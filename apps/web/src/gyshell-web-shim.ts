@@ -190,10 +190,10 @@ const gyshellApi = {
 
   agent: {
     startTask: (sessionId: string, message: string, options?: any) =>
-      rpc('agent:startTask', { sessionId, message, ...options }),
+      rpc('agent:startTask', { sessionId, userInput: message, options }),
     stopTask: (sessionId: string) => rpc('agent:stopTask', { sessionId }),
     replyMessage: (sessionId: string, message: string, options?: any) =>
-      rpc('agent:replyMessage', { sessionId, message, ...options }),
+      rpc('agent:replyMessage', { messageId: sessionId, payload: message, ...options }),
     deleteChatSession: (sessionId: string) => rpc('agent:deleteChatSession', { id: sessionId }),
     renameSession: (sessionId: string, name: string) =>
       rpc('agent:renameSession', { id: sessionId, name }),
