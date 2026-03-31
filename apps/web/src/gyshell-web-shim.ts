@@ -247,9 +247,9 @@ const gyshellApi = {
   },
 
   themes: {
-    getCustom: () => rpc('themes:getCustom').catch(() => null),
-    loadCustom: () => rpc('themes:loadCustom').catch(() => null),
-    reloadCustom: () => rpc('themes:reloadCustom').catch(() => null),
+    getCustom: () => rpc('themes:getCustom').catch(() => []),
+    loadCustom: () => rpc('themes:loadCustom').catch(() => []),
+    reloadCustom: () => rpc('themes:reloadCustom').catch(() => []),
     getCustomCSS: () => rpc('themes:getCustomCSS').catch(() => ''),
     openCustomConfig: noop,
   },
