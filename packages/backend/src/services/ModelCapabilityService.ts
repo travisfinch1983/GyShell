@@ -50,14 +50,13 @@ export class ModelCapabilityService {
     }
 
     const structuredMode = this.resolveStructuredOutputMode(model)
-    const [textCheck, imageCheck, structuredOutputCheck, objectToolChoiceCheck] = await Promise.all([
-      this.checkTextOutputs(model),
-      this.checkImageInputs(model),
-      structuredMode === 'auto'
-        ? this.checkStructuredOutput(model)
-        : Promise.resolve<ProbeStepResult>({ ok: structuredMode === 'on' }),
-      this.checkObjectToolChoice(model)
-    ])
+    // Run probes sequentially to avoid overwhelming single-slot local models
+    const textCheck = await this.checkTextOutputs(model)
+    const imageCheck = await this.checkImageInputs(model)
+    const structuredOutputCheck = structuredMode === 'auto'
+      ? await this.checkStructuredOutput(model)
+      : { ok: structuredMode === 'on' } as ProbeStepResult
+    const objectToolChoiceCheck = await this.checkObjectToolChoice(model)
     const activeCheck = textCheck.ok
       ? { ok: true as const }
       : await this.checkActiveByModelsEndpoint(model)
