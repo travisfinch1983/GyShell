@@ -228,7 +228,12 @@ const gyshellApi = {
   },
 
   models: {
-    probe: (config: any) => rpc('models:probe', { model: config }),
+    probe: async (config: any) => {
+      console.log('[gyshell-web] models.probe called with:', JSON.stringify({model: config.model, baseUrl: config.baseUrl, apiKey: config.apiKey ? '***' : 'missing'}))
+      const result = await rpc('models:probe', { model: config })
+      console.log('[gyshell-web] models.probe result:', JSON.stringify(result))
+      return result
+    },
     probeCapabilities: (config: any) => rpc('models:probe', { model: config }),
   },
 
