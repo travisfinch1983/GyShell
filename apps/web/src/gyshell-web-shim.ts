@@ -216,7 +216,7 @@ const gyshellApi = {
       rpc('agent:getSessionSnapshot', { id: sessionId }).catch(() => null),
     getProfiles: () => rpc('models:getProfiles'),
     setActiveProfile: (profileId: string) => rpc('models:setActiveProfile', { profileId }),
-    probeModel: (config: any) => rpc('models:probe', { config }),
+    probeModel: (config: any) => rpc('models:probe', { model: config }),
     onEvent: (cb: (event: any) => void): CleanupFn => {
       return client.on('gatewayEvent', (event) => {
         if (event.type === 'agent:event') cb(event)
@@ -228,8 +228,8 @@ const gyshellApi = {
   },
 
   models: {
-    probe: (config: any) => rpc('models:probeCapabilities', { config }),
-    probeCapabilities: (config: any) => rpc('models:probeCapabilities', { config }),
+    probe: (config: any) => rpc('models:probe', { model: config }),
+    probeCapabilities: (config: any) => rpc('models:probe', { model: config }),
   },
 
   tools: {
