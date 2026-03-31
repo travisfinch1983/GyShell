@@ -21,8 +21,81 @@ export const App: React.FC = observer(() => {
     store.bootstrap().then(() => {
       // Initialize minion cards from active profile
       initMinionsFromProfile()
+      // Hook into UI updates to drive minion status
+      setupMinionStatusListener()
     })
   }, [])
+
+  function setupMinionStatusListener() {
+    // Listen for agent UI updates to track model activity
+    window.gyshell.agent.onUiUpdate((action: any) => {
+      if (!action) return
+      const { type } = action
+
+      // Get the orchestrator minion (global model drives the main session)
+      const orchestrator = minionStore.getMinionByRole('orchestrator')
+      if (!orchestrator) return
+
+      if (type === 'ADD_MESSAGE') {
+        const msg = action.message
+        if (!msg) return
+
+        // Map message types to minion status
+        if (msg.role === 'assistant') {
+          switch (msg.type) {
+            case 'reasoning':
+              minionStore.updateMinionStatus(orchestrator.id, 'thinking')
+              break
+            case 'command': {
+              const cmd = msg.metadata?.command || msg.content?.substring(0, 40)
+              minionStore.updateMinionStatus(orchestrator.id, 'running-command', cmd)
+              break
+            }
+            case 'tool_call': {
+              const toolName = msg.metadata?.toolName || 'tool'
+              const { status, detail } = MinionStore.toolToStatus(toolName)
+              minionStore.updateMinionStatus(orchestrator.id, status, detail)
+              break
+            }
+            case 'file_edit': {
+              const action = msg.metadata?.action
+              const file = msg.metadata?.filePath || ''
+              if (action === 'created') {
+                minionStore.updateMinionStatus(orchestrator.id, 'writing-file', file)
+              } else {
+                minionStore.updateMinionStatus(orchestrator.id, 'editing-file', file)
+              }
+              break
+            }
+            case 'sub_tool': {
+              const hint = msg.metadata?.subToolHint || msg.metadata?.subToolTitle || ''
+              minionStore.updateMinionStatus(orchestrator.id, 'using-tool', hint)
+              break
+            }
+            case 'compaction':
+              minionStore.updateMinionStatus(orchestrator.id, 'compacting')
+              break
+            case 'text':
+              minionStore.updateMinionStatus(orchestrator.id, 'generating')
+              break
+            case 'error':
+              minionStore.updateMinionStatus(orchestrator.id, 'error', msg.content?.substring(0, 50))
+              break
+          }
+        } else if (msg.role === 'user') {
+          // User sent a message — model will start thinking
+          minionStore.updateMinionStatus(orchestrator.id, 'thinking')
+        }
+      } else if (type === 'DONE') {
+        minionStore.updateMinionStatus(orchestrator.id, 'idle')
+      } else if (type === 'APPEND_CONTENT' || type === 'APPEND_OUTPUT') {
+        // Model is actively generating
+        if (orchestrator.status === 'thinking') {
+          minionStore.updateMinionStatus(orchestrator.id, 'generating')
+        }
+      }
+    })
+  }
 
   function initMinionsFromProfile() {
     const settings = store.settings
