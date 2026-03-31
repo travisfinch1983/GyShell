@@ -1,0 +1,97 @@
+/* Minion Chat Message — Multi-agent feed messages */
+
+.minion-chat-msg {
+  padding: 6px 12px;
+  border-left: 2px solid transparent;
+  transition: background-color 0.1s ease;
+}
+
+.minion-chat-msg:hover {
+  background: var(--surface-soft, #1e2235);
+}
+
+.minion-chat-msg.from-user {
+  border-left-color: #22c55e;
+}
+
+.minion-chat-msg.system-msg {
+  border-left-color: #6b7280;
+  opacity: 0.7;
+}
+
+.minion-chat-msg.type-forward {
+  border-left-color: #f59e0b;
+}
+
+.minion-chat-msg.type-summary {
+  border-left-color: #8b5cf6;
+}
+
+.minion-chat-msg.type-tool-use {
+  border-left-color: #3b82f6;
+}
+
+.minion-msg-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
+.minion-msg-icon {
+  font-size: 10px;
+  margin-right: 2px;
+}
+
+.minion-msg-sender {
+  font-weight: 700;
+}
+
+.minion-msg-arrow {
+  color: var(--ink-soft, #6b7280);
+  font-size: 10px;
+}
+
+.minion-msg-recipient {
+  font-weight: 600;
+}
+
+.minion-msg-time {
+  margin-left: auto;
+  color: var(--ink-soft, #6b7280);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.minion-msg-body {
+  padding-left: 4px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink, #e1e4ea);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.minion-msg-body.forward {
+  font-style: italic;
+  color: var(--ink-soft, #8892a4);
+  font-size: 12px;
+}
+
+.minion-msg-tool-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+  background: var(--surface-muted, #252a3a);
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 3px;
+  padding: 0 4px;
+  margin-right: 6px;
+  color: var(--accent, #3b82f6);
+}
+
+.minion-msg-content {
+  /* Inherits from body */
+}
