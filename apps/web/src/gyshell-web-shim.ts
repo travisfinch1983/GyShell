@@ -194,15 +194,15 @@ const gyshellApi = {
     stopTask: (sessionId: string) => rpc('agent:stopTask', { sessionId }),
     replyMessage: (sessionId: string, message: string, options?: any) =>
       rpc('agent:replyMessage', { sessionId, message, ...options }),
-    deleteChatSession: (sessionId: string) => rpc('agent:deleteChatSession', { sessionId }),
+    deleteChatSession: (sessionId: string) => rpc('agent:deleteChatSession', { id: sessionId }),
     renameSession: (sessionId: string, name: string) =>
-      rpc('agent:renameSession', { sessionId, name }),
+      rpc('agent:renameSession', { id: sessionId, name }),
     rollbackToMessage: (sessionId: string, messageId: string) =>
-      rpc('agent:rollbackToMessage', { sessionId, messageId }),
+      rpc('agent:rollbackToMessage', { id: sessionId, messageId }),
     formatMessagesMarkdown: (sessionId: string) =>
-      rpc('agent:formatMessagesMarkdown', { sessionId }),
+      rpc('agent:formatMessagesMarkdown', { id: sessionId }).catch(() => ''),
     exportHistory: async (sessionId: string) => {
-      const data = await rpc<string>('agent:exportHistory', { sessionId })
+      const data = await rpc<string>('agent:exportHistory', { id: sessionId })
       const blob = new Blob([data as string], { type: 'text/markdown' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -210,9 +210,10 @@ const gyshellApi = {
       URL.revokeObjectURL(url)
     },
     getAllChatHistory: () => rpc('agent:getAllChatHistory'),
-    loadChatSession: (sessionId: string) => rpc('agent:loadChatSession', { sessionId }),
-    getUiMessages: (sessionId: string) => rpc('agent:getUiMessages', { sessionId }),
-    getSessionSnapshot: (sessionId: string) => rpc('agent:getSessionSnapshot', { sessionId }),
+    loadChatSession: (sessionId: string) => rpc('agent:loadChatSession', { id: sessionId }),
+    getUiMessages: (sessionId: string) => rpc('agent:getUiMessages', { id: sessionId }),
+    getSessionSnapshot: (sessionId: string) =>
+      rpc('agent:getSessionSnapshot', { id: sessionId }).catch(() => null),
     getProfiles: () => rpc('models:getProfiles'),
     setActiveProfile: (profileId: string) => rpc('models:setActiveProfile', { profileId }),
     probeModel: (config: any) => rpc('models:probe', { config }),
