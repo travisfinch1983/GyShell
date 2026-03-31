@@ -25,6 +25,9 @@
     "dev:mobile-web": "npm --workspace @gyshell/mobile-web run dev",
     "start:tui": "npm --workspace @gyshell/tui run start --",
     "start:mobile-web": "npm --workspace @gyshell/mobile-web run preview",
+    "dev:web": "npm --workspace @gyshell/web run dev",
+    "build:web": "npm --workspace @gyshell/web run build",
+    "start:web": "npm --workspace @gyshell/web run preview",
     "test:tui": "npm --workspace @gyshell/tui run test:smoke",
     "test:tui-input-automation": "npm --workspace @gyshell/tui run test:input-automation",
     "typecheck:tui": "npm --workspace @gyshell/tui run typecheck",
@@ -102,7 +105,7 @@
     "@types/uuid": "^9.0.0",
     "@typescript-eslint/eslint-plugin": "^8.49.0",
     "@typescript-eslint/parser": "^8.49.0",
-    "@vitejs/plugin-react": "^4.3.4",
+    "@vitejs/plugin-react": "^4.7.0",
     "electron": "^28.0.0",
     "electron-builder": "^26.8.1",
     "electron-builder-sandbox-fix": "^1.1.1",
@@ -110,9 +113,9 @@
     "eslint": "^8.57.0",
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.7.4",
-    "sass": "^1.91.0",
+    "sass": "^1.98.0",
     "tsx": "4.20.6",
     "typescript": "^5.3.3",
-    "vite": "^5.0.10"
+    "vite": "^5.4.21"
   }
 }
