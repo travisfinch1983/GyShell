@@ -115,14 +115,23 @@ const gyshellApi = {
   },
 
   accessTokens: {
-    list: () => rpc('access-tokens:list'),
-    create: (name: string) => rpc('access-tokens:create', { name }),
-    delete: (id: string) => rpc('access-tokens:delete', { id }),
+    // access-tokens not exposed via WebSocket — stub with empty
+    list: async () => [],
+    create: async (_name: string) => { console.warn('[gyshell-web] Token management not available in web mode') },
+    delete: async (_id: string) => { console.warn('[gyshell-web] Token management not available in web mode') },
   },
 
   uiSettings: {
-    get: () => rpc('ui-settings:get'),
-    set: (settings: any) => rpc('ui-settings:set', { settings }),
+    get: async () => {
+      // ui-settings not exposed via WebSocket — return defaults from localStorage
+      try {
+        const stored = localStorage.getItem('gyshell-ui-settings')
+        return stored ? JSON.parse(stored) : {}
+      } catch { return {} }
+    },
+    set: async (settings: any) => {
+      localStorage.setItem('gyshell-ui-settings', JSON.stringify(settings))
+    },
   },
 
   terminal: {
@@ -204,9 +213,9 @@ const gyshellApi = {
     loadChatSession: (sessionId: string) => rpc('agent:loadChatSession', { sessionId }),
     getUiMessages: (sessionId: string) => rpc('agent:getUiMessages', { sessionId }),
     getSessionSnapshot: (sessionId: string) => rpc('agent:getSessionSnapshot', { sessionId }),
-    getProfiles: () => rpc('agent:getProfiles'),
-    setActiveProfile: (profileId: string) => rpc('agent:setActiveProfile', { profileId }),
-    probeModel: (config: any) => rpc('agent:probeModel', { config }),
+    getProfiles: () => rpc('models:getProfiles'),
+    setActiveProfile: (profileId: string) => rpc('models:setActiveProfile', { profileId }),
+    probeModel: (config: any) => rpc('models:probe', { config }),
     onEvent: (cb: (event: any) => void): CleanupFn => {
       return client.on('gatewayEvent', (event) => {
         if (event.type === 'agent:event') cb(event)
@@ -224,12 +233,12 @@ const gyshellApi = {
 
   tools: {
     reloadMcp: () => rpc('tools:reloadMcp'),
-    getMcp: () => rpc('tools:getMcpServers'),
-    getMcpServers: () => rpc('tools:getMcpServers'),
+    getMcp: () => rpc('tools:getMcp'),
+    getMcpServers: () => rpc('tools:getMcp'),
     setMcpEnabled: (serverId: string, enabled: boolean) =>
       rpc('tools:setMcpEnabled', { serverId, enabled }),
-    getBuiltIn: () => rpc('tools:getBuiltInTools'),
-    getBuiltInTools: () => rpc('tools:getBuiltInTools'),
+    getBuiltIn: () => rpc('tools:getBuiltIn'),
+    getBuiltInTools: () => rpc('tools:getBuiltIn'),
     setBuiltInEnabled: (toolId: string, enabled: boolean) =>
       rpc('tools:setBuiltInEnabled', { toolId, enabled }),
     openMcpConfig: noop,
