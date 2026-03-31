@@ -42,6 +42,11 @@ export interface ModelProfile {
   actionModelId?: string
   thinkingModelId?: string
   compactionModelId?: string
+  // Minion horde custom roles:
+  coderModelId?: string
+  creativeModelId?: string
+  architectModelId?: string
+  scoutModelId?: string
 }
 
 export interface ExperimentalFlags {

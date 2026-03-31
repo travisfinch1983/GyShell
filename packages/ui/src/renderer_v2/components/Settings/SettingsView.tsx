@@ -1452,6 +1452,82 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                             ]}
                           />
                         </div>
+                        <div className="profile-field">
+                          <label>Coder Model</label>
+                          <Select
+                              value={(p as any).coderModelId || ""}
+                              onChange={(id) =>
+                                store.saveProfile({
+                                  ...p,
+                                  coderModelId: id || undefined,
+                                } as any)
+                              }
+                            options={[
+                                { value: "", label: "(None)" },
+                                ...(store.settings?.models.items.map((m) => ({
+                                  value: m.id,
+                                  label: m.name,
+                                })) || []),
+                            ]}
+                          />
+                        </div>
+                        <div className="profile-field">
+                          <label>Creative Model</label>
+                          <Select
+                              value={(p as any).creativeModelId || ""}
+                              onChange={(id) =>
+                                store.saveProfile({
+                                  ...p,
+                                  creativeModelId: id || undefined,
+                                } as any)
+                              }
+                            options={[
+                                { value: "", label: "(None)" },
+                                ...(store.settings?.models.items.map((m) => ({
+                                  value: m.id,
+                                  label: m.name,
+                                })) || []),
+                            ]}
+                          />
+                        </div>
+                        <div className="profile-field">
+                          <label>Architect Model</label>
+                          <Select
+                              value={(p as any).architectModelId || ""}
+                              onChange={(id) =>
+                                store.saveProfile({
+                                  ...p,
+                                  architectModelId: id || undefined,
+                                } as any)
+                              }
+                            options={[
+                                { value: "", label: "(None)" },
+                                ...(store.settings?.models.items.map((m) => ({
+                                  value: m.id,
+                                  label: m.name,
+                                })) || []),
+                            ]}
+                          />
+                        </div>
+                        <div className="profile-field">
+                          <label>Scout Model</label>
+                          <Select
+                              value={(p as any).scoutModelId || ""}
+                              onChange={(id) =>
+                                store.saveProfile({
+                                  ...p,
+                                  scoutModelId: id || undefined,
+                                } as any)
+                              }
+                            options={[
+                                { value: "", label: "(None)" },
+                                ...(store.settings?.models.items.map((m) => ({
+                                  value: m.id,
+                                  label: m.name,
+                                })) || []),
+                            ]}
+                          />
+                        </div>
                       </div>
                     </div>
                     );
