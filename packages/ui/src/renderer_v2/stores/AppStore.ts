@@ -2315,16 +2315,25 @@ export class AppStore {
       // Ensure profile is a plain object for IPC cloning
       profile: modelSnapshot.profile ? toJS(modelSnapshot.profile) : undefined,
     }
-    let nextProfile: ModelDefinition['profile'] = {
-      imageInputs: false,
-      textOutputs: false,
-      supportsStructuredOutput: false,
-      supportsObjectToolChoice: false,
-      testedAt: Date.now(),
-      ok: false,
-      error: 'Probe failed',
-    }
-    try {
+    // Skip re-probe if model/baseUrl/apiKey haven't changed and we already have a valid profile
+    const existingItem = items.find((x) => x.id === plainModel.id)
+    const configUnchanged = existingItem &&
+      existingItem.model === plainModel.model &&
+      existingItem.baseUrl === plainModel.baseUrl &&
+      existingItem.apiKey === plainModel.apiKey &&
+      existingItem.profile?.ok === true
+    let nextProfile: ModelDefinition['profile'] = configUnchanged
+      ? existingItem.profile!
+      : {
+          imageInputs: false,
+          textOutputs: false,
+          supportsStructuredOutput: false,
+          supportsObjectToolChoice: false,
+          testedAt: Date.now(),
+          ok: false,
+          error: 'Probe failed',
+        }
+    if (!configUnchanged) try {
       const probeResult = await window.gyshell.models.probe(plainModel)
       nextProfile = {
         imageInputs: probeResult.imageInputs,
