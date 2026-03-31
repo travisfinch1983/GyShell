@@ -16,6 +16,11 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Access token for WebSocket gateway authentication
+      // This is injected at serve-time; for production, use env or server-side injection
+      window.__GYSHELL_ACCESS_TOKEN__ = 'gys_at_uiLAh401tdLAUbfIvdcC2PPDPoh-ze6n';
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
