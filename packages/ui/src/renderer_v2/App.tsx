@@ -30,6 +30,7 @@ export const App: React.FC = observer(() => {
     // Listen for agent UI updates to track model activity
     window.gyshell.agent.onUiUpdate((action: any) => {
       if (!action) return
+      console.log('[minion-status] UI update:', action.type, action.message?.type || '', action.message?.role || '')
       const { type } = action
 
       // Get the orchestrator minion (global model drives the main session)
