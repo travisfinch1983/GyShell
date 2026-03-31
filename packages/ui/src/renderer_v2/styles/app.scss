@@ -8,10 +8,23 @@
   flex: 1;
   min-height: 0;
   position: relative;
+  display: flex;
+}
+
+.gyshell-minion-sidebar {
+  width: 200px;
+  min-width: 160px;
+  max-width: 280px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border, #2a2f3a);
+  background: var(--surface, #1a1d2e);
+  overflow: hidden;
 }
 
 .gyshell-main {
   height: 100%;
+  flex: 1;
+  min-width: 0;
 }
 
 .gyshell-overlay {
