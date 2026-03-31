@@ -50,9 +50,9 @@ client.on('status', (status) => {
 
 // ─── RPC Helper ──────────────────────────────────────────────────────────────
 
-async function rpc<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+async function rpc<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
   await ensureConnected()
-  return client.request<T>(method, params)
+  return client.request<T>(method, params, timeoutMs)
 }
 
 // ─── Event Listeners ─────────────────────────────────────────────────────────
@@ -190,7 +190,7 @@ const gyshellApi = {
 
   agent: {
     startTask: (sessionId: string, message: string, options?: any) =>
-      rpc('agent:startTask', { sessionId, userInput: message, options }),
+      rpc('agent:startTask', { sessionId, userInput: message, options }, 600000),
     stopTask: (sessionId: string) => rpc('agent:stopTask', { sessionId }),
     replyMessage: (sessionId: string, message: string, options?: any) =>
       rpc('agent:replyMessage', { messageId: sessionId, payload: message, ...options }),

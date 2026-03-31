@@ -30,12 +30,10 @@ export const App: React.FC = observer(() => {
     // Listen for agent UI updates to track model activity
     window.gyshell.agent.onUiUpdate((action: any) => {
       if (!action) return
-      console.log('[minion-status] UI update:', action.type, action.message?.type || '', action.message?.role || '')
       const { type } = action
 
       // Get the orchestrator minion (global model drives the main session)
       const orchestrator = minionStore.getMinionByRole('orchestrator')
-      console.log('[minion-status] orchestrator lookup:', orchestrator ? orchestrator.id : 'NOT FOUND', 'total minions:', minionStore.minionList.length)
       if (!orchestrator) return
 
       if (type === 'ADD_MESSAGE') {
