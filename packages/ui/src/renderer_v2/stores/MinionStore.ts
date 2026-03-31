@@ -107,17 +107,24 @@ export class MinionStore {
   updateMinionStatus(id: string, status: MinionStatus, detail?: string): void {
     const minion = this.minions.get(id)
     if (minion) {
-      minion.status = status
-      minion.statusDetail = detail
-      minion.lastActivity = Date.now()
+      // Replace with a new object to trigger MobX reactivity
+      this.minions.set(id, {
+        ...minion,
+        status,
+        statusDetail: detail,
+        lastActivity: Date.now(),
+      })
     }
   }
 
   updateMinionConnection(id: string, connected: boolean): void {
     const minion = this.minions.get(id)
     if (minion) {
-      minion.connected = connected
-      if (!connected) minion.status = 'disconnected'
+      this.minions.set(id, {
+        ...minion,
+        connected,
+        status: connected ? minion.status : 'disconnected',
+      })
     }
   }
 
