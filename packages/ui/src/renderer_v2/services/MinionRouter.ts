@@ -237,6 +237,19 @@ export class MinionRouter {
       { role: 'user', content: message },
     ]
 
+    // Conversation tracer — log what we're actually sending
+    const totalTokensEstimate = messages.reduce((sum, m) => sum + Math.ceil(m.content.length / 4), 0)
+    console.log(`[MinionRouter] ═══ TRACE ═══`)
+    console.log(`[MinionRouter] Target: ${minion.friendlyName} (${role})`)
+    console.log(`[MinionRouter] Endpoint: ${endpoint.baseUrl}/chat/completions`)
+    console.log(`[MinionRouter] Model: ${endpoint.modelId}`)
+    console.log(`[MinionRouter] Messages: ${messages.length} (est ~${totalTokensEstimate} tokens)`)
+    messages.forEach((m, i) => {
+      const preview = m.content.length > 100 ? m.content.substring(0, 100) + '...' : m.content
+      console.log(`[MinionRouter]   [${i}] ${m.role}: ${preview} (${m.content.length} chars)`)
+    })
+    console.log(`[MinionRouter] ═════════════`)
+
     try {
       const resp = await fetch(`${endpoint.baseUrl}/chat/completions`, {
         method: 'POST',

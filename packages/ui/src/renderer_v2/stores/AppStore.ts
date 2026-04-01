@@ -2710,6 +2710,7 @@ export class AppStore {
       const role = minionStore.selectedTarget
       const text = typeof content === 'string' ? content : content?.text || ''
       if (text) {
+        console.log(`[AppStore] ══ INTERCEPTED ══ Routing to specialist: ${role} (not GyShell agent)`)
         // Route to specialist — don't enter GyShell's busy/thinking state
         minionRouter.sendToSpecialist(role, text)
         // Ensure session is NOT marked as busy (prevents red stop button)
