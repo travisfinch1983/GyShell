@@ -95,7 +95,6 @@ const FeedMessage: React.FC<{ msg: MinionMessage }> = ({ msg }) => {
 export const MinionFeed = observer(({ store }: MinionFeedProps) => {
   const messages = store.allMessages
   const scrollRef = useRef<HTMLDivElement>(null)
-  const [expanded, setExpanded] = React.useState(true)
   const [roleFilter, setRoleFilter] = React.useState<string | null>(null)
 
   const filteredMessages = roleFilter
@@ -107,7 +106,6 @@ export const MinionFeed = observer(({ store }: MinionFeedProps) => {
       })
     : messages
 
-  // Get unique roles that have activity
   const activeRoles = React.useMemo(() => {
     const roles = new Set<string>()
     for (const m of messages) {
@@ -118,24 +116,14 @@ export const MinionFeed = observer(({ store }: MinionFeedProps) => {
   }, [messages.length])
 
   useEffect(() => {
-    if (scrollRef.current && expanded) {
+    if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [filteredMessages.length, expanded])
+  }, [filteredMessages.length])
 
   return (
     <div className="minion-feed-container">
-      <div
-        className="minion-feed-header"
-        onClick={() => setExpanded(!expanded)}
-      >
-        <span className="minion-feed-chevron">{expanded ? '▾' : '▸'}</span>
-        <span className="minion-feed-title">Activity Feed</span>
-        {messages.length > 0 && (
-          <span className="minion-feed-count">{filteredMessages.length}</span>
-        )}
-      </div>
-      {expanded && activeRoles.length > 0 && (
+      {activeRoles.length > 0 && (
         <div className="minion-feed-filters">
           <button
             className={`feed-filter-btn ${roleFilter === null ? 'active' : ''}`}
@@ -154,19 +142,17 @@ export const MinionFeed = observer(({ store }: MinionFeedProps) => {
           ))}
         </div>
       )}
-      {expanded && (
-        <div className="minion-feed-messages" ref={scrollRef}>
-          {filteredMessages.length === 0 ? (
-            <div className="minion-feed-empty">
-              {roleFilter ? `No activity for ${roleFilter}` : 'No activity yet'}
-            </div>
-          ) : (
-            filteredMessages.map((msg) => (
-              <FeedMessage key={msg.id} msg={msg} />
-            ))
-          )}
-        </div>
-      )}
+      <div className="minion-feed-messages" ref={scrollRef}>
+        {filteredMessages.length === 0 ? (
+          <div className="minion-feed-empty">
+            {roleFilter ? `No activity for ${roleFilter}` : 'No activity yet'}
+          </div>
+        ) : (
+          filteredMessages.map((msg) => (
+            <FeedMessage key={msg.id} msg={msg} />
+          ))
+        )}
+      </div>
     </div>
   )
 })

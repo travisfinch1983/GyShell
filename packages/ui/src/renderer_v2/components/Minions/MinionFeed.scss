@@ -3,46 +3,9 @@
 .minion-feed-container {
   display: flex;
   flex-direction: column;
-  border-top: 1px solid var(--border, #2a2f3a);
   min-height: 0;
   flex: 1;
-}
-
-.minion-feed-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.minion-feed-header:hover {
-  background: var(--surface-soft, #1e2235);
-}
-
-.minion-feed-chevron {
-  font-size: 10px;
-  color: var(--ink-soft, #6b7280);
-  width: 12px;
-}
-
-.minion-feed-title {
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--ink-soft, #8892a4);
-}
-
-.minion-feed-count {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--ink-soft, #6b7280);
-  background: var(--surface-muted, #1e2230);
-  border-radius: 8px;
-  padding: 0 5px;
-  margin-left: auto;
+  overflow: hidden;
 }
 
 .minion-feed-messages {

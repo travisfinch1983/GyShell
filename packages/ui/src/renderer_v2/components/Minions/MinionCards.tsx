@@ -112,7 +112,12 @@ function MinionCardItem({ card, store }: { card: MinionCard; store: MinionStore 
 }
 
 export const MinionCards = observer(({ store }: MinionCardsProps) => {
-  const minions = store.minionList
+  // Sort: selectable cards first, then internal
+  const minions = [...store.minionList].sort((a, b) => {
+    const aSelectable = MinionStore.selectableRoles.has(a.role) ? 0 : 1
+    const bSelectable = MinionStore.selectableRoles.has(b.role) ? 0 : 1
+    return aSelectable - bSelectable
+  })
 
   if (minions.length === 0) {
     return (

@@ -1,0 +1,112 @@
+/* MinionSidebar — Resizable cards + feed layout */
+
+.minion-sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.minion-sidebar-cards {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Draggable divider between cards and feed */
+.minion-sidebar-divider {
+  flex-shrink: 0;
+  height: 5px;
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg, #0f1117);
+  border-top: 1px solid var(--border, #2a2f3a);
+  border-bottom: 1px solid var(--border, #2a2f3a);
+  transition: background-color 0.1s ease;
+}
+
+.minion-sidebar-divider:hover,
+.minion-sidebar-divider.active {
+  background: color-mix(in srgb, var(--accent, #3b82f6) 15%, var(--bg, #0f1117));
+}
+
+.minion-divider-grip {
+  width: 24px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--border-strong, #3d4455);
+}
+
+.minion-sidebar-divider:hover .minion-divider-grip,
+.minion-sidebar-divider.active .minion-divider-grip {
+  background: var(--accent, #3b82f6);
+}
+
+/* Feed panel */
+.minion-sidebar-feed {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg, #0f1117);
+}
+
+.minion-sidebar-feed.collapsed {
+  height: auto !important;
+  min-height: 0 !important;
+}
+
+.minion-sidebar-feed-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Feed toggle header */
+.minion-feed-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 10px;
+  border-top: 1px solid var(--border, #2a2f3a);
+  background: var(--bg, #0f1117);
+  flex-shrink: 0;
+}
+
+.minion-feed-toggle:hover {
+  background: var(--surface-soft, #1e2235);
+}
+
+.minion-feed-toggle-chevron {
+  font-size: 9px;
+  color: var(--ink-soft, #6b7280);
+  width: 10px;
+}
+
+.minion-feed-toggle-label {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft, #8892a4);
+}
+
+.minion-feed-toggle-count {
+  margin-left: auto;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--ink-soft, #6b7280);
+  background: var(--surface-muted, #1e2230);
+  border-radius: 6px;
+  padding: 0 4px;
+  min-width: 0;
+}
+
+.minion-feed-toggle-count:empty {
+  display: none;
+}

@@ -10,8 +10,7 @@ import { SettingsView } from './components/Settings/SettingsView'
 import { ConnectionsView } from './components/Connections/ConnectionsView'
 import { ConfirmDialog } from './components/Common/ConfirmDialog'
 import { LayoutWorkspace } from './components/Layout/LayoutWorkspace'
-import { MinionCards } from './components/Minions/MinionCards'
-import { MinionFeed } from './components/Minions/MinionFeed'
+import { MinionSidebar } from './components/Minions/MinionSidebar'
 import './styles/app.scss'
 
 const store = new AppStore()
@@ -242,8 +241,7 @@ export const App: React.FC = observer(() => {
 
       <div className="gyshell-body">
         <div className="gyshell-minion-sidebar">
-          <MinionCards store={minionStore} />
-          <MinionFeed store={minionStore} />
+          <MinionSidebar store={minionStore} />
         </div>
         <div className="gyshell-main">
           <LayoutWorkspace store={store} />
