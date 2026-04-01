@@ -3,6 +3,19 @@ import { observer } from "mobx-react-lite";
 import { Check, Copy, CornerUpLeft } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+
+/** Map minion role/model names to muted colors for chat message tinting */
+function getMinionRoleColor(name: string): string {
+  const lower = (name || '').toLowerCase()
+  if (lower.includes('coder') || lower.includes('kat-dev')) return '#6ba3e0'
+  if (lower.includes('creative') || lower.includes('darkidol') || lower.includes('ballad')) return '#d68cb5'
+  if (lower.includes('architect') || lower.includes('27b')) return '#d4a853'
+  if (lower.includes('scout') || lower.includes('4b')) return '#6bc78f'
+  if (lower.includes('orchestrator')) return '#a78bdb'
+  if (lower.includes('chat') || lower.includes('122b')) return '#5cb8a0'
+  if (lower.includes('minion')) return '#7b9ec4'
+  return '#8892a4'
+}
 import type { AppStore } from "../../stores/AppStore";
 import type { ChatMessage } from "../../stores/ChatStore";
 import { renderMentionContent } from "../../lib/MentionParser";
@@ -150,7 +163,7 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
         <div
           className={`message-row-container role-assistant${mergeWithPreviousAssistant ? " is-group-continuation" : ""}${isSearchMatch ? " is-search-match" : ""}${isActiveSearchMatch ? " is-search-active" : ""}`}
         >
-          <div className="message-role-label assistant">ASSISTANT</div>
+          <div className={`message-role-label assistant ${msg.metadata?.modelName ? 'minion-role' : ''}`} style={msg.metadata?.modelName ? { color: getMinionRoleColor(msg.metadata.modelName) } : undefined}>{msg.metadata?.modelName ? msg.metadata.modelName.toUpperCase() : 'ASSISTANT'}</div>
           <SeamlessToolGroupBanner
             messages={groupMessages}
             expanded={bannerUiState?.expanded}
@@ -192,9 +205,11 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
     const canRollback =
       isUser && !!msg.backendMessageId && !msg.streaming && !isThinking;
 
+    const minionColor = msg.metadata?.modelName ? getMinionRoleColor(msg.metadata.modelName) : null
     const renderAssistantRow = (children: React.ReactNode) => (
       <div
-        className={`message-row-container role-assistant${mergeWithPreviousAssistant ? " is-group-continuation" : ""}${isSearchMatch ? " is-search-match" : ""}${isActiveSearchMatch ? " is-search-active" : ""}`}
+        className={`message-row-container role-assistant${mergeWithPreviousAssistant ? " is-group-continuation" : ""}${isSearchMatch ? " is-search-match" : ""}${isActiveSearchMatch ? " is-search-active" : ""}${minionColor ? " minion-message" : ""}`}
+        style={minionColor ? { borderLeftColor: minionColor, background: `color-mix(in srgb, ${minionColor} 5%, transparent)` } as React.CSSProperties : undefined}
       >
         {children}
         {shouldShowGroupCopy && (
@@ -342,7 +357,7 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
 
     return renderAssistantRow(
       <>
-        <div className="message-role-label assistant">ASSISTANT</div>
+        <div className={`message-role-label assistant ${msg.metadata?.modelName ? 'minion-role' : ''}`} style={msg.metadata?.modelName ? { color: getMinionRoleColor(msg.metadata.modelName) } : undefined}>{msg.metadata?.modelName ? msg.metadata.modelName.toUpperCase() : 'ASSISTANT'}</div>
         <div className={`message-text ${msg.role}`}>
           <div
             className={

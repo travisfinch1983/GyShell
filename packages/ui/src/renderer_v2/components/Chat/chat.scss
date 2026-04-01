@@ -471,6 +471,16 @@ body.chat-drag-selection-suppressed * {
     color: var(--fg);
     opacity: 0.7;
   }
+  &.assistant.minion-role {
+    opacity: 1;
+  }
+}
+
+.message-row-container.minion-message {
+  border-left: 3px solid;
+  border-radius: 4px;
+  margin: 4px 0;
+  padding-left: 12px;
 }
 
 .message-role-icon {

@@ -59,6 +59,33 @@
   text-align: center;
 }
 
+.minion-feed-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 2px 10px 4px;
+}
+
+.feed-filter-btn {
+  border: 1px solid var(--border, #2a2f3a);
+  background: transparent;
+  color: var(--ink-soft, #6b7280);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.feed-filter-btn:hover {
+  background: var(--surface-soft, #1e2235);
+}
+
+.feed-filter-btn.active {
+  background: var(--surface-muted, #252a3a);
+  border-color: var(--accent, #3b82f6);
+}
+
 .feed-msg {
   display: flex;
   align-items: center;
@@ -67,6 +94,7 @@
   font-size: 10px;
   color: var(--ink-soft, #8892a4);
   line-height: 1.4;
+  border-left: 2px solid transparent;
 }
 
 .feed-msg:hover {
