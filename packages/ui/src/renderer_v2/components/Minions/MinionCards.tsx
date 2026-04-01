@@ -60,6 +60,7 @@ function MinionCardItem({ card, store }: { card: MinionCard; store: MinionStore 
   const isSelectable = MinionStore.selectableRoles.has(card.role)
   const isSelected = store.isSelected(card.role)
   const isInternal = MinionStore.internalRoles.has(card.role)
+  const isActive = isAnimated(card.status) // True when model is working (not idle/complete/error/disconnected)
 
   return (
     <div
@@ -89,6 +90,19 @@ function MinionCardItem({ card, store }: { card: MinionCard; store: MinionStore 
         <span className="minion-status-label" style={{ color }}>
           {label}
         </span>
+        {isActive && (
+          <button
+            className="minion-stop-btn"
+            onClick={(e) => {
+              e.stopPropagation()
+              const router = (window as any).__minionRouter
+              if (router) router.cancelRequest(card.role)
+            }}
+            title={`Stop ${card.friendlyName}`}
+          >
+            ■
+          </button>
+        )}
       </div>
       <div className="minion-card-footer">
         <span className="minion-model-name">{card.modelName}</span>

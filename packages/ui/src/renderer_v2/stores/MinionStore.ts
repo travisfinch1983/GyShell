@@ -92,7 +92,7 @@ export class MinionStore {
   maxMessages = 500
 
   /** Roles that can be directly selected by clicking their card */
-  static selectableRoles = new Set(['coder', 'creative', 'architect', 'scout'])
+  static selectableRoles = new Set(['chat', 'coder', 'creative', 'architect', 'scout'])
   /** Roles that are internal/background — shown but not interactive */
   static internalRoles = new Set(['orchestrator', 'thinking', 'compaction', 'action'])
 

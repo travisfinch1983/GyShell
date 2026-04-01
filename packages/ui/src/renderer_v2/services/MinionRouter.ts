@@ -42,6 +42,12 @@ function injectChatMessage(role: 'user' | 'assistant' | 'system', content: strin
     message,
   })
 
+  // Always ensure GyShell doesn't think it's busy from our injected messages
+  try {
+    appStore.chat.setThinking(false, session.id)
+    appStore.chat.setSessionBusy(false, session.id)
+  } catch {}
+
   persistMinionMessage({ ...message, sessionId: session.id })
 
   // Record to transcript
@@ -243,9 +249,38 @@ Output ONLY this JSON, nothing else:
 
 export class MinionRouter {
   private store: MinionStore
+  private abortControllers = new Map<string, AbortController>()
 
   constructor(store: MinionStore) {
     this.store = store
+  }
+
+  /**
+   * Cancel an in-flight request for a specific role.
+   */
+  cancelRequest(role: string): void {
+    const controller = this.abortControllers.get(role)
+    if (controller) {
+      controller.abort()
+      this.abortControllers.delete(role)
+      const minion = this.store.getMinionByRole(role as any)
+      if (minion) {
+        this.store.updateMinionStatus(minion.id, 'idle')
+        this.store.addMessage({
+          from: 'system',
+          to: 'all',
+          type: 'system',
+          content: `Cancelled ${minion.friendlyName} request`,
+        })
+      }
+    }
+  }
+
+  /**
+   * Check if a role has an active request.
+   */
+  isRequestActive(role: string): boolean {
+    return this.abortControllers.has(role)
   }
 
   /**
@@ -304,6 +339,11 @@ export class MinionRouter {
     })
     console.log(`[MinionRouter] ═════════════`)
 
+    // Set up abort controller for this role
+    this.abortControllers.get(role)?.abort()
+    const abortController = new AbortController()
+    this.abortControllers.set(role, abortController)
+
     try {
       const resp = await fetch(`${endpoint.baseUrl}/chat/completions`, {
         method: 'POST',
@@ -318,6 +358,7 @@ export class MinionRouter {
           temperature: 0.7,
           stream: false,
         }),
+        signal: abortController.signal,
       })
 
       if (!resp.ok) {
@@ -359,11 +400,17 @@ export class MinionRouter {
       })
 
     } catch (err: any) {
-      console.error(`[MinionRouter] Fetch error:`, err)
-      this.store.updateMinionStatus(minion.id, 'error', err.message)
-      injectChatMessage('assistant', `**[${minion.friendlyName} ✗ Error]**\n\n${err.message}`, {
-        modelName: minion.friendlyName,
-      })
+      if (err.name === 'AbortError') {
+        console.log(`[MinionRouter] Request to ${minion.friendlyName} cancelled`)
+      } else {
+        console.error(`[MinionRouter] Fetch error:`, err)
+        this.store.updateMinionStatus(minion.id, 'error', err.message)
+        injectChatMessage('assistant', `**[${minion.friendlyName} ✗ Error]**\n\n${err.message}`, {
+          modelName: minion.friendlyName,
+        })
+      }
+    } finally {
+      this.abortControllers.delete(role)
     }
   }
 

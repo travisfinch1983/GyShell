@@ -160,7 +160,32 @@
 
 .minion-card-body {
   margin-top: 4px;
-  padding-left: 13px; /* Align with text after dot */
+  padding-left: 13px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.minion-stop-btn {
+  margin-left: auto;
+  border: none;
+  background: var(--danger, #ef4444);
+  color: #fff;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  font-size: 8px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+
+.minion-stop-btn:hover {
+  opacity: 1;
 }
 
 .minion-status-label {
