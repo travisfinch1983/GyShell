@@ -1,6 +1,6 @@
 import React from "react";
 import { observer } from "mobx-react-lite";
-import { Check, Copy, CornerUpLeft } from "lucide-react";
+import { Check, Copy, CornerUpLeft, Pencil, Send, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -229,6 +229,8 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
     }
     const canRollback =
       isUser && !!msg.backendMessageId && !msg.streaming && !isThinking;
+    const isMinionMessage = isUser && msg.id?.startsWith('minion-');
+    const canEditResend = isMinionMessage && !msg.streaming;
 
     const minionColor = msg.metadata?.modelName ? getMinionRoleColor(msg.metadata.modelName) : null
     const minionBg = minionColor ? hexToRgba(minionColor, 0.12) : undefined
@@ -292,14 +294,18 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
                 </div>
               )}
             </div>
-            <button
-              className="message-rollback-btn"
-              title="Rollback and re-edit"
-              onClick={() => onRollback(msg)}
-              disabled={!canRollback}
-            >
-              <CornerUpLeft size={14} />
-            </button>
+            {canEditResend ? (
+              <MinionEditResendButton msg={msg} />
+            ) : (
+              <button
+                className="message-rollback-btn"
+                title="Rollback and re-edit"
+                onClick={() => onRollback(msg)}
+                disabled={!canRollback}
+              >
+                <CornerUpLeft size={14} />
+              </button>
+            )}
           </div>
         </div>
       );
@@ -436,3 +442,87 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
     );
   },
 );
+
+// ─── Edit & Resend button for minion messages ───────────────────────────────
+
+// Pencil, Send, X imported at top of file
+
+const MinionEditResendButton: React.FC<{ msg: ChatMessage }> = ({ msg }) => {
+  const [editing, setEditing] = React.useState(false);
+  const [editText, setEditText] = React.useState('');
+
+  // Extract the user's original text (strip the [Sent to xxx] header if present)
+  const getOriginalText = () => {
+    let text = msg.content || '';
+    // Remove markdown header like **[Sent to Coder]**\n\n
+    text = text.replace(/^\*\*\[.*?\]\*\*\s*\n*/, '').trim();
+    return text;
+  };
+
+  const startEdit = () => {
+    setEditText(getOriginalText());
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setEditing(false);
+  };
+
+  const resend = () => {
+    if (!editText.trim()) return;
+    const minionStore = (window as any).__minionStore;
+    const minionRouter = (window as any).__minionRouter;
+    if (!minionStore || !minionRouter) return;
+
+    // Determine which specialist this was originally sent to
+    const headerMatch = msg.content?.match(/\[Sent to (\w+)\]/);
+    const targetRole = headerMatch ? headerMatch[1].toLowerCase() : null;
+
+    if (targetRole && minionStore.getMinionByRole(targetRole)) {
+      minionRouter.sendToSpecialist(targetRole, editText.trim());
+    } else if (minionStore.selectedTarget) {
+      minionRouter.sendToSpecialist(minionStore.selectedTarget, editText.trim());
+    } else {
+      minionRouter.routeViaOrchestrator(editText.trim());
+    }
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div className="minion-edit-resend" onClick={(e) => e.stopPropagation()}>
+        <textarea
+          className="minion-edit-textarea"
+          value={editText}
+          onChange={(e) => setEditText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              resend();
+            }
+            if (e.key === 'Escape') cancelEdit();
+          }}
+          autoFocus
+        />
+        <div className="minion-edit-actions">
+          <button className="minion-edit-send" onClick={resend} title="Resend">
+            <Send size={12} />
+          </button>
+          <button className="minion-edit-cancel" onClick={cancelEdit} title="Cancel">
+            <X size={12} />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      className="message-rollback-btn"
+      title="Edit and resend"
+      onClick={startEdit}
+    >
+      <Pencil size={14} />
+    </button>
+  );
+};

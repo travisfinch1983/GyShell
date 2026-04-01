@@ -497,6 +497,72 @@ body.chat-drag-selection-suppressed * {
   display: none;
 }
 
+/* Minion Edit & Resend */
+.minion-edit-resend {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.minion-edit-textarea {
+  width: 100%;
+  min-height: 48px;
+  max-height: 200px;
+  padding: 6px 8px;
+  border: 1px solid var(--accent, #3b82f6);
+  border-radius: 4px;
+  background: var(--bg, #0f1117);
+  color: var(--fg, #e1e4ea);
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1.4;
+  resize: vertical;
+}
+
+.minion-edit-textarea:focus {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--accent, #3b82f6);
+}
+
+.minion-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.minion-edit-send,
+.minion-edit-cancel {
+  border: none;
+  border-radius: 3px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.minion-edit-send {
+  background: var(--accent, #3b82f6);
+  color: #fff;
+}
+
+.minion-edit-cancel {
+  background: transparent;
+  color: var(--ink-soft, #6b7280);
+  border: 1px solid var(--border, #2a2f3a);
+}
+
+.minion-edit-send:hover {
+  opacity: 0.9;
+}
+
+.minion-edit-cancel:hover {
+  background: var(--surface-soft, #1e2235);
+}
+
 /* Markdown styling override */
 .markdown-body {
   --markdown-code-block-bg: color-mix(in srgb, var(--fg) 4%, transparent);
