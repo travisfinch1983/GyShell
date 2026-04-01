@@ -88,7 +88,7 @@ function nextMessageId(): string {
 export class MinionStore {
   messages: MinionMessage[] = []
   minions: Map<string, MinionCard> = new Map()
-  selectedTarget: string = 'orchestrator' // Default message target
+  selectedTarget: string = 'chat' // Default message target
   maxMessages = 500
 
   constructor() {
@@ -284,18 +284,22 @@ export class MinionStore {
     this.selectedTarget = target
   }
 
+  /** Roles hidden from the target dropdown (silent/background roles) */
+  private static hiddenTargetRoles = new Set(['orchestrator', 'compaction'])
+
   get targetOptions(): Array<{ value: string; label: string }> {
     const options: Array<{ value: string; label: string }> = []
     for (const minion of this.minions.values()) {
+      if (MinionStore.hiddenTargetRoles.has(minion.role)) continue
       options.push({
         value: minion.role,
-        label: `${minion.friendlyName} (${minion.role})`,
+        label: minion.friendlyName,
       })
     }
-    // Sort: orchestrator first, then alphabetical
+    // Sort: chat first, then alphabetical
     options.sort((a, b) => {
-      if (a.value === 'orchestrator') return -1
-      if (b.value === 'orchestrator') return 1
+      if (a.value === 'chat') return -1
+      if (b.value === 'chat') return 1
       return a.label.localeCompare(b.label)
     })
     return options
