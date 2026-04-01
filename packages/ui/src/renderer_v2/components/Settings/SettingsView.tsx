@@ -2654,6 +2654,10 @@ const RolePromptsEditor: React.FC<{ profile: any; store: any }> = observer(({ pr
     setEditValue(DEFAULT_PROMPTS[editingRole] || '');
   };
 
+  const cancelEdit = () => {
+    setEditingRole(null);
+  };
+
   return (
     <div className="profile-field" style={{ marginTop: 8 }}>
       <div
@@ -2685,12 +2689,22 @@ const RolePromptsEditor: React.FC<{ profile: any; store: any }> = observer(({ pr
                     {isEditing ? 'Save' : 'Edit'}
                   </button>
                   {isEditing && (
-                    <button
-                      onClick={resetPrompt}
-                      style={{ border: 'none', background: 'transparent', color: 'var(--ink-soft)', fontSize: 10, cursor: 'pointer', padding: '2px 4px' }}
-                    >
-                      Reset
-                    </button>
+                    <>
+                      <button
+                        onClick={resetPrompt}
+                        style={{ border: 'none', background: 'transparent', color: 'var(--warning, #f59e0b)', fontSize: 10, cursor: 'pointer', padding: '2px 4px' }}
+                        title="Reset to default prompt"
+                      >
+                        Reset
+                      </button>
+                      <button
+                        onClick={cancelEdit}
+                        style={{ border: 'none', background: 'transparent', color: 'var(--ink-soft)', fontSize: 10, cursor: 'pointer', padding: '2px 4px' }}
+                        title="Cancel without saving"
+                      >
+                        Cancel
+                      </button>
+                    </>
                   )}
                 </div>
                 {isEditing ? (
