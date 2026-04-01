@@ -49,6 +49,20 @@ function injectChatMessage(role: 'user' | 'assistant' | 'system', content: strin
 
   // Persist to localStorage for survival across refreshes
   persistMinionMessage({ ...message, sessionId: session.id })
+
+  // Record to transcript
+  const ts = (window as any).__transcriptService
+  if (ts) {
+    ts.recordChatMessage({
+      id: msgId,
+      timestamp: message.timestamp,
+      from: role === 'user' ? 'user' : (metadata?.modelName || 'assistant'),
+      to: role === 'user' ? (metadata?.subToolTitle?.replace('→ ', '') || 'assistant') : 'user',
+      content,
+      role,
+      metadata,
+    })
+  }
 }
 
 function persistMinionMessage(msg: StoredChatMessage) {

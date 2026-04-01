@@ -171,6 +171,21 @@ export class MinionStore {
     if (this.messages.length > this.maxMessages) {
       this.messages = this.messages.slice(-this.maxMessages)
     }
+
+    // Record to activity transcript
+    const ts = (window as any).__transcriptService
+    if (ts) {
+      ts.recordActivityEntry({
+        id: message.id,
+        timestamp: message.timestamp,
+        from: message.from,
+        to: message.to,
+        content: message.content,
+        messageType: message.type,
+        metadata: message.metadata,
+      })
+    }
+
     return message
   }
 

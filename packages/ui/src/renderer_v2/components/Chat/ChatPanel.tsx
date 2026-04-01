@@ -907,6 +907,37 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
               >
                 {t.chat.history.copySessionId}
               </button>
+              <div className="win-select-separator" role="separator" />
+              <button
+                type="button"
+                className="win-select-option"
+                role="menuitem"
+                onClick={() => {
+                  setShowExportMenu(false)
+                  const ts = (window as any).__transcriptService
+                  if (ts) ts.downloadTranscript()
+                }}
+              >
+                Save Transcript
+              </button>
+              <button
+                type="button"
+                className="win-select-option win-select-option-danger"
+                role="menuitem"
+                onClick={() => {
+                  setShowExportMenu(false)
+                  if (!activeSessionId) return
+                  // Clear minion messages from localStorage
+                  localStorage.removeItem('gyshell-minion-chat-messages')
+                  // Clear the MinionStore messages
+                  const ms = (window as any).__minionStore
+                  if (ms) ms.messages.length = 0
+                  // Reload to show clean chat (native messages stay in backend)
+                  window.location.reload()
+                }}
+              >
+                Clear Chat View
+              </button>
             </div>,
             document.body,
           )}

@@ -4,6 +4,7 @@ import { AppStore } from './stores/AppStore'
 import { MinionStore } from './stores/MinionStore'
 import { MinionProvider } from './stores/MinionContext'
 import { MinionRouter, rehydrateMinionMessages } from './services/MinionRouter'
+import { TranscriptService } from './services/TranscriptService'
 import { TopBar } from './components/TopBar/TopBar'
 import { SettingsView } from './components/Settings/SettingsView'
 import { ConnectionsView } from './components/Connections/ConnectionsView'
@@ -17,11 +18,14 @@ const store = new AppStore()
 const minionStore = new MinionStore()
 
 const minionRouter = new MinionRouter(minionStore)
+const transcriptService = new TranscriptService()
+transcriptService.runRetentionCleanup()
 
 // Expose globally for debugging and external access
 ;(window as any).__appStore = store
 ;(window as any).__minionStore = minionStore
 ;(window as any).__minionRouter = minionRouter
+;(window as any).__transcriptService = transcriptService
 
 export const App: React.FC = observer(() => {
   React.useEffect(() => {
