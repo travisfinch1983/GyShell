@@ -1547,11 +1547,12 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                             ]}
                           />
                         </div>
+                        <RolePromptsEditor profile={p} store={store} />
                       </div>
                     </div>
                     );
                 })}
-                <button 
+                <button
                     className="add-profile-btn"
                     onClick={() => {
                       const id = `profile-${Date.now()}`;
@@ -2609,3 +2610,111 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
     );
   },
 );
+
+// ─── Role Prompts Editor ─────────────────────────────────────────────────────
+
+const PROMPT_ROLES = ['chat', 'coder', 'creative', 'architect', 'scout', 'thinking'] as const;
+
+const DEFAULT_PROMPTS: Record<string, string> = {
+  coder: 'You are a code specialist. You write clean, efficient, well-documented code. When asked to create scripts, programs, functions, or anything code-related, provide the complete implementation. Be concise and direct.',
+  creative: 'You are a creative writing specialist. Write engaging, well-crafted text. Be expressive but professional. You handle documentation, descriptions, naming, brainstorming, and any writing-focused tasks.',
+  architect: 'You are a systems architect. Analyze designs, suggest improvements, and think about scalability, maintainability, and trade-offs. Provide detailed technical analysis.',
+  scout: 'You are a quick-check specialist. Give brief, direct answers. Be concise. You handle simple factual questions, status checks, and yes/no queries.',
+  chat: 'You are a helpful assistant. Be conversational and thorough. Answer questions clearly and provide useful explanations.',
+  thinking: 'You are a deep reasoning specialist. Think through problems carefully and explain your reasoning step by step.',
+};
+
+const RolePromptsEditor: React.FC<{ profile: any; store: any }> = observer(({ profile, store }) => {
+  const [expanded, setExpanded] = React.useState(false);
+  const [editingRole, setEditingRole] = React.useState<string | null>(null);
+  const [editValue, setEditValue] = React.useState('');
+
+  const currentPrompts = profile.rolePrompts || {};
+
+  const startEditing = (role: string) => {
+    setEditingRole(role);
+    setEditValue(currentPrompts[role] || DEFAULT_PROMPTS[role] || '');
+  };
+
+  const savePrompt = () => {
+    if (!editingRole) return;
+    const newPrompts = { ...currentPrompts };
+    const defaultVal = DEFAULT_PROMPTS[editingRole] || '';
+    if (editValue.trim() === defaultVal.trim() || editValue.trim() === '') {
+      delete newPrompts[editingRole];
+    } else {
+      newPrompts[editingRole] = editValue.trim();
+    }
+    store.saveProfile({ ...profile, rolePrompts: Object.keys(newPrompts).length > 0 ? newPrompts : undefined } as any);
+    setEditingRole(null);
+  };
+
+  const resetPrompt = () => {
+    if (!editingRole) return;
+    setEditValue(DEFAULT_PROMPTS[editingRole] || '');
+  };
+
+  return (
+    <div className="profile-field" style={{ marginTop: 8 }}>
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--ink-soft, #8892a4)' }}
+      >
+        <span style={{ fontSize: 10 }}>{expanded ? '▾' : '▸'}</span>
+        <strong>Role Prompts</strong>
+        {Object.keys(currentPrompts).length > 0 && (
+          <span style={{ fontSize: 10, opacity: 0.7 }}>({Object.keys(currentPrompts).length} customized)</span>
+        )}
+      </div>
+      {expanded && (
+        <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {PROMPT_ROLES.map((role) => {
+            const isCustom = !!currentPrompts[role];
+            const isEditing = editingRole === role;
+            return (
+              <div key={role} style={{ border: '1px solid var(--border, #2a2f3a)', borderRadius: 4, padding: '4px 8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'capitalize', flex: 1 }}>
+                    {role}
+                    {isCustom && <span style={{ fontSize: 9, color: 'var(--accent)', marginLeft: 4 }}>modified</span>}
+                  </span>
+                  <button
+                    onClick={() => isEditing ? savePrompt() : startEditing(role)}
+                    style={{ border: 'none', background: 'transparent', color: 'var(--accent)', fontSize: 10, fontWeight: 700, cursor: 'pointer', padding: '2px 4px' }}
+                  >
+                    {isEditing ? 'Save' : 'Edit'}
+                  </button>
+                  {isEditing && (
+                    <button
+                      onClick={resetPrompt}
+                      style={{ border: 'none', background: 'transparent', color: 'var(--ink-soft)', fontSize: 10, cursor: 'pointer', padding: '2px 4px' }}
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+                {isEditing ? (
+                  <textarea
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    style={{
+                      width: '100%', minHeight: 60, marginTop: 4, padding: 6,
+                      fontSize: 11, fontFamily: 'monospace', lineHeight: 1.4,
+                      border: '1px solid var(--accent)', borderRadius: 3,
+                      background: 'var(--surface-soft, #1e2235)', color: 'var(--ink, #e1e4ea)',
+                      resize: 'vertical',
+                    }}
+                  />
+                ) : (
+                  <div style={{ fontSize: 10, color: 'var(--ink-soft)', marginTop: 2, lineHeight: 1.3, maxHeight: 32, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {(currentPrompts[role] || DEFAULT_PROMPTS[role] || '').substring(0, 80)}...
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+});

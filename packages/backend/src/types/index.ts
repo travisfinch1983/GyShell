@@ -49,6 +49,8 @@ export interface ModelProfile {
   creativeModelId?: string      // Writing, docs, creative
   architectModelId?: string     // Complex analysis, architecture
   scoutModelId?: string         // Quick checks, lightweight tasks
+  // Per-role system prompts (optional overrides):
+  rolePrompts?: Record<string, string>
 }
 
 export interface ExperimentalFlags {

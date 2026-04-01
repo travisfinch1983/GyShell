@@ -195,32 +195,49 @@ function addToRoleHistory(role: string, msg: { role: string; content: string }) 
   }
 }
 
-// ─── System prompts per role ─────────────────────────────────────────────────
+// ─── Default system prompts per role ─────────────────────────────────────────
 
-const ROLE_SYSTEM_PROMPTS: Record<string, string> = {
-  coder: 'You are a code specialist. Write clean, efficient code. Be concise and direct.',
-  creative: 'You are a creative writing specialist. Write engaging, well-crafted text. Be expressive but professional.',
-  architect: 'You are a systems architect. Analyze designs, suggest improvements, and think about scalability and maintainability.',
-  scout: 'You are a quick-check specialist. Give brief, direct answers. Be concise.',
-  chat: 'You are a helpful assistant. Be conversational and thorough.',
-  thinking: 'You are a deep reasoning specialist. Think through problems carefully and explain your reasoning.',
+const DEFAULT_ROLE_PROMPTS: Record<string, string> = {
+  coder: 'You are a code specialist. You write clean, efficient, well-documented code. When asked to create scripts, programs, functions, or anything code-related, provide the complete implementation. Be concise and direct.',
+  creative: 'You are a creative writing specialist. Write engaging, well-crafted text. Be expressive but professional. You handle documentation, descriptions, naming, brainstorming, and any writing-focused tasks.',
+  architect: 'You are a systems architect. Analyze designs, suggest improvements, and think about scalability, maintainability, and trade-offs. Provide detailed technical analysis.',
+  scout: 'You are a quick-check specialist. Give brief, direct answers. Be concise. You handle simple factual questions, status checks, and yes/no queries.',
+  chat: 'You are a helpful assistant. Be conversational and thorough. Answer questions clearly and provide useful explanations.',
+  thinking: 'You are a deep reasoning specialist. Think through problems carefully and explain your reasoning step by step.',
+}
+
+/**
+ * Get the system prompt for a role, checking profile overrides first.
+ */
+function getRolePrompt(role: string): string {
+  const appStore = (window as any).__appStore
+  const settings = appStore?.settings
+  if (settings?.models) {
+    const profile = settings.models.profiles.find(
+      (p: any) => p.id === settings.models.activeProfileId
+    )
+    if (profile?.rolePrompts?.[role]) {
+      return profile.rolePrompts[role]
+    }
+  }
+  return DEFAULT_ROLE_PROMPTS[role] || DEFAULT_ROLE_PROMPTS.chat
 }
 
 // ─── Orchestrator classification prompt ──────────────────────────────────────
 
-const ORCHESTRATOR_CLASSIFY_PROMPT = `You are a message router. Classify the user's message and respond with ONLY a JSON object, nothing else.
+const ORCHESTRATOR_CLASSIFY_PROMPT = `You are a message router. Your ONLY job is to classify messages and output JSON. No other text.
 
-Available specialists:
-- "coder" — code generation, scripts, programming, git, debugging, technical implementation
-- "creative" — writing, documentation, creative text, descriptions, naming, brainstorming
-- "architect" — system design, architecture analysis, complex technical planning, trade-offs
-- "scout" — quick factual questions, simple lookups, yes/no answers, status checks
-- "chat" — general conversation, questions, explanations, anything that doesn't fit a specialist
+RULES:
+- "coder" — ANY request involving code, scripts, programming, commands, functions, debugging, git, APIs, configs, technical how-to. If they say "write", "create", "make", "build", "fix" followed by anything technical, it's coder.
+- "creative" — Writing prose, documentation, descriptions, naming things, brainstorming ideas, READMEs, commit messages, creative text.
+- "architect" — System design, architecture decisions, infrastructure planning, comparing approaches, scalability analysis.
+- "scout" — Quick factual lookups, simple questions with one-line answers, status checks, "what is X", "how many", yes/no.
+- "chat" — ONLY use this for casual conversation, greetings, or messages that truly don't fit ANY specialist.
 
-Respond with exactly this JSON format:
-{"role": "chat", "reason": "brief reason"}
+IMPORTANT: Prefer specialists over chat. Most technical questions should go to coder, not chat.
 
-Only use a specialist if the message clearly fits their domain. When in doubt, use "chat".`
+Output ONLY this JSON, nothing else:
+{"role":"coder","reason":"brief reason"}`
 
 // ─── MinionRouter class ─────────────────────────────────────────────────────
 
@@ -266,7 +283,7 @@ export class MinionRouter {
     this.store.updateMinionStatus(minion.id, 'thinking')
 
     // Build the request
-    const systemPrompt = ROLE_SYSTEM_PROMPTS[role] || ROLE_SYSTEM_PROMPTS.chat
+    const systemPrompt = getRolePrompt(role)
     const history = getRoleHistory(role)
     const messages = [
       { role: 'system', content: systemPrompt },
