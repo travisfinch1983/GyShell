@@ -12,13 +12,15 @@
 }
 
 .gyshell-minion-sidebar {
-  width: 200px;
-  min-width: 160px;
-  max-width: 280px;
+  width: 220px;
+  min-width: 180px;
+  max-width: 300px;
   flex-shrink: 0;
   border-right: 1px solid var(--border, #2a2f3a);
   background: var(--surface, #1a1d2e);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .gyshell-main {
