@@ -1072,7 +1072,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
                     hideArrow
                   />
                 </div>
-                <MinionTargetSelectorWrapper />
               </div>
               <div className="input-actions">
                 <div className="input-actions-static">

@@ -52,17 +52,28 @@ const roleBadgeColors: Record<string, string> = {
   compaction: '#64748b',
 }
 
-function MinionCardItem({ card, onSelect }: { card: MinionCard; onSelect: () => void }) {
+function MinionCardItem({ card, store }: { card: MinionCard; store: MinionStore }) {
   const label = MinionStore.statusLabel(card.status, card.statusDetail)
   const color = statusColor(card.status)
   const animated = isAnimated(card.status)
   const badgeColor = roleBadgeColors[card.role] || '#6b7280'
+  const isSelectable = MinionStore.selectableRoles.has(card.role)
+  const isSelected = store.isSelected(card.role)
+  const isInternal = MinionStore.internalRoles.has(card.role)
 
   return (
     <div
-      className={`minion-card ${card.status === 'disconnected' ? 'disconnected' : ''}`}
-      onClick={onSelect}
-      title={`${card.friendlyName} — ${card.modelName}`}
+      className={[
+        'minion-card',
+        card.status === 'disconnected' ? 'disconnected' : '',
+        isSelected ? 'selected' : '',
+        isSelectable ? 'selectable' : '',
+        isInternal ? 'internal' : '',
+      ].filter(Boolean).join(' ')}
+      onClick={() => isSelectable && store.toggleTarget(card.role)}
+      title={isSelectable
+        ? `${card.friendlyName} — Click to ${isSelected ? 'deselect' : 'message directly'}`
+        : `${card.friendlyName} — ${card.modelName}`}
     >
       <div className="minion-card-header">
         <span
@@ -98,18 +109,31 @@ export const MinionCards = observer(({ store }: MinionCardsProps) => {
     )
   }
 
+  const selected = store.selectedTarget
+  const selectedMinion = selected ? store.getMinionByName(selected) : null
+
   return (
     <div className="minion-cards-container">
       <div className="minion-cards-header">
         <span className="minion-cards-title">Minion Horde</span>
         <span className="minion-cards-count">{minions.length}</span>
       </div>
+      <div className="minion-routing-indicator">
+        {selectedMinion ? (
+          <span className="routing-direct">
+            Direct → <strong>{selectedMinion.friendlyName}</strong>
+            <button className="routing-clear" onClick={() => store.clearTarget()} title="Clear selection">✕</button>
+          </span>
+        ) : (
+          <span className="routing-auto">Auto routing</span>
+        )}
+      </div>
       <div className="minion-cards-list">
         {minions.map((card) => (
           <MinionCardItem
             key={card.id}
             card={card}
-            onSelect={() => store.setSelectedTarget(card.role)}
+            store={store}
           />
         ))}
       </div>

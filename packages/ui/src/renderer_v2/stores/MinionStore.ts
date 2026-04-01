@@ -88,8 +88,13 @@ function nextMessageId(): string {
 export class MinionStore {
   messages: MinionMessage[] = []
   minions: Map<string, MinionCard> = new Map()
-  selectedTarget: string = 'chat' // Default message target
+  selectedTarget: string | null = null // null = orchestrator routes, string = direct to specialist
   maxMessages = 500
+
+  /** Roles that can be directly selected by clicking their card */
+  static selectableRoles = new Set(['coder', 'creative', 'architect', 'scout'])
+  /** Roles that are internal/background — shown but not interactive */
+  static internalRoles = new Set(['orchestrator', 'thinking', 'compaction', 'action'])
 
   constructor() {
     makeAutoObservable(this)
@@ -280,29 +285,36 @@ export class MinionStore {
 
   // ─── Target Selection ────────────────────────────────────────────────
 
-  setSelectedTarget(target: string): void {
-    this.selectedTarget = target
+  /**
+   * Toggle selection of a specialist card.
+   * If already selected, deselect (revert to orchestrator routing).
+   * Only selectable roles can be toggled.
+   */
+  toggleTarget(role: string): void {
+    if (!MinionStore.selectableRoles.has(role)) return
+    this.selectedTarget = this.selectedTarget === role ? null : role
   }
 
-  /** Roles hidden from the target dropdown (silent/background roles) */
-  private static hiddenTargetRoles = new Set(['orchestrator', 'compaction'])
+  /**
+   * Clear any direct selection — messages go through orchestrator.
+   */
+  clearTarget(): void {
+    this.selectedTarget = null
+  }
 
-  get targetOptions(): Array<{ value: string; label: string }> {
-    const options: Array<{ value: string; label: string }> = []
-    for (const minion of this.minions.values()) {
-      if (MinionStore.hiddenTargetRoles.has(minion.role)) continue
-      options.push({
-        value: minion.role,
-        label: minion.friendlyName,
-      })
-    }
-    // Sort: chat first, then alphabetical
-    options.sort((a, b) => {
-      if (a.value === 'chat') return -1
-      if (b.value === 'chat') return 1
-      return a.label.localeCompare(b.label)
-    })
-    return options
+  /**
+   * Whether a specific role's card is currently selected for direct messaging.
+   */
+  isSelected(role: string): boolean {
+    return this.selectedTarget === role
+  }
+
+  /**
+   * Get the effective message destination.
+   * null = orchestrator decides, string = direct to that specialist.
+   */
+  get effectiveTarget(): string {
+    return this.selectedTarget || 'orchestrator'
   }
 
   // ─── Status Helpers ──────────────────────────────────────────────────
