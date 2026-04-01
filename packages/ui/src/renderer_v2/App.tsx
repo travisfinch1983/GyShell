@@ -3,6 +3,7 @@ import { observer } from 'mobx-react-lite'
 import { AppStore } from './stores/AppStore'
 import { MinionStore } from './stores/MinionStore'
 import { MinionProvider } from './stores/MinionContext'
+import { MinionRouter } from './services/MinionRouter'
 import { TopBar } from './components/TopBar/TopBar'
 import { SettingsView } from './components/Settings/SettingsView'
 import { ConnectionsView } from './components/Connections/ConnectionsView'
@@ -14,8 +15,11 @@ import './styles/app.scss'
 const store = new AppStore()
 const minionStore = new MinionStore()
 
-// Expose minionStore globally for debugging and external access
+const minionRouter = new MinionRouter(minionStore)
+
+// Expose globally for debugging and external access
 ;(window as any).__minionStore = minionStore
+;(window as any).__minionRouter = minionRouter
 
 export const App: React.FC = observer(() => {
   React.useEffect(() => {

@@ -2703,6 +2703,18 @@ export class AppStore {
     content: string | UserInputPayload,
     options?: { mode?: 'normal' | 'queue' },
   ): Promise<boolean> {
+    // Check if a specialist is selected via the minion cards
+    const minionStore = (window as any).__minionStore
+    const minionRouter = (window as any).__minionRouter
+    if (minionStore && minionRouter && minionStore.selectedTarget) {
+      const role = minionStore.selectedTarget
+      const text = typeof content === 'string' ? content : content?.text || ''
+      if (text) {
+        minionRouter.sendToSpecialist(role, text)
+        return true
+      }
+    }
+
     const mode = options?.mode || 'normal'
     let targetSessionId = sessionId
     if (!targetSessionId) {
