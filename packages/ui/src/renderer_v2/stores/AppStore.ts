@@ -2706,13 +2706,18 @@ export class AppStore {
     // Check if a specialist is selected via the minion cards
     const minionStore = (window as any).__minionStore
     const minionRouter = (window as any).__minionRouter
-    if (minionStore && minionRouter && minionStore.selectedTarget) {
-      const role = minionStore.selectedTarget
+    if (minionStore && minionRouter) {
       const text = typeof content === 'string' ? content : content?.text || ''
       if (text) {
-        console.log(`[AppStore] ══ INTERCEPTED ══ Routing to specialist: ${role} (not GyShell agent)`)
-        // Route to specialist — don't enter GyShell's busy/thinking state
-        minionRouter.sendToSpecialist(role, text)
+        if (minionStore.selectedTarget) {
+          // Direct routing to selected specialist
+          console.log(`[AppStore] ══ INTERCEPTED ══ Direct to specialist: ${minionStore.selectedTarget}`)
+          minionRouter.sendToSpecialist(minionStore.selectedTarget, text)
+        } else {
+          // No specialist selected — route through orchestrator
+          console.log(`[AppStore] ══ INTERCEPTED ══ Routing via orchestrator (auto-classify)`)
+          minionRouter.routeViaOrchestrator(text)
+        }
         // Ensure session is NOT marked as busy (prevents red stop button)
         const targetId = sessionId || this.chat.sessions?.[0]?.id
         if (targetId) {

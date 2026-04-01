@@ -185,6 +185,22 @@ const ROLE_SYSTEM_PROMPTS: Record<string, string> = {
   thinking: 'You are a deep reasoning specialist. Think through problems carefully and explain your reasoning.',
 }
 
+// ─── Orchestrator classification prompt ──────────────────────────────────────
+
+const ORCHESTRATOR_CLASSIFY_PROMPT = `You are a message router. Classify the user's message and respond with ONLY a JSON object, nothing else.
+
+Available specialists:
+- "coder" — code generation, scripts, programming, git, debugging, technical implementation
+- "creative" — writing, documentation, creative text, descriptions, naming, brainstorming
+- "architect" — system design, architecture analysis, complex technical planning, trade-offs
+- "scout" — quick factual questions, simple lookups, yes/no answers, status checks
+- "chat" — general conversation, questions, explanations, anything that doesn't fit a specialist
+
+Respond with exactly this JSON format:
+{"role": "chat", "reason": "brief reason"}
+
+Only use a specialist if the message clearly fits their domain. When in doubt, use "chat".`
+
 // ─── MinionRouter class ─────────────────────────────────────────────────────
 
 export class MinionRouter {
@@ -310,6 +326,97 @@ export class MinionRouter {
       injectChatMessage('assistant', `**[${minion.friendlyName} ✗ Error]**\n\n${err.message}`, {
         modelName: minion.friendlyName,
       })
+    }
+  }
+
+  /**
+   * Route a message through the orchestrator (9B).
+   * The orchestrator classifies the message and decides which specialist
+   * or the chat model should handle it.
+   */
+  async routeViaOrchestrator(message: string): Promise<void> {
+    const orchestrator = this.store.getMinionByRole('orchestrator')
+    const endpoint = getModelEndpoint('orchestrator')
+
+    if (!endpoint) {
+      console.warn('[MinionRouter] No orchestrator endpoint, falling back to chat')
+      await this.sendToSpecialist('chat', message)
+      return
+    }
+
+    // Update orchestrator card
+    if (orchestrator) this.store.updateMinionStatus(orchestrator.id, 'thinking')
+
+    console.log(`[MinionRouter] ═══ ORCHESTRATOR CLASSIFY ═══`)
+    console.log(`[MinionRouter] Message: ${message.substring(0, 80)}...`)
+
+    try {
+      const resp = await fetch(`${endpoint.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${endpoint.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: endpoint.modelId,
+          messages: [
+            { role: 'system', content: ORCHESTRATOR_CLASSIFY_PROMPT },
+            { role: 'user', content: message },
+          ],
+          max_tokens: 100,
+          temperature: 0.1,
+        }),
+      })
+
+      if (!resp.ok) {
+        console.warn(`[MinionRouter] Orchestrator classify failed (${resp.status}), falling back to chat`)
+        if (orchestrator) this.store.updateMinionStatus(orchestrator.id, 'idle')
+        await this.sendToSpecialist('chat', message)
+        return
+      }
+
+      const data = await resp.json()
+      let responseText = data.choices?.[0]?.message?.content || ''
+
+      // Strip think blocks
+      responseText = responseText.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim()
+
+      // Parse the JSON classification
+      let targetRole = 'chat'
+      let reason = 'default'
+      try {
+        const jsonMatch = responseText.match(/\{[\s\S]*\}/)
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0])
+          targetRole = parsed.role || 'chat'
+          reason = parsed.reason || 'classified'
+        }
+      } catch {
+        console.warn(`[MinionRouter] Failed to parse classification: ${responseText}`)
+      }
+
+      console.log(`[MinionRouter] Classification: ${targetRole} (${reason})`)
+
+      // Update orchestrator card back to idle
+      if (orchestrator) this.store.updateMinionStatus(orchestrator.id, 'idle')
+
+      // Add routing notice to activity feed
+      this.store.addMessage({
+        from: 'orchestrator',
+        to: targetRole,
+        type: 'forward',
+        content: `Routed to ${targetRole} — ${reason}`,
+        metadata: { role: targetRole, reason },
+      })
+
+      // Route to the classified specialist
+      await this.sendToSpecialist(targetRole, message)
+
+    } catch (err: any) {
+      console.error(`[MinionRouter] Orchestrator error:`, err)
+      if (orchestrator) this.store.updateMinionStatus(orchestrator.id, 'error', err.message)
+      // Fall back to chat on error
+      await this.sendToSpecialist('chat', message)
     }
   }
 
