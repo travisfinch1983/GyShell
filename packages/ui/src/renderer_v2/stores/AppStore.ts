@@ -2710,7 +2710,14 @@ export class AppStore {
       const role = minionStore.selectedTarget
       const text = typeof content === 'string' ? content : content?.text || ''
       if (text) {
+        // Route to specialist — don't enter GyShell's busy/thinking state
         minionRouter.sendToSpecialist(role, text)
+        // Ensure session is NOT marked as busy (prevents red stop button)
+        const targetId = sessionId || this.chat.sessions?.[0]?.id
+        if (targetId) {
+          this.chat.setThinking(false, targetId)
+          this.chat.setSessionBusy(false, targetId)
+        }
         return true
       }
     }
