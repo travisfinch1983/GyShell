@@ -76,6 +76,7 @@ export function rehydrateMinionMessages() {
     const appStore = (window as any).__appStore
     if (!appStore?.chat) return
 
+    // First, inject all messages via handleUiUpdate (appends to end)
     for (const msg of stored) {
       const session = appStore.chat.sessions?.find((s: any) => s.id === msg.sessionId)
       if (!session) continue
@@ -102,7 +103,27 @@ export function rehydrateMinionMessages() {
         },
       })
     }
-  } catch {}
+
+    // Now sort all messageIds by timestamp for each session that got minion messages
+    const sessionIds = new Set(stored.map(m => m.sessionId).filter(Boolean))
+    for (const sid of sessionIds) {
+      const session = appStore.chat.sessions?.find((s: any) => s.id === sid)
+      if (!session) continue
+
+      // Sort messageIds by the timestamp of each message
+      const sorted = [...session.messageIds].sort((a: string, b: string) => {
+        const msgA = session.messagesById.get(a)
+        const msgB = session.messagesById.get(b)
+        return (msgA?.timestamp || 0) - (msgB?.timestamp || 0)
+      })
+
+      // Replace the array contents (triggers MobX reactivity)
+      session.messageIds.length = 0
+      session.messageIds.push(...sorted)
+    }
+  } catch (e) {
+    console.warn('[rehydrate] Error:', e)
+  }
 }
 
 // ─── Model endpoint resolution ───────────────────────────────────────────────
