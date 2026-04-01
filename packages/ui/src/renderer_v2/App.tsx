@@ -3,7 +3,7 @@ import { observer } from 'mobx-react-lite'
 import { AppStore } from './stores/AppStore'
 import { MinionStore } from './stores/MinionStore'
 import { MinionProvider } from './stores/MinionContext'
-import { MinionRouter } from './services/MinionRouter'
+import { MinionRouter, rehydrateMinionMessages } from './services/MinionRouter'
 import { TopBar } from './components/TopBar/TopBar'
 import { SettingsView } from './components/Settings/SettingsView'
 import { ConnectionsView } from './components/Connections/ConnectionsView'
@@ -30,6 +30,9 @@ export const App: React.FC = observer(() => {
       initMinionsFromProfile()
       // Hook into UI updates to drive minion status
       setupMinionStatusListener()
+      // Re-inject persisted minion messages after a short delay
+      // (ChatStore needs time to hydrate sessions first)
+      setTimeout(() => rehydrateMinionMessages(), 2000)
     })
   }, [])
 

@@ -11,25 +11,86 @@ import type { MinionStore } from '../stores/MinionStore'
  * Inject a message into the GyShell chat feed by synthesizing a ChatStore message.
  * Uses the AppStore's chat.handleUiUpdate to add messages inline with native chat.
  */
+const MINION_CHAT_STORAGE_KEY = 'gyshell-minion-chat-messages'
+const MAX_STORED_MESSAGES = 200
+
+interface StoredChatMessage {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  type: string
+  content: string
+  timestamp: number
+  metadata?: Record<string, any>
+  sessionId?: string
+}
+
 function injectChatMessage(role: 'user' | 'assistant' | 'system', content: string, metadata?: Record<string, any>) {
   const appStore = (window as any).__appStore
   if (!appStore?.chat) return
-  const session = appStore.chat.sessions?.[0]
+  // Use the active session, not just the first one
+  const session = appStore.chat.activeSession || appStore.chat.sessions?.[0]
   if (!session) return
 
   const msgId = `minion-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`
+  const message = {
+    id: msgId,
+    role,
+    type: role === 'system' ? 'alert' : 'text',
+    content,
+    timestamp: Date.now(),
+    metadata,
+  }
+
   appStore.chat.handleUiUpdate({
     type: 'ADD_MESSAGE',
     sessionId: session.id,
-    message: {
-      id: msgId,
-      role,
-      type: role === 'system' ? 'alert' : 'text',
-      content,
-      timestamp: Date.now(),
-      metadata,
-    },
+    message,
   })
+
+  // Persist to localStorage for survival across refreshes
+  persistMinionMessage({ ...message, sessionId: session.id })
+}
+
+function persistMinionMessage(msg: StoredChatMessage) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(MINION_CHAT_STORAGE_KEY) || '[]')
+    stored.push(msg)
+    if (stored.length > MAX_STORED_MESSAGES) stored.splice(0, stored.length - MAX_STORED_MESSAGES)
+    localStorage.setItem(MINION_CHAT_STORAGE_KEY, JSON.stringify(stored))
+  } catch {}
+}
+
+/**
+ * Re-inject persisted minion messages after page reload.
+ * Call this after the ChatStore has hydrated its sessions.
+ */
+export function rehydrateMinionMessages() {
+  try {
+    const stored: StoredChatMessage[] = JSON.parse(localStorage.getItem(MINION_CHAT_STORAGE_KEY) || '[]')
+    if (!stored.length) return
+
+    const appStore = (window as any).__appStore
+    if (!appStore?.chat) return
+
+    for (const msg of stored) {
+      const session = appStore.chat.sessions?.find((s: any) => s.id === msg.sessionId)
+      if (!session) continue
+      // Only inject if not already present
+      if (session.messagesById?.has(msg.id)) continue
+      appStore.chat.handleUiUpdate({
+        type: 'ADD_MESSAGE',
+        sessionId: msg.sessionId,
+        message: {
+          id: msg.id,
+          role: msg.role,
+          type: msg.type,
+          content: msg.content,
+          timestamp: msg.timestamp,
+          metadata: msg.metadata,
+        },
+      })
+    }
+  } catch {}
 }
 
 const ORCHESTRATOR_API = 'http://10.0.0.52:6280'
@@ -86,11 +147,8 @@ export class MinionRouter {
       content: message,
     })
 
-    // Inject into main chat feed
-    injectChatMessage('user', message, {
-      subToolTitle: `→ ${minion.friendlyName}`,
-      subToolHint: `Direct message to ${minion.friendlyName}`,
-    })
+    // Inject into main chat feed with routing header
+    injectChatMessage('user', `**[Sent to ${minion.friendlyName}]**\n\n${message}`)
 
     try {
       const resp = await fetch(`${ORCHESTRATOR_API}/direct`, {

@@ -4,6 +4,14 @@ import { Check, Copy, CornerUpLeft } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+/** Convert hex color to rgba string */
+function hexToRgba(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
 /** Map minion role/model names to muted colors for chat message tinting */
 function getMinionRoleColor(name: string): string {
   const lower = (name || '').toLowerCase()
@@ -206,10 +214,11 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
       isUser && !!msg.backendMessageId && !msg.streaming && !isThinking;
 
     const minionColor = msg.metadata?.modelName ? getMinionRoleColor(msg.metadata.modelName) : null
+    const minionBg = minionColor ? hexToRgba(minionColor, 0.06) : undefined
     const renderAssistantRow = (children: React.ReactNode) => (
       <div
         className={`message-row-container role-assistant${mergeWithPreviousAssistant ? " is-group-continuation" : ""}${isSearchMatch ? " is-search-match" : ""}${isActiveSearchMatch ? " is-search-active" : ""}${minionColor ? " minion-message" : ""}`}
-        style={minionColor ? { borderLeftColor: minionColor, background: `color-mix(in srgb, ${minionColor} 5%, transparent)` } as React.CSSProperties : undefined}
+        style={minionColor ? { borderLeftColor: minionColor, backgroundColor: minionBg } : undefined}
       >
         {children}
         {shouldShowGroupCopy && (
