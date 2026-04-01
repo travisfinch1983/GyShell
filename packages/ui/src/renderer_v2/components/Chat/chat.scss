@@ -483,6 +483,16 @@ body.chat-drag-selection-suppressed * {
   padding-left: 12px;
 }
 
+.message-timestamp {
+  margin-left: auto;
+  font-size: 9px;
+  font-weight: 500;
+  opacity: 0.5;
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
+
 .message-role-icon {
   display: none;
 }

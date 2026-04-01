@@ -12,6 +12,23 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
+/** Format a timestamp for display in message headers */
+function formatMessageTimestamp(ts: number): string {
+  if (!ts) return ''
+  const d = new Date(ts)
+  const now = new Date()
+  const isToday = d.toDateString() === now.toDateString()
+  const yesterday = new Date(now)
+  yesterday.setDate(yesterday.getDate() - 1)
+  const isYesterday = d.toDateString() === yesterday.toDateString()
+
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+
+  if (isToday) return time
+  if (isYesterday) return `Yesterday ${time}`
+  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`
+}
+
 /** Map minion role/model names to muted colors for chat message tinting */
 function getMinionRoleColor(name: string): string {
   const lower = (name || '').toLowerCase()
@@ -171,7 +188,7 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
         <div
           className={`message-row-container role-assistant${mergeWithPreviousAssistant ? " is-group-continuation" : ""}${isSearchMatch ? " is-search-match" : ""}${isActiveSearchMatch ? " is-search-active" : ""}`}
         >
-          <div className={`message-role-label assistant ${msg.metadata?.modelName ? 'minion-role' : ''}`} style={msg.metadata?.modelName ? { color: getMinionRoleColor(msg.metadata.modelName) } : undefined}>{msg.metadata?.modelName ? msg.metadata.modelName.toUpperCase() : 'ASSISTANT'}</div>
+          <div className={`message-role-label assistant ${msg.metadata?.modelName ? 'minion-role' : ''}`} style={msg.metadata?.modelName ? { color: getMinionRoleColor(msg.metadata.modelName) } : undefined}>{msg.metadata?.modelName ? msg.metadata.modelName.toUpperCase() : 'ASSISTANT'}{msg.timestamp ? <span className="message-timestamp">{formatMessageTimestamp(msg.timestamp)}</span> : null}</div>
           <SeamlessToolGroupBanner
             messages={groupMessages}
             expanded={bannerUiState?.expanded}
@@ -248,7 +265,7 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
         <div
           className={`message-row-container role-user${isSearchMatch ? " is-search-match" : ""}${isActiveSearchMatch ? " is-search-active" : ""}`}
         >
-          <div className="message-role-label user">USER</div>
+          <div className="message-role-label user">USER{msg.timestamp ? <span className="message-timestamp">{formatMessageTimestamp(msg.timestamp)}</span> : null}</div>
           <div className="message-user-row">
             <div className={`message-text ${msg.role}`}>
               <div className="plain-text">
@@ -366,7 +383,7 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
 
     return renderAssistantRow(
       <>
-        <div className={`message-role-label assistant ${msg.metadata?.modelName ? 'minion-role' : ''}`} style={msg.metadata?.modelName ? { color: getMinionRoleColor(msg.metadata.modelName) } : undefined}>{msg.metadata?.modelName ? msg.metadata.modelName.toUpperCase() : 'ASSISTANT'}</div>
+        <div className={`message-role-label assistant ${msg.metadata?.modelName ? 'minion-role' : ''}`} style={msg.metadata?.modelName ? { color: getMinionRoleColor(msg.metadata.modelName) } : undefined}>{msg.metadata?.modelName ? msg.metadata.modelName.toUpperCase() : 'ASSISTANT'}{msg.timestamp ? <span className="message-timestamp">{formatMessageTimestamp(msg.timestamp)}</span> : null}</div>
         <div className={`message-text ${msg.role}`}>
           <div
             className={
