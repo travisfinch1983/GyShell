@@ -215,9 +215,6 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
 
     const minionColor = msg.metadata?.modelName ? getMinionRoleColor(msg.metadata.modelName) : null
     const minionBg = minionColor ? hexToRgba(minionColor, 0.12) : undefined
-    if (msg.id?.startsWith('minion-')) {
-      console.log('[MessageRow] minion msg:', msg.id, 'modelName:', msg.metadata?.modelName, 'color:', minionColor, 'metadata:', JSON.stringify(msg.metadata))
-    }
     const renderAssistantRow = (children: React.ReactNode) => (
       <div
         className={`message-row-container role-assistant${mergeWithPreviousAssistant ? " is-group-continuation" : ""}${isSearchMatch ? " is-search-match" : ""}${isActiveSearchMatch ? " is-search-active" : ""}${minionColor ? " minion-message" : ""}`}

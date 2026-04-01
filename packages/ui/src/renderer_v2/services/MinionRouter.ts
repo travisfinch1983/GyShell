@@ -77,6 +77,17 @@ export function rehydrateMinionMessages() {
       if (!session) continue
       // Only inject if not already present
       if (session.messagesById?.has(msg.id)) continue
+
+      // Backfill metadata.modelName for old messages that were persisted without it
+      let metadata = msg.metadata || {}
+      if (!metadata.modelName && msg.role === 'assistant' && msg.id?.startsWith('minion-')) {
+        // Try to extract model name from content header like [minion-coder ✓ Completed]
+        const match = msg.content?.match(/\[([^\s\]]+)\s+[✓✗?]/)
+        if (match) {
+          metadata = { ...metadata, modelName: match[1] }
+        }
+      }
+
       appStore.chat.handleUiUpdate({
         type: 'ADD_MESSAGE',
         sessionId: msg.sessionId,
@@ -86,7 +97,7 @@ export function rehydrateMinionMessages() {
           type: msg.type,
           content: msg.content,
           timestamp: msg.timestamp,
-          metadata: msg.metadata,
+          metadata,
         },
       })
     }
