@@ -146,6 +146,10 @@ export class MinionStore {
     for (const minion of this.minions.values()) {
       if (minion.friendlyName.toLowerCase() === lower) return minion
       if (minion.role === lower) return minion
+      // Match relay names like "minion-coder" → role "coder"
+      if (lower.startsWith('minion-') && lower.substring(7) === minion.role) return minion
+      // Match by model name
+      if (minion.modelName.toLowerCase().includes(lower)) return minion
     }
     return undefined
   }
