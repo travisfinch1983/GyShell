@@ -14,6 +14,7 @@ import { makeAutoObservable, runInAction } from 'mobx'
 
 export type MinionRole =
   | 'orchestrator'
+  | 'chat'
   | 'coder'
   | 'creative'
   | 'architect'

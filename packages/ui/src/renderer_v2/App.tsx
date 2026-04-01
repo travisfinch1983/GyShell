@@ -108,13 +108,14 @@ export const App: React.FC = observer(() => {
 
     const roleMap: Array<{ roleKey: string; role: any; label: string }> = [
       { roleKey: 'globalModelId', role: 'orchestrator', label: 'Orchestrator' },
-      { roleKey: 'actionModelId', role: 'action', label: 'Action' },
-      { roleKey: 'thinkingModelId', role: 'thinking', label: 'Thinking' },
-      { roleKey: 'compactionModelId', role: 'compaction', label: 'Compaction' },
+      { roleKey: 'chatModelId', role: 'chat', label: 'Chat' },
       { roleKey: 'coderModelId', role: 'coder', label: 'Coder' },
       { roleKey: 'creativeModelId', role: 'creative', label: 'Creative' },
       { roleKey: 'architectModelId', role: 'architect', label: 'Architect' },
+      { roleKey: 'thinkingModelId', role: 'thinking', label: 'Thinking' },
+      { roleKey: 'compactionModelId', role: 'compaction', label: 'Compaction' },
       { roleKey: 'scoutModelId', role: 'scout', label: 'Scout' },
+      { roleKey: 'actionModelId', role: 'action', label: 'Action' },
     ]
 
     const seen = new Set<string>()

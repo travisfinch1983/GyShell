@@ -1378,7 +1378,7 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
 
                       <div className="profile-body">
                         <div className="profile-field">
-                          <label>{t.settings.globalModel}</label>
+                          <label>Orchestrator (Router)</label>
                           <Select
                             value={p.globalModelId}
                               onChange={(id) =>
@@ -1390,6 +1390,25 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                                   label: m.name,
                                 })) || []
                               }
+                          />
+                        </div>
+                        <div className="profile-field">
+                          <label>Chat Model</label>
+                          <Select
+                              value={(p as any).chatModelId || ""}
+                              onChange={(id) =>
+                                store.saveProfile({
+                                  ...p,
+                                  chatModelId: id || undefined,
+                                } as any)
+                              }
+                            options={[
+                                { value: "", label: "(None — use Orchestrator)" },
+                                ...(store.settings?.models.items.map((m) => ({
+                                  value: m.id,
+                                  label: m.name,
+                                })) || []),
+                            ]}
                           />
                         </div>
                         <div className="profile-field">

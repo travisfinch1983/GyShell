@@ -34,19 +34,21 @@ export interface ModelProfile {
   id: string
   name: string
   /**
-   * Current app only uses one model (global).
-   * We keep this structure to support multi-model agents in the future.
+   * globalModelId serves as the Orchestrator — the routing model that decides
+   * which specialist handles a task. Kept as 'globalModelId' for backwards
+   * compatibility with GyShell's native agent system.
    */
   globalModelId: string
-  // reserved for future:
-  actionModelId?: string
-  thinkingModelId?: string
-  compactionModelId?: string
-  // Minion horde custom roles:
-  coderModelId?: string
-  creativeModelId?: string
-  architectModelId?: string
-  scoutModelId?: string
+  // Core roles:
+  chatModelId?: string          // Direct conversation model (heavy hitter)
+  actionModelId?: string        // Task execution
+  thinkingModelId?: string      // Deep reasoning passes
+  compactionModelId?: string    // Context summarization
+  // Specialist roles:
+  coderModelId?: string         // Code generation, scripts, git
+  creativeModelId?: string      // Writing, docs, creative
+  architectModelId?: string     // Complex analysis, architecture
+  scoutModelId?: string         // Quick checks, lightweight tasks
 }
 
 export interface ExperimentalFlags {

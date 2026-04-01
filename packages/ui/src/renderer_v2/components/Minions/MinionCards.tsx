@@ -42,6 +42,7 @@ function isAnimated(status: MinionStatus): boolean {
 
 const roleBadgeColors: Record<string, string> = {
   orchestrator: '#8b5cf6',
+  chat: '#10b981',
   coder: '#3b82f6',
   creative: '#ec4899',
   architect: '#f59e0b',
