@@ -1,0 +1,144 @@
+/* MinionChatBlock — Multi-agent messages in the chat feed */
+
+.mcb {
+  margin: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #2a2f3a);
+  background: var(--surface, #1a1d2e);
+  overflow: hidden;
+}
+
+.mcb.mcb-from-user {
+  border-left: 3px solid #22c55e;
+}
+
+.mcb.mcb-model-to-model {
+  border-left: 3px solid var(--ink-soft, #6b7280);
+  opacity: 0.85;
+}
+
+/* Header Block */
+.mcb-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  background: var(--surface-muted, #1e2230);
+  border-bottom: 1px solid var(--border, #2a2f3a);
+  font-size: 11px;
+}
+
+.mcb-from {
+  font-weight: 700;
+}
+
+.mcb-arrow {
+  color: var(--ink-soft, #6b7280);
+  font-size: 10px;
+}
+
+.mcb-to {
+  font-weight: 600;
+}
+
+.mcb-status-badge {
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid;
+  border-radius: 3px;
+  padding: 0 4px;
+  margin-left: 6px;
+}
+
+.mcb-time {
+  margin-left: auto;
+  color: var(--ink-soft, #555);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Content Block — full message (User→Model or Model→User) */
+.mcb-content {
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink, #e1e4ea);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Summary Block — for Model→Model messages */
+.mcb-summary {
+  padding: 8px 10px 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink, #e1e4ea);
+}
+
+/* Detail Toggle */
+.mcb-detail-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px 6px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 10px;
+  color: var(--accent, #3b82f6);
+}
+
+.mcb-detail-toggle:hover {
+  color: var(--accent-strong, #2563eb);
+}
+
+.mcb-detail-chevron {
+  font-size: 9px;
+  width: 10px;
+}
+
+.mcb-detail-label {
+  font-weight: 600;
+}
+
+/* Detail Block — collapsed by default for Model→Model */
+.mcb-detail {
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-soft, #8892a4);
+  background: var(--surface-soft, #161928);
+  border-top: 1px solid var(--border, #2a2f3a);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* System/Forward Notices — compact inline */
+.mcb-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 12px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--ink-soft, #6b7280);
+  border-radius: 4px;
+  background: var(--surface-muted, #1e2230);
+}
+
+.mcb-notice-icon {
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.mcb-notice-text {
+  flex: 1;
+  font-style: italic;
+}
+
+.mcb-notice-time {
+  font-size: 9px;
+  color: var(--ink-soft, #555);
+  flex-shrink: 0;
+}

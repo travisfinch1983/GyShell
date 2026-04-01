@@ -1,0 +1,38 @@
+/* MinionChatOverlay — Specialist messages in the chat area */
+
+.minion-chat-overlay {
+  border-top: 1px solid var(--border, #2a2f3a);
+  background: color-mix(in srgb, var(--surface, #1a1d2e) 95%, var(--accent, #3b82f6) 5%);
+  max-height: 40vh;
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+
+.minion-chat-overlay-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft, #8892a4);
+  position: sticky;
+  top: 0;
+  background: inherit;
+  z-index: 1;
+}
+
+.minion-chat-overlay-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent, #3b82f6);
+  animation: minion-overlay-pulse 2s ease-in-out infinite;
+}
+
+@keyframes minion-overlay-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}

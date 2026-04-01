@@ -1,4 +1,6 @@
 export { MinionCards } from './MinionCards'
 export { MinionChatMessage } from './MinionChatMessage'
+export { MinionChatBlock } from './MinionChatBlock'
+export { MinionChatOverlay } from './MinionChatOverlay'
 export { MinionTargetSelector } from './MinionTargetSelector'
 export { MinionFeed } from './MinionFeed'

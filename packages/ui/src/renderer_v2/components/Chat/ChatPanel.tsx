@@ -38,8 +38,7 @@ import {
   CHAT_PANEL_SESSION_TITLE_CHAR_LIMIT,
   formatChatPanelSessionTitle,
 } from "../../lib/sessionTitleDisplay";
-import { MinionTargetSelector } from "../Minions/MinionTargetSelector";
-import { useMinionStore } from "../../stores/MinionContext";
+import { MinionChatOverlay } from "../Minions/MinionChatOverlay";
 import type { ComposerDraft, InputImageAttachment } from "../../lib/userInput";
 import {
   cycleSearchIndex,
@@ -1026,6 +1025,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
               />
             </div>
           )}
+          <MinionChatOverlayWrapper />
           <div className="input-container">
             <RichInput
               ref={richInputRef}
@@ -1135,11 +1135,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
 );
 
 // Wrapper to use MinionStore hook inside the ChatPanel
-const MinionTargetSelectorWrapper: React.FC = observer(() => {
-  try {
-    const minionStore = useMinionStore()
-    return <MinionTargetSelector store={minionStore} />
-  } catch {
-    return null // MinionProvider not available
-  }
-})
+// Wrapper to inject MinionChatOverlay without deeply coupling to ChatPanel
+const MinionChatOverlayWrapper: React.FC = () => {
+  return <MinionChatOverlay />
+}

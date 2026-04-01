@@ -179,8 +179,18 @@ export class MinionRouter {
           // Not JSON, use raw content
         }
 
-        // Add result to chat feed
-        this.store.addModelToUserMessage(sender, resultText, 'summary')
+        // Add result to chat feed with status metadata for badge rendering
+        this.store.addMessage({
+          from: sender,
+          to: 'user',
+          type: 'summary',
+          content: resultText,
+          metadata: {
+            status: (() => {
+              try { return JSON.parse(content).status } catch { return 'completed' }
+            })(),
+          },
+        })
       }
     } catch {
       // Silently ignore poll errors
