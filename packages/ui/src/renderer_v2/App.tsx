@@ -2,6 +2,7 @@ import React from 'react'
 import { observer } from 'mobx-react-lite'
 import { AppStore } from './stores/AppStore'
 import { MinionStore } from './stores/MinionStore'
+import { MinionProvider } from './stores/MinionContext'
 import { TopBar } from './components/TopBar/TopBar'
 import { SettingsView } from './components/Settings/SettingsView'
 import { ConnectionsView } from './components/Connections/ConnectionsView'
@@ -196,6 +197,7 @@ export const App: React.FC = observer(() => {
       : 'platform-darwin'
 
   return (
+    <MinionProvider value={minionStore}>
     <div className={`gyshell ${platformClass}`}>
       <ConfirmDialog
         open={store.showVersionUpdateDialog && hasVersionDifference}
@@ -237,5 +239,6 @@ export const App: React.FC = observer(() => {
         </div>
       </div>
     </div>
+    </MinionProvider>
   )
 })

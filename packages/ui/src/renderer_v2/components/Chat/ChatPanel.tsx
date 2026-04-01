@@ -38,6 +38,8 @@ import {
   CHAT_PANEL_SESSION_TITLE_CHAR_LIMIT,
   formatChatPanelSessionTitle,
 } from "../../lib/sessionTitleDisplay";
+import { MinionTargetSelector } from "../Minions/MinionTargetSelector";
+import { useMinionStore } from "../../stores/MinionContext";
 import type { ComposerDraft, InputImageAttachment } from "../../lib/userInput";
 import {
   cycleSearchIndex,
@@ -1070,6 +1072,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
                     hideArrow
                   />
                 </div>
+                <MinionTargetSelectorWrapper />
               </div>
               <div className="input-actions">
                 <div className="input-actions-static">
@@ -1131,3 +1134,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
     );
   },
 );
+
+// Wrapper to use MinionStore hook inside the ChatPanel
+const MinionTargetSelectorWrapper: React.FC = observer(() => {
+  try {
+    const minionStore = useMinionStore()
+    return <MinionTargetSelector store={minionStore} />
+  } catch {
+    return null // MinionProvider not available
+  }
+})
