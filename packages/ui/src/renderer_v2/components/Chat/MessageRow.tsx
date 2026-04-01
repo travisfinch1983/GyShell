@@ -263,6 +263,11 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
 
     if (isUser) {
       const inputImages = msg.metadata?.inputImages || [];
+      if (canEditResend) {
+        return (
+          <MinionEditableMessage msg={msg} isSearchMatch={isSearchMatch} isActiveSearchMatch={isActiveSearchMatch} />
+        );
+      }
       return (
         <div
           className={`message-row-container role-user${isSearchMatch ? " is-search-match" : ""}${isActiveSearchMatch ? " is-search-active" : ""}`}
@@ -294,18 +299,14 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
                 </div>
               )}
             </div>
-            {canEditResend ? (
-              <MinionEditResendButton msg={msg} />
-            ) : (
-              <button
-                className="message-rollback-btn"
-                title="Rollback and re-edit"
-                onClick={() => onRollback(msg)}
-                disabled={!canRollback}
-              >
-                <CornerUpLeft size={14} />
-              </button>
-            )}
+            <button
+              className="message-rollback-btn"
+              title="Rollback and re-edit"
+              onClick={() => onRollback(msg)}
+              disabled={!canRollback}
+            >
+              <CornerUpLeft size={14} />
+            </button>
           </div>
         </div>
       );
@@ -443,18 +444,20 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
   },
 );
 
-// ─── Edit & Resend button for minion messages ───────────────────────────────
+// ─── Editable minion message — shows full message with edit/resend capability ──
 
 // Pencil, Send, X imported at top of file
 
-const MinionEditResendButton: React.FC<{ msg: ChatMessage }> = ({ msg }) => {
+const MinionEditableMessage: React.FC<{
+  msg: ChatMessage;
+  isSearchMatch?: boolean;
+  isActiveSearchMatch?: boolean;
+}> = ({ msg, isSearchMatch, isActiveSearchMatch }) => {
   const [editing, setEditing] = React.useState(false);
   const [editText, setEditText] = React.useState('');
 
-  // Extract the user's original text (strip the [Sent to xxx] header if present)
   const getOriginalText = () => {
     let text = msg.content || '';
-    // Remove markdown header like **[Sent to Coder]**\n\n
     text = text.replace(/^\*\*\[.*?\]\*\*\s*\n*/, '').trim();
     return text;
   };
@@ -474,7 +477,6 @@ const MinionEditResendButton: React.FC<{ msg: ChatMessage }> = ({ msg }) => {
     const minionRouter = (window as any).__minionRouter;
     if (!minionStore || !minionRouter) return;
 
-    // Determine which specialist this was originally sent to
     const headerMatch = msg.content?.match(/\[Sent to (\w+)\]/);
     const targetRole = headerMatch ? headerMatch[1].toLowerCase() : null;
 
@@ -488,41 +490,50 @@ const MinionEditResendButton: React.FC<{ msg: ChatMessage }> = ({ msg }) => {
     setEditing(false);
   };
 
-  if (editing) {
-    return (
-      <div className="minion-edit-resend" onClick={(e) => e.stopPropagation()}>
-        <textarea
-          className="minion-edit-textarea"
-          value={editText}
-          onChange={(e) => setEditText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              resend();
-            }
-            if (e.key === 'Escape') cancelEdit();
-          }}
-          autoFocus
-        />
-        <div className="minion-edit-actions">
-          <button className="minion-edit-send" onClick={resend} title="Resend">
-            <Send size={12} />
-          </button>
-          <button className="minion-edit-cancel" onClick={cancelEdit} title="Cancel">
-            <X size={12} />
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <button
-      className="message-rollback-btn"
-      title="Edit and resend"
-      onClick={startEdit}
+    <div
+      className={`message-row-container role-user${isSearchMatch ? " is-search-match" : ""}${isActiveSearchMatch ? " is-search-active" : ""}`}
     >
-      <Pencil size={14} />
-    </button>
+      <div className="message-role-label user">USER{msg.timestamp ? <span className="message-timestamp">{formatMessageTimestamp(msg.timestamp)}</span> : null}</div>
+      <div className="message-user-row">
+        {editing ? (
+          <div className="minion-edit-resend" onClick={(e) => e.stopPropagation()}>
+            <textarea
+              className="minion-edit-textarea"
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); resend(); }
+                if (e.key === 'Escape') cancelEdit();
+              }}
+              autoFocus
+            />
+            <div className="minion-edit-actions">
+              <button className="minion-edit-send" onClick={resend} title="Resend (Enter)">
+                <Send size={12} /> Resend
+              </button>
+              <button className="minion-edit-cancel" onClick={cancelEdit} title="Cancel (Esc)">
+                <X size={12} /> Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className={`message-text ${msg.role}`}>
+              <div className="plain-text">
+                {renderMentionContent(msg.content)}
+              </div>
+            </div>
+            <button
+              className="message-rollback-btn"
+              title="Edit and resend"
+              onClick={startEdit}
+            >
+              <Pencil size={14} />
+            </button>
+          </>
+        )}
+      </div>
+    </div>
   );
 };
