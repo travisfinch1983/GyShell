@@ -214,7 +214,7 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
       isUser && !!msg.backendMessageId && !msg.streaming && !isThinking;
 
     const minionColor = msg.metadata?.modelName ? getMinionRoleColor(msg.metadata.modelName) : null
-    const minionBg = minionColor ? hexToRgba(minionColor, 0.06) : undefined
+    const minionBg = minionColor ? hexToRgba(minionColor, 0.12) : undefined
     const renderAssistantRow = (children: React.ReactNode) => (
       <div
         className={`message-row-container role-assistant${mergeWithPreviousAssistant ? " is-group-continuation" : ""}${isSearchMatch ? " is-search-match" : ""}${isActiveSearchMatch ? " is-search-active" : ""}${minionColor ? " minion-message" : ""}`}
