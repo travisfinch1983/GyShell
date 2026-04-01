@@ -36,7 +36,17 @@ export const App: React.FC = observer(() => {
       setupMinionStatusListener()
       // Re-inject persisted minion messages after a short delay
       // (ChatStore needs time to hydrate sessions first)
-      setTimeout(() => rehydrateMinionMessages(), 2000)
+      setTimeout(() => {
+        rehydrateMinionMessages()
+        // Clear any lingering busy/thinking state from previous sessions
+        // This prevents the red stop button from appearing on page load
+        if (store.chat?.sessions) {
+          for (const session of store.chat.sessions) {
+            store.chat.setThinking(false, session.id)
+            store.chat.setSessionBusy(false, session.id)
+          }
+        }
+      }, 2000)
     })
   }, [])
 
