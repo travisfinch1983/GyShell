@@ -38,7 +38,7 @@ import {
   CHAT_PANEL_SESSION_TITLE_CHAR_LIMIT,
   formatChatPanelSessionTitle,
 } from "../../lib/sessionTitleDisplay";
-import { MinionChatOverlay } from "../Minions/MinionChatOverlay";
+// MinionChatOverlay removed — specialist messages now injected into ChatStore directly
 import type { ComposerDraft, InputImageAttachment } from "../../lib/userInput";
 import {
   cycleSearchIndex,
@@ -1025,7 +1025,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
               />
             </div>
           )}
-          <MinionChatOverlayWrapper />
           <div className="input-container">
             <RichInput
               ref={richInputRef}
@@ -1135,7 +1134,4 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
 );
 
 // Wrapper to use MinionStore hook inside the ChatPanel
-// Wrapper to inject MinionChatOverlay without deeply coupling to ChatPanel
-const MinionChatOverlayWrapper: React.FC = () => {
-  return <MinionChatOverlay />
-}
+// MinionChatOverlay removed — specialist messages injected into ChatStore

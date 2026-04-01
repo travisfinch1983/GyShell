@@ -7,6 +7,31 @@
 
 import type { MinionStore } from '../stores/MinionStore'
 
+/**
+ * Inject a message into the GyShell chat feed by synthesizing a ChatStore message.
+ * Uses the AppStore's chat.handleUiUpdate to add messages inline with native chat.
+ */
+function injectChatMessage(role: 'user' | 'assistant' | 'system', content: string, metadata?: Record<string, any>) {
+  const appStore = (window as any).__appStore
+  if (!appStore?.chat) return
+  const session = appStore.chat.sessions?.[0]
+  if (!session) return
+
+  const msgId = `minion-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`
+  appStore.chat.handleUiUpdate({
+    type: 'ADD_MESSAGE',
+    sessionId: session.id,
+    message: {
+      id: msgId,
+      role,
+      type: role === 'system' ? 'alert' : 'text',
+      content,
+      timestamp: Date.now(),
+      metadata,
+    },
+  })
+}
+
 const ORCHESTRATOR_API = 'http://10.0.0.52:6280'
 const MINION_RELAY = 'http://10.0.0.52:6278'
 
@@ -44,7 +69,7 @@ export class MinionRouter {
     // Update card status
     this.store.updateMinionStatus(minion.id, 'thinking')
 
-    // Add routing notice to chat feed
+    // Add routing notice to activity feed
     this.store.addMessage({
       from: 'system',
       to: 'all',
@@ -53,12 +78,18 @@ export class MinionRouter {
       metadata: { role, reason: `Direct message to ${role}` },
     })
 
-    // Add the user's message to the chat feed
+    // Add the user's message to activity feed
     this.store.addMessage({
       from: 'user',
       to: minion.friendlyName,
       type: 'chat',
       content: message,
+    })
+
+    // Inject into main chat feed
+    injectChatMessage('user', message, {
+      subToolTitle: `→ ${minion.friendlyName}`,
+      subToolHint: `Direct message to ${minion.friendlyName}`,
     })
 
     try {
@@ -179,17 +210,25 @@ export class MinionRouter {
           // Not JSON, use raw content
         }
 
-        // Add result to chat feed with status metadata for badge rendering
+        // Determine status
+        const parsedStatus = (() => {
+          try { return JSON.parse(content).status } catch { return 'completed' }
+        })()
+        const statusIcon = parsedStatus === 'completed' ? '✓' : parsedStatus === 'failed' ? '✗' : '?'
+        const statusLabel = parsedStatus === 'completed' ? 'Completed' : parsedStatus === 'failed' ? 'Failed' : 'Needs help'
+
+        // Add to activity feed (compact)
         this.store.addMessage({
           from: sender,
           to: 'user',
           type: 'summary',
           content: resultText,
-          metadata: {
-            status: (() => {
-              try { return JSON.parse(content).status } catch { return 'completed' }
-            })(),
-          },
+          metadata: { status: parsedStatus },
+        })
+
+        // Inject into main chat feed
+        injectChatMessage('assistant', `**[${sender} ${statusIcon} ${statusLabel}]**\n\n${resultText}`, {
+          modelName: sender,
         })
       }
     } catch {

@@ -52,29 +52,38 @@ function typeIcon(type: MessageType): string {
   }
 }
 
+function feedLabel(msg: MinionMessage): string {
+  const from = msg.from === 'user' ? 'You' : msg.from
+  const to = msg.to === 'user' ? 'You' : msg.to === 'all' ? 'All' : msg.to
+
+  switch (msg.type) {
+    case 'forward':
+      return msg.content // Already a short label like "Routed to Coder"
+    case 'tool-use':
+      return `${from} used ${msg.toolName || 'tool'}`
+    case 'summary':
+      return `Result from ${from}`
+    case 'system':
+      return msg.content.length > 60 ? msg.content.substring(0, 60) + '...' : msg.content
+    case 'chat':
+      return `Message from ${from} to ${to}`
+    default:
+      return `${from} → ${to}`
+  }
+}
+
 const FeedMessage: React.FC<{ msg: MinionMessage }> = ({ msg }) => {
-  const { from, to, type, content, timestamp, toolName } = msg
-  const fromColor = getSenderColor(from)
-  const isSystem = type === 'system'
+  const { type, timestamp } = msg
+  const icon = typeIcon(type)
+  const label = feedLabel(msg)
   const isForward = type === 'forward'
+  const isSystem = type === 'system'
 
   return (
     <div className={`feed-msg ${isSystem ? 'system' : ''} ${isForward ? 'forward' : ''}`}>
-      <div className="feed-msg-header">
-        <span className="feed-msg-icon">{typeIcon(type)}</span>
-        <span className="feed-msg-from" style={{ color: fromColor }}>
-          {from === 'user' ? 'You' : from}
-        </span>
-        <span className="feed-msg-arrow">→</span>
-        <span className="feed-msg-to">
-          {to === 'user' ? 'You' : to === 'all' ? 'All' : to}
-        </span>
-        <span className="feed-msg-time">{formatTime(timestamp)}</span>
-      </div>
-      <div className={`feed-msg-body ${isForward ? 'forward' : ''}`}>
-        {toolName && <span className="feed-tool-badge">{toolName}</span>}
-        {content.length > 200 ? content.substring(0, 200) + '...' : content}
-      </div>
+      <span className="feed-msg-icon">{icon}</span>
+      <span className="feed-msg-label">{label}</span>
+      <span className="feed-msg-time">{formatTime(timestamp)}</span>
     </div>
   )
 }

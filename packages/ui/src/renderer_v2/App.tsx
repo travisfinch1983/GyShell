@@ -19,6 +19,7 @@ const minionStore = new MinionStore()
 const minionRouter = new MinionRouter(minionStore)
 
 // Expose globally for debugging and external access
+;(window as any).__appStore = store
 ;(window as any).__minionStore = minionStore
 ;(window as any).__minionRouter = minionRouter
 
