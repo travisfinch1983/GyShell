@@ -1,16 +1,12 @@
 /**
- * MinionRouter — Routes messages to specialist models via the minion infrastructure.
+ * MinionRouter — Routes messages directly to specialist model endpoints.
  *
- * When a specialist card is selected, messages bypass GyShell's native agent
- * and go through the minion orchestrator API or directly to the specialist relay.
+ * Calls KoboldCpp/vLLM endpoints via ProxLab proxy slots.
+ * No Claude Code pipeline — clean context, fast responses.
  */
 
-import type { MinionStore } from '../stores/MinionStore'
+import type { MinionStore, MinionRole } from '../stores/MinionStore'
 
-/**
- * Inject a message into the GyShell chat feed by synthesizing a ChatStore message.
- * Uses the AppStore's chat.handleUiUpdate to add messages inline with native chat.
- */
 const MINION_CHAT_STORAGE_KEY = 'gyshell-minion-chat-messages'
 const MAX_STORED_MESSAGES = 200
 
@@ -27,7 +23,6 @@ interface StoredChatMessage {
 function injectChatMessage(role: 'user' | 'assistant' | 'system', content: string, metadata?: Record<string, any>) {
   const appStore = (window as any).__appStore
   if (!appStore?.chat) return
-  // Use the active session, not just the first one
   const session = appStore.chat.activeSession || appStore.chat.sessions?.[0]
   if (!session) return
 
@@ -47,7 +42,6 @@ function injectChatMessage(role: 'user' | 'assistant' | 'system', content: strin
     message,
   })
 
-  // Persist to localStorage for survival across refreshes
   persistMinionMessage({ ...message, sessionId: session.id })
 
   // Record to transcript
@@ -74,10 +68,6 @@ function persistMinionMessage(msg: StoredChatMessage) {
   } catch {}
 }
 
-/**
- * Re-inject persisted minion messages after page reload.
- * Call this after the ChatStore has hydrated its sessions.
- */
 export function rehydrateMinionMessages() {
   try {
     const stored: StoredChatMessage[] = JSON.parse(localStorage.getItem(MINION_CHAT_STORAGE_KEY) || '[]')
@@ -89,13 +79,10 @@ export function rehydrateMinionMessages() {
     for (const msg of stored) {
       const session = appStore.chat.sessions?.find((s: any) => s.id === msg.sessionId)
       if (!session) continue
-      // Only inject if not already present
       if (session.messagesById?.has(msg.id)) continue
 
-      // Backfill metadata.modelName for old messages that were persisted without it
       let metadata = msg.metadata || {}
       if (!metadata.modelName && msg.role === 'assistant' && msg.id?.startsWith('minion-')) {
-        // Try to extract model name from content header like [minion-coder ✓ Completed]
         const match = msg.content?.match(/\[([^\s\]]+)\s+[✓✗?]/)
         if (match) {
           metadata = { ...metadata, modelName: match[1] }
@@ -118,53 +105,114 @@ export function rehydrateMinionMessages() {
   } catch {}
 }
 
-const ORCHESTRATOR_API = 'http://10.0.0.52:6280'
-const MINION_RELAY = 'http://10.0.0.52:6278'
+// ─── Model endpoint resolution ───────────────────────────────────────────────
 
-// Poll interval for checking specialist results
-const RESULT_POLL_MS = 5000
-const RESULT_TIMEOUT_MS = 300000 // 5 min max wait
-
-interface DispatchResult {
-  ok: boolean
-  error?: string
+interface ModelEndpoint {
+  baseUrl: string
+  modelId: string
+  apiKey: string
 }
+
+/**
+ * Resolve the API endpoint for a given role from the active profile settings.
+ */
+function getModelEndpoint(role: string): ModelEndpoint | null {
+  const appStore = (window as any).__appStore
+  const settings = appStore?.settings
+  if (!settings?.models) return null
+
+  const profile = settings.models.profiles.find(
+    (p: any) => p.id === settings.models.activeProfileId
+  )
+  if (!profile) return null
+
+  // Map role to profile field
+  const roleToField: Record<string, string> = {
+    chat: 'chatModelId',
+    coder: 'coderModelId',
+    creative: 'creativeModelId',
+    architect: 'architectModelId',
+    scout: 'scoutModelId',
+    thinking: 'thinkingModelId',
+    action: 'actionModelId',
+    orchestrator: 'globalModelId',
+  }
+
+  const fieldName = roleToField[role]
+  if (!fieldName) return null
+
+  const modelId = (profile as any)[fieldName]
+  if (!modelId) return null
+
+  const item = settings.models.items.find((m: any) => m.id === modelId)
+  if (!item) return null
+
+  return {
+    baseUrl: item.baseUrl,
+    modelId: item.model,
+    apiKey: item.apiKey || 'not-needed',
+  }
+}
+
+// ─── Per-model conversation history ──────────────────────────────────────────
+
+/** Keep recent conversation history per role for context continuity */
+const roleConversations = new Map<string, Array<{ role: string; content: string }>>()
+const MAX_CONVERSATION_TURNS = 10
+
+function getRoleHistory(role: string): Array<{ role: string; content: string }> {
+  return roleConversations.get(role) || []
+}
+
+function addToRoleHistory(role: string, msg: { role: string; content: string }) {
+  if (!roleConversations.has(role)) roleConversations.set(role, [])
+  const history = roleConversations.get(role)!
+  history.push(msg)
+  // Keep only recent turns
+  while (history.length > MAX_CONVERSATION_TURNS * 2) {
+    history.shift()
+  }
+}
+
+// ─── System prompts per role ─────────────────────────────────────────────────
+
+const ROLE_SYSTEM_PROMPTS: Record<string, string> = {
+  coder: 'You are a code specialist. Write clean, efficient code. Be concise and direct.',
+  creative: 'You are a creative writing specialist. Write engaging, well-crafted text. Be expressive but professional.',
+  architect: 'You are a systems architect. Analyze designs, suggest improvements, and think about scalability and maintainability.',
+  scout: 'You are a quick-check specialist. Give brief, direct answers. Be concise.',
+  chat: 'You are a helpful assistant. Be conversational and thorough.',
+  thinking: 'You are a deep reasoning specialist. Think through problems carefully and explain your reasoning.',
+}
+
+// ─── MinionRouter class ─────────────────────────────────────────────────────
 
 export class MinionRouter {
   private store: MinionStore
-  private pollTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(store: MinionStore) {
     this.store = store
-    this.startResultPolling()
   }
 
   /**
-   * Send a message directly to a specialist model via the minion relay.
-   * The specialist's Claude Code instance will receive it via relay injection.
+   * Send a message directly to a specialist model's API endpoint.
+   * Clean context — no Claude Code pipeline.
    */
-  async sendToSpecialist(role: string, message: string): Promise<DispatchResult> {
-    const minion = this.store.getMinionByRole(role as any)
+  async sendToSpecialist(role: string, message: string): Promise<void> {
+    const minion = this.store.getMinionByRole(role as MinionRole)
     if (!minion) {
-      return { ok: false, error: `No minion found for role: ${role}` }
+      console.error(`[MinionRouter] No minion for role: ${role}`)
+      return
     }
 
-    // Map role to minion relay name
-    const minionName = this.roleToMinionName(role)
-
-    // Update card status
-    this.store.updateMinionStatus(minion.id, 'thinking')
+    const endpoint = getModelEndpoint(role)
+    if (!endpoint) {
+      console.error(`[MinionRouter] No endpoint for role: ${role}`)
+      this.store.updateMinionStatus(minion.id, 'error', 'No endpoint configured')
+      return
+    }
 
     // Add routing notice to activity feed
-    this.store.addMessage({
-      from: 'system',
-      to: 'all',
-      type: 'forward',
-      content: `Routed to ${minion.friendlyName}`,
-      metadata: { role, reason: `Direct message to ${role}` },
-    })
-
-    // Add the user's message to activity feed
     this.store.addMessage({
       from: 'user',
       to: minion.friendlyName,
@@ -172,172 +220,87 @@ export class MinionRouter {
       content: message,
     })
 
-    // Inject into main chat feed with routing header
-    injectChatMessage('user', `**[Sent to ${minion.friendlyName}]**\n\n${message}`)
+    // Inject user message into main chat
+    injectChatMessage('user', message, {
+      subToolTitle: `→ ${minion.friendlyName}`,
+    })
+
+    // Update card status
+    this.store.updateMinionStatus(minion.id, 'thinking')
+
+    // Build the request
+    const systemPrompt = ROLE_SYSTEM_PROMPTS[role] || ROLE_SYSTEM_PROMPTS.chat
+    const history = getRoleHistory(role)
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...history,
+      { role: 'user', content: message },
+    ]
 
     try {
-      const resp = await fetch(`${ORCHESTRATOR_API}/direct`, {
+      const resp = await fetch(`${endpoint.baseUrl}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${endpoint.apiKey}`,
+        },
         body: JSON.stringify({
-          minion: minionName,
-          message: message,
+          model: endpoint.modelId,
+          messages,
+          max_tokens: 4096,
+          temperature: 0.7,
+          stream: false,
         }),
       })
 
       if (!resp.ok) {
-        const err = await resp.json().catch(() => ({ error: 'Unknown error' }))
-        this.store.updateMinionStatus(minion.id, 'error', err.error)
-        return { ok: false, error: err.error }
+        const err = await resp.text().catch(() => 'Unknown error')
+        console.error(`[MinionRouter] API error:`, err)
+        this.store.updateMinionStatus(minion.id, 'error', `API ${resp.status}`)
+        injectChatMessage('assistant', `**[${minion.friendlyName} ✗ Error]**\n\nAPI error ${resp.status}: ${err.substring(0, 200)}`, {
+          modelName: minion.friendlyName,
+        })
+        return
       }
 
-      return { ok: true }
-    } catch (err: any) {
-      this.store.updateMinionStatus(minion.id, 'error', err.message)
-      return { ok: false, error: err.message }
-    }
-  }
-
-  /**
-   * Send a message through the orchestrator for auto-routing.
-   * The orchestrator (9B) decides which specialist handles it.
-   */
-  async sendToOrchestrator(message: string): Promise<DispatchResult> {
-    const orchestrator = this.store.getMinionByRole('orchestrator')
-    if (orchestrator) {
-      this.store.updateMinionStatus(orchestrator.id, 'thinking')
-    }
-
-    try {
-      const resp = await fetch(`${ORCHESTRATOR_API}/task`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          task: message,
-          from: 'gyshell-user',
-        }),
-      })
-
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({ error: 'Unknown error' }))
-        if (orchestrator) this.store.updateMinionStatus(orchestrator.id, 'error', err.error)
-        return { ok: false, error: err.error }
-      }
-
-      const result = await resp.json()
-
-      // Post routing decision to chat feed
-      if (result.results) {
-        for (const step of result.results) {
-          this.store.addMessage({
-            from: 'orchestrator',
-            to: 'all',
-            type: 'forward',
-            content: `Routed to ${step.minion} — ${result.plan || 'Task dispatched'}`,
-            metadata: { minion: step.minion, plan: result.plan },
-          })
-
-          // Update specialist card status
-          const specialist = this.store.getMinionByName(step.minion)
-          if (specialist) {
-            this.store.updateMinionStatus(specialist.id, 'thinking')
-          }
-        }
-      }
-
-      if (orchestrator) this.store.updateMinionStatus(orchestrator.id, 'idle')
-      return { ok: true }
-    } catch (err: any) {
-      if (orchestrator) this.store.updateMinionStatus(orchestrator.id, 'error', err.message)
-      return { ok: false, error: err.message }
-    }
-  }
-
-  /**
-   * Poll the orchestrator for results from specialists.
-   */
-  private startResultPolling(): void {
-    this.pollTimer = setInterval(() => this.checkResults(), RESULT_POLL_MS)
-  }
-
-  private async checkResults(): Promise<void> {
-    try {
-      const resp = await fetch(`${MINION_RELAY}/messages/orchestrator`)
-      if (!resp.ok) return
       const data = await resp.json()
-      const messages = data.messages || []
+      const choice = data.choices?.[0]
+      let responseText = choice?.message?.content || 'No response'
 
-      if (messages.length === 0) return
+      // Strip <think> blocks if present (some models include thinking)
+      responseText = responseText.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim()
 
-      // Ack messages
-      await fetch(`${MINION_RELAY}/messages/orchestrator/ack`, { method: 'POST' })
+      // Update conversation history
+      addToRoleHistory(role, { role: 'user', content: message })
+      addToRoleHistory(role, { role: 'assistant', content: responseText })
 
-      for (const msg of messages) {
-        const sender = msg.sender || '?'
-        let content = msg.message || ''
-        let resultText = content
+      // Update card status
+      this.store.updateMinionStatus(minion.id, 'idle')
 
-        // Try to parse structured result
-        try {
-          const parsed = JSON.parse(content)
-          if (parsed.type === 'result') {
-            resultText = parsed.result || content
-            const status = parsed.status === 'completed' ? 'complete' : 'error'
-            // Update the specialist's card status
-            const specialist = this.store.getMinionByName(sender)
-            if (specialist) {
-              this.store.updateMinionStatus(specialist.id, status === 'complete' ? 'idle' : 'error')
-            }
-          }
-        } catch {
-          // Not JSON, use raw content
-        }
+      // Add to activity feed
+      this.store.addMessage({
+        from: minion.friendlyName,
+        to: 'user',
+        type: 'summary',
+        content: responseText.substring(0, 100) + (responseText.length > 100 ? '...' : ''),
+        metadata: { status: 'completed' },
+      })
 
-        // Determine status
-        const parsedStatus = (() => {
-          try { return JSON.parse(content).status } catch { return 'completed' }
-        })()
-        const statusIcon = parsedStatus === 'completed' ? '✓' : parsedStatus === 'failed' ? '✗' : '?'
-        const statusLabel = parsedStatus === 'completed' ? 'Completed' : parsedStatus === 'failed' ? 'Failed' : 'Needs help'
+      // Inject response into main chat
+      injectChatMessage('assistant', `**[${minion.friendlyName} ✓]**\n\n${responseText}`, {
+        modelName: minion.friendlyName,
+      })
 
-        // Add to activity feed (compact)
-        this.store.addMessage({
-          from: sender,
-          to: 'user',
-          type: 'summary',
-          content: resultText,
-          metadata: { status: parsedStatus },
-        })
-
-        // Inject into main chat feed
-        injectChatMessage('assistant', `**[${sender} ${statusIcon} ${statusLabel}]**\n\n${resultText}`, {
-          modelName: sender,
-        })
-      }
-    } catch {
-      // Silently ignore poll errors
+    } catch (err: any) {
+      console.error(`[MinionRouter] Fetch error:`, err)
+      this.store.updateMinionStatus(minion.id, 'error', err.message)
+      injectChatMessage('assistant', `**[${minion.friendlyName} ✗ Error]**\n\n${err.message}`, {
+        modelName: minion.friendlyName,
+      })
     }
-  }
-
-  /**
-   * Map a role name to the minion relay recipient name.
-   */
-  private roleToMinionName(role: string): string {
-    const map: Record<string, string> = {
-      coder: 'minion-coder',
-      creative: 'minion-creative',
-      architect: 'minion-27',
-      scout: 'minion-4',
-      chat: 'minion-122',
-      thinking: 'minion-27',
-    }
-    return map[role] || `minion-${role}`
   }
 
   dispose(): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer)
-      this.pollTimer = null
-    }
+    // No polling needed anymore — direct API calls
   }
 }
