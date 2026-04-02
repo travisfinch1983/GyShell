@@ -7,6 +7,37 @@
   overflow: hidden;
 }
 
+/* ─── Collapse toggle header ─────────────────────────────────────── */
+
+.sidebar-collapse-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-collapse-toggle {
+  border: none;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.sidebar-collapse-toggle:hover {
+  background: var(--panel-bg-2);
+  color: var(--fg);
+}
+
+/* ─── Expanded layout sections ───────────────────────────────────── */
+
 .minion-sidebar-cards {
   overflow: hidden;
   display: flex;
@@ -109,4 +140,116 @@
 
 .minion-feed-toggle-count:empty {
   display: none;
+}
+
+/* ─── Collapsed sidebar mode ─────────────────────────────────────── */
+
+.collapsed-sidebar {
+  align-items: center;
+  padding: 0;
+}
+
+.collapsed-sidebar .sidebar-collapse-toggle {
+  margin: 6px 0 4px;
+}
+
+.collapsed-icons-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Scrollbar for collapsed icon list */
+.collapsed-icons-list::-webkit-scrollbar {
+  width: 0;
+}
+
+/* Individual collapsed icon */
+.collapsed-minion-icon {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: default;
+  transition: background 0.15s ease;
+}
+
+.collapsed-minion-icon.selectable {
+  cursor: pointer;
+}
+
+.collapsed-minion-icon.selectable:hover {
+  background: var(--panel-bg-2);
+}
+
+.collapsed-minion-icon.selected {
+  background: rgba(34, 197, 94, 0.12);
+  outline: 1.5px solid #22c55e;
+}
+
+/* Status dot overlaying the icon (bottom-right corner) */
+.collapsed-status-dot {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--app-bg);
+}
+
+.collapsed-status-dot.animated {
+  animation: minion-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes minion-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ─── Activity pulse (bottom of collapsed strip) ─────────────────── */
+
+.collapsed-activity-pulse-container {
+  flex-shrink: 0;
+  padding: 8px 0 10px;
+  display: flex;
+  justify-content: center;
+}
+
+.collapsed-activity-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+  opacity: 0.25;
+  transition: opacity 0.3s ease, background-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.collapsed-activity-pulse.active {
+  opacity: 1;
+  animation: activity-flash 1.5s ease-out forwards;
+}
+
+@keyframes activity-flash {
+  0% {
+    opacity: 1;
+    transform: scale(1.4);
+  }
+  30% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0.25;
+    transform: scale(1);
+    box-shadow: none;
+  }
 }

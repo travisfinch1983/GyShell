@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState, useCallback } from 'react'
 import { observer } from 'mobx-react-lite'
 import { AppStore } from './stores/AppStore'
 import { MinionStore } from './stores/MinionStore'
@@ -27,6 +27,17 @@ transcriptService.runRetentionCleanup()
 ;(window as any).__transcriptService = transcriptService
 
 export const App: React.FC = observer(() => {
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => localStorage.getItem('minion-sidebar-collapsed') === 'true'
+  )
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed(prev => {
+      const next = !prev
+      localStorage.setItem('minion-sidebar-collapsed', String(next))
+      return next
+    })
+  }, [])
+
   React.useEffect(() => {
     store.bootstrap().then(() => {
       // Initialize minion cards from active profile
@@ -240,8 +251,8 @@ export const App: React.FC = observer(() => {
       <TopBar store={store} />
 
       <div className="gyshell-body">
-        <div className="gyshell-minion-sidebar">
-          <MinionSidebar store={minionStore} />
+        <div className={`gyshell-minion-sidebar ${sidebarCollapsed ? 'is-collapsed' : ''}`}>
+          <MinionSidebar store={minionStore} collapsed={sidebarCollapsed} onToggleCollapse={toggleSidebar} />
         </div>
         <div className="gyshell-main">
           <LayoutWorkspace store={store} />
