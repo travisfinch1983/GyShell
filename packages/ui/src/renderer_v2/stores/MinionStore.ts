@@ -89,6 +89,7 @@ export class MinionStore {
   messages: MinionMessage[] = []
   minions: Map<string, MinionCard> = new Map()
   selectedTarget: string | null = null // null = orchestrator routes, string = direct to specialist
+  visionEnabled = false
   maxMessages = 500
 
   /** Roles that can be directly selected by clicking their card */
@@ -312,6 +313,13 @@ export class MinionStore {
   toggleTarget(role: string): void {
     if (!MinionStore.selectableRoles.has(role)) return
     this.selectedTarget = this.selectedTarget === role ? null : role
+  }
+
+  /**
+   * Toggle vision mode — when enabled, UI screenshots are sent with messages.
+   */
+  toggleVision(): void {
+    this.visionEnabled = !this.visionEnabled
   }
 
   /**

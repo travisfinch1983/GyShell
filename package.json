@@ -73,6 +73,7 @@
     "dayjs": "^1.11.19",
     "diff": "^8.0.3",
     "electron-store": "^10.0.0",
+    "html2canvas": "^1.4.1",
     "electron-updater": "^6.6.0",
     "i18next": "^25.7.4",
     "langchain": "^1.2.3",

@@ -142,6 +142,44 @@
   display: none;
 }
 
+/* ─── Vision toggle (expanded) ──────────────────────────────────── */
+
+.vision-toggle-btn {
+  border: none;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: auto;
+  transition: all 0.15s ease;
+}
+
+.vision-toggle-btn:hover {
+  background: var(--panel-bg-2);
+  color: var(--fg);
+}
+
+.vision-toggle-btn.active {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+}
+
+.vision-toggle-btn.active:hover {
+  background: rgba(59, 130, 246, 0.25);
+}
+
+.vision-toggle-label {
+  line-height: 1;
+}
+
 /* ─── Collapsed sidebar mode ─────────────────────────────────────── */
 
 .collapsed-sidebar {
@@ -151,6 +189,32 @@
 
 .collapsed-sidebar .sidebar-collapse-toggle {
   margin: 6px 0 4px;
+}
+
+/* Vision toggle in collapsed sidebar */
+.collapsed-vision-toggle {
+  border: none;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  margin-bottom: 4px;
+  transition: all 0.15s ease;
+}
+
+.collapsed-vision-toggle:hover {
+  background: var(--panel-bg-2);
+  color: var(--fg);
+}
+
+.collapsed-vision-toggle.active {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
 }
 
 .collapsed-icons-list {

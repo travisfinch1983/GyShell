@@ -378,7 +378,7 @@ export class MinionRouter {
   async sendToSpecialist(
     role: string,
     message: string,
-    options?: { showUserMessage?: boolean; dispatchedBy?: string }
+    options?: { showUserMessage?: boolean; dispatchedBy?: string; screenshotDataUrl?: string }
   ): Promise<void> {
     const minion = this.store.getMinionByRole(role as MinionRole)
     if (!minion) {
@@ -395,6 +395,7 @@ export class MinionRouter {
 
     const showUserMsg = options?.showUserMessage !== false
     const dispatchedBy = options?.dispatchedBy
+    const screenshotDataUrl = options?.screenshotDataUrl
 
     // Add routing notice to activity feed
     if (dispatchedBy) {
@@ -428,23 +429,44 @@ export class MinionRouter {
     // Build the request
     const systemPrompt = getRolePrompt(role)
     const history = getRoleHistory(role)
-    const messages = [
+
+    // Build user message — multimodal if screenshot provided
+    const userMessage: any = screenshotDataUrl
+      ? { role: 'user', content: [
+          { type: 'text', text: message },
+          { type: 'image_url', image_url: { url: screenshotDataUrl } },
+        ]}
+      : { role: 'user', content: message }
+
+    const messages: any[] = [
       { role: 'system', content: systemPrompt },
       ...history,
-      { role: 'user', content: message },
+      userMessage,
     ]
 
     // Conversation tracer
-    const totalTokensEstimate = messages.reduce((sum, m) => sum + Math.ceil(m.content.length / 4), 0)
+    const totalTokensEstimate = messages.reduce((sum, m) => {
+      if (typeof m.content === 'string') return sum + Math.ceil(m.content.length / 4)
+      if (Array.isArray(m.content)) {
+        return sum + m.content.reduce((s: number, part: any) => {
+          if (part.type === 'text') return s + Math.ceil(part.text.length / 4)
+          if (part.type === 'image_url') return s + 765
+          return s
+        }, 0)
+      }
+      return sum
+    }, 0)
     console.log(`[MinionRouter] ═══ TRACE ═══`)
     console.log(`[MinionRouter] Target: ${minion.friendlyName} (${role})`)
     console.log(`[MinionRouter] Endpoint: ${endpoint.baseUrl}/chat/completions`)
     console.log(`[MinionRouter] Model: ${endpoint.modelId}`)
+    console.log(`[MinionRouter] Vision: ${screenshotDataUrl ? 'YES (' + Math.round(screenshotDataUrl.length / 1024) + 'KB)' : 'no'}`)
     console.log(`[MinionRouter] Messages: ${messages.length} (est ~${totalTokensEstimate} tokens)`)
     if (dispatchedBy) console.log(`[MinionRouter] Dispatched by: ${dispatchedBy}`)
     messages.forEach((m, i) => {
-      const preview = m.content.length > 100 ? m.content.substring(0, 100) + '...' : m.content
-      console.log(`[MinionRouter]   [${i}] ${m.role}: ${preview} (${m.content.length} chars)`)
+      const content = typeof m.content === 'string' ? m.content : '[multimodal: text + image]'
+      const preview = content.length > 100 ? content.substring(0, 100) + '...' : content
+      console.log(`[MinionRouter]   [${i}] ${m.role}: ${preview} (${typeof m.content === 'string' ? m.content.length : 'multimodal'} chars)`)
     })
     console.log(`[MinionRouter] ═════════════`)
 
@@ -534,7 +556,7 @@ export class MinionRouter {
    * If chat includes a <route> tag, the specialist task is dispatched in the background
    * while chat's response is shown to the user immediately.
    */
-  async routeViaChat(message: string): Promise<void> {
+  async routeViaChat(message: string, screenshotDataUrl?: string): Promise<void> {
     const chatMinion = this.store.getMinionByRole('chat')
     const endpoint = getModelEndpoint('chat')
 
@@ -571,22 +593,42 @@ export class MinionRouter {
       contextBlock = '\n\n[Recent activity in the group chat]\n' + recentActivity.slice(-10).join('\n') + '\n'
     }
 
-    const messages = [
+    // Build user message — multimodal if screenshot provided
+    const userMessage: any = screenshotDataUrl
+      ? { role: 'user', content: [
+          { type: 'text', text: message },
+          { type: 'image_url', image_url: { url: screenshotDataUrl } },
+        ]}
+      : { role: 'user', content: message }
+
+    const messages: any[] = [
       { role: 'system', content: systemPrompt + contextBlock },
       ...history,
-      { role: 'user', content: message },
+      userMessage,
     ]
 
     // Conversation tracer
-    const totalTokensEstimate = messages.reduce((sum, m) => sum + Math.ceil(m.content.length / 4), 0)
+    const totalTokensEstimate = messages.reduce((sum, m) => {
+      if (typeof m.content === 'string') return sum + Math.ceil(m.content.length / 4)
+      if (Array.isArray(m.content)) {
+        return sum + m.content.reduce((s: number, part: any) => {
+          if (part.type === 'text') return s + Math.ceil(part.text.length / 4)
+          if (part.type === 'image_url') return s + 765
+          return s
+        }, 0)
+      }
+      return sum
+    }, 0)
     console.log(`[MinionRouter] ═══ CHAT ROUTE ═══`)
     console.log(`[MinionRouter] Endpoint: ${endpoint.baseUrl}/chat/completions`)
     console.log(`[MinionRouter] Model: ${endpoint.modelId}`)
+    console.log(`[MinionRouter] Vision: ${screenshotDataUrl ? 'YES (' + Math.round(screenshotDataUrl.length / 1024) + 'KB)' : 'no'}`)
     console.log(`[MinionRouter] Messages: ${messages.length} (est ~${totalTokensEstimate} tokens)`)
     console.log(`[MinionRouter] Activity context: ${recentActivity.length} entries`)
     messages.forEach((m, i) => {
-      const preview = m.content.length > 150 ? m.content.substring(0, 150) + '...' : m.content
-      console.log(`[MinionRouter]   [${i}] ${m.role}: ${preview} (${m.content.length} chars)`)
+      const content = typeof m.content === 'string' ? m.content : '[multimodal: text + image]'
+      const preview = content.length > 150 ? content.substring(0, 150) + '...' : content
+      console.log(`[MinionRouter]   [${i}] ${m.role}: ${preview} (${typeof m.content === 'string' ? m.content.length : 'multimodal'} chars)`)
     })
     console.log(`[MinionRouter] ══════════════════`)
 
@@ -665,6 +707,7 @@ export class MinionRouter {
         this.sendToSpecialist(route.role, route.message, {
           showUserMessage: false,
           dispatchedBy: chatName,
+          screenshotDataUrl,
         })
       }
 
@@ -686,8 +729,8 @@ export class MinionRouter {
   /**
    * @deprecated Use routeViaChat instead. Kept for backwards compatibility.
    */
-  async routeViaOrchestrator(message: string): Promise<void> {
-    return this.routeViaChat(message)
+  async routeViaOrchestrator(message: string, screenshotDataUrl?: string): Promise<void> {
+    return this.routeViaChat(message, screenshotDataUrl)
   }
 
   dispose(): void {

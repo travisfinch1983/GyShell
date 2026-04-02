@@ -2709,14 +2709,25 @@ export class AppStore {
     if (minionStore && minionRouter) {
       const text = typeof content === 'string' ? content : content?.text || ''
       if (text) {
+        // Capture screenshot if vision is enabled
+        let screenshotDataUrl: string | undefined
+        if (minionStore.visionEnabled) {
+          try {
+            const { captureUI } = await import('../services/ScreenshotService')
+            screenshotDataUrl = (await captureUI()) || undefined
+          } catch (e) {
+            console.warn('[AppStore] Screenshot capture failed:', e)
+          }
+        }
+
         if (minionStore.selectedTarget) {
           // Direct routing to selected specialist
-          console.log(`[AppStore] ══ INTERCEPTED ══ Direct to specialist: ${minionStore.selectedTarget}`)
-          minionRouter.sendToSpecialist(minionStore.selectedTarget, text)
+          console.log(`[AppStore] ══ INTERCEPTED ══ Direct to specialist: ${minionStore.selectedTarget}${screenshotDataUrl ? ' [+vision]' : ''}`)
+          minionRouter.sendToSpecialist(minionStore.selectedTarget, text, { screenshotDataUrl })
         } else {
           // No specialist selected — route through chat (chat handles + dispatches)
-          console.log(`[AppStore] ══ INTERCEPTED ══ Routing via chat model`)
-          minionRouter.routeViaChat(text)
+          console.log(`[AppStore] ══ INTERCEPTED ══ Routing via chat model${screenshotDataUrl ? ' [+vision]' : ''}`)
+          minionRouter.routeViaChat(text, screenshotDataUrl)
         }
         // Ensure session is NOT marked as busy (prevents red stop button)
         const targetId = sessionId || this.chat.sessions?.[0]?.id

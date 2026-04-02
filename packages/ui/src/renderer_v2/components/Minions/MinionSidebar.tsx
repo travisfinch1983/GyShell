@@ -20,6 +20,7 @@ import {
   Lightbulb,
   Layers,
   Bot,
+  Eye,
 } from 'lucide-react'
 import { MinionStore } from '../../stores/MinionStore'
 import type { MinionCard } from '../../stores/MinionStore'
@@ -207,6 +208,14 @@ export const MinionSidebar = observer(({ store, collapsed, onToggleCollapse }: M
           <PanelLeftOpen size={14} />
         </button>
 
+        <button
+          className={`collapsed-vision-toggle ${store.visionEnabled ? 'active' : ''}`}
+          onClick={() => store.toggleVision()}
+          title={store.visionEnabled ? 'Vision ON' : 'Vision OFF'}
+        >
+          <Eye size={14} />
+        </button>
+
         <div className="collapsed-icons-list">
           {minions.map((card) => (
             <CollapsedMinionIcon key={card.id} card={card} store={store} />
@@ -222,6 +231,14 @@ export const MinionSidebar = observer(({ store, collapsed, onToggleCollapse }: M
   return (
     <div className="minion-sidebar" ref={containerRef}>
       <div className="sidebar-collapse-header">
+        <button
+          className={`vision-toggle-btn ${store.visionEnabled ? 'active' : ''}`}
+          onClick={() => store.toggleVision()}
+          title={store.visionEnabled ? 'Vision ON — UI screenshots sent with messages' : 'Enable vision — send UI screenshots to models'}
+        >
+          <Eye size={13} />
+          <span className="vision-toggle-label">Vision</span>
+        </button>
         <button
           className="sidebar-collapse-toggle"
           onClick={onToggleCollapse}
