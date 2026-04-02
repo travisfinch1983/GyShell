@@ -13,8 +13,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 8px 10px 6px;
-  border-bottom: 1px solid var(--border, #2a2f3a);
-  background: var(--bg, #0f1117);
+  border-bottom: 1px solid var(--border);
+  background: var(--app-bg);
 }
 
 .minion-cards-title {
@@ -22,14 +22,14 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--ink-soft, #8892a4);
+  color: var(--fg-muted);
 }
 
 .minion-cards-count {
   font-size: 11px;
   font-weight: 600;
-  color: var(--ink-soft, #8892a4);
-  background: var(--surface-muted, #1e2230);
+  color: var(--fg-muted);
+  background: var(--control-bg);
   border-radius: 8px;
   padding: 1px 7px;
 }
@@ -37,11 +37,11 @@
 .minion-routing-indicator {
   padding: 4px 12px 6px;
   font-size: 11px;
-  border-bottom: 1px solid var(--border, #2a2f3a);
+  border-bottom: 1px solid var(--border);
 }
 
 .routing-auto {
-  color: var(--ink-soft, #6b7280);
+  color: var(--fg-faint);
 }
 
 .routing-direct {
@@ -58,7 +58,7 @@
 .routing-clear {
   border: none;
   background: none;
-  color: var(--ink-soft, #6b7280);
+  color: var(--fg-faint);
   cursor: pointer;
   padding: 0 2px;
   font-size: 12px;
@@ -66,7 +66,7 @@
 }
 
 .routing-clear:hover {
-  color: var(--danger, #ef4444);
+  color: var(--danger);
 }
 
 .minion-cards-list {
@@ -79,23 +79,23 @@
 }
 
 .minion-card {
-  border: 1px solid var(--border, #2a2f3a);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 8px;
   transition: border-color 0.15s ease, background-color 0.15s ease;
-  background: var(--surface, #1a1d2e);
+  background: var(--panel-bg);
   cursor: default;
 }
 
 .minion-card.selectable {
   cursor: pointer;
-  border: 1.5px solid var(--border-strong, #3d4455);
-  background: var(--surface-soft, #1e2235);
+  border: 1.5px solid var(--border-strong);
+  background: var(--panel-bg-2);
 }
 
 .minion-card.selectable:hover {
-  border-color: var(--accent, #3b82f6);
-  background: color-mix(in srgb, var(--accent, #3b82f6) 6%, var(--surface, #1a1d2e));
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel-bg));
 }
 
 .minion-card.selected {
@@ -144,7 +144,7 @@
 .minion-friendly-name {
   font-size: 12px;
   font-weight: 600;
-  color: var(--ink, #e1e4ea);
+  color: var(--fg);
   flex: 1;
   white-space: nowrap;
   overflow: hidden;
@@ -173,7 +173,7 @@
 .minion-stop-btn {
   margin-left: auto;
   border: none;
-  background: var(--danger, #ef4444);
+  background: var(--danger);
   color: #fff;
   width: 16px;
   height: 16px;
@@ -204,7 +204,7 @@
 
 .minion-model-name {
   font-size: 10px;
-  color: var(--ink-soft, #6b7280);
+  color: var(--fg-faint);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -220,7 +220,7 @@
   height: 100%;
   padding: 20px;
   text-align: center;
-  color: var(--ink-soft, #6b7280);
+  color: var(--fg-faint);
 }
 
 .minion-cards-empty p {

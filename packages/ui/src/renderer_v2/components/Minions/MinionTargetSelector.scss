@@ -9,9 +9,9 @@
   -webkit-appearance: none;
   -moz-appearance: none;
   appearance: none;
-  border: 1px solid var(--border, #2a2f3a);
-  background: var(--surface-soft, #1e2235);
-  color: var(--ink-soft, #8892a4);
+  border: 1px solid var(--border);
+  background: var(--panel-bg-2);
+  color: var(--fg-muted);
   border-radius: 4px;
   padding: 2px 20px 2px 6px;
   font-size: 11px;
@@ -25,10 +25,10 @@
 }
 
 .minion-target-selector select:hover {
-  border-color: var(--accent, #3b82f6);
+  border-color: var(--accent);
 }
 
 .minion-target-selector select:focus {
-  border-color: var(--accent, #3b82f6);
-  box-shadow: 0 0 0 1px var(--accent, #3b82f6);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }

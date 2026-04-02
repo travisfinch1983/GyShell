@@ -16,8 +16,8 @@
   min-width: 180px;
   max-width: 300px;
   flex-shrink: 0;
-  border-right: 1px solid var(--border, #2a2f3a);
-  background: var(--bg, #0f1117);
+  border-right: 1px solid var(--border);
+  background: var(--app-bg);
   overflow: hidden;
   display: flex;
   flex-direction: column;

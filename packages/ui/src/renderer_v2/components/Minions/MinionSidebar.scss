@@ -21,27 +21,27 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg, #0f1117);
-  border-top: 1px solid var(--border, #2a2f3a);
-  border-bottom: 1px solid var(--border, #2a2f3a);
+  background: var(--app-bg);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
   transition: background-color 0.1s ease;
 }
 
 .minion-sidebar-divider:hover,
 .minion-sidebar-divider.active {
-  background: color-mix(in srgb, var(--accent, #3b82f6) 15%, var(--bg, #0f1117));
+  background: color-mix(in srgb, var(--accent) 15%, var(--app-bg));
 }
 
 .minion-divider-grip {
   width: 24px;
   height: 2px;
   border-radius: 1px;
-  background: var(--border-strong, #3d4455);
+  background: var(--border-strong);
 }
 
 .minion-sidebar-divider:hover .minion-divider-grip,
 .minion-sidebar-divider.active .minion-divider-grip {
-  background: var(--accent, #3b82f6);
+  background: var(--accent);
 }
 
 /* Feed panel */
@@ -50,7 +50,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--bg, #0f1117);
+  background: var(--app-bg);
 }
 
 .minion-sidebar-feed.collapsed {
@@ -74,18 +74,18 @@
   cursor: pointer;
   user-select: none;
   font-size: 10px;
-  border-top: 1px solid var(--border, #2a2f3a);
-  background: var(--bg, #0f1117);
+  border-top: 1px solid var(--border);
+  background: var(--app-bg);
   flex-shrink: 0;
 }
 
 .minion-feed-toggle:hover {
-  background: var(--surface-soft, #1e2235);
+  background: var(--panel-bg-2);
 }
 
 .minion-feed-toggle-chevron {
   font-size: 9px;
-  color: var(--ink-soft, #6b7280);
+  color: var(--fg-faint);
   width: 10px;
 }
 
@@ -93,15 +93,15 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--ink-soft, #8892a4);
+  color: var(--fg-muted);
 }
 
 .minion-feed-toggle-count {
   margin-left: auto;
   font-size: 9px;
   font-weight: 600;
-  color: var(--ink-soft, #6b7280);
-  background: var(--surface-muted, #1e2230);
+  color: var(--fg-faint);
+  background: var(--control-bg);
   border-radius: 6px;
   padding: 0 4px;
   min-width: 0;

@@ -3,8 +3,8 @@
 .mcb {
   margin: 6px 12px;
   border-radius: 8px;
-  border: 1px solid var(--border, #2a2f3a);
-  background: var(--surface, #1a1d2e);
+  border: 1px solid var(--border);
+  background: var(--panel-bg);
   overflow: hidden;
 }
 
@@ -13,7 +13,7 @@
 }
 
 .mcb.mcb-model-to-model {
-  border-left: 3px solid var(--ink-soft, #6b7280);
+  border-left: 3px solid var(--fg-faint);
   opacity: 0.85;
 }
 
@@ -23,8 +23,8 @@
   align-items: center;
   gap: 5px;
   padding: 6px 10px;
-  background: var(--surface-muted, #1e2230);
-  border-bottom: 1px solid var(--border, #2a2f3a);
+  background: var(--control-bg);
+  border-bottom: 1px solid var(--border);
   font-size: 11px;
 }
 
@@ -33,7 +33,7 @@
 }
 
 .mcb-arrow {
-  color: var(--ink-soft, #6b7280);
+  color: var(--fg-faint);
   font-size: 10px;
 }
 
@@ -52,7 +52,7 @@
 
 .mcb-time {
   margin-left: auto;
-  color: var(--ink-soft, #555);
+  color: var(--fg-faint);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
@@ -62,7 +62,7 @@
   padding: 8px 10px;
   font-size: 13px;
   line-height: 1.45;
-  color: var(--ink, #e1e4ea);
+  color: var(--fg);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -72,7 +72,7 @@
   padding: 8px 10px 4px;
   font-size: 12px;
   line-height: 1.4;
-  color: var(--ink, #e1e4ea);
+  color: var(--fg);
 }
 
 /* Detail Toggle */
@@ -84,11 +84,11 @@
   cursor: pointer;
   user-select: none;
   font-size: 10px;
-  color: var(--accent, #3b82f6);
+  color: var(--accent);
 }
 
 .mcb-detail-toggle:hover {
-  color: var(--accent-strong, #2563eb);
+  color: var(--accent-2);
 }
 
 .mcb-detail-chevron {
@@ -105,9 +105,9 @@
   padding: 8px 10px;
   font-size: 12px;
   line-height: 1.4;
-  color: var(--ink-soft, #8892a4);
+  color: var(--fg-muted);
   background: var(--surface-soft, #161928);
-  border-top: 1px solid var(--border, #2a2f3a);
+  border-top: 1px solid var(--border);
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 300px;
@@ -122,9 +122,9 @@
   margin: 4px 12px;
   padding: 3px 8px;
   font-size: 11px;
-  color: var(--ink-soft, #6b7280);
+  color: var(--fg-faint);
   border-radius: 4px;
-  background: var(--surface-muted, #1e2230);
+  background: var(--control-bg);
 }
 
 .mcb-notice-icon {
@@ -139,6 +139,6 @@
 
 .mcb-notice-time {
   font-size: 9px;
-  color: var(--ink-soft, #555);
+  color: var(--fg-faint);
   flex-shrink: 0;
 }

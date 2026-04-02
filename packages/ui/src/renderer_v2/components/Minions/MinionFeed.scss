@@ -17,7 +17,7 @@
 
 .minion-feed-empty {
   padding: 12px;
-  color: var(--ink-soft, #6b7280);
+  color: var(--fg-faint);
   font-size: 11px;
   text-align: center;
 }
@@ -30,9 +30,9 @@
 }
 
 .feed-filter-btn {
-  border: 1px solid var(--border, #2a2f3a);
+  border: 1px solid var(--border);
   background: transparent;
-  color: var(--ink-soft, #6b7280);
+  color: var(--fg-faint);
   border-radius: 3px;
   padding: 1px 5px;
   font-size: 9px;
@@ -41,12 +41,12 @@
 }
 
 .feed-filter-btn:hover {
-  background: var(--surface-soft, #1e2235);
+  background: var(--panel-bg-2);
 }
 
 .feed-filter-btn.active {
-  background: var(--surface-muted, #252a3a);
-  border-color: var(--accent, #3b82f6);
+  background: var(--control-bg-active);
+  border-color: var(--accent);
 }
 
 .feed-msg {
@@ -55,13 +55,13 @@
   gap: 4px;
   padding: 2px 10px;
   font-size: 10px;
-  color: var(--ink-soft, #8892a4);
+  color: var(--fg-muted);
   line-height: 1.4;
   border-left: 2px solid transparent;
 }
 
 .feed-msg:hover {
-  background: var(--surface-soft, #1e2235);
+  background: var(--panel-bg-2);
 }
 
 .feed-msg.system {
@@ -69,7 +69,7 @@
 }
 
 .feed-msg.forward {
-  color: var(--warning, #f59e0b);
+  color: #f59e0b;
 }
 
 .feed-msg-icon {
@@ -89,6 +89,6 @@
 .feed-msg-time {
   flex-shrink: 0;
   font-size: 9px;
-  color: var(--ink-soft, #555);
+  color: var(--fg-faint);
   font-variant-numeric: tabular-nums;
 }

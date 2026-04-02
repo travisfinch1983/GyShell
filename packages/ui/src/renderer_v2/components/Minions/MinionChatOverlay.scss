@@ -1,8 +1,8 @@
 /* MinionChatOverlay — Specialist messages in the chat area */
 
 .minion-chat-overlay {
-  border-top: 1px solid var(--border, #2a2f3a);
-  background: color-mix(in srgb, var(--surface, #1a1d2e) 95%, var(--accent, #3b82f6) 5%);
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel-bg) 95%, var(--accent) 5%);
   max-height: 40vh;
   overflow-y: auto;
   padding-bottom: 8px;
@@ -17,7 +17,7 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--ink-soft, #8892a4);
+  color: var(--fg-muted);
   position: sticky;
   top: 0;
   background: inherit;
@@ -28,7 +28,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--accent, #3b82f6);
+  background: var(--accent);
   animation: minion-overlay-pulse 2s ease-in-out infinite;
 }
 
