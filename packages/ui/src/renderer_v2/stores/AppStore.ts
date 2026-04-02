@@ -2714,9 +2714,9 @@ export class AppStore {
           console.log(`[AppStore] ══ INTERCEPTED ══ Direct to specialist: ${minionStore.selectedTarget}`)
           minionRouter.sendToSpecialist(minionStore.selectedTarget, text)
         } else {
-          // No specialist selected — route through orchestrator
-          console.log(`[AppStore] ══ INTERCEPTED ══ Routing via orchestrator (auto-classify)`)
-          minionRouter.routeViaOrchestrator(text)
+          // No specialist selected — route through chat (chat handles + dispatches)
+          console.log(`[AppStore] ══ INTERCEPTED ══ Routing via chat model`)
+          minionRouter.routeViaChat(text)
         }
         // Ensure session is NOT marked as busy (prevents red stop button)
         const targetId = sessionId || this.chat.sessions?.[0]?.id

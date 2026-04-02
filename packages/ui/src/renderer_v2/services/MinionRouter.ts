@@ -1,8 +1,11 @@
 /**
- * MinionRouter — Routes messages directly to specialist model endpoints.
+ * MinionRouter — Chat-first routing with specialist dispatch.
  *
- * Calls KoboldCpp/vLLM endpoints via ProxLab proxy slots.
- * No Claude Code pipeline — clean context, fast responses.
+ * All unaddressed messages go to the chat model first. Chat acts as both
+ * conversationalist and router — it responds to the user naturally, and
+ * can optionally dispatch work to specialists via <route> tags.
+ *
+ * Direct specialist routing still works via card selection in the sidebar.
  */
 
 import type { MinionStore, MinionRole } from '../stores/MinionStore'
@@ -83,7 +86,6 @@ export function rehydrateMinionMessages() {
     const appStore = (window as any).__appStore
     if (!appStore?.chat) return
 
-    // First, inject all messages via handleUiUpdate (appends to end)
     for (const msg of stored) {
       const session = appStore.chat.sessions?.find((s: any) => s.id === msg.sessionId)
       if (!session) continue
@@ -111,20 +113,15 @@ export function rehydrateMinionMessages() {
       })
     }
 
-    // Now sort all messageIds by timestamp for each session that got minion messages
     const sessionIds = new Set(stored.map(m => m.sessionId).filter(Boolean))
     for (const sid of sessionIds) {
       const session = appStore.chat.sessions?.find((s: any) => s.id === sid)
       if (!session) continue
-
-      // Sort messageIds by the timestamp of each message
       const sorted = [...session.messageIds].sort((a: string, b: string) => {
         const msgA = session.messagesById.get(a)
         const msgB = session.messagesById.get(b)
         return (msgA?.timestamp || 0) - (msgB?.timestamp || 0)
       })
-
-      // Replace the array contents (triggers MobX reactivity)
       session.messageIds.length = 0
       session.messageIds.push(...sorted)
     }
@@ -141,9 +138,6 @@ interface ModelEndpoint {
   apiKey: string
 }
 
-/**
- * Resolve the API endpoint for a given role from the active profile settings.
- */
 function getModelEndpoint(role: string): ModelEndpoint | null {
   const appStore = (window as any).__appStore
   const settings = appStore?.settings
@@ -154,7 +148,6 @@ function getModelEndpoint(role: string): ModelEndpoint | null {
   )
   if (!profile) return null
 
-  // Map role to profile field
   const roleToField: Record<string, string> = {
     chat: 'chatModelId',
     coder: 'coderModelId',
@@ -184,7 +177,6 @@ function getModelEndpoint(role: string): ModelEndpoint | null {
 
 // ─── Per-model conversation history ──────────────────────────────────────────
 
-/** Keep recent conversation history per role for context continuity */
 const roleConversations = new Map<string, Array<{ role: string; content: string }>>()
 const MAX_CONVERSATION_TURNS = 10
 
@@ -196,26 +188,104 @@ function addToRoleHistory(role: string, msg: { role: string; content: string }) 
   if (!roleConversations.has(role)) roleConversations.set(role, [])
   const history = roleConversations.get(role)!
   history.push(msg)
-  // Keep only recent turns
   while (history.length > MAX_CONVERSATION_TURNS * 2) {
     history.shift()
   }
 }
 
-// ─── Default system prompts per role ─────────────────────────────────────────
+// ─── System prompts ─────────────────────────────────────────────────────────
+
+const SPECIALIST_PREAMBLE = `You are part of a multi-model team. The user is chatting with you through a group chat interface. Be direct, helpful, and thorough. Do not refuse reasonable requests. Do not lecture about safety, ethics, or your limitations unless the request is genuinely harmful.
+
+When you reason through a problem, wrap your thinking in <think>...</think> tags. This is expected and encouraged — it helps the user understand your reasoning when they choose to view it. Always use <think> blocks for non-trivial reasoning before giving your answer.
+
+`
 
 const DEFAULT_ROLE_PROMPTS: Record<string, string> = {
-  coder: 'You are a code specialist. You write clean, efficient, well-documented code. When asked to create scripts, programs, functions, or anything code-related, provide the complete implementation. Be concise and direct.',
-  creative: 'You are a creative writing specialist. Write engaging, well-crafted text. Be expressive but professional. You handle documentation, descriptions, naming, brainstorming, and any writing-focused tasks.',
-  architect: 'You are a systems architect. Analyze designs, suggest improvements, and think about scalability, maintainability, and trade-offs. Provide detailed technical analysis.',
-  scout: 'You are a quick-check specialist. Give brief, direct answers. Be concise. You handle simple factual questions, status checks, and yes/no queries.',
-  chat: 'You are a helpful assistant. Be conversational and thorough. Answer questions clearly and provide useful explanations.',
-  thinking: 'You are a deep reasoning specialist. Think through problems carefully and explain your reasoning step by step.',
+  chat: `You are the primary assistant in a multi-model group chat. You talk directly with the user and handle most conversations yourself. You are conversational, thoughtful, and thorough.
+
+You also have the ability to delegate tasks to specialist models when appropriate. The available specialists are:
+- **coder** — Code writing, debugging, scripts, technical implementation, CLI commands, configs
+- **creative** — Creative writing, documentation, descriptions, naming, brainstorming, prose
+- **architect** — System design, architecture analysis, infrastructure planning, trade-off evaluation
+- **scout** — Quick factual lookups, simple yes/no answers, brief status checks
+
+ROUTING RULES:
+- Handle most messages yourself. You are the default — casual chat, questions, explanations, follow-ups.
+- Only route to a specialist when the task clearly falls into their domain AND would benefit from their focused expertise.
+- If you are already discussing something with the user, CONTINUE the conversation yourself. Do not switch to a specialist mid-conversation unless the user explicitly asks for one or the task clearly requires it.
+- When routing, respond to the user first with a brief natural acknowledgment, then include a route tag at the END of your message.
+- The route tag format is: <route>{"role":"coder","message":"the task to send"}</route>
+- The "message" field should be a clear, self-contained description of the task for the specialist. Include relevant context from the conversation so the specialist can work independently.
+- You can continue chatting with the user while the specialist works — their response will appear separately.
+- NEVER route messages that are conversational, follow-ups to your own messages, or questions about how this system works.
+
+When you reason through a problem, wrap your thinking in <think>...</think> tags. This is expected and encouraged.
+
+Example of routing:
+User: "Can you write me a Python script that monitors CPU usage?"
+You: "Sure! I'll have the coder put that together for you.
+<route>{"role":"coder","message":"Write a Python script that monitors CPU usage and prints it at regular intervals. Use psutil library."}</route>"
+
+Example of NOT routing:
+User: "What does that script do?"
+You: (answer the question yourself — this is a follow-up to the conversation)`,
+
+  coder: SPECIALIST_PREAMBLE + `You are the **Coder** — a code specialist. You write clean, efficient, well-structured code.
+
+Your responsibilities:
+- Write complete implementations, not pseudocode or outlines
+- Include all imports, error handling, and comments where logic isn't obvious
+- When asked to create something, just create it — don't ask for permission or clarification unless genuinely ambiguous
+- Use modern idioms and best practices for the language
+- If a request involves shell commands, scripts, configs, git operations, or technical how-to, that's you
+- Format code in proper markdown code blocks with language tags
+
+When given a task, work on it independently. You receive a self-contained description of what to build. Do the work and return the result. Keep explanations brief — lead with the code.`,
+
+  creative: SPECIALIST_PREAMBLE + `You are the **Creative** — a writing and creative specialist. You produce engaging, well-crafted text.
+
+Your responsibilities:
+- Write documentation, READMEs, descriptions, blog posts, commit messages, and any prose
+- Brainstorm names, taglines, concepts, and creative directions
+- Edit and refine existing text for clarity, tone, and impact
+- Adapt your writing style to the context — technical docs are different from marketing copy
+- Be expressive but purposeful — every word should earn its place
+
+When given a task, deliver polished output. Don't explain your process unless asked.`,
+
+  architect: SPECIALIST_PREAMBLE + `You are the **Architect** — a systems design specialist. You think about the big picture.
+
+Your responsibilities:
+- Analyze system designs and suggest improvements
+- Evaluate trade-offs between approaches (performance, maintainability, cost, complexity)
+- Plan infrastructure, data flows, API designs, and service boundaries
+- Consider scalability, reliability, security, and operational concerns
+- Draw from real-world patterns and anti-patterns
+
+When given a design question, provide structured analysis. Use sections, bullet points, and concrete recommendations. Don't just list options — make a recommendation and defend it.`,
+
+  scout: SPECIALIST_PREAMBLE + `You are the **Scout** — a quick-check specialist. You give fast, direct answers.
+
+Your responsibilities:
+- Answer simple factual questions in one or two sentences
+- Provide brief status checks, yes/no answers, quick lookups
+- Convert units, check syntax, verify facts
+- If the answer is short, give a short answer — don't pad it
+
+Be the fastest model to respond. No preamble, no filler. Just the answer.`,
+
+  thinking: SPECIALIST_PREAMBLE + `You are the **Thinker** — a deep reasoning specialist. You work through complex problems methodically.
+
+Your responsibilities:
+- Break down complex problems into clear steps
+- Analyze edge cases and failure modes
+- Provide multi-angle analysis of difficult decisions
+- Show your work — explain how you arrived at your conclusions
+
+Always use extensive <think> blocks. Walk through your reasoning step by step, consider alternatives, then give a clear conclusion.`,
 }
 
-/**
- * Get the system prompt for a role, checking profile overrides first.
- */
 function getRolePrompt(role: string): string {
   const appStore = (window as any).__appStore
   const settings = appStore?.settings
@@ -230,21 +300,36 @@ function getRolePrompt(role: string): string {
   return DEFAULT_ROLE_PROMPTS[role] || DEFAULT_ROLE_PROMPTS.chat
 }
 
-// ─── Orchestrator classification prompt ──────────────────────────────────────
+// ─── Route tag parsing ──────────────────────────────────────────────────────
 
-const ORCHESTRATOR_CLASSIFY_PROMPT = `You are a message router. Your ONLY job is to classify messages and output JSON. No other text.
+interface RouteTag {
+  role: string
+  message: string
+}
 
-RULES:
-- "coder" — ANY request involving code, scripts, programming, commands, functions, debugging, git, APIs, configs, technical how-to. If they say "write", "create", "make", "build", "fix" followed by anything technical, it's coder.
-- "creative" — Writing prose, documentation, descriptions, naming things, brainstorming ideas, READMEs, commit messages, creative text.
-- "architect" — System design, architecture decisions, infrastructure planning, comparing approaches, scalability analysis.
-- "scout" — Quick factual lookups, simple questions with one-line answers, status checks, "what is X", "how many", yes/no.
-- "chat" — ONLY use this for casual conversation, greetings, or messages that truly don't fit ANY specialist.
+/**
+ * Extract a <route> tag from a chat model response.
+ * Returns the route info and the cleaned message (tag stripped).
+ */
+function extractRouteTag(text: string): { route: RouteTag | null; cleanText: string } {
+  const routeMatch = text.match(/<route>\s*(\{[\s\S]*?\})\s*<\/route>/)
+  if (!routeMatch) return { route: null, cleanText: text }
 
-IMPORTANT: Prefer specialists over chat. Most technical questions should go to coder, not chat.
+  try {
+    const parsed = JSON.parse(routeMatch[1])
+    if (parsed.role && parsed.message) {
+      const cleanText = text.replace(/<route>[\s\S]*?<\/route>\s*/g, '').trim()
+      return {
+        route: { role: parsed.role, message: parsed.message },
+        cleanText,
+      }
+    }
+  } catch {
+    console.warn('[MinionRouter] Failed to parse route tag:', routeMatch[1])
+  }
 
-Output ONLY this JSON, nothing else:
-{"role":"coder","reason":"brief reason"}`
+  return { route: null, cleanText: text }
+}
 
 // ─── MinionRouter class ─────────────────────────────────────────────────────
 
@@ -277,18 +362,24 @@ export class MinionRouter {
     }
   }
 
-  /**
-   * Check if a role has an active request.
-   */
   isRequestActive(role: string): boolean {
     return this.abortControllers.has(role)
   }
 
   /**
    * Send a message directly to a specialist model's API endpoint.
-   * Clean context — no Claude Code pipeline.
+   * Used for: card-selected direct routing AND chat-dispatched specialist tasks.
+   *
+   * @param role - The specialist role to send to
+   * @param message - The message/task for the specialist
+   * @param options.showUserMessage - Whether to inject a user message in chat (default: true)
+   * @param options.dispatchedBy - If dispatched by chat model, show as forwarded
    */
-  async sendToSpecialist(role: string, message: string): Promise<void> {
+  async sendToSpecialist(
+    role: string,
+    message: string,
+    options?: { showUserMessage?: boolean; dispatchedBy?: string }
+  ): Promise<void> {
     const minion = this.store.getMinionByRole(role as MinionRole)
     if (!minion) {
       console.error(`[MinionRouter] No minion for role: ${role}`)
@@ -302,19 +393,34 @@ export class MinionRouter {
       return
     }
 
-    // Add routing notice to activity feed
-    this.store.addMessage({
-      from: 'user',
-      to: minion.friendlyName,
-      type: 'chat',
-      content: message,
-    })
+    const showUserMsg = options?.showUserMessage !== false
+    const dispatchedBy = options?.dispatchedBy
 
-    // Inject user message into main chat
-    injectChatMessage('user', message, {
-      subToolTitle: `→ ${minion.friendlyName}`,
-      minionTo: minion.friendlyName,
-    })
+    // Add routing notice to activity feed
+    if (dispatchedBy) {
+      this.store.addMessage({
+        from: dispatchedBy,
+        to: minion.friendlyName,
+        type: 'forward',
+        content: `Dispatched to ${minion.friendlyName}`,
+        metadata: { role, reason: 'chat-routed' },
+      })
+    } else {
+      this.store.addMessage({
+        from: 'user',
+        to: minion.friendlyName,
+        type: 'chat',
+        content: message,
+      })
+    }
+
+    // Inject user message into main chat (only for direct sends, not chat-dispatched)
+    if (showUserMsg) {
+      injectChatMessage('user', message, {
+        subToolTitle: `→ ${minion.friendlyName}`,
+        minionTo: minion.friendlyName,
+      })
+    }
 
     // Update card status
     this.store.updateMinionStatus(minion.id, 'thinking')
@@ -328,20 +434,21 @@ export class MinionRouter {
       { role: 'user', content: message },
     ]
 
-    // Conversation tracer — log what we're actually sending
+    // Conversation tracer
     const totalTokensEstimate = messages.reduce((sum, m) => sum + Math.ceil(m.content.length / 4), 0)
     console.log(`[MinionRouter] ═══ TRACE ═══`)
     console.log(`[MinionRouter] Target: ${minion.friendlyName} (${role})`)
     console.log(`[MinionRouter] Endpoint: ${endpoint.baseUrl}/chat/completions`)
     console.log(`[MinionRouter] Model: ${endpoint.modelId}`)
     console.log(`[MinionRouter] Messages: ${messages.length} (est ~${totalTokensEstimate} tokens)`)
+    if (dispatchedBy) console.log(`[MinionRouter] Dispatched by: ${dispatchedBy}`)
     messages.forEach((m, i) => {
       const preview = m.content.length > 100 ? m.content.substring(0, 100) + '...' : m.content
       console.log(`[MinionRouter]   [${i}] ${m.role}: ${preview} (${m.content.length} chars)`)
     })
     console.log(`[MinionRouter] ═════════════`)
 
-    // Set up abort controller for this role
+    // Set up abort controller
     this.abortControllers.get(role)?.abort()
     const abortController = new AbortController()
     this.abortControllers.set(role, abortController)
@@ -377,17 +484,17 @@ export class MinionRouter {
       const choice = data.choices?.[0]
       const rawResponse = choice?.message?.content || 'No response'
 
-      // Parse response into structured blocks (thinking, summary, body)
+      // Parse response into structured blocks
       const parsed = parseMinionResponse(rawResponse)
 
-      // Update conversation history with clean body (no thinking)
+      // Update conversation history
       addToRoleHistory(role, { role: 'user', content: message })
       addToRoleHistory(role, { role: 'assistant', content: parsed.body })
 
       // Update card status
       this.store.updateMinionStatus(minion.id, 'idle')
 
-      // Add to activity feed (summary only)
+      // Add to activity feed
       this.store.addMessage({
         from: minion.friendlyName,
         to: 'user',
@@ -396,7 +503,7 @@ export class MinionRouter {
         metadata: { status: 'completed' },
       })
 
-      // Inject response into main chat with structured metadata
+      // Inject response into main chat
       injectChatMessage('assistant', `**[${minion.friendlyName} ✓]**\n\n${parsed.body}`, {
         modelName: minion.friendlyName,
         minionParsed: true,
@@ -421,25 +528,72 @@ export class MinionRouter {
   }
 
   /**
-   * Route a message through the orchestrator (9B).
-   * The orchestrator classifies the message and decides which specialist
-   * or the chat model should handle it.
+   * Route a message through the chat model.
+   *
+   * Chat handles the message itself AND decides whether to dispatch to a specialist.
+   * If chat includes a <route> tag, the specialist task is dispatched in the background
+   * while chat's response is shown to the user immediately.
    */
-  async routeViaOrchestrator(message: string): Promise<void> {
-    const orchestrator = this.store.getMinionByRole('orchestrator')
-    const endpoint = getModelEndpoint('orchestrator')
+  async routeViaChat(message: string): Promise<void> {
+    const chatMinion = this.store.getMinionByRole('chat')
+    const endpoint = getModelEndpoint('chat')
 
     if (!endpoint) {
-      console.warn('[MinionRouter] No orchestrator endpoint, falling back to chat')
-      await this.sendToSpecialist('chat', message)
+      console.warn('[MinionRouter] No chat endpoint configured')
       return
     }
 
-    // Update orchestrator card
-    if (orchestrator) this.store.updateMinionStatus(orchestrator.id, 'thinking')
+    // Add to activity feed
+    this.store.addMessage({
+      from: 'user',
+      to: chatMinion?.friendlyName || 'Chat',
+      type: 'chat',
+      content: message,
+    })
 
-    console.log(`[MinionRouter] ═══ ORCHESTRATOR CLASSIFY ═══`)
-    console.log(`[MinionRouter] Message: ${message.substring(0, 80)}...`)
+    // Inject user message into main chat
+    injectChatMessage('user', message, {
+      subToolTitle: `→ Chat`,
+      minionTo: 'chat',
+    })
+
+    // Update card status
+    if (chatMinion) this.store.updateMinionStatus(chatMinion.id, 'thinking')
+
+    // Build context — include recent activity summaries so chat knows what's been happening
+    const systemPrompt = getRolePrompt('chat')
+    const history = getRoleHistory('chat')
+
+    // Get recent activity summaries for context awareness
+    const recentActivity = this.store.getActivitySummariesSince(Date.now() - 5 * 60 * 1000) // last 5 min
+    let contextBlock = ''
+    if (recentActivity.length > 0) {
+      contextBlock = '\n\n[Recent activity in the group chat]\n' + recentActivity.slice(-10).join('\n') + '\n'
+    }
+
+    const messages = [
+      { role: 'system', content: systemPrompt + contextBlock },
+      ...history,
+      { role: 'user', content: message },
+    ]
+
+    // Conversation tracer
+    const totalTokensEstimate = messages.reduce((sum, m) => sum + Math.ceil(m.content.length / 4), 0)
+    console.log(`[MinionRouter] ═══ CHAT ROUTE ═══`)
+    console.log(`[MinionRouter] Endpoint: ${endpoint.baseUrl}/chat/completions`)
+    console.log(`[MinionRouter] Model: ${endpoint.modelId}`)
+    console.log(`[MinionRouter] Messages: ${messages.length} (est ~${totalTokensEstimate} tokens)`)
+    console.log(`[MinionRouter] Activity context: ${recentActivity.length} entries`)
+    messages.forEach((m, i) => {
+      const preview = m.content.length > 150 ? m.content.substring(0, 150) + '...' : m.content
+      console.log(`[MinionRouter]   [${i}] ${m.role}: ${preview} (${m.content.length} chars)`)
+    })
+    console.log(`[MinionRouter] ══════════════════`)
+
+    // Set up abort controller
+    this.abortControllers.get('chat')?.abort()
+    const abortController = new AbortController()
+    this.abortControllers.set('chat', abortController)
 
     try {
       const resp = await fetch(`${endpoint.baseUrl}/chat/completions`, {
@@ -450,68 +604,93 @@ export class MinionRouter {
         },
         body: JSON.stringify({
           model: endpoint.modelId,
-          messages: [
-            { role: 'system', content: ORCHESTRATOR_CLASSIFY_PROMPT },
-            { role: 'user', content: message },
-          ],
-          max_tokens: 100,
-          temperature: 0.1,
+          messages,
+          max_tokens: 4096,
+          temperature: 0.7,
+          stream: false,
         }),
+        signal: abortController.signal,
       })
 
       if (!resp.ok) {
-        console.warn(`[MinionRouter] Orchestrator classify failed (${resp.status}), falling back to chat`)
-        if (orchestrator) this.store.updateMinionStatus(orchestrator.id, 'idle')
-        await this.sendToSpecialist('chat', message)
+        const err = await resp.text().catch(() => 'Unknown error')
+        console.error(`[MinionRouter] Chat API error:`, err)
+        if (chatMinion) this.store.updateMinionStatus(chatMinion.id, 'error', `API ${resp.status}`)
+        injectChatMessage('assistant', `**[Chat ✗ Error]**\n\nAPI error ${resp.status}: ${err.substring(0, 200)}`, {
+          modelName: chatMinion?.friendlyName || 'Chat',
+        })
         return
       }
 
       const data = await resp.json()
-      let responseText = data.choices?.[0]?.message?.content || ''
+      const choice = data.choices?.[0]
+      const rawResponse = choice?.message?.content || 'No response'
 
-      // Strip think blocks
-      responseText = responseText.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim()
+      // Parse response — extract thinking, summary, body
+      const parsed = parseMinionResponse(rawResponse)
 
-      // Parse the JSON classification
-      let targetRole = 'chat'
-      let reason = 'default'
-      try {
-        const jsonMatch = responseText.match(/\{[\s\S]*\}/)
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0])
-          targetRole = parsed.role || 'chat'
-          reason = parsed.reason || 'classified'
-        }
-      } catch {
-        console.warn(`[MinionRouter] Failed to parse classification: ${responseText}`)
-      }
+      // Check for route tags in the clean body
+      const { route, cleanText } = extractRouteTag(parsed.body)
 
-      console.log(`[MinionRouter] Classification: ${targetRole} (${reason})`)
+      // Update conversation history with the clean text (no route tags)
+      addToRoleHistory('chat', { role: 'user', content: message })
+      addToRoleHistory('chat', { role: 'assistant', content: cleanText })
 
-      // Update orchestrator card back to idle
-      if (orchestrator) this.store.updateMinionStatus(orchestrator.id, 'idle')
+      // Update card status
+      if (chatMinion) this.store.updateMinionStatus(chatMinion.id, 'idle')
 
-      // Add routing notice to activity feed
+      // Add to activity feed
+      const chatName = chatMinion?.friendlyName || 'Chat'
       this.store.addMessage({
-        from: 'orchestrator',
-        to: targetRole,
-        type: 'forward',
-        content: `Routed to ${targetRole} — ${reason}`,
-        metadata: { role: targetRole, reason },
+        from: chatName,
+        to: 'user',
+        type: 'summary',
+        content: parsed.summary,
+        metadata: { status: 'completed', hasRoute: !!route },
       })
 
-      // Route to the classified specialist
-      await this.sendToSpecialist(targetRole, message)
+      // Inject chat's response into main chat
+      injectChatMessage('assistant', `**[${chatName} ✓]**\n\n${cleanText}`, {
+        modelName: chatName,
+        minionParsed: true,
+        minionSummary: parsed.summary,
+        minionThinking: parsed.thinking,
+        minionTo: 'user',
+      })
+
+      // If chat dispatched to a specialist, fire that off in the background
+      if (route) {
+        console.log(`[MinionRouter] Chat dispatched to ${route.role}: ${route.message.substring(0, 80)}...`)
+        // Don't await — specialist works in background while user sees chat's response
+        this.sendToSpecialist(route.role, route.message, {
+          showUserMessage: false,
+          dispatchedBy: chatName,
+        })
+      }
 
     } catch (err: any) {
-      console.error(`[MinionRouter] Orchestrator error:`, err)
-      if (orchestrator) this.store.updateMinionStatus(orchestrator.id, 'error', err.message)
-      // Fall back to chat on error
-      await this.sendToSpecialist('chat', message)
+      if (err.name === 'AbortError') {
+        console.log(`[MinionRouter] Chat request cancelled`)
+      } else {
+        console.error(`[MinionRouter] Chat fetch error:`, err)
+        if (chatMinion) this.store.updateMinionStatus(chatMinion.id, 'error', err.message)
+        injectChatMessage('assistant', `**[Chat ✗ Error]**\n\n${err.message}`, {
+          modelName: chatMinion?.friendlyName || 'Chat',
+        })
+      }
+    } finally {
+      this.abortControllers.delete('chat')
     }
   }
 
+  /**
+   * @deprecated Use routeViaChat instead. Kept for backwards compatibility.
+   */
+  async routeViaOrchestrator(message: string): Promise<void> {
+    return this.routeViaChat(message)
+  }
+
   dispose(): void {
-    // No polling needed anymore — direct API calls
+    // No polling needed — direct API calls
   }
 }
