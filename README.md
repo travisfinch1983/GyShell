@@ -1,168 +1,101 @@
-# <img src="./demo_imgs/icon.png" width="40" height="40" align="center" style="margin-right: 10px;"> GyShell
+# GyShell — Multi-Agent Group Chat Fork
 
-> **The AI-Native Terminal that thinks, executes, and collaborates with you.**
-
-[![License](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)](#platforms)
-[![Shell](https://img.shields.io/badge/Shell-Zsh%20%7C%20Bash%20%7C%20PowerShell-orange)](#key-capabilities)
-
-English README | [中文 README](./README.zh-CN.md)  
-Latest release notes: [`changelogs/v1.3.0.md`](./changelogs/v1.3.0.md)
-
-If you have any suggestions or questions, please feel free to submit them in [GitHub Discussions](https://github.com/MrOrangeJJ/GyShell/discussions).
-
-Usage guides:
-[`docs/mobile-web-usage.md`](./docs/mobile-web-usage.md) ·
-[`docs/tui-usage.md`](./docs/tui-usage.md) ·
-[`docs/gybackend-usage.md`](./docs/gybackend-usage.md)
-
-> [!TIP]
-> **Recommended Models**:
->
-> - **Cost-Performance**: Thinking-GLM 5 + Action/Global-Minimax2.5
-> - **Best Performance**: Thinking-Gemini 3.1 Pro + Action/Global-Gemini 3 Flash
-> - **Local (Mac Studio)**: Qwen3.5 / Minimax2.5
-
-> [!WARNING]
-> **Active Development**: GyShell evolves quickly. If a version introduces history compatibility breaks, it will be called out explicitly in release notes.
-
-<p align="center">
-  <img src="./demo_imgs/demo.png" width="100%">
-</p>
-<p align="center">
-  <video controls width="100%" src="https://github.com/user-attachments/assets/f9daf884-bda0-4a58-8a6d-934db0eddeb5"></video>
-</p>
+> Fork of [GyShell v1.3.0](https://github.com/MrOrangeJJ/GyShell) by TUOTUO, adapted from an Electron desktop AI terminal into a **web-served multi-agent group chat UI** with direct model routing, a collapsible sidebar, live activity feed, and orchestrator auto-classification.
 
 ---
 
-## Why GyShell Is Different
+## What This Fork Changes
 
-Most AI terminal tools either generate one-shot scripts, or run in isolated sandboxes detached from real shell workflows.
+GyShell upstream is a full-featured AI-native terminal app (Electron + TUI + mobile-web). This fork repurposes the web rendering layer into a self-hosted multi-model chat workspace where multiple LLM specialists (coder, creative, architect, chat, etc.) can be addressed directly or auto-routed through an orchestrator.
 
-GyShell is built for **persistent execution in your real terminal runtime**:
+### Key Differences from Upstream
 
-- **Persistent execution loop**: observe output -> reason -> continue.
-- **Human-in-the-loop by design**: intervene anytime without breaking flow.
-- **Multi-tab orchestration**: compile, inspect logs, and run fixes in parallel tabs.
-- **Workspace persistence**: terminal tabs and panel layout can survive restarts and restore quickly.
-- **Detachable multi-window workspace**: peel panels into sub-windows and move tabs or whole panels across windows.
-- **Adaptive panel tab display**: keep full tab strips or switch to a compact selector for narrow panel headers.
-- **Integrated file management**: browse, edit, copy, and transfer files across local and SSH sessions without leaving the workspace.
-- **Live resource visibility**: inspect CPU, memory, disks, network, processes, sockets, and GPU from local or SSH sessions.
-- **OpenClawd-style remote conversation control**: keep the runtime core on your own computer and steer it from anywhere through chat.
-- **Built-in mobile-web delivery**: desktop can publish the mobile-web companion directly over your LAN with copyable access links.
-- **Cross-surface runtime model**: desktop, TUI, and mobile-web share one gateway semantics.
-- **Profile lock safety**: busy sessions pin active model profile for consistency.
-- **Long-horizon context quality**: memory.md + compaction summary pipeline keeps long sessions useful.
-- **Tooling-native workflow**: skills, MCP servers, and built-in tools are runtime primitives.
+| Area | Upstream GyShell 1.3.0 | This Fork |
+|------|------------------------|-----------|
+| **Delivery** | Electron desktop app | Web-served via Express (no Electron required) |
+| **Model routing** | Single profile with role slots (Global, Thinking, Action, Compaction) | Multi-specialist routing: direct card selection or orchestrator auto-classification |
+| **Model API calls** | Routed through internal Claude Code pipeline | Direct HTTP fetch to model endpoints (KoboldCpp, vLLM, OpenAI-compatible) via ProxLab proxy |
+| **Sidebar** | None | Collapsible model status cards + live activity feed with role icons |
+| **Chat messages** | Standard assistant/user | Color-coded by role, tinted backgrounds, role name headers, timestamps |
+| **Message persistence** | Session-based | localStorage persistence with cross-refresh rehydration |
+| **Orchestrator** | Built-in model profile routing | 9B classifier auto-routes to specialists based on message content |
+| **Edit/Resend** | Standard chat rollback | Inline edit and resend for specialist messages |
+| **Activity feed** | None | Real-time inter-agent message log with role filters |
 
-### At a Glance
+### New Components
 
-- **For shipping work**: not just planning, but iterative execution and correction.
-- **For long-running tasks**: preserves session continuity and state across steps.
-- **For real infrastructure**: shell, SSH, forwarding, file management, and multi-tab interactive terminal control.
-- **For multi-device flow**: desktop + TUI + mobile-web with shared gateway semantics.
-- **For multimodal workflows**: text and image inputs can be combined in one execution turn.
+- **`MinionSidebar`** — Collapsible sidebar with resizable cards/feed panels, draggable divider
+- **`MinionCards`** — Model status cards with live status dots, role badges, stop buttons, selection
+- **`MinionFeed`** — Color-coded activity feed with role filtering
+- **`MinionRouter`** — Direct API routing service bypassing Claude Code pipeline
+- **`MinionStore`** — MobX reactive state for multi-agent message bus and model status
+- **`TranscriptService`** — Chat and activity recording with configurable retention
+- **Collapsed sidebar** — 40px icon strip with lucide role icons, status dot overlays, activity pulse indicator
 
-## v1.3.0 Key Highlights
+### Role Icons (Collapsed Sidebar)
 
-- **Dedicated Compaction Model**
-  - assign a separate model for long-context history summarization inside each profile
-  - keep live chat, action, and deep-thinking models focused on the current task
-- **Terminal command draft**
-  - open a draft box inside the current terminal tab with a configurable shortcut
-  - generate a paste-ready shell command from recent terminal context instead of starting from scratch
-- **Seamless Agent chat mode**
-  - group consecutive commands, tool calls, file edits, and sub-tools into one compact activity banner
-  - float approvals and alerts above the input area to reduce transcript clutter
-- **Unified panel search**
-  - use `Ctrl/Cmd+F` in terminal, current chat, file browser, and file editor
-  - jump between matches with one consistent find bar
-- **File browser sorting and filtering**
-  - sort by name, modified time, size, or type directly in the file panel
-  - show or hide dotfiles without leaving the current directory
-  - refresh the built-in editor without reopening the file
-- **Smarter remote monitor**
-  - share monitor collection across tabs that point at the same machine
-  - fail over cleanly when the original source tab exits
-  - surface clearer GPU telemetry in a denser CLI-style monitor layout
+| Role | Icon | Color |
+|------|------|-------|
+| Orchestrator | Brain | `#8b5cf6` |
+| Chat | MessageCircle | `#10b981` |
+| Coder | Code | `#3b82f6` |
+| Creative | Palette | `#ec4899` |
+| Architect | Blocks | `#f59e0b` |
+| Scout | Search | `#22c55e` |
+| Action | Zap | `#6366f1` |
+| Thinking | Lightbulb | `#a855f7` |
+| Compaction | Layers | `#64748b` |
 
 ---
 
-## Key Capabilities
+## Architecture
 
-### AI-Native Runtime
+```
+Browser (GyShell Web UI)
+  |
+  |-- WebSocket ──> gyshell-web backend (Express + node-pty)
+  |                   |── Terminal sessions (tmux-backed)
+  |                   |── Gateway RPC (session management, tools, settings)
+  |                   |── File browser, monitor panels
+  |
+  |-- HTTP fetch ──> ProxLab proxy ──> Model endpoints
+  |                   |── KoboldCpp (Qwen, Darkidol, etc.)
+  |                   |── vLLM (various models)
+  |                   |── Any OpenAI-compatible API
+  |
+  MinionRouter (browser-side)
+    |── Direct routing: user selects card -> fetch to model endpoint
+    |── Auto routing: orchestrator 9B classifies -> routes to specialist
+    |── Per-role conversation history (10 turns)
+    |── AbortController per role for cancellation
+```
 
-- Thinking-oriented execution for complex tasks.
-- Context-aware responses from terminal state and selected resources.
-- Per-profile model routing for `Global`, `Thinking`, `Action`, and `Compaction` roles.
-- Long-session context quality with dedicated compaction models and dynamic compaction summaries.
-- AI-assisted terminal command drafting from recent tab context, with paste-before-run control.
-- Classic or Seamless chat activity display, depending on how much inline tool detail you want.
-- Persistent global memory injection via `memory.md`.
-- Multimodal user input pipeline (text + images) for compatible models.
-- OpenAI-compatible model endpoint support.
+### WebSocket Layer
 
-### Terminal + SSH + File Management
+The web shim (`apps/web/src/gyshell-web-shim.ts`) replaces Electron's IPC with a WebSocket connection to the Express backend. All RPC calls (session CRUD, terminal I/O, settings, tools) go through this transport. The gateway service (`packages/backend/src/services/Gateway/`) handles session lifecycle, model interactions, and WebSocket client management.
 
-- Shell support: Zsh, Bash, PowerShell.
-- SSH support: password/key auth, proxy chaining, bastion workflows.
-- Port forwarding: local, remote, and dynamic SOCKS.
-- Agent can coordinate **multiple SSH/local terminal tabs** in parallel during one task.
-- Control-character operations for interactive terminal apps.
-- Draft a command for the current terminal tab from recent visible output, then paste it back without auto-running it.
-- Search within the active terminal buffer without leaving the panel.
-- Terminal tab restoration after backend restart, plus lossless output catch-up for renderer remount/reconnect within the same backend runtime.
-- **Integrated file browser panel**: browse, create, rename, delete, preview, sort, filter, and search files across local and SSH sessions.
-- **Cross-session file transfer** (copy/move) with real-time progress, cancellation, and adaptive SFTP tuning.
-- **Built-in text editor panel** for editing, refreshing, searching, and saving files directly in the workspace.
+Key files for the WebSocket architecture:
+- `apps/web/src/gyshell-web-shim.ts` — Browser-side WebSocket shim replacing Electron IPC
+- `apps/web/src/main.ts` — Web entry point, bootstraps the shim
+- `packages/backend/src/services/Gateway/WebSocketGatewayAdapter.ts` — Server-side WS adapter
+- `packages/backend/src/services/Gateway/WebSocketGatewayControlService.ts` — WS policy and lifecycle
+- `packages/backend/src/services/Gateway/WebSocketClientTransport.ts` — Client transport abstraction
+- `packages/backend/src/services/Gateway/types.ts` — Gateway type definitions
+- `packages/ui/src/renderer_v2/stores/AppStore.ts` — Frontend store consuming WS events
 
-### Workspace + Monitoring
+### Model Routing (MinionRouter)
 
-- Detach panels into dedicated sub-windows and move tabs or whole panels across windows.
-- Choose `Auto`, `Expanded`, or `Select` panel tab display modes based on how much header space your workspace has.
-- `Ctrl/Cmd+F` opens a panel-local find bar in terminal, current chat, file browser, and file editor.
-- Open a resource monitor panel for local and SSH terminals from the workspace rail.
-- Monitor panel surfaces CPU, memory, disk, network, process, socket, and GPU telemetry when available.
-- Monitor collection is shared across tabs that point at the same local or SSH target, with failover if the original source tab exits.
-- Compact monitor layouts now give GPU telemetry its own card with clearer VRAM usage details.
+The `MinionRouter` (`packages/ui/src/renderer_v2/services/MinionRouter.ts`) handles all specialist communication:
 
-### Skills + MCP + Tools
+1. **Direct mode**: User clicks a model card in the sidebar, types a message. MinionRouter resolves the endpoint from the active profile's slot configuration, builds a clean context (system prompt + conversation history + new message), and fetches directly.
 
-- Folder-based skills workflow compatible with agentskills-style structure.
-- Dynamic MCP server integration.
-- Precision editing tools for safe, targeted file updates.
-- Runtime tool toggles and summaries exposed to clients.
+2. **Auto mode**: No card selected. Message goes to the orchestrator (9B model) which returns a JSON classification `{"route": "coder"}`. MinionRouter then dispatches to the classified specialist.
 
-### Mobile-Web Companion
-
-- Mobile-first remote client for active session tracking and steering.
-- Desktop can serve the mobile-web companion directly and expose copyable access links from settings.
-- OpenClawd-style conversational control from anywhere while your core runtime stays on your own machine.
-- Session list with search and status hints.
-- Swipe-to-delete session flow for faster mobile cleanup.
-- Detailed turn event inspection from phone browser.
-- Tool/skill/terminal/settings access through gateway RPC.
-- Gateway exposure can now be limited to localhost, LAN-only, custom CIDR ranges, or all interfaces.
+3. **Message injection**: Responses are injected into the main ChatStore via synthetic `handleUiUpdate` ADD_MESSAGE events, appearing inline with native chat messages.
 
 ---
 
-## Platforms
-
-1. **Electron desktop app** (`apps/electron`)
-2. **Standalone backend runtime** (`apps/gybackend`)
-3. **TUI runtime** (`apps/tui` wrapper + `packages/tui` core)
-4. **Mobile-web runtime** (`apps/mobile-web` wrapper + `packages/mobile-web` core)
-
-### Which Surface Should You Use?
-
-- **Desktop app**: primary full-featured experience for daily development.
-- **TUI (`gyll`)**: terminal-native flow for keyboard-first sessions and automation, including multi-tab command orchestration.
-- **Mobile-web**: OpenClawd-style remote conversational control from phone/browser.
-
----
-
-## Quick Start
+## Running
 
 ### Prerequisites
 
@@ -172,148 +105,29 @@ GyShell is built for **persistent execution in your real terminal runtime**:
 ### Development
 
 ```bash
-git clone https://github.com/MrOrangeJJ/GyShell.git
+git clone https://github.com/travisfinch1983/GyShell.git
 cd GyShell
 npm install
 npm run dev
 ```
 
-### First-run CLI experience
-
-After desktop installation and first launch:
+### Web-only (no Electron)
 
 ```bash
-gyll --help
-gyll "Plan and execute: run tests, fix failures, and summarize changes"
+npm run dev:web
+# or build and serve:
+npm run build:web
+node apps/web/dist/server.js
 ```
 
-### One-line Mental Model
-
-`GyShell = persistent AI runtime + real terminal control + human override at any time.`
-
-### Mobile-web development
-
-```bash
-npm run dev:mobile-web
-```
-
-### TUI development
-
-```bash
-npm run dev:tui
-```
+The web UI runs on port 3456 by default.
 
 ---
 
-## Desktop Bundled CLI (`gyll`)
+## Upstream
 
-After installing and launching GyShell desktop once, `gyll` is available from the desktop runtime setup.
-
-If `--url` is not provided, CLI will try the local desktop backend (`127.0.0.1:17888` by default).
-
-```bash
-gyll --help
-gyll --url ip:port
-gyll --url ip:port --token <access_token>
-gyll --url ip:port "Hello"
-gyll --url ip:port --token <access_token> "Hello"
-gyll run --url ip:port "Run task"
-gyll hook --url ip:port "Send and exit"
-```
-
-Local quick forms:
-
-```bash
-gyll
-gyll "Hello"
-gyll run "Run task"
-gyll hook "Send and exit"
-```
-
-Modes:
-
-- `gyll`: interactive TUI.
-- `gyll "message"`: create session, send immediately, then enter TUI.
-- `gyll run "message"`: create session, stream output in terminal, no TUI entry.
-- `gyll hook "message"`: create session, send once, then exit.
-
-Use `--token <access_token>` when connecting to a non-local websocket gateway.
-
-You can also resume a target session:
-
-```bash
-gyll --sessionid "your-session-id"
-```
-
-Hook mode is useful for callback-style self-wakeup in long workflows.
-
-### Typical `gyll` patterns
-
-- **Interactive pairing**: `gyll`
-- **Single prompt then continue in TUI**: `gyll "message"`
-- **Automation-like terminal streaming**: `gyll run "message"`
-- **Callback signal / wake-up message**: `gyll hook "message"`
-
----
-
-## Architecture Notes
-
-GyShell follows strict layering:
-
-- `packages/*`: implementation logic.
-- `apps/*`: composition/bootstrap/build wrappers.
-- Frontend logic does not belong in `packages/backend`.
-
-Core runtime chain (simplified):
-
-1. `startElectronMain` (desktop composition root)
-2. `GatewayService` (session runtime + transport-agnostic orchestration)
-3. `WebSocketGatewayControlService` (policy-based ws gateway control)
-4. `WebSocketGatewayAdapter` / `ElectronWindowTransport` (transport implementations)
-5. Client controllers in TUI and mobile-web
-
-See:
-
-- `docs/monorepo-architecture.md`
-- `docs/build-commands.md`
-
-## Privacy and Update Policy
-
-- Version checks query only this repository's GitHub `version.json`.
-- No third-party auto-update endpoint is used.
-- Version check is the only automatic background network request.
-
-## Read More
-
-- Release notes: `changelogs/v1.3.0.md`
-- Build matrix and packaging: `docs/build-commands.md`
-- Monorepo boundaries and runtime flow: `docs/monorepo-architecture.md`
-
----
-
-## Build and Packaging
-
-- `npm run build`
-- `npm run build:backend`
-- `npm run build:tui`
-- `npm run build:mobile-web`
-- `npm run dist`
-- `npm run dist:mac`
-- `npm run dist:win`
-- `npm run dist:linux`
-- `npm run dist:linux-arm64`
-- `./build.sh --help`
-
-For the full command matrix and packaging notes, see `docs/build-commands.md`.
-
----
+This is a fork of [GyShell v1.3.0](https://github.com/MrOrangeJJ/GyShell) by TUOTUO (tuotuo@gyshell.com). The upstream project is an AI-native terminal application supporting Electron, TUI, and mobile-web delivery surfaces. See the [upstream README](https://github.com/MrOrangeJJ/GyShell/blob/main/README.md) for the full feature set and documentation.
 
 ## License
 
-This project is licensed under **CC BY-NC 4.0**.
-
-Special acknowledgment: inspirations and references from [Tabby](https://github.com/Eugeny/tabby) (MIT).
-
----
-
-**GyShell** - _The shell that thinks with you._
+This project inherits the upstream **CC BY-NC 4.0** license.
