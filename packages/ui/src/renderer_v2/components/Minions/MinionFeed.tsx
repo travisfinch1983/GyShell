@@ -20,9 +20,10 @@ const senderColors: Record<string, string> = {
   orchestrator: '#8b5cf6',
   coder: '#3b82f6',
   creative: '#ec4899',
-  architect: '#f59e0b',
-  scout: '#22c55e',
+  architect: '#e0a832',
+  scout: '#a855f7',
   chat: '#10b981',
+  thinking: '#c084fc',
 }
 
 function getSenderColor(name: string): string {

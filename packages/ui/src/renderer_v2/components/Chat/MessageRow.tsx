@@ -32,12 +32,13 @@ function formatMessageTimestamp(ts: number): string {
 /** Map minion role/model names to muted colors for chat message tinting */
 function getMinionRoleColor(name: string): string {
   const lower = (name || '').toLowerCase()
-  if (lower.includes('coder') || lower.includes('kat-dev')) return '#6ba3e0'
-  if (lower.includes('creative') || lower.includes('darkidol') || lower.includes('ballad')) return '#d68cb5'
-  if (lower.includes('architect') || lower.includes('27b')) return '#d4a853'
-  if (lower.includes('scout') || lower.includes('4b')) return '#6bc78f'
+  if (lower.includes('coder') || lower.includes('kat-dev')) return '#5b9bd5'
+  if (lower.includes('creative') || lower.includes('darkidol') || lower.includes('ballad')) return '#d67ec4'
+  if (lower.includes('architect') || lower.includes('27b')) return '#e0a832'
+  if (lower.includes('scout') || lower.includes('4b')) return '#c084fc'
   if (lower.includes('orchestrator')) return '#a78bdb'
-  if (lower.includes('chat') || lower.includes('122b')) return '#5cb8a0'
+  if (lower.includes('chat') || lower.includes('122b')) return '#34d399'
+  if (lower.includes('thinking')) return '#c084fc'
   if (lower.includes('minion')) return '#7b9ec4'
   return '#8892a4'
 }

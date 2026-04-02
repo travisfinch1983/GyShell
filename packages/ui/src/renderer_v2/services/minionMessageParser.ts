@@ -31,6 +31,8 @@ export function parseMinionResponse(raw: string): ParsedMinionResponse {
     thinkBlocks.push(content.trim())
     return ''
   })
+  // Strip any <route> tags (specialists may echo them)
+  body = body.replace(/<route>[\s\S]*?<\/route>\s*/g, '')
   body = body.trim()
 
   if (thinkBlocks.length > 0) {

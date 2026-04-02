@@ -45,10 +45,10 @@ const roleBadgeColors: Record<string, string> = {
   chat: '#10b981',
   coder: '#3b82f6',
   creative: '#ec4899',
-  architect: '#f59e0b',
-  scout: '#22c55e',
+  architect: '#e0a832',
+  scout: '#a855f7',
   action: '#6366f1',
-  thinking: '#a855f7',
+  thinking: '#c084fc',
   compaction: '#64748b',
 }
 
