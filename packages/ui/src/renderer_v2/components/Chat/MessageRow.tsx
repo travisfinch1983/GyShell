@@ -1,6 +1,6 @@
 import React from "react";
 import { observer } from "mobx-react-lite";
-import { Check, Copy, CornerUpLeft, Pencil, Send, X } from "lucide-react";
+import { Brain, Check, ChevronDown, ChevronUp, Copy, CornerUpLeft, Pencil, Send, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -388,6 +388,28 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
       );
     }
 
+    // Check for structured minion message metadata
+    const isMinionParsed = msg.metadata?.minionParsed === true
+    const minionThinking = msg.metadata?.minionThinking as string | null
+    const minionSummary = msg.metadata?.minionSummary as string | undefined
+    const minionTo = msg.metadata?.minionTo as string | undefined
+    const isToUser = !minionTo || minionTo === 'user'
+
+    // For minion messages: render with summary/detail/thinking structure
+    if (isMinionParsed) {
+      return renderAssistantRow(
+        <MinionParsedMessage
+          msg={msg}
+          thinking={minionThinking}
+          summary={minionSummary || ''}
+          isToUser={isToUser}
+          copiedKey={copiedKey}
+          copyCodeBlock={copyCodeBlock}
+          markCopied={markCopied}
+        />
+      )
+    }
+
     return renderAssistantRow(
       <>
         <div className={`message-role-label assistant ${msg.metadata?.modelName ? 'minion-role' : ''}`} style={msg.metadata?.modelName ? { color: getMinionRoleColor(msg.metadata.modelName) } : undefined}>{msg.metadata?.modelName ? msg.metadata.modelName.toUpperCase() : 'ASSISTANT'}{msg.timestamp ? <span className="message-timestamp">{formatMessageTimestamp(msg.timestamp)}</span> : null}</div>
@@ -535,5 +557,153 @@ const MinionEditableMessage: React.FC<{
         )}
       </div>
     </div>
+  );
+};
+
+// ─── Parsed minion message — structured summary/detail/thinking rendering ──
+
+const MinionMarkdownContent: React.FC<{
+  content: string;
+  copiedKey: string | null;
+  copyCodeBlock: (code: string) => void;
+  markCopied: (key: string) => void;
+}> = ({ content, copiedKey, copyCodeBlock }) => (
+  <ReactMarkdown
+    remarkPlugins={[remarkGfm]}
+    components={{
+      pre: ({ children, ...props }) => {
+        const codeText = extractNodeText(children);
+        const feedbackKey = `code:${codeText.length}:${codeText.slice(0, 32)}`;
+        return (
+          <div className="markdown-pre-wrap">
+            <pre {...props}>{children}</pre>
+            <button
+              className="message-copy-btn markdown-pre-copy-btn"
+              title="Copy code"
+              aria-label="Copy code"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                void copyCodeBlock(codeText);
+              }}
+            >
+              {copiedKey === feedbackKey ? <Check size={12} /> : <Copy size={12} />}
+            </button>
+          </div>
+        );
+      },
+      a: ({ node, ...props }) => (
+        <a {...props} target="_blank" rel="noopener noreferrer" />
+      ),
+    }}
+  >
+    {content}
+  </ReactMarkdown>
+);
+
+const MinionParsedMessage: React.FC<{
+  msg: ChatMessage;
+  thinking: string | null;
+  summary: string;
+  isToUser: boolean;
+  copiedKey: string | null;
+  copyCodeBlock: (code: string) => void;
+  markCopied: (key: string) => void;
+}> = ({ msg, thinking, summary, isToUser, copiedKey, copyCodeBlock, markCopied }) => {
+  // Messages to user: detail expanded by default. Messages to models: collapsed.
+  const [detailExpanded, setDetailExpanded] = React.useState(isToUser);
+  const [thinkingExpanded, setThinkingExpanded] = React.useState(false);
+
+  const modelName = msg.metadata?.modelName || 'Assistant';
+  const roleColor = getMinionRoleColor(modelName);
+
+  // Extract the body content (strip the header line we prepend)
+  const bodyContent = (msg.content || '').replace(/^\*\*\[.*?\]\*\*\s*\n*/, '').trim();
+
+  return (
+    <>
+      {/* Role label + timestamp */}
+      <div
+        className="message-role-label assistant minion-role"
+        style={{ color: roleColor }}
+      >
+        {modelName.toUpperCase()}
+        {thinking && (
+          <button
+            className={`minion-thinking-toggle ${thinkingExpanded ? 'active' : ''}`}
+            onClick={(e) => { e.stopPropagation(); setThinkingExpanded(!thinkingExpanded); }}
+            title={thinkingExpanded ? 'Hide thinking' : 'Show thinking'}
+          >
+            <Brain size={12} />
+          </button>
+        )}
+        {msg.timestamp ? <span className="message-timestamp">{formatMessageTimestamp(msg.timestamp)}</span> : null}
+      </div>
+
+      {/* Thinking block — expands upward from the message */}
+      {thinking && thinkingExpanded && (
+        <div className="minion-thinking-block">
+          <div className="minion-thinking-header">
+            <Brain size={11} />
+            <span>Thinking</span>
+          </div>
+          <div className="minion-thinking-content markdown-body">
+            <MinionMarkdownContent
+              content={thinking}
+              copiedKey={copiedKey}
+              copyCodeBlock={copyCodeBlock}
+              markCopied={markCopied}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Summary line (always present, visible when detail is collapsed for model-to-model, hidden label for user messages) */}
+      {!isToUser && !detailExpanded && (
+        <div className="minion-summary-line">
+          <span className="minion-summary-text">{summary}</span>
+          <button
+            className="minion-detail-toggle"
+            onClick={() => setDetailExpanded(true)}
+            title="Show full message"
+          >
+            <ChevronDown size={12} />
+            <span>Show detail</span>
+          </button>
+        </div>
+      )}
+
+      {/* Detail body */}
+      {detailExpanded && (
+        <div className={`message-text ${msg.role}`}>
+          <div className="markdown-body">
+            <MinionMarkdownContent
+              content={bodyContent}
+              copiedKey={copiedKey}
+              copyCodeBlock={copyCodeBlock}
+              markCopied={markCopied}
+            />
+            {msg.streaming && <span className="cursor-blink" />}
+          </div>
+          {!isToUser && (
+            <button
+              className="minion-detail-toggle minion-collapse-toggle"
+              onClick={() => setDetailExpanded(false)}
+              title="Collapse to summary"
+            >
+              <ChevronUp size={12} />
+              <span>Collapse</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* For messages to user: show a small summary badge below (for chat model context, not visually prominent) */}
+      {isToUser && detailExpanded && summary && (
+        <div className="minion-summary-badge" title="Summary used for chat model context">
+          {summary}
+        </div>
+      )}
+    </>
   );
 };

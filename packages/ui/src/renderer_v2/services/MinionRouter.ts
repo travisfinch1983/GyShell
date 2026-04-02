@@ -6,6 +6,7 @@
  */
 
 import type { MinionStore, MinionRole } from '../stores/MinionStore'
+import { parseMinionResponse } from './minionMessageParser'
 
 const MINION_CHAT_STORAGE_KEY = 'gyshell-minion-chat-messages'
 const MAX_STORED_MESSAGES = 200
@@ -312,6 +313,7 @@ export class MinionRouter {
     // Inject user message into main chat
     injectChatMessage('user', message, {
       subToolTitle: `→ ${minion.friendlyName}`,
+      minionTo: minion.friendlyName,
     })
 
     // Update card status
@@ -373,30 +375,34 @@ export class MinionRouter {
 
       const data = await resp.json()
       const choice = data.choices?.[0]
-      let responseText = choice?.message?.content || 'No response'
+      const rawResponse = choice?.message?.content || 'No response'
 
-      // Strip <think> blocks if present (some models include thinking)
-      responseText = responseText.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim()
+      // Parse response into structured blocks (thinking, summary, body)
+      const parsed = parseMinionResponse(rawResponse)
 
-      // Update conversation history
+      // Update conversation history with clean body (no thinking)
       addToRoleHistory(role, { role: 'user', content: message })
-      addToRoleHistory(role, { role: 'assistant', content: responseText })
+      addToRoleHistory(role, { role: 'assistant', content: parsed.body })
 
       // Update card status
       this.store.updateMinionStatus(minion.id, 'idle')
 
-      // Add to activity feed
+      // Add to activity feed (summary only)
       this.store.addMessage({
         from: minion.friendlyName,
         to: 'user',
         type: 'summary',
-        content: responseText.substring(0, 100) + (responseText.length > 100 ? '...' : ''),
+        content: parsed.summary,
         metadata: { status: 'completed' },
       })
 
-      // Inject response into main chat
-      injectChatMessage('assistant', `**[${minion.friendlyName} ✓]**\n\n${responseText}`, {
+      // Inject response into main chat with structured metadata
+      injectChatMessage('assistant', `**[${minion.friendlyName} ✓]**\n\n${parsed.body}`, {
         modelName: minion.friendlyName,
+        minionParsed: true,
+        minionSummary: parsed.summary,
+        minionThinking: parsed.thinking,
+        minionTo: 'user',
       })
 
     } catch (err: any) {

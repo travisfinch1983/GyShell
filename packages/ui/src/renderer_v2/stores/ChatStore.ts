@@ -50,6 +50,11 @@ export interface ChatMessage {
     details?: string
     inputKind?: 'normal' | 'inserted'
     inputImages?: InputImageAttachment[]
+    // Minion parsed message fields
+    minionParsed?: boolean
+    minionSummary?: string
+    minionThinking?: string | null
+    minionTo?: string
   }
   timestamp: number
   streaming?: boolean
