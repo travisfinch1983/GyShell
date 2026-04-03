@@ -943,7 +943,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
                   // Clear transcript
                   const ts = (window as any).__transcriptService
                   if (ts) ts.clearChatTranscript?.()
-                }
+                }}
               >
                 Clear Chat View
               </button>
