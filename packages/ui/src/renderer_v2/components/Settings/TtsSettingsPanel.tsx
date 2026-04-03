@@ -343,11 +343,12 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
 
         <div className="voice-selector-body">
           <div className="tts-field">
-            <label>TTS Voice</label>
+            <label>TTS Voice ({voices.length} available)</label>
             <select
               value={voice}
               onChange={(e) => setVoice(e.target.value)}
               className="tts-select"
+              style={{ minHeight: 28 }}
             >
               <option value="default">default</option>
               {voices.filter(v => v !== 'default').map(v => (

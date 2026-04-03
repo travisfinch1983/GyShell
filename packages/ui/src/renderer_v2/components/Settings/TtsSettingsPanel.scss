@@ -184,6 +184,34 @@
   gap: 10px;
 }
 
+.voice-selector-body .tts-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.voice-selector-body .tts-field label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
+.voice-selector-body .tts-select,
+.voice-selector-body .tts-input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--app-bg);
+  color: var(--fg);
+  font-size: 11px;
+  font-family: inherit;
+  appearance: auto;
+  -webkit-appearance: auto;
+}
+
 .voice-selector-footer {
   display: flex;
   justify-content: flex-end;
