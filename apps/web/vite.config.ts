@@ -31,6 +31,7 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    port: 17889
+    port: 17889,
+    allowedHosts: ['gyshell.deeveeyant.com'],
   }
 })
