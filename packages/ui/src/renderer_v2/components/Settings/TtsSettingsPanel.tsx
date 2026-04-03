@@ -18,9 +18,11 @@ import {
 import {
   getTtsProviders,
   getSttProviders,
+  getRvcModels,
   discoverModels,
   type TtsProvider,
   type SttProvider,
+  type RvcModel,
 } from '../../services/ProxlabDiscovery'
 
 interface TtsConfig {
@@ -60,6 +62,7 @@ const DEFAULT_STT_CONFIG: SttConfig = {
 export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) => {
   const [ttsProviders, setTtsProviders] = useState<TtsProvider[]>([])
   const [sttProviders, setSttProviders] = useState<SttProvider[]>([])
+  const [rvcModelList, setRvcModelList] = useState<RvcModel[]>([])
   const [refreshing, setRefreshing] = useState(false)
 
   const ttsConfig: TtsConfig = { ...DEFAULT_TTS_CONFIG, ...store.settings?.ttsConfig }
@@ -68,6 +71,7 @@ export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) =
   const loadProviders = () => {
     setTtsProviders(getTtsProviders())
     setSttProviders(getSttProviders())
+    setRvcModelList(getRvcModels())
   }
 
   useEffect(() => { loadProviders() }, [])
@@ -258,15 +262,32 @@ export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) =
                 {ttsConfig.rvcEnabled && (
                   <div className="tts-field">
                     <label>RVC Voice Model</label>
-                    <input
-                      type="text"
-                      value={ttsConfig.rvcModel}
-                      onChange={(e) => updateTts({ rvcModel: e.target.value })}
-                      placeholder="Enter RVC model name"
-                      className="tts-input"
-                    />
+                    {rvcModelList.length > 0 ? (
+                      <select
+                        value={ttsConfig.rvcModel}
+                        onChange={(e) => updateTts({ rvcModel: e.target.value })}
+                        className="tts-select"
+                      >
+                        <option value="">(None — select a voice)</option>
+                        {rvcModelList.map(m => (
+                          <option key={m.name} value={m.name}>
+                            {m.name}{m.loaded ? ' (loaded)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={ttsConfig.rvcModel}
+                        onChange={(e) => updateTts({ rvcModel: e.target.value })}
+                        placeholder="Enter RVC model name (no models discovered)"
+                        className="tts-input"
+                      />
+                    )}
                     <span className="tts-hint">
-                      Name of the RVC voice model to use for conversion
+                      {rvcModelList.length > 0
+                        ? `${rvcModelList.length} voice models available`
+                        : 'Could not discover RVC models — enter name manually'}
                     </span>
                   </div>
                 )}
@@ -299,10 +320,11 @@ export interface VoiceSelectorProps {
   currentRvcVoice?: string
   ttsConfig: TtsConfig
   voices: string[]
+  rvcModels: RvcModel[]
 }
 
 export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
-  onClose, onSave, currentVoice, currentRvcVoice, ttsConfig, voices,
+  onClose, onSave, currentVoice, currentRvcVoice, ttsConfig, voices, rvcModels,
 }) => {
   const [voice, setVoice] = useState(currentVoice || ttsConfig.defaultVoice || 'default')
   const [rvcVoice, setRvcVoice] = useState(currentRvcVoice || ttsConfig.rvcModel || '')
@@ -334,13 +356,28 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
           {ttsConfig.rvcEnabled && (
             <div className="tts-field">
               <label>RVC Voice Model</label>
-              <input
-                type="text"
-                value={rvcVoice}
-                onChange={(e) => setRvcVoice(e.target.value)}
-                placeholder="RVC model name (optional)"
-                className="tts-input"
-              />
+              {rvcModels.length > 0 ? (
+                <select
+                  value={rvcVoice}
+                  onChange={(e) => setRvcVoice(e.target.value)}
+                  className="tts-select"
+                >
+                  <option value="">(None)</option>
+                  {rvcModels.map(m => (
+                    <option key={m.name} value={m.name}>
+                      {m.name}{m.loaded ? ' (loaded)' : ''}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={rvcVoice}
+                  onChange={(e) => setRvcVoice(e.target.value)}
+                  placeholder="RVC model name"
+                  className="tts-input"
+                />
+              )}
             </div>
           )}
         </div>

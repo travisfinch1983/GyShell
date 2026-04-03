@@ -73,6 +73,11 @@ export interface SttProvider {
   models: string[]
 }
 
+export interface RvcModel {
+  name: string
+  loaded: boolean
+}
+
 // ─── Cache ──────────────────────────────────────────────────────────────────
 
 let discoveredModels: DiscoveredModel[] = []
@@ -82,6 +87,7 @@ let embedModel: string | null = null
 let rerankModel: string | null = null
 let ttsProviders: TtsProvider[] = []
 let sttProviders: SttProvider[] = []
+let rvcModels: RvcModel[] = []
 let discoveryTimer: ReturnType<typeof setInterval> | null = null
 
 // ─── URL Helpers ────────────────────────────────────────────────────────────
@@ -153,6 +159,10 @@ export function getTtsProviders(): TtsProvider[] {
 
 export function getSttProviders(): SttProvider[] {
   return [...sttProviders]
+}
+
+export function getRvcModels(): RvcModel[] {
+  return [...rvcModels]
 }
 
 // ─── Discovery ──────────────────────────────────────────────────────────────
@@ -333,6 +343,47 @@ async function discoverSttProviders(): Promise<SttProvider[]> {
   }
 }
 
+/** Discover RVC voice models from RVC backends directly */
+async function discoverRvcModels(svcData: Partial<ProxlabServices>): Promise<RvcModel[]> {
+  // Find RVC services from the TTS services list (they have providerId containing 'rvc')
+  const ttsSvcs = svcData.tts || []
+  const rvcSvcs = ttsSvcs.filter(s => s.provider.toLowerCase().includes('rvc'))
+
+  if (rvcSvcs.length === 0) return rvcModels
+
+  // Query the first RVC backend directly for its model list
+  const svc = rvcSvcs[0]
+  try {
+    const resp = await fetch(`http://${svc.containerIp}:${svc.port}/models`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!resp.ok) return rvcModels
+    const data = await resp.json()
+    return (data.models || []).map((m: any) => ({
+      name: m.name || '',
+      loaded: m.loaded || false,
+    }))
+  } catch {
+    // Direct access might be blocked — try through the proxy
+    // RVC is a TTS slot, so we can try the proxy path
+    try {
+      const proxyResp = await fetch(`${API_PREFIX}/tts/${svc.slot}/models`, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!proxyResp.ok) return rvcModels
+      const data = await proxyResp.json()
+      return (data.models || []).map((m: any) => ({
+        name: m.name || '',
+        loaded: m.loaded || false,
+      }))
+    } catch {
+      return rvcModels
+    }
+  }
+}
+
 /** Run full discovery cycle */
 export async function discoverModels(): Promise<DiscoveredModel[]> {
   // Discover all in parallel
@@ -345,6 +396,9 @@ export async function discoverModels(): Promise<DiscoveredModel[]> {
     discoverSttProviders(),
   ])
 
+  // Discover RVC models (needs services data, so runs after)
+  const rvc = await discoverRvcModels(svcData)
+
   // Update caches
   discoveredModels = llmModels
   modelSlotMap = new Map(llmModels.map(m => [m.id, m]))
@@ -353,6 +407,7 @@ export async function discoverModels(): Promise<DiscoveredModel[]> {
   services = svcData
   ttsProviders = tts
   sttProviders = stt
+  rvcModels = rvc
 
   // Log results
   console.log(`[ProxlabDiscovery] Discovered ${llmModels.length} LLM models`)
@@ -363,6 +418,7 @@ export async function discoverModels(): Promise<DiscoveredModel[]> {
   if (rerank) console.log(`[ProxlabDiscovery] Reranker: ${rerank}`)
   if (tts.length) console.log(`[ProxlabDiscovery] TTS: ${tts.length} providers, ${tts.reduce((s, p) => s + p.voices.length, 0)} voices`)
   if (stt.length) console.log(`[ProxlabDiscovery] STT: ${stt.length} providers`)
+  if (rvc.length) console.log(`[ProxlabDiscovery] RVC: ${rvc.length} voice models`)
 
   const svcSummary = Object.entries(svcData)
     .filter(([, v]) => Array.isArray(v) && v.length > 0)
