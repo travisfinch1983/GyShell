@@ -4,6 +4,7 @@ import { AppStore } from './stores/AppStore'
 import { MinionStore } from './stores/MinionStore'
 import { MinionProvider } from './stores/MinionContext'
 import { MinionRouter, rehydrateMinionMessages } from './services/MinionRouter'
+import { startDiscovery } from './services/ProxlabDiscovery'
 import { TranscriptService } from './services/TranscriptService'
 import { TopBar } from './components/TopBar/TopBar'
 import { SettingsView } from './components/Settings/SettingsView'
@@ -44,6 +45,8 @@ export const App: React.FC = observer(() => {
       initMinionsFromProfile()
       // Hook into UI updates to drive minion status
       setupMinionStatusListener()
+      // Start ProxLab model discovery (auto-registers models from LLM proxy)
+      startDiscovery()
       // Re-inject persisted minion messages after a short delay
       // (ChatStore needs time to hydrate sessions first)
       setTimeout(() => {

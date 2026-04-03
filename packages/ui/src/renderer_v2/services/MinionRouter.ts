@@ -10,6 +10,7 @@
 
 import type { MinionStore, MinionRole } from '../stores/MinionStore'
 import { parseMinionResponse } from './minionMessageParser'
+import { getDiscoveredModel, getSlotEndpoint } from './ProxlabDiscovery'
 
 const MINION_CHAT_STORAGE_KEY = 'gyshell-minion-chat-messages'
 const MAX_STORED_MESSAGES = 200
@@ -235,6 +236,17 @@ function getModelEndpoint(role: string): ModelEndpoint | null {
   const item = settings.models.items.find((m: any) => m.id === modelId)
   if (!item) return null
 
+  // Try ProxLab discovery first — get the slot-based endpoint
+  const discovered = getDiscoveredModel(item.model)
+  if (discovered) {
+    return {
+      baseUrl: getSlotEndpoint(discovered.slot),
+      modelId: item.model,
+      apiKey: item.apiKey || 'not-needed',
+    }
+  }
+
+  // Fallback: rewrite the stored baseUrl for browser compatibility
   return {
     baseUrl: rewriteEndpointForBrowser(item.baseUrl),
     modelId: item.model,
@@ -244,14 +256,7 @@ function getModelEndpoint(role: string): ModelEndpoint | null {
 
 /**
  * Rewrite model endpoint URLs for browser-side fetch.
- *
- * When the page is served over HTTPS (e.g., via Cloudflare tunnel),
- * the browser can't fetch from http:// endpoints (mixed content blocked).
- * The Vite dev server has a proxy at /proxlab-api/* that forwards to ProxLab.
- * This rewrites ProxLab URLs to use the proxy, making them same-origin.
- *
- * Backend probes use the original URL (they run server-side in Node.js).
- * This function only runs in the browser (MinionRouter is browser-only).
+ * Fallback for models not in ProxLab discovery (external endpoints).
  */
 function rewriteEndpointForBrowser(baseUrl: string): string {
   if (!baseUrl) return baseUrl
