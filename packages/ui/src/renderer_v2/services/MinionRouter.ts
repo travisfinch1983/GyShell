@@ -668,11 +668,28 @@ export class MinionRouter {
       const choice = data.choices?.[0]
       const rawResponse = choice?.message?.content || 'No response'
 
+      // Extract route tags BEFORE parsing (model may put them inside think blocks)
+      const { route: rawRoute } = extractRouteTag(rawResponse)
+
       // Parse response — extract thinking, summary, body
       const parsed = parseMinionResponse(rawResponse)
 
-      // Check for route tags in the clean body
-      const { route, cleanText } = extractRouteTag(parsed.body)
+      // Check for route tags in the clean body as well (belt and suspenders)
+      const { route: bodyRoute, cleanText } = extractRouteTag(parsed.body)
+      const route = bodyRoute || rawRoute
+
+      // Log routing result for debugging
+      if (route) {
+        console.log(`[MinionRouter] Route tag found: ${route.role} — "${route.message.substring(0, 80)}..."`)
+        console.log(`[MinionRouter] Route source: ${bodyRoute ? 'body' : 'raw (inside think block)'}`)
+      } else {
+        // Check if the model mentioned routing without using the tag
+        const mentionsRouting = rawResponse.match(/route|coder|specialist|dispatch/i)
+        if (mentionsRouting) {
+          console.warn(`[MinionRouter] Chat mentioned routing but no <route> tag found in response`)
+          console.warn(`[MinionRouter] Raw response (last 300 chars): ${rawResponse.slice(-300)}`)
+        }
+      }
 
       // Update conversation history with the clean text (no route tags)
       addToRoleHistory('chat', { role: 'user', content: message })
