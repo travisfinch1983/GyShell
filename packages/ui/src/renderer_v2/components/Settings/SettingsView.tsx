@@ -31,6 +31,7 @@ import "./settings.scss";
 import { ConfirmDialog } from "../Common/ConfirmDialog";
 import { NumericInput } from "../Common/NumericInput";
 import { InfoTooltip } from "../Common/InfoTooltip";
+import { ProxlabServicesPanel } from "./ProxlabServicesPanel";
 import { Select } from "../../platform/Select";
 import { ShortcutRecorder } from "./ShortcutRecorder";
 import { getDefaultCommandDraftShortcut } from "../../lib/commandDraftShortcut";
@@ -1248,10 +1249,12 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
 
             {store.settingsSection === "models" ? (
             <>
+              <ProxlabServicesPanel />
+
               <div className="settings-section-header">
                   <div className="settings-section-title">
-                    {t.settings.baseModels}
-                    <InfoTooltip content={t.settings.tooltips.modelAdd} />
+                    External Model Connections
+                    <InfoTooltip content="Manually added model endpoints (OpenAI, Anthropic, etc.)" />
                   </div>
                   <button
                     className="icon-btn-sm"
@@ -1263,7 +1266,7 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
               </div>
               
               <div className="models-list" style={modelMetaColumnVars}>
-                {store.settings?.models.items.map((item) => (
+                {store.settings?.models.items.filter((item: any) => !item._proxlabAutoDiscovered).map((item) => (
                     <div
                       key={item.id}
                       className="model-item"

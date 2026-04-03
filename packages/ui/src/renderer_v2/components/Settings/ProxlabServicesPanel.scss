@@ -1,0 +1,185 @@
+/* ProxlabServicesPanel — auto-discovered services display */
+
+.proxlab-services-panel {
+  margin-bottom: 24px;
+}
+
+.proxlab-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  margin-bottom: 8px;
+  color: var(--fg);
+}
+
+.proxlab-title {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.proxlab-subtitle {
+  font-size: 10px;
+  color: var(--fg-faint);
+  margin-left: 4px;
+}
+
+.proxlab-refresh {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+}
+
+.proxlab-refresh:hover {
+  background: var(--panel-bg-2);
+  color: var(--fg);
+}
+
+.proxlab-refresh.spinning svg {
+  animation: proxlab-spin 1s linear infinite;
+}
+
+@keyframes proxlab-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Sections */
+.proxlab-section {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-bottom: 4px;
+  overflow: hidden;
+}
+
+.proxlab-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+}
+
+.proxlab-section-header:hover {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+
+.proxlab-count {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--fg-faint);
+  background: var(--panel-bg-2);
+  padding: 0 5px;
+  border-radius: 8px;
+}
+
+.proxlab-section-body {
+  padding: 4px 8px 6px;
+}
+
+/* Individual items */
+.proxlab-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 11px;
+}
+
+.proxlab-dot {
+  flex-shrink: 0;
+}
+
+.proxlab-dot.active {
+  color: #22c55e;
+}
+
+.proxlab-dot.inactive {
+  color: #6b7280;
+}
+
+.proxlab-item-name {
+  font-weight: 500;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.proxlab-item-meta {
+  font-size: 9px;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+
+.proxlab-tag {
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  color: var(--fg-faint);
+}
+
+.proxlab-tag.active {
+  background: rgba(34, 197, 94, 0.12);
+  color: #22c55e;
+}
+
+.proxlab-empty {
+  font-size: 10px;
+  color: var(--fg-faint);
+  padding: 4px 0;
+  font-style: italic;
+}
+
+/* Provider sub-lists (voices, models, formats) */
+.proxlab-provider {
+  padding: 2px 0 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+.proxlab-provider:last-child {
+  border-bottom: none;
+}
+
+.proxlab-sub-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 0 0 14px;
+}
+
+.proxlab-sub-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--fg-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-right: 2px;
+}
+
+.proxlab-sub-item {
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  color: var(--fg-muted);
+}
+
+.proxlab-more {
+  color: var(--fg-faint);
+  font-style: italic;
+}

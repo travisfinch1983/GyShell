@@ -11,10 +11,7 @@
  * Auto-registers discovered LLM models in GyShell settings.
  */
 
-// ProxLab local address — used for backend probes and model item baseUrl
-const PROXLAB_LOCAL = 'http://10.0.0.140:7777'
-
-// Browser-safe prefix — Vite proxy rewrites to PROXLAB_LOCAL
+// Browser-safe prefix — Vite proxy rewrites to http://10.0.0.140:7777
 const API_PREFIX = '/proxlab-api'
 
 const DISCOVERY_INTERVAL_MS = 60_000 // 60s
@@ -51,6 +48,31 @@ export interface ProxlabServices {
   anthropic: DiscoveredService[]
 }
 
+export interface TtsProvider {
+  slot: number
+  providerId: string
+  providerName: string
+  node: string
+  status: string
+  capabilities: {
+    openai_compatible: boolean
+    voices: boolean
+    models: boolean
+    formats: string[]
+  }
+  voices: string[]
+  models: string[]
+}
+
+export interface SttProvider {
+  slot: number
+  providerId: string
+  providerName: string
+  node: string
+  status: string
+  models: string[]
+}
+
 // ─── Cache ──────────────────────────────────────────────────────────────────
 
 let discoveredModels: DiscoveredModel[] = []
@@ -58,6 +80,8 @@ let modelSlotMap = new Map<string, DiscoveredModel>()
 let services: Partial<ProxlabServices> = {}
 let embedModel: string | null = null
 let rerankModel: string | null = null
+let ttsProviders: TtsProvider[] = []
+let sttProviders: SttProvider[] = []
 let discoveryTimer: ReturnType<typeof setInterval> | null = null
 
 // ─── URL Helpers ────────────────────────────────────────────────────────────
@@ -121,6 +145,14 @@ export function getRerankModelId(): string | null {
 
 export function isServiceAvailable(type: keyof ProxlabServices): boolean {
   return (services[type]?.length ?? 0) > 0
+}
+
+export function getTtsProviders(): TtsProvider[] {
+  return [...ttsProviders]
+}
+
+export function getSttProviders(): SttProvider[] {
+  return [...sttProviders]
 }
 
 // ─── Discovery ──────────────────────────────────────────────────────────────
@@ -210,14 +242,107 @@ async function discoverServices(): Promise<Partial<ProxlabServices>> {
   }
 }
 
+/** Discover TTS providers with their voices and models */
+async function discoverTtsProviders(): Promise<TtsProvider[]> {
+  try {
+    const resp = await fetch(`${API_PREFIX}/tts/v1/providers`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!resp.ok) return ttsProviders
+    const data = await resp.json()
+    const providers: TtsProvider[] = []
+
+    for (const p of data.providers || []) {
+      let voices: string[] = []
+      let models: string[] = []
+
+      // Fetch voices and models for each provider
+      try {
+        const vResp = await fetch(`${API_PREFIX}/tts/v1/providers/${p.slot}/voices`, {
+          signal: AbortSignal.timeout(3000),
+        })
+        if (vResp.ok) {
+          const vData = await vResp.json()
+          voices = (vData.voices || []).map((v: any) => typeof v === 'string' ? v : v.id || v.name || '')
+        }
+      } catch {}
+
+      try {
+        const mResp = await fetch(`${API_PREFIX}/tts/v1/providers/${p.slot}/models`, {
+          signal: AbortSignal.timeout(3000),
+        })
+        if (mResp.ok) {
+          const mData = await mResp.json()
+          models = (mData.data || []).map((m: any) => m.id || '')
+        }
+      } catch {}
+
+      providers.push({
+        slot: p.slot,
+        providerId: p.providerId || '',
+        providerName: p.providerName || p.providerId || '',
+        node: p.node || '',
+        status: p.status || 'unknown',
+        capabilities: p.capabilities || { openai_compatible: false, voices: false, models: false, formats: [] },
+        voices,
+        models,
+      })
+    }
+    return providers
+  } catch {
+    return ttsProviders
+  }
+}
+
+/** Discover STT providers with their models */
+async function discoverSttProviders(): Promise<SttProvider[]> {
+  try {
+    const resp = await fetch(`${API_PREFIX}/stt/v1/providers`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!resp.ok) return sttProviders
+    const data = await resp.json()
+    const providers: SttProvider[] = []
+
+    for (const p of data.providers || []) {
+      let models: string[] = []
+      try {
+        const mResp = await fetch(`${API_PREFIX}/stt/v1/providers/${p.slot}/models`, {
+          signal: AbortSignal.timeout(3000),
+        })
+        if (mResp.ok) {
+          const mData = await mResp.json()
+          models = (mData.data || []).map((m: any) => m.id || '')
+        }
+      } catch {}
+
+      providers.push({
+        slot: p.slot,
+        providerId: p.providerId || '',
+        providerName: p.providerName || p.providerId || '',
+        node: p.node || '',
+        status: p.status || 'unknown',
+        models,
+      })
+    }
+    return providers
+  } catch {
+    return sttProviders
+  }
+}
+
 /** Run full discovery cycle */
 export async function discoverModels(): Promise<DiscoveredModel[]> {
   // Discover all in parallel
-  const [llmModels, embed, rerank, svcData] = await Promise.all([
+  const [llmModels, embed, rerank, svcData, tts, stt] = await Promise.all([
     discoverLlmModels(),
     discoverEmbedModel(),
     discoverRerankModel(),
     discoverServices(),
+    discoverTtsProviders(),
+    discoverSttProviders(),
   ])
 
   // Update caches
@@ -226,6 +351,8 @@ export async function discoverModels(): Promise<DiscoveredModel[]> {
   embedModel = embed
   rerankModel = rerank
   services = svcData
+  ttsProviders = tts
+  sttProviders = stt
 
   // Log results
   console.log(`[ProxlabDiscovery] Discovered ${llmModels.length} LLM models`)
@@ -234,6 +361,8 @@ export async function discoverModels(): Promise<DiscoveredModel[]> {
   }
   if (embed) console.log(`[ProxlabDiscovery] Embeddings: ${embed}`)
   if (rerank) console.log(`[ProxlabDiscovery] Reranker: ${rerank}`)
+  if (tts.length) console.log(`[ProxlabDiscovery] TTS: ${tts.length} providers, ${tts.reduce((s, p) => s + p.voices.length, 0)} voices`)
+  if (stt.length) console.log(`[ProxlabDiscovery] STT: ${stt.length} providers`)
 
   const svcSummary = Object.entries(svcData)
     .filter(([, v]) => Array.isArray(v) && v.length > 0)
@@ -241,67 +370,7 @@ export async function discoverModels(): Promise<DiscoveredModel[]> {
     .join(', ')
   if (svcSummary) console.log(`[ProxlabDiscovery] Services: ${svcSummary}`)
 
-  // Auto-register LLM models in GyShell settings
-  autoRegisterModels(llmModels)
-
   return llmModels
-}
-
-// ─── Auto-registration ──────────────────────────────────────────────────────
-
-function autoRegisterModels(models: DiscoveredModel[]) {
-  const appStore = (window as any).__appStore
-  const settings = appStore?.settings
-  if (!settings?.models?.items) return
-
-  const existingIds = new Set(settings.models.items.map((item: any) => item.model))
-  let added = 0
-
-  for (const model of models) {
-    if (existingIds.has(model.id)) continue
-
-    const friendlyName = model.id
-      .replace(/^koboldcpp\//, '')
-      .replace(/-UD-Q\d+_K(_XL)?(-\d+-of-\d+)?$/i, '')
-      .replace(/\.Q\d+_K$/i, '')
-      .replace(/-/g, ' ')
-
-    const itemId = `proxlab-${model.id.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase()}`
-
-    settings.models.items.push({
-      id: itemId,
-      name: friendlyName,
-      model: model.id,
-      apiKey: 'not-needed',
-      baseUrl: `${PROXLAB_LOCAL}/api/proxy/llm/${model.slot}/v1`,
-      maxTokens: 200000,
-      structuredOutputMode: 'auto',
-      supportsStructuredOutput: true,
-      supportsObjectToolChoice: false,
-      _proxlabSlot: model.slot,
-      _proxlabNode: model.node,
-      _proxlabAutoDiscovered: true,
-    })
-    existingIds.add(model.id)
-    added++
-    console.log(`[ProxlabDiscovery] Auto-registered: ${friendlyName} (slot ${model.slot})`)
-  }
-
-  // Remove stale auto-discovered items
-  const availableModelIds = new Set(models.map(m => m.id))
-  const toRemove: number[] = []
-  settings.models.items.forEach((item: any, idx: number) => {
-    if (item._proxlabAutoDiscovered && !availableModelIds.has(item.model)) {
-      toRemove.push(idx)
-    }
-  })
-  for (const idx of toRemove.reverse()) {
-    settings.models.items.splice(idx, 1)
-  }
-
-  if (added > 0 || toRemove.length > 0) {
-    try { appStore.saveSettings?.() } catch {}
-  }
 }
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
