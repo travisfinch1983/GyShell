@@ -65,8 +65,13 @@ export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) =
   const [rvcModelList, setRvcModelList] = useState<RvcModel[]>([])
   const [refreshing, setRefreshing] = useState(false)
 
-  const ttsConfig: TtsConfig = { ...DEFAULT_TTS_CONFIG, ...store.settings?.ttsConfig }
-  const sttConfig: SttConfig = { ...DEFAULT_STT_CONFIG, ...store.settings?.sttConfig }
+  // Hydrate from store settings, falling back to localStorage, then defaults
+  const storedTts = store.settings?.ttsConfig
+    || (() => { try { return JSON.parse(localStorage.getItem('gyshell-tts-config') || 'null') } catch { return null } })()
+  const storedStt = store.settings?.sttConfig
+    || (() => { try { return JSON.parse(localStorage.getItem('gyshell-stt-config') || 'null') } catch { return null } })()
+  const ttsConfig: TtsConfig = { ...DEFAULT_TTS_CONFIG, ...storedTts }
+  const sttConfig: SttConfig = { ...DEFAULT_STT_CONFIG, ...storedStt }
 
   const loadProviders = () => {
     setTtsProviders(getTtsProviders())
@@ -85,16 +90,14 @@ export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) =
 
   const updateTts = (patch: Partial<TtsConfig>) => {
     const updated = { ...ttsConfig, ...patch }
-    if (!store.settings) return
-    store.settings.ttsConfig = updated
-    store.saveSettings?.()
+    if (store.settings) store.settings.ttsConfig = updated
+    localStorage.setItem('gyshell-tts-config', JSON.stringify(updated))
   }
 
   const updateStt = (patch: Partial<SttConfig>) => {
     const updated = { ...sttConfig, ...patch }
-    if (!store.settings) return
-    store.settings.sttConfig = updated
-    store.saveSettings?.()
+    if (store.settings) store.settings.sttConfig = updated
+    localStorage.setItem('gyshell-stt-config', JSON.stringify(updated))
   }
 
   // Collect all voices and RVC models

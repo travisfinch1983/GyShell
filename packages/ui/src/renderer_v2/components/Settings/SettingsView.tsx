@@ -1417,6 +1417,8 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                         </div>
                         <div className="profile-field">
                           <label>Chat Model</label>
+                          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                          <div style={{ flex: 1 }}>
                           <Select
                               value={(p as any).chatModelId || ""}
                               onChange={(id) =>
@@ -1433,10 +1435,15 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                                 })) || []),
                             ]}
                           />
+                          </div>
+                          <ProfileVoiceButton profile={p} roleKey="chat" store={store} />
+                          </div>
                         </div>
                         <div className="profile-field">
                           <label>{t.settings.actionModel}</label>
-                          <Select
+                                                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                          <div style={{ flex: 1 }}>
+<Select
                               value={p.actionModelId || ""}
                               onChange={(id) =>
                                 store.saveProfile({
@@ -1452,10 +1459,15 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                                 })) || []),
                             ]}
                           />
+                          </div>
+                          <ProfileVoiceButton profile={p} roleKey="action" store={store} />
+                          </div>
                         </div>
                         <div className="profile-field">
                           <label>{t.settings.thinkingModel}</label>
-                          <Select
+                                                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                          <div style={{ flex: 1 }}>
+<Select
                               value={p.thinkingModelId || ""}
                               onChange={(id) =>
                                 store.saveProfile({
@@ -1471,13 +1483,18 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                                 })) || []),
                             ]}
                           />
+                          </div>
+                          <ProfileVoiceButton profile={p} roleKey="thinking" store={store} />
+                          </div>
                         </div>
                         <div className="profile-field">
                           <div className="profile-field-label-with-info">
                             <label>{t.settings.compactionModel}</label>
                             <InfoTooltip content={t.settings.tooltips.compactionModel} />
                           </div>
-                          <Select
+                                                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                          <div style={{ flex: 1 }}>
+<Select
                               value={p.compactionModelId || ""}
                               onChange={(id) =>
                                 store.saveProfile({
@@ -1493,10 +1510,15 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                                 })) || []),
                             ]}
                           />
+                          </div>
+                          <ProfileVoiceButton profile={p} roleKey="compaction" store={store} />
+                          </div>
                         </div>
                         <div className="profile-field">
                           <label>Coder Model</label>
-                          <Select
+                                                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                          <div style={{ flex: 1 }}>
+<Select
                               value={(p as any).coderModelId || ""}
                               onChange={(id) =>
                                 store.saveProfile({
@@ -1512,10 +1534,15 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                                 })) || []),
                             ]}
                           />
+                          </div>
+                          <ProfileVoiceButton profile={p} roleKey="coder" store={store} />
+                          </div>
                         </div>
                         <div className="profile-field">
                           <label>Creative Model</label>
-                          <Select
+                                                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                          <div style={{ flex: 1 }}>
+<Select
                               value={(p as any).creativeModelId || ""}
                               onChange={(id) =>
                                 store.saveProfile({
@@ -1531,10 +1558,15 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                                 })) || []),
                             ]}
                           />
+                          </div>
+                          <ProfileVoiceButton profile={p} roleKey="creative" store={store} />
+                          </div>
                         </div>
                         <div className="profile-field">
                           <label>Architect Model</label>
-                          <Select
+                                                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                          <div style={{ flex: 1 }}>
+<Select
                               value={(p as any).architectModelId || ""}
                               onChange={(id) =>
                                 store.saveProfile({
@@ -1550,10 +1582,15 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                                 })) || []),
                             ]}
                           />
+                          </div>
+                          <ProfileVoiceButton profile={p} roleKey="architect" store={store} />
+                          </div>
                         </div>
                         <div className="profile-field">
                           <label>Scout Model</label>
-                          <Select
+                                                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                          <div style={{ flex: 1 }}>
+<Select
                               value={(p as any).scoutModelId || ""}
                               onChange={(id) =>
                                 store.saveProfile({
@@ -1569,6 +1606,9 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                                 })) || []),
                             ]}
                           />
+                          </div>
+                          <ProfileVoiceButton profile={p} roleKey="scout" store={store} />
+                          </div>
                         </div>
                         <RolePromptsEditor profile={p} store={store} />
                       </div>
@@ -2637,6 +2677,78 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
     );
   },
 );
+
+// ─── Profile Voice Button ────────────────────────────────────────────────────
+
+import { VoiceSelector } from './TtsSettingsPanel'
+import { getTtsProviders, getRvcModels } from '../../services/ProxlabDiscovery'
+
+const ProfileVoiceButton: React.FC<{
+  profile: any
+  roleKey: string
+  store: any
+}> = ({ profile, roleKey, store }) => {
+  const [showSelector, setShowSelector] = React.useState(false)
+
+  const ttsConfig = {
+    enabled: true,
+    dualPipeline: true,
+    rvcEnabled: false,
+    defaultVoice: 'default',
+    defaultModel: 'f5-tts',
+    rvcModel: '',
+    preferredProviders: [] as number[],
+    rvcProviders: [] as number[],
+    ...store.settings?.ttsConfig,
+    ...((() => { try { return JSON.parse(localStorage.getItem('gyshell-tts-config') || 'null') } catch { return null } })()),
+  }
+
+  const isTtsAvailable = ttsConfig.enabled && getTtsProviders().length > 0
+  const voiceSettings = profile.voiceSettings || {}
+  const roleVoice = voiceSettings[roleKey]
+  const hasVoice = !!roleVoice?.voice
+
+  const allVoices = getTtsProviders().flatMap((p: any) => p.voices)
+  const uniqueVoices = [...new Set(allVoices)]
+  const rvcModelList = getRvcModels()
+
+  const handleSave = (voice: string, rvcVoice?: string) => {
+    const newVoiceSettings = { ...voiceSettings }
+    if (voice === 'default' && !rvcVoice) {
+      delete newVoiceSettings[roleKey]
+    } else {
+      newVoiceSettings[roleKey] = { voice, rvcVoice }
+    }
+    store.saveProfile({
+      ...profile,
+      voiceSettings: Object.keys(newVoiceSettings).length > 0 ? newVoiceSettings : undefined,
+    } as any)
+    setShowSelector(false)
+  }
+
+  return (
+    <>
+      <button
+        className={`profile-voice-btn ${!isTtsAvailable ? 'disabled' : hasVoice ? 'has-voice' : ''}`}
+        onClick={() => isTtsAvailable && setShowSelector(true)}
+        title={!isTtsAvailable ? 'No TTS system configured' : hasVoice ? `Voice: ${roleVoice.voice}` : 'Set voice for this role'}
+      >
+        <Volume2 size={13} />
+      </button>
+      {showSelector && (
+        <VoiceSelector
+          onClose={() => setShowSelector(false)}
+          onSave={handleSave}
+          currentVoice={roleVoice?.voice}
+          currentRvcVoice={roleVoice?.rvcVoice}
+          ttsConfig={ttsConfig}
+          voices={uniqueVoices}
+          rvcModels={rvcModelList}
+        />
+      )}
+    </>
+  )
+}
 
 // ─── Role Prompts Editor ─────────────────────────────────────────────────────
 
