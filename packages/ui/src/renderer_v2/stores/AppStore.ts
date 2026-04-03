@@ -88,6 +88,7 @@ export type SettingsSection =
   | 'theme'
   | 'models'
   | 'security'
+  | 'tts'
   | 'tools'
   | 'skills'
   | 'memory'

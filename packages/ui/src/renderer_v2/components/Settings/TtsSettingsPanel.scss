@@ -1,0 +1,255 @@
+/* TTS & STT Settings Panel */
+
+.tts-settings-panel {
+  padding: 0;
+}
+
+.tts-section {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.tts-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+  border-bottom: 1px solid var(--border);
+}
+
+.tts-section-body {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tts-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.tts-field label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
+.tts-field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tts-select, .tts-input {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--panel-bg);
+  color: var(--fg);
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.tts-select:focus, .tts-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.tts-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.tts-toggle input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.tts-toggle-label {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.tts-hint {
+  font-size: 9px;
+  color: var(--fg-faint);
+  line-height: 1.3;
+}
+
+.tts-empty {
+  font-size: 11px;
+  color: var(--fg-faint);
+  font-style: italic;
+  padding: 4px 0;
+}
+
+.tts-providers-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+.tts-providers-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--fg-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.tts-provider-badge {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  color: var(--fg-muted);
+}
+
+.tts-provider-badge .active {
+  color: #22c55e;
+}
+
+/* ─── Voice Selector Popup ─────────────────────────────────── */
+
+.voice-selector-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.voice-selector-popup {
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 320px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.voice-selector-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--fg);
+  border-bottom: 1px solid var(--border);
+}
+
+.voice-selector-close {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+.voice-selector-close:hover {
+  background: var(--panel-bg-2);
+  color: var(--fg);
+}
+
+.voice-selector-body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.voice-selector-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.voice-selector-save {
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  padding: 4px 12px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.voice-selector-save:hover {
+  opacity: 0.9;
+}
+
+.voice-selector-cancel {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-muted);
+  padding: 4px 12px;
+  border-radius: 3px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.voice-selector-cancel:hover {
+  background: var(--panel-bg-2);
+}
+
+/* ─── Speaker button on profile cards ──────────────────────── */
+
+.profile-voice-btn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  color: var(--fg-faint);
+  transition: all 0.15s;
+}
+
+.profile-voice-btn:hover {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  color: var(--fg);
+}
+
+.profile-voice-btn.has-voice {
+  color: var(--accent);
+}
+
+.profile-voice-btn.disabled {
+  color: #ef4444;
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.profile-voice-btn.disabled:hover {
+  background: transparent;
+}

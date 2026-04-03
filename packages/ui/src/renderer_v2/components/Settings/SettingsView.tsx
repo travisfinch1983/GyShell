@@ -21,6 +21,7 @@ import {
   Info,
   AlertTriangle,
   Database,
+  Volume2,
 } from "lucide-react";
 import { observer } from "mobx-react-lite";
 import type { AppStore } from "../../stores/AppStore";
@@ -32,6 +33,8 @@ import { ConfirmDialog } from "../Common/ConfirmDialog";
 import { NumericInput } from "../Common/NumericInput";
 import { InfoTooltip } from "../Common/InfoTooltip";
 import { ProxlabServicesPanel } from "./ProxlabServicesPanel";
+import { TtsSettingsPanel } from "./TtsSettingsPanel";
+import "./TtsSettingsPanel.scss";
 import { Select } from "../../platform/Select";
 import { ShortcutRecorder } from "./ShortcutRecorder";
 import { getDefaultCommandDraftShortcut } from "../../lib/commandDraftShortcut";
@@ -680,6 +683,21 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
               <Cpu size={16} strokeWidth={2} />
             </span>
             <span>{t.settings.models}</span>
+          </div>
+          <div
+              className={
+                store.settingsSection === "tts"
+                  ? "settings-nav-item is-active"
+                  : "settings-nav-item"
+              }
+              onClick={() => store.setSettingsSection("tts")}
+            role="button"
+            tabIndex={0}
+          >
+            <span className="icon">
+              <Volume2 size={16} strokeWidth={2} />
+            </span>
+            <span>TTS & STT</span>
           </div>
           <div
               className={
@@ -1756,6 +1774,10 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
             </>
           ) : null}
 
+            {store.settingsSection === "tts" ? (
+              <TtsSettingsPanel store={store} />
+            ) : null}
+
             {store.settingsSection === "tools" ? (
             <>
               <div className="settings-section-header">
@@ -2628,9 +2650,6 @@ function getEffectiveDefaults(store: any): Record<string, string> {
   const savedDefaults = store?.settings?.models?.defaultRolePrompts || {};
   return { ...CODE_DEFAULT_PROMPTS, ...savedDefaults };
 }
-
-// Keep a compat reference for the RolePromptsEditor
-const DEFAULT_PROMPTS: Record<string, string> = CODE_DEFAULT_PROMPTS;
 
 // ─── Default System Prompts Editor ───────────────────────────────────────────
 // Edits the base default prompts that all new profiles inherit from.
