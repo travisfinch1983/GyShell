@@ -480,10 +480,14 @@ export class MinionRouter {
     })
     console.log(`[MinionRouter] ═════════════`)
 
-    // Set up abort controller
+    // Set up abort controller with 5 minute timeout for long generations
     this.abortControllers.get(role)?.abort()
     const abortController = new AbortController()
     this.abortControllers.set(role, abortController)
+    const timeoutId = setTimeout(() => {
+      console.warn(`[MinionRouter] Request to ${role} timed out after 5 minutes`)
+      abortController.abort()
+    }, 300000) // 5 min
 
     try {
       const resp = await fetch(`${endpoint.baseUrl}/chat/completions`, {
@@ -546,15 +550,21 @@ export class MinionRouter {
 
     } catch (err: any) {
       if (err.name === 'AbortError') {
-        console.log(`[MinionRouter] Request to ${minion.friendlyName} cancelled`)
+        console.log(`[MinionRouter] Request to ${minion.friendlyName} cancelled/timed out`)
+        this.store.updateMinionStatus(minion.id, 'error', 'Request timed out')
+        injectChatMessage('assistant', `**[${minion.friendlyName} ✗ Timeout]**\n\nRequest timed out after 5 minutes. The model may still be generating — try again or send a simpler request.`, {
+          modelName: minion.friendlyName,
+        })
       } else {
-        console.error(`[MinionRouter] Fetch error:`, err)
+        console.error(`[MinionRouter] Fetch error for ${minion.friendlyName}:`, err)
+        console.error(`[MinionRouter] Endpoint was: ${endpoint.baseUrl}/chat/completions`)
         this.store.updateMinionStatus(minion.id, 'error', err.message)
-        injectChatMessage('assistant', `**[${minion.friendlyName} ✗ Error]**\n\n${err.message}`, {
+        injectChatMessage('assistant', `**[${minion.friendlyName} ✗ Error]**\n\n${err.message}\n\nEndpoint: ${endpoint.baseUrl}`, {
           modelName: minion.friendlyName,
         })
       }
     } finally {
+      clearTimeout(timeoutId)
       this.abortControllers.delete(role)
     }
   }
