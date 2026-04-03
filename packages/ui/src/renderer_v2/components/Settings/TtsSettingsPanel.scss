@@ -265,11 +265,17 @@
   display: flex;
   align-items: center;
   gap: 4px;
+  width: 100%;
 }
 
 .profile-select-with-voice .profile-select-wrap {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+}
+
+.profile-select-with-voice .profile-select-wrap .win-select-trigger {
+  width: 100%;
 }
 
 /* ─── Speaker button on profile cards ──────────────────────── */
