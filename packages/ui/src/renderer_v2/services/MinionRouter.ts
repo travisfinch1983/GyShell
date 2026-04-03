@@ -275,6 +275,8 @@ function rewriteEndpointForBrowser(baseUrl: string): string {
 // ─── Per-model conversation history ──────────────────────────────────────────
 
 const roleConversations = new Map<string, Array<{ role: string; content: string }>>()
+// Expose for clearing from UI (Clear Chat View)
+;(window as any).__roleConversations = roleConversations
 const MAX_CONVERSATION_TURNS = 10
 
 function getRoleHistory(role: string): Array<{ role: string; content: string }> {

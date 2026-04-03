@@ -929,12 +929,21 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
                   if (!activeSessionId) return
                   // Clear minion messages from localStorage
                   localStorage.removeItem('gyshell-minion-chat-messages')
-                  // Clear the MinionStore messages
+                  // Clear the MinionStore messages (activity feed)
                   const ms = (window as any).__minionStore
                   if (ms) ms.messages.length = 0
-                  // Reload to show clean chat (native messages stay in backend)
-                  window.location.reload()
-                }}
+                  // Clear the ChatStore session messages (visible chat bubbles)
+                  store.chat.clear()
+                  // Clear minion conversation history so models start fresh
+                  const mr = (window as any).__minionRouter
+                  if (mr) {
+                    // Reset per-role conversation histories
+                    try { (window as any).__roleConversations?.clear() } catch {}
+                  }
+                  // Clear transcript
+                  const ts = (window as any).__transcriptService
+                  if (ts) ts.clearChatTranscript?.()
+                }
               >
                 Clear Chat View
               </button>
