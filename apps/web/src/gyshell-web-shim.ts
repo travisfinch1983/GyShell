@@ -12,9 +12,12 @@ import { GatewayClient } from '../../../packages/mobile-web/src/gateway-client'
 const client = new GatewayClient()
 
 const GATEWAY_TOKEN = (window as any).__GYSHELL_ACCESS_TOKEN__ || ''
+const isSecure = window.location.protocol === 'https:'
 const baseGatewayUrl =
   (window as any).__GYSHELL_GATEWAY_URL__ ||
-  `ws://${window.location.hostname}:17888`
+  (isSecure
+    ? `wss://gyshell-ws.${window.location.hostname.split('.').slice(1).join('.')}`
+    : `ws://${window.location.hostname}:17888`)
 const GATEWAY_URL = GATEWAY_TOKEN
   ? `${baseGatewayUrl}?access_token=${encodeURIComponent(GATEWAY_TOKEN)}`
   : baseGatewayUrl
