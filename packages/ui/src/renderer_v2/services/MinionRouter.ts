@@ -236,10 +236,35 @@ function getModelEndpoint(role: string): ModelEndpoint | null {
   if (!item) return null
 
   return {
-    baseUrl: item.baseUrl,
+    baseUrl: rewriteEndpointForBrowser(item.baseUrl),
     modelId: item.model,
     apiKey: item.apiKey || 'not-needed',
   }
+}
+
+/**
+ * Rewrite model endpoint URLs for browser-side fetch.
+ *
+ * When the page is served over HTTPS (e.g., via Cloudflare tunnel),
+ * the browser can't fetch from http:// endpoints (mixed content blocked).
+ * The Vite dev server has a proxy at /proxlab-api/* that forwards to ProxLab.
+ * This rewrites ProxLab URLs to use the proxy, making them same-origin.
+ *
+ * Backend probes use the original URL (they run server-side in Node.js).
+ * This function only runs in the browser (MinionRouter is browser-only).
+ */
+function rewriteEndpointForBrowser(baseUrl: string): string {
+  if (!baseUrl) return baseUrl
+
+  // Rewrite http://10.0.0.140:7777/api/proxy/... → /proxlab-api/...
+  const localMatch = baseUrl.match(/^https?:\/\/10\.0\.0\.140:7777\/api\/proxy\/(.*)/)
+  if (localMatch) return `/proxlab-api/${localMatch[1]}`
+
+  // Rewrite http(s)://proxlab.deeveeyant.com/api/proxy/... → /proxlab-api/...
+  const domainMatch = baseUrl.match(/^https?:\/\/proxlab\.deeveeyant\.com\/api\/proxy\/(.*)/)
+  if (domainMatch) return `/proxlab-api/${domainMatch[1]}`
+
+  return baseUrl
 }
 
 // ─── Per-model conversation history ──────────────────────────────────────────

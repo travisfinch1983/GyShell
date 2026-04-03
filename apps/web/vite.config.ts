@@ -33,5 +33,15 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 17889,
     allowedHosts: ['gyshell.deeveeyant.com'],
+    proxy: {
+      // Proxy ProxLab LLM API requests through Vite dev server
+      // MinionRouter rewrites http://10.0.0.140:7777/api/proxy/llm/... to /proxlab-api/llm/...
+      // so the browser makes same-origin requests (no CORS, no mixed content)
+      '/proxlab-api': {
+        target: 'http://10.0.0.140:7777',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/proxlab-api/, '/api/proxy'),
+      },
+    },
   }
 })
