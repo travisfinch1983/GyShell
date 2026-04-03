@@ -1400,22 +1400,7 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                       </div>
 
                       <div className="profile-body">
-                        <div className="profile-field">
-                          <label>Orchestrator (Router)</label>
-                          <Select
-                            value={p.globalModelId}
-                              onChange={(id) =>
-                                store.saveProfile({ ...p, globalModelId: id })
-                              }
-                              options={
-                                store.settings?.models.items.map((m) => ({
-                                  value: m.id,
-                                  label: m.name,
-                                })) || []
-                              }
-                          />
-                        </div>
-                        <div className="profile-field">
+                                                <div className="profile-field">
                           <label>Chat Model</label>
                           <div className="profile-select-with-voice">
                           <div className="profile-select-wrap">
@@ -1437,81 +1422,6 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                           />
                           </div>
                           <ProfileVoiceButton profile={p} roleKey="chat" store={store} />
-                          </div>
-                        </div>
-                        <div className="profile-field">
-                          <label>{t.settings.actionModel}</label>
-                                                    <div className="profile-select-with-voice">
-                          <div className="profile-select-wrap">
-<Select
-                              value={p.actionModelId || ""}
-                              onChange={(id) =>
-                                store.saveProfile({
-                                  ...p,
-                                  actionModelId: id || undefined,
-                                })
-                              }
-                            options={[
-                                { value: "", label: "(None)" },
-                                ...(store.settings?.models.items.map((m) => ({
-                                  value: m.id,
-                                  label: m.name,
-                                })) || []),
-                            ]}
-                          />
-                          </div>
-                          <ProfileVoiceButton profile={p} roleKey="action" store={store} />
-                          </div>
-                        </div>
-                        <div className="profile-field">
-                          <label>{t.settings.thinkingModel}</label>
-                                                    <div className="profile-select-with-voice">
-                          <div className="profile-select-wrap">
-<Select
-                              value={p.thinkingModelId || ""}
-                              onChange={(id) =>
-                                store.saveProfile({
-                                  ...p,
-                                  thinkingModelId: id || undefined,
-                                })
-                              }
-                            options={[
-                                { value: "", label: "(None)" },
-                                ...(store.settings?.models.items.map((m) => ({
-                                  value: m.id,
-                                  label: m.name,
-                                })) || []),
-                            ]}
-                          />
-                          </div>
-                          <ProfileVoiceButton profile={p} roleKey="thinking" store={store} />
-                          </div>
-                        </div>
-                        <div className="profile-field">
-                          <div className="profile-field-label-with-info">
-                            <label>{t.settings.compactionModel}</label>
-                            <InfoTooltip content={t.settings.tooltips.compactionModel} />
-                          </div>
-                                                    <div className="profile-select-with-voice">
-                          <div className="profile-select-wrap">
-<Select
-                              value={p.compactionModelId || ""}
-                              onChange={(id) =>
-                                store.saveProfile({
-                                  ...p,
-                                  compactionModelId: id || undefined,
-                                })
-                              }
-                            options={[
-                                { value: "", label: "(None)" },
-                                ...(store.settings?.models.items.map((m) => ({
-                                  value: m.id,
-                                  label: m.name,
-                                })) || []),
-                            ]}
-                          />
-                          </div>
-                          <ProfileVoiceButton profile={p} roleKey="compaction" store={store} />
                           </div>
                         </div>
                         <div className="profile-field">
@@ -1610,7 +1520,97 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                           <ProfileVoiceButton profile={p} roleKey="scout" store={store} />
                           </div>
                         </div>
-                        <RolePromptsEditor profile={p} store={store} />
+                        <div className="profile-field">
+                          <label>Orchestrator (Router)</label>
+                          <Select
+                            value={p.globalModelId}
+                              onChange={(id) =>
+                                store.saveProfile({ ...p, globalModelId: id })
+                              }
+                              options={
+                                store.settings?.models.items.map((m) => ({
+                                  value: m.id,
+                                  label: m.name,
+                                })) || []
+                              }
+                          />
+                        </div>
+                        <div className="profile-field">
+                          <label>{t.settings.actionModel}</label>
+                          <div className="profile-select-with-voice">
+                          <div className="profile-select-wrap">
+                          <Select
+                              value={p.actionModelId || ""}
+                              onChange={(id) =>
+                                store.saveProfile({
+                                  ...p,
+                                  actionModelId: id || undefined,
+                                })
+                              }
+                            options={[
+                                { value: "", label: "(None)" },
+                                ...(store.settings?.models.items.map((m) => ({
+                                  value: m.id,
+                                  label: m.name,
+                                })) || []),
+                            ]}
+                          />
+                          </div>
+                          <ProfileVoiceButton profile={p} roleKey="action" store={store} />
+                          </div>
+                        </div>
+                        <div className="profile-field">
+                          <label>{t.settings.thinkingModel}</label>
+                          <div className="profile-select-with-voice">
+                          <div className="profile-select-wrap">
+                          <Select
+                              value={p.thinkingModelId || ""}
+                              onChange={(id) =>
+                                store.saveProfile({
+                                  ...p,
+                                  thinkingModelId: id || undefined,
+                                })
+                              }
+                            options={[
+                                { value: "", label: "(None)" },
+                                ...(store.settings?.models.items.map((m) => ({
+                                  value: m.id,
+                                  label: m.name,
+                                })) || []),
+                            ]}
+                          />
+                          </div>
+                          <ProfileVoiceButton profile={p} roleKey="thinking" store={store} />
+                          </div>
+                        </div>
+                        <div className="profile-field">
+                          <div className="profile-field-label-with-info">
+                            <label>{t.settings.compactionModel}</label>
+                            <InfoTooltip content={t.settings.tooltips.compactionModel} />
+                          </div>
+                          <div className="profile-select-with-voice">
+                          <div className="profile-select-wrap">
+                          <Select
+                              value={p.compactionModelId || ""}
+                              onChange={(id) =>
+                                store.saveProfile({
+                                  ...p,
+                                  compactionModelId: id || undefined,
+                                })
+                              }
+                            options={[
+                                { value: "", label: "(None)" },
+                                ...(store.settings?.models.items.map((m) => ({
+                                  value: m.id,
+                                  label: m.name,
+                                })) || []),
+                            ]}
+                          />
+                          </div>
+                          <ProfileVoiceButton profile={p} roleKey="compaction" store={store} />
+                          </div>
+                        </div>
+<RolePromptsEditor profile={p} store={store} />
                       </div>
                     </div>
                     );

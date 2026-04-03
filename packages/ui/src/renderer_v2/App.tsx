@@ -47,6 +47,8 @@ export const App: React.FC = observer(() => {
       setupMinionStatusListener()
       // Start ProxLab model discovery (auto-registers models from LLM proxy)
       startDiscovery()
+      // Re-init minion cards after discovery completes (models may have been synced)
+      setTimeout(() => initMinionsFromProfile(), 5000)
       // Re-inject persisted minion messages after a short delay
       // (ChatStore needs time to hydrate sessions first)
       setTimeout(() => {
@@ -143,16 +145,17 @@ export const App: React.FC = observer(() => {
     if (!profile) return
     const items = settings.models.items
 
+    // Order matches sidebar: selectable roles first, then internal
     const roleMap: Array<{ roleKey: string; role: any; label: string }> = [
-      { roleKey: 'globalModelId', role: 'orchestrator', label: 'Orchestrator' },
       { roleKey: 'chatModelId', role: 'chat', label: 'Chat' },
       { roleKey: 'coderModelId', role: 'coder', label: 'Coder' },
       { roleKey: 'creativeModelId', role: 'creative', label: 'Creative' },
       { roleKey: 'architectModelId', role: 'architect', label: 'Architect' },
+      { roleKey: 'scoutModelId', role: 'scout', label: 'Scout' },
+      { roleKey: 'globalModelId', role: 'orchestrator', label: 'Orchestrator' },
+      { roleKey: 'actionModelId', role: 'action', label: 'Action' },
       { roleKey: 'thinkingModelId', role: 'thinking', label: 'Thinking' },
       { roleKey: 'compactionModelId', role: 'compaction', label: 'Compaction' },
-      { roleKey: 'scoutModelId', role: 'scout', label: 'Scout' },
-      { roleKey: 'actionModelId', role: 'action', label: 'Action' },
     ]
 
     const seen = new Set<string>()
@@ -162,13 +165,16 @@ export const App: React.FC = observer(() => {
       seen.add(modelId + role)
       const item = items.find((m: any) => m.id === modelId)
       if (!item) continue
+      // ProxLab auto-discovered models are available by definition
+      const isProxlab = item._proxlabAutoDiscovered === true
+      const isActive = isProxlab || item.profile?.ok === true
       minionStore.registerMinion({
         id: `${modelId}-${role}`,
         role,
         friendlyName: label,
         modelName: item.name || item.model || modelId,
-        status: item.profile?.ok ? 'idle' : 'disconnected',
-        connected: item.profile?.ok === true,
+        status: isActive ? 'idle' : 'disconnected',
+        connected: isActive,
       })
     }
   }
