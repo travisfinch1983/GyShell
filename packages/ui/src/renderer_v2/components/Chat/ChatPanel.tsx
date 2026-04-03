@@ -932,14 +932,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
                   // Clear the MinionStore messages (activity feed)
                   const ms = (window as any).__minionStore
                   if (ms) ms.messages.length = 0
-                  // Clear the ChatStore session messages (visible chat bubbles)
-                  store.chat.clear()
-                  // Clear minion conversation history so models start fresh
-                  const mr = (window as any).__minionRouter
-                  if (mr) {
-                    // Reset per-role conversation histories
-                    try { (window as any).__roleConversations?.clear() } catch {}
+                  // Close all sessions and create a fresh one
+                  const sessionIds = store.chat.sessions.map((s: any) => s.id)
+                  for (const sid of sessionIds) {
+                    store.chat.closeSession(sid)
                   }
+                  // Clear minion conversation history so models start fresh
+                  try { (window as any).__roleConversations?.clear() } catch {}
                   // Clear transcript
                   const ts = (window as any).__transcriptService
                   if (ts) ts.clearChatTranscript?.()

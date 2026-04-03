@@ -159,12 +159,18 @@ export const ProxlabServicesPanel: React.FC = () => {
       </div>
 
       {/* TTS Providers */}
+      {(() => {
+        const ttsServices = (services as any).tts || []
+        const ttsProviderSlots = new Set(tts.map(p => p.slot))
+        const rvcServices = ttsServices.filter((s: any) => !ttsProviderSlots.has(s.slot))
+        const totalCount = tts.length + rvcServices.length
+        return (
       <div className="proxlab-section">
         <div className="proxlab-section-header" onClick={() => toggleSection('tts')}>
           {expandedSections.has('tts') ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           <Volume2 size={12} />
           <span>Text-to-Speech</span>
-          <span className="proxlab-count">{tts.length} providers</span>
+          <span className="proxlab-count">{totalCount} services</span>
         </div>
         {expandedSections.has('tts') && (
           <div className="proxlab-section-body">
@@ -202,9 +208,25 @@ export const ProxlabServicesPanel: React.FC = () => {
                 </div>
               ))
             )}
+            {rvcServices.length > 0 && (
+              <>
+                <div className="proxlab-sub-divider">Voice Conversion (RVC)</div>
+                {rvcServices.map((svc: any) => (
+                  <div key={svc.slot} className="proxlab-item">
+                    <CircleDot size={8} className="proxlab-dot active" />
+                    <span className="proxlab-item-name">{svc.provider || 'RVC'}</span>
+                    <span className="proxlab-item-meta">slot {svc.slot}</span>
+                    <span className="proxlab-item-meta">{svc.node}</span>
+                    <span className="proxlab-tag active">pipeline</span>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
         )}
       </div>
+        )
+      })()}
 
       {/* STT Providers */}
       <div className="proxlab-section">

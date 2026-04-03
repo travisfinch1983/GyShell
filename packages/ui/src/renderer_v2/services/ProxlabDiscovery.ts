@@ -370,7 +370,76 @@ export async function discoverModels(): Promise<DiscoveredModel[]> {
     .join(', ')
   if (svcSummary) console.log(`[ProxlabDiscovery] Services: ${svcSummary}`)
 
+  // Sync discovered LLM models into settings.models.items so they appear
+  // in profile role dropdowns. Marked with _proxlabAutoDiscovered so the
+  // "External Model Connections" UI list filters them out.
+  syncModelsToSettings(llmModels)
+
   return llmModels
+}
+
+/**
+ * Sync discovered models into GyShell settings for profile dropdown population.
+ * Adds new models, removes stale ones. Does not touch user-created items.
+ */
+function syncModelsToSettings(models: DiscoveredModel[]) {
+  const appStore = (window as any).__appStore
+  const settings = appStore?.settings
+  if (!settings?.models?.items) return
+
+  const availableIds = new Set(models.map(m => m.id))
+  const existingProxlab = new Map<string, number>()
+
+  // Index existing auto-discovered items
+  settings.models.items.forEach((item: any, idx: number) => {
+    if (item._proxlabAutoDiscovered) {
+      existingProxlab.set(item.model, idx)
+    }
+  })
+
+  // Add new models
+  for (const model of models) {
+    if (existingProxlab.has(model.id)) {
+      // Update slot if changed
+      const idx = existingProxlab.get(model.id)!
+      settings.models.items[idx]._proxlabSlot = model.slot
+      continue
+    }
+
+    // Skip if user already has a manual entry for this model
+    if (settings.models.items.some((item: any) => item.model === model.id && !item._proxlabAutoDiscovered)) {
+      continue
+    }
+
+    const friendlyName = model.id
+      .replace(/^koboldcpp\//, '')
+      .replace(/-UD-Q\d+_K(_XL)?(-\d+-of-\d+)?$/i, '')
+      .replace(/\.Q\d+_K$/i, '')
+      .replace(/-/g, ' ')
+
+    settings.models.items.push({
+      id: `proxlab-${model.slot}`,
+      name: friendlyName,
+      model: model.id,
+      apiKey: 'not-needed',
+      baseUrl: `http://10.0.0.140:7777/api/proxy/llm/${model.slot}/v1`,
+      maxTokens: 200000,
+      structuredOutputMode: 'auto',
+      supportsStructuredOutput: true,
+      supportsObjectToolChoice: false,
+      _proxlabSlot: model.slot,
+      _proxlabNode: model.node,
+      _proxlabAutoDiscovered: true,
+    })
+  }
+
+  // Remove stale auto-discovered items
+  for (let i = settings.models.items.length - 1; i >= 0; i--) {
+    const item = settings.models.items[i]
+    if (item._proxlabAutoDiscovered && !availableIds.has(item.model)) {
+      settings.models.items.splice(i, 1)
+    }
+  }
 }
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
