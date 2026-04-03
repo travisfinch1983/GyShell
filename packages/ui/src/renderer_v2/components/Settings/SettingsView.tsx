@@ -1251,6 +1251,8 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
             <>
               <ProxlabServicesPanel />
 
+              <DefaultPromptsEditor store={store} />
+
               <div className="settings-section-header">
                   <div className="settings-section-title">
                     External Model Connections
@@ -2618,14 +2620,134 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
 
 const PROMPT_ROLES = ['chat', 'coder', 'creative', 'architect', 'scout', 'thinking'] as const;
 
-const DEFAULT_PROMPTS: Record<string, string> = {
-  coder: 'You are a code specialist. You write clean, efficient, well-documented code. When asked to create scripts, programs, functions, or anything code-related, provide the complete implementation. Be concise and direct.',
-  creative: 'You are a creative writing specialist. Write engaging, well-crafted text. Be expressive but professional. You handle documentation, descriptions, naming, brainstorming, and any writing-focused tasks.',
-  architect: 'You are a systems architect. Analyze designs, suggest improvements, and think about scalability, maintainability, and trade-offs. Provide detailed technical analysis.',
-  scout: 'You are a quick-check specialist. Give brief, direct answers. Be concise. You handle simple factual questions, status checks, and yes/no queries.',
-  chat: 'You are a helpful assistant. Be conversational and thorough. Answer questions clearly and provide useful explanations.',
-  thinking: 'You are a deep reasoning specialist. Think through problems carefully and explain your reasoning step by step.',
-};
+// Import the real default prompts from MinionRouter
+import { DEFAULT_ROLE_PROMPTS as CODE_DEFAULT_PROMPTS } from '../../services/MinionRouter';
+
+// Resolve effective defaults: saved defaults from settings > code defaults
+function getEffectiveDefaults(store: any): Record<string, string> {
+  const savedDefaults = store?.settings?.models?.defaultRolePrompts || {};
+  return { ...CODE_DEFAULT_PROMPTS, ...savedDefaults };
+}
+
+// Keep a compat reference for the RolePromptsEditor
+const DEFAULT_PROMPTS: Record<string, string> = CODE_DEFAULT_PROMPTS;
+
+// ─── Default System Prompts Editor ───────────────────────────────────────────
+// Edits the base default prompts that all new profiles inherit from.
+
+const DefaultPromptsEditor: React.FC<{ store: any }> = observer(({ store }) => {
+  const [expanded, setExpanded] = React.useState(false);
+  const [editingRole, setEditingRole] = React.useState<string | null>(null);
+  const [editValue, setEditValue] = React.useState('');
+
+  const savedDefaults = store.settings?.models?.defaultRolePrompts || {};
+  const customCount = Object.keys(savedDefaults).length;
+
+  const startEditing = (role: string) => {
+    setEditingRole(role);
+    setEditValue(savedDefaults[role] || CODE_DEFAULT_PROMPTS[role] || '');
+  };
+
+  const savePrompt = () => {
+    if (!editingRole) return;
+    const newDefaults = { ...savedDefaults };
+    const codeDefault = CODE_DEFAULT_PROMPTS[editingRole] || '';
+    if (editValue.trim() === codeDefault.trim() || editValue.trim() === '') {
+      delete newDefaults[editingRole];
+    } else {
+      newDefaults[editingRole] = editValue.trim();
+    }
+    // Save to settings.models.defaultRolePrompts
+    if (!store.settings.models.defaultRolePrompts) store.settings.models.defaultRolePrompts = {};
+    store.settings.models.defaultRolePrompts = Object.keys(newDefaults).length > 0 ? newDefaults : undefined;
+    store.saveSettings?.();
+    setEditingRole(null);
+  };
+
+  const resetToCodeDefault = () => {
+    if (!editingRole) return;
+    setEditValue(CODE_DEFAULT_PROMPTS[editingRole] || '');
+  };
+
+  const cancelEdit = () => {
+    setEditingRole(null);
+  };
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, padding: '6px 0', fontSize: 13 }}
+      >
+        <span style={{ fontSize: 10 }}>{expanded ? '▾' : '▸'}</span>
+        <strong style={{ color: 'var(--fg)' }}>Default System Prompts</strong>
+        <span style={{ fontSize: 10, color: 'var(--fg-faint)' }}>
+          Base prompts inherited by new profiles
+          {customCount > 0 && ` (${customCount} customized)`}
+        </span>
+      </div>
+      {expanded && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+          {PROMPT_ROLES.map((role) => {
+            const isSaved = !!savedDefaults[role];
+            const isEditing = editingRole === role;
+            const displayPrompt = savedDefaults[role] || CODE_DEFAULT_PROMPTS[role] || '';
+            return (
+              <div key={role} style={{ border: '1px solid var(--border)', borderRadius: 4, padding: '4px 8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'capitalize', flex: 1 }}>
+                    {role}
+                    {isSaved && <span style={{ fontSize: 9, color: '#f59e0b', marginLeft: 4 }}>modified</span>}
+                  </span>
+                  <button
+                    onClick={() => isEditing ? savePrompt() : startEditing(role)}
+                    style={{ border: 'none', background: 'transparent', color: 'var(--accent)', fontSize: 10, fontWeight: 700, cursor: 'pointer', padding: '2px 4px' }}
+                  >
+                    {isEditing ? 'Save' : 'Edit'}
+                  </button>
+                  {isEditing && (
+                    <>
+                      <button
+                        onClick={resetToCodeDefault}
+                        style={{ border: 'none', background: 'transparent', color: '#f59e0b', fontSize: 10, cursor: 'pointer', padding: '2px 4px' }}
+                        title="Reset to built-in code default"
+                      >
+                        Reset
+                      </button>
+                      <button
+                        onClick={cancelEdit}
+                        style={{ border: 'none', background: 'transparent', color: 'var(--fg-faint)', fontSize: 10, cursor: 'pointer', padding: '2px 4px' }}
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
+                </div>
+                {isEditing ? (
+                  <textarea
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    style={{
+                      width: '100%', minHeight: 100, marginTop: 4, padding: 6,
+                      fontSize: 11, fontFamily: 'monospace', lineHeight: 1.4,
+                      border: '1px solid var(--accent)', borderRadius: 3,
+                      background: 'var(--panel-bg)', color: 'var(--fg)',
+                      resize: 'vertical',
+                    }}
+                  />
+                ) : (
+                  <div style={{ fontSize: 10, color: 'var(--fg-faint)', marginTop: 2, lineHeight: 1.3, maxHeight: 32, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {displayPrompt.substring(0, 100)}...
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+});
 
 const RolePromptsEditor: React.FC<{ profile: any; store: any }> = observer(({ profile, store }) => {
   const [expanded, setExpanded] = React.useState(false);
@@ -2633,16 +2755,17 @@ const RolePromptsEditor: React.FC<{ profile: any; store: any }> = observer(({ pr
   const [editValue, setEditValue] = React.useState('');
 
   const currentPrompts = profile.rolePrompts || {};
+  const effectiveDefaults = getEffectiveDefaults(store);
 
   const startEditing = (role: string) => {
     setEditingRole(role);
-    setEditValue(currentPrompts[role] || DEFAULT_PROMPTS[role] || '');
+    setEditValue(currentPrompts[role] || effectiveDefaults[role] || '');
   };
 
   const savePrompt = () => {
     if (!editingRole) return;
     const newPrompts = { ...currentPrompts };
-    const defaultVal = DEFAULT_PROMPTS[editingRole] || '';
+    const defaultVal = effectiveDefaults[editingRole] || '';
     if (editValue.trim() === defaultVal.trim() || editValue.trim() === '') {
       delete newPrompts[editingRole];
     } else {
@@ -2654,7 +2777,7 @@ const RolePromptsEditor: React.FC<{ profile: any; store: any }> = observer(({ pr
 
   const resetPrompt = () => {
     if (!editingRole) return;
-    setEditValue(DEFAULT_PROMPTS[editingRole] || '');
+    setEditValue(effectiveDefaults[editingRole] || '');
   };
 
   const cancelEdit = () => {
@@ -2724,7 +2847,7 @@ const RolePromptsEditor: React.FC<{ profile: any; store: any }> = observer(({ pr
                   />
                 ) : (
                   <div style={{ fontSize: 10, color: 'var(--ink-soft)', marginTop: 2, lineHeight: 1.3, maxHeight: 32, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {(currentPrompts[role] || DEFAULT_PROMPTS[role] || '').substring(0, 80)}...
+                    {(currentPrompts[role] || effectiveDefaults[role] || '').substring(0, 80)}...
                   </div>
                 )}
               </div>

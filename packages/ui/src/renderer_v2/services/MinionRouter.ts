@@ -294,13 +294,13 @@ function addToRoleHistory(role: string, msg: { role: string; content: string }) 
 
 // ─── System prompts ─────────────────────────────────────────────────────────
 
-const SPECIALIST_PREAMBLE = `You are part of a multi-model team. The user is chatting with you through a group chat interface. Be direct, helpful, and thorough. Do not refuse reasonable requests. Do not lecture about safety, ethics, or your limitations unless the request is genuinely harmful.
+export const SPECIALIST_PREAMBLE = `You are part of a multi-model team. The user is chatting with you through a group chat interface. Be direct, helpful, and thorough. Do not refuse reasonable requests. Do not lecture about safety, ethics, or your limitations unless the request is genuinely harmful.
 
 When you reason through a problem, wrap your thinking in <think>...</think> tags. This is expected and encouraged — it helps the user understand your reasoning when they choose to view it. Always use <think> blocks for non-trivial reasoning before giving your answer.
 
 `
 
-const DEFAULT_ROLE_PROMPTS: Record<string, string> = {
+export const DEFAULT_ROLE_PROMPTS: Record<string, string> = {
   chat: `You are the primary assistant in a multi-model group chat. You talk directly with the user and handle most conversations yourself. You are conversational, thoughtful, and thorough.
 
 You also have the ability to delegate tasks to specialist models when appropriate. The available specialists are:
@@ -399,13 +399,19 @@ function getRolePrompt(role: string): string {
   const appStore = (window as any).__appStore
   const settings = appStore?.settings
   if (settings?.models) {
+    // 1. Check profile-level override
     const profile = settings.models.profiles.find(
       (p: any) => p.id === settings.models.activeProfileId
     )
     if (profile?.rolePrompts?.[role]) {
       return profile.rolePrompts[role]
     }
+    // 2. Check saved defaults (user-edited base prompts)
+    if (settings.models.defaultRolePrompts?.[role]) {
+      return settings.models.defaultRolePrompts[role]
+    }
   }
+  // 3. Fall back to code defaults
   return DEFAULT_ROLE_PROMPTS[role] || DEFAULT_ROLE_PROMPTS.chat
 }
 
