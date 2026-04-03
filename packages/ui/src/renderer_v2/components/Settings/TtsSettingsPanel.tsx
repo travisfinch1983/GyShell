@@ -11,6 +11,7 @@
  */
 
 import React, { useState, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { observer } from 'mobx-react-lite'
 import {
   Volume2, Mic, RefreshCw, CircleDot,
@@ -332,7 +333,7 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
   const [voice, setVoice] = useState(currentVoice || ttsConfig.defaultVoice || 'default')
   const [rvcVoice, setRvcVoice] = useState(currentRvcVoice || ttsConfig.rvcModel || '')
 
-  return (
+  return createPortal(
     <div className="voice-selector-overlay" onClick={onClose}>
       <div className="voice-selector-popup" onClick={(e) => e.stopPropagation()}>
         <div className="voice-selector-header">
@@ -398,6 +399,7 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

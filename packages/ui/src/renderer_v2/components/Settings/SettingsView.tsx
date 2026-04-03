@@ -1417,8 +1417,8 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                         </div>
                         <div className="profile-field">
                           <label>Chat Model</label>
-                          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                          <div style={{ flex: 1 }}>
+                          <div className="profile-select-with-voice">
+                          <div className="profile-select-wrap">
                           <Select
                               value={(p as any).chatModelId || ""}
                               onChange={(id) =>
@@ -1441,8 +1441,8 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                         </div>
                         <div className="profile-field">
                           <label>{t.settings.actionModel}</label>
-                                                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                          <div style={{ flex: 1 }}>
+                                                    <div className="profile-select-with-voice">
+                          <div className="profile-select-wrap">
 <Select
                               value={p.actionModelId || ""}
                               onChange={(id) =>
@@ -1465,8 +1465,8 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                         </div>
                         <div className="profile-field">
                           <label>{t.settings.thinkingModel}</label>
-                                                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                          <div style={{ flex: 1 }}>
+                                                    <div className="profile-select-with-voice">
+                          <div className="profile-select-wrap">
 <Select
                               value={p.thinkingModelId || ""}
                               onChange={(id) =>
@@ -1492,8 +1492,8 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                             <label>{t.settings.compactionModel}</label>
                             <InfoTooltip content={t.settings.tooltips.compactionModel} />
                           </div>
-                                                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                          <div style={{ flex: 1 }}>
+                                                    <div className="profile-select-with-voice">
+                          <div className="profile-select-wrap">
 <Select
                               value={p.compactionModelId || ""}
                               onChange={(id) =>
@@ -1516,8 +1516,8 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                         </div>
                         <div className="profile-field">
                           <label>Coder Model</label>
-                                                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                          <div style={{ flex: 1 }}>
+                                                    <div className="profile-select-with-voice">
+                          <div className="profile-select-wrap">
 <Select
                               value={(p as any).coderModelId || ""}
                               onChange={(id) =>
@@ -1540,8 +1540,8 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                         </div>
                         <div className="profile-field">
                           <label>Creative Model</label>
-                                                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                          <div style={{ flex: 1 }}>
+                                                    <div className="profile-select-with-voice">
+                          <div className="profile-select-wrap">
 <Select
                               value={(p as any).creativeModelId || ""}
                               onChange={(id) =>
@@ -1564,8 +1564,8 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                         </div>
                         <div className="profile-field">
                           <label>Architect Model</label>
-                                                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                          <div style={{ flex: 1 }}>
+                                                    <div className="profile-select-with-voice">
+                          <div className="profile-select-wrap">
 <Select
                               value={(p as any).architectModelId || ""}
                               onChange={(id) =>
@@ -1588,8 +1588,8 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                         </div>
                         <div className="profile-field">
                           <label>Scout Model</label>
-                                                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                          <div style={{ flex: 1 }}>
+                                                    <div className="profile-select-with-voice">
+                          <div className="profile-select-wrap">
 <Select
                               value={(p as any).scoutModelId || ""}
                               onChange={(id) =>

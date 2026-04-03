@@ -198,8 +198,12 @@
   color: var(--fg-muted);
 }
 
+/* Override .profile-field select { display:none } which hides native selects */
+.voice-selector-overlay select,
+.voice-selector-body select,
 .voice-selector-body .tts-select,
 .voice-selector-body .tts-input {
+  display: block !important;
   width: 100%;
   padding: 6px 8px;
   border: 1px solid var(--border);
@@ -208,8 +212,14 @@
   color: var(--fg);
   font-size: 11px;
   font-family: inherit;
+  min-height: 30px;
   appearance: auto;
   -webkit-appearance: auto;
+}
+
+.voice-selector-body .tts-select option {
+  background: var(--app-bg);
+  color: var(--fg);
 }
 
 .voice-selector-footer {
@@ -247,6 +257,19 @@
 
 .voice-selector-cancel:hover {
   background: var(--panel-bg-2);
+}
+
+/* ─── Profile field with voice button layout ───────────────── */
+
+.profile-select-with-voice {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.profile-select-with-voice .profile-select-wrap {
+  flex: 1;
+  min-width: 0;
 }
 
 /* ─── Speaker button on profile cards ──────────────────────── */
