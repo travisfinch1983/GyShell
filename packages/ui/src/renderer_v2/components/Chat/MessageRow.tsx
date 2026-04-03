@@ -632,6 +632,7 @@ const MinionParsedMessage: React.FC<{
         {thinking && (
           <button
             className={`minion-thinking-toggle ${thinkingExpanded ? 'active' : ''}`}
+            style={{ color: roleColor }}
             onClick={(e) => { e.stopPropagation(); setThinkingExpanded(!thinkingExpanded); }}
             title={thinkingExpanded ? 'Hide thinking' : 'Show thinking'}
           >
