@@ -125,8 +125,75 @@ export function rehydrateMinionMessages() {
       session.messageIds.length = 0
       session.messageIds.push(...sorted)
     }
+    // Rehydrate per-role conversation history from stored messages
+    // This restores the context that gets sent to models on the next API call
+    rehydrateConversationHistory(stored)
+
   } catch (e) {
     console.warn('[rehydrate] Error:', e)
+  }
+}
+
+/**
+ * Rebuild the per-role conversation history from persisted messages.
+ * Maps stored chat messages back into the roleConversations Map so models
+ * have context after a page refresh.
+ */
+function rehydrateConversationHistory(stored: StoredChatMessage[]) {
+  // Sort by timestamp to maintain conversation order
+  const sorted = [...stored].sort((a, b) => a.timestamp - b.timestamp)
+
+  // Only use recent messages (last N turns per role, matching MAX_CONVERSATION_TURNS)
+  const roleMsgMap = new Map<string, Array<{ role: string; content: string }>>()
+
+  for (const msg of sorted) {
+    // Skip error messages and system messages
+    if (msg.content?.includes('✗ Error') || msg.content?.includes('✗ Timeout')) continue
+    if (msg.role === 'system') continue
+
+    // Determine which role's history this belongs to
+    let targetRole: string | null = null
+
+    if (msg.role === 'assistant' && msg.metadata?.modelName) {
+      // Model response — extract role from model name
+      const modelName = (msg.metadata.modelName as string).toLowerCase()
+      if (modelName.includes('chat') || modelName.includes('122b')) targetRole = 'chat'
+      else if (modelName.includes('coder') || modelName.includes('kat-dev')) targetRole = 'coder'
+      else if (modelName.includes('creative') || modelName.includes('darkidol') || modelName.includes('ballad')) targetRole = 'creative'
+      else if (modelName.includes('architect') || modelName.includes('27b')) targetRole = 'architect'
+      else if (modelName.includes('scout') || modelName.includes('4b')) targetRole = 'scout'
+    } else if (msg.role === 'user' && msg.metadata?.minionTo) {
+      // User message addressed to a specific role
+      targetRole = (msg.metadata.minionTo as string).toLowerCase()
+      // Normalize friendly names to roles
+      if (targetRole === 'chat' || targetRole.includes('122b')) targetRole = 'chat'
+      else if (targetRole.includes('coder') || targetRole.includes('kat-dev')) targetRole = 'coder'
+      else if (targetRole.includes('creative')) targetRole = 'creative'
+      else if (targetRole.includes('architect')) targetRole = 'architect'
+      else if (targetRole.includes('scout')) targetRole = 'scout'
+    }
+
+    if (!targetRole) continue
+
+    if (!roleMsgMap.has(targetRole)) roleMsgMap.set(targetRole, [])
+    const history = roleMsgMap.get(targetRole)!
+
+    // Strip the header we prepend (e.g., "**[Chat ✓]**\n\n")
+    let content = msg.content || ''
+    content = content.replace(/^\*\*\[.*?\]\*\*\s*\n*/, '').trim()
+    if (!content) continue
+
+    history.push({
+      role: msg.role === 'user' ? 'user' : 'assistant',
+      content,
+    })
+  }
+
+  // Apply to roleConversations, keeping only recent turns
+  for (const [role, messages] of roleMsgMap) {
+    const trimmed = messages.slice(-(MAX_CONVERSATION_TURNS * 2))
+    roleConversations.set(role, trimmed)
+    console.log(`[rehydrate] Restored ${trimmed.length} history entries for ${role}`)
   }
 }
 
