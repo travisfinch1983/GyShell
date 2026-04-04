@@ -119,6 +119,11 @@ async function speakTextImmediate(text: string, role?: string): Promise<void> {
   const effectiveVoice = roleVoice.voice || config.defaultVoice || 'default'
   const effectiveRvcModel = roleVoice.rvcVoice || config.rvcModel || ''
 
+  console.log(`[TtsPlayback] Role: ${role || '(none)'}`)
+  console.log(`[TtsPlayback] Role voice settings:`, roleVoice)
+  console.log(`[TtsPlayback] Effective voice: ${effectiveVoice}, RVC: ${effectiveRvcModel}`)
+  console.log(`[TtsPlayback] Global config voice: ${config.defaultVoice}, RVC: ${config.rvcModel}, rvcEnabled: ${config.rvcEnabled}`)
+
   // Build effective config with role overrides applied
   const effectiveConfig = {
     ...config,
@@ -205,6 +210,8 @@ async function speakViaStream(
   if (config.rvcProviders?.length) {
     body.rvc_providers = config.rvcProviders
   }
+
+  console.log(`[TtsPlayback] Stream request body:`, JSON.stringify(body))
 
   const resp = await fetch(`${apiBase}/tts/stream`, {
     method: 'POST',
