@@ -12,6 +12,10 @@ let enabled = false
 let currentAudio: HTMLAudioElement | null = null
 let currentAbort: AbortController | null = null
 
+// Speech queue — messages wait for the current one to finish
+const speechQueue: Array<{ text: string; resolve: () => void }> = []
+let isProcessingQueue = false
+
 // Load saved state
 try {
   enabled = localStorage.getItem('gyshell-tts-auto') === 'true'
@@ -27,6 +31,9 @@ export function setTtsEnabled(on: boolean): void {
 }
 
 export function stopPlayback(): void {
+  // Clear the queue
+  speechQueue.length = 0
+  isProcessingQueue = false
   if (currentAudio) {
     currentAudio.pause()
     currentAudio = null
@@ -49,15 +56,40 @@ function getTtsConfig(): any {
 }
 
 /**
- * Speak a text string using the TTS streaming endpoint.
- * Only call this with clean body text — no thinking blocks, no tool calls.
+ * Process the speech queue — plays items one at a time in order.
+ */
+async function processQueue(): Promise<void> {
+  if (isProcessingQueue) return
+  isProcessingQueue = true
+
+  while (speechQueue.length > 0) {
+    const item = speechQueue[0]
+    try {
+      await speakTextImmediate(item.text)
+    } catch {}
+    speechQueue.shift()
+    item.resolve()
+  }
+
+  isProcessingQueue = false
+}
+
+/**
+ * Queue text for speech. Plays after any currently playing speech finishes.
  */
 export async function speakText(text: string): Promise<void> {
   if (!enabled || !text.trim()) return
 
-  // Stop any current playback
-  stopPlayback()
+  return new Promise<void>((resolve) => {
+    speechQueue.push({ text, resolve })
+    processQueue()
+  })
+}
 
+/**
+ * Speak text immediately (internal — called by queue processor).
+ */
+async function speakTextImmediate(text: string): Promise<void> {
   const config = getTtsConfig()
   if (!config.enabled) return
 
@@ -67,10 +99,8 @@ export async function speakText(text: string): Promise<void> {
 
   try {
     if (config.dualPipeline) {
-      // Use SSE streaming endpoint for dual pipeline
       await speakViaStream(text, config, apiBase, abort)
     } else {
-      // Use simple OpenAI-compatible endpoint
       await speakViaSimple(text, config, apiBase, abort)
     }
   } catch (err: any) {
