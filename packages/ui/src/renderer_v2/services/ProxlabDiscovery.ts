@@ -343,44 +343,28 @@ async function discoverSttProviders(): Promise<SttProvider[]> {
   }
 }
 
-/** Discover RVC voice models from RVC backends directly */
+/** Discover RVC voice models via ProxLab proxy (never direct HTTP — avoids mixed content) */
 async function discoverRvcModels(svcData: Partial<ProxlabServices>): Promise<RvcModel[]> {
-  // Find RVC services from the TTS services list (they have providerId containing 'rvc')
   const ttsSvcs = svcData.tts || []
   const rvcSvcs = ttsSvcs.filter(s => s.provider.toLowerCase().includes('rvc'))
 
   if (rvcSvcs.length === 0) return rvcModels
 
-  // Query the first RVC backend directly for its model list
   const svc = rvcSvcs[0]
+  // Always go through the Vite proxy — direct HTTP is blocked on HTTPS pages
   try {
-    const resp = await fetch(`http://${svc.containerIp}:${svc.port}/models`, {
+    const proxyResp = await fetch(`${API_PREFIX}/tts/${svc.slot}/models`, {
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(5000),
     })
-    if (!resp.ok) return rvcModels
-    const data = await resp.json()
+    if (!proxyResp.ok) return rvcModels
+    const data = await proxyResp.json()
     return (data.models || []).map((m: any) => ({
       name: m.name || '',
       loaded: m.loaded || false,
     }))
   } catch {
-    // Direct access might be blocked — try through the proxy
-    // RVC is a TTS slot, so we can try the proxy path
-    try {
-      const proxyResp = await fetch(`${API_PREFIX}/tts/${svc.slot}/models`, {
-        headers: { Accept: 'application/json' },
-        signal: AbortSignal.timeout(5000),
-      })
-      if (!proxyResp.ok) return rvcModels
-      const data = await proxyResp.json()
-      return (data.models || []).map((m: any) => ({
-        name: m.name || '',
-        loaded: m.loaded || false,
-      }))
-    } catch {
-      return rvcModels
-    }
+    return rvcModels
   }
 }
 

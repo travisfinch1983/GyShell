@@ -234,8 +234,15 @@ function getModelEndpoint(role: string): ModelEndpoint | null {
   const modelId = (profile as any)[fieldName]
   if (!modelId) return null
 
-  const item = settings.models.items.find((m: any) => m.id === modelId)
-  if (!item) return null
+  let item = settings.models.items.find((m: any) => m.id === modelId)
+  // Fallback: if item ID not found, the profile may reference an old ID — try matching by model name
+  if (!item) {
+    item = settings.models.items.find((m: any) => m.model === modelId)
+  }
+  if (!item) {
+    console.warn(`[MinionRouter] No model item found for ${role} (id: ${modelId})`)
+    return null
+  }
 
   // Try ProxLab discovery first — get the slot-based endpoint
   const discovered = getDiscoveredModel(item.model)
