@@ -16,6 +16,8 @@ import {
   GripVertical,
   Volume2,
   VolumeOff,
+  Mic,
+  Radio,
 } from "lucide-react";
 import { observer } from "mobx-react-lite";
 import type { AppStore } from "../../stores/AppStore";
@@ -36,6 +38,12 @@ import { SeamlessOverlayCard } from "./ChatBanner";
 import { resolveFloatingMenuPlacement } from "../../lib/menuPlacement";
 import { isLinux, isWindows } from "../../platform/platform";
 import { isTtsEnabled, setTtsEnabled, stopPlayback } from "../../services/TtsPlayback";
+import {
+  startPushToTalk, stopPushToTalk,
+  startHandsFree, stopHandsFree,
+  setOnTranscript, setOnAutoSend, setOnStateChange,
+  type SttState,
+} from "../../services/SttCapture";
 import { resolveSeamlessOverlayMessages } from "./chatRenderModel";
 import {
   CHAT_PANEL_SESSION_TITLE_CHAR_LIMIT,
@@ -1086,6 +1094,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
             <div className="input-footer">
               <div className="input-left-tools">
                 <TtsToggleButton />
+                <PushToTalkButton richInputRef={richInputRef} store={store} />
+                <HandsFreeButton store={store} />
                 <div
                   className={`chat-profile-selector ${profileSelectorDisabled ? "is-disabled" : ""}`}
                   onClick={() => {
@@ -1195,6 +1205,97 @@ const TtsToggleButton: React.FC = () => {
       title={on ? 'Auto-TTS enabled — click to disable' : 'Enable auto-TTS for model responses'}
     >
       {on ? <Volume2 size={14} /> : <VolumeOff size={14} />}
+    </button>
+  )
+}
+
+// ─── Push-to-Talk Button ────────────────────────────────────────────────────
+
+const PushToTalkButton: React.FC<{ richInputRef: React.RefObject<RichInputHandle | null>; store: any }> = ({ richInputRef }) => {
+  const [state, setState] = React.useState<SttState>('idle')
+
+  React.useEffect(() => {
+    setOnTranscript((text: string) => {
+      // Insert transcribed text into the input box
+      if (richInputRef.current) {
+        // Append to current input content
+        const el = (richInputRef.current as any)?.rootRef?.current
+        if (el) {
+          const current = el.textContent || ''
+          el.textContent = current ? current + ' ' + text : text
+          // Move cursor to end
+          const range = document.createRange()
+          range.selectNodeContents(el)
+          range.collapse(false)
+          const sel = window.getSelection()
+          sel?.removeAllRanges()
+          sel?.addRange(range)
+        }
+      }
+    })
+    setOnStateChange((s: SttState) => setState(s))
+  }, [richInputRef])
+
+  const isRecording = state === 'recording'
+  const isTranscribing = state === 'transcribing'
+
+  const handleClick = () => {
+    if (isRecording) {
+      stopPushToTalk()
+    } else if (state === 'idle') {
+      startPushToTalk()
+    }
+  }
+
+  return (
+    <button
+      className={`stt-push-to-talk ${isRecording ? 'recording' : ''} ${isTranscribing ? 'transcribing' : ''}`}
+      onClick={handleClick}
+      disabled={isTranscribing || state === 'handsfree' || state === 'handsfree-recording'}
+      title={isRecording ? 'Stop recording (click to transcribe)' : isTranscribing ? 'Transcribing...' : 'Push to talk — click to start, click again to stop'}
+    >
+      {isTranscribing ? <Radio size={14} className="pulse" /> : <Mic size={14} />}
+    </button>
+  )
+}
+
+// ─── Hands-Free Button ──────────────────────────────────────────────────────
+
+const HandsFreeButton: React.FC<{ store: any }> = ({ store }) => {
+  const [state, setState] = React.useState<SttState>('idle')
+
+  React.useEffect(() => {
+    setOnAutoSend((text: string) => {
+      // Auto-send transcribed text as a chat message
+      if (text && store) {
+        const sessionId = store.chat?.activeSessionId || store.chat?.sessions?.[0]?.id
+        if (sessionId) {
+          store.sendChatMessage(sessionId, text)
+        }
+      }
+    })
+    setOnStateChange((s: SttState) => setState(s))
+  }, [store])
+
+  const isActive = state === 'handsfree' || state === 'handsfree-recording'
+  const isSpeaking = state === 'handsfree-recording'
+
+  const handleClick = () => {
+    if (isActive) {
+      stopHandsFree()
+    } else if (state === 'idle') {
+      startHandsFree()
+    }
+  }
+
+  return (
+    <button
+      className={`stt-handsfree ${isActive ? 'active' : ''} ${isSpeaking ? 'speaking' : ''}`}
+      onClick={handleClick}
+      disabled={state === 'recording' || state === 'transcribing'}
+      title={isActive ? (isSpeaking ? 'Listening... (speech detected)' : 'Hands-free active — click to stop') : 'Hands-free mode — auto-sends after silence'}
+    >
+      <Radio size={14} />
     </button>
   )
 }

@@ -1076,3 +1076,78 @@ body.chat-drag-selection-suppressed * {
 .tts-auto-toggle.active:hover {
   background: rgba(34, 197, 94, 0.12);
 }
+
+/* ─── STT Push-to-Talk Button ────────────────────────────── */
+
+.stt-push-to-talk {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  color: var(--fg-faint);
+  transition: all 0.15s ease;
+}
+
+.stt-push-to-talk:hover {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  color: var(--fg);
+}
+
+.stt-push-to-talk.recording {
+  color: #ef4444;
+  animation: stt-pulse 1s ease-in-out infinite;
+}
+
+.stt-push-to-talk.transcribing {
+  color: #f59e0b;
+}
+
+.stt-push-to-talk:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.stt-push-to-talk .pulse {
+  animation: stt-pulse 0.8s ease-in-out infinite;
+}
+
+/* ─── STT Hands-Free Button ──────────────────────────────── */
+
+.stt-handsfree {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  color: var(--fg-faint);
+  transition: all 0.15s ease;
+}
+
+.stt-handsfree:hover {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  color: var(--fg);
+}
+
+.stt-handsfree.active {
+  color: #22c55e;
+}
+
+.stt-handsfree.speaking {
+  color: #ef4444;
+  animation: stt-pulse 1s ease-in-out infinite;
+}
+
+.stt-handsfree:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+@keyframes stt-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
