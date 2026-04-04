@@ -2714,10 +2714,12 @@ const ProfileVoiceButton: React.FC<{
 
   const handleSave = (voice: string, rvcVoice?: string) => {
     const newVoiceSettings = { ...voiceSettings }
-    if (voice === 'default' && !rvcVoice) {
+    if (voice === 'default' && (!rvcVoice || rvcVoice === '__none__')) {
       delete newVoiceSettings[roleKey]
     } else {
-      newVoiceSettings[roleKey] = { voice, rvcVoice }
+      // Save rvcVoice as "__none__" to explicitly disable RVC for this role
+      // (distinguishes from undefined which means "use global default")
+      newVoiceSettings[roleKey] = { voice, rvcVoice: rvcVoice || '__none__' }
     }
     store.saveProfile({
       ...profile,

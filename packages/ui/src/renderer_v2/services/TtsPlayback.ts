@@ -117,18 +117,31 @@ async function speakTextImmediate(text: string, role?: string): Promise<void> {
   // Resolve voice: role-specific override > global default
   const roleVoice = getRoleVoiceSettings(role)
   const effectiveVoice = roleVoice.voice || config.defaultVoice || 'default'
-  const effectiveRvcModel = roleVoice.rvcVoice || config.rvcModel || ''
+
+  // RVC: "__none__" means explicitly skip RVC for this role
+  // undefined/missing means use global default
+  let effectiveRvcModel = ''
+  let rvcDisabledForRole = false
+  if (roleVoice.rvcVoice === '__none__') {
+    effectiveRvcModel = ''
+    rvcDisabledForRole = true
+  } else if (roleVoice.rvcVoice) {
+    effectiveRvcModel = roleVoice.rvcVoice
+  } else {
+    effectiveRvcModel = config.rvcModel || ''
+  }
 
   console.log(`[TtsPlayback] Role: ${role || '(none)'}`)
-  console.log(`[TtsPlayback] Role voice settings:`, roleVoice)
-  console.log(`[TtsPlayback] Effective voice: ${effectiveVoice}, RVC: ${effectiveRvcModel}`)
-  console.log(`[TtsPlayback] Global config voice: ${config.defaultVoice}, RVC: ${config.rvcModel}, rvcEnabled: ${config.rvcEnabled}`)
+  console.log(`[TtsPlayback] Role voice settings:`, JSON.stringify(roleVoice))
+  console.log(`[TtsPlayback] Effective voice: ${effectiveVoice}, RVC: ${effectiveRvcModel || '(disabled for role)'}`)
 
   // Build effective config with role overrides applied
   const effectiveConfig = {
     ...config,
     defaultVoice: effectiveVoice,
-    rvcModel: effectiveRvcModel,
+    rvcModel: rvcDisabledForRole ? '' : effectiveRvcModel,
+    // If RVC is explicitly disabled for this role, override rvcEnabled
+    rvcEnabled: rvcDisabledForRole ? false : config.rvcEnabled,
   }
 
   const apiBase = getProxlabApiBase()

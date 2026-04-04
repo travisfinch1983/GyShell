@@ -331,7 +331,8 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
   onClose, onSave, currentVoice, currentRvcVoice, ttsConfig, voices, rvcModels,
 }) => {
   const [voice, setVoice] = useState(currentVoice || ttsConfig.defaultVoice || 'default')
-  const [rvcVoice, setRvcVoice] = useState(currentRvcVoice || ttsConfig.rvcModel || '')
+  // "__none__" means explicitly no RVC — distinguish from empty/undefined which means "use default"
+  const [rvcVoice, setRvcVoice] = useState(currentRvcVoice || '__none__')
 
   return createPortal(
     <div className="voice-selector-overlay" onClick={onClose}>
@@ -367,7 +368,7 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
                   onChange={(e) => setRvcVoice(e.target.value)}
                   className="tts-select"
                 >
-                  <option value="">(None)</option>
+                  <option value="__none__">(None — skip RVC)</option>
                   {rvcModels.map(m => (
                     <option key={m.name} value={m.name}>
                       {m.name}{m.loaded ? ' (loaded)' : ''}
