@@ -13,7 +13,7 @@ let currentAudio: HTMLAudioElement | null = null
 let currentAbort: AbortController | null = null
 
 // Speech queue — messages wait for the current one to finish
-const speechQueue: Array<{ text: string; resolve: () => void }> = []
+const speechQueue: Array<{ text: string; role?: string; resolve: () => void }> = []
 let isProcessingQueue = false
 
 // Load saved state
@@ -65,7 +65,7 @@ async function processQueue(): Promise<void> {
   while (speechQueue.length > 0) {
     const item = speechQueue[0]
     try {
-      await speakTextImmediate(item.text)
+      await speakTextImmediate(item.text, item.role)
     } catch {}
     speechQueue.shift()
     item.resolve()
@@ -75,13 +75,34 @@ async function processQueue(): Promise<void> {
 }
 
 /**
- * Queue text for speech. Plays after any currently playing speech finishes.
+ * Get voice settings for a specific role from the active profile.
  */
-export async function speakText(text: string): Promise<void> {
+function getRoleVoiceSettings(role?: string): { voice?: string; rvcVoice?: string } {
+  if (!role) return {}
+  try {
+    const appStore = (window as any).__appStore
+    const settings = appStore?.settings
+    if (!settings?.models) return {}
+    const profile = settings.models.profiles.find(
+      (p: any) => p.id === settings.models.activeProfileId
+    )
+    if (!profile?.voiceSettings?.[role]) return {}
+    return profile.voiceSettings[role]
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Queue text for speech. Plays after any currently playing speech finishes.
+ * @param text Clean body text to speak
+ * @param role Optional role name — uses role-specific voice if configured
+ */
+export async function speakText(text: string, role?: string): Promise<void> {
   if (!enabled || !text.trim()) return
 
   return new Promise<void>((resolve) => {
-    speechQueue.push({ text, resolve })
+    speechQueue.push({ text, role, resolve })
     processQueue()
   })
 }
@@ -89,19 +110,31 @@ export async function speakText(text: string): Promise<void> {
 /**
  * Speak text immediately (internal — called by queue processor).
  */
-async function speakTextImmediate(text: string): Promise<void> {
+async function speakTextImmediate(text: string, role?: string): Promise<void> {
   const config = getTtsConfig()
   if (!config.enabled) return
+
+  // Resolve voice: role-specific override > global default
+  const roleVoice = getRoleVoiceSettings(role)
+  const effectiveVoice = roleVoice.voice || config.defaultVoice || 'default'
+  const effectiveRvcModel = roleVoice.rvcVoice || config.rvcModel || ''
+
+  // Build effective config with role overrides applied
+  const effectiveConfig = {
+    ...config,
+    defaultVoice: effectiveVoice,
+    rvcModel: effectiveRvcModel,
+  }
 
   const apiBase = getProxlabApiBase()
   const abort = new AbortController()
   currentAbort = abort
 
   try {
-    if (config.dualPipeline) {
-      await speakViaStream(text, config, apiBase, abort)
+    if (effectiveConfig.dualPipeline) {
+      await speakViaStream(text, effectiveConfig, apiBase, abort)
     } else {
-      await speakViaSimple(text, config, apiBase, abort)
+      await speakViaSimple(text, effectiveConfig, apiBase, abort)
     }
   } catch (err: any) {
     if (err.name !== 'AbortError') {

@@ -662,7 +662,7 @@ export class MinionRouter {
       })
 
       // Auto-TTS: speak the clean body text (no thinking, no tool calls)
-      if (isTtsEnabled()) speakText(parsed.body)
+      if (isTtsEnabled()) speakText(parsed.body, role)
 
     } catch (err: any) {
       if (err.name === 'AbortError') {
@@ -854,7 +854,7 @@ export class MinionRouter {
       })
 
       // Auto-TTS: speak the clean text (no thinking, no route tags)
-      if (isTtsEnabled()) speakText(cleanText)
+      if (isTtsEnabled()) speakText(cleanText, 'chat')
 
       // If chat dispatched to a specialist, fire that off in the background
       if (route) {
