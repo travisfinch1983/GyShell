@@ -1049,3 +1049,30 @@ body.chat-drag-selection-suppressed * {
     opacity: 0;
   }
 }
+
+/* ─── TTS Auto-Toggle Button ─────────────────────────────── */
+
+.tts-auto-toggle {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  color: var(--fg-faint);
+  transition: all 0.15s ease;
+}
+
+.tts-auto-toggle:hover {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  color: var(--fg);
+}
+
+.tts-auto-toggle.active {
+  color: #22c55e;
+}
+
+.tts-auto-toggle.active:hover {
+  background: rgba(34, 197, 94, 0.12);
+}

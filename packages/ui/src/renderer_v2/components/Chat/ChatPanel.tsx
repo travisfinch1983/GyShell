@@ -14,6 +14,8 @@ import {
   Play,
   MoreVertical,
   GripVertical,
+  Volume2,
+  VolumeOff,
 } from "lucide-react";
 import { observer } from "mobx-react-lite";
 import type { AppStore } from "../../stores/AppStore";
@@ -33,6 +35,7 @@ import { RichInput, type RichInputHandle } from "./RichInput";
 import { SeamlessOverlayCard } from "./ChatBanner";
 import { resolveFloatingMenuPlacement } from "../../lib/menuPlacement";
 import { isLinux, isWindows } from "../../platform/platform";
+import { isTtsEnabled, setTtsEnabled, stopPlayback } from "../../services/TtsPlayback";
 import { resolveSeamlessOverlayMessages } from "./chatRenderModel";
 import {
   CHAT_PANEL_SESSION_TITLE_CHAR_LIMIT,
@@ -1082,6 +1085,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
 
             <div className="input-footer">
               <div className="input-left-tools">
+                <TtsToggleButton />
                 <div
                   className={`chat-profile-selector ${profileSelectorDisabled ? "is-disabled" : ""}`}
                   onClick={() => {
@@ -1171,6 +1175,29 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
     );
   },
 );
+
+// ─── TTS Toggle Button ──────────────────────────────────────────────────────
+
+const TtsToggleButton: React.FC = () => {
+  const [on, setOn] = React.useState(isTtsEnabled)
+
+  const toggle = () => {
+    const next = !on
+    setOn(next)
+    setTtsEnabled(next)
+    if (!next) stopPlayback()
+  }
+
+  return (
+    <button
+      className={`tts-auto-toggle ${on ? 'active' : ''}`}
+      onClick={toggle}
+      title={on ? 'Auto-TTS enabled — click to disable' : 'Enable auto-TTS for model responses'}
+    >
+      {on ? <Volume2 size={14} /> : <VolumeOff size={14} />}
+    </button>
+  )
+}
 
 // Wrapper to use MinionStore hook inside the ChatPanel
 // MinionChatOverlay removed — specialist messages injected into ChatStore

@@ -11,6 +11,7 @@
 import type { MinionStore, MinionRole } from '../stores/MinionStore'
 import { parseMinionResponse } from './minionMessageParser'
 import { getDiscoveredModel, getSlotEndpoint } from './ProxlabDiscovery'
+import { isTtsEnabled, speakText } from './TtsPlayback'
 
 const MINION_CHAT_STORAGE_KEY = 'gyshell-minion-chat-messages'
 const MAX_STORED_MESSAGES = 200
@@ -653,6 +654,9 @@ export class MinionRouter {
         minionTo: 'user',
       })
 
+      // Auto-TTS: speak the clean body text (no thinking, no tool calls)
+      if (isTtsEnabled()) speakText(parsed.body)
+
     } catch (err: any) {
       if (err.name === 'AbortError') {
         console.log(`[MinionRouter] Request to ${minion.friendlyName} cancelled/timed out`)
@@ -841,6 +845,9 @@ export class MinionRouter {
         minionThinking: parsed.thinking,
         minionTo: 'user',
       })
+
+      // Auto-TTS: speak the clean text (no thinking, no route tags)
+      if (isTtsEnabled()) speakText(cleanText)
 
       // If chat dispatched to a specialist, fire that off in the background
       if (route) {
