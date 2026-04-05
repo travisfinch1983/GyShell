@@ -1414,9 +1414,9 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                               }
                             options={[
                                 { value: "", label: "(None — use Orchestrator)" },
-                                ...(store.settings?.models.items.map((m) => ({
+                                ...(store.settings?.models.items.map((m: any) => ({
                                   value: m.id,
-                                  label: m.name,
+                                  label: m._proxlabDisconnected ? `⚠ ${m.name}` : m.name,
                                 })) || []),
                             ]}
                           />
@@ -1438,9 +1438,9 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                               }
                             options={[
                                 { value: "", label: "(None)" },
-                                ...(store.settings?.models.items.map((m) => ({
+                                ...(store.settings?.models.items.map((m: any) => ({
                                   value: m.id,
-                                  label: m.name,
+                                  label: m._proxlabDisconnected ? `⚠ ${m.name}` : m.name,
                                 })) || []),
                             ]}
                           />
@@ -1462,9 +1462,9 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                               }
                             options={[
                                 { value: "", label: "(None)" },
-                                ...(store.settings?.models.items.map((m) => ({
+                                ...(store.settings?.models.items.map((m: any) => ({
                                   value: m.id,
-                                  label: m.name,
+                                  label: m._proxlabDisconnected ? `⚠ ${m.name}` : m.name,
                                 })) || []),
                             ]}
                           />
@@ -1486,9 +1486,9 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                               }
                             options={[
                                 { value: "", label: "(None)" },
-                                ...(store.settings?.models.items.map((m) => ({
+                                ...(store.settings?.models.items.map((m: any) => ({
                                   value: m.id,
-                                  label: m.name,
+                                  label: m._proxlabDisconnected ? `⚠ ${m.name}` : m.name,
                                 })) || []),
                             ]}
                           />
@@ -1510,9 +1510,9 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                               }
                             options={[
                                 { value: "", label: "(None)" },
-                                ...(store.settings?.models.items.map((m) => ({
+                                ...(store.settings?.models.items.map((m: any) => ({
                                   value: m.id,
-                                  label: m.name,
+                                  label: m._proxlabDisconnected ? `⚠ ${m.name}` : m.name,
                                 })) || []),
                             ]}
                           />
@@ -1528,9 +1528,9 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                                 store.saveProfile({ ...p, globalModelId: id })
                               }
                               options={
-                                store.settings?.models.items.map((m) => ({
+                                store.settings?.models.items.map((m: any) => ({
                                   value: m.id,
-                                  label: m.name,
+                                  label: m._proxlabDisconnected ? `⚠ ${m.name}` : m.name,
                                 })) || []
                               }
                           />
@@ -1549,9 +1549,9 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                               }
                             options={[
                                 { value: "", label: "(None)" },
-                                ...(store.settings?.models.items.map((m) => ({
+                                ...(store.settings?.models.items.map((m: any) => ({
                                   value: m.id,
-                                  label: m.name,
+                                  label: m._proxlabDisconnected ? `⚠ ${m.name}` : m.name,
                                 })) || []),
                             ]}
                           />
@@ -1573,9 +1573,9 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                               }
                             options={[
                                 { value: "", label: "(None)" },
-                                ...(store.settings?.models.items.map((m) => ({
+                                ...(store.settings?.models.items.map((m: any) => ({
                                   value: m.id,
-                                  label: m.name,
+                                  label: m._proxlabDisconnected ? `⚠ ${m.name}` : m.name,
                                 })) || []),
                             ]}
                           />
@@ -1600,9 +1600,9 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                               }
                             options={[
                                 { value: "", label: "(None)" },
-                                ...(store.settings?.models.items.map((m) => ({
+                                ...(store.settings?.models.items.map((m: any) => ({
                                   value: m.id,
-                                  label: m.name,
+                                  label: m._proxlabDisconnected ? `⚠ ${m.name}` : m.name,
                                 })) || []),
                             ]}
                           />

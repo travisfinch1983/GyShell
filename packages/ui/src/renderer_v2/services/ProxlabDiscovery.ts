@@ -473,11 +473,20 @@ function syncModelsToSettings(models: DiscoveredModel[]) {
     })
   }
 
-  // Remove stale auto-discovered items
-  for (let i = settings.models.items.length - 1; i >= 0; i--) {
-    const item = settings.models.items[i]
-    if (item._proxlabAutoDiscovered && !availableIds.has(item.model)) {
-      settings.models.items.splice(i, 1)
+  // Mark stale auto-discovered items as disconnected (don't remove — profile may reference them)
+  // Only remove if a full discovery returned results and this model wasn't in it
+  if (models.length > 0) {
+    for (const item of settings.models.items) {
+      if (item._proxlabAutoDiscovered) {
+        item._proxlabDisconnected = !availableIds.has(item.model)
+      }
+    }
+  } else {
+    // Discovery returned empty — mark all as disconnected but keep them
+    for (const item of settings.models.items) {
+      if (item._proxlabAutoDiscovered) {
+        item._proxlabDisconnected = true
+      }
     }
   }
 }
