@@ -1,3 +1,4 @@
+import { runInAction } from 'mobx'
 /**
  * ProxlabDiscovery — Auto-discover models and services from ProxLab proxy.
  *
@@ -266,27 +267,32 @@ async function discoverTtsProviders(): Promise<TtsProvider[]> {
     for (const p of data.providers || []) {
       let voices: string[] = []
       let models: string[] = []
+      const caps = p.capabilities || {}
 
-      // Fetch voices and models for each provider
-      try {
-        const vResp = await fetch(`${API_PREFIX}/tts/v1/providers/${p.slot}/voices`, {
-          signal: AbortSignal.timeout(3000),
-        })
-        if (vResp.ok) {
-          const vData = await vResp.json()
-          voices = (vData.voices || []).map((v: any) => typeof v === 'string' ? v : v.id || v.name || '')
-        }
-      } catch {}
+      // Only fetch voices/models from providers that support them
+      if (caps.voices) {
+        try {
+          const vResp = await fetch(`${API_PREFIX}/tts/v1/providers/${p.slot}/voices`, {
+            signal: AbortSignal.timeout(3000),
+          })
+          if (vResp.ok) {
+            const vData = await vResp.json()
+            voices = (vData.voices || []).map((v: any) => typeof v === 'string' ? v : v.id || v.name || '')
+          }
+        } catch {}
+      }
 
-      try {
-        const mResp = await fetch(`${API_PREFIX}/tts/v1/providers/${p.slot}/models`, {
-          signal: AbortSignal.timeout(3000),
-        })
-        if (mResp.ok) {
-          const mData = await mResp.json()
-          models = (mData.data || []).map((m: any) => m.id || '')
-        }
-      } catch {}
+      if (caps.models) {
+        try {
+          const mResp = await fetch(`${API_PREFIX}/tts/v1/providers/${p.slot}/models`, {
+            signal: AbortSignal.timeout(3000),
+          })
+          if (mResp.ok) {
+            const mData = await mResp.json()
+            models = (mData.data || []).map((m: any) => m.id || '')
+          }
+        } catch {}
+      }
 
       providers.push({
         slot: p.slot,
@@ -478,14 +484,14 @@ function syncModelsToSettings(models: DiscoveredModel[]) {
   if (models.length > 0) {
     for (const item of settings.models.items) {
       if (item._proxlabAutoDiscovered) {
-        item._proxlabDisconnected = !availableIds.has(item.model)
+        runInAction(() => { item._proxlabDisconnected = !availableIds.has(item.model) })
       }
     }
   } else {
     // Discovery returned empty — mark all as disconnected but keep them
     for (const item of settings.models.items) {
       if (item._proxlabAutoDiscovered) {
-        item._proxlabDisconnected = true
+        runInAction(() => { item._proxlabDisconnected = true })
       }
     }
   }

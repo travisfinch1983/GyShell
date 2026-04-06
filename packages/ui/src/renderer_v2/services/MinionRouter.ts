@@ -1,3 +1,4 @@
+import { runInAction } from 'mobx'
 /**
  * MinionRouter — Chat-first routing with specialist dispatch.
  *
@@ -147,8 +148,8 @@ export function rehydrateMinionMessages() {
         const msgB = session.messagesById.get(b)
         return (msgA?.timestamp || 0) - (msgB?.timestamp || 0)
       })
-      session.messageIds.length = 0
-      session.messageIds.push(...sorted)
+      runInAction(() => { session.messageIds.length = 0
+      session.messageIds.push(...sorted) })
     }
     // Rehydrate per-role conversation history from stored messages
     // This restores the context that gets sent to models on the next API call
