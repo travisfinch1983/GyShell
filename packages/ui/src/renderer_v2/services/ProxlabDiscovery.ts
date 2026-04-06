@@ -255,7 +255,7 @@ async function discoverServices(): Promise<Partial<ProxlabServices>> {
 /** Discover TTS providers with their voices and models */
 async function discoverTtsProviders(): Promise<TtsProvider[]> {
   try {
-    const resp = await fetch(`${API_PREFIX}/tts/v1/providers`, {
+    const resp = await fetch(`${API_PREFIX}/multi-tts/v1/providers`, {
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(5000),
     })
@@ -269,7 +269,7 @@ async function discoverTtsProviders(): Promise<TtsProvider[]> {
 
       // Fetch voices and models for each provider
       try {
-        const vResp = await fetch(`${API_PREFIX}/tts/v1/providers/${p.slot}/voices`, {
+        const vResp = await fetch(`${API_PREFIX}/multi-tts/v1/providers/${p.slot}/voices`, {
           signal: AbortSignal.timeout(3000),
         })
         if (vResp.ok) {
@@ -279,7 +279,7 @@ async function discoverTtsProviders(): Promise<TtsProvider[]> {
       } catch {}
 
       try {
-        const mResp = await fetch(`${API_PREFIX}/tts/v1/providers/${p.slot}/models`, {
+        const mResp = await fetch(`${API_PREFIX}/multi-tts/v1/providers/${p.slot}/models`, {
           signal: AbortSignal.timeout(3000),
         })
         if (mResp.ok) {
@@ -353,7 +353,7 @@ async function discoverRvcModels(svcData: Partial<ProxlabServices>): Promise<Rvc
   const svc = rvcSvcs[0]
   // Always go through the Vite proxy — direct HTTP is blocked on HTTPS pages
   try {
-    const proxyResp = await fetch(`${API_PREFIX}/tts/${svc.slot}/models`, {
+    const proxyResp = await fetch(`${API_PREFIX}/multi-tts/${svc.slot}/models`, {
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(5000),
     })

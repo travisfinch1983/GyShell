@@ -169,7 +169,7 @@ async function speakTextImmediate(text: string, role?: string): Promise<void> {
 async function speakViaSimple(
   text: string, config: any, apiBase: string, abort: AbortController
 ): Promise<void> {
-  const resp = await fetch(`${apiBase}/tts/v1/audio/speech`, {
+  const resp = await fetch(`${apiBase}/multi-tts/v1/audio/speech`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -226,7 +226,7 @@ async function speakViaStream(
 
   console.log(`[TtsPlayback] Stream request body:`, JSON.stringify(body))
 
-  const resp = await fetch(`${apiBase}/tts/stream`, {
+  const resp = await fetch(`${apiBase}/multi-tts/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
