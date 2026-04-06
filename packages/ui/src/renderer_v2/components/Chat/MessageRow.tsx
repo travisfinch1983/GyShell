@@ -1,6 +1,6 @@
 import React from "react";
 import { observer } from "mobx-react-lite";
-import { Brain, Check, ChevronDown, ChevronUp, Copy, CornerUpLeft, Pencil, Send, X } from "lucide-react";
+import { Brain, Check, ChevronDown, ChevronUp, Code, Copy, CornerUpLeft, Pencil, Send, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -394,6 +394,7 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
     const minionThinking = msg.metadata?.minionThinking as string | null
     const minionSummary = msg.metadata?.minionSummary as string | undefined
     const minionTo = msg.metadata?.minionTo as string | undefined
+    const minionCodeBlocks = msg.metadata?.minionCodeBlocks as string[] | undefined
     const isToUser = !minionTo || minionTo === 'user'
 
     // For minion messages: render with summary/detail/thinking structure
@@ -403,6 +404,7 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
           msg={msg}
           thinking={minionThinking}
           summary={minionSummary || ''}
+          codeBlocks={minionCodeBlocks || []}
           isToUser={isToUser}
           copiedKey={copiedKey}
           copyCodeBlock={copyCodeBlock}
@@ -606,14 +608,16 @@ const MinionParsedMessage: React.FC<{
   msg: ChatMessage;
   thinking: string | null;
   summary: string;
+  codeBlocks: string[];
   isToUser: boolean;
   copiedKey: string | null;
   copyCodeBlock: (code: string) => void;
   markCopied: (key: string) => void;
-}> = ({ msg, thinking, summary, isToUser, copiedKey, copyCodeBlock, markCopied }) => {
+}> = ({ msg, thinking, summary, codeBlocks, isToUser, copiedKey, copyCodeBlock, markCopied }) => {
   // Messages to user: detail expanded by default. Messages to models: collapsed.
   const [detailExpanded, setDetailExpanded] = React.useState(isToUser);
   const [thinkingExpanded, setThinkingExpanded] = React.useState(false);
+  const [codeExpanded, setCodeExpanded] = React.useState(false);
 
   const modelName = msg.metadata?.modelName || 'Assistant';
   const roleColor = getMinionRoleColor(modelName);
@@ -639,6 +643,16 @@ const MinionParsedMessage: React.FC<{
             <Brain size={12} />
           </button>
         )}
+        {codeBlocks.length > 0 && (
+          <button
+            className={`minion-thinking-toggle ${codeExpanded ? 'active' : ''}`}
+            style={{ color: roleColor }}
+            onClick={(e) => { e.stopPropagation(); setCodeExpanded(!codeExpanded); }}
+            title={codeExpanded ? 'Hide code' : `Show code (${codeBlocks.length} block${codeBlocks.length > 1 ? 's' : ''})`}
+          >
+            <Code size={12} />
+          </button>
+        )}
         {msg.timestamp ? <span className="message-timestamp">{formatMessageTimestamp(msg.timestamp)}</span> : null}
       </div>
 
@@ -657,6 +671,30 @@ const MinionParsedMessage: React.FC<{
               markCopied={markCopied}
             />
           </div>
+        </div>
+      )}
+
+      {/* Code blocks — expandable, not read by TTS */}
+      {codeBlocks.length > 0 && codeExpanded && (
+        <div className="minion-code-blocks">
+          <div className="minion-thinking-header" style={{ color: roleColor }}>
+            <Code size={11} />
+            <span>Code ({codeBlocks.length} block{codeBlocks.length > 1 ? 's' : ''})</span>
+          </div>
+          {codeBlocks.map((code, i) => (
+            <div key={i} className="minion-code-block">
+              <div className="markdown-pre-wrap">
+                <pre><code>{code}</code></pre>
+                <button
+                  className="message-copy-btn markdown-pre-copy-btn"
+                  title="Copy code"
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); copyCodeBlock(code); }}
+                >
+                  {copiedKey === `code:${code.length}:${code.slice(0, 32)}` ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

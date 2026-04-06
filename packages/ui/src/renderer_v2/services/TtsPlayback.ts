@@ -108,6 +108,61 @@ export async function speakText(text: string, role?: string): Promise<void> {
 }
 
 /**
+ * Sanitize text for TTS — strip code blocks, markdown, emojis, symbols.
+ * Returns only the natural language content that should be read aloud.
+ */
+function sanitizeForTts(text: string): string {
+  let clean = text
+
+  // Remove <code>...</code> blocks (model-generated code)
+  clean = clean.replace(/<code>[\s\S]*?<\/code>/gi, '')
+
+  // Remove markdown code blocks (```...```)
+  clean = clean.replace(/```[\s\S]*?```/g, '')
+
+  // Remove inline code (`...`)
+  clean = clean.replace(/`[^`]+`/g, '')
+
+  // Remove markdown bold/italic (**text**, *text*, __text__, _text_)
+  clean = clean.replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1')
+  clean = clean.replace(/_{1,2}([^_]+)_{1,2}/g, '$1')
+
+  // Remove markdown headers (# ## ### etc)
+  clean = clean.replace(/^#{1,6}\s+/gm, '')
+
+  // Remove markdown list markers (- * + and numbered)
+  clean = clean.replace(/^[\s]*[-*+]\s+/gm, '')
+  clean = clean.replace(/^[\s]*\d+\.\s+/gm, '')
+
+  // Remove markdown links [text](url) → text
+  clean = clean.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+
+  // Remove horizontal rules
+  clean = clean.replace(/^[-*_]{3,}$/gm, '')
+
+  // Remove emojis (Unicode emoji ranges)
+  clean = clean.replace(/[\u{1F600}-\u{1F64F}]/gu, '') // Emoticons
+  clean = clean.replace(/[\u{1F300}-\u{1F5FF}]/gu, '') // Misc symbols
+  clean = clean.replace(/[\u{1F680}-\u{1F6FF}]/gu, '') // Transport
+  clean = clean.replace(/[\u{1F1E0}-\u{1F1FF}]/gu, '') // Flags
+  clean = clean.replace(/[\u{2600}-\u{26FF}]/gu, '')   // Misc symbols
+  clean = clean.replace(/[\u{2700}-\u{27BF}]/gu, '')   // Dingbats
+  clean = clean.replace(/[\u{FE00}-\u{FE0F}]/gu, '')   // Variation selectors
+  clean = clean.replace(/[\u{1F900}-\u{1F9FF}]/gu, '') // Supplemental
+  clean = clean.replace(/[\u{200D}]/gu, '')             // Zero-width joiner
+
+  // Remove common symbols that don't read well
+  clean = clean.replace(/[✓✗✔✘★☆●○■□▸▾▴▪•→←↑↓⚠️❌✅❗❓💡🔧📋↗]/g, '')
+
+  // Clean up multiple blank lines and whitespace
+  clean = clean.replace(/\n{3,}/g, '\n\n')
+  clean = clean.replace(/[ \t]+/g, ' ')
+  clean = clean.trim()
+
+  return clean
+}
+
+/**
  * Speak text immediately (internal — called by queue processor).
  */
 async function speakTextImmediate(text: string, role?: string): Promise<void> {
@@ -148,9 +203,16 @@ async function speakTextImmediate(text: string, role?: string): Promise<void> {
   const abort = new AbortController()
   currentAbort = abort
 
+  // Sanitize text for TTS — strip code, markdown, emojis, symbols
+  const ttsText = sanitizeForTts(text)
+  if (!ttsText) {
+    console.log('[TtsPlayback] Nothing to speak after sanitization')
+    return
+  }
+
   try {
     // Always use streaming endpoint (simple /v1/audio/speech was removed in TTS overhaul)
-    await speakViaStream(text, effectiveConfig, apiBase, abort)
+    await speakViaStream(ttsText, effectiveConfig, apiBase, abort)
   } catch (err: any) {
     if (err.name !== 'AbortError') {
       console.warn('[TtsPlayback] Error:', err.message)

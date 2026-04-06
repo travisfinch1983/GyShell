@@ -55,6 +55,7 @@ export interface ChatMessage {
     minionSummary?: string
     minionThinking?: string | null
     minionTo?: string
+    minionCodeBlocks?: string[]
   }
   timestamp: number
   streaming?: boolean

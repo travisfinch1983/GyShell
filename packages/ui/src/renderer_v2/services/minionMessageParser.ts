@@ -12,6 +12,8 @@ export interface ParsedMinionResponse {
   summary: string
   /** Full response body with thinking stripped */
   body: string
+  /** Extracted code blocks from <code> tags */
+  codeBlocks: string[]
 }
 
 /**
@@ -33,6 +35,20 @@ export function parseMinionResponse(raw: string): ParsedMinionResponse {
   })
   // Strip any <route> tags (specialists may echo them)
   body = body.replace(/<route>[\s\S]*?<\/route>\s*/g, '')
+
+  // Extract <code> blocks
+  const codeBlocks: string[] = []
+  body = body.replace(/<code>([\s\S]*?)<\/code>/gi, (_match, content) => {
+    codeBlocks.push(content.trim())
+    return ''
+  })
+
+  // Also extract markdown code blocks (```...```) as code blocks
+  body = body.replace(/```(\w*)\n?([\s\S]*?)```/g, (_match, _lang, content) => {
+    codeBlocks.push(content.trim())
+    return ''
+  })
+
   body = body.trim()
 
   if (thinkBlocks.length > 0) {
@@ -42,7 +58,7 @@ export function parseMinionResponse(raw: string): ParsedMinionResponse {
   // Generate summary from the cleaned body
   const summary = generateSummary(body)
 
-  return { thinking, summary, body }
+  return { thinking, summary, body, codeBlocks }
 }
 
 /**

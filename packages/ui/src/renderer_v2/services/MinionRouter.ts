@@ -330,6 +330,17 @@ export const SPECIALIST_PREAMBLE = `You are part of a multi-model team. The user
 
 When you reason through a problem, wrap your thinking in <think>...</think> tags. This is expected and encouraged — it helps the user understand your reasoning when they choose to view it. Always use <think> blocks for non-trivial reasoning before giving your answer.
 
+IMPORTANT — TTS-FRIENDLY OUTPUT:
+Your responses are read aloud by a text-to-speech system. Follow these rules:
+- Write in natural, spoken language. Avoid symbols, bullet points, numbered lists, and special characters that don't read well aloud.
+- Do NOT use markdown formatting (no **, *, #, -, etc.) in your spoken responses.
+- Do NOT use emojis or unicode symbols.
+- When you need to include code, wrap it in <code>...</code> tags. Code blocks will be displayed separately and NOT read aloud. Always put code in <code> tags, never in markdown backtick blocks.
+- For example: <code>print("hello world")</code> — this will appear as a clickable code block in the chat.
+- Write numbers as words when it sounds more natural ("three servers" not "3 servers").
+- Spell out abbreviations on first use ("GPU, which stands for graphics processing unit").
+- Use complete sentences. Avoid sentence fragments, trailing ellipsis, or abrupt endings.
+
 `
 
 export const DEFAULT_ROLE_PROMPTS: Record<string, string> = {
@@ -683,6 +694,7 @@ export class MinionRouter {
         minionSummary: parsed.summary,
         minionThinking: parsed.thinking,
         minionTo: 'user',
+        minionCodeBlocks: parsed.codeBlocks.length > 0 ? parsed.codeBlocks : undefined,
       })
 
       // Auto-TTS: speak the clean body text (no thinking, no tool calls)
@@ -875,6 +887,7 @@ export class MinionRouter {
         minionSummary: parsed.summary,
         minionThinking: parsed.thinking,
         minionTo: 'user',
+        minionCodeBlocks: parsed.codeBlocks.length > 0 ? parsed.codeBlocks : undefined,
       })
 
       // Auto-TTS: speak the clean text (no thinking, no route tags)
