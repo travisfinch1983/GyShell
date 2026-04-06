@@ -83,14 +83,34 @@ function persistMinionMessage(msg: StoredChatMessage) {
 export function rehydrateMinionMessages() {
   try {
     const stored: StoredChatMessage[] = JSON.parse(localStorage.getItem(MINION_CHAT_STORAGE_KEY) || '[]')
-    if (!stored.length) return
+    if (!stored.length) {
+      console.log('[rehydrate] No stored minion messages')
+      return
+    }
 
     const appStore = (window as any).__appStore
     if (!appStore?.chat) return
 
+    // Get the active session — messages may have been stored under a different session ID
+    // (e.g., after Clear Chat created a new session)
+    const activeSession = appStore.chat.activeSession || appStore.chat.sessions?.[0]
+    if (!activeSession) {
+      console.warn('[rehydrate] No active session to inject messages into')
+      return
+    }
+    const activeSessionId = activeSession.id
+
+    console.log(`[rehydrate] Found ${stored.length} stored messages, active session: ${activeSessionId.slice(0, 8)}`)
+
     for (const msg of stored) {
-      const session = appStore.chat.sessions?.find((s: any) => s.id === msg.sessionId)
-      if (!session) continue
+      // Try the stored session first, fall back to active session
+      let session = appStore.chat.sessions?.find((s: any) => s.id === msg.sessionId)
+      let targetSessionId = msg.sessionId
+      if (!session) {
+        // Session doesn't exist anymore — inject into active session
+        session = activeSession
+        targetSessionId = activeSessionId
+      }
       if (session.messagesById?.has(msg.id)) continue
 
       let metadata = msg.metadata || {}
@@ -103,7 +123,7 @@ export function rehydrateMinionMessages() {
 
       appStore.chat.handleUiUpdate({
         type: 'ADD_MESSAGE',
-        sessionId: msg.sessionId,
+        sessionId: targetSessionId,
         message: {
           id: msg.id,
           role: msg.role,
@@ -115,7 +135,10 @@ export function rehydrateMinionMessages() {
       })
     }
 
-    const sessionIds = new Set(stored.map(m => m.sessionId).filter(Boolean))
+    console.log(`[rehydrate] Injected messages into session ${activeSessionId.slice(0, 8)}`)
+
+    // Sort messages by timestamp in all affected sessions
+    const sessionIds = new Set([activeSessionId, ...stored.map(m => m.sessionId).filter(Boolean)])
     for (const sid of sessionIds) {
       const session = appStore.chat.sessions?.find((s: any) => s.id === sid)
       if (!session) continue
