@@ -149,11 +149,8 @@ async function speakTextImmediate(text: string, role?: string): Promise<void> {
   currentAbort = abort
 
   try {
-    if (effectiveConfig.dualPipeline) {
-      await speakViaStream(text, effectiveConfig, apiBase, abort)
-    } else {
-      await speakViaSimple(text, effectiveConfig, apiBase, abort)
-    }
+    // Always use streaming endpoint (simple /v1/audio/speech was removed in TTS overhaul)
+    await speakViaStream(text, effectiveConfig, apiBase, abort)
   } catch (err: any) {
     if (err.name !== 'AbortError') {
       console.warn('[TtsPlayback] Error:', err.message)
@@ -169,7 +166,7 @@ async function speakTextImmediate(text: string, role?: string): Promise<void> {
 async function speakViaSimple(
   text: string, config: any, apiBase: string, abort: AbortController
 ): Promise<void> {
-  const resp = await fetch(`${apiBase}/multi-tts/v1/audio/speech`, {
+  const resp = await fetch(`${apiBase}/multi-tts/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
