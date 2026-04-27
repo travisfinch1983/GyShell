@@ -315,6 +315,32 @@ export class ElectronGatewayIpcAdapter {
       return await this.skillService.createSkillFromTemplate();
     });
 
+    ipcMain.handle(
+      "skills:import",
+      async (_: any, payload: { skills: Array<{ name: string; description: string; content: string }> }) => {
+        const list = Array.isArray(payload?.skills) ? payload.skills : [];
+        const created: any[] = [];
+        const failed: Array<{ name: string; error: string }> = [];
+        for (const entry of list) {
+          if (!entry?.name || typeof entry.name !== "string") {
+            failed.push({ name: String(entry?.name || "<unnamed>"), error: "Missing name" });
+            continue;
+          }
+          try {
+            const result = await this.skillService.createSkill(
+              entry.name,
+              entry.description || "",
+              entry.content || "",
+            );
+            created.push(result.skill);
+          } catch (err) {
+            failed.push({ name: entry.name, error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+        return { created, failed };
+      },
+    );
+
     ipcMain.handle("skills:openFile", async (_evt: any, fileName: string) => {
       await this.skillService.openSkillFile(fileName);
     });

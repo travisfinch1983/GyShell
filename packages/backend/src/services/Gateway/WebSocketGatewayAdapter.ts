@@ -40,6 +40,7 @@ type WebSocketRpcMethod =
   | 'skills:getAll'
   | 'skills:getEnabled'
   | 'skills:create'
+  | 'skills:import'
   | 'skills:delete'
   | 'skills:list'
   | 'skills:setEnabled'
@@ -182,6 +183,7 @@ export interface WebSocketGatewayAdapterOptions {
     getAll?: () => unknown | Promise<unknown>;
     getEnabled?: () => unknown | Promise<unknown>;
     create?: () => unknown | Promise<unknown>;
+    importBatch?: (skills: Array<{ name: string; description: string; content: string }>) => unknown | Promise<unknown>;
     delete?: (fileName: string) => unknown | Promise<unknown>;
     listSkills: () =>
       | Array<{ name: string; description?: string; enabled: boolean }>
@@ -970,6 +972,13 @@ export class WebSocketGatewayAdapter {
           throw new WebSocketRpcError('METHOD_NOT_FOUND', 'skills:create is not available on this websocket gateway.');
         }
         return await this.options.skillBridge.create();
+      }
+      case 'skills:import': {
+        if (!this.options.skillBridge?.importBatch) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'skills:import is not available on this websocket gateway.');
+        }
+        const skills = Array.isArray(params?.skills) ? params.skills : [];
+        return await this.options.skillBridge.importBatch(skills);
       }
       case 'skills:delete': {
         if (!this.options.skillBridge?.delete) {

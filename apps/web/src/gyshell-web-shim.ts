@@ -274,6 +274,8 @@ const gyshellApi = {
     getAll: () => rpc('skills:getAll'),
     getEnabled: () => rpc('skills:getEnabled').catch(() => []),
     create: (name?: string) => rpc('skills:create', { name }),
+    importBatch: (skills: Array<{ name: string; description: string; content: string }>) =>
+      rpc('skills:import', { skills }),
     delete: (fileName: string) => rpc('skills:delete', { fileName }),
     setEnabled: (name: string, enabled: boolean) => rpc('skills:setEnabled', { name, enabled }),
     listFolderSkills: () => rpc('skills:listFolderSkills').catch(() => []),

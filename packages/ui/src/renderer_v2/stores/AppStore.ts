@@ -351,6 +351,7 @@ export class AppStore {
       openSkillsFolder: action,
       reloadSkills: action,
       createSkill: action,
+      importSkills: action,
       editSkill: action,
       deleteSkill: action,
       loadMemory: action,
@@ -1561,6 +1562,17 @@ export class AppStore {
   async createSkill(): Promise<void> {
     await window.gyshell.skills.create()
     await this.reloadSkills()
+  }
+
+  async importSkills(
+    skills: Array<{ name: string; description: string; content: string }>,
+  ): Promise<{ created: any[]; failed: Array<{ name: string; error: string }> }> {
+    const result = (await (window as any).gyshell.skills.importBatch(skills)) as {
+      created: any[]
+      failed: Array<{ name: string; error: string }>
+    }
+    await this.reloadSkills()
+    return result
   }
 
   async editSkill(fileName: string): Promise<void> {

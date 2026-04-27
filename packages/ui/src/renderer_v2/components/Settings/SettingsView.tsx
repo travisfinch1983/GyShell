@@ -397,6 +397,96 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
     const t = store.i18n.t;
     const [editingModelId, setEditingModelId] = useState<string | null>(null);
     const [showModelEditor, setShowModelEditor] = useState(false);
+    const skillImportInputRef = React.useRef<HTMLInputElement>(null);
+
+    /**
+     * Parse a skill.md file into {name, description, content}. Honors
+     * YAML-ish frontmatter (---name: ... description: ... ---) when present;
+     * falls back to deriving the name from the immediate parent folder and
+     * the description from the first non-empty body line.
+     */
+    const parseSkillMarkdown = (
+      raw: string,
+      filePath: string,
+    ): { name: string; description: string; content: string } | null => {
+      const text = raw.replace(/^\uFEFF/, "");
+      let body = text;
+      let frontName = "";
+      let frontDesc = "";
+      const fm = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
+      if (fm) {
+        body = text.slice(fm[0].length);
+        const lines = fm[1].split(/\r?\n/);
+        for (const line of lines) {
+          const m = line.match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/);
+          if (!m) continue;
+          const key = m[1].toLowerCase();
+          let val = m[2].trim();
+          // Strip surrounding quotes if present
+          if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+          }
+          if (key === "name") frontName = val;
+          else if (key === "description") frontDesc = val;
+        }
+      }
+      const segments = filePath.split(/[\\/]/).filter(Boolean);
+      // Use the immediate parent folder as the fallback name (skill.md sits inside it)
+      const parentFolder = segments.length >= 2 ? segments[segments.length - 2] : "";
+      const name = frontName || parentFolder || filePath.replace(/\.md$/i, "");
+      let description = frontDesc;
+      if (!description) {
+        const firstLine = body.split(/\r?\n/).find((l) => l.trim().length > 0 && !l.startsWith("#"));
+        description = firstLine ? firstLine.trim().slice(0, 200) : "";
+      }
+      return name ? { name, description, content: body.trimStart() } : null;
+    };
+
+    const handleSkillImport = async (files: FileList) => {
+      // Filter to skill.md files anywhere in the picked tree (case-insensitive).
+      const skillFiles: File[] = [];
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        // webkitRelativePath gives "<picked-folder>/sub/.../skill.md"
+        const rel = (f as any).webkitRelativePath || f.name;
+        if (/(?:^|[\\/])skill\.md$/i.test(rel)) skillFiles.push(f);
+      }
+      if (skillFiles.length === 0) {
+        alert("No skill.md files found in the selected folder.");
+        return;
+      }
+      const parsed: Array<{ name: string; description: string; content: string }> = [];
+      const skipped: string[] = [];
+      for (const f of skillFiles) {
+        try {
+          const text = await f.text();
+          const rel = (f as any).webkitRelativePath || f.name;
+          const entry = parseSkillMarkdown(text, rel);
+          if (entry) parsed.push(entry);
+          else skipped.push(rel);
+        } catch (err) {
+          skipped.push((f as any).webkitRelativePath || f.name);
+        }
+      }
+      if (parsed.length === 0) {
+        alert(`Found ${skillFiles.length} skill.md file(s) but couldn't parse any.`);
+        return;
+      }
+      const result = await store.importSkills(parsed);
+      const lines = [
+        `Imported ${result.created.length} skill(s):`,
+        ...result.created.map((s: any) => `  ✓ ${s.name}`),
+      ];
+      if (result.failed.length > 0) {
+        lines.push("", `${result.failed.length} failed:`);
+        for (const f of result.failed) lines.push(`  ✗ ${f.name}: ${f.error}`);
+      }
+      if (skipped.length > 0) {
+        lines.push("", `${skipped.length} skipped (parse error):`);
+        for (const s of skipped) lines.push(`  - ${s}`);
+      }
+      alert(lines.join("\n"));
+    };
   const modelMetaColumnVars = useMemo(
     () =>
       ({
@@ -1970,6 +2060,31 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                       {t.settings.openSkillsFolder}
                     </button>
                   </InfoTooltip>
+                    <button
+                      className="btn-secondary"
+                      title="Import skill.md files from a folder (walks subfolders, multi-select)"
+                      onClick={() => skillImportInputRef.current?.click()}
+                    >
+                    Import…
+                  </button>
+                  {/* Hidden file input — webkitdirectory walks the picked folder
+                      and submits every file inside; we filter to skill.md and
+                      auto-derive name + description from frontmatter or the
+                      folder name. */}
+                  <input
+                    ref={skillImportInputRef}
+                    type="file"
+                    multiple
+                    style={{ display: "none" }}
+                    {...({ webkitdirectory: "", directory: "" } as any)}
+                    onChange={(e) => {
+                      const files = e.target.files;
+                      if (files && files.length > 0) {
+                        void handleSkillImport(files);
+                      }
+                      e.target.value = "";
+                    }}
+                  />
                     <button
                       className="icon-btn-sm"
                       title={t.settings.addSkill}

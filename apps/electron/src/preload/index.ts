@@ -553,6 +553,7 @@ export interface GyShellAPI {
     getAll: () => Promise<SkillSummary[]>
     getEnabled: () => Promise<SkillSummary[]>
     create: () => Promise<SkillSummary>
+    importBatch: (skills: Array<{ name: string; description: string; content: string }>) => Promise<{ created: SkillSummary[]; failed: Array<{ name: string; error: string }> }>
     openFile: (fileName: string) => Promise<void>
     delete: (fileName: string) => Promise<SkillSummary[]>
     setEnabled: (name: string, enabled: boolean) => Promise<SkillStatusSummary[]>
@@ -830,6 +831,7 @@ const api: GyShellAPI = {
     getAll: () => ipcRenderer.invoke('skills:getAll'),
     getEnabled: () => ipcRenderer.invoke('skills:getEnabled'),
     create: () => ipcRenderer.invoke('skills:create'),
+    importBatch: (skills) => ipcRenderer.invoke('skills:import', { skills }),
     openFile: (fileName) => ipcRenderer.invoke('skills:openFile', fileName),
     delete: (fileName) => ipcRenderer.invoke('skills:delete', fileName),
     setEnabled: (name: string, enabled: boolean) => ipcRenderer.invoke('skills:setEnabled', name, enabled),
