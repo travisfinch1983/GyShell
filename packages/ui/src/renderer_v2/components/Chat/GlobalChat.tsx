@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react'
+import React, { useEffect } from 'react'
 import { observer } from 'mobx-react-lite'
 import type { AppStore } from '../../stores/AppStore'
 import { ChatPanel } from '../Chat/ChatPanel'
@@ -26,20 +26,26 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
   // ChatStore.handleUiUpdate silently drops every backend event for it (it
   // intentionally won't synthesize a session from live updates), and the
   // user's message + the model's response both vanish into the void.
-  const sessionId = useMemo(() => {
-    const sessions = store.chat?.sessions || []
-    if (sessions.length > 0) return sessions[0].id
-    if (store.chat && typeof store.chat.createSession === 'function') {
-      try {
-        return store.chat.createSession('Chat')
-      } catch (err) {
-        console.warn('[GlobalChat] createSession failed:', err)
-      }
+  //
+  // Computed inline (no useMemo) on purpose: useMemo's dep array is checked
+  // with plain JS equality, which doesn't reliably re-fire when MobX mutates
+  // the underlying sessions array. The component is observer-wrapped so it
+  // re-renders whenever store.chat.sessions changes anyway, and this lookup
+  // is cheap enough that memoization buys nothing.
+  const sessions = store.chat?.sessions || []
+  let sessionId: string
+  if (sessions.length > 0) {
+    sessionId = sessions[0].id
+  } else if (store.chat && typeof store.chat.createSession === 'function') {
+    try {
+      sessionId = store.chat.createSession('Chat')
+    } catch (err) {
+      console.warn('[GlobalChat] createSession failed:', err)
+      sessionId = 'global-chat-session'
     }
-    // Last-resort placeholder. With createSession in place this branch
-    // shouldn't fire; if it does, the user can reload to recover.
-    return 'global-chat-session'
-  }, [store.chat?.sessions?.length])
+  } else {
+    sessionId = 'global-chat-session'
+  }
 
   // Make sure the chat store knows this is the active session — ChatPanel
   // reads from activeSessionId for some menu interactions.
