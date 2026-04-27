@@ -2,7 +2,21 @@ import type { BackendSettings, WsGatewayAccess } from "../../types";
 import { BUILTIN_TOOL_INFO } from "../AgentHelper/tools";
 import { deepMerge, isObject } from "./objectMerge";
 
-export const BACKEND_SETTINGS_SCHEMA_VERSION = 7;
+export const BACKEND_SETTINGS_SCHEMA_VERSION = 8;
+
+/**
+ * Default icon assigned to each seeded agent. Pulled out as a constant so the
+ * v7→v8 migration can backfill them on existing seeded agents whose icon
+ * field doesn't exist yet.
+ */
+const DEFAULT_AGENT_ICONS: Record<string, string> = {
+  "agent-default-researcher-fast": "Globe",
+  "agent-default-researcher-deep": "Globe",
+  "agent-default-code-explorer": "Search",
+  "agent-default-planner": "ScrollText",
+  "agent-default-coder-focused": "Hammer",
+  "agent-default-debugger": "Bug",
+};
 
 /**
  * The systemPrompt + allowedTools snapshot for each default agent at every
@@ -67,6 +81,8 @@ const DEFAULT_AGENTS: any[] = [
       "You are a fast web researcher. Your job is to answer focused questions by fetching exactly the page(s) most likely to have the answer and quoting the relevant section back. Prefer one or two well-chosen fetches over many. If a search is needed, run web_search once, pick the best result, fetch it, and answer. Cite the URL of every claim. Keep your final reply under 200 words unless the caller asks for detail.\n\nMemory: before fetching, run memory_recall with the question — if a prior researcher already saved the answer, cite it instead of re-fetching. Don't save single-source ephemera (version numbers, today's news) — leave persistence to the deep researcher.",
     modelProfileIds: [],
     allowedTools: ["web_fetch", "web_search", "memory_recall"],
+    icon: "Globe",
+    showInSidebar: true,
   },
   {
     id: "agent-default-researcher-deep",
@@ -77,6 +93,8 @@ const DEFAULT_AGENTS: any[] = [
       "You are a thorough web researcher. Investigate the question by fetching multiple sources, cross-referencing them, and synthesizing a structured answer. Start with web_search to discover candidate URLs, then fetch the most relevant 3-5 with web_fetch. When inspecting a github repo, fetch the README, then key source files referenced, then any docs/ directory. Cite every claim with its URL. Flag contradictions between sources. Final reply should be organized with clear sections.\n\nMemory: at the start of an investigation, run memory_recall against the topic — prior research often answers most of the question already. After synthesizing, save the *conclusion* (not raw quotes) with memory_save. Use memory_list_collections to find a topical fit before defaulting to ai-lab_general; create a new collection with memory_create_collection if you're researching a domain that doesn't have one yet.",
     modelProfileIds: [],
     allowedTools: ["web_fetch", "web_search", "memory_recall", "memory_save", "memory_list_collections", "memory_create_collection"],
+    icon: "Globe",
+    showInSidebar: true,
   },
   {
     id: "agent-default-code-explorer",
@@ -87,6 +105,8 @@ const DEFAULT_AGENTS: any[] = [
       "You are a codebase explorer. Find and explain code without modifying anything. Use read_file to inspect specific files. When asked 'where does X happen', identify the entry points, follow imports/calls, and summarize the flow with file:line citations. Don't speculate — if you can't find the answer in the files you've read, say so and suggest what else to look at. Be specific: 'the handler is at src/api/users.ts:47' beats 'somewhere in the API code'.\n\nMemory: search memory_recall first — architecture notes for this codebase may already exist (e.g. 'the auth flow is...'). After exploring, save *durable* findings: where major subsystems live, key file paths, the role of central modules. Skip transient details like exact line numbers (they drift). Use a project-named collection (e.g. ai-lab_proxlab) created via memory_create_collection so notes stay topic-scoped.",
     modelProfileIds: [],
     allowedTools: ["read_file", "memory_recall", "memory_save", "memory_list_collections", "memory_create_collection"],
+    icon: "Search",
+    showInSidebar: true,
   },
   {
     id: "agent-default-planner",
@@ -97,6 +117,8 @@ const DEFAULT_AGENTS: any[] = [
       "You are a software architect. Given a goal, produce a step-by-step implementation plan. Read the relevant files first (read_file) to understand current structure, then output: (1) what files will change and why, (2) the order of changes, (3) the main trade-offs and one alternative considered, (4) what could go wrong. Don't write the code itself — your job is to think through the approach so the implementing agent has a clear roadmap. Be specific about file paths and function names.\n\nMemory: at the start, run memory_recall on the project + feature area — prior plans for the same project may have established conventions you should respect. After producing a plan, save the *decision* (chosen approach + the alternative + why you picked one) with memory_save into a project-scoped collection. This builds an institutional memory of architectural choices that future planners and debuggers can consult.",
     modelProfileIds: [],
     allowedTools: ["read_file", "memory_recall", "memory_save", "memory_list_collections", "memory_create_collection"],
+    icon: "ScrollText",
+    showInSidebar: true,
   },
   {
     id: "agent-default-coder-focused",
@@ -107,6 +129,8 @@ const DEFAULT_AGENTS: any[] = [
       "You are a focused code implementer. The caller has already decided what to do — your job is to apply the change cleanly. Use read_file to confirm the current state of any file you'll edit, then create_or_edit to make the change. Match existing code style. Don't refactor adjacent code unless asked. Don't add comments explaining the change — that goes in the commit message, not the code. After editing, briefly confirm what you changed and where.\n\nMemory: you have memory_recall available — use it to check for project conventions saved by other agents (formatting rules, naming patterns, 'always use X helper'). You do NOT have memory_save: focused edits aren't worth persisting, and auto-saving from a coder loop creates noise. If you discover something worth remembering, mention it in your reply so the caller (or a planner) can decide whether to persist it.",
     modelProfileIds: [],
     allowedTools: ["read_file", "create_or_edit", "memory_recall"],
+    icon: "Hammer",
+    showInSidebar: true,
   },
   {
     id: "agent-default-debugger",
@@ -117,6 +141,8 @@ const DEFAULT_AGENTS: any[] = [
       "You are a debugger. Find root causes, not workarounds. Given a symptom (error message, wrong output, unexpected behavior), trace it back to its source by reading the relevant code (read_file) and consulting external docs when an API is involved (web_fetch). Form a hypothesis, then verify it by reading more code or fetching the relevant doc page — don't speculate. Final reply: state the root cause, cite the file:line where it lives, explain why it produces the symptom, and propose a fix without applying it.\n\nMemory: this is the highest-value agent for memory. Always start with memory_recall on the symptom (error message, function name) — past root causes for similar symptoms compound massively in value. After resolving, save the cause-symptom pair with memory_save into a bug-pattern collection (e.g. ai-lab_bugs_proxlab). Phrase it for retrieval: 'When X symptom appears, the root cause is usually Y in file Z.' Future debuggers will thank you.",
     modelProfileIds: [],
     allowedTools: ["read_file", "web_fetch", "memory_recall", "memory_save", "memory_list_collections", "memory_create_collection"],
+    icon: "Bug",
+    showInSidebar: true,
   },
 ];
 
@@ -298,6 +324,8 @@ function normalizeBackendSettings(settings: BackendSettings): BackendSettings {
             allowedTools: Array.isArray(a.allowedTools)
               ? a.allowedTools.filter((t: any) => typeof t === "string")
               : [],
+            icon: typeof a.icon === "string" && a.icon ? a.icon : undefined,
+            showInSidebar: a.showInSidebar !== false,
           };
         })
     : [];
@@ -363,6 +391,33 @@ function migrateBackendToV4(
     next.agents = [];
   }
   next.schemaVersion = 4;
+  return next;
+}
+
+function migrateBackendToV8(
+  settings: Partial<BackendSettings>,
+): Partial<BackendSettings> {
+  const next = { ...(settings as any) };
+  // Backfill icon + showInSidebar on existing agents. Default-id agents get
+  // their canonical icon from DEFAULT_AGENT_ICONS; user-created agents keep
+  // any icon they already had, otherwise fall through to the renderer's Bot
+  // fallback. showInSidebar defaults to true so existing agents continue to
+  // appear in the icon strip.
+  if (Array.isArray(next.agents)) {
+    next.agents = next.agents.map((a: any) => {
+      if (!a || typeof a !== "object") return a;
+      const out: any = { ...a };
+      if (typeof out.icon !== "string" || !out.icon) {
+        const defaultIcon = DEFAULT_AGENT_ICONS[out.id];
+        if (defaultIcon) out.icon = defaultIcon;
+      }
+      if (typeof out.showInSidebar !== "boolean") {
+        out.showInSidebar = true;
+      }
+      return out;
+    });
+  }
+  next.schemaVersion = 8;
   return next;
 }
 
@@ -515,6 +570,10 @@ export function migrateBackendSettings(
   if (fromVersion < 7) {
     merged = deepMerge(merged, migrateBackendToV7(merged as any) as any);
     fromVersion = 7;
+  }
+  if (fromVersion < 8) {
+    merged = deepMerge(merged, migrateBackendToV8(merged as any) as any);
+    fromVersion = 8;
   }
 
   return normalizeBackendSettings(merged);

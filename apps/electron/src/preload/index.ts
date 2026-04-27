@@ -259,6 +259,8 @@ interface AgentDefinition {
   systemPrompt: string
   modelProfileIds: string[]
   allowedTools: string[]
+  icon?: string
+  showInSidebar?: boolean
 }
 
 interface AccessTokenSummary {

@@ -103,6 +103,8 @@ export interface AgentDefinition {
   systemPrompt: string;
   modelProfileIds: string[];
   allowedTools: string[];
+  icon?: string;
+  showInSidebar?: boolean;
 }
 
 export type McpToolSummary = Awaited<

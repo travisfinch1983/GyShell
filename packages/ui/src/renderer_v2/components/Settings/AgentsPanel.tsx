@@ -3,6 +3,7 @@ import { observer } from "mobx-react-lite";
 import { Plus, Pencil, Trash2, Users, X, Tag, Box } from "lucide-react";
 import type { AppStore, AgentDefinition } from "../../stores/AppStore";
 import { ConfirmDialog } from "../Common/ConfirmDialog";
+import { AGENT_ICON_REGISTRY } from "../../lib/agentIcons";
 
 interface Props {
   store: AppStore;
@@ -15,6 +16,8 @@ const newAgentDraft = (): AgentDefinition => ({
   systemPrompt: "",
   modelProfileIds: [],
   allowedTools: [],
+  icon: "Bot",
+  showInSidebar: true,
 });
 
 const AgentEditor = observer(
@@ -34,6 +37,8 @@ const AgentEditor = observer(
             ...existing,
             allowedTools: [...existing.allowedTools],
             modelProfileIds: [...(existing.modelProfileIds ?? [])],
+            icon: existing.icon || "Bot",
+            showInSidebar: existing.showInSidebar !== false,
           }
         : newAgentDraft(),
     );
@@ -119,6 +124,78 @@ const AgentEditor = observer(
                 onChange={(e) => setDraft({ ...draft, description: e.target.value })}
                 disabled={isSaving}
               />
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              <label style={{ fontSize: 12, opacity: 0.75, marginBottom: 4, display: "block" }}>
+                Icon
+              </label>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(40px, 1fr))",
+                  gap: 4,
+                  padding: 8,
+                  border: "1px solid var(--color-border)",
+                  borderRadius: 4,
+                  maxHeight: 132,
+                  overflowY: "auto",
+                }}
+              >
+                {AGENT_ICON_REGISTRY.map(({ name, icon: Icon }) => {
+                  const selected = (draft.icon || "Bot") === name;
+                  return (
+                    <button
+                      key={name}
+                      type="button"
+                      onClick={() => setDraft({ ...draft, icon: name })}
+                      title={name}
+                      disabled={isSaving}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 32,
+                        height: 32,
+                        borderRadius: 4,
+                        border: selected
+                          ? "1.5px solid var(--accent, #3b82f6)"
+                          : "1px solid var(--color-border)",
+                        background: selected
+                          ? "color-mix(in srgb, var(--accent, #3b82f6) 18%, transparent)"
+                          : "transparent",
+                        color: "var(--text-primary)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <Icon size={16} strokeWidth={1.75} />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={draft.showInSidebar !== false}
+                  onChange={(e) => setDraft({ ...draft, showInSidebar: e.target.checked })}
+                  disabled={isSaving}
+                />
+                <span>Show in sidebar</span>
+                <span style={{ opacity: 0.6, fontSize: 11, marginLeft: 4 }}>
+                  (icon shortcut + in-flight badge)
+                </span>
+              </label>
             </div>
 
             <div style={{ marginTop: 12 }}>

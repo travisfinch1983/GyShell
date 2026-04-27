@@ -146,11 +146,22 @@ export interface AgentDefinition {
    * Empty array = no tools (pure text reasoning).
    */
   allowedTools: string[]
+  /**
+   * Lucide icon name identifying this agent in the sidebar. The renderer
+   * looks the name up in a known icon registry; unknown / missing names
+   * fall back to a generic Bot icon.
+   */
+  icon?: string
+  /**
+   * Whether the icon-strip sidebar shows a shortcut for this agent.
+   * Defaults to true. Hides rarely-used agents without deleting them.
+   */
+  showInSidebar?: boolean
 }
 
 export interface BackendSettings {
   /** Settings schema version, used for migrations */
-  schemaVersion: 7
+  schemaVersion: 8
 
   /** Command policy mode */
   commandPolicyMode: 'safe' | 'standard' | 'smart'
