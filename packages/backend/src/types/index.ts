@@ -147,7 +147,7 @@ export interface AgentDefinition {
 
 export interface BackendSettings {
   /** Settings schema version, used for migrations */
-  schemaVersion: 5
+  schemaVersion: 6
 
   /** Command policy mode */
   commandPolicyMode: 'safe' | 'standard' | 'smart'
