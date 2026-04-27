@@ -38,6 +38,23 @@ import {
   buildDelegateAgentDescription,
   runDelegateAgent
 } from './tools/delegate_agent_tool'
+import {
+  memoryListCollectionsSchema,
+  memoryRecallSchema,
+  memorySaveSchema,
+  memoryCreateCollectionSchema,
+  memoryDeleteSchema,
+  MEMORY_LIST_COLLECTIONS_DESCRIPTION,
+  MEMORY_RECALL_DESCRIPTION,
+  MEMORY_SAVE_DESCRIPTION,
+  MEMORY_CREATE_COLLECTION_DESCRIPTION,
+  MEMORY_DELETE_DESCRIPTION,
+  runMemoryListCollections,
+  runMemoryRecall,
+  runMemorySave,
+  runMemoryCreateCollection,
+  runMemoryDelete
+} from './tools/memory_tools'
 
 // Re-export schemas for AgentService to use
 export { 
@@ -132,6 +149,31 @@ export function buildToolsForModel(readFileSupport: ReadFileSupport) {
       name: 'delegate_agent',
       description: buildDelegateAgentDescription([]), // updated dynamically by AgentService
       schema: delegateAgentSchema
+    },
+    {
+      name: 'memory_list_collections',
+      description: MEMORY_LIST_COLLECTIONS_DESCRIPTION,
+      schema: memoryListCollectionsSchema
+    },
+    {
+      name: 'memory_recall',
+      description: MEMORY_RECALL_DESCRIPTION,
+      schema: memoryRecallSchema
+    },
+    {
+      name: 'memory_save',
+      description: MEMORY_SAVE_DESCRIPTION,
+      schema: memorySaveSchema
+    },
+    {
+      name: 'memory_create_collection',
+      description: MEMORY_CREATE_COLLECTION_DESCRIPTION,
+      schema: memoryCreateCollectionSchema
+    },
+    {
+      name: 'memory_delete',
+      description: MEMORY_DELETE_DESCRIPTION,
+      schema: memoryDeleteSchema
     }
   ].map((tool) => convertToOpenAITool(tool))
 }
@@ -153,7 +195,12 @@ export const toolImplementations = {
   waitCommandEnd,
   runWebFetch,
   runWebSearch,
-  runDelegateAgent
+  runDelegateAgent,
+  runMemoryListCollections,
+  runMemoryRecall,
+  runMemorySave,
+  runMemoryCreateCollection,
+  runMemoryDelete
 }
 
 // Re-export web tool helpers for AgentService dispatch

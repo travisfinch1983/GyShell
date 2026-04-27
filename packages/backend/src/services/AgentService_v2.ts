@@ -1057,6 +1057,31 @@ export class AgentService_v2 {
           result = out.message
           break
         }
+        case 'memory_list_collections': {
+          const out = await toolImplementations.runMemoryListCollections(toolCall.args || {}, executionContext.signal)
+          result = out.message
+          break
+        }
+        case 'memory_recall': {
+          const out = await toolImplementations.runMemoryRecall(toolCall.args || {}, executionContext.signal)
+          result = out.message
+          break
+        }
+        case 'memory_save': {
+          const out = await toolImplementations.runMemorySave(toolCall.args || {}, executionContext.signal)
+          result = out.message
+          break
+        }
+        case 'memory_create_collection': {
+          const out = await toolImplementations.runMemoryCreateCollection(toolCall.args || {}, executionContext.signal)
+          result = out.message
+          break
+        }
+        case 'memory_delete': {
+          const out = await toolImplementations.runMemoryDelete(toolCall.args || {}, executionContext.signal)
+          result = out.message
+          break
+        }
         default:
           result = `Tool "${toolCall.name}" is not supported.`
       }

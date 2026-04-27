@@ -206,6 +206,31 @@ export const BUILTIN_TOOL_INFO = [
     name: 'delegate_agent',
     description:
       'Delegate a focused subtask to a configured specialist agent (defined in Settings → Agents). Each agent has its own system prompt, model, and tool allowlist. Use this to hand off research, planning, or focused coding to a different model/persona.'
+  },
+  {
+    name: 'memory_list_collections',
+    description:
+      'List the long-term memory collections available to AI-Lab agents (excluding system collections). Each result shows the collection name and whether it is owned by AI-Lab (ai-lab_ prefix) or shared with Claude.'
+  },
+  {
+    name: 'memory_recall',
+    description:
+      'Search long-term memory for facts relevant to a query. Vector search across configured DBs with cross-encoder reranking. When a specific collection is given, also searches its prefixed/unprefixed sibling so context flows both ways.'
+  },
+  {
+    name: 'memory_save',
+    description:
+      'Save a fact to long-term memory. Always lands in an ai-lab_* collection (defaults to ai-lab_general). Mirrored across every configured custom-collection DB. Hippocampai is intentionally excluded.'
+  },
+  {
+    name: 'memory_create_collection',
+    description:
+      'Create a new topical memory collection. The name is auto-prefixed with ai-lab_ if missing. Use this when a new memory does not fit any existing collection.'
+  },
+  {
+    name: 'memory_delete',
+    description:
+      'Delete an entire AI-Lab memory collection (per-id deletion is not supported by the proxy). Only ai-lab_* collections may be modified.'
   }
 ]
 

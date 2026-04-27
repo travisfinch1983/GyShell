@@ -17,6 +17,13 @@ import {
   skillToolSchema,
   createSkillSchema,
 } from './skill_tools'
+import {
+  runMemoryListCollections,
+  runMemoryRecall,
+  runMemorySave,
+  runMemoryCreateCollection,
+  runMemoryDelete,
+} from './memory_tools'
 import type { ToolExecutionContext } from '../types'
 import type { ISkillRuntime } from '../../runtimeContracts'
 
@@ -184,6 +191,11 @@ const STATELESS_TOOLS = new Set([
   'create_or_edit',
   'skill',
   'create_skill',
+  'memory_list_collections',
+  'memory_recall',
+  'memory_save',
+  'memory_create_collection',
+  'memory_delete',
 ])
 
 async function dispatchSubTool(
@@ -222,6 +234,26 @@ async function dispatchSubTool(
       if (!deps.skillService) return 'Error: skill service not available in delegated context.'
       const args = createSkillSchema.parse(rawArgs)
       const out = await runCreateSkillTool(args, deps.skillService, signal)
+      return out.message
+    }
+    case 'memory_list_collections': {
+      const out = await runMemoryListCollections(rawArgs, signal)
+      return out.message
+    }
+    case 'memory_recall': {
+      const out = await runMemoryRecall(rawArgs, signal)
+      return out.message
+    }
+    case 'memory_save': {
+      const out = await runMemorySave(rawArgs, signal)
+      return out.message
+    }
+    case 'memory_create_collection': {
+      const out = await runMemoryCreateCollection(rawArgs, signal)
+      return out.message
+    }
+    case 'memory_delete': {
+      const out = await runMemoryDelete(rawArgs, signal)
       return out.message
     }
     default:
