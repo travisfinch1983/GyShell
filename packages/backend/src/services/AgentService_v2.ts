@@ -1537,33 +1537,58 @@ export class AgentService_v2 {
     const profiles = settings?.models?.profiles ?? []
     const activeProfileId = settings?.models?.activeProfileId
 
-    const resolveModelByProfileId = (profileId: string) => {
-      if (!profileId) return null
-      const profile = profiles.find((p) => p.id === profileId)
+    // Resolve a model item by its definition id, then fall back to the
+    // active profile's globalModelId so an empty allowlist still works
+    // ("inherit caller's active profile" semantics).
+    const resolveModelById = (id: string) => {
+      if (!id) return null
+      const direct = allModels.find((m) => m.id === id)
+      if (direct) return direct
+      // Back-compat: callers used to pass profile ids. If the id matches a
+      // profile, dereference to its globalModelId.
+      const profile = profiles.find((p) => p.id === id)
+      if (profile) return allModels.find((m) => m.id === profile.globalModelId) ?? null
+      return null
+    }
+    const resolveActiveProfileModel = () => {
+      if (!activeProfileId) return null
+      const profile = profiles.find((p) => p.id === activeProfileId)
       if (!profile) return null
       return allModels.find((m) => m.id === profile.globalModelId) ?? null
     }
 
-    // Resolve every model assigned to an agent. If none assigned, fall back
-    // to the caller's active profile so empty modelProfileIds keeps working
-    // ("inherit" semantics). Each candidate carries its slot count, which the
-    // pool uses as concurrency capacity for that profile.
+    // Build the candidate list for an agent. The agent stores model item ids
+    // directly; if the array is empty we fall back to the caller's active
+    // profile so the agent is still usable. Each candidate carries the slot
+    // count discovered from /v1/models so the pool knows its concurrency
+    // capacity for this profile.
     const resolveModels = (agent: any): Array<{ profileId: string; modelItem: any; slots: number }> => {
-      const ids: string[] = Array.isArray(agent.modelProfileIds) && agent.modelProfileIds.length > 0
-        ? agent.modelProfileIds
-        : (activeProfileId ? [activeProfileId] : [])
+      const ids: string[] = Array.isArray(agent.modelProfileIds) ? agent.modelProfileIds : []
       const out: Array<{ profileId: string; modelItem: any; slots: number }> = []
-      for (const pid of ids) {
-        const modelItem = resolveModelByProfileId(pid)
-        if (!modelItem) continue
+      const seen = new Set<string>()
+      const push = (id: string, modelItem: any) => {
+        if (!modelItem || seen.has(modelItem.id)) return
+        seen.add(modelItem.id)
         const baseUrl = modelItem.baseUrl ?? ''
-        const cached = this.slotCache.get(`${baseUrl}|${modelItem.model}`)
-        const slots = cached?.slots ?? 1
-        out.push({ profileId: pid, modelItem, slots })
-        // Kick off async refresh for next call (don't await — first call gets 1)
+        // Auto-discovered items already carry _proxlabSlots; otherwise fall
+        // back to the slot cache (or 1) and kick off an async refresh.
+        const cachedHttp = baseUrl
+          ? this.slotCache.get(`${baseUrl}|${modelItem.model}`)
+          : undefined
+        const slots = (typeof modelItem._proxlabSlots === 'number' && modelItem._proxlabSlots > 0)
+          ? modelItem._proxlabSlots
+          : (cachedHttp?.slots ?? 1)
+        out.push({ profileId: id, modelItem, slots })
         if (baseUrl) {
           void this.discoverSlots(baseUrl, modelItem.model, modelItem.apiKey)
         }
+      }
+
+      if (ids.length > 0) {
+        for (const id of ids) push(id, resolveModelById(id))
+      }
+      if (out.length === 0) {
+        push('__active__', resolveActiveProfileModel())
       }
       return out
     }

@@ -39,25 +39,23 @@ const AgentEditor = observer(
     );
     const [isSaving, setIsSaving] = useState(false);
 
-    const profiles = store.settings?.models.profiles ?? [];
-    const items = store.settings?.models.items ?? [];
     const builtInTools = store.builtInTools.filter((t) => t.enabled);
     const mcpTools = store.mcpTools.filter((t) => t.enabled);
 
-    // Resolve a profile's underlying model definition + concurrency slots so we
-    // can annotate the multi-select with how many lanes each profile gives the
-    // agent's pool. _proxlabSlots is set by the auto-discovery layer when the
-    // model came from proxlab's /v1/models; defaults to 1 for manual entries.
-    const profileMeta = (profileId: string): { slots: number; modelLabel: string } => {
-      const profile = profiles.find((p) => p.id === profileId);
-      if (!profile) return { slots: 1, modelLabel: "" };
-      const item = items.find((m) => m.id === (profile as any).globalModelId) as any;
-      const slots = typeof item?._proxlabSlots === "number" && item._proxlabSlots > 0
-        ? item._proxlabSlots
-        : 1;
-      const modelLabel = item?.model ? ` · ${item.model}` : "";
-      return { slots, modelLabel };
-    };
+    // Multi-select against individual model definitions (items), not profiles.
+    // Profiles are user-created bundles (most users have just one), but agents
+    // need to address specific model instances — particularly when the user
+    // has multiple instances of the same family (e.g. two Qwen3.5-4B servers).
+    // Auto-discovered items from proxlab carry _proxlabSlots; manual entries
+    // default to 1 lane.
+    const allItems = (store.settings?.models.items ?? []) as any[];
+    const assignableItems = allItems
+      .filter((m) => !m._proxlabDisconnected)
+      .slice()
+      .sort((a, b) => String(a.name || a.model || "").localeCompare(String(b.name || b.model || "")));
+
+    const itemSlots = (item: any): number =>
+      typeof item?._proxlabSlots === "number" && item._proxlabSlots > 0 ? item._proxlabSlots : 1;
 
     const toggleTool = (name: string) => {
       setDraft((d) => {
@@ -137,29 +135,29 @@ const AgentEditor = observer(
                 contributes its <code>--parallel</code> slots as concurrency lanes. Leave empty to
                 inherit the caller's active profile.
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 6, maxHeight: 160, overflowY: "auto", padding: 8, border: "1px solid var(--color-border)", borderRadius: 4 }}>
-                {profiles.length === 0 && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 6, maxHeight: 220, overflowY: "auto", padding: 8, border: "1px solid var(--color-border)", borderRadius: 4 }}>
+                {assignableItems.length === 0 && (
                   <div style={{ gridColumn: "1 / -1", fontSize: 12, opacity: 0.6 }}>
-                    No model profiles configured. Add one in the Models tab first.
+                    No models available. Make sure proxlab is running and at least one LLM service is up — auto-discovery refreshes every ~30s.
                   </div>
                 )}
-                {profiles.map((p) => {
-                  const meta = profileMeta(p.id);
+                {assignableItems.map((item) => {
+                  const slots = itemSlots(item);
+                  const label = String(item.name || item.model || item.id);
                   return (
                     <label
-                      key={p.id}
+                      key={item.id}
                       style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}
-                      title={meta.modelLabel ? `Model: ${meta.modelLabel.slice(3)} · ${meta.slots} concurrent slot${meta.slots === 1 ? "" : "s"}` : ""}
                     >
                       <input
                         type="checkbox"
-                        checked={draft.modelProfileIds.includes(p.id)}
-                        onChange={() => toggleModel(p.id)}
+                        checked={draft.modelProfileIds.includes(item.id)}
+                        onChange={() => toggleModel(item.id)}
                         disabled={isSaving}
                       />
-                      <span>{p.name}</span>
-                      <span style={{ opacity: 0.6, fontSize: 11, marginLeft: "auto" }}>
-                        {meta.slots} slot{meta.slots === 1 ? "" : "s"}
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+                      <span style={{ opacity: 0.6, fontSize: 11, marginLeft: "auto", flexShrink: 0 }}>
+                        {slots} slot{slots === 1 ? "" : "s"}
                       </span>
                     </label>
                   );
@@ -244,11 +242,13 @@ export const AgentsPanel: React.FC<Props> = observer(({ store }) => {
     }
   }, [store]);
 
-  const profileNameById = useMemo(() => {
+  const itemNameById = useMemo(() => {
     const m = new Map<string, string>();
-    (store.settings?.models.profiles ?? []).forEach((p) => m.set(p.id, p.name));
+    (store.settings?.models.items ?? []).forEach((it: any) => {
+      m.set(it.id, String(it.name || it.model || it.id));
+    });
     return m;
-  }, [store.settings?.models.profiles]);
+  }, [store.settings?.models.items]);
 
   const openEditor = (id?: string) => {
     setEditingId(id || null);
@@ -283,7 +283,7 @@ export const AgentsPanel: React.FC<Props> = observer(({ store }) => {
           const profileLabel = ids.length === 0
             ? "Inherits caller"
             : ids
-                .map((id) => profileNameById.get(id) || "(missing)")
+                .map((id) => itemNameById.get(id) || "(missing)")
                 .join(", ");
           return (
             <div key={agent.id} className="tool-item">
