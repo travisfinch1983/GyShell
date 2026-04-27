@@ -157,29 +157,23 @@ const ActivityPulse = observer(({ store }: { store: MinionStore }) => {
 })
 
 /**
- * One agent shortcut. Click sends a placeholder direct-route signal to the
- * chat (full delegate-direct wiring lands with the chat-window adaptation).
- * Badge in the corner shows how many invocations of this agent are
- * currently in flight — populated from the agent pool once the WS event
- * surface is wired up; defaults to 0 (badge hidden).
- *
- * Uses themed colors so the icon doesn't clash with the rest of the UI:
- * `currentColor` is `--text-primary`, hover background is `--panel-bg-2`,
- * the active-count badge uses `--accent` with white text for contrast.
+ * One agent indicator in the sidebar — not a button, just an informational
+ * icon plus an optional in-flight count badge. Rendered as a div with no
+ * hover effect or click handler; the icon stroke color is set explicitly
+ * via a CSS variable so it adapts to dark / light themes (matches the
+ * rest of the UI's text color).
  */
 const AgentIcon: React.FC<{
   name: string
   iconName: string | undefined
   activeCount: number
-  onClick: () => void
-}> = ({ name, iconName, activeCount, onClick }) => {
+}> = ({ name, iconName, activeCount }) => {
   const Icon = resolveAgentIcon(iconName)
   return (
-    <button
-      className="collapsed-minion-icon selectable"
-      onClick={onClick}
+    <div
+      className="collapsed-minion-icon"
       title={`${name}${activeCount > 0 ? ` — ${activeCount} in flight` : ''}`}
-      style={{ color: 'var(--text-primary)' }}
+      style={{ color: 'var(--text-primary)', cursor: 'default' }}
     >
       <Icon size={14} strokeWidth={1.75} />
       {activeCount > 0 && (
@@ -200,7 +194,7 @@ const AgentIcon: React.FC<{
           {activeCount}
         </span>
       )}
-    </button>
+    </div>
   )
 }
 
@@ -218,15 +212,6 @@ export const MinionSidebar = observer(({ store, appStore }: MinionSidebarProps) 
   // Configured agents — filtered by the per-agent showInSidebar flag so the
   // user can hide agents they rarely use without deleting them.
   const agents = (appStore.agents ?? []).filter((a) => a.showInSidebar !== false)
-
-  const focusAgent = (agentName: string) => {
-    const chatStore = (appStore as any).chat
-    if (chatStore) {
-      ;(chatStore as any).nextDirectAgentName = agentName
-    }
-    // eslint-disable-next-line no-console
-    console.log(`[MinionSidebar] Next message will be delegated to agent "${agentName}"`)
-  }
 
   return (
     <div className="minion-sidebar collapsed-sidebar">
@@ -262,7 +247,6 @@ export const MinionSidebar = observer(({ store, appStore }: MinionSidebarProps) 
               name={a.name}
               iconName={a.icon}
               activeCount={0}
-              onClick={() => focusAgent(a.name)}
             />
           ))}
         </div>
