@@ -14,6 +14,7 @@ import {
   XCircle,
   FastForward,
   Check,
+  Brain,
 } from 'lucide-react'
 import type { ChatMessage } from '../../stores/ChatStore'
 import './chatBanner.scss'
@@ -387,6 +388,11 @@ export const SubToolBanner = observer(({
         className="banner-header subtool-header"
         onClick={handleHeaderClick}
       >
+        {variant === 'reasoning' ? (
+          <div className="banner-icon" style={{ marginRight: 6, opacity: 0.85 }}>
+            <Brain size={13} strokeWidth={1.75} />
+          </div>
+        ) : null}
         <div className="banner-title subtool-title">
           <span className="banner-type" data-sweep-text={shouldSweepTitle ? title : undefined}>
             {title}

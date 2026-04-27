@@ -214,10 +214,11 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
     if (isRetryHint && !isLastMessage) {
       return null;
     }
-    if (
-      (msg.type === "reasoning" || msg.type === "compaction") &&
-      !isLastMessage
-    ) {
+    // Reasoning banners stay rendered after streaming ends so the user can
+    // expand them later via the brain-icon toggle. Compaction banners stay
+    // hidden when not the last message — those are large summarization
+    // payloads we don't want cluttering the conversation history.
+    if (msg.type === "compaction" && !isLastMessage) {
       return null;
     }
 
