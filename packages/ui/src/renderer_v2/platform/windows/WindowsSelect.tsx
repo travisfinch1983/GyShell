@@ -189,9 +189,14 @@ export const WindowsSelect = forwardRef<SelectHandle, WindowsSelectProps>(
                   : menuStyle
               }
             >
-              {options.map((o) => (
+              {options.map((o, i) => (
+                // Index suffix on the React key defends against duplicate
+                // option values silently collapsing into a single rendered
+                // button (the source of the historic 'click N, select N-K'
+                // bug). The data layer should also dedupe, but this makes
+                // the UI robust to bad input.
                 <button
-                  key={o.value}
+                  key={`${o.value}::${i}`}
                   type="button"
                   className={`win-select-option ${o.value === value ? "is-selected" : ""}`}
                   onClick={() => {

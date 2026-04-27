@@ -1556,79 +1556,7 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                           </div>
                         </div>
                         <div className="profile-field">
-                          <label>Creative Model</label>
-                                                    <div className="profile-select-with-voice">
-                          <div className="profile-select-wrap">
-<Select
-                              value={(p as any).creativeModelId || ""}
-                              onChange={(id) =>
-                                store.saveProfile({
-                                  ...p,
-                                  creativeModelId: id || undefined,
-                                } as any)
-                              }
-                            options={[
-                                { value: "", label: "(None)" },
-                                ...(store.settings?.models.items.map((m: any) => ({
-                                  value: m.id,
-                                  label: m._proxlabDisconnected ? `⚠ ${m.name}` : m.name,
-                                })) || []),
-                            ]}
-                          />
-                          </div>
-                          <ProfileVoiceButton profile={p} roleKey="creative" store={store} />
-                          </div>
-                        </div>
-                        <div className="profile-field">
-                          <label>Architect Model</label>
-                                                    <div className="profile-select-with-voice">
-                          <div className="profile-select-wrap">
-<Select
-                              value={(p as any).architectModelId || ""}
-                              onChange={(id) =>
-                                store.saveProfile({
-                                  ...p,
-                                  architectModelId: id || undefined,
-                                } as any)
-                              }
-                            options={[
-                                { value: "", label: "(None)" },
-                                ...(store.settings?.models.items.map((m: any) => ({
-                                  value: m.id,
-                                  label: m._proxlabDisconnected ? `⚠ ${m.name}` : m.name,
-                                })) || []),
-                            ]}
-                          />
-                          </div>
-                          <ProfileVoiceButton profile={p} roleKey="architect" store={store} />
-                          </div>
-                        </div>
-                        <div className="profile-field">
-                          <label>Scout Model</label>
-                                                    <div className="profile-select-with-voice">
-                          <div className="profile-select-wrap">
-<Select
-                              value={(p as any).scoutModelId || ""}
-                              onChange={(id) =>
-                                store.saveProfile({
-                                  ...p,
-                                  scoutModelId: id || undefined,
-                                } as any)
-                              }
-                            options={[
-                                { value: "", label: "(None)" },
-                                ...(store.settings?.models.items.map((m: any) => ({
-                                  value: m.id,
-                                  label: m._proxlabDisconnected ? `⚠ ${m.name}` : m.name,
-                                })) || []),
-                            ]}
-                          />
-                          </div>
-                          <ProfileVoiceButton profile={p} roleKey="scout" store={store} />
-                          </div>
-                        </div>
-                        <div className="profile-field">
-                          <label>Orchestrator (Router)</label>
+                          <label>Default Model (fallback)</label>
                           <Select
                             value={p.globalModelId}
                               onChange={(id) =>
@@ -1641,81 +1569,6 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                                 })) || []
                               }
                           />
-                        </div>
-                        <div className="profile-field">
-                          <label>{t.settings.actionModel}</label>
-                          <div className="profile-select-with-voice">
-                          <div className="profile-select-wrap">
-                          <Select
-                              value={p.actionModelId || ""}
-                              onChange={(id) =>
-                                store.saveProfile({
-                                  ...p,
-                                  actionModelId: id || undefined,
-                                })
-                              }
-                            options={[
-                                { value: "", label: "(None)" },
-                                ...(store.settings?.models.items.map((m: any) => ({
-                                  value: m.id,
-                                  label: m._proxlabDisconnected ? `⚠ ${m.name}` : m.name,
-                                })) || []),
-                            ]}
-                          />
-                          </div>
-                          <ProfileVoiceButton profile={p} roleKey="action" store={store} />
-                          </div>
-                        </div>
-                        <div className="profile-field">
-                          <label>{t.settings.thinkingModel}</label>
-                          <div className="profile-select-with-voice">
-                          <div className="profile-select-wrap">
-                          <Select
-                              value={p.thinkingModelId || ""}
-                              onChange={(id) =>
-                                store.saveProfile({
-                                  ...p,
-                                  thinkingModelId: id || undefined,
-                                })
-                              }
-                            options={[
-                                { value: "", label: "(None)" },
-                                ...(store.settings?.models.items.map((m: any) => ({
-                                  value: m.id,
-                                  label: m._proxlabDisconnected ? `⚠ ${m.name}` : m.name,
-                                })) || []),
-                            ]}
-                          />
-                          </div>
-                          <ProfileVoiceButton profile={p} roleKey="thinking" store={store} />
-                          </div>
-                        </div>
-                        <div className="profile-field">
-                          <div className="profile-field-label-with-info">
-                            <label>{t.settings.compactionModel}</label>
-                            <InfoTooltip content={t.settings.tooltips.compactionModel} />
-                          </div>
-                          <div className="profile-select-with-voice">
-                          <div className="profile-select-wrap">
-                          <Select
-                              value={p.compactionModelId || ""}
-                              onChange={(id) =>
-                                store.saveProfile({
-                                  ...p,
-                                  compactionModelId: id || undefined,
-                                })
-                              }
-                            options={[
-                                { value: "", label: "(None)" },
-                                ...(store.settings?.models.items.map((m: any) => ({
-                                  value: m.id,
-                                  label: m._proxlabDisconnected ? `⚠ ${m.name}` : m.name,
-                                })) || []),
-                            ]}
-                          />
-                          </div>
-                          <ProfileVoiceButton profile={p} roleKey="compaction" store={store} />
-                          </div>
                         </div>
 <RolePromptsEditor profile={p} store={store} />
                       </div>
@@ -2890,7 +2743,7 @@ const ProfileVoiceButton: React.FC<{
 
 // ─── Role Prompts Editor ─────────────────────────────────────────────────────
 
-const PROMPT_ROLES = ['chat', 'coder', 'creative', 'architect', 'scout', 'thinking'] as const;
+const PROMPT_ROLES = ['chat', 'coder'] as const;
 
 // Import the real default prompts from MinionRouter
 import { DEFAULT_ROLE_PROMPTS as CODE_DEFAULT_PROMPTS } from '../../services/MinionRouter';

@@ -323,14 +323,18 @@ export class AgentService_v2 {
       return null
     }
 
-    const actionItem = profile.actionModelId
-      ? settings.models.items.find((m) => m.id === profile.actionModelId)
+    // The retired action/thinking/compaction role fields no longer exist on
+    // ModelProfile (v7+). Read them off the profile defensively for any
+    // pre-migration data, but in practice these will always be undefined and
+    // the runtime will fall back to globalModelId for everything.
+    const actionItem = (profile as any).actionModelId
+      ? settings.models.items.find((m) => m.id === (profile as any).actionModelId)
       : undefined
-    const thinkingItem = profile.thinkingModelId
-      ? settings.models.items.find((m) => m.id === profile.thinkingModelId)
+    const thinkingItem = (profile as any).thinkingModelId
+      ? settings.models.items.find((m) => m.id === (profile as any).thinkingModelId)
       : undefined
-    const compactionItem = profile.compactionModelId
-      ? settings.models.items.find((m) => m.id === profile.compactionModelId)
+    const compactionItem = (profile as any).compactionModelId
+      ? settings.models.items.find((m) => m.id === (profile as any).compactionModelId)
       : undefined
 
     const model = this.helpers.createChatModel(globalItem, 0.7)

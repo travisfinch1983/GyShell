@@ -34,22 +34,25 @@ export interface ModelProfile {
   id: string
   name: string
   /**
-   * globalModelId serves as the Orchestrator — the routing model that decides
-   * which specialist handles a task. Kept as 'globalModelId' for backwards
-   * compatibility with GyShell's native agent system.
+   * Default model for this profile. The runtime falls back to this whenever a
+   * specific role isn't assigned (action / thinking / compaction now all
+   * inherit from it since their dedicated roles were retired in favor of the
+   * agent system). Kept as 'globalModelId' for migration continuity with the
+   * earlier multi-role schema.
    */
   globalModelId: string
-  // Core roles:
-  chatModelId?: string          // Direct conversation model (heavy hitter)
-  actionModelId?: string        // Task execution
-  thinkingModelId?: string      // Deep reasoning passes
-  compactionModelId?: string    // Context summarization
-  // Specialist roles:
-  coderModelId?: string         // Code generation, scripts, git
-  creativeModelId?: string      // Writing, docs, creative
-  architectModelId?: string     // Complex analysis, architecture
-  scoutModelId?: string         // Quick checks, lightweight tasks
-  // Per-role system prompts (optional overrides):
+  /**
+   * Direct user-facing conversation model. The chat window targets this.
+   * If unset, falls back to globalModelId.
+   */
+  chatModelId?: string
+  /**
+   * Specialist for direct code edits requested via chat (without going
+   * through delegate_agent). Use the coder-focused agent instead for
+   * delegated workflows.
+   */
+  coderModelId?: string
+  /** Per-role system prompts (optional overrides). */
   rolePrompts?: Record<string, string>
 }
 
@@ -147,7 +150,7 @@ export interface AgentDefinition {
 
 export interface BackendSettings {
   /** Settings schema version, used for migrations */
-  schemaVersion: 6
+  schemaVersion: 7
 
   /** Command policy mode */
   commandPolicyMode: 'safe' | 'standard' | 'smart'

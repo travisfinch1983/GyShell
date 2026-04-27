@@ -2,7 +2,7 @@ import type { BackendSettings, WsGatewayAccess } from "../../types";
 import { BUILTIN_TOOL_INFO } from "../AgentHelper/tools";
 import { deepMerge, isObject } from "./objectMerge";
 
-export const BACKEND_SETTINGS_SCHEMA_VERSION = 6;
+export const BACKEND_SETTINGS_SCHEMA_VERSION = 7;
 
 /**
  * The systemPrompt + allowedTools snapshot for each default agent at every
@@ -366,6 +366,47 @@ function migrateBackendToV4(
   return next;
 }
 
+function migrateBackendToV7(
+  settings: Partial<BackendSettings>,
+): Partial<BackendSettings> {
+  const next = { ...(settings as any) };
+  // 1) Strip retired model-profile role fields. The agent system now handles
+  // these specialties; only chat + coder remain as direct-routed roles, with
+  // globalModelId as the catch-all default.
+  if (next.models && Array.isArray(next.models.profiles)) {
+    next.models.profiles = next.models.profiles.map((p: any) => {
+      if (!p || typeof p !== "object") return p;
+      const cleaned = { ...p };
+      delete cleaned.actionModelId;
+      delete cleaned.thinkingModelId;
+      delete cleaned.compactionModelId;
+      delete cleaned.creativeModelId;
+      delete cleaned.architectModelId;
+      delete cleaned.scoutModelId;
+      // Prune per-role prompts that referenced retired roles.
+      if (cleaned.rolePrompts && typeof cleaned.rolePrompts === "object") {
+        const keep = ["chat", "coder"];
+        const next: Record<string, string> = {};
+        for (const [k, v] of Object.entries(cleaned.rolePrompts)) {
+          if (keep.includes(k) && typeof v === "string") next[k] = v;
+        }
+        cleaned.rolePrompts = Object.keys(next).length > 0 ? next : undefined;
+      }
+      return cleaned;
+    });
+  }
+  // 2) Blow away auto-discovered model items. Auto-discovery used a slot-based
+  // id scheme (`proxlab-${slot}`) and slot numbers got reused as services
+  // rotated, leaving the items array with duplicate ids. Discovery
+  // repopulates within a poll cycle, so dropping them is safe and the
+  // cleanest way to recover from the duplicate-id mess.
+  if (next.models && Array.isArray(next.models.items)) {
+    next.models.items = next.models.items.filter((m: any) => !m?._proxlabAutoDiscovered);
+  }
+  next.schemaVersion = 7;
+  return next;
+}
+
 function migrateBackendToV6(
   settings: Partial<BackendSettings>,
 ): Partial<BackendSettings> {
@@ -470,6 +511,10 @@ export function migrateBackendSettings(
   if (fromVersion < 6) {
     merged = deepMerge(merged, migrateBackendToV6(merged as any) as any);
     fromVersion = 6;
+  }
+  if (fromVersion < 7) {
+    merged = deepMerge(merged, migrateBackendToV7(merged as any) as any);
+    fromVersion = 7;
   }
 
   return normalizeBackendSettings(merged);

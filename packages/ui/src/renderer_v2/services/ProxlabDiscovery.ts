@@ -435,75 +435,97 @@ export async function discoverModels(): Promise<DiscoveredModel[]> {
  * Sync discovered models into GyShell settings for profile dropdown population.
  * Adds new models, removes stale ones. Does not touch user-created items.
  */
+/**
+ * The previous implementation keyed auto-discovered items by `proxlab-${slot}`
+ * and only marked stale entries as `_proxlabDisconnected` rather than
+ * removing them. Slot numbers get reused as services rotate, which produced
+ * duplicate ids in the items array — the dropdown's React key collapsed them
+ * silently and clicking option N triggered the FIRST item sharing its key.
+ *
+ * Fix: derive a stable id from the discovered model's API id (the actual
+ * served-model name, which is unique per service), keep an index of
+ * discovered ids, and HARD-DELETE stale auto-discovered entries when
+ * discovery returns a non-empty result. When discovery is empty (proxy
+ * down), we leave entries as-is so user-assigned profiles don't break.
+ */
 function syncModelsToSettings(models: DiscoveredModel[]) {
   const appStore = (window as any).__appStore
   const settings = appStore?.settings
   if (!settings?.models?.items) return
 
-  const availableIds = new Set(models.map(m => m.id))
-  const existingProxlab = new Map<string, number>()
+  // Stable id derived from the API model id — guaranteed unique per service.
+  // We sanitize it so it's safe as a settings key.
+  const stableId = (modelId: string) => `proxlab:${modelId}`
 
-  // Index existing auto-discovered items
-  settings.models.items.forEach((item: any, idx: number) => {
-    if (item._proxlabAutoDiscovered) {
-      existingProxlab.set(item.model, idx)
+  const discoveredById = new Map<string, DiscoveredModel>()
+  for (const m of models) discoveredById.set(stableId(m.id), m)
+
+  runInAction(() => {
+    // Hard-delete stale auto-discovered items when discovery produced results.
+    // (If discovery returned empty, the proxy is probably down — keep entries
+    // so saved profile assignments still resolve when it comes back.)
+    if (models.length > 0) {
+      settings.models.items = settings.models.items.filter((item: any) => {
+        if (!item._proxlabAutoDiscovered) return true
+        return discoveredById.has(item.id)
+      })
+    }
+
+    const existingByStableId = new Map<string, number>()
+    settings.models.items.forEach((item: any, idx: number) => {
+      if (item._proxlabAutoDiscovered) existingByStableId.set(item.id, idx)
+    })
+
+    // Upsert: update existing entries, insert new ones, skip ids the user has
+    // a manual entry for already.
+    for (const m of models) {
+      const id = stableId(m.id)
+      const existingIdx = existingByStableId.get(id)
+      if (existingIdx !== undefined) {
+        const cur = settings.models.items[existingIdx]
+        cur._proxlabSlot = m.slot
+        cur._proxlabSlots = m.slots
+        cur._proxlabNode = m.node
+        cur._proxlabDisconnected = false
+        // Refresh baseUrl in case the user repointed proxlab.
+        cur.baseUrl = `http://10.0.0.140:7777/api/proxy/llm/${m.slot}/v1`
+        continue
+      }
+      // Don't shadow a user's manual entry pointing at the same model.
+      if (settings.models.items.some((i: any) => i.model === m.id && !i._proxlabAutoDiscovered)) continue
+
+      const friendlyName = m.id
+        .replace(/^koboldcpp\//, '')
+        .replace(/-UD-Q\d+_K(_XL)?(-\d+-of-\d+)?$/i, '')
+        .replace(/\.Q\d+_K$/i, '')
+        .replace(/-/g, ' ')
+
+      settings.models.items.push({
+        id,
+        name: friendlyName,
+        model: m.id,
+        apiKey: 'not-needed',
+        baseUrl: `http://10.0.0.140:7777/api/proxy/llm/${m.slot}/v1`,
+        maxTokens: 200000,
+        structuredOutputMode: 'auto',
+        supportsStructuredOutput: true,
+        supportsObjectToolChoice: false,
+        _proxlabSlot: m.slot,
+        _proxlabNode: m.node,
+        _proxlabSlots: m.slots,
+        _proxlabAutoDiscovered: true,
+        _proxlabDisconnected: false,
+      })
+    }
+
+    // If discovery is empty, mark surviving auto-discovered items as
+    // disconnected for UI feedback but leave them in place.
+    if (models.length === 0) {
+      for (const item of settings.models.items) {
+        if (item._proxlabAutoDiscovered) item._proxlabDisconnected = true
+      }
     }
   })
-
-  // Add new models
-  for (const model of models) {
-    if (existingProxlab.has(model.id)) {
-      // Update slot + concurrency-slots if changed
-      const idx = existingProxlab.get(model.id)!
-      settings.models.items[idx]._proxlabSlot = model.slot
-      settings.models.items[idx]._proxlabSlots = model.slots
-      continue
-    }
-
-    // Skip if user already has a manual entry for this model
-    if (settings.models.items.some((item: any) => item.model === model.id && !item._proxlabAutoDiscovered)) {
-      continue
-    }
-
-    const friendlyName = model.id
-      .replace(/^koboldcpp\//, '')
-      .replace(/-UD-Q\d+_K(_XL)?(-\d+-of-\d+)?$/i, '')
-      .replace(/\.Q\d+_K$/i, '')
-      .replace(/-/g, ' ')
-
-    settings.models.items.push({
-      id: `proxlab-${model.slot}`,
-      name: friendlyName,
-      model: model.id,
-      apiKey: 'not-needed',
-      baseUrl: `http://10.0.0.140:7777/api/proxy/llm/${model.slot}/v1`,
-      maxTokens: 200000,
-      structuredOutputMode: 'auto',
-      supportsStructuredOutput: true,
-      supportsObjectToolChoice: false,
-      _proxlabSlot: model.slot,
-      _proxlabNode: model.node,
-      _proxlabSlots: model.slots,
-      _proxlabAutoDiscovered: true,
-    })
-  }
-
-  // Mark stale auto-discovered items as disconnected (don't remove — profile may reference them)
-  // Only remove if a full discovery returned results and this model wasn't in it
-  if (models.length > 0) {
-    for (const item of settings.models.items) {
-      if (item._proxlabAutoDiscovered) {
-        runInAction(() => { item._proxlabDisconnected = !availableIds.has(item.model) })
-      }
-    }
-  } else {
-    // Discovery returned empty — mark all as disconnected but keep them
-    for (const item of settings.models.items) {
-      if (item._proxlabAutoDiscovered) {
-        runInAction(() => { item._proxlabDisconnected = true })
-      }
-    }
-  }
 }
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
