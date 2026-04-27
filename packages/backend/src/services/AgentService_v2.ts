@@ -314,13 +314,38 @@ export class AgentService_v2 {
       return null
     }
 
-    const globalItem = settings.models.items.find((m) => m.id === profile.globalModelId)
-    if (!globalItem || !globalItem.apiKey) {
-      console.warn('[AgentService_v2] Global model is invalid for session binding:', {
+    // Resolve the default model in fallback order so a stale globalModelId
+    // (e.g. an auto-discovered service that got renamed at relaunch) doesn't
+    // bring down the whole session. Try globalModelId, then chatModelId,
+    // then coderModelId, then any valid item — whichever resolves first
+    // becomes the session's default model.
+    const findItemWithKey = (id: string | undefined) => {
+      if (!id) return undefined
+      const item = settings.models.items.find((m) => m.id === id)
+      return item && item.apiKey ? item : undefined
+    }
+    let globalItem =
+      findItemWithKey(profile.globalModelId) ||
+      findItemWithKey((profile as any).chatModelId) ||
+      findItemWithKey((profile as any).coderModelId)
+    if (!globalItem) {
+      // Last-ditch fallback: any item with a usable apiKey.
+      globalItem = settings.models.items.find((m) => !!m.apiKey)
+    }
+    if (!globalItem) {
+      console.warn('[AgentService_v2] No usable model could be resolved for session binding:', {
         profileId,
-        globalModelId: profile.globalModelId
+        globalModelId: profile.globalModelId,
+        chatModelId: (profile as any).chatModelId,
+        coderModelId: (profile as any).coderModelId,
       })
       return null
+    }
+    if (globalItem.id !== profile.globalModelId) {
+      console.warn(
+        `[AgentService_v2] Profile "${profileId}" globalModelId "${profile.globalModelId}" is stale; ` +
+        `falling back to "${globalItem.id}". Re-pick the Default Model in Settings to silence this warning.`
+      )
     }
 
     // The retired action/thinking/compaction role fields no longer exist on
