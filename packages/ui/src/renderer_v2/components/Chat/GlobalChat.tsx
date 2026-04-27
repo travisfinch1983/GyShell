@@ -21,13 +21,23 @@ interface Props {
  * and routes selection back to the same id.
  */
 export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
-  // Pick a stable single session — first existing, or create one if none.
+  // Pick a stable single session — first existing, or create a real one if
+  // none. The session must actually exist in store.chat.sessions, otherwise
+  // ChatStore.handleUiUpdate silently drops every backend event for it (it
+  // intentionally won't synthesize a session from live updates), and the
+  // user's message + the model's response both vanish into the void.
   const sessionId = useMemo(() => {
     const sessions = store.chat?.sessions || []
     if (sessions.length > 0) return sessions[0].id
-    // ChatStore should auto-create on first use; fall back to a placeholder
-    // string so ChatPanel doesn't get null. The first message dispatch will
-    // hydrate the actual session.
+    if (store.chat && typeof store.chat.createSession === 'function') {
+      try {
+        return store.chat.createSession('Chat')
+      } catch (err) {
+        console.warn('[GlobalChat] createSession failed:', err)
+      }
+    }
+    // Last-resort placeholder. With createSession in place this branch
+    // shouldn't fire; if it does, the user can reload to recover.
     return 'global-chat-session'
   }, [store.chat?.sessions?.length])
 
