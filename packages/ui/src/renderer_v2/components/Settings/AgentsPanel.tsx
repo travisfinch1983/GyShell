@@ -31,12 +31,23 @@ const AgentEditor = observer(
     onClose: () => void;
   }) => {
     const existing = store.agents.find((a) => a.id === agentId);
+    // Drop modelProfileIds that no longer correspond to a known item — those
+    // are leftover references from the v7 model-id schema change. Keeps any
+    // valid assignments so the user only re-picks the truly stale ones.
+    const knownItemIds = useMemo(() => {
+      const ids = new Set<string>();
+      (store.settings?.models.items ?? []).forEach((m: any) => ids.add(m.id));
+      return ids;
+    }, [store.settings?.models.items]);
+
     const [draft, setDraft] = useState<AgentDefinition>(() =>
       existing
         ? {
             ...existing,
             allowedTools: [...existing.allowedTools],
-            modelProfileIds: [...(existing.modelProfileIds ?? [])],
+            modelProfileIds: [...(existing.modelProfileIds ?? [])].filter((id) =>
+              knownItemIds.has(id),
+            ),
             icon: existing.icon || "Bot",
             showInSidebar: existing.showInSidebar !== false,
           }
@@ -357,11 +368,11 @@ export const AgentsPanel: React.FC<Props> = observer(({ store }) => {
       <div className="tools-list">
         {store.agents.map((agent) => {
           const ids = agent.modelProfileIds ?? [];
-          const profileLabel = ids.length === 0
+          const validIds = ids.filter((id) => itemNameById.has(id));
+          const staleCount = ids.length - validIds.length;
+          const profileLabel = validIds.length === 0
             ? "Inherits caller"
-            : ids
-                .map((id) => itemNameById.get(id) || "(missing)")
-                .join(", ");
+            : validIds.map((id) => itemNameById.get(id) || "").join(", ");
           return (
             <div key={agent.id} className="tool-item">
               <div className="tool-info">
@@ -370,15 +381,20 @@ export const AgentsPanel: React.FC<Props> = observer(({ store }) => {
                   {agent.description || agent.systemPrompt.slice(0, 80)}
                 </div>
                 <div className="tool-meta" style={{ opacity: 0.6, fontSize: 11 }}>
-                  {ids.length === 0 ? "Model: " : `Models (${ids.length}): `}
+                  {validIds.length === 0 ? "Model: " : `Models (${validIds.length}): `}
                   {profileLabel} · {agent.allowedTools.length} tools
+                  {staleCount > 0 && (
+                    <span style={{ color: "var(--warn, #d97706)", marginLeft: 6 }}>
+                      ({staleCount} stale — open to re-pick)
+                    </span>
+                  )}
                 </div>
               </div>
               <div className="tool-actions">
-                <button className="btn-icon" onClick={() => openEditor(agent.id)} title="Edit">
+                <button className="icon-btn-sm" onClick={() => openEditor(agent.id)} title="Edit">
                   <Pencil size={14} />
                 </button>
-                <button className="btn-icon" onClick={() => setConfirmDeleteId(agent.id)} title="Delete">
+                <button className="icon-btn-sm" onClick={() => setConfirmDeleteId(agent.id)} title="Delete">
                   <Trash2 size={14} />
                 </button>
               </div>
