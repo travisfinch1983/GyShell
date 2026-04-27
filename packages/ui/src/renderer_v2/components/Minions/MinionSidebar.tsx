@@ -21,6 +21,7 @@ import {
   Layers,
   Bot,
   Eye,
+  MessageSquare,
 } from 'lucide-react'
 import { MinionStore } from '../../stores/MinionStore'
 import type { MinionCard } from '../../stores/MinionStore'
@@ -31,6 +32,10 @@ import './MinionSidebar.scss'
 interface MinionSidebarProps {
   store: MinionStore
   appStore: AppStore
+  /** Whether the global chat overlay is currently visible. */
+  chatOpen: boolean
+  /** Toggle the chat overlay open/closed. */
+  onChatToggle: () => void
 }
 
 /** Map role names to lucide icons */
@@ -198,7 +203,7 @@ const AgentIcon: React.FC<{
   )
 }
 
-export const MinionSidebar = observer(({ store, appStore }: MinionSidebarProps) => {
+export const MinionSidebar = observer(({ store, appStore, chatOpen, onChatToggle }: MinionSidebarProps) => {
   // Now that the per-role model architecture is retired (chat + coder are
   // the only direct-target roles), filter the legacy minion list down to
   // those two roles. Drops orchestrator / thinking / compaction / action /
@@ -215,6 +220,21 @@ export const MinionSidebar = observer(({ store, appStore }: MinionSidebarProps) 
 
   return (
     <div className="minion-sidebar collapsed-sidebar">
+      {/* Chat-overlay toggle — lives at the very top of the strip (above
+          the vision toggle) since this strip never auto-collapses, unlike
+          the PrimarySidebar where this button used to live. The 24px gap
+          below the model icons row visually separates the "controls" zone
+          (chat toggle + vision toggle) from the "configured items" zone
+          (model shortcuts + agents) so the eye doesn't merge them. */}
+      <button
+        className={`collapsed-vision-toggle ${chatOpen ? 'active' : ''}`}
+        onClick={onChatToggle}
+        title={chatOpen ? 'Close chat' : 'Open chat'}
+        style={{ color: 'var(--text-primary)' }}
+      >
+        <MessageSquare size={14} />
+      </button>
+
       <button
         className={`collapsed-vision-toggle ${store.visionEnabled ? 'active' : ''}`}
         onClick={() => store.toggleVision()}
@@ -224,9 +244,10 @@ export const MinionSidebar = observer(({ store, appStore }: MinionSidebarProps) 
       </button>
 
       {/* Top row — chat + coder model shortcuts. Click to force the next
-          message directly at that model (skips agent routing). */}
+          message directly at that model (skips agent routing). The 24px
+          top-margin separates this row from the controls zone above. */}
       {minions.length > 0 && (
-        <div className="collapsed-icons-list" style={{ marginTop: 6 }}>
+        <div className="collapsed-icons-list" style={{ marginTop: 24 }}>
           {minions.map((card) => (
             <CollapsedMinionIcon key={card.id} card={card} store={store} />
           ))}

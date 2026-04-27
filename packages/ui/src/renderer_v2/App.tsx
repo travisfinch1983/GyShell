@@ -279,13 +279,20 @@ export const App: React.FC = observer(() => {
           activeTab={primaryTab}
           onTabChange={handlePrimaryTabChange}
           onSettingsClick={() => store.toggleSettings()}
-          chatOpen={chatOpen}
-          onChatToggle={toggleChat}
         />
 
-        {/* Model/agent sidebar is permanently collapsed to its icon strip. */}
+        {/* Model/agent sidebar is permanently collapsed to its icon strip.
+            The chat-overlay toggle lives at the top of this strip (rather
+            than the auto-collapsing PrimarySidebar) so clicking it doesn't
+            cause the cascading expand/collapse jitter the auto-pinned
+            sidebar produces on mouseover. */}
         <div className="gyshell-minion-sidebar is-collapsed">
-          <MinionSidebar store={minionStore} appStore={store} />
+          <MinionSidebar
+            store={minionStore}
+            appStore={store}
+            chatOpen={chatOpen}
+            onChatToggle={toggleChat}
+          />
         </div>
 
         {/*
