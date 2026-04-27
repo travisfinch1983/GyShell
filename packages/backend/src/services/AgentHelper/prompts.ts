@@ -191,6 +191,21 @@ export const BUILTIN_TOOL_INFO = [
   {
     name: 'wait_command_end',
     description: WAIT_COMMAND_END_DESCRIPTION
+  },
+  {
+    name: 'web_fetch',
+    description:
+      'Fetch the contents of a URL and return its text. HTML is stripped to readable text. Use this to read documentation pages, GitHub READMEs, blog posts, etc. Output is capped at ~50KB.'
+  },
+  {
+    name: 'web_search',
+    description:
+      'Search the web for a query and return up to 10 result entries with title, URL, and snippet. Use this when you need to discover URLs to follow up on with web_fetch.'
+  },
+  {
+    name: 'delegate_agent',
+    description:
+      'Delegate a focused subtask to a configured specialist agent (defined in Settings → Agents). Each agent has its own system prompt, model, and tool allowlist. Use this to hand off research, planning, or focused coding to a different model/persona.'
   }
 ]
 

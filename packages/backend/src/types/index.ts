@@ -122,9 +122,32 @@ export interface WsGatewaySettings {
   allowedCidrs?: string[]
 }
 
+export interface AgentDefinition {
+  /** Stable opaque identifier */
+  id: string
+  /** Human-readable name shown in UI + used as key for delegate_agent tool */
+  name: string
+  /** Short description of the agent's role (shown in delegate_agent tool description) */
+  description: string
+  /** System prompt prepended to the sub-conversation */
+  systemPrompt: string
+  /**
+   * IDs of the model profiles this agent can run against. When more than one
+   * is listed, delegate_agent's pool round-robins across them per-slot:
+   * each model contributes its `_proxlab_slots` lanes of concurrency. An
+   * empty array means inherit the caller's active profile.
+   */
+  modelProfileIds: string[]
+  /**
+   * Names of built-in or MCP tools this agent is permitted to use.
+   * Empty array = no tools (pure text reasoning).
+   */
+  allowedTools: string[]
+}
+
 export interface BackendSettings {
   /** Settings schema version, used for migrations */
-  schemaVersion: 3
+  schemaVersion: 5
 
   /** Command policy mode */
   commandPolicyMode: 'safe' | 'standard' | 'smart'
@@ -156,6 +179,15 @@ export interface BackendSettings {
     builtIn: Record<string, boolean>
     skills?: Record<string, boolean>
   }
+
+  /** User-defined agents (system prompt + model + tool allowlist bundles) */
+  agents: AgentDefinition[]
+  /**
+   * One-shot flag set after the default agent set has been seeded. Lets users
+   * delete defaults without them respawning, while still seeding for new
+   * installs and existing ones that were on schema 4 with no agents yet.
+   */
+  agentsSeeded: boolean
 
   /** Layout persistence */
   layout?: {

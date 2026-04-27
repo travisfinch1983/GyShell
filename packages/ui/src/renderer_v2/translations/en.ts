@@ -41,6 +41,7 @@ export const en = {
     terminal: "Terminal",
     tools: "Tools",
     skills: "Skills",
+    agents: "Agents",
     memory: "Memory",
     accessTokens: "Gateway",
     version: "Version",

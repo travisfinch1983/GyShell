@@ -41,24 +41,29 @@ const TerminalPanelRenderer: LayoutPanelRenderer = ({
   />
 )
 
-const ChatPanelRenderer: LayoutPanelRenderer = ({
-  store,
-  panelId,
-  tabIds,
-  activeTabId,
-  onSelectTab,
-  onRequestCloseTabs,
-  onLayoutHeaderContextMenu
-}) => (
-  <ChatPanel
-    store={store}
-    panelId={panelId}
-    sessionIds={tabIds}
-    activeSessionId={activeTabId}
-    onSelectSession={onSelectTab}
-    onRequestCloseTabs={onRequestCloseTabs}
-    onLayoutHeaderContextMenu={onLayoutHeaderContextMenu}
-  />
+// Chat panels in the multi-panel layout are deprecated — the chat now lives
+// in the always-visible global overlay (see components/Chat/GlobalChat.tsx).
+// Existing chat panels in saved layout state render this stub so the user can
+// close them manually; new chat panels can no longer be created from the
+// removed PanelTypeRail.
+const ChatPanelRenderer: LayoutPanelRenderer = () => (
+  <div style={{
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: '100%',
+    padding: 24,
+    gap: 8,
+    color: 'var(--fg-muted)',
+    textAlign: 'center',
+  }}>
+    <div style={{ color: 'var(--fg)', fontWeight: 500 }}>Chat moved to global panel</div>
+    <div style={{ fontSize: 11, maxWidth: 360 }}>
+      The chat interface is now pinned to the right of the model sidebar and
+      shown whenever the sidebar is expanded. You can close this panel.
+    </div>
+  </div>
 )
 
 const FileSystemPanelRenderer: LayoutPanelRenderer = ({

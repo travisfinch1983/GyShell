@@ -389,6 +389,36 @@ export class ElectronGatewayIpcAdapter {
       await shell.openPath(snapshot.filePath);
     });
 
+    ipcMain.handle("agents:getAll", async () => {
+      return this.settingsService.getSettings().agents;
+    });
+
+    ipcMain.handle("agents:save", async (_: any, agent: any) => {
+      const current = this.settingsService.getSettings();
+      const list = Array.isArray(current.agents) ? current.agents.slice() : [];
+      const idx = list.findIndex((a) => a.id === agent.id);
+      if (idx >= 0) {
+        list[idx] = agent;
+      } else {
+        list.push(agent);
+      }
+      this.settingsService.setSettings({ agents: list });
+      const refreshed = this.settingsService.getSettings();
+      this.agentService.updateSettings(refreshed);
+      this.gateway.broadcastRaw("agents:updated", refreshed.agents);
+      return refreshed.agents;
+    });
+
+    ipcMain.handle("agents:delete", async (_: any, id: string) => {
+      const current = this.settingsService.getSettings();
+      const list = (current.agents ?? []).filter((a) => a.id !== id);
+      this.settingsService.setSettings({ agents: list });
+      const refreshed = this.settingsService.getSettings();
+      this.agentService.updateSettings(refreshed);
+      this.gateway.broadcastRaw("agents:updated", refreshed.agents);
+      return refreshed.agents;
+    });
+
     // Settings / tools / themes / models
     ipcMain.handle("settings:get", async () => {
       return this.settingsService.getSettings();

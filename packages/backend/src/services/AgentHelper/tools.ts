@@ -19,12 +19,25 @@ import {
 } from './prompts'
 import type { ReadFileSupport } from './types'
 import { waitSchema, waitTerminalIdleSchema, waitCommandEndSchema, wait, waitTerminalIdle, waitCommandEnd } from './tools/wait_tools'
-import { 
-  skillToolSchema, 
+import {
+  skillToolSchema,
   buildSkillToolDescription,
   createSkillSchema,
   runCreateSkillTool
 } from './tools/skill_tools'
+import {
+  webFetchSchema,
+  webSearchSchema,
+  WEB_FETCH_DESCRIPTION,
+  WEB_SEARCH_DESCRIPTION,
+  runWebFetch,
+  runWebSearch
+} from './tools/web_tools'
+import {
+  delegateAgentSchema,
+  buildDelegateAgentDescription,
+  runDelegateAgent
+} from './tools/delegate_agent_tool'
 
 // Re-export schemas for AgentService to use
 export { 
@@ -104,6 +117,21 @@ export function buildToolsForModel(readFileSupport: ReadFileSupport) {
       name: 'wait_command_end',
       description: 'Wait for the currently running command in the terminal tab to finish. Use this when you started a command with nowait but now need its output or exit code to proceed.',
       schema: waitCommandEndSchema
+    },
+    {
+      name: 'web_fetch',
+      description: WEB_FETCH_DESCRIPTION,
+      schema: webFetchSchema
+    },
+    {
+      name: 'web_search',
+      description: WEB_SEARCH_DESCRIPTION,
+      schema: webSearchSchema
+    },
+    {
+      name: 'delegate_agent',
+      description: buildDelegateAgentDescription([]), // updated dynamically by AgentService
+      schema: delegateAgentSchema
     }
   ].map((tool) => convertToOpenAITool(tool))
 }
@@ -122,5 +150,19 @@ export const toolImplementations = {
   writeAndEdit,
   runReadFile,
   runCreateSkillTool,
-  waitCommandEnd
+  waitCommandEnd,
+  runWebFetch,
+  runWebSearch,
+  runDelegateAgent
 }
+
+// Re-export web tool helpers for AgentService dispatch
+export { runWebFetch, runWebSearch, webFetchSchema, webSearchSchema } from './tools/web_tools'
+export {
+  delegateAgentSchema,
+  buildDelegateAgentDescription,
+  runDelegateAgent,
+  MAX_DELEGATE_DEPTH,
+  MAX_DELEGATE_TURNS,
+} from './tools/delegate_agent_tool'
+export type { DelegateAgentDeps, DelegateAgentResult } from './tools/delegate_agent_tool'

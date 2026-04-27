@@ -31,7 +31,8 @@ import {
   waitCommandEndSchema,
 
   toolImplementations,
-  buildSkillToolDescription
+  buildSkillToolDescription,
+  buildDelegateAgentDescription
 } from './AgentHelper/tools'
 import type { ToolExecutionContext } from './AgentHelper/types'
 import { AgentHelpers } from './AgentHelper/helpers'
@@ -614,6 +615,12 @@ export class AgentService_v2 {
         builtInTools[skillToolIndex].function.description = buildSkillToolDescription(skills)
       }
 
+      // Update delegate_agent description with the latest configured agents
+      const delegateToolIndex = builtInTools.findIndex(t => t.function.name === 'delegate_agent')
+      if (delegateToolIndex !== -1) {
+        builtInTools[delegateToolIndex].function.description = buildDelegateAgentDescription(this.settings?.agents ?? [])
+      }
+
       const mcpTools = this.mcpToolService.getActiveTools()
       const shouldUseThinkingModelOnThisPass =
         state.firstTurnThinkingModelEnabled === true && nextPassCount === 1
@@ -838,6 +845,41 @@ export class AgentService_v2 {
       const toolCall = queue[0]
       if (!toolCall) return state
 
+      // Parallelize consecutive delegate_agent calls from the queue head.
+      // The model often emits 2+ delegate_agent calls in one response when
+      // it wants to fan out work — without this batch we'd run them serially
+      // and the multi-model pool would never see overlap. Other tool kinds
+      // (file edits, exec_command) stay sequential to avoid races.
+      const delegateBatch: any[] = []
+      while (delegateBatch.length < queue.length && queue[delegateBatch.length]?.name === 'delegate_agent') {
+        delegateBatch.push(queue[delegateBatch.length])
+      }
+      if (delegateBatch.length > 1) {
+        const messages: BaseMessage[] = []
+        const deps = this.buildDelegateAgentDeps(this.createExecutionContext(
+          sessionId,
+          this.createToolMessage(toolCall).additional_kwargs._gyshellMessageId as string,
+          config,
+        ))
+        const results = await Promise.all(delegateBatch.map(async (tc: any) => {
+          const tm = this.createToolMessage(tc)
+          try {
+            const out = await toolImplementations.runDelegateAgent(tc.args || {}, deps)
+            tm.content = out.message
+          } catch (err: any) {
+            if (err?.name === 'AbortError') throw err
+            tm.content = `delegate_agent failed: ${err?.message || String(err)}`
+          }
+          return tm
+        }))
+        for (const tm of results) messages.push(tm)
+        return {
+          messages: [...state.messages, ...messages],
+          sessionId,
+          pendingToolCalls: queue.slice(delegateBatch.length),
+        }
+      }
+
       const toolMessage = this.createToolMessage(toolCall)
       const executionContext = this.createExecutionContext(
         sessionId,
@@ -998,6 +1040,21 @@ export class AgentService_v2 {
           } catch (err) {
             result = `Parameter validation error for wait_command_end: ${(err as Error).message}`
           }
+          break
+        }
+        case 'web_fetch': {
+          const out = await toolImplementations.runWebFetch(toolCall.args || {}, executionContext.signal)
+          result = out.message
+          break
+        }
+        case 'web_search': {
+          const out = await toolImplementations.runWebSearch(toolCall.args || {}, executionContext.signal)
+          result = out.message
+          break
+        }
+        case 'delegate_agent': {
+          const out = await toolImplementations.runDelegateAgent(toolCall.args || {}, this.buildDelegateAgentDeps(executionContext))
+          result = out.message
           break
         }
         default:
@@ -1436,6 +1493,95 @@ export class AgentService_v2 {
       commandPolicyService: this.commandPolicyService,
       commandPolicyMode: this.settings?.commandPolicyMode || 'standard',
       signal: config?.signal
+    }
+  }
+
+  /**
+   * Per-(baseUrl, modelName) cache of slot counts discovered via /v1/models.
+   * Reads the proxlab-injected `_proxlab_slots` field; falls back to 1 when
+   * the backend is non-proxlab or unreachable. Cached for 30 seconds so
+   * repeated delegate_agent calls don't re-fetch on every invocation.
+   */
+  private slotCache = new Map<string, { slots: number; expiresAt: number }>()
+  private readonly SLOT_CACHE_TTL_MS = 30_000
+
+  private async discoverSlots(baseUrl: string, modelName: string, apiKey?: string): Promise<number> {
+    const key = `${baseUrl}|${modelName}`
+    const cached = this.slotCache.get(key)
+    if (cached && cached.expiresAt > Date.now()) return cached.slots
+    let slots = 1
+    try {
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), 4000)
+      const headers: Record<string, string> = {}
+      if (apiKey) headers['authorization'] = `Bearer ${apiKey}`
+      const url = baseUrl.replace(/\/+$/, '') + '/v1/models'
+      const resp = await fetch(url, { headers, signal: ctrl.signal })
+      clearTimeout(timer)
+      if (resp.ok) {
+        const json = (await resp.json()) as any
+        const entries: any[] = Array.isArray(json?.data) ? json.data : []
+        const match = entries.find((m) => m?.id === modelName) ?? entries[0]
+        const reported = match?._proxlab_slots
+        if (typeof reported === 'number' && reported > 0) slots = Math.floor(reported)
+      }
+    } catch { /* fall through to slots=1 */ }
+    this.slotCache.set(key, { slots, expiresAt: Date.now() + this.SLOT_CACHE_TTL_MS })
+    return slots
+  }
+
+  private buildDelegateAgentDeps(executionContext: ToolExecutionContext) {
+    const settings = this.settings
+    const agents = settings?.agents ?? []
+    const allModels = settings?.models?.items ?? []
+    const profiles = settings?.models?.profiles ?? []
+    const activeProfileId = settings?.models?.activeProfileId
+
+    const resolveModelByProfileId = (profileId: string) => {
+      if (!profileId) return null
+      const profile = profiles.find((p) => p.id === profileId)
+      if (!profile) return null
+      return allModels.find((m) => m.id === profile.globalModelId) ?? null
+    }
+
+    // Resolve every model assigned to an agent. If none assigned, fall back
+    // to the caller's active profile so empty modelProfileIds keeps working
+    // ("inherit" semantics). Each candidate carries its slot count, which the
+    // pool uses as concurrency capacity for that profile.
+    const resolveModels = (agent: any): Array<{ profileId: string; modelItem: any; slots: number }> => {
+      const ids: string[] = Array.isArray(agent.modelProfileIds) && agent.modelProfileIds.length > 0
+        ? agent.modelProfileIds
+        : (activeProfileId ? [activeProfileId] : [])
+      const out: Array<{ profileId: string; modelItem: any; slots: number }> = []
+      for (const pid of ids) {
+        const modelItem = resolveModelByProfileId(pid)
+        if (!modelItem) continue
+        const baseUrl = modelItem.baseUrl ?? ''
+        const cached = this.slotCache.get(`${baseUrl}|${modelItem.model}`)
+        const slots = cached?.slots ?? 1
+        out.push({ profileId: pid, modelItem, slots })
+        // Kick off async refresh for next call (don't await — first call gets 1)
+        if (baseUrl) {
+          void this.discoverSlots(baseUrl, modelItem.model, modelItem.apiKey)
+        }
+      }
+      return out
+    }
+
+    const buildToolsForAllowedNames = (allowedNames: string[]) => {
+      const all = buildToolsForModel({ image: false })
+      const allowSet = new Set(allowedNames)
+      return all.filter((t: any) => allowSet.has(t?.function?.name))
+    }
+
+    return {
+      agents,
+      resolveModels,
+      createChatModel: this.helpers.createChatModel.bind(this.helpers),
+      buildToolsForModel: buildToolsForAllowedNames,
+      executionContext,
+      skillService: this.skillService,
+      depth: 0,
     }
   }
 

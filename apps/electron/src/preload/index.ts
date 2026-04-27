@@ -252,6 +252,15 @@ interface MemorySnapshot {
   content: string
 }
 
+interface AgentDefinition {
+  id: string
+  name: string
+  description: string
+  systemPrompt: string
+  modelProfileIds: string[]
+  allowedTools: string[]
+}
+
 interface AccessTokenSummary {
   id: string
   name: string
@@ -556,6 +565,12 @@ export interface GyShellAPI {
     openFile: () => Promise<void>
   }
 
+  agents: {
+    getAll: () => Promise<AgentDefinition[]>
+    save: (agent: AgentDefinition) => Promise<AgentDefinition[]>
+    delete: (id: string) => Promise<AgentDefinition[]>
+  }
+
   version: {
     getState: () => Promise<VersionCheckResult>
     check: () => Promise<VersionCheckResult>
@@ -828,6 +843,11 @@ const api: GyShellAPI = {
     get: () => ipcRenderer.invoke('memory:get'),
     setContent: (content: string) => ipcRenderer.invoke('memory:setContent', content),
     openFile: () => ipcRenderer.invoke('memory:openFile')
+  },
+  agents: {
+    getAll: () => ipcRenderer.invoke('agents:getAll'),
+    save: (agent: AgentDefinition) => ipcRenderer.invoke('agents:save', agent),
+    delete: (id: string) => ipcRenderer.invoke('agents:delete', id),
   },
   version: {
     getState: () => ipcRenderer.invoke('version:getState'),

@@ -91,9 +91,19 @@ export type SettingsSection =
   | 'tts'
   | 'tools'
   | 'skills'
+  | 'agents'
   | 'memory'
   | 'accessTokens'
   | 'version';
+
+export interface AgentDefinition {
+  id: string;
+  name: string;
+  description: string;
+  systemPrompt: string;
+  modelProfileIds: string[];
+  allowedTools: string[];
+}
 
 export type McpToolSummary = Awaited<
   ReturnType<Window['gyshell']['tools']['getMcp']>
@@ -226,6 +236,7 @@ export class AppStore {
   mcpTools: McpToolSummary[] = []
   builtInTools: BuiltInToolSummary[] = []
   skills: SkillSummary[] = []
+  agents: AgentDefinition[] = []
   memoryFilePath = ''
   memoryContent = ''
   accessTokens: AccessTokenSummary[] = []
@@ -279,6 +290,7 @@ export class AppStore {
       mcpTools: observable,
       builtInTools: observable,
       skills: observable,
+      agents: observable,
       memoryFilePath: observable,
       memoryContent: observable,
       accessTokens: observable,
@@ -319,6 +331,9 @@ export class AppStore {
       setCommandDraftProfileId: action,
       saveModel: action,
       deleteModel: action,
+      loadAgents: action,
+      saveAgent: action,
+      deleteAgent: action,
       saveProfile: action,
       deleteProfile: action,
       setActiveProfile: action,
@@ -2110,29 +2125,25 @@ export class AppStore {
           }
         })
       } else {
+        // Backend has no terminal sessions. Mark hydrated and stop —
+        // do NOT auto-create a tab here. The Ai-Lab UI shows an
+        // always-visible "+" button in the Terminal tab corner that
+        // the user can click to spawn one. Auto-creating here was
+        // racing with the user's click + the closeTab auto-respawn,
+        // producing duplicate tabs ("Local" + "Local (1)") whenever
+        // the page loaded with an empty backend.
         runInAction(() => {
           this.terminalTabs = []
           this.terminalTabsHydrated = true
           this.activeTerminalId = null
         })
         this.syncMonitorSessions()
-        const ensurePanelForDefault =
-          this.windowRole === 'main' &&
-          this.isFirstLaunchDefaultLayout(effectiveLayout)
-        const targetPanelId =
-          this.layout.getPrimaryPanelId('terminal') ||
-          (ensurePanelForDefault
-            ? this.layout.ensurePrimaryPanelForKind('terminal')
-            : null) ||
-          undefined
-        this.createLocalTab(targetPanelId, {
-          ensurePanel: ensurePanelForDefault,
-        })
       }
 
       // Load tools status
       void this.loadTools()
       void this.loadSkills()
+      void this.loadAgents()
       void this.loadMemory()
       void this.loadCommandPolicyLists()
       void this.loadAccessTokens()
@@ -2153,6 +2164,7 @@ export class AppStore {
       }
       void this.loadTools()
       void this.loadSkills()
+      void this.loadAgents()
       void this.loadMemory()
       void this.loadCommandPolicyLists()
       void this.loadAccessTokens()
@@ -2390,6 +2402,33 @@ export class AppStore {
     await window.gyshell.settings.set({ models: nextModels })
   }
 
+  async loadAgents(): Promise<void> {
+    try {
+      const agents = await (window as any).gyshell.agents.getAll()
+      runInAction(() => {
+        this.agents = Array.isArray(agents) ? agents : []
+      })
+    } catch {
+      runInAction(() => {
+        this.agents = []
+      })
+    }
+  }
+
+  async saveAgent(agent: AgentDefinition): Promise<void> {
+    const next = await (window as any).gyshell.agents.save(toJS(agent))
+    runInAction(() => {
+      this.agents = Array.isArray(next) ? next : []
+    })
+  }
+
+  async deleteAgent(id: string): Promise<void> {
+    const next = await (window as any).gyshell.agents.delete(id)
+    runInAction(() => {
+      this.agents = Array.isArray(next) ? next : []
+    })
+  }
+
   async saveProfile(
     profile: AppSettings['models']['profiles'][number],
   ): Promise<void> {
@@ -2520,6 +2559,19 @@ export class AppStore {
     const idx = this.terminalTabs.findIndex((t) => t.id === tabId)
     if (idx < 0) return
 
+    const isLastTab = this.terminalTabs.length === 1
+    // Capture the existing terminal panel id + pin it as an empty placeholder
+    // before the close. While pinned, syncPanelBindings will NOT auto-prune
+    // the empty panel — so its split width is preserved for the replacement
+    // tab we'll attach after the kill completes. The pin auto-clears as
+    // soon as a tab gets bound to the panel again.
+    const terminalPanelId = isLastTab
+      ? this.layout.getPrimaryPanelId('terminal')
+      : null
+    if (terminalPanelId) {
+      this.layout.pinPanelsAsRestorePlaceholder([terminalPanelId])
+    }
+
     const wasActive = this.activeTerminalId === tabId
     const nextTabs = this.terminalTabs.slice()
     nextTabs.splice(idx, 1)
@@ -2537,11 +2589,43 @@ export class AppStore {
     this.layout.syncPanelBindings()
     this.syncMonitorSessions()
 
-    // Kill backend session (best-effort)
+    // Wait for backend to confirm the kill before spawning a replacement —
+    // this avoids a race where the backend's onTabsUpdated event (firing
+    // mid-spawn) reconciles terminalTabs back to a state that still contains
+    // the closed tab, which produced the "two tabs after close" symptom.
     try {
       await window.gyshell.terminal.kill(tabId)
     } catch {
       // ignore
+    }
+
+    if (isLastTab && terminalPanelId) {
+      // Drain any phantoms from the backend's persisted terminal state
+      // (these can accumulate from earlier app instances or crashes).
+      try {
+        const snapshot = await window.gyshell.terminal.list()
+        const phantoms = (snapshot?.terminals || [])
+          .map((t) => t.id)
+          .filter((id) => typeof id === 'string' && id !== tabId)
+        await Promise.all(
+          phantoms.map((id) =>
+            window.gyshell.terminal.kill(id).catch(() => {}),
+          ),
+        )
+      } catch {
+        // best-effort
+      }
+      // Force a clean slate before spawning. A late-arriving
+      // onTabsUpdated event from the backend (firing after we awaited
+      // the kill but before the next React tick) can otherwise
+      // re-hydrate terminalTabs with a now-killed session — and then
+      // getUniqueTitle("Local") inside createLocalTab sees that ghost
+      // and returns "Local (1)", producing the duplicate-tab symptom.
+      runInAction(() => {
+        this.terminalTabs = []
+        this.activeTerminalId = null
+      })
+      this.createLocalTab(terminalPanelId, { ensurePanel: false })
     }
   }
 

@@ -55,6 +55,9 @@ type WebSocketRpcMethod =
   | 'tools:setMcpEnabled'
   | 'tools:getBuiltIn'
   | 'tools:setBuiltInEnabled'
+  | 'agents:getAll'
+  | 'agents:save'
+  | 'agents:delete'
   | 'agent:startTask'
   | 'agent:startTaskAsync'
   | 'agent:stopTask'
@@ -1096,6 +1099,41 @@ export class WebSocketGatewayAdapter {
           throw new WebSocketRpcError('BAD_REQUEST', 'enabled must be boolean.');
         }
         return await this.options.toolsBridge.setBuiltInEnabled(name, enabled);
+      }
+      case 'agents:getAll': {
+        if (!this.options.settingsBridge?.getSettings) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'agents:getAll is not available on this websocket gateway.');
+        }
+        const settings = (await this.options.settingsBridge.getSettings()) as any;
+        return Array.isArray(settings?.agents) ? settings.agents : [];
+      }
+      case 'agents:save': {
+        if (!this.options.settingsBridge?.getSettings || !this.options.settingsBridge?.setSettings) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'agents:save is not available on this websocket gateway.');
+        }
+        const agent = params?.agent;
+        if (!agent || typeof agent !== 'object' || typeof agent.id !== 'string' || !agent.id) {
+          throw new WebSocketRpcError('BAD_REQUEST', 'agent must be an object with a string id.');
+        }
+        const settings = (await this.options.settingsBridge.getSettings()) as any;
+        const list = Array.isArray(settings?.agents) ? settings.agents.slice() : [];
+        const idx = list.findIndex((a: any) => a.id === agent.id);
+        if (idx >= 0) list[idx] = agent;
+        else list.push(agent);
+        await this.options.settingsBridge.setSettings({ agents: list });
+        this.gateway.broadcastRaw('agents:updated', list);
+        return list;
+      }
+      case 'agents:delete': {
+        if (!this.options.settingsBridge?.getSettings || !this.options.settingsBridge?.setSettings) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'agents:delete is not available on this websocket gateway.');
+        }
+        const id = this.readStringParam(params, 'id');
+        const settings = (await this.options.settingsBridge.getSettings()) as any;
+        const list = (Array.isArray(settings?.agents) ? settings.agents : []).filter((a: any) => a.id !== id);
+        await this.options.settingsBridge.setSettings({ agents: list });
+        this.gateway.broadcastRaw('agents:updated', list);
+        return list;
       }
       case 'agent:startTask': {
         const sessionId = this.readStringParam(params, 'sessionId');

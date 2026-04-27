@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react'
 import { observer } from 'mobx-react-lite'
+import { SlidersHorizontal, Plus } from 'lucide-react'
 import { AppStore } from './stores/AppStore'
 import { MinionStore } from './stores/MinionStore'
 import { MinionProvider } from './stores/MinionContext'
@@ -12,6 +13,8 @@ import { ConnectionsView } from './components/Connections/ConnectionsView'
 import { ConfirmDialog } from './components/Common/ConfirmDialog'
 import { LayoutWorkspace } from './components/Layout/LayoutWorkspace'
 import { MinionSidebar } from './components/Minions/MinionSidebar'
+import { PrimarySidebar, type PrimaryTab } from './components/PrimarySidebar/PrimarySidebar'
+import { GlobalChat } from './components/Chat/GlobalChat'
 import './styles/app.scss'
 
 const store = new AppStore()
@@ -37,6 +40,14 @@ export const App: React.FC = observer(() => {
       localStorage.setItem('minion-sidebar-collapsed', String(next))
       return next
     })
+  }, [])
+
+  const [primaryTab, setPrimaryTab] = useState<PrimaryTab>(
+    () => (localStorage.getItem('ai-lab-primary-tab') as PrimaryTab) || 'terminal'
+  )
+  const handlePrimaryTabChange = useCallback((id: PrimaryTab) => {
+    setPrimaryTab(id)
+    localStorage.setItem('ai-lab-primary-tab', id)
   }, [])
 
   React.useEffect(() => {
@@ -260,11 +271,87 @@ export const App: React.FC = observer(() => {
       <TopBar store={store} />
 
       <div className="gyshell-body">
+        <PrimarySidebar
+          activeTab={primaryTab}
+          onTabChange={handlePrimaryTabChange}
+          onSettingsClick={() => store.toggleSettings()}
+        />
+
+        {/* Model sidebar is now ALWAYS visible, regardless of active tab. */}
         <div className={`gyshell-minion-sidebar ${sidebarCollapsed ? 'is-collapsed' : ''}`}>
           <MinionSidebar store={minionStore} collapsed={sidebarCollapsed} onToggleCollapse={toggleSidebar} />
         </div>
-        <div className="gyshell-main">
-          <LayoutWorkspace store={store} />
+
+        {/*
+          Tab content area. Each tab fills the area absolutely so we don't have
+          to fight flex sizing. LayoutWorkspace stays mounted across tab
+          switches (just hidden) so xterm sessions don't unmount.
+          The GlobalChat overlay sits on top of this whole area when the model
+          sidebar is expanded.
+        */}
+        <div className="gyshell-main" style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              display: primaryTab === 'terminal' ? 'block' : 'none',
+              position: 'absolute',
+              inset: 0,
+            }}
+          >
+            <LayoutWorkspace store={store} />
+          </div>
+
+          {primaryTab === 'flowchart' && (
+            <PlaceholderPanel
+              title="Flowchart"
+              body="Visual structure builder coming in Phase 2 — port of the xyflow-based diagram tool from claude-dhb, generalized for rect / circle / group shapes with nesting + a saved diagram library."
+            />
+          )}
+          {primaryTab === 'files' && (
+            <PlaceholderPanel
+              title="Files"
+              body="The Files panel will be extracted from the multi-panel terminal layout and rendered here as a top-level workspace tab."
+            />
+          )}
+          {primaryTab === 'monitor' && (
+            <PlaceholderPanel
+              title="Monitor"
+              body="The Monitor panel will be extracted from the multi-panel terminal layout and rendered here as a top-level workspace tab."
+            />
+          )}
+
+          {/* Terminal-scoped action buttons — only visible on the Terminal tab.
+              Always present even when no terminal tabs are open, so the user
+              can always spawn a new one. */}
+          {primaryTab === 'terminal' && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 6,
+                right: 8,
+                zIndex: 5,
+                display: 'flex',
+                gap: 4,
+              }}
+            >
+              <button
+                className="icon-btn"
+                title="New terminal tab"
+                onClick={() => store.createLocalTab(undefined, { ensurePanel: true })}
+              >
+                <Plus size={16} strokeWidth={2} />
+              </button>
+              <button
+                className="icon-btn"
+                title={store.i18n.t.connections.title}
+                onClick={() => store.openConnections()}
+              >
+                <SlidersHorizontal size={16} strokeWidth={2} />
+              </button>
+            </div>
+          )}
+
+          {/* Global chat overlay — visible whenever the model sidebar is expanded. */}
+          <GlobalChat store={store} visible={!sidebarCollapsed} />
         </div>
 
         {/* Settings is an overlay so we don't unmount terminals (xterm state stays alive) */}
@@ -284,3 +371,20 @@ export const App: React.FC = observer(() => {
     </MinionProvider>
   )
 })
+
+const PlaceholderPanel: React.FC<{ title: string; body: string }> = ({ title, body }) => (
+  <div style={{
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: '100%',
+    color: 'var(--fg-muted)',
+    gap: 12,
+    padding: 32,
+    textAlign: 'center',
+  }}>
+    <h2 style={{ margin: 0, color: 'var(--fg)', fontWeight: 500 }}>{title}</h2>
+    <p style={{ margin: 0, maxWidth: 480, lineHeight: 1.5 }}>{body}</p>
+  </div>
+)

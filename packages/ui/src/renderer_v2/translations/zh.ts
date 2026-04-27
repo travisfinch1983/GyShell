@@ -41,6 +41,7 @@ export const zh = {
     terminal: "终端",
     tools: "工具",
     skills: "技能",
+    agents: "智能体",
     memory: "记忆",
     accessTokens: "网关",
     version: "版本",

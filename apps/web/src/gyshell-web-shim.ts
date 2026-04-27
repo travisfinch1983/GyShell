@@ -13,11 +13,17 @@ const client = new GatewayClient()
 
 const GATEWAY_TOKEN = (window as any).__GYSHELL_ACCESS_TOKEN__ || ''
 const isSecure = window.location.protocol === 'https:'
+// Derive the WS host from the current page host so this works for any deployment name.
+// e.g. ai-lab.deeveeyant.com -> ai-lab-ws.deeveeyant.com
+const pageHost = window.location.hostname
+const wsHost = pageHost.includes('.')
+  ? pageHost.replace(/^([^.]+)\./, '$1-ws.')
+  : pageHost
 const baseGatewayUrl =
   (window as any).__GYSHELL_GATEWAY_URL__ ||
   (isSecure
-    ? `wss://gyshell-ws.${window.location.hostname.split('.').slice(1).join('.')}`
-    : `ws://${window.location.hostname}:17888`)
+    ? `wss://${wsHost}`
+    : `ws://${pageHost}:17888`)
 const GATEWAY_URL = GATEWAY_TOKEN
   ? `${baseGatewayUrl}?access_token=${encodeURIComponent(GATEWAY_TOKEN)}`
   : baseGatewayUrl
@@ -280,6 +286,12 @@ const gyshellApi = {
     get: () => rpc('memory:get'),
     setContent: (content: string) => rpc('memory:setContent', { content }),
     openFile: noop,
+  },
+
+  agents: {
+    getAll: () => rpc('agents:getAll').catch(() => []),
+    save: (agent: any) => rpc('agents:save', { agent }),
+    delete: (id: string) => rpc('agents:delete', { id }),
   },
 
   version: {

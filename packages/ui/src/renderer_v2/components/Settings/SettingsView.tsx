@@ -17,6 +17,7 @@ import {
   Wrench,
   RefreshCw,
   BookOpenText,
+  Users,
   Pencil,
   Info,
   AlertTriangle,
@@ -33,6 +34,7 @@ import { ConfirmDialog } from "../Common/ConfirmDialog";
 import { NumericInput } from "../Common/NumericInput";
 import { InfoTooltip } from "../Common/InfoTooltip";
 import { ProxlabServicesPanel } from "./ProxlabServicesPanel";
+import { AgentsPanel } from "./AgentsPanel";
 import { TtsSettingsPanel } from "./TtsSettingsPanel";
 import "./TtsSettingsPanel.scss";
 import { Select } from "../../platform/Select";
@@ -743,6 +745,21 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
               <BookOpenText size={16} strokeWidth={2} />
             </span>
             <span>{t.settings.skills}</span>
+          </div>
+          <div
+              className={
+                store.settingsSection === "agents"
+                  ? "settings-nav-item is-active"
+                  : "settings-nav-item"
+              }
+              onClick={() => store.setSettingsSection("agents")}
+            role="button"
+            tabIndex={0}
+          >
+            <span className="icon">
+              <Users size={16} strokeWidth={2} />
+            </span>
+            <span>{t.settings.agents}</span>
           </div>
           <div
               className={
@@ -2118,6 +2135,10 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                 ) : null}
             </>
           ) : null}
+
+            {store.settingsSection === "agents" ? (
+              <AgentsPanel store={store} />
+            ) : null}
 
             {store.settingsSection === "memory" ? (
             <>

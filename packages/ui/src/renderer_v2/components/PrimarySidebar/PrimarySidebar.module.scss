@@ -1,0 +1,92 @@
+// Auto-collapsing primary sidebar — collapsed by default, expands on hover.
+// Pattern lifted from the claude-dhb / BEI workspace sidebar.
+
+$sidebar-collapsed: 50px;
+$sidebar-expanded: 200px;
+
+.sidebar {
+  width: $sidebar-collapsed;
+  height: 100%;
+  background: var(--panel-bg-2, var(--app-bg));
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 8px 0;
+  flex-shrink: 0;
+  overflow: hidden;
+  z-index: 20;
+  transition: width 0.18s ease;
+
+  &:hover {
+    width: $sidebar-expanded;
+  }
+}
+
+.tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  flex: 1;
+  padding: 0 6px;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.1s, color 0.1s, border-color 0.1s, justify-content 0s;
+  white-space: nowrap;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  min-height: 36px;
+  justify-content: center;
+
+  svg {
+    flex-shrink: 0;
+  }
+
+  &:hover {
+    background: var(--control-bg-hover);
+    color: var(--fg);
+    border-color: var(--border);
+  }
+
+  &.active {
+    background: rgba(var(--accent-rgb), 0.14);
+    color: var(--accent);
+    border-color: rgba(var(--accent-rgb), 0.32);
+  }
+}
+
+.sidebar:hover .tab {
+  justify-content: flex-start;
+}
+
+.label {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: none;
+}
+
+.sidebar:hover .label {
+  display: inline;
+}
+
+.bottom {
+  width: 100%;
+  padding: 6px 6px 0;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}

@@ -32,7 +32,7 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 17889,
-    allowedHosts: ['gyshell.deeveeyant.com'],
+    allowedHosts: ['ai-lab.deeveeyant.com', 'gyshell.deeveeyant.com'],
     proxy: {
       // Proxy all ProxLab API requests through Vite dev server
       // Covers: LLM, embeddings, reranker, vector, TTS, STT, image, services

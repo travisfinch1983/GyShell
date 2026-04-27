@@ -2799,14 +2799,9 @@ export const LayoutWorkspace: React.FC<LayoutWorkspaceProps> = observer(
 
     return (
       <div ref={rootRef} className="gyshell-layout-root">
-        {store.isDetachedWindow ? null : (
-          <PanelTypeRail
-            store={store}
-            onPrimaryPanelUnavailable={(kind, intent) => {
-              void openKindInDetachedWindow(kind, intent);
-            }}
-          />
-        )}
+        {/* PanelTypeRail removed — its filesystem/monitor entries moved to the
+            primary sidebar; new-chat/new-terminal controls are reachable from
+            panel headers. */}
         <div ref={canvasRef} className="gyshell-layout-canvas">
           <ConfirmDialog
             open={pendingTerminalCloseCount > 0}

@@ -193,9 +193,12 @@ export async function startGyBackend(): Promise<void> {
             terminalService.resize(terminalId, cols, rows)
           },
           kill: async (terminalId) => {
-            if (terminalService.getDisplayTerminals().length <= 1) {
-              throw new Error('Cannot close the last terminal tab.')
-            }
+            // The Ai-Lab UI auto-spawns a replacement when the last
+            // terminal tab is closed (see AppStore.closeTab), so the
+            // "never kill the last one" guard the desktop app needed
+            // is now actively harmful — it would leave the closed
+            // session alive while the frontend creates a new one,
+            // producing duplicate tabs.
             terminalService.kill(terminalId)
           },
           setSelection: async (terminalId, selectionText) => {
