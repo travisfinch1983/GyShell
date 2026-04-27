@@ -1860,39 +1860,51 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                 <i />
               </div>
               <div className="tools-list">
-                {store.builtInTools.map((tool) => (
-                  <div key={tool.name} className="tool-item">
-                    <div className="tool-info">
-                      <div className="tool-name">{tool.name}</div>
-                        <div className="tool-meta">
-                          {tool.description || ""}
-                        </div>
+                {store.builtInTools.map((tool) => {
+                  const perm = (tool as any).permission || (tool.enabled ? 'always-ask' : 'disabled');
+                  const dotClass =
+                    perm === 'always-allow' ? 'is-ok' :
+                    perm === 'ask-once-session' ? 'is-ok' :
+                    perm === 'always-ask' ? 'is-pending' :
+                    'is-disabled';
+                  return (
+                    <div key={tool.name} className="tool-item">
+                      <div className="tool-info">
+                        <div className="tool-name">{tool.name}</div>
+                        <div className="tool-meta">{tool.description || ""}</div>
+                      </div>
+                      <div className="tool-actions" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span className={`status-dot ${dotClass}`} />
+                        <select
+                          value={perm}
+                          onChange={(e) =>
+                            store.setBuiltInToolPermission(
+                              tool.name,
+                              e.target.value as any,
+                            )
+                          }
+                          title={
+                            perm === 'always-allow' ? 'Tool runs without ever prompting' :
+                            perm === 'ask-once-session' ? 'Prompt on first use this session, auto-allow after' :
+                            perm === 'always-ask' ? 'Prompt for approval on every call' :
+                            'Tool is hidden from the model entirely'
+                          }
+                          style={{ fontSize: 11, padding: '2px 4px' }}
+                        >
+                          <option value="always-allow">Always Allow</option>
+                          <option value="ask-once-session">Ask Once / Session</option>
+                          <option value="always-ask">Always Ask</option>
+                          <option value="disabled">Disabled</option>
+                        </select>
+                      </div>
                     </div>
-                    <div className="tool-actions">
-                        <span
-                          className={`status-dot ${tool.enabled ? "is-ok" : "is-disabled"}`}
-                        />
-                      <label className="switch">
-                        <input
-                          type="checkbox"
-                          checked={tool.enabled}
-                            onChange={(e) =>
-                              store.setBuiltInToolEnabled(
-                                tool.name,
-                                e.target.checked,
-                              )
-                            }
-                        />
-                        <span className="switch-slider" />
-                      </label>
-                    </div>
+                  );
+                })}
+                {store.builtInTools.length === 0 ? (
+                  <div className="tool-empty">
+                    {t.settings.noBuiltInTools}
                   </div>
-                ))}
-                  {store.builtInTools.length === 0 ? (
-                    <div className="tool-empty">
-                      {t.settings.noBuiltInTools}
-                    </div>
-                  ) : null}
+                ) : null}
               </div>
             </>
           ) : null}

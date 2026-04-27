@@ -1,8 +1,9 @@
-import type { BackendSettings, WsGatewayAccess } from "../../types";
+import type { BackendSettings, WsGatewayAccess, ToolPermission } from "../../types";
+import { DEFAULT_BUILT_IN_TOOL_PERMISSIONS } from "../../types";
 import { BUILTIN_TOOL_INFO } from "../AgentHelper/tools";
 import { deepMerge, isObject } from "./objectMerge";
 
-export const BACKEND_SETTINGS_SCHEMA_VERSION = 8;
+export const BACKEND_SETTINGS_SCHEMA_VERSION = 9;
 
 /**
  * Default icon assigned to each seeded agent. Pulled out as a constant so the
@@ -254,6 +255,10 @@ function normalizeBackendSettings(settings: BackendSettings): BackendSettings {
       ...DEFAULT_BUILTIN_TOOLS,
       ...builtIn,
     },
+    builtInPermissions: {
+      ...DEFAULT_BUILT_IN_TOOL_PERMISSIONS,
+      ...(next.tools?.builtInPermissions ?? {}),
+    },
     skills: {
       ...(next.tools?.skills ?? {}),
     },
@@ -391,6 +396,31 @@ function migrateBackendToV4(
     next.agents = [];
   }
   next.schemaVersion = 4;
+  return next;
+}
+
+function migrateBackendToV9(
+  settings: Partial<BackendSettings>,
+): Partial<BackendSettings> {
+  const next = { ...(settings as any) };
+  // Seed per-tool permissions from existing builtIn enable/disable + the
+  // safe defaults declared in DEFAULT_BUILT_IN_TOOL_PERMISSIONS. A tool that
+  // was explicitly disabled becomes 'disabled'; everything else uses its
+  // safety-tuned default ('always-allow' for reads, 'always-ask' for shell/
+  // file-write tools, 'ask-once-session' for memory-state writes).
+  const builtIn = next.tools?.builtIn || {};
+  const existingPerms = next.tools?.builtInPermissions || {};
+  const merged: Record<string, ToolPermission> = { ...DEFAULT_BUILT_IN_TOOL_PERMISSIONS };
+  for (const [name, enabled] of Object.entries(builtIn)) {
+    if (enabled === false) merged[name] = 'disabled';
+  }
+  // Anything already in builtInPermissions wins over migration-derived values.
+  for (const [name, perm] of Object.entries(existingPerms)) {
+    if (typeof perm === 'string') merged[name] = perm as ToolPermission;
+  }
+  if (!next.tools) next.tools = { builtIn: {}, skills: {} };
+  next.tools.builtInPermissions = merged;
+  next.schemaVersion = 9;
   return next;
 }
 
@@ -574,6 +604,10 @@ export function migrateBackendSettings(
   if (fromVersion < 8) {
     merged = deepMerge(merged, migrateBackendToV8(merged as any) as any);
     fromVersion = 8;
+  }
+  if (fromVersion < 9) {
+    merged = deepMerge(merged, migrateBackendToV9(merged as any) as any);
+    fromVersion = 9;
   }
 
   return normalizeBackendSettings(merged);

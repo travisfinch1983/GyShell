@@ -465,16 +465,52 @@ export async function startGyBackend(): Promise<void> {
           },
           getBuiltIn: () => {
             const settings = settingsService.getSettings()
-            return buildBuiltInToolStatusSummary(settings.tools?.builtIn)
+            return buildBuiltInToolStatusSummary(
+              settings.tools?.builtIn,
+              settings.tools?.builtInPermissions,
+            )
           },
           setBuiltInEnabled: async (name, enabled) => {
             const settings = settingsService.getSettings()
             const nextBuiltIn = { ...(settings.tools?.builtIn ?? {}) }
             nextBuiltIn[name] = enabled
-            settingsService.setSettings({ tools: { builtIn: nextBuiltIn, skills: settings.tools?.skills ?? {} } })
+            settingsService.setSettings({
+              tools: {
+                builtIn: nextBuiltIn,
+                builtInPermissions: settings.tools?.builtInPermissions,
+                skills: settings.tools?.skills ?? {},
+              },
+            })
             const next = settingsService.getSettings()
             agentService.updateSettings(next)
-            const summary = buildBuiltInToolStatusSummary(next.tools?.builtIn)
+            const summary = buildBuiltInToolStatusSummary(
+              next.tools?.builtIn,
+              next.tools?.builtInPermissions,
+            )
+            gatewayService.broadcastRaw('tools:builtInUpdated', summary)
+            return summary
+          },
+          setBuiltInPermission: async (name, permission) => {
+            const valid = new Set(['always-allow', 'ask-once-session', 'always-ask', 'disabled'])
+            if (!valid.has(permission)) {
+              throw new Error(`Invalid tool permission: ${permission}`)
+            }
+            const settings = settingsService.getSettings()
+            const nextPerms = { ...(settings.tools?.builtInPermissions ?? {}) }
+            nextPerms[name] = permission as any
+            settingsService.setSettings({
+              tools: {
+                builtIn: settings.tools?.builtIn ?? {},
+                builtInPermissions: nextPerms,
+                skills: settings.tools?.skills ?? {},
+              },
+            })
+            const next = settingsService.getSettings()
+            agentService.updateSettings(next)
+            const summary = buildBuiltInToolStatusSummary(
+              next.tools?.builtIn,
+              next.tools?.builtInPermissions,
+            )
             gatewayService.broadcastRaw('tools:builtInUpdated', summary)
             return summary
           }

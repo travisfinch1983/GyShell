@@ -125,6 +125,49 @@ export interface WsGatewaySettings {
   allowedCidrs?: string[]
 }
 
+/**
+ * Per-tool permission policy. See BackendSettings.tools.builtInPermissions.
+ */
+export type ToolPermission =
+  | 'always-allow'
+  | 'ask-once-session'
+  | 'always-ask'
+  | 'disabled'
+
+/**
+ * Default permission for each known built-in tool. Read-only / safe tools
+ * default to 'always-allow'; tools that change state on disk or run shell
+ * commands default to 'always-ask'; collection-mutation memory tools default
+ * to 'ask-once-session' so the user gets one prompt per session and not on
+ * every save.
+ */
+export const DEFAULT_BUILT_IN_TOOL_PERMISSIONS: Record<string, ToolPermission> = {
+  // Stateless reads
+  read_file: 'always-allow',
+  read_terminal_tab: 'always-allow',
+  read_command_output: 'always-allow',
+  web_fetch: 'always-allow',
+  web_search: 'always-allow',
+  memory_recall: 'always-allow',
+  memory_list_collections: 'always-allow',
+  // Wait family — purely time
+  wait: 'always-allow',
+  wait_terminal_idle: 'always-allow',
+  wait_command_end: 'always-allow',
+  // Skill discovery + delegation
+  skill: 'always-allow',
+  delegate_agent: 'always-allow',
+  // State-mutating but agent-scoped (per-session ack is plenty)
+  memory_save: 'ask-once-session',
+  memory_create_collection: 'ask-once-session',
+  memory_delete: 'always-ask',
+  create_skill: 'ask-once-session',
+  // Touches the user's filesystem / shell — always confirm
+  exec_command: 'always-ask',
+  write_stdin: 'always-ask',
+  create_or_edit: 'always-ask',
+}
+
 export interface AgentDefinition {
   /** Stable opaque identifier */
   id: string
@@ -161,7 +204,7 @@ export interface AgentDefinition {
 
 export interface BackendSettings {
   /** Settings schema version, used for migrations */
-  schemaVersion: 8
+  schemaVersion: 9
 
   /** Command policy mode */
   commandPolicyMode: 'safe' | 'standard' | 'smart'
@@ -190,7 +233,18 @@ export interface BackendSettings {
 
   /** Tools enablement (built-in only; MCP is managed separately) */
   tools: {
+    /** Legacy enable/disable flag — kept for back-compat but superseded by `builtInPermissions`. */
     builtIn: Record<string, boolean>
+    /**
+     * Per-tool permission policy.
+     * - 'always-allow' — tool runs without ever prompting
+     * - 'ask-once-session' — first invocation in a session prompts; subsequent calls auto-allow
+     * - 'always-ask' — every call prompts (or runs through CommandPolicy for command-based tools)
+     * - 'disabled' — tool isn't bound to the model at all
+     * Missing entries fall back to a per-tool sensible default (read-only tools allow,
+     * state-changing tools ask).
+     */
+    builtInPermissions?: Record<string, ToolPermission>
     skills?: Record<string, boolean>
   }
 

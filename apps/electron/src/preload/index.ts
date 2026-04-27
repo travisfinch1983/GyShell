@@ -225,10 +225,13 @@ interface McpToolSummary {
   toolCount?: number
 }
 
+type ToolPermission = 'always-allow' | 'ask-once-session' | 'always-ask' | 'disabled'
+
 interface BuiltInToolSummary {
   name: string
   description?: string
   enabled: boolean
+  permission: ToolPermission
 }
 
 interface SkillSummary {
@@ -539,6 +542,7 @@ export interface GyShellAPI {
     setMcpEnabled: (name: string, enabled: boolean) => Promise<McpToolSummary[]>
     getBuiltIn: () => Promise<BuiltInToolSummary[]>
     setBuiltInEnabled: (name: string, enabled: boolean) => Promise<BuiltInToolSummary[]>
+    setBuiltInPermission: (name: string, permission: ToolPermission) => Promise<BuiltInToolSummary[]>
     onMcpUpdated: (callback: (data: McpToolSummary[]) => void) => () => void
     onBuiltInUpdated: (callback: (data: BuiltInToolSummary[]) => void) => () => void
   }
@@ -811,6 +815,7 @@ const api: GyShellAPI = {
     setMcpEnabled: (name, enabled) => ipcRenderer.invoke('tools:setMcpEnabled', name, enabled),
     getBuiltIn: () => ipcRenderer.invoke('tools:getBuiltIn'),
     setBuiltInEnabled: (name, enabled) => ipcRenderer.invoke('tools:setBuiltInEnabled', name, enabled),
+    setBuiltInPermission: (name, permission) => ipcRenderer.invoke('tools:setBuiltInPermission', name, permission),
     onMcpUpdated: (callback) => {
       const handler = (_: IpcRendererEvent, data: McpToolSummary[]) => callback(data)
       ipcRenderer.on('tools:mcpUpdated', handler)

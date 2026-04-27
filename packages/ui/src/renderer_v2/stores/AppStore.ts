@@ -368,6 +368,7 @@ export class AppStore {
       reloadMcpTools: action,
       setMcpToolEnabled: action,
       setBuiltInToolEnabled: action,
+      setBuiltInToolPermission: action,
       setSkillEnabled: action,
       setMemoryEnabled: action,
       setRecursionLimit: action,
@@ -1677,6 +1678,19 @@ export class AppStore {
     const builtInTools = await window.gyshell.tools.setBuiltInEnabled(
       name,
       enabled,
+    )
+    runInAction(() => {
+      this.applyBuiltInToolStatusUpdate(builtInTools)
+    })
+  }
+
+  async setBuiltInToolPermission(
+    name: string,
+    permission: 'always-allow' | 'ask-once-session' | 'always-ask' | 'disabled',
+  ): Promise<void> {
+    const builtInTools = await (window as any).gyshell.tools.setBuiltInPermission(
+      name,
+      permission,
     )
     runInAction(() => {
       this.applyBuiltInToolStatusUpdate(builtInTools)

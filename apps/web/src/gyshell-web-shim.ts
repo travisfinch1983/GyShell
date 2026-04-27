@@ -255,7 +255,9 @@ const gyshellApi = {
     getBuiltIn: () => rpc('tools:getBuiltIn'),
     getBuiltInTools: () => rpc('tools:getBuiltIn'),
     setBuiltInEnabled: (toolId: string, enabled: boolean) =>
-      rpc('tools:setBuiltInEnabled', { toolId, enabled }),
+      rpc('tools:setBuiltInEnabled', { name: toolId, enabled }),
+    setBuiltInPermission: (toolId: string, permission: string) =>
+      rpc('tools:setBuiltInPermission', { name: toolId, permission }),
     openMcpConfig: noop,
     onMcpUpdated: (cb: (data: any) => void): CleanupFn => onRaw('tools:mcpUpdated', cb),
     onBuiltInUpdated: (cb: (data: any) => void): CleanupFn => onRaw('tools:builtInUpdated', cb),

@@ -498,6 +498,18 @@ async function checkCommandPolicy(
   context: ToolExecutionContext
 ): Promise<{ allowed: boolean; message: string }> {
   abortIfNeeded(context.signal)
+
+  // Per-tool permission short-circuit. Set in Settings → Tools.
+  // 'always-allow' bypasses the command-pattern policy entirely.
+  // 'ask-once-session' allows after the first approval this session.
+  const perm = context.toolPermissions?.[toolName]
+  if (perm === 'always-allow') {
+    return { allowed: true, message: '' }
+  }
+  if (perm === 'ask-once-session' && context.sessionApprovedTools?.has(toolName)) {
+    return { allowed: true, message: '' }
+  }
+
   const decision = await context.commandPolicyService.evaluate(command, context.commandPolicyMode)
   if (decision === 'allow') {
     return { allowed: true, message: '' }
@@ -513,6 +525,10 @@ async function checkCommandPolicy(
     sendEvent: context.sendEvent,
     signal: context.signal
   })
+  // Remember the per-session approval so subsequent calls auto-allow.
+  if (approved && perm === 'ask-once-session') {
+    context.sessionApprovedTools?.add(toolName)
+  }
 
   if (!approved) {
     return { allowed: false, message: `User rejected command: ${command}` }

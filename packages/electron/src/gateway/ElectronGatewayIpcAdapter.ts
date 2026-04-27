@@ -557,7 +557,10 @@ export class ElectronGatewayIpcAdapter {
 
     ipcMain.handle("tools:getBuiltIn", async () => {
       const settings = this.settingsService.getSettings();
-      return buildBuiltInToolStatusSummary(settings.tools?.builtIn);
+      return buildBuiltInToolStatusSummary(
+        settings.tools?.builtIn,
+        settings.tools?.builtInPermissions,
+      );
     });
 
     ipcMain.handle(
@@ -567,12 +570,45 @@ export class ElectronGatewayIpcAdapter {
         const nextBuiltIn = { ...(settings.tools?.builtIn ?? {}) };
         nextBuiltIn[name] = enabled;
         this.settingsService.setSettings({
-          tools: { builtIn: nextBuiltIn, skills: settings.tools?.skills ?? {} },
+          tools: {
+            builtIn: nextBuiltIn,
+            builtInPermissions: settings.tools?.builtInPermissions,
+            skills: settings.tools?.skills ?? {},
+          },
         });
         const nextSettings = this.settingsService.getSettings();
         this.agentService.updateSettings(nextSettings);
         const summary = buildBuiltInToolStatusSummary(
           nextSettings.tools?.builtIn,
+          nextSettings.tools?.builtInPermissions,
+        );
+        this.gateway.broadcastRaw("tools:builtInUpdated", summary);
+        return summary;
+      },
+    );
+
+    ipcMain.handle(
+      "tools:setBuiltInPermission",
+      async (_: any, name: string, permission: string) => {
+        const valid = new Set(['always-allow', 'ask-once-session', 'always-ask', 'disabled']);
+        if (!valid.has(permission)) {
+          throw new Error(`Invalid tool permission: ${permission}`);
+        }
+        const settings = this.settingsService.getSettings();
+        const nextPerms = { ...(settings.tools?.builtInPermissions ?? {}) };
+        nextPerms[name] = permission as any;
+        this.settingsService.setSettings({
+          tools: {
+            builtIn: settings.tools?.builtIn ?? {},
+            builtInPermissions: nextPerms,
+            skills: settings.tools?.skills ?? {},
+          },
+        });
+        const nextSettings = this.settingsService.getSettings();
+        this.agentService.updateSettings(nextSettings);
+        const summary = buildBuiltInToolStatusSummary(
+          nextSettings.tools?.builtIn,
+          nextSettings.tools?.builtInPermissions,
         );
         this.gateway.broadcastRaw("tools:builtInUpdated", summary);
         return summary;

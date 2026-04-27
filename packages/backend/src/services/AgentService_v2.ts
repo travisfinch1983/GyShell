@@ -1537,6 +1537,22 @@ export class AgentService_v2 {
     return toolMessage
   }
 
+  /**
+   * Per-session memo of which tools have been approved this session, driving
+   * the 'ask-once-session' permission. Cleared when the session ends so a new
+   * session starts fresh.
+   */
+  private sessionApprovedToolsBySession = new Map<string, Set<string>>()
+
+  private getSessionApprovedTools(sessionId: string): Set<string> {
+    let set = this.sessionApprovedToolsBySession.get(sessionId)
+    if (!set) {
+      set = new Set<string>()
+      this.sessionApprovedToolsBySession.set(sessionId, set)
+    }
+    return set
+  }
+
   private createExecutionContext(sessionId: string, messageId: string, config: any): ToolExecutionContext {
     return {
       sessionId,
@@ -1546,7 +1562,9 @@ export class AgentService_v2 {
       waitForFeedback: this.waitForFeedback ?? undefined,
       commandPolicyService: this.commandPolicyService,
       commandPolicyMode: this.settings?.commandPolicyMode || 'standard',
-      signal: config?.signal
+      signal: config?.signal,
+      toolPermissions: this.settings?.tools?.builtInPermissions,
+      sessionApprovedTools: this.getSessionApprovedTools(sessionId),
     }
   }
 

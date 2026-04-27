@@ -56,6 +56,7 @@ type WebSocketRpcMethod =
   | 'tools:setMcpEnabled'
   | 'tools:getBuiltIn'
   | 'tools:setBuiltInEnabled'
+  | 'tools:setBuiltInPermission'
   | 'agents:getAll'
   | 'agents:save'
   | 'agents:delete'
@@ -214,6 +215,7 @@ export interface WebSocketGatewayAdapterOptions {
     setMcpEnabled?: (name: string, enabled: boolean) => unknown | Promise<unknown>;
     getBuiltIn?: () => unknown | Promise<unknown>;
     setBuiltInEnabled?: (name: string, enabled: boolean) => unknown | Promise<unknown>;
+    setBuiltInPermission?: (name: string, permission: string) => unknown | Promise<unknown>;
   };
   serverFactory?: WebSocketServerFactory;
   logger?: IWebSocketGatewayAdapterLogger;
@@ -1108,6 +1110,17 @@ export class WebSocketGatewayAdapter {
           throw new WebSocketRpcError('BAD_REQUEST', 'enabled must be boolean.');
         }
         return await this.options.toolsBridge.setBuiltInEnabled(name, enabled);
+      }
+      case 'tools:setBuiltInPermission': {
+        if (!this.options.toolsBridge?.setBuiltInPermission) {
+          throw new WebSocketRpcError(
+            'METHOD_NOT_FOUND',
+            'tools:setBuiltInPermission is not available on this websocket gateway.'
+          );
+        }
+        const name = this.readStringParam(params, 'name');
+        const permission = this.readStringParam(params, 'permission');
+        return await this.options.toolsBridge.setBuiltInPermission(name, permission);
       }
       case 'agents:getAll': {
         if (!this.options.settingsBridge?.getSettings) {
