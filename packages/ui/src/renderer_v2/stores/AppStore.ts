@@ -2802,41 +2802,13 @@ export class AppStore {
     content: string | UserInputPayload,
     options?: { mode?: 'normal' | 'queue' },
   ): Promise<boolean> {
-    // Check if a specialist is selected via the minion cards
-    const minionStore = (window as any).__minionStore
-    const minionRouter = (window as any).__minionRouter
-    if (minionStore && minionRouter) {
-      const text = typeof content === 'string' ? content : content?.text || ''
-      if (text) {
-        // Capture screenshot if vision is enabled
-        let screenshotDataUrl: string | undefined
-        if (minionStore.visionEnabled) {
-          try {
-            const { captureUI } = await import('../services/ScreenshotService')
-            screenshotDataUrl = (await captureUI()) || undefined
-          } catch (e) {
-            console.warn('[AppStore] Screenshot capture failed:', e)
-          }
-        }
-
-        if (minionStore.selectedTarget) {
-          // Direct routing to selected specialist
-          console.log(`[AppStore] ══ INTERCEPTED ══ Direct to specialist: ${minionStore.selectedTarget}${screenshotDataUrl ? ' [+vision]' : ''}`)
-          minionRouter.sendToSpecialist(minionStore.selectedTarget, text, { screenshotDataUrl })
-        } else {
-          // No specialist selected — route through chat (chat handles + dispatches)
-          console.log(`[AppStore] ══ INTERCEPTED ══ Routing via chat model${screenshotDataUrl ? ' [+vision]' : ''}`)
-          minionRouter.routeViaChat(text, screenshotDataUrl)
-        }
-        // Ensure session is NOT marked as busy (prevents red stop button)
-        const targetId = sessionId || this.chat.sessions?.[0]?.id
-        if (targetId) {
-          this.chat.setThinking(false, targetId)
-          this.chat.setSessionBusy(false, targetId)
-        }
-        return true
-      }
-    }
+    // Note: previously every chat message was intercepted here and routed
+    // through the legacy MinionRouter (the XML <route> specialist system).
+    // That intercept was hijacking the modern agent.startTask flow — the
+    // user's message was never appended to the chat session and the
+    // response landed in MinionFeed instead of the chat panel. The minion
+    // multi-role routing has been retired in favor of the agent system,
+    // so messages now flow normally to AgentService_v2.
 
     const mode = options?.mode || 'normal'
     let targetSessionId = sessionId
