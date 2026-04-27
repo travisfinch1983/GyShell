@@ -85,11 +85,31 @@ function nextMessageId(): string {
   return `msg-${Date.now()}-${++messageCounter}`
 }
 
+/**
+ * Persist the vision toggle in localStorage so it survives page refreshes
+ * and backend restarts — the user toggles it once and expects it to stay
+ * on (or off) across sessions instead of resetting to the default each
+ * time the app reloads.
+ */
+const VISION_ENABLED_KEY = 'ai-lab-vision-enabled'
+function loadVisionEnabled(): boolean {
+  try {
+    return localStorage.getItem(VISION_ENABLED_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+function persistVisionEnabled(v: boolean): void {
+  try {
+    localStorage.setItem(VISION_ENABLED_KEY, String(v))
+  } catch { /* localStorage unavailable — ignore */ }
+}
+
 export class MinionStore {
   messages: MinionMessage[] = []
   minions: Map<string, MinionCard> = new Map()
   selectedTarget: string | null = null // null = orchestrator routes, string = direct to specialist
-  visionEnabled = false
+  visionEnabled = loadVisionEnabled()
   maxMessages = 500
 
   /** Roles that can be directly selected by clicking their card */
@@ -317,9 +337,11 @@ export class MinionStore {
 
   /**
    * Toggle vision mode — when enabled, UI screenshots are sent with messages.
+   * Persisted to localStorage so the choice survives reloads and restarts.
    */
   toggleVision(): void {
     this.visionEnabled = !this.visionEnabled
+    persistVisionEnabled(this.visionEnabled)
   }
 
   /**
