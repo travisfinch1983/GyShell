@@ -25,6 +25,12 @@ export interface DiscoveredModel {
   node: string
   provider: string
   ownedBy: string
+  /**
+   * Number of concurrent request slots the backend serves. Reflects
+   * --parallel (llama-server) / --multiuser (KoboldCpp). Drives the agent
+   * pool's per-profile concurrency lanes. Defaults to 1 when missing.
+   */
+  slots: number
 }
 
 export interface DiscoveredService {
@@ -184,6 +190,7 @@ async function discoverLlmModels(): Promise<DiscoveredModel[]> {
       node: m._proxlab_node || '',
       provider: m._proxlab_provider || m.owned_by || '',
       ownedBy: m.owned_by || '',
+      slots: typeof m._proxlab_slots === 'number' && m._proxlab_slots > 0 ? m._proxlab_slots : 1,
     }))
   } catch {
     return discoveredModels
@@ -446,9 +453,10 @@ function syncModelsToSettings(models: DiscoveredModel[]) {
   // Add new models
   for (const model of models) {
     if (existingProxlab.has(model.id)) {
-      // Update slot if changed
+      // Update slot + concurrency-slots if changed
       const idx = existingProxlab.get(model.id)!
       settings.models.items[idx]._proxlabSlot = model.slot
+      settings.models.items[idx]._proxlabSlots = model.slots
       continue
     }
 
@@ -475,6 +483,7 @@ function syncModelsToSettings(models: DiscoveredModel[]) {
       supportsObjectToolChoice: false,
       _proxlabSlot: model.slot,
       _proxlabNode: model.node,
+      _proxlabSlots: model.slots,
       _proxlabAutoDiscovered: true,
     })
   }

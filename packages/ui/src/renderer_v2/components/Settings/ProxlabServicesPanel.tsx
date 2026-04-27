@@ -105,6 +105,12 @@ export const ProxlabServicesPanel: React.FC = () => {
                   <span className="proxlab-item-meta">slot {m.slot}</span>
                   <span className="proxlab-item-meta">{m.node}</span>
                   <span className="proxlab-item-meta">{m.provider}</span>
+                  <span
+                    className="proxlab-item-meta"
+                    title={`This model serves up to ${m.slots} concurrent request${m.slots === 1 ? '' : 's'} (--parallel/--multiuser at launch).`}
+                  >
+                    {m.slots} slot{m.slots === 1 ? '' : 's'}
+                  </span>
                 </div>
               ))
             )}

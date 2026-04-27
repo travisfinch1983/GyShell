@@ -40,8 +40,24 @@ const AgentEditor = observer(
     const [isSaving, setIsSaving] = useState(false);
 
     const profiles = store.settings?.models.profiles ?? [];
+    const items = store.settings?.models.items ?? [];
     const builtInTools = store.builtInTools.filter((t) => t.enabled);
     const mcpTools = store.mcpTools.filter((t) => t.enabled);
+
+    // Resolve a profile's underlying model definition + concurrency slots so we
+    // can annotate the multi-select with how many lanes each profile gives the
+    // agent's pool. _proxlabSlots is set by the auto-discovery layer when the
+    // model came from proxlab's /v1/models; defaults to 1 for manual entries.
+    const profileMeta = (profileId: string): { slots: number; modelLabel: string } => {
+      const profile = profiles.find((p) => p.id === profileId);
+      if (!profile) return { slots: 1, modelLabel: "" };
+      const item = items.find((m) => m.id === (profile as any).globalModelId) as any;
+      const slots = typeof item?._proxlabSlots === "number" && item._proxlabSlots > 0
+        ? item._proxlabSlots
+        : 1;
+      const modelLabel = item?.model ? ` · ${item.model}` : "";
+      return { slots, modelLabel };
+    };
 
     const toggleTool = (name: string) => {
       setDraft((d) => {
@@ -127,20 +143,27 @@ const AgentEditor = observer(
                     No model profiles configured. Add one in the Models tab first.
                   </div>
                 )}
-                {profiles.map((p) => (
-                  <label
-                    key={p.id}
-                    style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={draft.modelProfileIds.includes(p.id)}
-                      onChange={() => toggleModel(p.id)}
-                      disabled={isSaving}
-                    />
-                    <span>{p.name}</span>
-                  </label>
-                ))}
+                {profiles.map((p) => {
+                  const meta = profileMeta(p.id);
+                  return (
+                    <label
+                      key={p.id}
+                      style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}
+                      title={meta.modelLabel ? `Model: ${meta.modelLabel.slice(3)} · ${meta.slots} concurrent slot${meta.slots === 1 ? "" : "s"}` : ""}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.modelProfileIds.includes(p.id)}
+                        onChange={() => toggleModel(p.id)}
+                        disabled={isSaving}
+                      />
+                      <span>{p.name}</span>
+                      <span style={{ opacity: 0.6, fontSize: 11, marginLeft: "auto" }}>
+                        {meta.slots} slot{meta.slots === 1 ? "" : "s"}
+                      </span>
+                    </label>
+                  );
+                })}
               </div>
             </div>
 
