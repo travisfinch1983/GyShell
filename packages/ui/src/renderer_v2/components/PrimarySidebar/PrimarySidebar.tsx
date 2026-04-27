@@ -5,6 +5,7 @@ import {
   FolderOpen,
   Activity,
   Settings,
+  MessageSquare,
   type LucideIcon,
 } from 'lucide-react'
 import styles from './PrimarySidebar.module.scss'
@@ -28,12 +29,35 @@ interface Props {
   activeTab: PrimaryTab
   onTabChange: (id: PrimaryTab) => void
   onSettingsClick: () => void
+  /** Whether the global chat overlay is currently visible */
+  chatOpen: boolean
+  /** Toggle the chat overlay open/closed (independent from any tab change) */
+  onChatToggle: () => void
 }
 
-export const PrimarySidebar: React.FC<Props> = ({ activeTab, onTabChange, onSettingsClick }) => {
+export const PrimarySidebar: React.FC<Props> = ({
+  activeTab,
+  onTabChange,
+  onSettingsClick,
+  chatOpen,
+  onChatToggle,
+}) => {
   return (
     <nav className={styles.sidebar}>
       <div className={styles.tabs}>
+        {/* Chat toggle — sits above the tab group since opening it doesn't
+            switch tabs, just overlays the chat panel onto whatever tab is
+            currently active. */}
+        <button
+          className={`${styles.tab} ${chatOpen ? styles.active : ''}`}
+          onClick={onChatToggle}
+          title={chatOpen ? 'Close chat' : 'Open chat'}
+          type="button"
+        >
+          <MessageSquare size={20} strokeWidth={1.75} />
+          <span className={styles.label}>Chat</span>
+        </button>
+
         {TABS.map(({ id, label, Icon }) => (
           <button
             key={id}

@@ -1,15 +1,15 @@
 /**
- * MinionSidebar — Resizable panel containing model cards and activity feed
- * with a draggable divider, collapsible feed, and full sidebar collapse.
+ * MinionSidebar — Always-collapsed icon strip showing minion-army members,
+ * the active profile's chat/coder models, and the configured agent set.
  *
- * When collapsed, shows a thin icon strip with role icons and an activity pulse.
+ * The previous resizable-with-feed design was retired: the chat overlay now
+ * controls its own visibility separately, so the sidebar's role is just the
+ * icon strip with status badges.
  */
 
-import React, { useRef, useState, useCallback, useEffect } from 'react'
+import React, { useRef, useState, useEffect } from 'react'
 import { observer } from 'mobx-react-lite'
 import {
-  PanelLeftClose,
-  PanelLeftOpen,
   Brain,
   MessageCircle,
   Code,
@@ -21,17 +21,19 @@ import {
   Layers,
   Bot,
   Eye,
+  Globe,
+  ScrollText,
+  Hammer,
+  Bug,
 } from 'lucide-react'
 import { MinionStore } from '../../stores/MinionStore'
 import type { MinionCard } from '../../stores/MinionStore'
-import { MinionCards } from './MinionCards'
-import { MinionFeed } from './MinionFeed'
+import type { AppStore } from '../../stores/AppStore'
 import './MinionSidebar.scss'
 
 interface MinionSidebarProps {
   store: MinionStore
-  collapsed: boolean
-  onToggleCollapse: () => void
+  appStore: AppStore
 }
 
 /** Map role names to lucide icons */
@@ -157,127 +159,175 @@ const ActivityPulse = observer(({ store }: { store: MinionStore }) => {
   )
 })
 
-export const MinionSidebar = observer(({ store, collapsed, onToggleCollapse }: MinionSidebarProps) => {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [feedHeight, setFeedHeight] = useState(200)
-  const [feedExpanded, setFeedExpanded] = useState(true)
-  const [dragging, setDragging] = useState(false)
-  const dragStartY = useRef(0)
-  const dragStartHeight = useRef(0)
+/** Pick a per-agent icon. Falls back to a generic Bot. */
+function iconForAgent(name: string): React.FC<any> {
+  const n = name.toLowerCase()
+  if (n.includes('research')) return Globe
+  if (n.includes('plan')) return ScrollText
+  if (n.includes('cod')) return Hammer
+  if (n.includes('debug')) return Bug
+  if (n.includes('explor')) return Search
+  return Bot
+}
 
-  const onDragStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    setDragging(true)
-    dragStartY.current = e.clientY
-    dragStartHeight.current = feedHeight
+/**
+ * One agent shortcut. Click sends a placeholder direct-route signal to the
+ * chat (full delegate-direct wiring lands once the chat-window adaptation is
+ * in). Badge in the corner shows how many invocations of this agent are
+ * currently in flight — populated from the in-process pool exposed by the
+ * backend (Phase B once the WS event surface is added).
+ */
+const AgentIcon: React.FC<{ name: string; activeCount: number; onClick: () => void }> = ({
+  name,
+  activeCount,
+  onClick,
+}) => {
+  const Icon = iconForAgent(name)
+  return (
+    <button
+      className="collapsed-minion-icon"
+      onClick={onClick}
+      title={`${name}${activeCount > 0 ? ` — ${activeCount} in flight` : ''}`}
+    >
+      <Icon size={14} />
+      {activeCount > 0 && (
+        <span
+          className="collapsed-status-dot"
+          style={{
+            backgroundColor: 'var(--minion-active, #3b82f6)',
+            // Reuse the existing badge dot styling but show the count instead
+            width: 12,
+            height: 12,
+            fontSize: 9,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'white',
+            fontWeight: 700,
+          }}
+        >
+          {activeCount}
+        </span>
+      )}
+    </button>
+  )
+}
 
-    const onMouseMove = (ev: MouseEvent) => {
-      const delta = dragStartY.current - ev.clientY
-      const newHeight = Math.max(60, Math.min(600, dragStartHeight.current + delta))
-      setFeedHeight(newHeight)
-    }
+/**
+ * Resolve the active profile's chat + coder model items so we can show them
+ * as direct-message shortcuts. Falls back to the global model when chat or
+ * coder isn't explicitly assigned.
+ */
+function useActiveProfileModels(appStore: AppStore) {
+  const profiles = appStore.settings?.models?.profiles ?? []
+  const items = appStore.settings?.models?.items ?? []
+  const activeId = appStore.settings?.models?.activeProfileId
+  const profile = profiles.find((p) => p.id === activeId) ?? profiles[0]
+  if (!profile) return { chat: null as any, coder: null as any }
+  const findItem = (id?: string) => (id ? items.find((m) => m.id === id) ?? null : null)
+  const chat = findItem((profile as any).chatModelId) || findItem(profile.globalModelId)
+  const coder = findItem((profile as any).coderModelId) || findItem(profile.globalModelId)
+  return { chat, coder }
+}
 
-    const onMouseUp = () => {
-      setDragging(false)
-      document.removeEventListener('mousemove', onMouseMove)
-      document.removeEventListener('mouseup', onMouseUp)
-    }
-
-    document.addEventListener('mousemove', onMouseMove)
-    document.addEventListener('mouseup', onMouseUp)
-  }, [feedHeight])
-
-  const toggleFeed = () => setFeedExpanded(!feedExpanded)
-
-  // Sort minions same as MinionCards: selectable first
+export const MinionSidebar = observer(({ store, appStore }: MinionSidebarProps) => {
+  // Sort minions: selectable first (matches MinionCards' ordering).
   const minions = [...store.minionList].sort((a, b) => {
     const aSelectable = MinionStore.selectableRoles.has(a.role) ? 0 : 1
     const bSelectable = MinionStore.selectableRoles.has(b.role) ? 0 : 1
     return aSelectable - bSelectable
   })
 
-  // ─── Collapsed mode ─────────────────────────────────────────────
-  if (collapsed) {
-    return (
-      <div className="minion-sidebar collapsed-sidebar" ref={containerRef}>
-        <button
-          className="sidebar-collapse-toggle"
-          onClick={onToggleCollapse}
-          title="Expand sidebar"
-        >
-          <PanelLeftOpen size={14} />
-        </button>
+  const { chat, coder } = useActiveProfileModels(appStore)
+  const agents = appStore.agents ?? []
 
-        <button
-          className={`collapsed-vision-toggle ${store.visionEnabled ? 'active' : ''}`}
-          onClick={() => store.toggleVision()}
-          title={store.visionEnabled ? 'Vision ON' : 'Vision OFF'}
-        >
-          <Eye size={14} />
-        </button>
+  // Click handlers — wiring of the actual direct-route message dispatch comes
+  // with the chat-window adaptation. For now we set a hint on the chat store
+  // that the next message should be routed directly to this model.
+  const directRoute = (modelId: string | undefined, label: string) => {
+    if (!modelId) return
+    const chatStore = (appStore as any).chat
+    if (chatStore) {
+      // Tag the next outgoing message — the chat send path will read this
+      // and override its routing once that adaptation is wired.
+      ;(chatStore as any).nextDirectRouteModelId = modelId
+      ;(chatStore as any).nextDirectRouteLabel = label
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[MinionSidebar] Next message will route directly to ${label} (${modelId})`)
+  }
 
-        <div className="collapsed-icons-list">
+  const focusAgent = (agentName: string) => {
+    const chatStore = (appStore as any).chat
+    if (chatStore) {
+      ;(chatStore as any).nextDirectAgentName = agentName
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[MinionSidebar] Next message will be delegated to agent "${agentName}"`)
+  }
+
+  return (
+    <div className="minion-sidebar collapsed-sidebar">
+      <button
+        className={`collapsed-vision-toggle ${store.visionEnabled ? 'active' : ''}`}
+        onClick={() => store.toggleVision()}
+        title={store.visionEnabled ? 'Vision ON' : 'Vision OFF'}
+      >
+        <Eye size={14} />
+      </button>
+
+      {/* Models — click to force the next message directly at that model
+          (skips agent routing). Two slots: chat + coder, populated from the
+          active profile's role assignments. */}
+      <div className="collapsed-icons-list" style={{ marginTop: 6 }}>
+        {chat && (
+          <button
+            className="collapsed-minion-icon selectable"
+            onClick={() => directRoute(chat.id, chat.name || chat.model)}
+            title={`Chat model — ${chat.name || chat.model} (click to route next message directly)`}
+          >
+            <MessageCircle size={14} />
+          </button>
+        )}
+        {coder && coder.id !== chat?.id && (
+          <button
+            className="collapsed-minion-icon selectable"
+            onClick={() => directRoute(coder.id, coder.name || coder.model)}
+            title={`Coder model — ${coder.name || coder.model} (click to route next message directly)`}
+          >
+            <Code size={14} />
+          </button>
+        )}
+      </div>
+
+      {/* Agents — click to delegate the next message to that specific agent.
+          Badge count shows how many invocations are currently in flight (Phase B
+          once the pool exposes per-agent counters via WS events; for now it's
+          always 0 and the badge is hidden). */}
+      {agents.length > 0 && (
+        <div className="collapsed-icons-list" style={{ marginTop: 4 }}>
+          {agents.map((a) => (
+            <AgentIcon
+              key={a.id}
+              name={a.name}
+              activeCount={0}
+              onClick={() => focusAgent(a.name)}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Minion-army members (existing). Kept as a third row so the user can
+          still see/select remote minions even with the chat overlay closed. */}
+      {minions.length > 0 && (
+        <div className="collapsed-icons-list" style={{ marginTop: 4 }}>
           {minions.map((card) => (
             <CollapsedMinionIcon key={card.id} card={card} store={store} />
           ))}
         </div>
-
-        <ActivityPulse store={store} />
-      </div>
-    )
-  }
-
-  // ─── Expanded mode ──────────────────────────────────────────────
-  return (
-    <div className="minion-sidebar" ref={containerRef}>
-      <div className="sidebar-collapse-header">
-        <button
-          className={`vision-toggle-btn ${store.visionEnabled ? 'active' : ''}`}
-          onClick={() => store.toggleVision()}
-          title={store.visionEnabled ? 'Vision ON — UI screenshots sent with messages' : 'Enable vision — send UI screenshots to models'}
-        >
-          <Eye size={13} />
-          <span className="vision-toggle-label">Vision</span>
-        </button>
-        <button
-          className="sidebar-collapse-toggle"
-          onClick={onToggleCollapse}
-          title="Collapse sidebar"
-        >
-          <PanelLeftClose size={14} />
-        </button>
-      </div>
-
-      <div className="minion-sidebar-cards" style={feedExpanded ? { flex: `1 1 0`, minHeight: 80 } : { flex: 1 }}>
-        <MinionCards store={store} />
-      </div>
-
-      {feedExpanded && (
-        <div
-          className={`minion-sidebar-divider ${dragging ? 'active' : ''}`}
-          onMouseDown={onDragStart}
-        >
-          <div className="minion-divider-grip" />
-        </div>
       )}
 
-      <div
-        className={`minion-sidebar-feed ${feedExpanded ? '' : 'collapsed'}`}
-        style={feedExpanded ? { height: feedHeight, minHeight: 60 } : {}}
-      >
-        <div className="minion-feed-toggle" onClick={toggleFeed}>
-          <span className="minion-feed-toggle-chevron">{feedExpanded ? '▾' : '▴'}</span>
-          <span className="minion-feed-toggle-label">Activity</span>
-          <span className="minion-feed-toggle-count">
-            {store.allMessages.length || ''}
-          </span>
-        </div>
-        {feedExpanded && (
-          <div className="minion-sidebar-feed-content">
-            <MinionFeed store={store} />
-          </div>
-        )}
-      </div>
+      <ActivityPulse store={store} />
     </div>
   )
 })

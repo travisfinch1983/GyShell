@@ -31,13 +31,17 @@ transcriptService.runRetentionCleanup()
 ;(window as any).__transcriptService = transcriptService
 
 export const App: React.FC = observer(() => {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(
-    () => localStorage.getItem('minion-sidebar-collapsed') === 'true'
+  // The model/agent sidebar is permanently collapsed to its icon strip — its
+  // expand affordance was removed in favor of always-on icons (model + agent
+  // shortcuts with status badges). The chat overlay's visibility is now its
+  // own state so opening the chat doesn't expand the sidebar and vice versa.
+  const [chatOpen, setChatOpen] = useState(
+    () => localStorage.getItem('ai-lab-chat-open') === 'true'
   )
-  const toggleSidebar = useCallback(() => {
-    setSidebarCollapsed(prev => {
+  const toggleChat = useCallback(() => {
+    setChatOpen(prev => {
       const next = !prev
-      localStorage.setItem('minion-sidebar-collapsed', String(next))
+      localStorage.setItem('ai-lab-chat-open', String(next))
       return next
     })
   }, [])
@@ -275,11 +279,13 @@ export const App: React.FC = observer(() => {
           activeTab={primaryTab}
           onTabChange={handlePrimaryTabChange}
           onSettingsClick={() => store.toggleSettings()}
+          chatOpen={chatOpen}
+          onChatToggle={toggleChat}
         />
 
-        {/* Model sidebar is now ALWAYS visible, regardless of active tab. */}
-        <div className={`gyshell-minion-sidebar ${sidebarCollapsed ? 'is-collapsed' : ''}`}>
-          <MinionSidebar store={minionStore} collapsed={sidebarCollapsed} onToggleCollapse={toggleSidebar} />
+        {/* Model/agent sidebar is permanently collapsed to its icon strip. */}
+        <div className="gyshell-minion-sidebar is-collapsed">
+          <MinionSidebar store={minionStore} appStore={store} />
         </div>
 
         {/*
@@ -350,8 +356,8 @@ export const App: React.FC = observer(() => {
             </div>
           )}
 
-          {/* Global chat overlay — visible whenever the model sidebar is expanded. */}
-          <GlobalChat store={store} visible={!sidebarCollapsed} />
+          {/* Global chat overlay — toggled independently from the model sidebar. */}
+          <GlobalChat store={store} visible={chatOpen} />
         </div>
 
         {/* Settings is an overlay so we don't unmount terminals (xterm state stays alive) */}
