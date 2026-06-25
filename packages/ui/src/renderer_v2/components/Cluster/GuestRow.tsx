@@ -3,6 +3,7 @@ import { observer } from 'mobx-react-lite'
 import { ChevronRight, ChevronDown, MoreVertical, Settings, Cpu } from 'lucide-react'
 import { clusterStore, type ClusterGuest } from '../../stores/ClusterStore'
 import { MetricChart } from './MetricChart'
+import { resolveQuery, type GearEdit } from '../../stores/metricTemplates'
 import styles from './Cluster.module.scss'
 
 export interface GuestRowHandlers {
@@ -34,6 +35,7 @@ export const GuestRow: React.FC<{
   const busy = clusterStore.actionBusy === g.vmid
   const isLxc = g.type === 'lxc'
   const guestId = `${isLxc ? 'lxc' : 'qemu'}/${g.vmid}`
+  const template = clusterStore.getTemplate(isLxc ? 'lxc' : 'qemu')
 
   const gpuAssigned = clusterStore.gpuAssignments?.[String(g.vmid)]?.gpus?.length ?? 0
 
@@ -119,43 +121,37 @@ export const GuestRow: React.FC<{
 
       {expanded && (
         <div className={styles.guestRow2}>
-          <div className={styles.metricCell}>
-            <div className={styles.metricHead}>
-              <span className={styles.metricName}>CPU</span>
-              <button className={styles.gear} title="Edit cores" onClick={() => h.onEditCores(g)}>
-                <Settings size={12} />
-              </button>
-            </div>
-            <MetricChart label="CPU %" unit="percent" query={`pve_cpu_usage_ratio{id="${guestId}"} * 100`} />
-          </div>
-          <div className={styles.metricCell}>
-            <div className={styles.metricHead}>
-              <span className={styles.metricName}>Memory</span>
-              <button className={styles.gear} title="Edit memory" onClick={() => h.onEditMemory(g)}>
-                <Settings size={12} />
-              </button>
-            </div>
-            <MetricChart
-              label="Mem %"
-              unit="percent"
-              color="#7c5cff"
-              query={`pve_memory_usage_bytes{id="${guestId}"} / pve_memory_size_bytes{id="${guestId}"} * 100`}
-            />
-          </div>
-          <div className={styles.metricCell}>
-            <div className={styles.metricHead}>
-              <span className={styles.metricName}>Disk</span>
-              <button className={styles.gear} title="Resize disk" onClick={() => h.onResizeDisk(g)}>
-                <Settings size={12} />
-              </button>
-            </div>
-            <MetricChart
-              label="Disk %"
-              unit="percent"
-              color="#2ecc71"
-              query={`pve_disk_usage_bytes{id="${guestId}"} / pve_disk_size_bytes{id="${guestId}"} * 100`}
-            />
-          </div>
+          {template.charts.map((chart) => {
+            const gearFor: Record<Exclude<GearEdit, 'none'>, () => void> = {
+              cores: () => h.onEditCores(g),
+              memory: () => h.onEditMemory(g),
+              disk: () => h.onResizeDisk(g),
+              order: () => h.onEditOrder(g),
+            }
+            return (
+              <div className={styles.metricCell} key={chart.id}>
+                <div className={styles.metricHead}>
+                  <span className={styles.metricName}>{chart.label}</span>
+                  {chart.gear !== 'none' && (
+                    <button className={styles.gear} title={`Edit ${chart.gear}`} onClick={gearFor[chart.gear]}>
+                      <Settings size={12} />
+                    </button>
+                  )}
+                </div>
+                <MetricChart
+                  label={chart.label}
+                  unit={chart.unit}
+                  color={chart.color}
+                  query={resolveQuery(chart.query, guestId)}
+                  rangeSeconds={template.rangeSeconds}
+                  stepSeconds={template.stepSeconds}
+                />
+              </div>
+            )
+          })}
+          {template.charts.length === 0 && (
+            <div className={styles.noMetrics}>No metrics configured for this list — use “⚙ Metrics” in the list header.</div>
+          )}
         </div>
       )}
     </div>

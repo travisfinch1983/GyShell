@@ -1,4 +1,11 @@
 import { makeAutoObservable, runInAction } from 'mobx'
+import {
+  loadTemplates,
+  saveTemplates,
+  defaultTemplate,
+  type MetricCategory,
+  type MetricTemplate,
+} from './metricTemplates'
 
 /**
  * ClusterStore — MobX state for the Cluster tab (migrated from ProxLab).
@@ -97,6 +104,8 @@ export class ClusterStore {
   gpuInventory: Record<string, any> | null = null
   gpuAssignments: Record<string, any> | null = null
   storages: any[] | null = null
+  // Per-category metric templates (LXC / VM rows render from these)
+  metricTemplates: Record<MetricCategory, MetricTemplate> = loadTemplates()
 
   constructor() {
     makeAutoObservable(this)
@@ -218,6 +227,20 @@ export class ClusterStore {
 
   setFilter(value: string): void {
     this.filter = value
+  }
+
+  // ─── metric templates ───────────────────────────────────────────────────────
+  getTemplate(category: MetricCategory): MetricTemplate {
+    return this.metricTemplates[category]
+  }
+
+  saveTemplate(category: MetricCategory, template: MetricTemplate): void {
+    this.metricTemplates = { ...this.metricTemplates, [category]: template }
+    saveTemplates(this.metricTemplates)
+  }
+
+  resetTemplate(category: MetricCategory): void {
+    this.saveTemplate(category, defaultTemplate(category))
   }
 
   // ─── Write actions (all via the backend cluster:request proxy; rule #1) ──────

@@ -7,6 +7,9 @@ import { MigrateModal } from './MigrateModal'
 import { GpuModal } from './GpuModal'
 import { ConfirmModal, EditValueModal } from './ClusterModals'
 import { GuestRow, type GuestRowHandlers } from './GuestRow'
+import { MetricTemplateEditor } from './MetricTemplateEditor'
+import { type MetricCategory } from '../../stores/metricTemplates'
+import { SlidersHorizontal } from 'lucide-react'
 import styles from './Cluster.module.scss'
 
 function pct(used?: number, max?: number): number {
@@ -83,6 +86,7 @@ export const ClusterPanel: React.FC = observer(() => {
   const [gpuFor, setGpuFor] = useState<ClusterGuest | null>(null)
   const [edit, setEdit] = useState<{ kind: EditKind; guest: ClusterGuest } | null>(null)
   const [confirm, setConfirm] = useState<{ guest: ClusterGuest; action: 'stop' | 'shutdown' | 'reboot' } | null>(null)
+  const [tplEditor, setTplEditor] = useState<MetricCategory | null>(null)
 
   useEffect(() => {
     clusterStore.startPolling(10000)
@@ -240,6 +244,9 @@ export const ClusterPanel: React.FC = observer(() => {
             <div className={styles.listHead}>
               <span className={styles.listTitle}>LXC Containers ({clusterStore.containers.length})</span>
               <SortBar sort={clusterStore.ctSort} onSort={(k) => clusterStore.setSort('ct', k)} />
+              <button className={styles.tplBtn} title="Configure metrics for all LXC entries" onClick={() => setTplEditor('lxc')}>
+                <SlidersHorizontal size={12} /> Metrics
+              </button>
             </div>
             {clusterStore.containers.map((g) => (
               <GuestRow
@@ -258,6 +265,9 @@ export const ClusterPanel: React.FC = observer(() => {
             <div className={styles.listHead}>
               <span className={styles.listTitle}>Virtual Machines ({clusterStore.vms.length})</span>
               <SortBar sort={clusterStore.vmSort} onSort={(k) => clusterStore.setSort('vm', k)} />
+              <button className={styles.tplBtn} title="Configure metrics for all VM entries" onClick={() => setTplEditor('qemu')}>
+                <SlidersHorizontal size={12} /> Metrics
+              </button>
             </div>
             {clusterStore.vms.map((g) => (
               <GuestRow
@@ -274,6 +284,7 @@ export const ClusterPanel: React.FC = observer(() => {
         </div>
       )}
 
+      {tplEditor && <MetricTemplateEditor category={tplEditor} onClose={() => setTplEditor(null)} />}
       {migrateFor && <MigrateModal guest={migrateFor} onClose={() => setMigrateFor(null)} />}
       {gpuFor && <GpuModal guest={gpuFor} onClose={() => setGpuFor(null)} />}
       {edit && (

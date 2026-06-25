@@ -266,6 +266,51 @@
   cursor: pointer;
   &:hover { background: var(--accent); color: #06121f; }
 }
+.noMetrics { font-size: 12px; color: var(--fg-faint); padding: 12px; }
+
+/* ── metric template editor ── */
+.tplBtn {
+  display: inline-flex; align-items: center; gap: 4px; margin-left: auto;
+  font-size: 11px; padding: 3px 9px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--control-bg); color: var(--fg-muted); cursor: pointer;
+  &:hover { background: var(--control-bg-hover); color: var(--fg); }
+}
+.modalWide { width: 640px; }
+.tplRangeRow {
+  display: flex; gap: 16px; margin: 10px 0 14px;
+  label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--fg-muted); }
+  input { width: 110px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
+          background: var(--control-bg); color: var(--fg); font-size: 12px; }
+}
+.tplCharts { display: flex; flex-direction: column; gap: 10px; max-height: 46vh; overflow: auto; }
+.tplChart { border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: var(--panel-bg-2); }
+.tplChartTop { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.tplLabel {
+  flex: 1; min-width: 80px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--control-bg); color: var(--fg); font-size: 12px;
+}
+.tplColor { width: 30px; height: 28px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--control-bg); cursor: pointer; }
+.tplChartTop select {
+  padding: 5px 6px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--control-bg); color: var(--fg); font-size: 11px;
+}
+.tplQuery {
+  width: 100%; resize: vertical; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--app-bg); color: var(--fg); font-family: var(--font-mono); font-size: 11px; line-height: 1.4;
+  &:focus { outline: none; border-color: var(--accent); }
+}
+.iconBtn {
+  display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--control-bg); color: var(--fg-muted); cursor: pointer;
+  &:hover { background: var(--control-bg-hover); color: var(--fg); }
+  &.danger:hover { background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); }
+}
+.addChartBtn {
+  display: inline-flex; align-items: center; gap: 5px; margin-top: 10px;
+  font-size: 12px; padding: 6px 12px; border-radius: 6px;
+  border: 1px dashed var(--border-strong); background: transparent; color: var(--fg-muted); cursor: pointer;
+  &:hover { color: var(--fg); border-color: var(--accent); }
+}
 .typeBadge { font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--control-bg); color: var(--fg-muted); }
 .status {
   font-size: 11px;
