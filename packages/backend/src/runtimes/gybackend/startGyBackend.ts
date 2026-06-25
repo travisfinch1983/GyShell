@@ -9,6 +9,7 @@ import { ChatHistoryService } from '../../services/ChatHistoryService'
 import { GatewayService } from '../../services/Gateway/GatewayService'
 import { WebSocketGatewayAdapter } from '../../services/Gateway/WebSocketGatewayAdapter'
 import { clusterService } from '../../services/Cluster/ClusterService'
+import { metricsService } from '../../services/Cluster/MetricsService'
 import {
   WebSocketGatewayControlService,
   resolveWsGatewayAccessFromHost,
@@ -170,6 +171,10 @@ export async function startGyBackend(): Promise<void> {
         clusterBridge: {
           getStatus: () => clusterService.getStatus(),
           request: (method, path, body) => clusterService.request(method, path, body)
+        },
+        metricsBridge: {
+          queryRange: (query, rangeSeconds, stepSeconds) => metricsService.queryRange(query, rangeSeconds, stepSeconds),
+          query: (query) => metricsService.query(query)
         },
         terminalBridge: {
           listTerminals: () =>

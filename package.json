@@ -89,6 +89,7 @@
     "react-resizable-panels": "^3.0.6",
     "remark-gfm": "^4.0.1",
     "remeda": "^2.33.4",
+    "uplot": "^1.6.32",
     "socks": "^2.8.7",
     "ssh2": "^1.17.0",
     "tree-sitter-bash": "^0.25.1",

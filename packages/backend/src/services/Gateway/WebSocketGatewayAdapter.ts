@@ -71,7 +71,9 @@ type WebSocketRpcMethod =
   | 'agent:renameSession'
   | 'agent:rollbackToMessage'
   | 'cluster:getStatus'
-  | 'cluster:request';
+  | 'cluster:request'
+  | 'metrics:queryRange'
+  | 'metrics:query';
 
 interface WebSocketRpcRequest {
   id?: string | number;
@@ -112,6 +114,10 @@ export interface WebSocketGatewayAdapterOptions {
   clusterBridge?: {
     getStatus: () => Promise<unknown>;
     request: (method: string, path: string, body?: unknown) => Promise<unknown>;
+  };
+  metricsBridge?: {
+    queryRange: (query: string, rangeSeconds?: number, stepSeconds?: number) => Promise<unknown>;
+    query: (query: string) => Promise<unknown>;
   };
   agentBridge?: {
     exportHistory?: (sessionId: string, mode: 'simple' | 'detailed') => unknown | Promise<unknown>;
@@ -630,6 +636,21 @@ export class WebSocketGatewayAdapter {
         const method = this.readStringParam(params, 'method');
         const path = this.readStringParam(params, 'path');
         return await this.options.clusterBridge.request(method, path, (params as Record<string, unknown>).body);
+      }
+      case 'metrics:queryRange': {
+        if (!this.options.metricsBridge?.queryRange) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'metrics:queryRange is not available on this websocket gateway.');
+        }
+        const p = params as Record<string, unknown>;
+        const query = this.readStringParam(params, 'query');
+        return { series: await this.options.metricsBridge.queryRange(query, p.rangeSeconds as number, p.stepSeconds as number) };
+      }
+      case 'metrics:query': {
+        if (!this.options.metricsBridge?.query) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'metrics:query is not available on this websocket gateway.');
+        }
+        const query = this.readStringParam(params, 'query');
+        return { result: await this.options.metricsBridge.query(query) };
       }
       case 'session:list': {
         return { sessions: this.gateway.listSessionSummaries() };

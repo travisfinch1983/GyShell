@@ -103,6 +103,13 @@ const gyshellApi = {
       rpc('cluster:request', { method, path, body }),
   },
 
+  metrics: {
+    // Native charts (rule #1): backend queries Prometheus, UI renders with uPlot.
+    queryRange: (query: string, rangeSeconds?: number, stepSeconds?: number) =>
+      rpc('metrics:queryRange', { query, rangeSeconds, stepSeconds }),
+    query: (query: string) => rpc('metrics:query', { query }),
+  },
+
   windowing: {
     openDetached: noop,
     onMainWindowClosing: noopCleanup,

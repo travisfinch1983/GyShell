@@ -2,7 +2,7 @@ import React from 'react'
 import { observer } from 'mobx-react-lite'
 import { ChevronRight, ChevronDown, MoreVertical, Settings, Cpu } from 'lucide-react'
 import { clusterStore, type ClusterGuest } from '../../stores/ClusterStore'
-import { GrafanaPanel } from './GrafanaPanel'
+import { MetricChart } from './MetricChart'
 import styles from './Cluster.module.scss'
 
 export interface GuestRowHandlers {
@@ -120,22 +120,41 @@ export const GuestRow: React.FC<{
       {expanded && (
         <div className={styles.guestRow2}>
           <div className={styles.metricCell}>
-            <button className={styles.gear} title="Edit cores" onClick={() => h.onEditCores(g)}>
-              <Settings size={12} />
-            </button>
-            <GrafanaPanel uid="pve-guest-homelab" panelId={1} height={120} vars={{ guest: guestId }} />
+            <div className={styles.metricHead}>
+              <span className={styles.metricName}>CPU</span>
+              <button className={styles.gear} title="Edit cores" onClick={() => h.onEditCores(g)}>
+                <Settings size={12} />
+              </button>
+            </div>
+            <MetricChart label="CPU %" unit="percent" query={`pve_cpu_usage_ratio{id="${guestId}"} * 100`} />
           </div>
           <div className={styles.metricCell}>
-            <button className={styles.gear} title="Edit memory" onClick={() => h.onEditMemory(g)}>
-              <Settings size={12} />
-            </button>
-            <GrafanaPanel uid="pve-guest-homelab" panelId={2} height={120} vars={{ guest: guestId }} />
+            <div className={styles.metricHead}>
+              <span className={styles.metricName}>Memory</span>
+              <button className={styles.gear} title="Edit memory" onClick={() => h.onEditMemory(g)}>
+                <Settings size={12} />
+              </button>
+            </div>
+            <MetricChart
+              label="Mem %"
+              unit="percent"
+              color="#7c5cff"
+              query={`pve_memory_usage_bytes{id="${guestId}"} / pve_memory_size_bytes{id="${guestId}"} * 100`}
+            />
           </div>
           <div className={styles.metricCell}>
-            <button className={styles.gear} title="Resize disk" onClick={() => h.onResizeDisk(g)}>
-              <Settings size={12} />
-            </button>
-            <GrafanaPanel uid="pve-guest-homelab" panelId={3} height={120} vars={{ guest: guestId }} />
+            <div className={styles.metricHead}>
+              <span className={styles.metricName}>Disk</span>
+              <button className={styles.gear} title="Resize disk" onClick={() => h.onResizeDisk(g)}>
+                <Settings size={12} />
+              </button>
+            </div>
+            <MetricChart
+              label="Disk %"
+              unit="percent"
+              color="#2ecc71"
+              query={`pve_disk_usage_bytes{id="${guestId}"} / pve_disk_size_bytes{id="${guestId}"} * 100`}
+            />
           </div>
         </div>
       )}
