@@ -350,6 +350,7 @@ const ConnectionImporter = observer(({ store, onClose }: { store: AppStore; onCl
   const [adding, setAdding] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [rows, setRows] = useState<Array<{ id: string; ctx: number; sel: boolean }> | null>(null);
+  const [filter, setFilter] = useState("");
 
   const fetchModels = async () => {
     setLoading(true);
@@ -361,11 +362,14 @@ const ConnectionImporter = observer(({ store, onClose }: { store: AppStore; onCl
       setErr(r.error || "Failed to list models");
       return;
     }
+    // Big catalogs (e.g. OpenRouter) start unselected so you filter + pick; small
+    // local endpoints start fully selected.
+    const preselect = r.models.length <= 20;
     setRows(
       r.models.map((m) => ({
         id: m.id,
         ctx: typeof m.contextLength === "number" && m.contextLength > 0 ? m.contextLength : defaultCtx,
-        sel: true,
+        sel: preselect,
       })),
     );
   };
@@ -380,6 +384,14 @@ const ConnectionImporter = observer(({ store, onClose }: { store: AppStore; onCl
   };
 
   const selCount = rows?.filter((r) => r.sel).length ?? 0;
+  const fq = filter.trim().toLowerCase();
+  const visible = rows ? rows.filter((r) => !fq || r.id.toLowerCase().includes(fq)) : [];
+  const updateRow = (id: string, patch: Partial<{ ctx: number; sel: boolean }>) =>
+    setRows((rs) => (rs ? rs.map((x) => (x.id === id ? { ...x, ...patch } : x)) : rs));
+  const setSelVisible = (val: boolean) => {
+    const vis = new Set(visible.map((r) => r.id));
+    setRows((rs) => (rs ? rs.map((x) => (vis.has(x.id) ? { ...x, sel: val } : x)) : rs));
+  };
 
   return (
     <div className="model-editor-overlay">
@@ -413,16 +425,35 @@ const ConnectionImporter = observer(({ store, onClose }: { store: AppStore; onCl
             {rows && <span style={{ fontSize: 12, color: "var(--fg-muted)", alignSelf: "center" }}>{rows.length} models · {selCount} selected</span>}
           </div>
           {rows && rows.length > 0 && (
-            <div style={{ maxHeight: 300, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6, padding: 6 }}>
-              {rows.map((r, i) => (
-                <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 6px" }}>
-                  <input type="checkbox" checked={r.sel} onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, sel: e.target.checked } : x)))} />
-                  <span style={{ flex: 1, fontSize: 12, fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.id}</span>
-                  <span style={{ fontSize: 11, color: "var(--fg-faint)" }}>ctx</span>
-                  <NumericInput className="editor-input" style={{ width: 100 }} value={r.ctx} onChange={(v) => setRows(rows.map((x, j) => (j === i ? { ...x, ctx: v } : x)))} min={0} />
-                </div>
-              ))}
-            </div>
+            <>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
+                <input
+                  className="editor-input"
+                  style={{ flex: 1 }}
+                  placeholder="Filter models…"
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  disabled={adding}
+                />
+                <button className="btn-secondary" onClick={() => setSelVisible(true)} disabled={adding} title={fq ? "Select all matching" : "Select all"}>
+                  Select all{fq ? " shown" : ""}
+                </button>
+                <button className="btn-secondary" onClick={() => setSelVisible(false)} disabled={adding} title={fq ? "Deselect all matching" : "Deselect all"}>
+                  Deselect{fq ? " shown" : ""}
+                </button>
+              </div>
+              <div style={{ maxHeight: 300, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6, padding: 6 }}>
+                {visible.length === 0 && <div style={{ fontSize: 12, color: "var(--fg-faint)", padding: 6 }}>No models match “{filter}”.</div>}
+                {visible.map((r) => (
+                  <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 6px" }}>
+                    <input type="checkbox" checked={r.sel} onChange={(e) => updateRow(r.id, { sel: e.target.checked })} />
+                    <span style={{ flex: 1, fontSize: 12, fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.id}</span>
+                    <span style={{ fontSize: 11, color: "var(--fg-faint)" }}>ctx</span>
+                    <NumericInput className="editor-input" style={{ width: 100 }} value={r.ctx} onChange={(v) => updateRow(r.id, { ctx: v })} min={0} />
+                  </div>
+                ))}
+              </div>
+            </>
           )}
           {rows && rows.length === 0 && <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>No models returned by this API.</div>}
         </div>
