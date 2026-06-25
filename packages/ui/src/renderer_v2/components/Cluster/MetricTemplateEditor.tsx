@@ -26,7 +26,11 @@ export const MetricTemplateEditor: React.FC<{ category: MetricCategory; onClose:
   category,
   onClose,
 }) => {
-  const [tpl, setTpl] = useState<MetricTemplate>(() => structuredClone(clusterStore.getTemplate(category)))
+  // Deep plain-object copy — NOT structuredClone (the source is a MobX observable,
+  // which structuredClone rejects with DataCloneError and crashes the render).
+  const [tpl, setTpl] = useState<MetricTemplate>(() =>
+    JSON.parse(JSON.stringify(clusterStore.getTemplate(category))) as MetricTemplate,
+  )
 
   const setChart = (i: number, patch: Partial<MetricChartDef>) =>
     setTpl((t) => ({ ...t, charts: t.charts.map((c, idx) => (idx === i ? { ...c, ...patch } : c)) }))
