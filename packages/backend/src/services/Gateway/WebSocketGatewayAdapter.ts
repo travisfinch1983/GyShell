@@ -70,7 +70,8 @@ type WebSocketRpcMethod =
   | 'agent:deleteChatSession'
   | 'agent:renameSession'
   | 'agent:rollbackToMessage'
-  | 'cluster:getStatus';
+  | 'cluster:getStatus'
+  | 'cluster:request';
 
 interface WebSocketRpcRequest {
   id?: string | number;
@@ -110,6 +111,7 @@ export interface WebSocketGatewayAdapterOptions {
   ipFilter?: WebSocketIpFilter;
   clusterBridge?: {
     getStatus: () => Promise<unknown>;
+    request: (method: string, path: string, body?: unknown) => Promise<unknown>;
   };
   agentBridge?: {
     exportHistory?: (sessionId: string, mode: 'simple' | 'detailed') => unknown | Promise<unknown>;
@@ -620,6 +622,14 @@ export class WebSocketGatewayAdapter {
           throw new WebSocketRpcError('METHOD_NOT_FOUND', 'cluster:getStatus is not available on this websocket gateway.');
         }
         return await this.options.clusterBridge.getStatus();
+      }
+      case 'cluster:request': {
+        if (!this.options.clusterBridge?.request) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'cluster:request is not available on this websocket gateway.');
+        }
+        const method = this.readStringParam(params, 'method');
+        const path = this.readStringParam(params, 'path');
+        return await this.options.clusterBridge.request(method, path, (params as Record<string, unknown>).body);
       }
       case 'session:list': {
         return { sessions: this.gateway.listSessionSummaries() };

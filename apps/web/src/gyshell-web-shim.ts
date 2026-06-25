@@ -99,6 +99,8 @@ const gyshellApi = {
   cluster: {
     // Backend-proxied (rule #1): the backend fetches ProxLab/PVE, never the browser.
     getStatus: () => rpc('cluster:getStatus'),
+    request: (method: string, path: string, body?: unknown) =>
+      rpc('cluster:request', { method, path, body }),
   },
 
   windowing: {

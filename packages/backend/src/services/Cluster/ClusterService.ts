@@ -1,13 +1,15 @@
 /**
- * ClusterService — backend-side access to Proxmox cluster data for the Cluster tab.
+ * ClusterService — backend-side access to Proxmox cluster data + actions for the
+ * Cluster tab.
  *
  * ARCHITECTURE / RULE #1: all cluster + PVE network calls live HERE on the backend
  * (CT 152), never in the browser. The renderer reaches this only through the
- * WebSocket gateway RPC `cluster:getStatus` (wired as `clusterBridge` in
- * startGyBackend.ts). For the first migration slice this proxies ProxLab's existing
- * `/api/pve/status` endpoint, which already owns the PVE integration (token, cluster
- * resources, guest config enrichment). The direct-PVE rebuild can later replace the
- * fetch target without changing the RPC surface or the renderer.
+ * WebSocket gateway RPCs `cluster:getStatus` (read) and `cluster:request` (the
+ * path-allowlisted proxy for actions), both wired as `clusterBridge` in
+ * startGyBackend.ts. We proxy ProxLab's existing REST API (10.0.0.140:7777), which
+ * already owns the PVE integration (token, migrations, GPU hookscripts, bind-mount
+ * handling). The direct-PVE rebuild can later replace the fetch target without
+ * changing the RPC surface or the renderer.
  *
  * Configure the upstream with PROXLAB_API_BASE (default http://10.0.0.140:7777).
  */
@@ -18,29 +20,72 @@ export interface ClusterServiceOptions {
   timeoutMs?: number
 }
 
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE'
+
 export class ClusterService {
   private readonly base: string
   private readonly timeoutMs: number
 
+  // Only cluster-management paths are proxyable from the renderer.
+  private static readonly ALLOWED_PREFIXES = ['/api/guests/', '/api/gpu', '/api/storages', '/api/pve/']
+
   constructor(opts: ClusterServiceOptions = {}) {
     this.base = (opts.proxlabBase || DEFAULT_BASE).replace(/\/+$/, '')
-    this.timeoutMs = opts.timeoutMs ?? 12000
+    this.timeoutMs = opts.timeoutMs ?? 20000
+  }
+
+  private async send(method: HttpMethod, path: string, body?: unknown): Promise<unknown> {
+    const url = `${this.base}${path}`
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs)
+    try {
+      const resp = await fetch(url, {
+        method,
+        signal: controller.signal,
+        headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      })
+      const text = await resp.text()
+      const data = text ? safeJson(text) : null
+      if (!resp.ok) {
+        const msg = (data && (data as any).error) || `${resp.status} ${resp.statusText}`
+        throw new Error(`ProxLab ${method} ${path}: ${msg}`)
+      }
+      return data
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   /** Full cluster snapshot: { configured, cluster, nodes[], containers[], vms[], timestamp }. */
   async getStatus(): Promise<unknown> {
-    const url = `${this.base}/api/pve/status`
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs)
-    try {
-      const resp = await fetch(url, { signal: controller.signal })
-      if (!resp.ok) {
-        throw new Error(`ProxLab API responded ${resp.status} ${resp.statusText} for ${url}`)
-      }
-      return await resp.json()
-    } finally {
-      clearTimeout(timer)
+    return this.send('GET', '/api/pve/status')
+  }
+
+  /**
+   * Path-allowlisted proxy used for all Cluster-tab actions (power, config,
+   * resources, resize, migrate, gpu). Rejects anything outside the cluster API.
+   */
+  async request(method: string, path: string, body?: unknown): Promise<unknown> {
+    const m = (method || 'GET').toUpperCase() as HttpMethod
+    if (!['GET', 'POST', 'PUT', 'DELETE'].includes(m)) {
+      throw new Error(`cluster proxy: method not allowed: ${m}`)
     }
+    if (typeof path !== 'string' || !path.startsWith('/api/') || path.includes('..')) {
+      throw new Error(`cluster proxy: invalid path: ${path}`)
+    }
+    if (!ClusterService.ALLOWED_PREFIXES.some((p) => path.startsWith(p))) {
+      throw new Error(`cluster proxy: path not allowed: ${path}`)
+    }
+    return this.send(m, path, body)
+  }
+}
+
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return { raw: text }
   }
 }
 

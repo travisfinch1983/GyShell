@@ -168,7 +168,8 @@ export async function startGyBackend(): Promise<void> {
         },
         ipFilter,
         clusterBridge: {
-          getStatus: () => clusterService.getStatus()
+          getStatus: () => clusterService.getStatus(),
+          request: (method, path, body) => clusterService.request(method, path, body)
         },
         terminalBridge: {
           listTerminals: () =>

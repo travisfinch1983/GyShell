@@ -43,6 +43,10 @@ export interface ClusterGuest {
   maxdisk?: number
   uptime?: number
   tags?: string[]
+  onboot?: number
+  protection?: number
+  console?: number
+  ostype?: string
 }
 
 export interface ClusterStatus {
@@ -85,6 +89,13 @@ export class ClusterStore {
   nodeOrder: string[] = loadNodeOrder()
   ctSort: GuestSort = { key: 'vmid', dir: 'asc' }
   vmSort: GuestSort = { key: 'vmid', dir: 'asc' }
+  // Write-action state
+  actionBusy: number | null = null // vmid currently running a write action
+  actionError: string | null = null
+  // Lazily-loaded data for the migrate / GPU modals
+  gpuInventory: Record<string, any> | null = null
+  gpuAssignments: Record<string, any> | null = null
+  storages: any[] | null = null
 
   constructor() {
     makeAutoObservable(this)
@@ -206,6 +217,75 @@ export class ClusterStore {
 
   setFilter(value: string): void {
     this.filter = value
+  }
+
+  // ─── Write actions (all via the backend cluster:request proxy; rule #1) ──────
+  private async req(method: string, path: string, body?: unknown): Promise<any> {
+    const api = (window as any).gyshell?.cluster
+    if (!api?.request) throw new Error('cluster gateway RPC not available')
+    return api.request(method, path, body)
+  }
+
+  /** Run a write action, track busy/error, then refresh the snapshot. */
+  private async run(vmid: number, fn: () => Promise<unknown>): Promise<void> {
+    runInAction(() => {
+      this.actionBusy = vmid
+      this.actionError = null
+    })
+    try {
+      await fn()
+      await this.refresh()
+    } catch (err) {
+      runInAction(() => {
+        this.actionError = err instanceof Error ? err.message : String(err)
+      })
+    } finally {
+      runInAction(() => {
+        this.actionBusy = null
+      })
+    }
+  }
+
+  guestPower(vmid: number, action: 'start' | 'stop' | 'shutdown' | 'reboot'): Promise<void> {
+    return this.run(vmid, () => this.req('POST', `/api/guests/${vmid}/${action}`))
+  }
+
+  setConfig(vmid: number, patch: Record<string, unknown>): Promise<void> {
+    return this.run(vmid, () => this.req('PUT', `/api/guests/${vmid}/config`, patch))
+  }
+
+  setResources(vmid: number, patch: Record<string, unknown>): Promise<void> {
+    return this.run(vmid, () => this.req('PUT', `/api/guests/${vmid}/resources`, patch))
+  }
+
+  resizeDisk(vmid: number, disk: string, size: string): Promise<void> {
+    return this.run(vmid, () => this.req('PUT', `/api/guests/${vmid}/resize`, { disk, size }))
+  }
+
+  migrate(vmid: number, body: Record<string, unknown>): Promise<void> {
+    return this.run(vmid, () => this.req('POST', `/api/guests/${vmid}/migrate`, body))
+  }
+
+  setGpuAssignment(vmid: number, body: Record<string, unknown>): Promise<void> {
+    return this.run(vmid, () => this.req('PUT', `/api/gpu/assignments/${vmid}`, body))
+  }
+
+  clearGpuAssignment(vmid: number): Promise<void> {
+    return this.run(vmid, () => this.req('DELETE', `/api/gpu/assignments/${vmid}`))
+  }
+
+  /** Load GPU inventory/assignments + storages for the migrate / GPU modals. */
+  async loadModalData(): Promise<void> {
+    const [inv, asn, st] = await Promise.all([
+      this.req('GET', '/api/gpu/inventory').catch(() => null),
+      this.req('GET', '/api/gpu/assignments').catch(() => null),
+      this.req('GET', '/api/storages').catch(() => null),
+    ])
+    runInAction(() => {
+      this.gpuInventory = inv
+      this.gpuAssignments = asn
+      this.storages = Array.isArray(st) ? st : (st as any)?.storages ?? null
+    })
   }
 
   async refresh(): Promise<void> {

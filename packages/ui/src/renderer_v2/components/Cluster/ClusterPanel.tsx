@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { RefreshCw, Server, GripVertical } from 'lucide-react'
+import { RefreshCw, Server, MoreVertical } from 'lucide-react'
 import { clusterStore, type ClusterGuest, type GuestSort, type GuestSortKey } from '../../stores/ClusterStore'
 import { GrafanaPanel } from './GrafanaPanel'
+import { MigrateModal } from './MigrateModal'
+import { GpuModal } from './GpuModal'
 import styles from './Cluster.module.scss'
 
 function pct(used?: number, max?: number): number {
@@ -57,7 +59,8 @@ const GuestTable: React.FC<{
   guests: ClusterGuest[]
   sort: GuestSort
   onSort: (key: GuestSortKey) => void
-}> = ({ title, guests, sort, onSort }) => (
+  renderActions: (g: ClusterGuest) => React.ReactNode
+}> = ({ title, guests, sort, onSort, renderActions }) => (
   <div className={styles.tableWrap}>
     <div className={styles.tableHead}>
       <span className={styles.tableTitle}>
@@ -76,13 +79,16 @@ const GuestTable: React.FC<{
                 </span>
               </th>
             ))}
+            <th>Boot</th>
+            <th />
           </tr>
         </thead>
         <tbody>
           {guests.map((g) => {
             const running = g.status === 'running'
+            const busy = clusterStore.actionBusy === g.vmid
             return (
-              <tr key={g.vmid}>
+              <tr key={g.vmid} className={busy ? styles.rowBusy : ''}>
                 <td className={styles.mono}>{g.vmid}</td>
                 <td>{g.name ?? '—'}</td>
                 <td>{g.node ?? '—'}</td>
@@ -95,6 +101,16 @@ const GuestTable: React.FC<{
                 <td className={styles.mono}>
                   {running ? `${fmtBytes(g.mem)} / ${fmtBytes(g.maxmem)}` : fmtBytes(g.maxmem)}
                 </td>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={!!g.onboot}
+                    disabled={busy}
+                    title="Start on boot"
+                    onChange={() => clusterStore.setConfig(g.vmid, { onboot: g.onboot ? 0 : 1 })}
+                  />
+                </td>
+                <td className={styles.actionsCell}>{renderActions(g)}</td>
               </tr>
             )
           })}
@@ -107,11 +123,93 @@ const GuestTable: React.FC<{
 export const ClusterPanel: React.FC = observer(() => {
   const [dragNode, setDragNode] = useState<string | null>(null)
   const [overNode, setOverNode] = useState<string | null>(null)
+  const [menuVmid, setMenuVmid] = useState<number | null>(null)
+  const [migrateFor, setMigrateFor] = useState<ClusterGuest | null>(null)
+  const [gpuFor, setGpuFor] = useState<ClusterGuest | null>(null)
 
   useEffect(() => {
     clusterStore.startPolling(10000)
     return () => clusterStore.stopPolling()
   }, [])
+
+  const power = (g: ClusterGuest, action: 'start' | 'stop' | 'shutdown' | 'reboot') => {
+    setMenuVmid(null)
+    if (action !== 'start' && !window.confirm(`${action.toUpperCase()} ${g.type?.toUpperCase()} ${g.vmid} (${g.name ?? ''})?`)) return
+    void clusterStore.guestPower(g.vmid, action)
+  }
+
+  const editResources = (g: ClusterGuest) => {
+    setMenuVmid(null)
+    const cores = window.prompt(`Cores for ${g.vmid} (${g.name ?? ''})`, String(g.maxcpu ?? ''))
+    if (cores === null) return
+    const memMb = window.prompt('Memory (MB)', String(g.maxmem ? Math.round(g.maxmem / 1048576) : ''))
+    if (memMb === null) return
+    const patch: Record<string, unknown> = {}
+    if (cores.trim()) patch.cores = Number(cores)
+    if (memMb.trim()) patch.memory = Number(memMb)
+    if (Object.keys(patch).length) void clusterStore.setResources(g.vmid, patch)
+  }
+
+  const resizeDisk = (g: ClusterGuest) => {
+    setMenuVmid(null)
+    const disk = g.type === 'qemu' ? 'scsi0' : 'rootfs'
+    const size = window.prompt(`Grow disk "${disk}" of ${g.vmid} by (e.g. +5G):`, '+5G')
+    if (size && size.trim()) void clusterStore.resizeDisk(g.vmid, disk, size.trim())
+  }
+
+  const toggleProtection = (g: ClusterGuest) => {
+    setMenuVmid(null)
+    void clusterStore.setConfig(g.vmid, { protection: g.protection ? 0 : 1 })
+  }
+
+  const openMigrate = (g: ClusterGuest) => {
+    setMenuVmid(null)
+    void clusterStore.loadModalData()
+    setMigrateFor(g)
+  }
+
+  const openGpu = (g: ClusterGuest) => {
+    setMenuVmid(null)
+    void clusterStore.loadModalData()
+    setGpuFor(g)
+  }
+
+  const renderActions = (g: ClusterGuest) => {
+    const running = g.status === 'running'
+    const open = menuVmid === g.vmid
+    return (
+      <div className={styles.actionWrap}>
+        <button
+          className={styles.menuBtn}
+          title="Actions"
+          type="button"
+          onClick={() => setMenuVmid(open ? null : g.vmid)}
+        >
+          <MoreVertical size={15} />
+        </button>
+        {open && (
+          <>
+            <div className={styles.menuBackdrop} onClick={() => setMenuVmid(null)} />
+            <div className={styles.menu}>
+              {!running && <button onClick={() => power(g, 'start')}>Start</button>}
+              {running && <button onClick={() => power(g, 'reboot')}>Reboot</button>}
+              {running && <button onClick={() => power(g, 'shutdown')}>Shutdown</button>}
+              {running && <button className={styles.danger} onClick={() => power(g, 'stop')}>Stop</button>}
+              <div className={styles.menuSep} />
+              <button onClick={() => editResources(g)}>Edit cores / memory…</button>
+              <button onClick={() => resizeDisk(g)}>Resize disk…</button>
+              <button onClick={() => openMigrate(g)}>Migrate…</button>
+              {g.type === 'lxc' && <button onClick={() => openGpu(g)}>GPUs…</button>}
+              <div className={styles.menuSep} />
+              <button onClick={() => toggleProtection(g)}>
+                {g.protection ? 'Disable protection' : 'Enable protection'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    )
+  }
 
   const s = clusterStore.status
   const c = s?.cluster
@@ -145,8 +243,11 @@ export const ClusterPanel: React.FC = observer(() => {
         </button>
       </div>
 
-      {clusterStore.error && (
-        <div className={styles.error}>Failed to load cluster — {clusterStore.error}</div>
+      {clusterStore.error && <div className={styles.error}>Failed to load cluster — {clusterStore.error}</div>}
+      {clusterStore.actionError && (
+        <div className={styles.error} onClick={() => (clusterStore.actionError = null)}>
+          Action failed — {clusterStore.actionError} <span className={styles.dismiss}>(dismiss)</span>
+        </div>
       )}
       {!s && !clusterStore.error && <div className={styles.loading}>Loading cluster…</div>}
 
@@ -180,7 +281,6 @@ export const ClusterPanel: React.FC = observer(() => {
                 }}
               >
                 <div className={styles.nodeTop}>
-                  <GripVertical size={13} className={styles.grip} />
                   <span className={`${styles.dot} ${n.online ? styles.ok : styles.crit}`} />
                   <span className={styles.nodeName}>{n.node}</span>
                   <span className={styles.nodeIp}>{n.ip ?? ''}</span>
@@ -224,15 +324,20 @@ export const ClusterPanel: React.FC = observer(() => {
             guests={clusterStore.containers}
             sort={clusterStore.ctSort}
             onSort={(key) => clusterStore.setSort('ct', key)}
+            renderActions={renderActions}
           />
           <GuestTable
             title="Virtual Machines"
             guests={clusterStore.vms}
             sort={clusterStore.vmSort}
             onSort={(key) => clusterStore.setSort('vm', key)}
+            renderActions={renderActions}
           />
         </div>
       )}
+
+      {migrateFor && <MigrateModal guest={migrateFor} onClose={() => setMigrateFor(null)} />}
+      {gpuFor && <GpuModal guest={gpuFor} onClose={() => setGpuFor(null)} />}
     </div>
   )
 })

@@ -138,6 +138,77 @@
 .sortable { cursor: pointer; user-select: none; }
 .sortable:hover { color: var(--fg); }
 .sortArrow { color: var(--accent); font-size: 10px; }
+.rowBusy { opacity: 0.5; pointer-events: none; }
+.dismiss { text-decoration: underline; cursor: pointer; }
+
+/* ── per-row actions menu ── */
+.actionsCell { position: relative; white-space: nowrap; }
+.actionWrap { position: relative; display: inline-block; }
+.menuBtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 5px;
+  border: 1px solid transparent; background: transparent; color: var(--fg-muted); cursor: pointer;
+  &:hover { background: var(--control-bg); color: var(--fg); }
+}
+.menuBackdrop { position: fixed; inset: 0; z-index: 40; }
+.menu {
+  position: absolute; right: 0; top: 26px; z-index: 50;
+  min-width: 180px; padding: 4px;
+  background: var(--panel-bg-2); border: 1px solid var(--border-strong);
+  border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+  button {
+    display: block; width: 100%; text-align: left;
+    padding: 7px 10px; border: none; background: transparent; color: var(--fg);
+    font-size: 12px; border-radius: 5px; cursor: pointer;
+    &:hover { background: var(--control-bg-hover); }
+    &.danger:hover { background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); }
+  }
+}
+.menuSep { height: 1px; margin: 4px 2px; background: var(--border); }
+
+/* ── modals (migrate / gpu) ── */
+.modalOverlay {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.55);
+}
+.modal {
+  width: 460px; max-width: calc(100vw - 40px); max-height: calc(100vh - 80px); overflow: auto;
+  padding: 18px; border-radius: 10px;
+  background: var(--panel-bg); border: 1px solid var(--border-strong);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.55); color: var(--fg);
+}
+.modalTitle { font-size: 14px; font-weight: 600; margin-bottom: 14px; }
+.dim { color: var(--fg-faint); font-weight: 400; }
+.modalRow {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 12px;
+  label { width: 110px; color: var(--fg-muted); flex: 0 0 auto; }
+  select { flex: 1; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+           background: var(--control-bg); color: var(--fg); font-size: 12px;
+           &:focus { outline: none; border-color: var(--accent); } }
+}
+.modalErr {
+  margin: 10px 0; padding: 8px 10px; font-size: 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: 6px;
+  color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+.modalNote { margin-top: 10px; font-size: 11px; color: var(--fg-faint); }
+.modalActions {
+  display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;
+  button {
+    padding: 7px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--control-bg); color: var(--fg); font-size: 12px; cursor: pointer;
+    &:hover:not(:disabled) { background: var(--control-bg-hover); }
+    &:disabled { opacity: 0.5; cursor: default; }
+    &.primary { background: var(--accent); border-color: var(--accent); color: #06121f; font-weight: 600; }
+    &.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+  }
+}
+.gpuList { margin: 6px 0; max-height: 260px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; padding: 6px; }
+.gpuItem {
+  display: flex; align-items: center; gap: 8px; padding: 5px 6px; font-size: 12px; border-radius: 4px; cursor: pointer;
+  &:hover { background: var(--control-bg); }
+}
 .typeBadge { font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--control-bg); color: var(--fg-muted); }
 .status {
   font-size: 11px;
