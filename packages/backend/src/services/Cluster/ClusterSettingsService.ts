@@ -44,6 +44,25 @@ export interface ServiceNames {
   common: Record<string, string> // "port:process" -> display name
   custom: Record<string, string> // "host:port" -> display name
 }
+export interface GpuConfigEntry {
+  friendlyName?: string
+  showInFleet?: boolean
+  poolMode?: 'reserved' | 'ai-pool'
+}
+export interface SharedFolderCategory {
+  name: string
+  hostPath: string
+}
+export interface SharedFolderGroup {
+  name: string
+  enabled: boolean
+  basePath: string
+  categories: SharedFolderCategory[]
+}
+export interface SharedFolders {
+  containerMountParent: string
+  groups: SharedFolderGroup[]
+}
 export interface ClusterSettings {
   pve: PveSettings
   tokens: { hfToken: string; civitaiToken: string }
@@ -52,6 +71,9 @@ export interface ClusterSettings {
   externalServices: ExternalService[]
   vectorDbs: VectorDb[]
   serviceNames: ServiceNames
+  gpuConfig: Record<string, GpuConfigEntry> // keyed "node:pciId"
+  agents: Record<string, number> // node -> vmid
+  sharedFolders: SharedFolders
 }
 
 const DEFAULTS: ClusterSettings = {
@@ -62,6 +84,19 @@ const DEFAULTS: ClusterSettings = {
   externalServices: [],
   vectorDbs: [],
   serviceNames: { common: {}, custom: {} },
+  gpuConfig: {},
+  agents: {},
+  sharedFolders: {
+    containerMountParent: '/mnt/shared',
+    groups: [
+      { name: 'media', enabled: false, basePath: '', categories: [] },
+      { name: 'nas', enabled: false, basePath: '', categories: [] },
+      { name: 'system', enabled: false, basePath: '', categories: [] },
+      { name: 'llm', enabled: false, basePath: '', categories: [] },
+      { name: 'tts', enabled: false, basePath: '', categories: [] },
+      { name: 'image-gen', enabled: false, basePath: '', categories: [] },
+    ],
+  },
 }
 
 const SECRET_PATHS = ['pve.tokenSecret', 'tokens.hfToken', 'tokens.civitaiToken']
@@ -96,6 +131,9 @@ export class ClusterSettingsService {
       externalServices: Array.isArray(parsed.externalServices) ? parsed.externalServices : [],
       vectorDbs: Array.isArray(parsed.vectorDbs) ? parsed.vectorDbs : [],
       serviceNames: { common: parsed.serviceNames?.common ?? {}, custom: parsed.serviceNames?.custom ?? {} },
+      gpuConfig: parsed.gpuConfig ?? {},
+      agents: parsed.agents ?? {},
+      sharedFolders: parsed.sharedFolders ?? DEFAULTS.sharedFolders,
     }
     return this.cache
   }
@@ -126,6 +164,9 @@ export class ClusterSettingsService {
       externalServices: s.externalServices,
       vectorDbs: s.vectorDbs,
       serviceNames: s.serviceNames,
+      gpuConfig: s.gpuConfig,
+      agents: s.agents,
+      sharedFolders: s.sharedFolders,
     }
   }
 
@@ -141,6 +182,9 @@ export class ClusterSettingsService {
       externalServices: Array.isArray(patch?.externalServices) ? patch.externalServices : cur.externalServices,
       vectorDbs: Array.isArray(patch?.vectorDbs) ? patch.vectorDbs : cur.vectorDbs,
       serviceNames: patch?.serviceNames ? { common: patch.serviceNames.common ?? {}, custom: patch.serviceNames.custom ?? {} } : cur.serviceNames,
+      gpuConfig: patch?.gpuConfig ?? cur.gpuConfig,
+      agents: patch?.agents ?? cur.agents,
+      sharedFolders: patch?.sharedFolders ?? cur.sharedFolders,
     }
     // Don't wipe secrets when the caller sends blank/undefined.
     for (const p of SECRET_PATHS) {

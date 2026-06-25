@@ -300,3 +300,133 @@ export const ServiceNamesPanel: React.FC = () => {
     </div>
   )
 }
+
+// ─── GPU & Pools (config stored native; inventory read via bridge for display) ──
+const POOL_MODES = ['reserved', 'ai-pool']
+export const GpuPoolsPanel: React.FC = () => {
+  const { s, busy, msg, save } = useClusterSettings()
+  const [cfg, setCfg] = useState<Record<string, any>>({})
+  const [gpus, setGpus] = useState<Array<{ node: string; pciId: string; product: string; vendor: string }>>([])
+  const [invErr, setInvErr] = useState<string | null>(null)
+  useEffect(() => { if (s) setCfg({ ...(s.gpuConfig ?? {}) }) }, [s])
+  useEffect(() => {
+    void (async () => {
+      try {
+        const inv = await (window as any).gyshell?.cluster?.request?.('GET', '/api/gpu/inventory')
+        const out: any[] = []
+        for (const [node, data] of Object.entries(inv || {})) {
+          for (const g of ((data as any).allGpus ?? (data as any).nvidiaGpus ?? [])) {
+            out.push({ node, pciId: g.pciId, product: g.productName || g.friendlyName || '', vendor: g.vendor || '' })
+          }
+        }
+        setGpus(out)
+      } catch (e) { setInvErr(e instanceof Error ? e.message : String(e)) }
+    })()
+  }, [])
+  if (!s) return <div style={sub}>Loading…</div>
+  const set = (key: string, patch: any) => setCfg({ ...cfg, [key]: { ...(cfg[key] ?? {}), ...patch } })
+  return (
+    <div style={wrap}>
+      <div style={h}>GPU &amp; Pools</div>
+      <div style={sub}>Friendly names, fleet visibility, and pool mode per GPU. Config stored on CT 152 (applied in a later finalization pass).</div>
+      {invErr && <div style={{ ...sub, color: 'var(--fg-faint)' }}>GPU inventory unavailable ({invErr}) — showing saved config only.</div>}
+      {gpus.length === 0 && !invErr && <div style={sub}>No GPUs discovered.</div>}
+      {gpus.map((g) => {
+        const key = `${g.node}:${g.pciId}`
+        const c = cfg[key] ?? {}
+        return (
+          <div key={key} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ width: 70, fontSize: 11, color: 'var(--fg-faint)' }}>{g.node}</span>
+            <span style={{ width: 120, fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)' }}>{g.pciId}</span>
+            <span style={{ width: 130, fontSize: 11 }}>{g.product}</span>
+            <input style={{ ...smallInp, width: 140 }} placeholder="friendly name" value={c.friendlyName ?? ''} onChange={(e) => set(key, { friendlyName: e.target.value })} />
+            <select style={{ ...smallInp, width: 100 }} value={c.poolMode ?? 'reserved'} onChange={(e) => set(key, { poolMode: e.target.value })}>
+              {POOL_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+            <label style={{ fontSize: 11, color: 'var(--fg-muted)', display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+              <input type="checkbox" checked={!!c.showInFleet} onChange={(e) => set(key, { showInFleet: e.target.checked })} /> fleet
+            </label>
+          </div>
+        )
+      })}
+      <div style={{ ...row, marginTop: 18 }}>
+        <button style={primaryBtn} disabled={busy} onClick={() => void save({ gpuConfig: cfg })}>Save</button>
+        {msg && <span style={{ fontSize: 12, color: 'var(--success)' }}>{msg}</span>}
+      </div>
+    </div>
+  )
+}
+
+// ─── AI Agents (node -> agent container vmid) ───────────────────────────────────
+export const AiAgentsPanel: React.FC = () => {
+  const { s, busy, msg, save } = useClusterSettings()
+  const [rows, setRows] = useState<Array<{ node: string; vmid: string }>>([])
+  useEffect(() => { if (s?.agents) setRows(Object.entries(s.agents).map(([node, vmid]) => ({ node, vmid: String(vmid) }))) }, [s])
+  if (!s) return <div style={sub}>Loading…</div>
+  const saveRows = () => {
+    const agents: Record<string, number> = {}
+    rows.forEach((r) => { if (r.node.trim() && r.vmid.trim()) agents[r.node.trim()] = Number(r.vmid) })
+    void save({ agents })
+  }
+  return (
+    <div style={wrap}>
+      <div style={h}>AI Agents</div>
+      <div style={sub}>Per-node agent container (vmid) that manages AI workloads. Applied in a later finalization pass.</div>
+      {rows.map((r, i) => (
+        <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+          <input style={{ ...smallInp, width: 160 }} placeholder="node (e.g. px-gpu)" value={r.node} onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, node: e.target.value } : x)))} />
+          <span style={{ color: 'var(--fg-faint)' }}>→</span>
+          <input style={{ ...smallInp, width: 100 }} type="number" placeholder="vmid" value={r.vmid} onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, vmid: e.target.value } : x)))} />
+          <button style={delBtn} title="Remove" onClick={() => setRows(rows.filter((_, j) => j !== i))}><Trash2 size={13} /></button>
+        </div>
+      ))}
+      <button style={addBtn} onClick={() => setRows([...rows, { node: '', vmid: '' }])}><Plus size={13} /> Add agent</button>
+      <div style={{ ...row, marginTop: 18 }}>
+        <button style={primaryBtn} disabled={busy} onClick={saveRows}>Save</button>
+        {msg && <span style={{ fontSize: 12, color: 'var(--success)' }}>{msg}</span>}
+      </div>
+    </div>
+  )
+}
+
+// ─── Shared Folders / Storage ───────────────────────────────────────────────────
+export const SharedFoldersPanel: React.FC = () => {
+  const { s, busy, msg, save } = useClusterSettings()
+  const [sf, setSf] = useState<any>(null)
+  useEffect(() => { if (s?.sharedFolders) setSf(JSON.parse(JSON.stringify(s.sharedFolders))) }, [s])
+  if (!s || !sf) return <div style={sub}>Loading…</div>
+  const setGroup = (gi: number, patch: any) => setSf({ ...sf, groups: sf.groups.map((g: any, i: number) => (i === gi ? { ...g, ...patch } : g)) })
+  const setCat = (gi: number, ci: number, patch: any) => setGroup(gi, { categories: sf.groups[gi].categories.map((c: any, i: number) => (i === ci ? { ...c, ...patch } : c)) })
+  return (
+    <div style={wrap}>
+      <div style={h}>Shared Folders</div>
+      <div style={sub}>Host→container mount groups. Definitions stored on CT 152; mounts provisioned in a later finalization pass.</div>
+      <Field label="Mount parent"><input style={inp} value={sf.containerMountParent ?? ''} onChange={(e) => setSf({ ...sf, containerMountParent: e.target.value })} /></Field>
+      {sf.groups.map((g: any, gi: number) => (
+        <div key={gi} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10, background: 'var(--panel-bg)' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+            <label style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12 }}>
+              <input type="checkbox" checked={!!g.enabled} onChange={(e) => setGroup(gi, { enabled: e.target.checked })} />
+            </label>
+            <input style={{ ...smallInp, width: 110, fontWeight: 600 }} value={g.name} onChange={(e) => setGroup(gi, { name: e.target.value })} />
+            <input style={{ ...smallInp, flex: 1 }} placeholder="base path on host" value={g.basePath ?? ''} onChange={(e) => setGroup(gi, { basePath: e.target.value })} />
+            <button style={delBtn} title="Remove group" onClick={() => setSf({ ...sf, groups: sf.groups.filter((_: any, i: number) => i !== gi) })}><Trash2 size={13} /></button>
+          </div>
+          {(g.categories ?? []).map((c: any, ci: number) => (
+            <div key={ci} style={{ display: 'flex', gap: 6, marginBottom: 4, alignItems: 'center', paddingLeft: 24 }}>
+              <input style={{ ...smallInp, width: 120 }} placeholder="category" value={c.name} onChange={(e) => setCat(gi, ci, { name: e.target.value })} />
+              <input style={{ ...smallInp, flex: 1 }} placeholder="host path" value={c.hostPath ?? ''} onChange={(e) => setCat(gi, ci, { hostPath: e.target.value })} />
+              <button style={delBtn} title="Remove" onClick={() => setGroup(gi, { categories: g.categories.filter((_: any, i: number) => i !== ci) })}><Trash2 size={12} /></button>
+            </div>
+          ))}
+          <button style={{ ...addBtn, marginLeft: 24 }} onClick={() => setGroup(gi, { categories: [...(g.categories ?? []), { name: '', hostPath: '' }] })}><Plus size={12} /> category</button>
+        </div>
+      ))}
+      <button style={addBtn} onClick={() => setSf({ ...sf, groups: [...sf.groups, { name: 'new-group', enabled: false, basePath: '', categories: [] }] })}><Plus size={13} /> Add group</button>
+      <div style={{ ...row, marginTop: 18 }}>
+        <button style={primaryBtn} disabled={busy} onClick={() => void save({ sharedFolders: sf })}>Save</button>
+        {msg && <span style={{ fontSize: 12, color: 'var(--success)' }}>{msg}</span>}
+      </div>
+    </div>
+  )
+}

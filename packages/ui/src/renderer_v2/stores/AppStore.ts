@@ -99,7 +99,10 @@ export type SettingsSection =
   | 'cluster-tokens'
   | 'cluster-ui'
   | 'cluster-services'
-  | 'cluster-servicenames';
+  | 'cluster-servicenames'
+  | 'cluster-gpu'
+  | 'cluster-agents'
+  | 'cluster-storage';
 
 export interface AgentDefinition {
   id: string;
