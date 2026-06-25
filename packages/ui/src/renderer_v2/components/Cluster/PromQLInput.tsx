@@ -10,13 +10,13 @@ import styles from './Cluster.module.scss'
  */
 let namesCache: Promise<string[]> | null = null
 function getMetricNames(): Promise<string[]> {
-  if (!namesCache) {
-    const api = (window as any).gyshell?.metrics
-    namesCache = api?.metricNames
-      ? api.metricNames().then((r: any) => (Array.isArray(r?.names) ? r.names : [])).catch(() => [])
-      : Promise.resolve([])
-  }
-  return namesCache
+  if (namesCache) return namesCache
+  const api = (window as any).gyshell?.metrics
+  const p: Promise<string[]> = api?.metricNames
+    ? api.metricNames().then((r: any) => (Array.isArray(r?.names) ? r.names : [])).catch(() => [])
+    : Promise.resolve<string[]>([])
+  namesCache = p
+  return p
 }
 
 const IDENT = /[a-zA-Z0-9_:]/
