@@ -43,6 +43,20 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/proxlab-api/, '/api/proxy'),
         ws: true, // Support WebSocket for streaming
       },
+      // Grafana panel embedding (Cluster tab metrics, and any future tab).
+      // Grafana serves under /grafana (serve_from_sub_path=true), so we keep the
+      // prefix (no rewrite) and inject the service-account token server-side.
+      // Rule #1: the token never reaches the browser, and the iframe is same-origin
+      // so there are no CORS / X-Frame / mixed-content issues over either the LAN IP
+      // or the Cloudflare tunnel. Token + URL come from the ai-lab-web systemd env
+      // (GRAFANA_SA_TOKEN / GRAFANA_URL) — never committed to the repo.
+      '/grafana': {
+        target: process.env.GRAFANA_URL || 'http://10.0.0.105:3000',
+        changeOrigin: true,
+        headers: process.env.GRAFANA_SA_TOKEN
+          ? { Authorization: `Bearer ${process.env.GRAFANA_SA_TOKEN}` }
+          : {},
+      },
     },
   }
 })

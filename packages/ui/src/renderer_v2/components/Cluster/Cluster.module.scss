@@ -52,6 +52,11 @@
 
 .body { flex: 1; overflow: auto; padding: 16px; }
 
+.metricsSection { margin-bottom: 20px; }
+.sectionTitle { font-size: 12px; font-weight: 600; color: var(--fg); margin-bottom: 10px; }
+.sectionSub { color: var(--fg-faint); font-weight: 400; }
+.grafanaGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+
 .nodeGrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));

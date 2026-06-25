@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Server, GripVertical } from 'lucide-react'
 import { clusterStore, type ClusterGuest, type GuestSort, type GuestSortKey } from '../../stores/ClusterStore'
+import { GrafanaPanel } from './GrafanaPanel'
 import styles from './Cluster.module.scss'
 
 function pct(used?: number, max?: number): number {
@@ -192,6 +193,18 @@ export const ClusterPanel: React.FC = observer(() => {
                 <Metric label="DISK" value={pct(n.disk, n.maxdisk)} />
               </div>
             ))}
+          </div>
+
+          <div className={styles.metricsSection}>
+            <div className={styles.sectionTitle}>
+              Fleet Metrics <span className={styles.sectionSub}>· Grafana / Prometheus</span>
+            </div>
+            <div className={styles.grafanaGrid}>
+              <GrafanaPanel uid="gpu-fleet-homelab" panelId={5} />
+              <GrafanaPanel uid="gpu-fleet-homelab" panelId={6} />
+              <GrafanaPanel uid="gpu-fleet-homelab" panelId={11} />
+              <GrafanaPanel uid="gpu-fleet-homelab" panelId={12} />
+            </div>
           </div>
 
           <div className={styles.guestToolbar}>
