@@ -20,6 +20,7 @@ import { ClusterPanel } from './components/Cluster/ClusterPanel'
 import { ServicesPanel } from './components/Services/ServicesPanel'
 import { ScriptsPanel } from './components/Scripts/ScriptsPanel'
 import { ScriptCatalogPanel } from './components/ScriptCatalog/ScriptCatalogPanel'
+import { FileManagerPanel } from './components/FileManager/FileManagerPanel'
 import './styles/app.scss'
 
 const store = new AppStore()
@@ -332,12 +333,7 @@ export const App: React.FC = observer(() => {
               body="Visual structure builder coming in Phase 2 — port of the xyflow-based diagram tool from claude-dhb, generalized for rect / circle / group shapes with nesting + a saved diagram library."
             />
           )}
-          {primaryTab === 'files' && (
-            <PlaceholderPanel
-              title="Files"
-              body="The Files panel will be extracted from the multi-panel terminal layout and rendered here as a top-level workspace tab."
-            />
-          )}
+          {primaryTab === 'files' && <FileManagerPanel />}
           {primaryTab === 'monitor' && (
             <PlaceholderPanel
               title="Monitor"
