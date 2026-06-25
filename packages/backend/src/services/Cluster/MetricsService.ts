@@ -33,7 +33,7 @@ export class MetricsService {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs)
     try {
       const resp = await fetch(url, { signal: controller.signal })
-      const data = await resp.json()
+      const data = (await resp.json()) as any
       if (!resp.ok || data?.status === 'error') {
         throw new Error(`Prometheus ${path}: ${data?.error || resp.status}`)
       }
