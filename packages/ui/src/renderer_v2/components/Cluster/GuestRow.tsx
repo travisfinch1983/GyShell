@@ -19,14 +19,49 @@ export interface GuestRowHandlers {
   onGpu: (g: ClusterGuest) => void
 }
 
-/** A small OS glyph from the PVE ostype. */
-function osGlyph(ostype?: string): { icon: string; label: string } {
+/**
+ * PVE ostype → distro SVG (Simple Icons, CC0, served from /os/ by Vite). Rendered as a
+ * CSS mask so the monochrome silhouette tints to the theme color on the dark UI.
+ */
+const OS_ICON_MAP: Record<string, { file: string; name: string }> = {
+  debian: { file: 'debian-linux.svg', name: 'Debian' },
+  ubuntu: { file: 'ubuntu-linux.svg', name: 'Ubuntu' },
+  alpine: { file: 'alpine-linux.svg', name: 'Alpine' },
+  fedora: { file: 'fedora.svg', name: 'Fedora' },
+  centos: { file: 'centos.svg', name: 'CentOS' },
+  archlinux: { file: 'arch-linux.svg', name: 'Arch' },
+  nixos: { file: 'nixos.svg', name: 'NixOS' },
+  opensuse: { file: 'opensuse.svg', name: 'openSUSE' },
+  gentoo: { file: 'gentoo-linux.svg', name: 'Gentoo' },
+  devuan: { file: 'linux.svg', name: 'Devuan' },
+  unmanaged: { file: 'linux.svg', name: 'Unmanaged' },
+  l26: { file: 'linux.svg', name: 'Linux' },
+  l24: { file: 'linux.svg', name: 'Linux' },
+  win11: { file: 'windows.svg', name: 'Windows 11' },
+  win10: { file: 'windows.svg', name: 'Windows 10' },
+  win8: { file: 'windows.svg', name: 'Windows 8' },
+  win7: { file: 'windows.svg', name: 'Windows 7' },
+  w2k19: { file: 'windows.svg', name: 'Windows Server 2019' },
+  w2k22: { file: 'windows.svg', name: 'Windows Server 2022' },
+  wxp: { file: 'windows.svg', name: 'Windows XP' },
+}
+function osInfo(ostype?: string): { file: string; name: string } {
   const o = (ostype || '').toLowerCase()
-  if (o.startsWith('win')) return { icon: '🪟', label: ostype || 'windows' }
-  if (['debian', 'ubuntu', 'alpine', 'archlinux', 'fedora', 'centos', 'gentoo', 'opensuse', 'l26', 'nixos'].some((d) => o.includes(d)))
-    return { icon: '🐧', label: ostype || 'linux' }
-  if (o === 'l24') return { icon: '🐧', label: 'linux 2.4' }
-  return { icon: '🖥️', label: ostype || 'unknown' }
+  if (OS_ICON_MAP[o]) return OS_ICON_MAP[o]
+  if (o.startsWith('win')) return { file: 'windows.svg', name: ostype || 'Windows' }
+  return { file: 'linux.svg', name: ostype || 'Linux' }
+}
+
+const OsIcon: React.FC<{ ostype?: string }> = ({ ostype }) => {
+  const info = osInfo(ostype)
+  const url = `url("/os/${info.file}")`
+  return (
+    <span
+      className={styles.osIcon}
+      title={info.name}
+      style={{ WebkitMaskImage: url, maskImage: url }}
+    />
+  )
 }
 
 const CMODES = ['tty', 'console', 'shell']
@@ -53,7 +88,6 @@ export const GuestRow: React.FC<{
   const template = clusterStore.getTemplate(isLxc ? 'lxc' : 'qemu')
 
   const gpuAssigned = clusterStore.gpuAssignments?.[String(g.vmid)]?.gpus?.length ?? 0
-  const os = osGlyph(g.ostype)
   const privileged = isLxc && g.unprivileged === 0
   const isAi = clusterStore.isAi(g.vmid)
 
@@ -64,7 +98,7 @@ export const GuestRow: React.FC<{
           {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
         </button>
         <span className={`${styles.dot} ${running ? styles.ok : styles.idle}`} />
-        <span className={styles.osIcon} title={os.label}>{os.icon}</span>
+        <OsIcon ostype={g.ostype} />
         <span className={styles.gVmid}>{g.vmid}</span>
         <span className={`${styles.gName} ${isAi ? styles.aiName : ''}`}>{g.name ?? '—'}</span>
         {privileged && <ShieldAlert size={13} className={styles.shield} aria-label="Privileged" />}

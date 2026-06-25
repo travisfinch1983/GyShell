@@ -258,7 +258,12 @@
   &:hover:not(:disabled) { color: var(--fg); }
   &:disabled { opacity: 0.5; }
 }
-.osIcon { font-size: 13px; line-height: 1; flex: 0 0 auto; }
+.osIcon {
+  width: 15px; height: 15px; flex: 0 0 auto; display: inline-block;
+  background-color: var(--fg-muted);
+  mask-size: contain; mask-repeat: no-repeat; mask-position: center;
+  -webkit-mask-size: contain; -webkit-mask-repeat: no-repeat; -webkit-mask-position: center;
+}
 .shield { color: #e0a832; flex: 0 0 auto; }
 .aiBadge {
   font-size: 9px; font-weight: 700; letter-spacing: 0.05em; padding: 1px 5px; border-radius: 8px;
