@@ -1,4 +1,4 @@
-import { WebSocket } from 'ws'
+import * as WS from 'ws'
 
 /**
  * CatalogInstallService — runs a Helper-Scripts installer on a PVE node and streams the
@@ -24,7 +24,7 @@ export interface StartInstallOptions {
 export class CatalogInstallService {
   private readonly wsBase: string
   private readonly publish: Publish
-  private readonly sessions = new Map<string, WebSocket>()
+  private readonly sessions = new Map<string, WS.WebSocket>()
   private seq = 0
 
   constructor(opts: { publish: Publish; proxlabBase?: string }) {
@@ -36,7 +36,7 @@ export class CatalogInstallService {
   start({ host, command, cols = 120, rows = 30 }: StartInstallOptions): { id: string } {
     if (!host) throw new Error('host is required')
     const id = `ci-${++this.seq}-${Date.now()}`
-    const sock = new WebSocket(`${this.wsBase}/ws`)
+    const sock = new WS.WebSocket(`${this.wsBase}/ws`)
     const emit = (data: string) => this.publish('catalogInstall:data', { id, data })
     const exit = (code: number) => this.publish('catalogInstall:exit', { id, code })
 
@@ -78,11 +78,11 @@ export class CatalogInstallService {
 
   input(id: string, data: string): void {
     const s = this.sessions.get(id)
-    if (s && s.readyState === WebSocket.OPEN) s.send(JSON.stringify({ type: 'input', data }))
+    if (s && s.readyState === WS.WebSocket.OPEN) s.send(JSON.stringify({ type: 'input', data }))
   }
   resize(id: string, cols: number, rows: number): void {
     const s = this.sessions.get(id)
-    if (s && s.readyState === WebSocket.OPEN) s.send(JSON.stringify({ type: 'resize', cols, rows }))
+    if (s && s.readyState === WS.WebSocket.OPEN) s.send(JSON.stringify({ type: 'resize', cols, rows }))
   }
   close(id: string): void {
     const s = this.sessions.get(id)
