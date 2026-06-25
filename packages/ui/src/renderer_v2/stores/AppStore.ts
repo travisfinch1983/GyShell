@@ -2531,8 +2531,9 @@ export class AppStore {
         structuredOutputMode: 'auto',
         supportsStructuredOutput: false,
         supportsObjectToolChoice: false,
-        // Unprobed — capability profile filled in when the user opens/saves the model.
-        profile: { imageInputs: false, textOutputs: false, supportsStructuredOutput: false, supportsObjectToolChoice: false, testedAt: Date.now(), ok: false, error: 'Not yet probed' },
+        // Listed by the API's /v1/models, so treat as a reachable text model (shows
+        // Active). Image/structured capability is left unprobed until the model is opened.
+        profile: { imageInputs: false, textOutputs: true, supportsStructuredOutput: false, supportsObjectToolChoice: false, testedAt: Date.now(), ok: true },
       } as any)
       added++
     }
