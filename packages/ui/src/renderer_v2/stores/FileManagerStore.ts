@@ -70,7 +70,10 @@ export class FileManagerStore {
     try {
       const cfg = (await this.cluster().request('GET', '/api/file-manager/config')) as any
       const tabs = cfg?.tabs ?? {}
-      const keys = Object.keys(tabs)
+      // Only filesystem-browse roots — the download sub-tabs (hf-downloader/civitai/dl-queue)
+      // are deferred to the native downloader port, not browseable here.
+      const DOWNLOAD_TABS = new Set(['hf-downloader', 'civitai', 'dl-queue'])
+      const keys = Object.keys(tabs).filter((k) => !DOWNLOAD_TABS.has(k) && tabs[k]?.basePath)
       runInAction(() => {
         this.tabs = tabs
         this.tabKeys = keys
