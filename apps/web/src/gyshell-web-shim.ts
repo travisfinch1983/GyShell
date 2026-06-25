@@ -96,6 +96,11 @@ const gyshellApi = {
     isSameMachine: async () => false,
   },
 
+  cluster: {
+    // Backend-proxied (rule #1): the backend fetches ProxLab/PVE, never the browser.
+    getStatus: () => rpc('cluster:getStatus'),
+  },
+
   windowing: {
     openDetached: noop,
     onMainWindowClosing: noopCleanup,

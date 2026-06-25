@@ -8,6 +8,7 @@ import { UIHistoryService } from '../../services/UIHistoryService'
 import { ChatHistoryService } from '../../services/ChatHistoryService'
 import { GatewayService } from '../../services/Gateway/GatewayService'
 import { WebSocketGatewayAdapter } from '../../services/Gateway/WebSocketGatewayAdapter'
+import { clusterService } from '../../services/Cluster/ClusterService'
 import {
   WebSocketGatewayControlService,
   resolveWsGatewayAccessFromHost,
@@ -166,6 +167,9 @@ export async function startGyBackend(): Promise<void> {
           allowLocalhostWithoutToken: true
         },
         ipFilter,
+        clusterBridge: {
+          getStatus: () => clusterService.getStatus()
+        },
         terminalBridge: {
           listTerminals: () =>
             terminalService.getDisplayTerminals().map((terminal) => ({
