@@ -3,9 +3,11 @@ import { X, Copy, Check, Play, Save, Loader2 } from 'lucide-react'
 import {
   scriptCatalogStore as store,
   buildInstallCommand,
+  buildTemplateInstall,
   type CatalogScript,
   type SchemaField,
   type ClusterData,
+  type NodeTemplate,
 } from '../../stores/ScriptCatalogStore'
 import styles from './ScriptCatalog.module.scss'
 
@@ -231,13 +233,20 @@ const OptionsForm: React.FC<{
 }
 
 /* ─── Detail modal (full parity) ─── */
-export const DetailModal: React.FC<{ s: CatalogScript; onClose: () => void; onRun: (nodeIp: string, nodeName: string, cmd: string) => void }> = ({ s, onClose, onRun }) => {
+export const DetailModal: React.FC<{
+  s: CatalogScript
+  onClose: () => void
+  onRun: (nodeIp: string, nodeName: string, command: string, setup?: { path: string; content: string }) => void
+}> = ({ s, onClose, onRun }) => {
   const [defaults, setDefaults] = useState<{ global: Vals; app: Vals; hasGlobal: boolean; hasApp: boolean } | null>(null)
   const [vals, setVals] = useState<Vals>({})
   const [optsOpen, setOptsOpen] = useState(false)
   const [node, setNode] = useState('') // ip
   const [copied, setCopied] = useState(false)
   const [savedApp, setSavedApp] = useState(false)
+  const [templates, setTemplates] = useState<NodeTemplate[]>([])
+  const [tplLoading, setTplLoading] = useState(false)
+  const [selectedTpl, setSelectedTpl] = useState('') // volid, '' = script default (auto)
 
   useEffect(() => {
     void (async () => {
@@ -247,6 +256,18 @@ export const DetailModal: React.FC<{ s: CatalogScript; onClose: () => void; onRu
       setVals(seedValues(store.schema, d, store.clusterData))
     })()
   }, [s.slug])
+
+  // Load templates for the chosen node (native pveam over SSH), reset selection on node change.
+  useEffect(() => {
+    setSelectedTpl('')
+    setTemplates([])
+    if (!node) return
+    setTplLoading(true)
+    void store
+      .listNodeTemplates(node)
+      .then(setTemplates)
+      .finally(() => setTplLoading(false))
+  }, [node])
 
   const scriptDefs: Vals = {
     var_cpu: String(s.resources?.cpu ?? ''),
@@ -272,6 +293,18 @@ export const DetailModal: React.FC<{ s: CatalogScript; onClose: () => void; onRu
     await store.saveAppDefaults(s.slug, vals)
     setSavedApp(true)
     setTimeout(() => setSavedApp(false), 2000)
+  }
+  const doRun = () => {
+    if (!node || !s.installUrl) return
+    const tpl = templates.find((t) => t.volid === selectedTpl)
+    if (tpl) {
+      // custom template: point template storage at it + force CUSTOM_TEMPLATE via the wrapper
+      const runVals = { ...vals, var_template_storage: tpl.storage }
+      const { command, setup } = buildTemplateInstall(s.installUrl, runVals, nodeName, tpl.name)
+      onRun(node, nodeName || node, command, setup)
+    } else {
+      onRun(node, nodeName || node, buildInstallCommand(s.installUrl, vals, nodeName))
+    }
   }
 
   return (
@@ -301,12 +334,33 @@ export const DetailModal: React.FC<{ s: CatalogScript; onClose: () => void; onRu
               <option value="">Select a node…</option>
               {store.nodes.map((n) => <option key={n.ip} value={n.ip}>{n.node} ({n.ip})</option>)}
             </select>
-            <button className={styles.runBtn} disabled={!node} onClick={() => onRun(node, nodeName || node, cmd)}>
+            <button className={styles.runBtn} disabled={!node} onClick={() => doRun()}>
               <Play size={13} /> Run Script
             </button>
           </div>
 
-          {/* Live command */}
+          {/* OS template picker (custom Debian base, etc.) */}
+          <div className={styles.runRow}>
+            <select
+              className={styles.nodeSelect}
+              value={selectedTpl}
+              disabled={!node || tplLoading}
+              onChange={(e) => setSelectedTpl(e.target.value)}
+              title="OS template — defaults to the script's auto-selected template"
+            >
+              <option value="">{!node ? 'Select a node first' : tplLoading ? 'Loading templates…' : 'OS template: script default (auto)'}</option>
+              {templates.map((t) => (
+                <option key={t.volid} value={t.volid}>{t.storage}: {t.name}</option>
+              ))}
+            </select>
+          </div>
+          {selectedTpl && (
+            <div className={styles.note}>
+              Using custom template <b>{templates.find((t) => t.volid === selectedTpl)?.name}</b> — applied on Run via AI-Lab's patched build.func (not reflected in the copyable command below).
+            </div>
+          )}
+
+          {/* Live command (standard auto-template form, for copy/paste) */}
           <div className={styles.cmdRow}>
             <code className={styles.cmd}>{cmd}</code>
             <button className={styles.copyBtn} onClick={copy}>{copied ? <Check size={13} /> : <Copy size={13} />}</button>

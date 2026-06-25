@@ -16,6 +16,15 @@ export interface StartInstallOptions {
   command: string // full var-prefixed install command
   cols?: number
   rows?: number
+  // optional helper script written to the node (via SFTP) before the command runs —
+  // used by the custom-OS-template flow to drop a patched-build.func wrapper.
+  setup?: { path: string; content: string }
+}
+
+export interface NodeTemplate {
+  volid: string // e.g. local:vztmpl/debian-13-standard_13.1-1_amd64.tar.zst
+  storage: string // local
+  name: string // debian-13-standard_13.1-1_amd64.tar.zst
 }
 
 interface Session {
@@ -42,7 +51,7 @@ export class CatalogInstallService {
     return this.privateKey
   }
 
-  start({ host, command, cols = 120, rows = 30 }: StartInstallOptions): { id: string } {
+  start({ host, command, cols = 120, rows = 30, setup }: StartInstallOptions): { id: string } {
     if (!host) throw new Error('host is required')
     const id = `ci-${++this.seq}-${Date.now()}`
     const emit = (data: string) => this.publish('catalogInstall:data', { id, data })
@@ -60,8 +69,7 @@ export class CatalogInstallService {
     const conn = new ssh2.Client()
     this.sessions.set(id, { conn })
 
-    conn.on('ready', () => {
-      emit('\x1b[36m▶ connected — running installer…\x1b[0m\r\n')
+    const openShell = () => {
       conn.shell({ term: 'xterm-256color', cols, rows } as any, (err, stream) => {
         if (err) {
           emit(`\r\n\x1b[31mShell error: ${err.message}\x1b[0m\r\n`)
@@ -84,6 +92,31 @@ export class CatalogInstallService {
         })
         stream.write(command + '\n')
       })
+    }
+
+    conn.on('ready', () => {
+      emit('\x1b[36m▶ connected — running installer…\x1b[0m\r\n')
+      if (setup) {
+        conn.sftp((err, sftp) => {
+          if (err) {
+            emit(`\r\n\x1b[31mSFTP error: ${err.message}\x1b[0m\r\n`)
+            exit(1)
+            conn.end()
+            return
+          }
+          sftp.writeFile(setup.path, setup.content, { mode: 0o700 }, (werr) => {
+            if (werr) {
+              emit(`\r\n\x1b[31mSetup-file write error: ${werr.message}\x1b[0m\r\n`)
+              exit(1)
+              conn.end()
+              return
+            }
+            openShell()
+          })
+        })
+      } else {
+        openShell()
+      }
     })
     conn.on('error', (e: Error) => {
       emit(`\r\n\x1b[31mSSH error: ${e.message}\x1b[0m\r\n`)
@@ -125,5 +158,57 @@ export class CatalogInstallService {
       }
       this.sessions.delete(id)
     }
+  }
+
+  /** List LXC templates available on a node's vztmpl-capable storages (native `pveam`). */
+  listTemplates(host: string): Promise<NodeTemplate[]> {
+    return new Promise((resolve, reject) => {
+      let key: Buffer
+      try {
+        key = this.loadKey()
+      } catch {
+        reject(new Error(`AI-Lab SSH key not found at ${this.keyPath}`))
+        return
+      }
+      const conn = new ssh2.Client()
+      // For each storage that can hold container templates, list its vztmpl volumes.
+      const cmd =
+        `for s in $(pvesm status --content vztmpl 2>/dev/null | awk 'NR>1{print $1}'); do ` +
+        `pveam list "$s" 2>/dev/null | awk 'NR>1{print $1}'; done`
+      let out = ''
+      let errOut = ''
+      const done = (fn: () => void) => {
+        try {
+          conn.end()
+        } catch {
+          /* ignore */
+        }
+        fn()
+      }
+      conn.on('ready', () => {
+        conn.exec(cmd, (err, stream) => {
+          if (err) {
+            done(() => reject(err))
+            return
+          }
+          stream.on('data', (d: Buffer) => (out += d.toString('utf8')))
+          stream.stderr.on('data', (d: Buffer) => (errOut += d.toString('utf8')))
+          stream.on('close', () => {
+            const templates: NodeTemplate[] = out
+              .split('\n')
+              .map((l) => l.trim())
+              .filter((l) => l.includes(':vztmpl/'))
+              .map((volid) => {
+                const storage = volid.split(':')[0]
+                const name = volid.split('/').pop() || volid
+                return { volid, storage, name }
+              })
+            done(() => resolve(templates))
+          })
+        })
+      })
+      conn.on('error', (e: Error) => reject(new Error(`${e.message}${errOut ? ' / ' + errOut : ''}`)))
+      conn.connect({ host, port: 22, username: this.user, privateKey: key, readyTimeout: 12000, hostVerifier: () => true })
+    })
   }
 }

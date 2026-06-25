@@ -183,7 +183,8 @@ export async function startGyBackend(): Promise<void> {
           start: (opts) => catalogInstallService.start(opts),
           input: (id, data) => catalogInstallService.input(id, data),
           resize: (id, cols, rows) => catalogInstallService.resize(id, cols, rows),
-          close: (id) => catalogInstallService.close(id)
+          close: (id) => catalogInstallService.close(id),
+          listTemplates: (host) => catalogInstallService.listTemplates(host)
         },
         metricsBridge: {
           queryRange: (query, rangeSeconds, stepSeconds) => metricsService.queryRange(query, rangeSeconds, stepSeconds),

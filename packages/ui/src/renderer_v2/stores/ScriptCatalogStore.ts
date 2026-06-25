@@ -62,8 +62,14 @@ export interface PveNode {
   ip: string
 }
 
-/** Build the var-prefixed install command (mirrors ProxLab updateDisplayedCommand / runScriptOnNode). */
-export function buildInstallCommand(installUrl: string, vals: Record<string, string>, forNode?: string): string {
+export interface NodeTemplate {
+  volid: string
+  storage: string
+  name: string
+}
+
+/** The `mode=generated var_x='..' ` env prefix shared by both run paths. */
+export function buildVarPrefix(vals: Record<string, string>, forNode?: string): string {
   const parts: string[] = []
   for (const [key, val] of Object.entries(vals)) {
     if (!val) continue
@@ -79,8 +85,42 @@ export function buildInstallCommand(installUrl: string, vals: Record<string, str
     }
     if (key.startsWith('var_')) parts.push(`${key}='${val.replace(/'/g, "'\\''")}'`)
   }
-  const prefix = parts.length ? `mode=generated ${parts.join(' ')} ` : ''
-  return `${prefix}bash -c "$(curl -fsSL ${installUrl})"`
+  return parts.length ? `mode=generated ${parts.join(' ')} ` : ''
+}
+
+/** Standard install command (auto-selected OS template). */
+export function buildInstallCommand(installUrl: string, vals: Record<string, string>, forNode?: string): string {
+  return `${buildVarPrefix(vals, forNode)}bash -c "$(curl -fsSL ${installUrl})"`
+}
+
+const sq = (s: string) => s.replace(/'/g, '')
+
+/**
+ * Custom-OS-template install: returns a command + a setup wrapper to SFTP onto the node.
+ * The wrapper fetches upstream build.func, patches its template-selection to honor
+ * CUSTOM_TEMPLATE, rewrites the script's build.func source line to the patched copy, and runs it.
+ */
+export function buildTemplateInstall(
+  installUrl: string,
+  vals: Record<string, string>,
+  forNode: string | undefined,
+  templateName: string,
+): { command: string; setup: { path: string; content: string } } {
+  const prefix = buildVarPrefix(vals, forNode)
+  const path = `/tmp/ailab-install-${Date.now()}.sh`
+  const content = [
+    '#!/usr/bin/env bash',
+    'set -e',
+    `export CUSTOM_TEMPLATE='${sq(templateName)}'`,
+    'BF="$(mktemp)"',
+    "curl -fsSL 'https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func' \\",
+    "  | sed -E 's/\\bTEMPLATE=\"(\\$\\{LOCAL_TEMPLATES\\[-1\\]\\}|\\$ONLINE_TEMPLATE|\\$\\{ONLINE_TEMPLATES\\[-1\\]\\}|\\$fallback_template)\"/TEMPLATE=\"${CUSTOM_TEMPLATE:-\\1}\"/g' > \"$BF\"",
+    `CT="$(curl -fsSL '${sq(installUrl)}')"`,
+    'CT="$(printf \'%s\' "$CT" | sed -E "s#source <\\(curl -fsSL [^)]*/misc/build\\.func\\)#source $BF#")"',
+    'eval "$CT"',
+    '',
+  ].join('\n')
+  return { command: `${prefix}bash ${path}`, setup: { path, content } }
 }
 
 export class ScriptCatalogStore {
@@ -89,6 +129,7 @@ export class ScriptCatalogStore {
   clusterData: ClusterData = {}
   nodes: PveNode[] = []
   formDepsLoaded = false
+  nodeTemplates: Record<string, NodeTemplate[]> = {} // keyed by node IP
   catalog: Catalog | null = null
   loading = false
   error: string | null = null
@@ -205,6 +246,19 @@ export class ScriptCatalogStore {
   }
   async saveAppDefaults(slug: string, vals: Record<string, string>): Promise<void> {
     await this.cluster().request('PUT', `/api/script-catalog/defaults/${encodeURIComponent(slug)}`, vals)
+  }
+
+  /** LXC templates available on a node (native `pveam` over AI-Lab's SSH key), cached per node. */
+  async listNodeTemplates(host: string): Promise<NodeTemplate[]> {
+    if (this.nodeTemplates[host]) return this.nodeTemplates[host]
+    const api = (window as any).gyshell?.catalogInstall
+    if (!api?.listTemplates) return []
+    const r = await api.listTemplates(host)
+    const list: NodeTemplate[] = Array.isArray(r) ? r : (r?.templates ?? [])
+    runInAction(() => {
+      this.nodeTemplates[host] = list
+    })
+    return list
   }
 
   get filteredScripts(): CatalogScript[] {

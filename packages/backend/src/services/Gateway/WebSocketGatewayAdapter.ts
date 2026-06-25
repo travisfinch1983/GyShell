@@ -27,6 +27,7 @@ type WebSocketRpcMethod =
   | 'catalogInstall:input'
   | 'catalogInstall:resize'
   | 'catalogInstall:close'
+  | 'catalogInstall:listTemplates'
   | 'filesystem:list'
   | 'filesystem:readTextFile'
   | 'filesystem:readFileBase64'
@@ -128,10 +129,11 @@ export interface WebSocketGatewayAdapterOptions {
     request: (method: string, path: string, body?: unknown) => Promise<unknown>;
   };
   catalogInstallBridge?: {
-    start: (opts: { host: string; command: string; cols?: number; rows?: number }) => { id: string };
+    start: (opts: { host: string; command: string; cols?: number; rows?: number; setup?: { path: string; content: string } }) => { id: string };
     input: (id: string, data: string) => void;
     resize: (id: string, cols: number, rows: number) => void;
     close: (id: string) => void;
+    listTemplates: (host: string) => Promise<unknown>;
   };
   metricsBridge?: {
     queryRange: (query: string, rangeSeconds?: number, stepSeconds?: number) => Promise<unknown>;
@@ -670,12 +672,21 @@ export class WebSocketGatewayAdapter {
           throw new WebSocketRpcError('METHOD_NOT_FOUND', 'catalogInstall:start is not available on this websocket gateway.');
         }
         const p = (params ?? {}) as Record<string, unknown>;
+        const setup = p.setup && typeof p.setup === 'object'
+          ? { path: String((p.setup as any).path ?? ''), content: String((p.setup as any).content ?? '') }
+          : undefined;
         return this.options.catalogInstallBridge.start({
           host: String(p.host ?? ''),
           command: String(p.command ?? ''),
           cols: typeof p.cols === 'number' ? p.cols : undefined,
           rows: typeof p.rows === 'number' ? p.rows : undefined,
+          setup,
         });
+      }
+      case 'catalogInstall:listTemplates': {
+        if (!this.options.catalogInstallBridge) throw new WebSocketRpcError('METHOD_NOT_FOUND', 'catalogInstall:listTemplates is not available.');
+        const p = (params ?? {}) as Record<string, unknown>;
+        return await this.options.catalogInstallBridge.listTemplates(String(p.host ?? ''));
       }
       case 'catalogInstall:input': {
         if (!this.options.catalogInstallBridge) throw new WebSocketRpcError('METHOD_NOT_FOUND', 'catalogInstall:input is not available.');

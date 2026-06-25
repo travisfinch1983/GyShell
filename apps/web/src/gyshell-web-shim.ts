@@ -105,8 +105,9 @@ const gyshellApi = {
 
   // Helper-Scripts installer stream (backend relays to ProxLab's node PTY; rule #1).
   catalogInstall: {
-    start: (params: { host: string; command: string; cols?: number; rows?: number }) =>
+    start: (params: { host: string; command: string; cols?: number; rows?: number; setup?: { path: string; content: string } }) =>
       rpc('catalogInstall:start', params),
+    listTemplates: (host: string) => rpc('catalogInstall:listTemplates', { host }),
     input: (id: string, data: string) => rpc('catalogInstall:input', { id, data }),
     resize: (id: string, cols: number, rows: number) => rpc('catalogInstall:resize', { id, cols, rows }),
     close: (id: string) => rpc('catalogInstall:close', { id }),

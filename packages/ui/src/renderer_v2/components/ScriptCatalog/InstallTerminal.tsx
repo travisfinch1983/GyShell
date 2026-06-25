@@ -10,6 +10,7 @@ export interface InstallSession {
   nodeName: string
   hostIp: string
   command: string
+  setup?: { path: string; content: string }
 }
 
 /** Live installer terminal — streams via the catalogInstall relay (backend → ProxLab node PTY). */
@@ -64,7 +65,7 @@ export const InstallTerminal: React.FC<{ session: InstallSession; onClose: () =>
     window.addEventListener('resize', onWinResize)
 
     void api
-      .start({ host: session.hostIp, command: session.command, cols: term.cols, rows: term.rows })
+      .start({ host: session.hostIp, command: session.command, cols: term.cols, rows: term.rows, setup: session.setup })
       .then((res: { id: string }) => {
         if (!alive) {
           if (res?.id) void api.close(res.id)

@@ -107,10 +107,10 @@ export const ScriptCatalogPanel: React.FC = observer(() => {
         <DetailModal
           s={detail}
           onClose={() => setDetail(null)}
-          onRun={(hostIp, nodeName, command) => {
+          onRun={(hostIp, nodeName, command, setup) => {
             const name = detail.name
             setDetail(null)
-            setInstall({ scriptName: name, hostIp, nodeName, command })
+            setInstall({ scriptName: name, hostIp, nodeName, command, setup })
           }}
         />
       )}
