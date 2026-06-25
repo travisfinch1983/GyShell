@@ -1,6 +1,6 @@
 import React from 'react'
 import { observer } from 'mobx-react-lite'
-import { ChevronRight, ChevronDown, MoreVertical, Settings, Cpu } from 'lucide-react'
+import { ChevronRight, ChevronDown, MoreVertical, Settings, Cpu, ShieldAlert } from 'lucide-react'
 import { clusterStore, type ClusterGuest } from '../../stores/ClusterStore'
 import { MetricChart } from './MetricChart'
 import { resolveQuery, type GearEdit } from '../../stores/metricTemplates'
@@ -12,9 +12,24 @@ export interface GuestRowHandlers {
   onEditMemory: (g: ClusterGuest) => void
   onResizeDisk: (g: ClusterGuest) => void
   onEditOrder: (g: ClusterGuest) => void
+  onEditTty: (g: ClusterGuest) => void
+  onFeatures: (g: ClusterGuest) => void
+  onEnv: (g: ClusterGuest) => void
   onMigrate: (g: ClusterGuest) => void
   onGpu: (g: ClusterGuest) => void
 }
+
+/** A small OS glyph from the PVE ostype. */
+function osGlyph(ostype?: string): { icon: string; label: string } {
+  const o = (ostype || '').toLowerCase()
+  if (o.startsWith('win')) return { icon: '🪟', label: ostype || 'windows' }
+  if (['debian', 'ubuntu', 'alpine', 'archlinux', 'fedora', 'centos', 'gentoo', 'opensuse', 'l26', 'nixos'].some((d) => o.includes(d)))
+    return { icon: '🐧', label: ostype || 'linux' }
+  if (o === 'l24') return { icon: '🐧', label: 'linux 2.4' }
+  return { icon: '🖥️', label: ostype || 'unknown' }
+}
+
+const CMODES = ['tty', 'console', 'shell']
 
 /**
  * A single guest as a 2-row entry (coding standard #3):
@@ -38,16 +53,22 @@ export const GuestRow: React.FC<{
   const template = clusterStore.getTemplate(isLxc ? 'lxc' : 'qemu')
 
   const gpuAssigned = clusterStore.gpuAssignments?.[String(g.vmid)]?.gpus?.length ?? 0
+  const os = osGlyph(g.ostype)
+  const privileged = isLxc && g.unprivileged === 0
+  const isAi = clusterStore.isAi(g.vmid)
 
   return (
-    <div className={`${styles.guestEntry} ${busy ? styles.rowBusy : ''}`}>
+    <div className={`${styles.guestEntry} ${busy ? styles.rowBusy : ''} ${isAi ? styles.aiEntry : ''}`}>
       <div className={styles.guestRow1}>
         <button className={styles.expandBtn} onClick={onToggleExpand} title="Metrics">
           {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
         </button>
         <span className={`${styles.dot} ${running ? styles.ok : styles.idle}`} />
+        <span className={styles.osIcon} title={os.label}>{os.icon}</span>
         <span className={styles.gVmid}>{g.vmid}</span>
-        <span className={styles.gName}>{g.name ?? '—'}</span>
+        <span className={`${styles.gName} ${isAi ? styles.aiName : ''}`}>{g.name ?? '—'}</span>
+        {privileged && <ShieldAlert size={13} className={styles.shield} aria-label="Privileged" />}
+        {isAi && <span className={styles.aiBadge}>AI</span>}
         <span className={styles.gNode}>{g.node}</span>
         <span className={`${styles.status} ${running ? styles.ok : styles.idle}`}>{g.status ?? '—'}</span>
 
@@ -77,6 +98,38 @@ export const GuestRow: React.FC<{
             />
             console
           </label>
+        )}
+
+        {isLxc && (
+          <button className={styles.ctrlBtn} disabled={busy} title="TTY count" onClick={() => h.onEditTty(g)}>
+            tty:{g.tty ?? 2}
+          </button>
+        )}
+
+        {isLxc && (
+          <select
+            className={styles.ctrlSelect}
+            value={g.cmode ?? 'tty'}
+            disabled={busy}
+            title="Console mode"
+            onChange={(e) => clusterStore.setConfig(g.vmid, { cmode: e.target.value })}
+          >
+            {CMODES.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        )}
+
+        {isLxc && (
+          <button className={styles.ctrlBtn} disabled={busy} title="LXC features" onClick={() => h.onFeatures(g)}>
+            features
+          </button>
+        )}
+
+        {isLxc && (
+          <button className={styles.ctrlBtn} disabled={busy} title="Environment variables" onClick={() => h.onEnv(g)}>
+            env{g.lxcenv && Object.keys(g.lxcenv).length ? ` ·${Object.keys(g.lxcenv).length}` : ''}
+          </button>
         )}
 
         <label className={styles.ctrl} title="Protection (prevent deletion)">

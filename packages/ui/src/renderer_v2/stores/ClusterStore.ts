@@ -55,6 +55,11 @@ export interface ClusterGuest {
   console?: number
   ostype?: string
   startup?: string
+  unprivileged?: number
+  tty?: number
+  cmode?: string
+  features?: string
+  lxcenv?: Record<string, string>
 }
 
 export interface ClusterStatus {
@@ -106,6 +111,8 @@ export class ClusterStore {
   storages: any[] | null = null
   // Per-category metric templates (LXC / VM rows render from these)
   metricTemplates: Record<MetricCategory, MetricTemplate> = loadTemplates()
+  // vmids that are AI-pool agents (from /api/ai/config) — highlighted in the list
+  aiVmids: Set<number> = new Set()
 
   constructor() {
     makeAutoObservable(this)
@@ -288,6 +295,33 @@ export class ClusterStore {
 
   migrate(vmid: number, body: Record<string, unknown>): Promise<void> {
     return this.run(vmid, () => this.req('POST', `/api/guests/${vmid}/migrate`, body))
+  }
+
+  setFeatures(vmid: number, features: string): Promise<void> {
+    return this.run(vmid, () => this.req('PUT', `/api/guests/${vmid}/features`, { features }))
+  }
+
+  setEnv(vmid: number, vars: Record<string, string>): Promise<void> {
+    return this.run(vmid, () => this.req('PUT', `/api/guests/${vmid}/lxc-env`, { vars }))
+  }
+
+  isAi(vmid: number): boolean {
+    return this.aiVmids.has(vmid)
+  }
+
+  async loadAiConfig(): Promise<void> {
+    try {
+      const cfg = (await this.req('GET', '/api/ai/config')) as any
+      const agents = cfg?.agents ?? {}
+      const ids = Object.values(agents)
+        .map((a: any) => Number(a?.vmid))
+        .filter((n) => Number.isFinite(n))
+      runInAction(() => {
+        this.aiVmids = new Set(ids)
+      })
+    } catch {
+      /* non-fatal */
+    }
   }
 
   setGpuAssignment(vmid: number, body: Record<string, unknown>): Promise<void> {

@@ -6,6 +6,7 @@ import { GrafanaPanel } from './GrafanaPanel'
 import { MigrateModal } from './MigrateModal'
 import { GpuModal } from './GpuModal'
 import { ConfirmModal, EditValueModal } from './ClusterModals'
+import { FeaturesModal, EnvModal } from './GuestConfigModals'
 import { GuestRow, type GuestRowHandlers } from './GuestRow'
 import { MetricTemplateEditor } from './MetricTemplateEditor'
 import { type MetricCategory } from '../../stores/metricTemplates'
@@ -75,7 +76,7 @@ const SortBar: React.FC<{ sort: GuestSort; onSort: (k: GuestSortKey) => void }> 
   </div>
 )
 
-type EditKind = 'cores' | 'memory' | 'disk' | 'order'
+type EditKind = 'cores' | 'memory' | 'disk' | 'order' | 'tty'
 
 export const ClusterPanel: React.FC = observer(() => {
   const [dragNode, setDragNode] = useState<string | null>(null)
@@ -87,10 +88,13 @@ export const ClusterPanel: React.FC = observer(() => {
   const [edit, setEdit] = useState<{ kind: EditKind; guest: ClusterGuest } | null>(null)
   const [confirm, setConfirm] = useState<{ guest: ClusterGuest; action: 'stop' | 'shutdown' | 'reboot' } | null>(null)
   const [tplEditor, setTplEditor] = useState<MetricCategory | null>(null)
+  const [featuresFor, setFeaturesFor] = useState<ClusterGuest | null>(null)
+  const [envFor, setEnvFor] = useState<ClusterGuest | null>(null)
 
   useEffect(() => {
     clusterStore.startPolling(10000)
     clusterStore.loadModalData() // GPU assignment counts shown inline
+    clusterStore.loadAiConfig() // AI-agent vmids for highlighting
     return () => clusterStore.stopPolling()
   }, [])
 
@@ -111,6 +115,9 @@ export const ClusterPanel: React.FC = observer(() => {
     onEditMemory: (g) => setEdit({ kind: 'memory', guest: g }),
     onResizeDisk: (g) => setEdit({ kind: 'disk', guest: g }),
     onEditOrder: (g) => setEdit({ kind: 'order', guest: g }),
+    onEditTty: (g) => setEdit({ kind: 'tty', guest: g }),
+    onFeatures: (g) => setFeaturesFor(g),
+    onEnv: (g) => setEnvFor(g),
     onMigrate: (g) => {
       setMenuVmid(null)
       void clusterStore.loadModalData()
@@ -130,6 +137,7 @@ export const ClusterPanel: React.FC = observer(() => {
     else if (kind === 'disk')
       void clusterStore.resizeDisk(guest.vmid, guest.type === 'qemu' ? 'scsi0' : 'rootfs', value)
     else if (kind === 'order') void clusterStore.setConfig(guest.vmid, { startup: value })
+    else if (kind === 'tty') void clusterStore.setConfig(guest.vmid, { tty: Number(value) })
   }
 
   const editConfig: Record<EditKind, { title: string; label: string; initial: (g: ClusterGuest) => string; hint?: string }> = {
@@ -137,6 +145,7 @@ export const ClusterPanel: React.FC = observer(() => {
     memory: { title: 'Edit memory', label: 'Memory (MB)', initial: (g) => String(g.maxmem ? Math.round(g.maxmem / 1048576) : '') },
     disk: { title: 'Resize disk', label: 'Grow by', initial: () => '+5G', hint: 'Relative size, e.g. +5G or +512M. Disk only grows.' },
     order: { title: 'Startup order', label: 'startup', initial: (g) => String(g.startup ?? 'order=1,up=30'), hint: 'PVE format: order=N,up=SECS;down=SECS' },
+    tty: { title: 'TTY count', label: 'TTYs', initial: (g) => String(g.tty ?? 2), hint: 'Number of ttys (default 2). Reboot to apply.' },
   }
 
   const s = clusterStore.status
@@ -287,6 +296,8 @@ export const ClusterPanel: React.FC = observer(() => {
       {tplEditor && <MetricTemplateEditor category={tplEditor} onClose={() => setTplEditor(null)} />}
       {migrateFor && <MigrateModal guest={migrateFor} onClose={() => setMigrateFor(null)} />}
       {gpuFor && <GpuModal guest={gpuFor} onClose={() => setGpuFor(null)} />}
+      {featuresFor && <FeaturesModal guest={featuresFor} onClose={() => setFeaturesFor(null)} />}
+      {envFor && <EnvModal guest={envFor} onClose={() => setEnvFor(null)} />}
       {edit && (
         <EditValueModal
           title={`${editConfig[edit.kind].title} · ${edit.guest.vmid} (${edit.guest.name ?? ''})`}

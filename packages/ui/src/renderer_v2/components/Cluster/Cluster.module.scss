@@ -252,6 +252,21 @@
   &:hover:not(:disabled) { background: var(--control-bg-hover); color: var(--fg); }
   &:disabled { opacity: 0.5; cursor: default; }
 }
+.ctrlSelect {
+  font-size: 11px; padding: 3px 4px; border-radius: 5px;
+  border: 1px solid var(--border); background: var(--control-bg); color: var(--fg-muted); cursor: pointer;
+  &:hover:not(:disabled) { color: var(--fg); }
+  &:disabled { opacity: 0.5; }
+}
+.osIcon { font-size: 13px; line-height: 1; flex: 0 0 auto; }
+.shield { color: #e0a832; flex: 0 0 auto; }
+.aiBadge {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.05em; padding: 1px 5px; border-radius: 8px;
+  background: color-mix(in srgb, var(--success) 22%, transparent); color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 45%, transparent); flex: 0 0 auto;
+}
+.aiName { color: var(--success); }
+.aiEntry { border-color: color-mix(in srgb, var(--success) 35%, transparent); }
 
 .guestRow2 {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
