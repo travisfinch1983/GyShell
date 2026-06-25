@@ -54,6 +54,24 @@ export interface ClusterStatus {
   timestamp?: number
 }
 
+export type GuestSortKey = 'vmid' | 'name' | 'node' | 'status' | 'cpu' | 'mem'
+export type SortDir = 'asc' | 'desc'
+export interface GuestSort {
+  key: GuestSortKey
+  dir: SortDir
+}
+
+const NODE_ORDER_KEY = 'ai-lab-cluster-node-order'
+
+function loadNodeOrder(): string[] {
+  try {
+    const raw = localStorage.getItem(NODE_ORDER_KEY)
+    return raw ? (JSON.parse(raw) as string[]) : []
+  } catch {
+    return []
+  }
+}
+
 // Kept out of the observable graph on purpose (a timer handle is not UI state).
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -63,36 +81,127 @@ export class ClusterStore {
   error: string | null = null
   lastUpdated: number | null = null
   filter = ''
+  // Persisted, user-defined node card order (by node name).
+  nodeOrder: string[] = loadNodeOrder()
+  ctSort: GuestSort = { key: 'vmid', dir: 'asc' }
+  vmSort: GuestSort = { key: 'vmid', dir: 'asc' }
 
   constructor() {
     makeAutoObservable(this)
   }
 
-  get nodes(): ClusterNode[] {
-    return this.status?.nodes ?? []
+  /**
+   * Nodes in a STABLE display order: user-ordered names first (in saved order),
+   * then any nodes not yet ordered, alphabetically. Without this, PVE returns
+   * nodes in a varying order each poll and the cards appear to shuffle randomly.
+   */
+  get orderedNodes(): ClusterNode[] {
+    const nodes = this.status?.nodes ?? []
+    const byName = new Map(nodes.map((n) => [n.node, n]))
+    const ordered: ClusterNode[] = []
+    for (const name of this.nodeOrder) {
+      const n = byName.get(name)
+      if (n) {
+        ordered.push(n)
+        byName.delete(name)
+      }
+    }
+    const rest = [...byName.values()].sort((a, b) => a.node.localeCompare(b.node))
+    return [...ordered, ...rest]
   }
 
-  get guests(): ClusterGuest[] {
-    return [...(this.status?.containers ?? []), ...(this.status?.vms ?? [])]
+  setNodeOrder(order: string[]): void {
+    this.nodeOrder = order
+    try {
+      localStorage.setItem(NODE_ORDER_KEY, JSON.stringify(order))
+    } catch {
+      /* ignore quota / serialization errors */
+    }
   }
 
-  get filteredGuests(): ClusterGuest[] {
+  /** Move the dragged node so it lands at the dropped-on node's position. */
+  moveNode(fromName: string, toName: string): void {
+    const current = this.orderedNodes.map((n) => n.node)
+    const from = current.indexOf(fromName)
+    const to = current.indexOf(toName)
+    if (from < 0 || to < 0 || from === to) return
+    const [moved] = current.splice(from, 1)
+    current.splice(to, 0, moved)
+    this.setNodeOrder(current)
+  }
+
+  private matchesFilter(g: ClusterGuest): boolean {
     const f = this.filter.trim().toLowerCase()
-    if (!f) return this.guests
-    return this.guests.filter(
-      (g) =>
-        String(g.vmid).includes(f) ||
-        (g.name ?? '').toLowerCase().includes(f) ||
-        (g.node ?? '').toLowerCase().includes(f),
+    if (!f) return true
+    return (
+      String(g.vmid).includes(f) ||
+      (g.name ?? '').toLowerCase().includes(f) ||
+      (g.node ?? '').toLowerCase().includes(f)
     )
   }
 
+  private sortGuests(list: ClusterGuest[], sort: GuestSort): ClusterGuest[] {
+    const dir = sort.dir === 'asc' ? 1 : -1
+    return [...list].sort((a, b) => {
+      let av: number | string
+      let bv: number | string
+      switch (sort.key) {
+        case 'name':
+          av = (a.name ?? '').toLowerCase()
+          bv = (b.name ?? '').toLowerCase()
+          break
+        case 'node':
+          av = (a.node ?? '').toLowerCase()
+          bv = (b.node ?? '').toLowerCase()
+          break
+        case 'status':
+          av = a.status ?? ''
+          bv = b.status ?? ''
+          break
+        case 'cpu':
+          av = a.cpu ?? 0
+          bv = b.cpu ?? 0
+          break
+        case 'mem':
+          av = a.mem ?? 0
+          bv = b.mem ?? 0
+          break
+        default:
+          av = a.vmid
+          bv = b.vmid
+      }
+      if (av < bv) return -1 * dir
+      if (av > bv) return 1 * dir
+      return 0
+    })
+  }
+
+  get containers(): ClusterGuest[] {
+    return this.sortGuests((this.status?.containers ?? []).filter((g) => this.matchesFilter(g)), this.ctSort)
+  }
+
+  get vms(): ClusterGuest[] {
+    return this.sortGuests((this.status?.vms ?? []).filter((g) => this.matchesFilter(g)), this.vmSort)
+  }
+
+  setSort(table: 'ct' | 'vm', key: GuestSortKey): void {
+    const cur = table === 'ct' ? this.ctSort : this.vmSort
+    const next: GuestSort =
+      cur.key === key ? { key, dir: cur.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }
+    if (table === 'ct') this.ctSort = next
+    else this.vmSort = next
+  }
+
+  private get allGuests(): ClusterGuest[] {
+    return [...(this.status?.containers ?? []), ...(this.status?.vms ?? [])]
+  }
+
   get runningCount(): number {
-    return this.guests.filter((g) => g.status === 'running').length
+    return this.allGuests.filter((g) => g.status === 'running').length
   }
 
   get stoppedCount(): number {
-    return this.guests.filter((g) => g.status !== 'running').length
+    return this.allGuests.filter((g) => g.status !== 'running').length
   }
 
   setFilter(value: string): void {

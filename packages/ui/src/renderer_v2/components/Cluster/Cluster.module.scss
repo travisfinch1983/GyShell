@@ -64,8 +64,14 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel-bg);
+  cursor: grab;
+  transition: border-color 0.12s ease, opacity 0.12s ease, box-shadow 0.12s ease;
+  &:active { cursor: grabbing; }
   &.isOffline { opacity: 0.55; }
+  &.dragging { opacity: 0.4; }
+  &.dropTarget { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 }
+.grip { color: var(--fg-faint); flex: 0 0 auto; }
 .nodeTop { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .nodeName { font-weight: 600; font-size: 13px; }
 .nodeIp { color: var(--fg-faint); font-size: 11px; margin-left: auto; font-family: var(--font-mono); }
@@ -88,8 +94,11 @@
   &.crit { background: var(--danger); }
 }
 
-.tableWrap { border: 1px solid var(--border); border-radius: 8px; background: var(--panel-bg); overflow: hidden; }
-.tableHead { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.tableWrap { border: 1px solid var(--border); border-radius: 8px; background: var(--panel-bg); overflow: hidden; margin-bottom: 16px; }
+.guestToolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.tableHead { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--panel-bg-2); }
+.tableTitle { font-weight: 600; font-size: 12px; }
+.tableCount { color: var(--fg-faint); font-weight: 400; }
 .filter {
   flex: 1; max-width: 360px;
   padding: 6px 10px;
@@ -121,6 +130,9 @@
   tr:hover td { background: var(--control-bg); }
 }
 .mono { font-family: var(--font-mono); color: var(--fg-muted); }
+.sortable { cursor: pointer; user-select: none; }
+.sortable:hover { color: var(--fg); }
+.sortArrow { color: var(--accent); font-size: 10px; }
 .typeBadge { font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--control-bg); color: var(--fg-muted); }
 .status {
   font-size: 11px;

@@ -1,7 +1,7 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { RefreshCw, Server } from 'lucide-react'
-import { clusterStore } from '../../stores/ClusterStore'
+import { RefreshCw, Server, GripVertical } from 'lucide-react'
+import { clusterStore, type ClusterGuest, type GuestSort, type GuestSortKey } from '../../stores/ClusterStore'
 import styles from './Cluster.module.scss'
 
 function pct(used?: number, max?: number): number {
@@ -42,7 +42,71 @@ const Metric: React.FC<{ label: string; value: number }> = ({ label, value }) =>
   )
 }
 
+const COLUMNS: Array<{ key: GuestSortKey; label: string }> = [
+  { key: 'vmid', label: 'VMID' },
+  { key: 'name', label: 'Name' },
+  { key: 'node', label: 'Node' },
+  { key: 'status', label: 'Status' },
+  { key: 'cpu', label: 'CPU' },
+  { key: 'mem', label: 'Memory' },
+]
+
+const GuestTable: React.FC<{
+  title: string
+  guests: ClusterGuest[]
+  sort: GuestSort
+  onSort: (key: GuestSortKey) => void
+}> = ({ title, guests, sort, onSort }) => (
+  <div className={styles.tableWrap}>
+    <div className={styles.tableHead}>
+      <span className={styles.tableTitle}>
+        {title} <span className={styles.tableCount}>({guests.length})</span>
+      </span>
+    </div>
+    <div className={styles.tableScroll}>
+      <table className={styles.table}>
+        <thead>
+          <tr>
+            {COLUMNS.map((col) => (
+              <th key={col.key} className={styles.sortable} onClick={() => onSort(col.key)}>
+                {col.label}
+                <span className={styles.sortArrow}>
+                  {sort.key === col.key ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {guests.map((g) => {
+            const running = g.status === 'running'
+            return (
+              <tr key={g.vmid}>
+                <td className={styles.mono}>{g.vmid}</td>
+                <td>{g.name ?? '—'}</td>
+                <td>{g.node ?? '—'}</td>
+                <td>
+                  <span className={`${styles.status} ${running ? styles.ok : styles.idle}`}>
+                    {g.status ?? '—'}
+                  </span>
+                </td>
+                <td className={styles.mono}>{running ? `${Math.round((g.cpu ?? 0) * 100)}%` : '—'}</td>
+                <td className={styles.mono}>
+                  {running ? `${fmtBytes(g.mem)} / ${fmtBytes(g.maxmem)}` : fmtBytes(g.maxmem)}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  </div>
+)
+
 export const ClusterPanel: React.FC = observer(() => {
+  const [dragNode, setDragNode] = useState<string | null>(null)
+  const [overNode, setOverNode] = useState<string | null>(null)
+
   useEffect(() => {
     clusterStore.startPolling(10000)
     return () => clusterStore.stopPolling()
@@ -88,12 +152,34 @@ export const ClusterPanel: React.FC = observer(() => {
       {s && (
         <div className={styles.body}>
           <div className={styles.nodeGrid}>
-            {clusterStore.nodes.map((n) => (
+            {clusterStore.orderedNodes.map((n) => (
               <div
                 key={n.node}
-                className={`${styles.nodeCard} ${n.online ? styles.isOnline : styles.isOffline}`}
+                className={`${styles.nodeCard} ${n.online ? styles.isOnline : styles.isOffline} ${
+                  dragNode === n.node ? styles.dragging : ''
+                } ${overNode === n.node && dragNode && dragNode !== n.node ? styles.dropTarget : ''}`}
+                draggable
+                onDragStart={(e) => {
+                  setDragNode(n.node)
+                  e.dataTransfer.effectAllowed = 'move'
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault()
+                  if (overNode !== n.node) setOverNode(n.node)
+                }}
+                onDragLeave={() => setOverNode((cur) => (cur === n.node ? null : cur))}
+                onDrop={() => {
+                  if (dragNode && dragNode !== n.node) clusterStore.moveNode(dragNode, n.node)
+                  setDragNode(null)
+                  setOverNode(null)
+                }}
+                onDragEnd={() => {
+                  setDragNode(null)
+                  setOverNode(null)
+                }}
               >
                 <div className={styles.nodeTop}>
+                  <GripVertical size={13} className={styles.grip} />
                   <span className={`${styles.dot} ${n.online ? styles.ok : styles.crit}`} />
                   <span className={styles.nodeName}>{n.node}</span>
                   <span className={styles.nodeIp}>{n.ip ?? ''}</span>
@@ -108,58 +194,30 @@ export const ClusterPanel: React.FC = observer(() => {
             ))}
           </div>
 
-          <div className={styles.tableWrap}>
-            <div className={styles.tableHead}>
-              <input
-                className={styles.filter}
-                placeholder="Filter by name / vmid / node…"
-                value={clusterStore.filter}
-                onChange={(e) => clusterStore.setFilter(e.target.value)}
-              />
-              <span className={styles.tableCounts}>
-                {clusterStore.runningCount} running · {clusterStore.stoppedCount} stopped
-              </span>
-            </div>
-            <div className={styles.tableScroll}>
-              <table className={styles.table}>
-                <thead>
-                  <tr>
-                    <th>VMID</th>
-                    <th>Name</th>
-                    <th>Node</th>
-                    <th>Type</th>
-                    <th>Status</th>
-                    <th>CPU</th>
-                    <th>Memory</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {clusterStore.filteredGuests.map((g) => {
-                    const running = g.status === 'running'
-                    return (
-                      <tr key={`${g.type}-${g.vmid}`}>
-                        <td className={styles.mono}>{g.vmid}</td>
-                        <td>{g.name ?? '—'}</td>
-                        <td>{g.node ?? '—'}</td>
-                        <td>
-                          <span className={styles.typeBadge}>{(g.type ?? '').toUpperCase()}</span>
-                        </td>
-                        <td>
-                          <span className={`${styles.status} ${running ? styles.ok : styles.idle}`}>
-                            {g.status ?? '—'}
-                          </span>
-                        </td>
-                        <td className={styles.mono}>{running ? `${Math.round((g.cpu ?? 0) * 100)}%` : '—'}</td>
-                        <td className={styles.mono}>
-                          {running ? `${fmtBytes(g.mem)} / ${fmtBytes(g.maxmem)}` : fmtBytes(g.maxmem)}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+          <div className={styles.guestToolbar}>
+            <input
+              className={styles.filter}
+              placeholder="Filter by name / vmid / node…"
+              value={clusterStore.filter}
+              onChange={(e) => clusterStore.setFilter(e.target.value)}
+            />
+            <span className={styles.tableCounts}>
+              {clusterStore.runningCount} running · {clusterStore.stoppedCount} stopped
+            </span>
           </div>
+
+          <GuestTable
+            title="LXC Containers"
+            guests={clusterStore.containers}
+            sort={clusterStore.ctSort}
+            onSort={(key) => clusterStore.setSort('ct', key)}
+          />
+          <GuestTable
+            title="Virtual Machines"
+            guests={clusterStore.vms}
+            sort={clusterStore.vmSort}
+            onSort={(key) => clusterStore.setSort('vm', key)}
+          />
         </div>
       )}
     </div>
