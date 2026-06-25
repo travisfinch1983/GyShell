@@ -139,11 +139,11 @@ export const GuestRow: React.FC<{
                   )}
                 </div>
                 <MetricChart
-                  label={chart.label}
-                  unit={chart.unit}
-                  color={chart.color}
+                  title={chart.label}
                   viz={chart.viz}
-                  query={resolveQuery(chart.query, guestId)}
+                  unit={chart.unit}
+                  series={chart.series.map((s) => ({ ...s, query: resolveQuery(s.query, guestId) }))}
+                  fields={chart.fields.map((f) => ({ ...f, query: resolveQuery(f.query, guestId) }))}
                   rangeSeconds={template.rangeSeconds}
                   stepSeconds={template.stepSeconds}
                 />

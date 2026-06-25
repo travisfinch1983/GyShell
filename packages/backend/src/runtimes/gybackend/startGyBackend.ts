@@ -174,6 +174,7 @@ export async function startGyBackend(): Promise<void> {
         },
         metricsBridge: {
           queryRange: (query, rangeSeconds, stepSeconds) => metricsService.queryRange(query, rangeSeconds, stepSeconds),
+          queryRangeBatch: (queries, rangeSeconds, stepSeconds) => metricsService.queryRangeBatch(queries, rangeSeconds, stepSeconds),
           query: (query) => metricsService.query(query)
         },
         terminalBridge: {

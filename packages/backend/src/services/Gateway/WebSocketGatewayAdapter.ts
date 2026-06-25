@@ -73,6 +73,7 @@ type WebSocketRpcMethod =
   | 'cluster:getStatus'
   | 'cluster:request'
   | 'metrics:queryRange'
+  | 'metrics:queryRangeBatch'
   | 'metrics:query';
 
 interface WebSocketRpcRequest {
@@ -117,6 +118,7 @@ export interface WebSocketGatewayAdapterOptions {
   };
   metricsBridge?: {
     queryRange: (query: string, rangeSeconds?: number, stepSeconds?: number) => Promise<unknown>;
+    queryRangeBatch: (queries: string[], rangeSeconds?: number, stepSeconds?: number) => Promise<unknown>;
     query: (query: string) => Promise<unknown>;
   };
   agentBridge?: {
@@ -644,6 +646,14 @@ export class WebSocketGatewayAdapter {
         const p = params as Record<string, unknown>;
         const query = this.readStringParam(params, 'query');
         return { series: await this.options.metricsBridge.queryRange(query, p.rangeSeconds as number, p.stepSeconds as number) };
+      }
+      case 'metrics:queryRangeBatch': {
+        if (!this.options.metricsBridge?.queryRangeBatch) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'metrics:queryRangeBatch is not available on this websocket gateway.');
+        }
+        const p = params as Record<string, unknown>;
+        const queries = Array.isArray(p.queries) ? (p.queries as string[]) : [];
+        return { results: await this.options.metricsBridge.queryRangeBatch(queries, p.rangeSeconds as number, p.stepSeconds as number) };
       }
       case 'metrics:query': {
         if (!this.options.metricsBridge?.query) {

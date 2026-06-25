@@ -64,6 +64,14 @@ export class MetricsService {
     }))
   }
 
+  /** Batch range query → results aligned to the input queries (each = that query's series). */
+  async queryRangeBatch(queries: string[], rangeSeconds = 10800, stepSeconds = 60): Promise<RangeSeries[][]> {
+    if (!Array.isArray(queries)) throw new Error('metrics: queries must be an array')
+    return Promise.all(
+      queries.slice(0, 24).map((q) => this.queryRange(q, rangeSeconds, stepSeconds).catch(() => [] as RangeSeries[])),
+    )
+  }
+
   /** Instant scalar/vector query → array of { labels, value }. */
   async query(query: string): Promise<Array<{ labels: Record<string, string>; value: number | null }>> {
     if (typeof query !== 'string' || !query.trim()) throw new Error('metrics: empty query')

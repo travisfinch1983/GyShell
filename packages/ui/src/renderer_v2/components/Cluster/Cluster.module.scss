@@ -305,6 +305,39 @@
   &:hover { background: var(--control-bg-hover); color: var(--fg); }
   &.danger:hover { background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); }
 }
+/* multi-value chart: legend (multi-series) + field read-out strip */
+.legend { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 3px; }
+.legendItem { font-size: 10px; color: var(--fg-muted); display: inline-flex; align-items: center; gap: 4px; b { color: var(--fg); } }
+.fieldStrip { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--border); }
+.fieldItem { font-size: 10px; color: var(--fg-muted); display: inline-flex; align-items: center; gap: 4px; b { color: var(--fg); font-weight: 600; } }
+.fieldDot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+
+/* template editor: series / fields sub-sections */
+.qSection { margin-top: 8px; }
+.qSectionHead {
+  display: flex; align-items: center; gap: 8px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--fg-faint); margin-bottom: 4px;
+}
+.miniAdd {
+  display: inline-flex; align-items: center; gap: 3px; font-size: 10px; padding: 1px 6px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--control-bg); color: var(--fg-muted); cursor: pointer;
+  &:hover { color: var(--fg); border-color: var(--accent); }
+}
+.qRow { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
+.qLabel {
+  width: 90px; flex: 0 0 auto; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px;
+  background: var(--control-bg); color: var(--fg); font-size: 11px;
+}
+.qUnit {
+  flex: 0 0 auto; padding: 4px 5px; border: 1px solid var(--border); border-radius: 5px;
+  background: var(--control-bg); color: var(--fg); font-size: 10px;
+}
+.qQuery {
+  flex: 1; min-width: 60px; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px;
+  background: var(--app-bg); color: var(--fg); font-family: var(--font-mono); font-size: 11px;
+  &:focus { outline: none; border-color: var(--accent); }
+}
+
 .tplPreview {
   margin-top: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
   background: var(--panel-bg);

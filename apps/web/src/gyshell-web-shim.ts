@@ -107,6 +107,8 @@ const gyshellApi = {
     // Native charts (rule #1): backend queries Prometheus, UI renders with uPlot.
     queryRange: (query: string, rangeSeconds?: number, stepSeconds?: number) =>
       rpc('metrics:queryRange', { query, rangeSeconds, stepSeconds }),
+    queryRangeBatch: (queries: string[], rangeSeconds?: number, stepSeconds?: number) =>
+      rpc('metrics:queryRangeBatch', { queries, rangeSeconds, stepSeconds }),
     query: (query: string) => rpc('metrics:query', { query }),
   },
 
