@@ -19,6 +19,7 @@ import { ContextMenuOverlay } from './components/Common/ContextMenuOverlay'
 import { ClusterPanel } from './components/Cluster/ClusterPanel'
 import { ServicesPanel } from './components/Services/ServicesPanel'
 import { ScriptsPanel } from './components/Scripts/ScriptsPanel'
+import { ScriptCatalogPanel } from './components/ScriptCatalog/ScriptCatalogPanel'
 import './styles/app.scss'
 
 const store = new AppStore()
@@ -322,6 +323,8 @@ export const App: React.FC = observer(() => {
           {primaryTab === 'services' && <ServicesPanel />}
 
           {primaryTab === 'scripts' && <ScriptsPanel />}
+
+          {primaryTab === 'helper-scripts' && <ScriptCatalogPanel />}
 
           {primaryTab === 'flowchart' && (
             <PlaceholderPanel
