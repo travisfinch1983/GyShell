@@ -6,12 +6,13 @@ import {
   Activity,
   Server,
   Radar,
+  FileCode,
   Settings,
   type LucideIcon,
 } from 'lucide-react'
 import styles from './PrimarySidebar.module.scss'
 
-export type PrimaryTab = 'terminal' | 'cluster' | 'services' | 'flowchart' | 'files' | 'monitor'
+export type PrimaryTab = 'terminal' | 'cluster' | 'services' | 'scripts' | 'flowchart' | 'files' | 'monitor'
 
 interface TabDef {
   id: PrimaryTab
@@ -23,6 +24,7 @@ const TABS: TabDef[] = [
   { id: 'terminal',  label: 'Terminal',  Icon: Terminal },
   { id: 'cluster',   label: 'Cluster',   Icon: Server },
   { id: 'services',  label: 'Services',  Icon: Radar },
+  { id: 'scripts',   label: 'Scripts',   Icon: FileCode },
   { id: 'flowchart', label: 'Flowchart', Icon: Workflow },
   { id: 'files',     label: 'Files',     Icon: FolderOpen },
   { id: 'monitor',   label: 'Monitor',   Icon: Activity },
