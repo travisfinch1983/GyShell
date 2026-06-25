@@ -344,6 +344,8 @@ export class AppStore {
       setCommandDraftProfileId: action,
       saveModel: action,
       deleteModel: action,
+      listRemoteModels: action,
+      addRemoteModels: action,
       loadAgents: action,
       saveAgent: action,
       deleteAgent: action,
@@ -2439,7 +2441,13 @@ export class AppStore {
           error: 'Probe failed',
         }
     if (!configUnchanged) try {
-      const probeResult = await window.gyshell.models.probe(plainModel)
+      // Hard cap so a slow/unreachable endpoint can never hang the Save button.
+      const probeResult = await Promise.race([
+        window.gyshell.models.probe(plainModel),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Probe timed out (saved without capability check)')), 25000),
+        ),
+      ])
       nextProfile = {
         imageInputs: probeResult.imageInputs,
         textOutputs: probeResult.textOutputs,
@@ -2479,6 +2487,61 @@ export class AppStore {
       }
     })
     await window.gyshell.settings.set({ models: nextModels })
+  }
+
+  /** Query an OpenAI-compatible API's /v1/models. Returns model ids + best-effort context length. */
+  async listRemoteModels(
+    baseUrl: string,
+    apiKey: string,
+  ): Promise<{ ok: boolean; models: Array<{ id: string; contextLength?: number }>; error?: string }> {
+    try {
+      const r = await (window as any).gyshell.models.listRemote(baseUrl, apiKey)
+      return r ?? { ok: false, models: [], error: 'no response' }
+    } catch (err) {
+      return { ok: false, models: [], error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /**
+   * Bulk-add models from an API connection WITHOUT probing each (fast, no hang). Each
+   * gets the connection's baseUrl/apiKey; maxTokens from the API's context length when
+   * available, else `defaultContext`. Capabilities can be probed later by opening a model.
+   */
+  async addRemoteModels(opts: {
+    namePrefix: string
+    baseUrl: string
+    apiKey: string
+    defaultContext: number
+    models: Array<{ id: string; contextLength?: number }>
+  }): Promise<number> {
+    const current = this.settings ?? (await this.fetchCombinedSettings())
+    const items = current.models.items.slice().map((x) => toJS(x))
+    const existingKey = new Set(items.map((x) => `${x.baseUrl}||${x.model}`))
+    let added = 0
+    for (const m of opts.models) {
+      if (existingKey.has(`${opts.baseUrl}||${m.id}`)) continue
+      const ctx = typeof m.contextLength === 'number' && m.contextLength > 0 ? m.contextLength : opts.defaultContext
+      items.push({
+        id: `model-${Date.now()}-${added}-${Math.round(ctx)}`,
+        name: opts.namePrefix ? `${opts.namePrefix} ${m.id}` : m.id,
+        model: m.id,
+        baseUrl: opts.baseUrl,
+        apiKey: opts.apiKey,
+        maxTokens: ctx,
+        structuredOutputMode: 'auto',
+        supportsStructuredOutput: false,
+        supportsObjectToolChoice: false,
+        // Unprobed — capability profile filled in when the user opens/saves the model.
+        profile: { imageInputs: false, textOutputs: false, supportsStructuredOutput: false, supportsObjectToolChoice: false, testedAt: Date.now(), ok: false, error: 'Not yet probed' },
+      } as any)
+      added++
+    }
+    const nextModels = { ...toJS(current.models), items }
+    runInAction(() => {
+      if (this.settings) this.settings.models = nextModels as any
+    })
+    await window.gyshell.settings.set({ models: nextModels })
+    return added
   }
 
   async deleteModel(id: string): Promise<void> {

@@ -310,6 +310,7 @@ const gyshellApi = {
       return result
     },
     probeCapabilities: (config: any) => rpc('models:probe', { model: config }),
+    listRemote: (baseUrl: string, apiKey: string) => rpc('models:listRemote', { baseUrl, apiKey }),
   },
 
   tools: {

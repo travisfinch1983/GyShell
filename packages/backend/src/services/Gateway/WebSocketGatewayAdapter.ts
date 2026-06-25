@@ -38,6 +38,7 @@ type WebSocketRpcMethod =
   | 'models:getProfiles'
   | 'models:setActiveProfile'
   | 'models:probe'
+  | 'models:listRemote'
   | 'skills:reload'
   | 'skills:getAll'
   | 'skills:getEnabled'
@@ -203,6 +204,7 @@ export interface WebSocketGatewayAdapterOptions {
       profiles: Array<{ id: string; name: string; globalModelId: string; modelName?: string }>;
     };
     probeModel?: (model: unknown) => unknown | Promise<unknown>;
+    listRemoteModels?: (baseUrl: string, apiKey: string) => unknown | Promise<unknown>;
   };
   systemBridge?: {
     saveTempPaste?: (content: string) => Promise<string> | string;
@@ -1066,6 +1068,13 @@ export class WebSocketGatewayAdapter {
           const message = error instanceof Error ? error.message : 'Failed to set active profile.';
           throw new WebSocketRpcError('BAD_REQUEST', message);
         }
+      }
+      case 'models:listRemote': {
+        if (!this.options.profileBridge?.listRemoteModels) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'models:listRemote is not available on this websocket gateway.');
+        }
+        const p = params as Record<string, unknown>;
+        return await this.options.profileBridge.listRemoteModels(String(p.baseUrl ?? ''), String(p.apiKey ?? ''));
       }
       case 'models:probe': {
         if (!this.options.profileBridge?.probeModel) {

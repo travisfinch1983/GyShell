@@ -158,6 +158,53 @@ export class ModelCapabilityService {
     }
   }
 
+  /**
+   * List all models exposed by an OpenAI-compatible endpoint's /v1/models, with a
+   * best-effort context length per model (many compatible servers include it under
+   * one of several keys). Used by the "add all models from an API" flow — no per-model
+   * capability probe, so it's fast and never hangs.
+   */
+  async listRemoteModels(
+    baseUrl?: string,
+    apiKey?: string,
+  ): Promise<{ ok: boolean; models: Array<{ id: string; contextLength?: number }>; error?: string }> {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MODELS_MS)
+    const endpoint = this.buildModelsEndpoint(baseUrl)
+    try {
+      const response = await fetch(endpoint, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${apiKey || ''}`, Accept: 'application/json' },
+        signal: controller.signal,
+      })
+      if (!response.ok) {
+        return { ok: false, models: [], error: `HTTP ${response.status} ${response.statusText}`.trim() }
+      }
+      const payload = await response.json().catch(() => undefined)
+      const data = payload && typeof payload === 'object' ? (payload as any).data : undefined
+      if (!Array.isArray(data)) {
+        return { ok: false, models: [], error: 'Unexpected /v1/models response (no data array)' }
+      }
+      const ctxKeys = ['context_length', 'max_model_len', 'max_context_length', 'context_window', 'max_tokens', 'n_ctx']
+      const models = data
+        .filter((m: any) => m && typeof m.id === 'string')
+        .map((m: any) => {
+          let ctx: number | undefined
+          for (const k of ctxKeys) {
+            const v = m[k] ?? m?.meta?.[k]
+            if (typeof v === 'number' && v > 0) { ctx = v; break }
+          }
+          return { id: m.id as string, contextLength: ctx }
+        })
+      return { ok: true, models }
+    } catch (err) {
+      if (this.isAbortError(err)) return { ok: false, models: [], error: `Timeout after ${PROBE_TIMEOUT_MODELS_MS}ms` }
+      return { ok: false, models: [], error: err instanceof Error ? err.message : String(err) }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   private async checkTextOutputs(model: ModelDefinition): Promise<ProbeStepResult> {
     const client = this.createProbeClient(model)
     return await this.runStreamProbe({

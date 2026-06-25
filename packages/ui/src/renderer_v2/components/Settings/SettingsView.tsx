@@ -335,6 +335,108 @@ const ModelEditor = observer(
   },
 );
 
+/**
+ * Add models from an API connection: enter URL + token, fetch /v1/models, pick which to
+ * add and set each one's context size (prefilled from the API when it exposes it). No
+ * per-model capability probe here — fast, no hang; capabilities fill in when a model is opened.
+ */
+const ConnectionImporter = observer(({ store, onClose }: { store: AppStore; onClose: () => void }) => {
+  const t = store.i18n.t;
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [prefix, setPrefix] = useState("");
+  const [defaultCtx, setDefaultCtx] = useState(32768);
+  const [loading, setLoading] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [rows, setRows] = useState<Array<{ id: string; ctx: number; sel: boolean }> | null>(null);
+
+  const fetchModels = async () => {
+    setLoading(true);
+    setErr(null);
+    setRows(null);
+    const r = await store.listRemoteModels(baseUrl.trim(), apiKey.trim());
+    setLoading(false);
+    if (!r.ok) {
+      setErr(r.error || "Failed to list models");
+      return;
+    }
+    setRows(
+      r.models.map((m) => ({
+        id: m.id,
+        ctx: typeof m.contextLength === "number" && m.contextLength > 0 ? m.contextLength : defaultCtx,
+        sel: true,
+      })),
+    );
+  };
+
+  const add = async () => {
+    if (!rows) return;
+    setAdding(true);
+    const chosen = rows.filter((r) => r.sel).map((r) => ({ id: r.id, contextLength: r.ctx }));
+    await store.addRemoteModels({ namePrefix: prefix.trim(), baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), defaultContext: defaultCtx, models: chosen });
+    setAdding(false);
+    onClose();
+  };
+
+  const selCount = rows?.filter((r) => r.sel).length ?? 0;
+
+  return (
+    <div className="model-editor-overlay">
+      <div className="model-editor-card">
+        <div className="editor-header">
+          <h3>Add models from API</h3>
+          <button className="icon-btn-sm" onClick={onClose} disabled={adding}><X size={16} /></button>
+        </div>
+        <div className="editor-body">
+          <div className="editor-row">
+            <span className="editor-icon"><Globe size={16} strokeWidth={2} /></span>
+            <input className="editor-input" placeholder="API URL (e.g. http://10.0.0.232:5005/v1)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} disabled={loading || adding} />
+          </div>
+          <div className="editor-row">
+            <span className="editor-icon"><Key size={16} strokeWidth={2} /></span>
+            <input type="password" className="editor-input" placeholder="API token (optional)" value={apiKey} onChange={(e) => setApiKey(e.target.value)} disabled={loading || adding} />
+          </div>
+          <div className="editor-row">
+            <span className="editor-icon"><Tag size={16} strokeWidth={2} /></span>
+            <input className="editor-input" placeholder="Name prefix (optional)" value={prefix} onChange={(e) => setPrefix(e.target.value)} disabled={loading || adding} />
+          </div>
+          <div className="editor-row">
+            <span className="editor-icon"><Loader2 size={16} strokeWidth={2} /></span>
+            <NumericInput className="editor-input" placeholder="Default context size" value={defaultCtx} onChange={(v) => setDefaultCtx(v)} min={0} disabled={loading || adding} />
+          </div>
+          <div style={{ display: "flex", gap: 8, margin: "4px 0 12px" }}>
+            <button className="btn-secondary" onClick={fetchModels} disabled={loading || adding || !baseUrl.trim()}>
+              {loading ? <Loader2 size={16} className="spin" /> : "Fetch models"}
+            </button>
+            {err && <span style={{ fontSize: 12, color: "var(--danger)", alignSelf: "center" }}>{err}</span>}
+            {rows && <span style={{ fontSize: 12, color: "var(--fg-muted)", alignSelf: "center" }}>{rows.length} models · {selCount} selected</span>}
+          </div>
+          {rows && rows.length > 0 && (
+            <div style={{ maxHeight: 300, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6, padding: 6 }}>
+              {rows.map((r, i) => (
+                <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 6px" }}>
+                  <input type="checkbox" checked={r.sel} onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, sel: e.target.checked } : x)))} />
+                  <span style={{ flex: 1, fontSize: 12, fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.id}</span>
+                  <span style={{ fontSize: 11, color: "var(--fg-faint)" }}>ctx</span>
+                  <NumericInput className="editor-input" style={{ width: 100 }} value={r.ctx} onChange={(v) => setRows(rows.map((x, j) => (j === i ? { ...x, ctx: v } : x)))} min={0} />
+                </div>
+              ))}
+            </div>
+          )}
+          {rows && rows.length === 0 && <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>No models returned by this API.</div>}
+        </div>
+        <div className="editor-footer">
+          <button className="btn-secondary" onClick={onClose} disabled={adding}>{t.common.cancel}</button>
+          <button className="btn-primary" onClick={add} disabled={adding || !rows || selCount === 0}>
+            {adding ? <Loader2 size={16} className="spin" /> : `Add ${selCount} model${selCount === 1 ? "" : "s"}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 function AccessTokenRevealDialog(props: {
   open: boolean;
   title: string;
@@ -401,6 +503,7 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
     const t = store.i18n.t;
     const [editingModelId, setEditingModelId] = useState<string | null>(null);
     const [showModelEditor, setShowModelEditor] = useState(false);
+    const [showConnectionImporter, setShowConnectionImporter] = useState(false);
     const skillImportInputRef = React.useRef<HTMLInputElement>(null);
 
     /**
@@ -718,13 +821,17 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
         />
 
       {showModelEditor && (
-          <ModelEditor 
-            store={store} 
-            modelId={editingModelId || undefined} 
-            onClose={() => setShowModelEditor(false)} 
+          <ModelEditor
+            store={store}
+            modelId={editingModelId || undefined}
+            onClose={() => setShowModelEditor(false)}
           />
       )}
-      
+
+      {showConnectionImporter && (
+          <ConnectionImporter store={store} onClose={() => setShowConnectionImporter(false)} />
+      )}
+
       <div className="settings-sidebar">
           <button
             className="settings-back-btn"
@@ -1459,8 +1566,16 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
               <div className="settings-section-header">
                   <div className="settings-section-title">
                     External Model Connections
-                    <InfoTooltip content="Manually added model endpoints (OpenAI, Anthropic, etc.)" />
+                    <InfoTooltip content="Add all models from an API (Fetch), or a single endpoint manually (+)." />
                   </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    className="icon-btn-sm"
+                    title="Add all models from an API"
+                    onClick={() => setShowConnectionImporter(true)}
+                  >
+                      <Globe size={16} strokeWidth={2} />
+                  </button>
                   <button
                     className="icon-btn-sm"
                     title={t.common.add}
@@ -1468,6 +1583,7 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                   >
                       <Plus size={16} strokeWidth={2} />
                   </button>
+                  </div>
               </div>
               
               <div className="models-list" style={modelMetaColumnVars}>

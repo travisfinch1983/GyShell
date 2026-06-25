@@ -319,6 +319,8 @@ export async function startGyBackend(): Promise<void> {
               }))
             }
           },
+          listRemoteModels: (baseUrl: string, apiKey: string) =>
+            modelCapabilityService.listRemoteModels(baseUrl, apiKey),
           probeModel: async (model: any) => {
             return await modelCapabilityService.probe(model)
           }
