@@ -72,5 +72,5 @@ export function saveTemplates(templates: Record<MetricCategory, MetricTemplate>)
 
 /** Substitute the guest id into a template query. */
 export function resolveQuery(query: string, guestId: string): string {
-  return query.replaceAll('$id', guestId)
+  return query.replace(/\$id/g, guestId)
 }
