@@ -123,7 +123,8 @@ export async function startGyBackend(): Promise<void> {
   )
   const terminalCommandDraftService = new TerminalCommandDraftService(terminalService, settingsService)
   const catalogInstallService = new CatalogInstallService({
-    publish: (channel, data) => gatewayService.broadcastRaw(channel, data)
+    publish: (channel, data) => gatewayService.broadcastRaw(channel, data),
+    keyPath: process.env.AILAB_SSH_KEY || path.join(dataDir, 'ssh', 'id_ed25519')
   })
 
   const terminalRestoreResult = await terminalService.restorePersistedTerminals()
