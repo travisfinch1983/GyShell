@@ -1081,6 +1081,14 @@ export class AgentService_v2 {
           result = out.message
           break
         }
+        case 'exec_headless': {
+          // Pass full executionContext so the tool can run its per-tool
+          // permission check + use the same approval-prompt path
+          // exec_command uses (banner in the chat with Approve/Deny).
+          const out = await toolImplementations.runExecHeadless(toolCall.args || {}, executionContext)
+          result = out.message
+          break
+        }
         case 'delegate_agent': {
           const out = await toolImplementations.runDelegateAgent(toolCall.args || {}, this.buildDelegateAgentDeps(executionContext))
           result = out.message
@@ -2470,16 +2478,46 @@ export class AgentService_v2 {
   }
 
   getAllChatHistory() {
+    // Union both stores. The chatHistoryService snapshot only updates when a
+    // task path explicitly calls saveSession (task completion success or
+    // checkpoint-on-abort). The uiHistoryService snapshot updates on every
+    // event, with debounced disk flushing. Sessions can therefore exist in
+    // ui-history but not in chat-history — and the rehydrate-on-page-reload
+    // code consumes this method to discover sessions, so it MUST see those
+    // ui-only sessions or we silently lose them on reload.
     const backendSessions = this.chatHistoryService.getAllSessions()
     const uiSessions = this.uiHistoryService.getAllSessions()
+    const uiById = new Map(uiSessions.map((u) => [u.id, u]))
+    const seen = new Set<string>()
 
-    return backendSessions.map((backend) => {
-      const ui = uiSessions.find((u) => u.id === backend.id)
+    const merged = backendSessions.map((backend) => {
+      seen.add(backend.id)
+      const ui = uiById.get(backend.id)
       return {
         ...backend,
         title: ui?.title || backend.title,
-        messagesCount: ui?.messages.length || 0
+        // Prefer the UI session's updatedAt when fresher, since UI history
+        // updates more often than chat history.
+        updatedAt: Math.max(backend.updatedAt || 0, ui?.updatedAt || 0),
+        messagesCount: ui?.messages.length || 0,
       }
     })
+
+    // Append sessions that exist only in UI history. Synthesize a
+    // chat-history-shaped record so callers don't have to special-case.
+    for (const ui of uiSessions) {
+      if (seen.has(ui.id)) continue
+      merged.push({
+        id: ui.id,
+        title: ui.title || 'New Session',
+        messages: [],
+        lastCheckpointOffset: 0,
+        createdAt: ui.updatedAt || Date.now(),
+        updatedAt: ui.updatedAt || Date.now(),
+        messagesCount: ui.messages.length,
+      } as any)
+    }
+
+    return merged
   }
 }

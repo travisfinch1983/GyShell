@@ -267,7 +267,7 @@ export const MinionSidebar = observer(({ store, appStore, chatOpen, onChatToggle
               key={a.id}
               name={a.name}
               iconName={a.icon}
-              activeCount={0}
+              activeCount={appStore.agentActiveCounts[a.id] || 0}
             />
           ))}
         </div>

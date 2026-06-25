@@ -15,6 +15,7 @@ import { LayoutWorkspace } from './components/Layout/LayoutWorkspace'
 import { MinionSidebar } from './components/Minions/MinionSidebar'
 import { PrimarySidebar, type PrimaryTab } from './components/PrimarySidebar/PrimarySidebar'
 import { GlobalChat } from './components/Chat/GlobalChat'
+import { ContextMenuOverlay } from './components/Common/ContextMenuOverlay'
 import './styles/app.scss'
 
 const store = new AppStore()
@@ -380,6 +381,7 @@ export const App: React.FC = observer(() => {
           <ConnectionsView store={store} />
         </div>
       </div>
+      <ContextMenuOverlay />
     </div>
     </MinionProvider>
   )

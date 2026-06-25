@@ -193,8 +193,40 @@ const gyshellApi = {
   },
 
   ui: {
-    showContextMenu: noop,
-    onContextMenuAction: noopCleanup,
+    showContextMenu: async (payload: any) => {
+      // Lazy import keeps the controller module out of the shim's
+      // import-time graph (the shim runs before React is ready).
+      const ctl = await import(
+        '../../../packages/ui/src/renderer_v2/components/Common/contextMenuController'
+      )
+      ctl.showContextMenu({
+        id: payload.id,
+        canCopy: !!payload.canCopy,
+        canPaste: !!payload.canPaste,
+        x: typeof payload.x === 'number' ? payload.x : 0,
+        y: typeof payload.y === 'number' ? payload.y : 0,
+        suggestions: Array.isArray(payload.suggestions) ? payload.suggestions : undefined,
+      })
+    },
+    onContextMenuAction: (cb: any) => {
+      // Synchronous subscribe — the controller is already loaded by the
+      // time the React tree mounts and starts adding listeners.
+      // We use a dynamic require pattern via a module-scope cached promise
+      // so subsequent calls don't re-import.
+      let unsubscribed = false
+      let cleanup: (() => void) | null = null
+      void import(
+        '../../../packages/ui/src/renderer_v2/components/Common/contextMenuController'
+      ).then((ctl) => {
+        if (unsubscribed) return
+        cleanup = ctl.subscribeContextMenuAction(cb)
+      })
+      return () => {
+        unsubscribed = true
+        if (cleanup) cleanup()
+      }
+    },
+    spellCheck: (word: string) => rpc('ui:spellCheck', { word }),
   },
 
   agent: {
@@ -203,15 +235,18 @@ const gyshellApi = {
     stopTask: (sessionId: string) => rpc('agent:stopTask', { sessionId }),
     replyMessage: (sessionId: string, message: string, options?: any) =>
       rpc('agent:replyMessage', { messageId: sessionId, payload: message, ...options }),
-    deleteChatSession: (sessionId: string) => rpc('agent:deleteChatSession', { id: sessionId }),
+    deleteChatSession: (sessionId: string) => rpc('agent:deleteChatSession', { sessionId }),
     renameSession: (sessionId: string, name: string) =>
-      rpc('agent:renameSession', { id: sessionId, name }),
+      rpc('agent:renameSession', { sessionId, newTitle: name }),
     rollbackToMessage: (sessionId: string, messageId: string) =>
-      rpc('agent:rollbackToMessage', { id: sessionId, messageId }),
-    formatMessagesMarkdown: (sessionId: string) =>
-      rpc('agent:formatMessagesMarkdown', { id: sessionId }).catch(() => ''),
+      rpc('agent:rollbackToMessage', { sessionId, messageId }),
+    formatMessagesMarkdown: (sessionId: string, messageIds?: string[]) =>
+      rpc('agent:formatMessagesMarkdown', {
+        sessionId,
+        messageIds: Array.isArray(messageIds) ? messageIds : [],
+      }).catch(() => ''),
     exportHistory: async (sessionId: string) => {
-      const data = await rpc<string>('agent:exportHistory', { id: sessionId })
+      const data = await rpc<string>('agent:exportHistory', { sessionId })
       const blob = new Blob([data as string], { type: 'text/markdown' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -219,10 +254,15 @@ const gyshellApi = {
       URL.revokeObjectURL(url)
     },
     getAllChatHistory: () => rpc('agent:getAllChatHistory'),
-    loadChatSession: (sessionId: string) => rpc('agent:loadChatSession', { id: sessionId }),
-    getUiMessages: (sessionId: string) => rpc('agent:getUiMessages', { id: sessionId }),
+    loadChatSession: (sessionId: string) => rpc('agent:loadChatSession', { sessionId }),
+    getUiMessages: (sessionId: string) => rpc('agent:getUiMessages', { sessionId }),
     getSessionSnapshot: (sessionId: string) =>
-      rpc('agent:getSessionSnapshot', { id: sessionId }).catch(() => null),
+      // Handler is registered as `session:get` (not `agent:getSessionSnapshot`)
+      // and wraps its result as `{ session }`. Unwrap so callers see the bare
+      // snapshot like the original electron preload behavior.
+      rpc('session:get', { sessionId })
+        .then((r: any) => r?.session ?? null)
+        .catch(() => null),
     getProfiles: () => rpc('models:getProfiles'),
     setActiveProfile: (profileId: string) => rpc('models:setActiveProfile', { profileId }),
     probeModel: (config: any) => rpc('models:probe', { model: config }),
@@ -296,6 +336,8 @@ const gyshellApi = {
     getAll: () => rpc('agents:getAll').catch(() => []),
     save: (agent: any) => rpc('agents:save', { agent }),
     delete: (id: string) => rpc('agents:delete', { id }),
+    onActiveCountsUpdated: (cb: (counts: Record<string, number>) => void): CleanupFn =>
+      onRaw('agents:active', cb),
   },
 
   version: {

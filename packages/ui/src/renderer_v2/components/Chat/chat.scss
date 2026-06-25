@@ -1174,3 +1174,35 @@ body.chat-drag-selection-suppressed * {
   font-size: 12px;
   line-height: 1.4;
 }
+
+.chat-thinking-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px 6px;
+  font-size: 11px;
+  color: var(--text-secondary, #888);
+  user-select: none;
+
+  .chat-thinking-label {
+    margin-left: 6px;
+    font-style: italic;
+  }
+
+  .chat-thinking-dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.4;
+    animation: chat-thinking-bounce 1.2s ease-in-out infinite;
+  }
+
+  .chat-thinking-dot:nth-child(2) { animation-delay: 0.15s; }
+  .chat-thinking-dot:nth-child(3) { animation-delay: 0.3s; }
+}
+
+@keyframes chat-thinking-bounce {
+  0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-2px); }
+}

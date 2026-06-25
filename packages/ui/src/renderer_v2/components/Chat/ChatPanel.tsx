@@ -145,6 +145,90 @@ const CHAT_PANEL_FOCUS_BYPASS_SELECTOR = [
 const shouldFocusChatPanelRoot = (target: HTMLElement | null): boolean =>
   !target?.closest(CHAT_PANEL_FOCUS_BYPASS_SELECTOR);
 
+const WORD_CHAR_RE = /[A-Za-z'’]/;
+
+/**
+ * Find the word at viewport coordinates inside an editable element.
+ * Returns the word and a Range covering it, or null if the click missed
+ * a word (whitespace, mention chip, image attachment, etc.). Used by
+ * the chat context-menu spell-check flow.
+ */
+function getWordAtPoint(
+  x: number,
+  y: number,
+  rootEl: HTMLElement,
+): { word: string; range: Range } | null {
+  let textNode: Text | null = null;
+  let offset = 0;
+
+  // Chrome / Safari (also recent Firefox) — caretRangeFromPoint
+  const docAny = document as any;
+  if (typeof docAny.caretRangeFromPoint === "function") {
+    const r = docAny.caretRangeFromPoint(x, y) as Range | null;
+    if (r && r.startContainer.nodeType === Node.TEXT_NODE) {
+      textNode = r.startContainer as Text;
+      offset = r.startOffset;
+    }
+  } else if (typeof docAny.caretPositionFromPoint === "function") {
+    // Older Firefox path
+    const pos = docAny.caretPositionFromPoint(x, y) as
+      | { offsetNode: Node; offset: number }
+      | null;
+    if (pos && pos.offsetNode.nodeType === Node.TEXT_NODE) {
+      textNode = pos.offsetNode as Text;
+      offset = pos.offset;
+    }
+  }
+  if (!textNode || !rootEl.contains(textNode)) return null;
+
+  const text = textNode.textContent ?? "";
+  let start = Math.min(offset, text.length);
+  let end = start;
+  while (start > 0 && WORD_CHAR_RE.test(text[start - 1])) start--;
+  while (end < text.length && WORD_CHAR_RE.test(text[end])) end++;
+  if (start === end) return null;
+  const word = text.slice(start, end).replace(/[’]/g, "'");
+  if (!word) return null;
+  const range = document.createRange();
+  range.setStart(textNode, start);
+  range.setEnd(textNode, end);
+  return { word, range };
+}
+
+/**
+ * Replace the contents of a Range with plain text and notify the
+ * contenteditable host that its content changed (so React + the
+ * RichInput onInput handler pick up the new value).
+ */
+function replaceRangeWithText(range: Range, text: string): void {
+  try {
+    const startContainer = range.startContainer;
+    const editorEl =
+      startContainer.nodeType === Node.ELEMENT_NODE
+        ? (startContainer as HTMLElement)
+        : (startContainer.parentElement as HTMLElement | null);
+    range.deleteContents();
+    const node = document.createTextNode(text);
+    range.insertNode(node);
+    // Move caret to end of replacement.
+    const after = document.createRange();
+    after.setStartAfter(node);
+    after.collapse(true);
+    const sel = window.getSelection();
+    if (sel) {
+      sel.removeAllRanges();
+      sel.addRange(after);
+    }
+    // Bubble an input event so the RichInput's onInput rebuilds state.
+    const host = editorEl?.closest(".rich-input-editor") as HTMLElement | null;
+    if (host) {
+      host.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    }
+  } catch {
+    // Range invalidated since right-click — abort silently.
+  }
+}
+
 interface ChatPanelProps {
   store: AppStore;
   panelId: string;
@@ -560,6 +644,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
       }
     }, [queueEditTarget, queueItems]);
 
+    // The misspelled word's range, captured at right-click time. Reused
+    // when the user picks a suggestion so we can replace exactly the
+    // word they clicked on, not whatever the selection happens to be by
+    // the time the menu closes.
+    const pendingWordRangeRef = useRef<Range | null>(null);
+
     useEffect(() => {
       const panelEl = panelRef.current;
       if (!panelEl) return;
@@ -576,16 +666,50 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
         }
         event.preventDefault();
         const selectionText = getSelectionText();
+
+        // Open the menu immediately with copy/paste so there's no
+        // perceptible delay. If the click was inside an editable element
+        // and lands on a word, we fire spell-check in parallel and
+        // re-open the menu with suggestions when it returns.
+        const x = event.clientX;
+        const y = event.clientY;
         window.gyshell.ui.showContextMenu({
           id: contextMenuId,
           canCopy: selectionText.trim().length > 0,
           canPaste: true,
+          x,
+          y,
         });
+        pendingWordRangeRef.current = null;
+
+        const editorEl = target?.closest<HTMLElement>(".rich-input-editor");
+        if (!editorEl) return;
+        const wordHit = getWordAtPoint(x, y, editorEl);
+        if (!wordHit) return;
+        pendingWordRangeRef.current = wordHit.range;
+        void window.gyshell.ui
+          .spellCheck(wordHit.word)
+          .then((result: { misspelled: boolean; suggestions: string[] }) => {
+            if (!result?.misspelled || !result.suggestions?.length) return;
+            window.gyshell.ui.showContextMenu({
+              id: contextMenuId,
+              canCopy: selectionText.trim().length > 0,
+              canPaste: true,
+              x,
+              y,
+              suggestions: result.suggestions,
+            });
+          })
+          .catch(() => {
+            // Backend unavailable / dictionary not loaded — silently
+            // fall back to plain copy/paste, which is already open.
+          });
       };
 
       const onContextMenuAction = (data: {
         id: string;
-        action: "copy" | "paste";
+        action: "copy" | "paste" | "replace";
+        payload?: string;
       }) => {
         if (data.id !== contextMenuId) return;
         if (data.action === "copy") {
@@ -610,6 +734,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
             .catch(() => {
               // ignore
             });
+          return;
+        }
+        if (data.action === "replace") {
+          const replacement = data.payload ?? "";
+          const range = pendingWordRangeRef.current;
+          pendingWordRangeRef.current = null;
+          if (!range || !replacement) return;
+          replaceRangeWithText(range, replacement);
+          return;
         }
       };
 
@@ -943,10 +1076,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
                   // Clear the MinionStore messages (activity feed)
                   const ms = (window as any).__minionStore
                   if (ms) ms.messages.length = 0
-                  // Close all sessions and create a fresh one
+                  // Delete all sessions (persisted) and create a fresh one.
+                  // closeSession only removes in-memory state, so the next
+                  // page reload's rehydrate would resurrect everything.
                   const sessionIds = store.chat.sessions.map((s: any) => s.id)
                   for (const sid of sessionIds) {
-                    store.chat.closeSession(sid)
+                    void store.chat.deleteChatSession(sid).catch((err: any) => {
+                      console.warn('[ChatPanel] deleteChatSession failed during clear:', sid, err)
+                    })
                   }
                   // Clear minion conversation history so models start fresh
                   try { (window as any).__roleConversations?.clear() } catch {}
@@ -1073,6 +1210,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
                 onEdit={handleQueueEditRequest}
                 editLabel={t.common.edit}
               />
+            </div>
+          )}
+          {isThinking && (
+            <div className="chat-thinking-indicator" role="status" aria-live="polite">
+              <span className="chat-thinking-dot" />
+              <span className="chat-thinking-dot" />
+              <span className="chat-thinking-dot" />
+              <span className="chat-thinking-label">Working…</span>
             </div>
           )}
           <div className="input-container">

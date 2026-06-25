@@ -12,6 +12,8 @@ type WebSocketRpcMethod =
   | 'agent:getAllChatHistory'
   | 'agent:loadChatSession'
   | 'agent:getUiMessages'
+  | 'agent:formatMessagesMarkdown'
+  | 'ui:spellCheck'
   | 'terminal:list'
   | 'terminal:createTab'
   | 'terminal:write'
@@ -110,6 +112,7 @@ export interface WebSocketGatewayAdapterOptions {
     getAllChatHistory?: () => unknown | Promise<unknown>;
     loadChatSession?: (sessionId: string) => unknown | Promise<unknown>;
     getUiMessages?: (sessionId: string) => unknown | Promise<unknown>;
+    formatMessagesMarkdown?: (sessionId: string, messageIds: string[]) => unknown | Promise<unknown>;
   };
   terminalBridge?: {
     listTerminals: () => Array<{ id: string; title: string; type: string }>;
@@ -644,16 +647,33 @@ export class WebSocketGatewayAdapter {
         if (!bridge?.loadChatSession) {
           throw new WebSocketRpcError('METHOD_NOT_FOUND', 'agent:loadChatSession is not available on this websocket gateway.');
         }
-        const id = this.readStringParam(params, 'id');
-        return await bridge.loadChatSession(id);
+        const sessionId = this.readStringParam(params, 'sessionId');
+        return await bridge.loadChatSession(sessionId);
       }
       case 'agent:getUiMessages': {
         const bridge = this.options.agentBridge;
         if (!bridge?.getUiMessages) {
           throw new WebSocketRpcError('METHOD_NOT_FOUND', 'agent:getUiMessages is not available on this websocket gateway.');
         }
-        const id = this.readStringParam(params, 'id');
-        return await bridge.getUiMessages(id);
+        const sessionId = this.readStringParam(params, 'sessionId');
+        return await bridge.getUiMessages(sessionId);
+      }
+      case 'agent:formatMessagesMarkdown': {
+        const bridge = this.options.agentBridge;
+        if (!bridge?.formatMessagesMarkdown) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'agent:formatMessagesMarkdown is not available on this websocket gateway.');
+        }
+        const sessionId = this.readStringParam(params, 'sessionId');
+        const messageIdsRaw = (params as any).messageIds;
+        const messageIds = Array.isArray(messageIdsRaw)
+          ? messageIdsRaw.filter((id: any) => typeof id === 'string' && id.length > 0)
+          : [];
+        return await bridge.formatMessagesMarkdown(sessionId, messageIds);
+      }
+      case 'ui:spellCheck': {
+        const word = this.readStringParam(params, 'word');
+        const { spellCheckWord } = await import('../SpellCheckService');
+        return await spellCheckWord(word);
       }
       case 'terminal:list': {
         if (!this.options.terminalBridge) {

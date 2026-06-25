@@ -51,6 +51,8 @@ export function buildDelegateAgentDescription(agents: AgentDefinition[]): string
     'Each agent has its own system prompt, model, and tool allowlist tuned for a specific role (researcher, coder, planner, etc.).',
     'Use this when a subtask benefits from a different model or a more focused tool set than your own.',
     'You MUST choose a valid agent_name from the list below.',
+    '',
+    'PARALLEL DISPATCH: when you need to fan out N independent sub-tasks, emit N delegate_agent tool calls in the SAME response. They run concurrently. Emitting them across multiple responses runs them sequentially and the user waits N times longer. Never say "I will dispatch the rest in parallel" and then emit a single call — that is sequential. Put all the parallel calls in this turn, or they are not parallel.',
   ]
   if (agents.length === 0) {
     return [
@@ -109,6 +111,27 @@ class AgentModelPool {
   private waiters = new Map<string, Array<() => void>>()
   /** Round-robin cursor per agent — biases new acquires to spread across profiles */
   private cursor = new Map<string, number>()
+  /** Activity observer — called whenever per-agent in-flight totals change */
+  private activityObserver: ((counts: Record<string, number>) => void) | null = null
+
+  setActivityObserver(fn: ((counts: Record<string, number>) => void) | null): void {
+    this.activityObserver = fn
+  }
+
+  getActivityCounts(): Record<string, number> {
+    const out: Record<string, number> = {}
+    for (const [agentId, usage] of this.inUse.entries()) {
+      let total = 0
+      for (const c of usage.values()) total += c
+      if (total > 0) out[agentId] = total
+    }
+    return out
+  }
+
+  private notifyActivityChanged(): void {
+    if (!this.activityObserver) return
+    try { this.activityObserver(this.getActivityCounts()) } catch {}
+  }
 
   async acquire(
     agentId: string,
@@ -131,6 +154,7 @@ class AgentModelPool {
           usage.set(c.profileId, cur + 1)
           this.inUse.set(agentId, usage)
           this.cursor.set(agentId, (startIdx + offset + 1) % candidates.length)
+          this.notifyActivityChanged()
           let released = false
           const release = () => {
             if (released) return
@@ -176,6 +200,7 @@ class AgentModelPool {
     const n = (usage.get(profileId) ?? 0) - 1
     if (n <= 0) usage.delete(profileId)
     else usage.set(profileId, n)
+    this.notifyActivityChanged()
     const queue = this.waiters.get(agentId)
     const next = queue?.shift()
     if (next) next()
@@ -183,6 +208,22 @@ class AgentModelPool {
 }
 
 const agentModelPool = new AgentModelPool()
+
+/**
+ * Subscribe to per-agent in-flight count changes from the model pool.
+ * The observer is called with a `{ agentId: count }` snapshot whenever the
+ * pool's usage map mutates. Pass `null` to clear. Used by GatewayService to
+ * broadcast counts over `agents:active` so the sidebar can render badges.
+ */
+export function setAgentPoolActivityObserver(
+  fn: ((counts: Record<string, number>) => void) | null,
+): void {
+  agentModelPool.setActivityObserver(fn)
+}
+
+export function getAgentPoolActivityCounts(): Record<string, number> {
+  return agentModelPool.getActivityCounts()
+}
 
 const STATELESS_TOOLS = new Set([
   'web_fetch',

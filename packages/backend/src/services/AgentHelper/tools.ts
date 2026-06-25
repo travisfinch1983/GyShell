@@ -34,6 +34,11 @@ import {
   runWebSearch
 } from './tools/web_tools'
 import {
+  execHeadlessSchema,
+  EXEC_HEADLESS_DESCRIPTION,
+  runExecHeadless,
+} from './tools/headless_tools'
+import {
   delegateAgentSchema,
   buildDelegateAgentDescription,
   runDelegateAgent
@@ -146,6 +151,11 @@ export function buildToolsForModel(readFileSupport: ReadFileSupport) {
       schema: webSearchSchema
     },
     {
+      name: 'exec_headless',
+      description: EXEC_HEADLESS_DESCRIPTION,
+      schema: execHeadlessSchema
+    },
+    {
       name: 'delegate_agent',
       description: buildDelegateAgentDescription([]), // updated dynamically by AgentService
       schema: delegateAgentSchema
@@ -200,7 +210,8 @@ export const toolImplementations = {
   runMemoryRecall,
   runMemorySave,
   runMemoryCreateCollection,
-  runMemoryDelete
+  runMemoryDelete,
+  runExecHeadless
 }
 
 // Re-export web tool helpers for AgentService dispatch

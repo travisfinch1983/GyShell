@@ -332,6 +332,8 @@ export const FileEditorPanel: React.FC<FileEditorPanelProps> = observer(
                   id: contextMenuId,
                   canCopy: selectionEnd > selectionStart,
                   canPaste: true,
+                  x: event.clientX,
+                  y: event.clientY,
                 });
               }}
               onKeyDown={(event) => {

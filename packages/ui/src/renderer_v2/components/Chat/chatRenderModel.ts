@@ -104,10 +104,13 @@ const getRowDisplayKind = (
   const isRetryHint =
     candidate.type === 'alert' && candidate.metadata?.subToolLevel === 'info'
   if (isRetryHint && !isLastInSession) return 'hidden'
-  if (
-    (candidate.type === 'reasoning' || candidate.type === 'compaction') &&
-    !isLastInSession
-  ) {
+  // Compaction banners are large summarization payloads — only keep the
+  // most recent one so they don't clutter scrollback. Reasoning blocks
+  // stay visible for their entire history so the user can see what the
+  // model was thinking before each tool call. (The earlier filter that
+  // also hid older reasoning was the culprit behind reasoning appearing
+  // to "vanish" the moment the model emitted a follow-up tool call.)
+  if (candidate.type === 'compaction' && !isLastInSession) {
     return 'hidden'
   }
   if (SPECIAL_ASSISTANT_TYPES.has(candidate.type)) return 'assistant'

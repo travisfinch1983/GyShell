@@ -55,6 +55,23 @@ export class GatewayService extends EventEmitter implements IGatewayRuntime {
     
     this.setupInternalSubscriptions();
     this.setupServiceSubscriptions();
+    this.setupAgentPoolBridge();
+  }
+
+  /**
+   * Wire the AgentModelPool's per-agent in-flight counters to a broadcast
+   * channel. The frontend subscribes via the web shim / electron preload's
+   * `agents.onActiveCountsUpdated` listener and renders the counts as
+   * badges on the sidebar agent icons.
+   */
+  private setupAgentPoolBridge() {
+    void import('../AgentHelper/tools/delegate_agent_tool').then((mod) => {
+      mod.setAgentPoolActivityObserver((counts) => {
+        this.broadcastRaw('agents:active', counts);
+      });
+    }).catch((err) => {
+      console.warn('[GatewayService] failed to wire agent pool bridge:', err);
+    });
   }
 
   public registerTransport(transport: IClientTransport) {

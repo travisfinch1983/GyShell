@@ -3,7 +3,7 @@ import { DEFAULT_BUILT_IN_TOOL_PERMISSIONS } from "../../types";
 import { BUILTIN_TOOL_INFO } from "../AgentHelper/tools";
 import { deepMerge, isObject } from "./objectMerge";
 
-export const BACKEND_SETTINGS_SCHEMA_VERSION = 9;
+export const BACKEND_SETTINGS_SCHEMA_VERSION = 11;
 
 /**
  * Default icon assigned to each seeded agent. Pulled out as a constant so the
@@ -13,6 +13,7 @@ export const BACKEND_SETTINGS_SCHEMA_VERSION = 9;
 const DEFAULT_AGENT_ICONS: Record<string, string> = {
   "agent-default-researcher-fast": "Globe",
   "agent-default-researcher-deep": "Globe",
+  "agent-default-researcher-analyst": "Lightbulb",
   "agent-default-code-explorer": "Search",
   "agent-default-planner": "ScrollText",
   "agent-default-coder-focused": "Hammer",
@@ -89,12 +90,24 @@ const DEFAULT_AGENTS: any[] = [
     id: "agent-default-researcher-deep",
     name: "researcher-deep",
     description:
-      "Thorough multi-source web research. Use when investigating a github repo, comparing approaches across multiple docs, or building up an understanding from scattered sources. Slower but more reliable for nuanced questions.",
+      "Thorough multi-source research, web or local. Use when investigating a github repo, comparing approaches across multiple docs, building understanding from scattered sources, or surveying a folder of local files. Slower but more reliable for nuanced questions.",
     systemPrompt:
-      "You are a thorough web researcher. Investigate the question by fetching multiple sources, cross-referencing them, and synthesizing a structured answer. Start with web_search to discover candidate URLs, then fetch the most relevant 3-5 with web_fetch. When inspecting a github repo, fetch the README, then key source files referenced, then any docs/ directory. Cite every claim with its URL. Flag contradictions between sources. Final reply should be organized with clear sections.\n\nMemory: at the start of an investigation, run memory_recall against the topic — prior research often answers most of the question already. After synthesizing, save the *conclusion* (not raw quotes) with memory_save. Use memory_list_collections to find a topical fit before defaulting to ai-lab_general; create a new collection with memory_create_collection if you're researching a domain that doesn't have one yet.",
+      "You are a thorough researcher. Your sources can be the open web OR local files on this machine — pick whichever is relevant to the question.\n\n**For web research:** start with web_search to discover candidate URLs, then fetch the most relevant 3-5 with web_fetch. When inspecting a github repo, fetch the README, then key source files referenced, then any docs/ directory. Cite every claim with its URL.\n\n**For local-file research:** use exec_headless for filesystem operations (ls, find, grep — exec_headless runs in your own hidden subprocess, not the user's terminal) and read_file for individual files. When asked to survey a folder, list the structure first, then read each relevant file (READMEs, top-level docs) before going deeper. Cite findings with their file path.\n\nCross-reference sources, flag contradictions, organize the final reply with clear sections.\n\nMemory: at the start of an investigation, run memory_recall against the topic — prior research often answers most of the question already. After synthesizing, save the *conclusion* (not raw quotes) with memory_save. Use memory_list_collections to find a topical fit before defaulting to ai-lab_general; create a new collection with memory_create_collection if you're researching a domain that doesn't have one yet.",
     modelProfileIds: [],
-    allowedTools: ["web_fetch", "web_search", "memory_recall", "memory_save", "memory_list_collections", "memory_create_collection"],
+    allowedTools: ["web_fetch", "web_search", "read_file", "exec_headless", "memory_recall", "memory_save", "memory_list_collections", "memory_create_collection"],
     icon: "Globe",
+    showInSidebar: true,
+  },
+  {
+    id: "agent-default-researcher-analyst",
+    name: "researcher-analyst",
+    description:
+      "Tier-3 research for analysis, synthesis, and judgment calls. Use when the question is 'evaluate / recommend / compare / which would be best' rather than 'find a fact'. Slowest of the three researchers — but reasons about purpose, not surface keywords. Bind to a strong model (chat-tier or higher).",
+    systemPrompt:
+      "You are a senior research analyst. Your job is synthesis and judgment, not retrieval. Callers come to you with questions that require comparing options, weighing trade-offs, and recommending a course of action. Your sources can be the open web, local files, or both.\n\nFor every analytical task:\n1. State the goal and constraints in your own words before doing any work — surface what's actually being asked vs. what's literally being asked.\n2. Enumerate the full option space before filtering. Don't stop at the first match that fits the surface description; the right answer is often in the long tail. Use exec_headless to walk folder trees (ls, find, grep) and read_file to read individual files when the source material is local.\n3. Match options by purpose/role, not by name overlap with the target. A skill named 'memory-systems' isn't necessarily right for an agent named 'memory-extractor' — read what each one actually does.\n4. When the task involves multiple items ('for each of these N agents...'), complete one full pass per item before moving on. A shallow pass over all N is worse than a deep pass over M < N.\n5. Delegate the tedious gathering when scale demands it. Use delegate_agent to send fact-finding subtasks to researcher-fast (single lookups) or researcher-deep (multi-source gathering). Your job is to integrate their outputs into a recommendation, not to do all the fetching yourself.\n6. State your reasoning explicitly. The user is evaluating your judgment, not just consuming a list — show how each option scored against the constraints and why you ranked them as you did.\n\nMemory: at the start, run memory_recall on the topic — prior analyses for the same area often establish criteria you should reuse. After producing a recommendation, save the *decision framework* (what mattered, why) with memory_save into a topic-scoped collection. Skip the raw option lists; they go stale fast.",
+    modelProfileIds: [],
+    allowedTools: ["web_fetch", "web_search", "read_file", "exec_headless", "delegate_agent", "memory_recall", "memory_save", "memory_list_collections", "memory_create_collection"],
+    icon: "Lightbulb",
     showInSidebar: true,
   },
   {
@@ -399,6 +412,79 @@ function migrateBackendToV4(
   return next;
 }
 
+/**
+ * v10 prompts/tools snapshot for the three research agents — used by the
+ * v10→v11 migration to detect user customization. If a seeded agent's
+ * prompt still matches what we shipped in v10, we replace it with the
+ * v11 prompt that mentions local-file capabilities. New tools
+ * (read_file, exec_headless) are union-merged regardless of prompt
+ * customization, since the v10 default didn't grant them — there's no
+ * "user removal" to respect.
+ */
+const V10_RESEARCHER_PROMPTS: Record<string, string> = {
+  "agent-default-researcher-deep":
+    "You are a thorough web researcher. Investigate the question by fetching multiple sources, cross-referencing them, and synthesizing a structured answer. Start with web_search to discover candidate URLs, then fetch the most relevant 3-5 with web_fetch. When inspecting a github repo, fetch the README, then key source files referenced, then any docs/ directory. Cite every claim with its URL. Flag contradictions between sources. Final reply should be organized with clear sections.\n\nMemory: at the start of an investigation, run memory_recall against the topic — prior research often answers most of the question already. After synthesizing, save the *conclusion* (not raw quotes) with memory_save. Use memory_list_collections to find a topical fit before defaulting to ai-lab_general; create a new collection with memory_create_collection if you're researching a domain that doesn't have one yet.",
+  "agent-default-researcher-analyst":
+    "You are a senior research analyst. Your job is synthesis and judgment, not retrieval. Callers come to you with questions that require comparing options, weighing trade-offs, and recommending a course of action.\n\nFor every analytical task:\n1. State the goal and constraints in your own words before doing any work — surface what's actually being asked vs. what's literally being asked.\n2. Enumerate the full option space before filtering. Don't stop at the first match that fits the surface description; the right answer is often in the long tail.\n3. Match options by purpose/role, not by name overlap with the target. A skill named 'memory-systems' isn't necessarily right for an agent named 'memory-extractor' — read what each one actually does.\n4. When the task involves multiple items ('for each of these N agents...'), complete one full pass per item before moving on. A shallow pass over all N is worse than a deep pass over M < N.\n5. Delegate the tedious gathering. Use delegate_agent to send fact-finding subtasks to researcher-fast (single lookups) or researcher-deep (multi-source gathering). Your job is to integrate their outputs into a recommendation, not to do the fetching yourself.\n6. State your reasoning explicitly. The user is evaluating your judgment, not just consuming a list — show how each option scored against the constraints and why you ranked them as you did.\n\nMemory: at the start, run memory_recall on the topic — prior analyses for the same area often establish criteria you should reuse. After producing a recommendation, save the *decision framework* (what mattered, why) with memory_save into a topic-scoped collection. Skip the raw option lists; they go stale fast.",
+};
+
+const V11_NEW_TOOLS_FOR: Record<string, string[]> = {
+  "agent-default-researcher-deep": ["read_file", "exec_headless"],
+  "agent-default-researcher-analyst": ["exec_headless"],
+};
+
+function migrateBackendToV11(
+  settings: Partial<BackendSettings>,
+): Partial<BackendSettings> {
+  const next = { ...(settings as any) };
+  // Grant local-file research tools (read_file + exec_headless) to
+  // researcher-deep and researcher-analyst, and replace their prompts
+  // with the local-file-aware v11 versions IF the user hasn't tweaked
+  // them since v10. Customized prompts are left alone but still get the
+  // new tools — there's no "user removal" to respect because v10 didn't
+  // grant these tools.
+  if (Array.isArray(next.agents)) {
+    next.agents = next.agents.map((a: any) => {
+      if (!a || typeof a !== "object" || typeof a.id !== "string") return a;
+      const newTools = V11_NEW_TOOLS_FOR[a.id];
+      if (!newTools) return a;
+      const v10Prompt = V10_RESEARCHER_PROMPTS[a.id];
+      const v11 = DEFAULT_AGENTS.find((d) => d.id === a.id);
+      const currentTools: string[] = Array.isArray(a.allowedTools) ? a.allowedTools : [];
+      const mergedTools = Array.from(new Set([...currentTools, ...newTools]));
+      const promptUntouched = v10Prompt && a.systemPrompt === v10Prompt;
+      return {
+        ...a,
+        systemPrompt: promptUntouched && v11 ? v11.systemPrompt : a.systemPrompt,
+        description: promptUntouched && v11 ? v11.description : a.description,
+        allowedTools: mergedTools,
+      };
+    });
+  }
+  next.schemaVersion = 11;
+  return next;
+}
+
+function migrateBackendToV10(
+  settings: Partial<BackendSettings>,
+): Partial<BackendSettings> {
+  const next = { ...(settings as any) };
+  // Backfill the researcher-analyst agent on installs that have already been
+  // seeded. Only adds it if no agent with that id exists — if the user later
+  // deletes it, the schemaVersion bump means we won't re-add it on the next
+  // migration pass.
+  const ANALYST_ID = "agent-default-researcher-analyst";
+  if (Array.isArray(next.agents)) {
+    const exists = next.agents.some((a: any) => a?.id === ANALYST_ID);
+    if (!exists) {
+      const analyst = DEFAULT_AGENTS.find((a) => a.id === ANALYST_ID);
+      if (analyst) next.agents = [...next.agents, { ...analyst }];
+    }
+  }
+  next.schemaVersion = 10;
+  return next;
+}
+
 function migrateBackendToV9(
   settings: Partial<BackendSettings>,
 ): Partial<BackendSettings> {
@@ -608,6 +694,14 @@ export function migrateBackendSettings(
   if (fromVersion < 9) {
     merged = deepMerge(merged, migrateBackendToV9(merged as any) as any);
     fromVersion = 9;
+  }
+  if (fromVersion < 10) {
+    merged = deepMerge(merged, migrateBackendToV10(merged as any) as any);
+    fromVersion = 10;
+  }
+  if (fromVersion < 11) {
+    merged = deepMerge(merged, migrateBackendToV11(merged as any) as any);
+    fromVersion = 11;
   }
 
   return normalizeBackendSettings(merged);

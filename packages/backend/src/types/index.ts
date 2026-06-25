@@ -166,6 +166,10 @@ export const DEFAULT_BUILT_IN_TOOL_PERMISSIONS: Record<string, ToolPermission> =
   exec_command: 'always-ask',
   write_stdin: 'always-ask',
   create_or_edit: 'always-ask',
+  // Headless shell runs on the AI-Lab backend container only (not the user's
+  // visible tabs). Default to one prompt per session so the user sees the
+  // first command (sanity check) and the model can work freely afterward.
+  exec_headless: 'ask-once-session',
 }
 
 export interface AgentDefinition {
@@ -204,7 +208,7 @@ export interface AgentDefinition {
 
 export interface BackendSettings {
   /** Settings schema version, used for migrations */
-  schemaVersion: 9
+  schemaVersion: 11
 
   /** Command policy mode */
   commandPolicyMode: 'safe' | 'standard' | 'smart'

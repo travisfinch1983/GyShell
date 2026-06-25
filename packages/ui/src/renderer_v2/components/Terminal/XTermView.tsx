@@ -434,6 +434,8 @@ const createRuntime = (
       id: runtime.contextMenuId,
       canCopy: selectionText.trim().length > 0,
       canPaste: true,
+      x: event.clientX,
+      y: event.clientY,
     });
   };
 

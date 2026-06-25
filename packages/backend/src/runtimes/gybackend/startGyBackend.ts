@@ -339,7 +339,15 @@ export async function startGyBackend(): Promise<void> {
           },
           getAllChatHistory: () => agentService.getAllChatHistory(),
           loadChatSession: (sessionId) => agentService.loadChatSession(sessionId),
-          getUiMessages: (sessionId) => uiHistoryService.getMessages(sessionId)
+          getUiMessages: (sessionId) => uiHistoryService.getMessages(sessionId),
+          formatMessagesMarkdown: (sessionId, messageIds) => {
+            const session = uiHistoryService.getSession(sessionId)
+            if (!session) return ''
+            const idSet = new Set(messageIds || [])
+            const filtered = session.messages.filter((m: any) => idSet.has(m.id))
+            if (filtered.length === 0) return ''
+            return uiHistoryService.toReadableMarkdown(filtered, session.title)
+          }
         },
         systemBridge: {
           saveTempPaste: async (content: string) => {

@@ -146,7 +146,12 @@ export const CREATE_OR_EDIT_TOOL_DESCRIPTION = [
 ].join('\n')
 
 export const EXEC_COMMAND_DESCRIPTION =
-  'Execute a shell command in a specific terminal tab. This appends a trailing "\\n" to run the command automatically. If you do NOT want auto-execute, use write_stdin instead. You must provide waitMode: "wait" (synchronous; wait for command result) or "nowait" (asynchronous; return immediately). Command output may be truncated; use read_command_output with history_command_match_id and terminalId to read full output.'
+  'Execute a shell command in one of the user\'s VISIBLE terminal tabs. ' +
+  'Use this ONLY when the user has explicitly asked you to operate in their terminal (e.g. "run X in my terminal", "use the terminal tab named foo"), ' +
+  'or when you need state to persist across calls (cd into a directory, source an env file, etc.) and the user is OK with that work being visible. ' +
+  'For any other shell work (probes, file checks, scripts, lookups) prefer exec_headless — it\'s isolated and doesn\'t clutter the user\'s terminals. ' +
+  'This tool appends a trailing "\\n" to auto-run; for input without auto-execute use write_stdin. You must provide waitMode: "wait" (synchronous) or "nowait" (asynchronous). ' +
+  'Output may be truncated; use read_command_output with history_command_match_id and terminalId to read full output.'
 export const READ_TERMINAL_TAB_DESCRIPTION = 'Read the recent visible output of a specific terminal tab.'
 export const READ_COMMAND_OUTPUT_DESCRIPTION =
   'Read historical output of a specific command by history_command_match_id and terminal tab. Supports offset/limit for paging large outputs.'
@@ -201,6 +206,14 @@ export const BUILTIN_TOOL_INFO = [
     name: 'web_search',
     description:
       'Search the web for a query and return up to 10 result entries with title, URL, and snippet. Use this when you need to discover URLs to follow up on with web_fetch.'
+  },
+  {
+    name: 'exec_headless',
+    description:
+      'Run a shell command in a one-shot headless subprocess inside the AI-Lab backend container. ' +
+      'Use this as the DEFAULT for any work you need to do on your own — checking files, running probes, ' +
+      'gathering information, executing scripts. The user does NOT see this output. Each call is independent. ' +
+      'Only use exec_command (UI-terminal version) when the user explicitly asks you to operate in their open terminal tab.'
   },
   {
     name: 'delegate_agent',

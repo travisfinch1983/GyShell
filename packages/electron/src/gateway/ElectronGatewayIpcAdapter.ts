@@ -1033,6 +1033,13 @@ export class ElectronGatewayIpcAdapter {
         menu.popup({ window });
       },
     );
+
+    ipcMain.handle("ui:spellCheck", async (_event: any, word: string) => {
+      const { spellCheckWord } = await import(
+        "../../../backend/src/services/SpellCheckService"
+      );
+      return spellCheckWord(word);
+    });
   }
 
   private async applyWsGatewayConfig(ws: {

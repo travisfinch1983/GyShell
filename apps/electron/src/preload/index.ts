@@ -483,8 +483,18 @@ export interface GyShellAPI {
 
   // UI
   ui: {
-    showContextMenu: (payload: { id: string; canCopy: boolean; canPaste: boolean }) => Promise<void>
-    onContextMenuAction: (callback: (data: { id: string; action: 'copy' | 'paste' }) => void) => () => void
+    showContextMenu: (payload: {
+      id: string
+      canCopy: boolean
+      canPaste: boolean
+      x?: number
+      y?: number
+      suggestions?: string[]
+    }) => Promise<void>
+    onContextMenuAction: (
+      callback: (data: { id: string; action: 'copy' | 'paste' | 'replace'; payload?: string }) => void,
+    ) => () => void
+    spellCheck: (word: string) => Promise<{ word: string; misspelled: boolean; suggestions: string[] }>
   }
 
   // Agent
@@ -576,6 +586,9 @@ export interface GyShellAPI {
     getAll: () => Promise<AgentDefinition[]>
     save: (agent: AgentDefinition) => Promise<AgentDefinition[]>
     delete: (id: string) => Promise<AgentDefinition[]>
+    onActiveCountsUpdated: (
+      cb: (counts: Record<string, number>) => void,
+    ) => () => void
   }
 
   version: {
@@ -760,13 +773,39 @@ const api: GyShellAPI = {
   },
 
   ui: {
-    showContextMenu: (payload) => ipcRenderer.invoke('ui:showContextMenu', payload),
+    // Uses the in-renderer ContextMenuOverlay controller for both web and
+    // electron — one popover implementation, identical visuals everywhere.
+    // The legacy IPC path (ui:showContextMenu / ui:contextMenuAction) is
+    // retained on the main process for backwards compat but is no longer
+    // invoked from here.
+    showContextMenu: async (payload) => {
+      const ctl = await import(
+        '../../../../packages/ui/src/renderer_v2/components/Common/contextMenuController'
+      )
+      ctl.showContextMenu({
+        id: payload.id,
+        canCopy: !!payload.canCopy,
+        canPaste: !!payload.canPaste,
+        x: typeof payload.x === 'number' ? payload.x : 0,
+        y: typeof payload.y === 'number' ? payload.y : 0,
+        suggestions: Array.isArray(payload.suggestions) ? payload.suggestions : undefined,
+      })
+    },
     onContextMenuAction: (callback) => {
-      const handler = (_: IpcRendererEvent, data: { id: string; action: 'copy' | 'paste' }) =>
-        callback(data)
-      ipcRenderer.on('ui:contextMenuAction', handler)
-      return () => ipcRenderer.off('ui:contextMenuAction', handler)
-    }
+      let unsubscribed = false
+      let cleanup: (() => void) | null = null
+      void import(
+        '../../../../packages/ui/src/renderer_v2/components/Common/contextMenuController'
+      ).then((ctl) => {
+        if (unsubscribed) return
+        cleanup = ctl.subscribeContextMenuAction(callback)
+      })
+      return () => {
+        unsubscribed = true
+        if (cleanup) cleanup()
+      }
+    },
+    spellCheck: (word) => ipcRenderer.invoke('ui:spellCheck', word),
   },
 
   agent: {
@@ -857,6 +896,11 @@ const api: GyShellAPI = {
     getAll: () => ipcRenderer.invoke('agents:getAll'),
     save: (agent: AgentDefinition) => ipcRenderer.invoke('agents:save', agent),
     delete: (id: string) => ipcRenderer.invoke('agents:delete', id),
+    onActiveCountsUpdated: (cb) => {
+      const handler = (_: IpcRendererEvent, counts: Record<string, number>) => cb(counts)
+      ipcRenderer.on('agents:active', handler)
+      return () => ipcRenderer.off('agents:active', handler)
+    },
   },
   version: {
     getState: () => ipcRenderer.invoke('version:getState'),

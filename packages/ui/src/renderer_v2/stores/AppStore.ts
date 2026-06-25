@@ -239,6 +239,8 @@ export class AppStore {
   builtInTools: BuiltInToolSummary[] = []
   skills: SkillSummary[] = []
   agents: AgentDefinition[] = []
+  /** Per-agent in-flight delegation counts, fed by the backend agent pool. */
+  agentActiveCounts: Record<string, number> = {}
   memoryFilePath = ''
   memoryContent = ''
   accessTokens: AccessTokenSummary[] = []
@@ -293,6 +295,7 @@ export class AppStore {
       builtInTools: observable,
       skills: observable,
       agents: observable,
+      agentActiveCounts: observable,
       memoryFilePath: observable,
       memoryContent: observable,
       accessTokens: observable,
@@ -2098,11 +2101,55 @@ export class AppStore {
         })
       })
 
-      if (persistedChatInventoryState.tabIds.length > 0) {
-        await this.chat.hydrateSessionsFromBackend(
-          persistedChatInventoryState.tabIds,
-          persistedChatInventoryState.preferredActiveTabId,
-        )
+      // Always discover the full set of persisted sessions, not just whatever
+      // the layout tree happens to be referencing. The layout tree only sees
+      // sessions currently bound to a live panel, but there can be many more
+      // on disk — orphaned because their old panel got removed, created in
+      // overlay mode (which uses a synthetic panelId not in the tree), or
+      // simply older sessions the user wants to scroll back to. Falling out
+      // of a panel must not equal "session is gone".
+      try {
+        const allHistory = await this.chat.getAllChatHistory()
+        const allIds: string[] = Array.isArray(allHistory)
+          ? allHistory
+              .map((entry: any) => (entry && typeof entry.id === 'string' ? entry.id : null))
+              .filter((id: string | null): id is string => !!id && id.length > 0)
+          : []
+
+        // Union: layout tabIds first (preserve their order so panel-bound
+        // sessions sit at the front), then any disk-only sessions sorted by
+        // updatedAt desc so the most-recently-touched orphans show high.
+        const layoutIds = persistedChatInventoryState.tabIds
+        const layoutIdSet = new Set(layoutIds)
+        const updatedAtById = new Map<string, number>()
+        if (Array.isArray(allHistory)) {
+          allHistory.forEach((entry: any) => {
+            if (!entry || typeof entry.id !== 'string') return
+            const t = typeof entry.updatedAt === 'number' ? entry.updatedAt : 0
+            updatedAtById.set(entry.id, t)
+          })
+        }
+        const orphanIds = allIds
+          .filter((id) => !layoutIdSet.has(id))
+          .sort((a, b) => (updatedAtById.get(b) || 0) - (updatedAtById.get(a) || 0))
+        const mergedIds = [...layoutIds, ...orphanIds]
+
+        if (mergedIds.length > 0) {
+          // Defer UI updates while we populate sessions, so events for
+          // sessions arriving mid-hydration aren't dropped by
+          // ChatStore.handleUiUpdate's "unknown session" guard.
+          deferUiUpdates = true
+          // Preferred active session: respect the layout's preference if it
+          // resolves; otherwise the most-recent session overall.
+          const preferred =
+            (persistedChatInventoryState.preferredActiveTabId &&
+            mergedIds.includes(persistedChatInventoryState.preferredActiveTabId)
+              ? persistedChatInventoryState.preferredActiveTabId
+              : mergedIds[0]) || null
+          await this.chat.hydrateSessionsFromBackend(mergedIds, preferred)
+        }
+      } catch (err) {
+        console.warn('[AppStore] session rehydration failed:', err)
       }
       runInAction(() => {
         flushDeferredUiUpdates()
@@ -2139,6 +2186,15 @@ export class AppStore {
           this.applySkillStatusUpdate(skills)
         })
       })
+
+      // Agent in-flight count updates — drives the sidebar badge bubbles.
+      ;(window.gyshell as any).agents?.onActiveCountsUpdated?.(
+        (counts: Record<string, number>) => {
+          runInAction(() => {
+            this.agentActiveCounts = counts || {}
+          })
+        },
+      )
 
       const terminalSnapshot = await window.gyshell.terminal.list()
       if (terminalSnapshot.terminals.length > 0) {

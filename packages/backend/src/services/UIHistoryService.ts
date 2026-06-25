@@ -28,6 +28,15 @@ export class UIHistoryService {
   private sessionsCache: Record<string, UIChatSession>
   private sessionSummaryCache: Record<string, UISessionSummary>
   private dirtySessions: Set<string> = new Set()
+  /**
+   * Debounced periodic flush during active streaming. Without this, in-flight
+   * messages stay in memory until the next task boundary, so a page refresh
+   * mid-task (browser tab freeze, dev-server reload, etc) loses the running
+   * conversation. Triggered when sessions become dirty; coalesces bursts so
+   * we don't pay disk-write cost on every stream chunk.
+   */
+  private pendingFlushTimer: NodeJS.Timeout | null = null
+  private static readonly DEBOUNCED_FLUSH_DELAY_MS = 3000
 
   constructor() {
     const storeOptions: any = {
@@ -146,12 +155,40 @@ export class UIHistoryService {
     this.syncSessionSummary(sessionId)
     // Mark dirty but do not persist immediately (critical for smooth streaming UX).
     this.dirtySessions.add(sessionId)
+    this.scheduleDebouncedFlush()
     return actions
   }
 
   /**
-   * Flush UI history to disk. By design we persist at low frequency
-   * (e.g. on task completion / error / delete / rollback), not on every event.
+   * Schedule a flush to run a few seconds after the last mutation. Resets the
+   * timer on every call, so a burst of stream chunks coalesces into one
+   * write. Crucially, this guarantees in-flight messages reach disk even if
+   * the next task boundary is far in the future — so a mid-task refresh
+   * doesn't lose the conversation.
+   */
+  private scheduleDebouncedFlush(): void {
+    if (this.pendingFlushTimer) {
+      clearTimeout(this.pendingFlushTimer)
+    }
+    this.pendingFlushTimer = setTimeout(() => {
+      this.pendingFlushTimer = null
+      try {
+        this.flush()
+      } catch (e) {
+        console.warn('[UIHistoryService] debounced flush failed:', e)
+      }
+    }, UIHistoryService.DEBOUNCED_FLUSH_DELAY_MS)
+    // Don't keep the process alive just for this timer.
+    if (typeof this.pendingFlushTimer.unref === 'function') {
+      this.pendingFlushTimer.unref()
+    }
+  }
+
+  /**
+   * Flush UI history to disk. Called explicitly at task boundaries
+   * (completion / error / delete / rollback) and automatically on a
+   * debounced timer while sessions are dirty (so mid-task refreshes
+   * don't lose streaming messages).
    */
   flush(sessionId?: string): void {
     if (sessionId) {
@@ -165,6 +202,12 @@ export class UIHistoryService {
     this.saveSessions(this.sessionsCache)
     if (sessionId) this.dirtySessions.delete(sessionId)
     else this.dirtySessions.clear()
+
+    // If a debounced flush was scheduled, the explicit call covers it.
+    if (this.pendingFlushTimer) {
+      clearTimeout(this.pendingFlushTimer)
+      this.pendingFlushTimer = null
+    }
   }
 
   private processEvent(session: UIChatSession, event: AgentEvent, sessionId: string): UIUpdateAction[] {

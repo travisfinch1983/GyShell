@@ -11,50 +11,52 @@ interface Props {
 }
 
 /**
- * Single-session global chat overlay. Shown whenever the model sidebar is
+ * Multi-session global chat overlay. Shown whenever the model sidebar is
  * expanded; hidden when collapsed. Overlays the active tab's content with
  * a semi-transparent backdrop so the user can keep referencing what's
  * underneath while typing.
  *
- * Multi-session controls inside ChatPanel are still present but unused —
- * the global panel always renders the first session in store.chat.sessions
- * and routes selection back to the same id.
+ * Renders every session in store.chat.sessions as a tab in ChatPanel, with
+ * tab selection / new-tab / close-tab routed back through ChatStore. The
+ * synthetic panelId "global-chat" is intentionally not registered in the
+ * layout tree — layout-store calls referencing it (e.g. attachTabToPanel)
+ * harmlessly no-op, since this overlay manages its own tab state via
+ * ChatStore.activeSessionId.
  */
 export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
-  // Pick a stable single session — first existing, or create a real one if
-  // none. The session must actually exist in store.chat.sessions, otherwise
-  // ChatStore.handleUiUpdate silently drops every backend event for it (it
-  // intentionally won't synthesize a session from live updates), and the
-  // user's message + the model's response both vanish into the void.
-  //
-  // Computed inline (no useMemo) on purpose: useMemo's dep array is checked
-  // with plain JS equality, which doesn't reliably re-fire when MobX mutates
-  // the underlying sessions array. The component is observer-wrapped so it
-  // re-renders whenever store.chat.sessions changes anyway, and this lookup
-  // is cheap enough that memoization buys nothing.
+  // Computed inline (no useMemo) on purpose: useMemo's dep array uses plain
+  // JS equality, which doesn't reliably re-fire on MobX mutations. The
+  // observer wrapper handles re-renders for us.
   const sessions = store.chat?.sessions || []
-  let sessionId: string
-  if (sessions.length > 0) {
-    sessionId = sessions[0].id
-  } else if (store.chat && typeof store.chat.createSession === 'function') {
+
+  // Make sure at least one session exists. ChatStore.handleUiUpdate silently
+  // drops events for unknown sessionIds, so the placeholder must be a real
+  // session in the store, not a synthetic id.
+  if (sessions.length === 0 && store.chat && typeof store.chat.createSession === 'function') {
     try {
-      sessionId = store.chat.createSession('Chat')
+      store.chat.createSession('Chat')
     } catch (err) {
       console.warn('[GlobalChat] createSession failed:', err)
-      sessionId = 'global-chat-session'
     }
-  } else {
-    sessionId = 'global-chat-session'
   }
 
-  // Make sure the chat store knows this is the active session — ChatPanel
-  // reads from activeSessionId for some menu interactions.
+  const sessionIds = sessions.map((s) => s.id)
+  const activeSessionId =
+    (store.chat?.activeSessionId && sessionIds.includes(store.chat.activeSessionId)
+      ? store.chat.activeSessionId
+      : sessionIds[0]) || null
+
+  // Keep ChatStore's activeSessionId in sync if it ever falls out of the list.
   useEffect(() => {
     if (!visible) return
-    if (store.chat && typeof (store.chat as any).setActiveSession === 'function') {
-      try { (store.chat as any).setActiveSession(sessionId) } catch {}
+    if (
+      activeSessionId &&
+      store.chat?.activeSessionId !== activeSessionId &&
+      typeof store.chat?.setActiveSession === 'function'
+    ) {
+      try { store.chat.setActiveSession(activeSessionId) } catch {}
     }
-  }, [visible, sessionId, store.chat])
+  }, [visible, activeSessionId, store.chat])
 
   if (!visible) return null
 
@@ -63,10 +65,23 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
       <ChatPanel
         store={store}
         panelId="global-chat"
-        sessionIds={[sessionId]}
-        activeSessionId={sessionId}
-        onSelectSession={() => { /* single-session — no-op */ }}
-        onRequestCloseTabs={undefined}
+        sessionIds={sessionIds}
+        activeSessionId={activeSessionId}
+        onSelectSession={(id) => {
+          try { store.chat.setActiveSession(id) } catch {}
+        }}
+        onRequestCloseTabs={(ids) => {
+          // In overlay mode, closing a tab means the user wants the session
+          // gone. We always rehydrate the full session list on reload, so
+          // anything we leave on disk would just reappear next refresh.
+          // Use deleteChatSession (persistent) instead of closeSession
+          // (in-memory only).
+          for (const id of ids) {
+            void store.chat.deleteChatSession(id).catch((err) => {
+              console.warn('[GlobalChat] deleteChatSession failed:', id, err)
+            })
+          }
+        }}
         onLayoutHeaderContextMenu={undefined}
       />
     </div>
