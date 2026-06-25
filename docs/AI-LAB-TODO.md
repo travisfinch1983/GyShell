@@ -7,15 +7,22 @@ Everything must end up NATIVE in AI-Lab (CT 152): settings storage + the backend
 (PVE API client, SSH, GPU hookscripts, discovery, downloads). The `cluster:request`/`metrics:*`
 proxy-to-ProxLab calls are a TEMPORARY BRIDGE, retired piece-by-piece as each native port lands.
 
-### Settings migration (in progress)
-- [x] Map both settings systems (AI-Lab SettingsView + all ProxLab settings/endpoints).
-- [ ] **Phase 1 (now):** native cluster-settings store on CT 152 + native PVE client (connection + test).
-      Settings tabs: Proxmox connection, Tokens (HF/CivitAI), Cluster UI prefs.
-- [ ] Phase 2: GPU config/pools, AI agents, service-name overrides settings tabs.
-- [ ] Phase 3: shared folders, external services / vector DBs settings tabs.
-- [ ] Repoint cluster tab reads (getStatus/inventory) from ProxLab proxy → native PVE client.
+### Settings migration — UI DONE (native storage), effects deferred
+All ProxLab settings now have native AI-Lab tabs (stored in `cluster-settings.json` on CT 152 via
+`clusterSettings:*` RPCs). Tabs: Proxmox (native PVE client + Test ✓), Download Tokens (reveal/eye),
+Cluster UI, External Services (+ Vector DBs), Service Names, GPU & Pools, AI Agents, Shared Folders.
+- [x] Native cluster-settings store + PveClient (connection test verified PVE 9.1.1).
+- [x] All 8 settings tabs built + wired (UI + native persistence).
+
+### ⚑ FINALIZATION — wire saved settings to actual effects (do after all tabs migrated)
+The settings UIs SAVE natively but most don't yet TAKE EFFECT (intentional — finalization pass):
+- [ ] Repoint cluster tab reads (getStatus/inventory) from ProxLab proxy → native PVE client (uses Proxmox settings).
+- [ ] GPU & Pools: native GPU discovery (SSH+nvidia-smi) + hookscript deploy reading gpuConfig.
+- [ ] AI Agents: native pool auto-sync from agents map.
+- [ ] Shared Folders: native mount provisioning from group/category definitions.
+- [ ] External Services / Vector DBs / Service Names: consume natively where the UI/feature tabs read them.
+- [ ] HF/CivitAI tokens: native downloaders use them.
 - [ ] Port write actions (config/migrate/GPU hookscripts via SSH) natively; retire cluster:request bridge.
-- [ ] Port HF/CivitAI downloaders + AI service launchers natively (later tabs).
 
 
 ## Cluster tab — metric cards (PARKED 2026-06-25, working but to be fleshed out)
