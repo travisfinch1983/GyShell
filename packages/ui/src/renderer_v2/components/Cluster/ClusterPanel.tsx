@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { RefreshCw, Server, MoreVertical } from 'lucide-react'
+import { RefreshCw, Server } from 'lucide-react'
 import { clusterStore, type ClusterGuest, type GuestSort, type GuestSortKey } from '../../stores/ClusterStore'
 import { GrafanaPanel } from './GrafanaPanel'
 import { MigrateModal } from './MigrateModal'
 import { GpuModal } from './GpuModal'
+import { ConfirmModal, EditValueModal } from './ClusterModals'
+import { GuestRow, type GuestRowHandlers } from './GuestRow'
 import styles from './Cluster.module.scss'
 
 function pct(used?: number, max?: number): number {
@@ -45,170 +47,92 @@ const Metric: React.FC<{ label: string; value: number }> = ({ label, value }) =>
   )
 }
 
-const COLUMNS: Array<{ key: GuestSortKey; label: string }> = [
+const SORT_KEYS: Array<{ key: GuestSortKey; label: string }> = [
   { key: 'vmid', label: 'VMID' },
   { key: 'name', label: 'Name' },
   { key: 'node', label: 'Node' },
   { key: 'status', label: 'Status' },
   { key: 'cpu', label: 'CPU' },
-  { key: 'mem', label: 'Memory' },
+  { key: 'mem', label: 'Mem' },
 ]
 
-const GuestTable: React.FC<{
-  title: string
-  guests: ClusterGuest[]
-  sort: GuestSort
-  onSort: (key: GuestSortKey) => void
-  renderActions: (g: ClusterGuest) => React.ReactNode
-}> = ({ title, guests, sort, onSort, renderActions }) => (
-  <div className={styles.tableWrap}>
-    <div className={styles.tableHead}>
-      <span className={styles.tableTitle}>
-        {title} <span className={styles.tableCount}>({guests.length})</span>
-      </span>
-    </div>
-    <div className={styles.tableScroll}>
-      <table className={styles.table}>
-        <thead>
-          <tr>
-            {COLUMNS.map((col) => (
-              <th key={col.key} className={styles.sortable} onClick={() => onSort(col.key)}>
-                {col.label}
-                <span className={styles.sortArrow}>
-                  {sort.key === col.key ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
-                </span>
-              </th>
-            ))}
-            <th>Boot</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {guests.map((g) => {
-            const running = g.status === 'running'
-            const busy = clusterStore.actionBusy === g.vmid
-            return (
-              <tr key={g.vmid} className={busy ? styles.rowBusy : ''}>
-                <td className={styles.mono}>{g.vmid}</td>
-                <td>{g.name ?? '—'}</td>
-                <td>{g.node ?? '—'}</td>
-                <td>
-                  <span className={`${styles.status} ${running ? styles.ok : styles.idle}`}>
-                    {g.status ?? '—'}
-                  </span>
-                </td>
-                <td className={styles.mono}>{running ? `${Math.round((g.cpu ?? 0) * 100)}%` : '—'}</td>
-                <td className={styles.mono}>
-                  {running ? `${fmtBytes(g.mem)} / ${fmtBytes(g.maxmem)}` : fmtBytes(g.maxmem)}
-                </td>
-                <td>
-                  <input
-                    type="checkbox"
-                    checked={!!g.onboot}
-                    disabled={busy}
-                    title="Start on boot"
-                    onChange={() => clusterStore.setConfig(g.vmid, { onboot: g.onboot ? 0 : 1 })}
-                  />
-                </td>
-                <td className={styles.actionsCell}>{renderActions(g)}</td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
+const SortBar: React.FC<{ sort: GuestSort; onSort: (k: GuestSortKey) => void }> = ({ sort, onSort }) => (
+  <div className={styles.sortBar}>
+    <span className={styles.sortLabel}>Sort:</span>
+    {SORT_KEYS.map((s) => (
+      <button
+        key={s.key}
+        className={`${styles.sortChip} ${sort.key === s.key ? styles.sortActive : ''}`}
+        onClick={() => onSort(s.key)}
+      >
+        {s.label}
+        {sort.key === s.key ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
+      </button>
+    ))}
   </div>
 )
+
+type EditKind = 'cores' | 'memory' | 'disk' | 'order'
 
 export const ClusterPanel: React.FC = observer(() => {
   const [dragNode, setDragNode] = useState<string | null>(null)
   const [overNode, setOverNode] = useState<string | null>(null)
   const [menuVmid, setMenuVmid] = useState<number | null>(null)
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [migrateFor, setMigrateFor] = useState<ClusterGuest | null>(null)
   const [gpuFor, setGpuFor] = useState<ClusterGuest | null>(null)
+  const [edit, setEdit] = useState<{ kind: EditKind; guest: ClusterGuest } | null>(null)
+  const [confirm, setConfirm] = useState<{ guest: ClusterGuest; action: 'stop' | 'shutdown' | 'reboot' } | null>(null)
 
   useEffect(() => {
     clusterStore.startPolling(10000)
+    clusterStore.loadModalData() // GPU assignment counts shown inline
     return () => clusterStore.stopPolling()
   }, [])
 
-  const power = (g: ClusterGuest, action: 'start' | 'stop' | 'shutdown' | 'reboot') => {
-    setMenuVmid(null)
-    if (action !== 'start' && !window.confirm(`${action.toUpperCase()} ${g.type?.toUpperCase()} ${g.vmid} (${g.name ?? ''})?`)) return
-    void clusterStore.guestPower(g.vmid, action)
+  const toggleExpand = (vmid: number) =>
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      next.has(vmid) ? next.delete(vmid) : next.add(vmid)
+      return next
+    })
+
+  const handlers: GuestRowHandlers = {
+    onPower: (g, action) => {
+      setMenuVmid(null)
+      if (action === 'start') void clusterStore.guestPower(g.vmid, action)
+      else setConfirm({ guest: g, action })
+    },
+    onEditCores: (g) => setEdit({ kind: 'cores', guest: g }),
+    onEditMemory: (g) => setEdit({ kind: 'memory', guest: g }),
+    onResizeDisk: (g) => setEdit({ kind: 'disk', guest: g }),
+    onEditOrder: (g) => setEdit({ kind: 'order', guest: g }),
+    onMigrate: (g) => {
+      setMenuVmid(null)
+      void clusterStore.loadModalData()
+      setMigrateFor(g)
+    },
+    onGpu: (g) => {
+      void clusterStore.loadModalData()
+      setGpuFor(g)
+    },
   }
 
-  const editResources = (g: ClusterGuest) => {
-    setMenuVmid(null)
-    const cores = window.prompt(`Cores for ${g.vmid} (${g.name ?? ''})`, String(g.maxcpu ?? ''))
-    if (cores === null) return
-    const memMb = window.prompt('Memory (MB)', String(g.maxmem ? Math.round(g.maxmem / 1048576) : ''))
-    if (memMb === null) return
-    const patch: Record<string, unknown> = {}
-    if (cores.trim()) patch.cores = Number(cores)
-    if (memMb.trim()) patch.memory = Number(memMb)
-    if (Object.keys(patch).length) void clusterStore.setResources(g.vmid, patch)
+  const applyEdit = (value: string) => {
+    if (!edit) return
+    const { kind, guest } = edit
+    if (kind === 'cores') void clusterStore.setResources(guest.vmid, { cores: Number(value) })
+    else if (kind === 'memory') void clusterStore.setResources(guest.vmid, { memory: Number(value) })
+    else if (kind === 'disk')
+      void clusterStore.resizeDisk(guest.vmid, guest.type === 'qemu' ? 'scsi0' : 'rootfs', value)
+    else if (kind === 'order') void clusterStore.setConfig(guest.vmid, { startup: value })
   }
 
-  const resizeDisk = (g: ClusterGuest) => {
-    setMenuVmid(null)
-    const disk = g.type === 'qemu' ? 'scsi0' : 'rootfs'
-    const size = window.prompt(`Grow disk "${disk}" of ${g.vmid} by (e.g. +5G):`, '+5G')
-    if (size && size.trim()) void clusterStore.resizeDisk(g.vmid, disk, size.trim())
-  }
-
-  const toggleProtection = (g: ClusterGuest) => {
-    setMenuVmid(null)
-    void clusterStore.setConfig(g.vmid, { protection: g.protection ? 0 : 1 })
-  }
-
-  const openMigrate = (g: ClusterGuest) => {
-    setMenuVmid(null)
-    void clusterStore.loadModalData()
-    setMigrateFor(g)
-  }
-
-  const openGpu = (g: ClusterGuest) => {
-    setMenuVmid(null)
-    void clusterStore.loadModalData()
-    setGpuFor(g)
-  }
-
-  const renderActions = (g: ClusterGuest) => {
-    const running = g.status === 'running'
-    const open = menuVmid === g.vmid
-    return (
-      <div className={styles.actionWrap}>
-        <button
-          className={styles.menuBtn}
-          title="Actions"
-          type="button"
-          onClick={() => setMenuVmid(open ? null : g.vmid)}
-        >
-          <MoreVertical size={15} />
-        </button>
-        {open && (
-          <>
-            <div className={styles.menuBackdrop} onClick={() => setMenuVmid(null)} />
-            <div className={styles.menu}>
-              {!running && <button onClick={() => power(g, 'start')}>Start</button>}
-              {running && <button onClick={() => power(g, 'reboot')}>Reboot</button>}
-              {running && <button onClick={() => power(g, 'shutdown')}>Shutdown</button>}
-              {running && <button className={styles.danger} onClick={() => power(g, 'stop')}>Stop</button>}
-              <div className={styles.menuSep} />
-              <button onClick={() => editResources(g)}>Edit cores / memory…</button>
-              <button onClick={() => resizeDisk(g)}>Resize disk…</button>
-              <button onClick={() => openMigrate(g)}>Migrate…</button>
-              {g.type === 'lxc' && <button onClick={() => openGpu(g)}>GPUs…</button>}
-              <div className={styles.menuSep} />
-              <button onClick={() => toggleProtection(g)}>
-                {g.protection ? 'Disable protection' : 'Enable protection'}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-    )
+  const editConfig: Record<EditKind, { title: string; label: string; initial: (g: ClusterGuest) => string; hint?: string }> = {
+    cores: { title: 'Edit cores', label: 'Cores', initial: (g) => String(g.maxcpu ?? '') },
+    memory: { title: 'Edit memory', label: 'Memory (MB)', initial: (g) => String(g.maxmem ? Math.round(g.maxmem / 1048576) : '') },
+    disk: { title: 'Resize disk', label: 'Grow by', initial: () => '+5G', hint: 'Relative size, e.g. +5G or +512M. Disk only grows.' },
+    order: { title: 'Startup order', label: 'startup', initial: (g) => String(g.startup ?? 'order=1,up=30'), hint: 'PVE format: order=N,up=SECS;down=SECS' },
   }
 
   const s = clusterStore.status
@@ -229,16 +153,9 @@ export const ClusterPanel: React.FC = observer(() => {
         </span>
         <div className={styles.spacer} />
         {clusterStore.lastUpdated && (
-          <span className={styles.updated}>
-            updated {new Date(clusterStore.lastUpdated).toLocaleTimeString()}
-          </span>
+          <span className={styles.updated}>updated {new Date(clusterStore.lastUpdated).toLocaleTimeString()}</span>
         )}
-        <button
-          className={styles.refreshBtn}
-          onClick={() => void clusterStore.refresh()}
-          title="Refresh"
-          type="button"
-        >
+        <button className={styles.refreshBtn} onClick={() => void clusterStore.refresh()} title="Refresh" type="button">
           <RefreshCw size={14} className={clusterStore.loading ? styles.spin : ''} />
         </button>
       </div>
@@ -319,25 +236,66 @@ export const ClusterPanel: React.FC = observer(() => {
             </span>
           </div>
 
-          <GuestTable
-            title="LXC Containers"
-            guests={clusterStore.containers}
-            sort={clusterStore.ctSort}
-            onSort={(key) => clusterStore.setSort('ct', key)}
-            renderActions={renderActions}
-          />
-          <GuestTable
-            title="Virtual Machines"
-            guests={clusterStore.vms}
-            sort={clusterStore.vmSort}
-            onSort={(key) => clusterStore.setSort('vm', key)}
-            renderActions={renderActions}
-          />
+          <div className={styles.listSection}>
+            <div className={styles.listHead}>
+              <span className={styles.listTitle}>LXC Containers ({clusterStore.containers.length})</span>
+              <SortBar sort={clusterStore.ctSort} onSort={(k) => clusterStore.setSort('ct', k)} />
+            </div>
+            {clusterStore.containers.map((g) => (
+              <GuestRow
+                key={g.vmid}
+                guest={g}
+                expanded={expanded.has(g.vmid)}
+                onToggleExpand={() => toggleExpand(g.vmid)}
+                menuOpen={menuVmid === g.vmid}
+                onMenuToggle={() => setMenuVmid(menuVmid === g.vmid ? null : g.vmid)}
+                h={handlers}
+              />
+            ))}
+          </div>
+
+          <div className={styles.listSection}>
+            <div className={styles.listHead}>
+              <span className={styles.listTitle}>Virtual Machines ({clusterStore.vms.length})</span>
+              <SortBar sort={clusterStore.vmSort} onSort={(k) => clusterStore.setSort('vm', k)} />
+            </div>
+            {clusterStore.vms.map((g) => (
+              <GuestRow
+                key={g.vmid}
+                guest={g}
+                expanded={expanded.has(g.vmid)}
+                onToggleExpand={() => toggleExpand(g.vmid)}
+                menuOpen={menuVmid === g.vmid}
+                onMenuToggle={() => setMenuVmid(menuVmid === g.vmid ? null : g.vmid)}
+                h={handlers}
+              />
+            ))}
+          </div>
         </div>
       )}
 
       {migrateFor && <MigrateModal guest={migrateFor} onClose={() => setMigrateFor(null)} />}
       {gpuFor && <GpuModal guest={gpuFor} onClose={() => setGpuFor(null)} />}
+      {edit && (
+        <EditValueModal
+          title={`${editConfig[edit.kind].title} · ${edit.guest.vmid} (${edit.guest.name ?? ''})`}
+          label={editConfig[edit.kind].label}
+          initial={editConfig[edit.kind].initial(edit.guest)}
+          hint={editConfig[edit.kind].hint}
+          onSubmit={applyEdit}
+          onClose={() => setEdit(null)}
+        />
+      )}
+      {confirm && (
+        <ConfirmModal
+          title={`${confirm.action.toUpperCase()} ${confirm.guest.type?.toUpperCase()} ${confirm.guest.vmid}?`}
+          message={`${confirm.guest.name ?? ''} on ${confirm.guest.node}. This affects a running guest.`}
+          confirmLabel={confirm.action.charAt(0).toUpperCase() + confirm.action.slice(1)}
+          danger={confirm.action === 'stop'}
+          onConfirm={() => void clusterStore.guestPower(confirm.guest.vmid, confirm.action)}
+          onClose={() => setConfirm(null)}
+        />
+      )}
     </div>
   )
 })

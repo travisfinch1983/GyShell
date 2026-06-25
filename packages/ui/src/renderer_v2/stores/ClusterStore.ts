@@ -47,6 +47,7 @@ export interface ClusterGuest {
   protection?: number
   console?: number
   ostype?: string
+  startup?: string
 }
 
 export interface ClusterStatus {
