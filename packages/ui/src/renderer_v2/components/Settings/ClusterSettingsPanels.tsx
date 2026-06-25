@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { Eye, EyeOff } from 'lucide-react'
 
 /**
  * Settings panels for the ProxLab-replacement domain — stored NATIVELY on CT 152 via
@@ -60,14 +61,51 @@ const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, 
   </div>
 )
 
+/** Secret input pre-filled with the real value, obscured, with an eyeball reveal toggle. */
+const SecretInput: React.FC<{ value: string; onChange: (v: string) => void; placeholder?: string }> = ({ value, onChange, placeholder }) => {
+  const [show, setShow] = useState(false)
+  return (
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6 }}>
+      <input
+        style={{ ...inp, flex: 1 }}
+        type={show ? 'text' : 'password'}
+        value={value}
+        placeholder={placeholder}
+        autoComplete="off"
+        spellCheck={false}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <button
+        type="button"
+        style={{ ...btn, padding: 7, display: 'inline-flex', alignItems: 'center' }}
+        title={show ? 'Hide' : 'Show'}
+        onClick={() => setShow((s) => !s)}
+      >
+        {show ? <EyeOff size={15} /> : <Eye size={15} />}
+      </button>
+    </div>
+  )
+}
+
+/** Load the actual secret values for the reveal/eyeball affordance. */
+async function loadSecrets(): Promise<any> {
+  const r = await (window as any).gyshell?.clusterSettings?.reveal?.()
+  return r?.secrets ?? null
+}
+
 // ─── Proxmox connection ───────────────────────────────────────────────────────
 export const ProxmoxSettingsPanel: React.FC = () => {
   const { s, busy, msg, save } = useClusterSettings()
   const [f, setF] = useState<any>({})
   const [test, setTest] = useState<string | null>(null)
   useEffect(() => {
-    if (s?.pve) setF({ ...s.pve, tokenSecret: '' })
+    if (s?.pve) setF((prev: any) => ({ ...s.pve, tokenSecret: prev.tokenSecret ?? '' }))
   }, [s])
+  useEffect(() => {
+    void loadSecrets().then((sec) => {
+      if (sec?.pve) setF((prev: any) => ({ ...prev, tokenSecret: sec.pve.tokenSecret ?? '' }))
+    })
+  }, [])
   if (!s) return <div style={sub}>Loading…</div>
   const runTest = async () => {
     setTest('testing…')
@@ -83,7 +121,7 @@ export const ProxmoxSettingsPanel: React.FC = () => {
       <Field label="Host / IP"><input style={inp} value={f.host ?? ''} onChange={(e) => setF({ ...f, host: e.target.value })} /></Field>
       <Field label="Port"><input style={inp} type="number" value={f.port ?? 8006} onChange={(e) => setF({ ...f, port: Number(e.target.value) })} /></Field>
       <Field label="Token ID"><input style={inp} placeholder="user@realm!tokenname" value={f.tokenId ?? ''} onChange={(e) => setF({ ...f, tokenId: e.target.value })} /></Field>
-      <Field label="Token Secret"><input style={inp} type="password" placeholder={s.pve.tokenSecretSet ? '•••••••• (set — leave blank to keep)' : 'token secret UUID'} value={f.tokenSecret ?? ''} onChange={(e) => setF({ ...f, tokenSecret: e.target.value })} /></Field>
+      <Field label="Token Secret"><SecretInput value={f.tokenSecret ?? ''} onChange={(v) => setF({ ...f, tokenSecret: v })} placeholder="token secret UUID" /></Field>
       <Field label="Default node"><input style={inp} placeholder="(optional)" value={f.node ?? ''} onChange={(e) => setF({ ...f, node: e.target.value })} /></Field>
       <Field label="Verify SSL">
         <input type="checkbox" checked={!!f.verifySsl} onChange={(e) => setF({ ...f, verifySsl: e.target.checked })} />
@@ -101,18 +139,28 @@ export const ProxmoxSettingsPanel: React.FC = () => {
 
 // ─── Download tokens ──────────────────────────────────────────────────────────
 export const ClusterTokensPanel: React.FC = () => {
-  const { s, busy, msg, save } = useClusterSettings()
+  const { busy, msg, save } = useClusterSettings()
   const [hf, setHf] = useState('')
   const [civ, setCiv] = useState('')
-  if (!s) return <div style={sub}>Loading…</div>
+  const [loaded, setLoaded] = useState(false)
+  useEffect(() => {
+    void loadSecrets().then((sec) => {
+      if (sec) {
+        setHf(sec.tokens?.hfToken ?? '')
+        setCiv(sec.tokens?.civitaiToken ?? '')
+      }
+      setLoaded(true)
+    })
+  }, [])
+  if (!loaded) return <div style={sub}>Loading…</div>
   return (
     <div style={wrap}>
       <div style={h}>Download Tokens</div>
-      <div style={sub}>API tokens for model downloads. Stored on CT 152; blank = keep existing.</div>
-      <Field label="HuggingFace"><input style={inp} type="password" placeholder={s.tokens.hfTokenSet ? '•••••••• (set)' : 'hf_...'} value={hf} onChange={(e) => setHf(e.target.value)} /></Field>
-      <Field label="CivitAI"><input style={inp} type="password" placeholder={s.tokens.civitaiTokenSet ? '•••••••• (set)' : 'civitai api key'} value={civ} onChange={(e) => setCiv(e.target.value)} /></Field>
+      <div style={sub}>API tokens for model downloads. Stored on CT 152. Click the eye to reveal.</div>
+      <Field label="HuggingFace"><SecretInput value={hf} onChange={setHf} placeholder="hf_..." /></Field>
+      <Field label="CivitAI"><SecretInput value={civ} onChange={setCiv} placeholder="civitai api key" /></Field>
       <div style={{ ...row, marginTop: 18 }}>
-        <button style={primaryBtn} disabled={busy} onClick={() => { void save({ tokens: { hfToken: hf, civitaiToken: civ } }); setHf(''); setCiv('') }}>Save</button>
+        <button style={primaryBtn} disabled={busy} onClick={() => void save({ tokens: { hfToken: hf, civitaiToken: civ } })}>Save</button>
         {msg && <span style={{ fontSize: 12, color: 'var(--success)' }}>{msg}</span>}
       </div>
     </div>

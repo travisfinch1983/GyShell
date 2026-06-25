@@ -78,6 +78,16 @@ export class ClusterSettingsService {
     return this.load()
   }
 
+  /** Actual secret values, for the UI's reveal/eyeball affordance. Goes browser-ward
+   *  only over the trusted WS gateway (rule #1), on explicit request from the settings UI. */
+  reveal(): { pve: { tokenSecret: string }; tokens: { hfToken: string; civitaiToken: string } } {
+    const s = this.load()
+    return {
+      pve: { tokenSecret: s.pve.tokenSecret },
+      tokens: { hfToken: s.tokens.hfToken, civitaiToken: s.tokens.civitaiToken },
+    }
+  }
+
   /** UI-safe view: secrets replaced with `<field>Set` booleans. */
   get(): unknown {
     const s = this.load()

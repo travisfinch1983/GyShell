@@ -184,6 +184,7 @@ export async function startGyBackend(): Promise<void> {
         clusterSettingsBridge: {
           get: () => clusterSettingsService.get(),
           set: (patch) => clusterSettingsService.set(patch),
+          reveal: () => clusterSettingsService.reveal(),
           testPve: () => pveClient.testConnection()
         },
         terminalBridge: {

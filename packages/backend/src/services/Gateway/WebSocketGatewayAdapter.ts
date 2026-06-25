@@ -79,6 +79,7 @@ type WebSocketRpcMethod =
   | 'metrics:labelValues'
   | 'clusterSettings:get'
   | 'clusterSettings:set'
+  | 'clusterSettings:reveal'
   | 'clusterSettings:testPve';
 
 interface WebSocketRpcRequest {
@@ -131,6 +132,7 @@ export interface WebSocketGatewayAdapterOptions {
   clusterSettingsBridge?: {
     get: () => unknown;
     set: (patch: unknown) => unknown;
+    reveal: () => unknown;
     testPve: () => Promise<unknown>;
   };
   agentBridge?: {
@@ -698,6 +700,12 @@ export class WebSocketGatewayAdapter {
           throw new WebSocketRpcError('METHOD_NOT_FOUND', 'clusterSettings:set is not available on this websocket gateway.');
         }
         return { settings: this.options.clusterSettingsBridge.set((params as Record<string, unknown>).patch) };
+      }
+      case 'clusterSettings:reveal': {
+        if (!this.options.clusterSettingsBridge?.reveal) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'clusterSettings:reveal is not available on this websocket gateway.');
+        }
+        return { secrets: this.options.clusterSettingsBridge.reveal() };
       }
       case 'clusterSettings:testPve': {
         if (!this.options.clusterSettingsBridge?.testPve) {
