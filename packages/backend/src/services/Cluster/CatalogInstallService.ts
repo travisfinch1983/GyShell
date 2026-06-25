@@ -1,4 +1,4 @@
-import WebSocket from 'ws'
+import { WebSocket } from 'ws'
 
 /**
  * CatalogInstallService — runs a Helper-Scripts installer on a PVE node and streams the
