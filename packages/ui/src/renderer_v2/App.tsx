@@ -17,6 +17,7 @@ import { PrimarySidebar, type PrimaryTab } from './components/PrimarySidebar/Pri
 import { GlobalChat } from './components/Chat/GlobalChat'
 import { ContextMenuOverlay } from './components/Common/ContextMenuOverlay'
 import { ClusterPanel } from './components/Cluster/ClusterPanel'
+import { ServicesPanel } from './components/Services/ServicesPanel'
 import './styles/app.scss'
 
 const store = new AppStore()
@@ -316,6 +317,8 @@ export const App: React.FC = observer(() => {
           </div>
 
           {primaryTab === 'cluster' && <ClusterPanel />}
+
+          {primaryTab === 'services' && <ServicesPanel />}
 
           {primaryTab === 'flowchart' && (
             <PlaceholderPanel

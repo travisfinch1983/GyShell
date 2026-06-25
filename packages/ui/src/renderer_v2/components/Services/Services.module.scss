@@ -1,0 +1,62 @@
+.container { display: flex; flex-direction: column; position: absolute; inset: 0; background: var(--app-bg); color: var(--fg); overflow: hidden; }
+
+.header {
+  display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+  border-bottom: 1px solid var(--border); background: var(--panel-bg-2); flex: 0 0 auto;
+}
+.headerIcon { color: var(--accent); }
+.title { font-weight: 600; font-size: 14px; }
+.counts { color: var(--fg-muted); font-size: 12px; }
+.spacer { flex: 1; }
+.updated { color: var(--fg-faint); font-size: 11px; }
+.filter {
+  width: 260px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--control-bg); color: var(--fg); font-size: 12px;
+  &:focus { outline: none; border-color: var(--accent); }
+}
+.scanBtn {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 6px 12px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--control-bg); color: var(--fg); cursor: pointer;
+  &:hover:not(:disabled) { background: var(--control-bg-hover); }
+  &:disabled { opacity: 0.5; cursor: default; }
+}
+.spin { animation: svc-spin 0.9s linear infinite; }
+@keyframes svc-spin { to { transform: rotate(360deg); } }
+
+.errorBar { margin: 12px 16px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: 6px; color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.loading { padding: 32px; text-align: center; color: var(--fg-muted); }
+
+.body { flex: 1; overflow: auto; padding: 16px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+
+.card { border: 1px solid var(--border); border-radius: 8px; background: var(--panel-bg); overflow: hidden; }
+.cardError { border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.cardHead { display: flex; align-items: center; gap: 8px; padding: 9px 11px; border-bottom: 1px solid var(--border); background: var(--panel-bg-2); }
+.typeBadge { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: var(--control-bg); color: var(--fg-muted); }
+.hostName { font-weight: 600; font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.svcCount { font-size: 11px; color: var(--fg-faint); }
+.rescanBtn {
+  display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px;
+  border: 1px solid var(--border); border-radius: 5px; background: var(--control-bg); color: var(--fg-muted); cursor: pointer;
+  &:hover:not(:disabled) { background: var(--control-bg-hover); color: var(--fg); }
+}
+.cardSub { padding: 6px 11px 0; font-size: 11px; color: var(--fg-faint); font-family: var(--font-mono); }
+.cardErr { padding: 8px 11px 11px; font-size: 11px; color: var(--danger); }
+.cardEmpty { padding: 8px 11px 11px; font-size: 11px; color: var(--fg-faint); }
+
+.svcList { padding: 6px; }
+.svc { display: flex; align-items: center; gap: 7px; padding: 4px 6px; border-radius: 5px; &:hover { background: var(--control-bg); } }
+.svcUnknown { opacity: 0.6; }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.on { background: var(--success); }
+.off { background: var(--fg-faint); }
+.svcLink { flex: 1; display: inline-flex; align-items: center; gap: 4px; color: var(--fg); text-decoration: none; font-size: 12px; min-width: 0; &:hover { color: var(--accent); } }
+.svcName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.svcPort { color: var(--fg-faint); font-family: var(--font-mono); font-size: 11px; }
+.extIcon { color: var(--fg-faint); flex: 0 0 auto; }
+.svcEdit { flex: 1; padding: 3px 6px; border: 1px solid var(--accent); border-radius: 4px; background: var(--control-bg); color: var(--fg); font-size: 12px; }
+.editBtn {
+  display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
+  border: none; background: transparent; color: var(--fg-faint); cursor: pointer; border-radius: 4px; flex: 0 0 auto;
+  &:hover { background: var(--control-bg-hover); color: var(--fg); }
+}
