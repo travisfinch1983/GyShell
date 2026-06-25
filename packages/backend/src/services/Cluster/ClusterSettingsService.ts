@@ -26,11 +26,32 @@ export interface ClusterUiSettings {
   metricsRefreshMs: number
   pveRefreshMs: number
 }
+export interface ExternalService {
+  name: string
+  type: string // llm | embeddings | reranker | tts | stt
+  url: string
+  model?: string
+  description?: string
+}
+export interface VectorDb {
+  name: string
+  type: string // milvus | weaviate | chromadb | qdrant | hippocampai
+  host: string
+  port: number
+  description?: string
+}
+export interface ServiceNames {
+  common: Record<string, string> // "port:process" -> display name
+  custom: Record<string, string> // "host:port" -> display name
+}
 export interface ClusterSettings {
   pve: PveSettings
   tokens: { hfToken: string; civitaiToken: string }
   ui: ClusterUiSettings
   labName: string
+  externalServices: ExternalService[]
+  vectorDbs: VectorDb[]
+  serviceNames: ServiceNames
 }
 
 const DEFAULTS: ClusterSettings = {
@@ -38,6 +59,9 @@ const DEFAULTS: ClusterSettings = {
   tokens: { hfToken: '', civitaiToken: '' },
   ui: { ramIncrementMB: 1024, swapIncrementMB: 512, cpuIncrement: 1, metricsRefreshMs: 10000, pveRefreshMs: 10000 },
   labName: 'DeeveeyantLab',
+  externalServices: [],
+  vectorDbs: [],
+  serviceNames: { common: {}, custom: {} },
 }
 
 const SECRET_PATHS = ['pve.tokenSecret', 'tokens.hfToken', 'tokens.civitaiToken']
@@ -69,6 +93,9 @@ export class ClusterSettingsService {
       tokens: { ...DEFAULTS.tokens, ...(parsed.tokens ?? {}) },
       ui: { ...DEFAULTS.ui, ...(parsed.ui ?? {}) },
       labName: parsed.labName ?? DEFAULTS.labName,
+      externalServices: Array.isArray(parsed.externalServices) ? parsed.externalServices : [],
+      vectorDbs: Array.isArray(parsed.vectorDbs) ? parsed.vectorDbs : [],
+      serviceNames: { common: parsed.serviceNames?.common ?? {}, custom: parsed.serviceNames?.custom ?? {} },
     }
     return this.cache
   }
@@ -96,6 +123,9 @@ export class ClusterSettingsService {
       tokens: { hfTokenSet: !!s.tokens.hfToken, civitaiTokenSet: !!s.tokens.civitaiToken },
       ui: s.ui,
       labName: s.labName,
+      externalServices: s.externalServices,
+      vectorDbs: s.vectorDbs,
+      serviceNames: s.serviceNames,
     }
   }
 
@@ -107,6 +137,10 @@ export class ClusterSettingsService {
       tokens: { ...cur.tokens, ...(patch?.tokens ?? {}) },
       ui: { ...cur.ui, ...(patch?.ui ?? {}) },
       labName: patch?.labName ?? cur.labName,
+      // Arrays/maps replaced wholesale when present in the patch.
+      externalServices: Array.isArray(patch?.externalServices) ? patch.externalServices : cur.externalServices,
+      vectorDbs: Array.isArray(patch?.vectorDbs) ? patch.vectorDbs : cur.vectorDbs,
+      serviceNames: patch?.serviceNames ? { common: patch.serviceNames.common ?? {}, custom: patch.serviceNames.custom ?? {} } : cur.serviceNames,
     }
     // Don't wipe secrets when the caller sends blank/undefined.
     for (const p of SECRET_PATHS) {

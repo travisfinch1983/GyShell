@@ -31,7 +31,7 @@ import { observer } from "mobx-react-lite";
 import type { AppStore } from "../../stores/AppStore";
 import type { ModelDefinition } from "../../lib/ipcTypes";
 import { BUILTIN_THEMES } from "../../theme/themes";
-import { ProxmoxSettingsPanel, ClusterTokensPanel, ClusterUiPanel } from "./ClusterSettingsPanels";
+import { ProxmoxSettingsPanel, ClusterTokensPanel, ClusterUiPanel, ExternalServicesPanel, ServiceNamesPanel } from "./ClusterSettingsPanels";
 import type { AppTheme } from "../../theme/themes";
 import "./settings.scss";
 import { ConfirmDialog } from "../Common/ConfirmDialog";
@@ -928,6 +928,24 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
           >
             <span className="icon"><SlidersHorizontal size={16} strokeWidth={2} /></span>
             <span>Cluster UI</span>
+          </div>
+          <div
+            className={store.settingsSection === "cluster-services" ? "settings-nav-item is-active" : "settings-nav-item"}
+            onClick={() => store.setSettingsSection("cluster-services")}
+            role="button"
+            tabIndex={0}
+          >
+            <span className="icon"><Globe size={16} strokeWidth={2} /></span>
+            <span>External Services</span>
+          </div>
+          <div
+            className={store.settingsSection === "cluster-servicenames" ? "settings-nav-item is-active" : "settings-nav-item"}
+            onClick={() => store.setSettingsSection("cluster-servicenames")}
+            role="button"
+            tabIndex={0}
+          >
+            <span className="icon"><Tag size={16} strokeWidth={2} /></span>
+            <span>Service Names</span>
           </div>
         </div>
       </div>
@@ -2709,6 +2727,8 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
           {store.settingsSection === "cluster-proxmox" ? <ProxmoxSettingsPanel /> : null}
           {store.settingsSection === "cluster-tokens" ? <ClusterTokensPanel /> : null}
           {store.settingsSection === "cluster-ui" ? <ClusterUiPanel /> : null}
+          {store.settingsSection === "cluster-services" ? <ExternalServicesPanel /> : null}
+          {store.settingsSection === "cluster-servicenames" ? <ServiceNamesPanel /> : null}
         </div>
       </div>
     </div>

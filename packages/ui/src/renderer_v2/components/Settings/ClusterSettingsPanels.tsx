@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Eye, EyeOff } from 'lucide-react'
+import { Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
 
 /**
  * Settings panels for the ProxLab-replacement domain — stored NATIVELY on CT 152 via
@@ -194,6 +194,107 @@ export const ClusterUiPanel: React.FC = () => {
       {num('cpuIncrement', 'CPU step (cores)')}
       <div style={{ ...row, marginTop: 18 }}>
         <button style={primaryBtn} disabled={busy} onClick={() => void save({ ui: f, labName: lab })}>Save</button>
+        {msg && <span style={{ fontSize: 12, color: 'var(--success)' }}>{msg}</span>}
+      </div>
+    </div>
+  )
+}
+
+// ─── External Services (LLM/embed/rerank/TTS/STT) + Vector DBs ──────────────────
+const SVC_TYPES = ['llm', 'embeddings', 'reranker', 'tts', 'stt']
+const VDB_TYPES = ['milvus', 'weaviate', 'chromadb', 'qdrant', 'hippocampai']
+const smallInp: React.CSSProperties = { ...inp, flex: 'unset', padding: '5px 8px', fontSize: 12 }
+const delBtn: React.CSSProperties = { ...btn, padding: 6, color: 'var(--danger)', borderColor: 'color-mix(in srgb, var(--danger) 40%, transparent)' }
+const addBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 8, fontSize: 12, padding: '6px 12px', borderRadius: 6, border: '1px dashed var(--border-strong)', background: 'transparent', color: 'var(--fg-muted)', cursor: 'pointer' }
+const sectionTitle: React.CSSProperties = { fontSize: 12, fontWeight: 600, color: 'var(--fg-muted)', margin: '16px 0 8px' }
+
+export const ExternalServicesPanel: React.FC = () => {
+  const { s, busy, msg, save } = useClusterSettings()
+  const [svc, setSvc] = useState<any[]>([])
+  const [vdb, setVdb] = useState<any[]>([])
+  useEffect(() => {
+    if (s) { setSvc(s.externalServices ?? []); setVdb(s.vectorDbs ?? []) }
+  }, [s])
+  if (!s) return <div style={sub}>Loading…</div>
+  const up = (arr: any[], set: any, i: number, patch: any) => set(arr.map((x, j) => (j === i ? { ...x, ...patch } : x)))
+  return (
+    <div style={wrap}>
+      <div style={h}>External Services</div>
+      <div style={sub}>LLM / embeddings / reranker / TTS / STT endpoints + vector DBs. Stored on CT 152.</div>
+
+      <div style={sectionTitle}>AI service endpoints</div>
+      {svc.map((e, i) => (
+        <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input style={{ ...smallInp, width: 110 }} placeholder="name" value={e.name ?? ''} onChange={(ev) => up(svc, setSvc, i, { name: ev.target.value })} />
+          <select style={{ ...smallInp, width: 110 }} value={e.type ?? 'llm'} onChange={(ev) => up(svc, setSvc, i, { type: ev.target.value })}>
+            {SVC_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <input style={{ ...smallInp, flex: 1, minWidth: 160 }} placeholder="http://host:port" value={e.url ?? ''} onChange={(ev) => up(svc, setSvc, i, { url: ev.target.value })} />
+          <input style={{ ...smallInp, width: 120 }} placeholder="model (opt)" value={e.model ?? ''} onChange={(ev) => up(svc, setSvc, i, { model: ev.target.value })} />
+          <button style={delBtn} title="Remove" onClick={() => setSvc(svc.filter((_, j) => j !== i))}><Trash2 size={13} /></button>
+        </div>
+      ))}
+      <button style={addBtn} onClick={() => setSvc([...svc, { name: '', type: 'llm', url: '', model: '' }])}><Plus size={13} /> Add service</button>
+
+      <div style={sectionTitle}>Vector databases</div>
+      {vdb.map((e, i) => (
+        <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input style={{ ...smallInp, width: 110 }} placeholder="name" value={e.name ?? ''} onChange={(ev) => up(vdb, setVdb, i, { name: ev.target.value })} />
+          <select style={{ ...smallInp, width: 120 }} value={e.type ?? 'qdrant'} onChange={(ev) => up(vdb, setVdb, i, { type: ev.target.value })}>
+            {VDB_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <input style={{ ...smallInp, flex: 1, minWidth: 140 }} placeholder="host" value={e.host ?? ''} onChange={(ev) => up(vdb, setVdb, i, { host: ev.target.value })} />
+          <input style={{ ...smallInp, width: 90 }} type="number" placeholder="port" value={e.port ?? ''} onChange={(ev) => up(vdb, setVdb, i, { port: Number(ev.target.value) })} />
+          <button style={delBtn} title="Remove" onClick={() => setVdb(vdb.filter((_, j) => j !== i))}><Trash2 size={13} /></button>
+        </div>
+      ))}
+      <button style={addBtn} onClick={() => setVdb([...vdb, { name: '', type: 'qdrant', host: '', port: 6333 }])}><Plus size={13} /> Add vector DB</button>
+
+      <div style={{ ...row, marginTop: 20 }}>
+        <button style={primaryBtn} disabled={busy} onClick={() => void save({ externalServices: svc, vectorDbs: vdb })}>Save</button>
+        {msg && <span style={{ fontSize: 12, color: 'var(--success)' }}>{msg}</span>}
+      </div>
+    </div>
+  )
+}
+
+// ─── Service-name overrides ─────────────────────────────────────────────────────
+type KV = { k: string; v: string }
+const toRows = (m: Record<string, string>): KV[] => Object.entries(m || {}).map(([k, v]) => ({ k, v }))
+const toMap = (rows: KV[]): Record<string, string> => { const o: Record<string, string> = {}; rows.forEach((r) => { if (r.k.trim()) o[r.k.trim()] = r.v }); return o }
+
+export const ServiceNamesPanel: React.FC = () => {
+  const { s, busy, msg, save } = useClusterSettings()
+  const [common, setCommon] = useState<KV[]>([])
+  const [custom, setCustom] = useState<KV[]>([])
+  useEffect(() => {
+    if (s?.serviceNames) { setCommon(toRows(s.serviceNames.common)); setCustom(toRows(s.serviceNames.custom)) }
+  }, [s])
+  if (!s) return <div style={sub}>Loading…</div>
+  const editRows = (rows: KV[], set: any, keyPlaceholder: string) => (
+    <>
+      {rows.map((r, i) => (
+        <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+          <input style={{ ...smallInp, width: 200, fontFamily: 'var(--font-mono)' }} placeholder={keyPlaceholder} value={r.k} onChange={(e) => set(rows.map((x, j) => (j === i ? { ...x, k: e.target.value } : x)))} />
+          <span style={{ color: 'var(--fg-faint)' }}>→</span>
+          <input style={{ ...smallInp, flex: 1 }} placeholder="display name" value={r.v} onChange={(e) => set(rows.map((x, j) => (j === i ? { ...x, v: e.target.value } : x)))} />
+          <button style={delBtn} title="Remove" onClick={() => set(rows.filter((_, j) => j !== i))}><Trash2 size={13} /></button>
+        </div>
+      ))}
+    </>
+  )
+  return (
+    <div style={wrap}>
+      <div style={h}>Service Names</div>
+      <div style={sub}>Friendly display names for discovered services. Stored on CT 152.</div>
+      <div style={sectionTitle}>Common (by port:process)</div>
+      {editRows(common, setCommon, '8080:nginx')}
+      <button style={addBtn} onClick={() => setCommon([...common, { k: '', v: '' }])}><Plus size={13} /> Add</button>
+      <div style={sectionTitle}>Per-host (by host:port)</div>
+      {editRows(custom, setCustom, 'pve-2:22')}
+      <button style={addBtn} onClick={() => setCustom([...custom, { k: '', v: '' }])}><Plus size={13} /> Add</button>
+      <div style={{ ...row, marginTop: 20 }}>
+        <button style={primaryBtn} disabled={busy} onClick={() => void save({ serviceNames: { common: toMap(common), custom: toMap(custom) } })}>Save</button>
         {msg && <span style={{ fontSize: 12, color: 'var(--success)' }}>{msg}</span>}
       </div>
     </div>

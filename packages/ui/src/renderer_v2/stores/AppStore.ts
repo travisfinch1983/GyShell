@@ -97,7 +97,9 @@ export type SettingsSection =
   | 'version'
   | 'cluster-proxmox'
   | 'cluster-tokens'
-  | 'cluster-ui';
+  | 'cluster-ui'
+  | 'cluster-services'
+  | 'cluster-servicenames';
 
 export interface AgentDefinition {
   id: string;
