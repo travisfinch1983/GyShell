@@ -21,9 +21,9 @@ export const GpuModal: React.FC<{ guest: ClusterGuest; onClose: () => void }> = 
       }
     }, [current, selected])
 
-    const sel = selected ?? current?.gpus ?? []
+    const sel: string[] = selected ?? current?.gpus ?? []
     const toggle = (pciId: string) => {
-      const base = selected ?? current?.gpus ?? []
+      const base: string[] = selected ?? current?.gpus ?? []
       setSelected(base.includes(pciId) ? base.filter((x) => x !== pciId) : [...base, pciId])
     }
 

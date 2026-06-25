@@ -5,7 +5,7 @@ import styles from './Cluster.module.scss'
 
 export const MigrateModal: React.FC<{ guest: ClusterGuest; onClose: () => void }> = observer(
   ({ guest, onClose }) => {
-    const targets = clusterStore.nodes.filter((n) => n.node !== guest.node)
+    const targets = clusterStore.orderedNodes.filter((n) => n.node !== guest.node)
     const [target, setTarget] = useState(targets[0]?.node ?? '')
     const [online, setOnline] = useState(guest.status === 'running')
     const [storage, setStorage] = useState('')
