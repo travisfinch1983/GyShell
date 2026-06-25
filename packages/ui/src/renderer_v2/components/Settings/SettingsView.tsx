@@ -377,10 +377,17 @@ const ConnectionImporter = observer(({ store, onClose }: { store: AppStore; onCl
   const add = async () => {
     if (!rows) return;
     setAdding(true);
+    setErr(null);
     const chosen = rows.filter((r) => r.sel).map((r) => ({ id: r.id, contextLength: r.ctx }));
-    await store.addRemoteModels({ namePrefix: prefix.trim(), baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), defaultContext: defaultCtx, models: chosen });
-    setAdding(false);
-    onClose();
+    try {
+      const n = await store.addRemoteModels({ namePrefix: prefix.trim(), baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), defaultContext: defaultCtx, models: chosen });
+      console.log(`[ConnectionImporter] added ${n} models`);
+      onClose();
+    } catch (e) {
+      setErr(`Add failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setAdding(false);
+    }
   };
 
   const selCount = rows?.filter((r) => r.sel).length ?? 0;

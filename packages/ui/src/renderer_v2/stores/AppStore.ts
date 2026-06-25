@@ -2540,7 +2540,12 @@ export class AppStore {
     runInAction(() => {
       if (this.settings) this.settings.models = nextModels as any
     })
-    await window.gyshell.settings.set({ models: nextModels })
+    await Promise.race([
+      window.gyshell.settings.set({ models: nextModels }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('settings.set timed out — models may be too many for one save')), 30000),
+      ),
+    ])
     return added
   }
 
