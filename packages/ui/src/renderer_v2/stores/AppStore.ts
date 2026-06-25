@@ -94,7 +94,10 @@ export type SettingsSection =
   | 'agents'
   | 'memory'
   | 'accessTokens'
-  | 'version';
+  | 'version'
+  | 'cluster-proxmox'
+  | 'cluster-tokens'
+  | 'cluster-ui';
 
 export interface AgentDefinition {
   id: string;

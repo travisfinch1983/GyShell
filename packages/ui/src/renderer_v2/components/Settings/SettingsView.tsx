@@ -23,11 +23,15 @@ import {
   AlertTriangle,
   Database,
   Volume2,
+  Server,
+  KeyRound,
+  SlidersHorizontal,
 } from "lucide-react";
 import { observer } from "mobx-react-lite";
 import type { AppStore } from "../../stores/AppStore";
 import type { ModelDefinition } from "../../lib/ipcTypes";
 import { BUILTIN_THEMES } from "../../theme/themes";
+import { ProxmoxSettingsPanel, ClusterTokensPanel, ClusterUiPanel } from "./ClusterSettingsPanels";
 import type { AppTheme } from "../../theme/themes";
 import "./settings.scss";
 import { ConfirmDialog } from "../Common/ConfirmDialog";
@@ -895,6 +899,35 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
               <Info size={16} strokeWidth={2} />
             </span>
             <span>{t.settings.version}</span>
+          </div>
+
+          <div className="settings-nav-sep" />
+          <div
+            className={store.settingsSection === "cluster-proxmox" ? "settings-nav-item is-active" : "settings-nav-item"}
+            onClick={() => store.setSettingsSection("cluster-proxmox")}
+            role="button"
+            tabIndex={0}
+          >
+            <span className="icon"><Server size={16} strokeWidth={2} /></span>
+            <span>Proxmox</span>
+          </div>
+          <div
+            className={store.settingsSection === "cluster-tokens" ? "settings-nav-item is-active" : "settings-nav-item"}
+            onClick={() => store.setSettingsSection("cluster-tokens")}
+            role="button"
+            tabIndex={0}
+          >
+            <span className="icon"><KeyRound size={16} strokeWidth={2} /></span>
+            <span>Download Tokens</span>
+          </div>
+          <div
+            className={store.settingsSection === "cluster-ui" ? "settings-nav-item is-active" : "settings-nav-item"}
+            onClick={() => store.setSettingsSection("cluster-ui")}
+            role="button"
+            tabIndex={0}
+          >
+            <span className="icon"><SlidersHorizontal size={16} strokeWidth={2} /></span>
+            <span>Cluster UI</span>
           </div>
         </div>
       </div>
@@ -2672,6 +2705,10 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
               </div>
             </>
           ) : null}
+
+          {store.settingsSection === "cluster-proxmox" ? <ProxmoxSettingsPanel /> : null}
+          {store.settingsSection === "cluster-tokens" ? <ClusterTokensPanel /> : null}
+          {store.settingsSection === "cluster-ui" ? <ClusterUiPanel /> : null}
         </div>
       </div>
     </div>
