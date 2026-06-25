@@ -55,6 +55,16 @@ export class ServicesStore {
     return api
   }
 
+  /**
+   * Drop ProxLab's hardcoded `static` host entries (config.yaml) — they reference hosts
+   * that no longer exist and show as connection errors (coding std #5: no stale hardcoded
+   * data). AI-Lab's Services view reflects LIVE inventory (PVE guests + nodes). A native,
+   * user-managed external-hosts list can be added later if needed.
+   */
+  private normalize(hosts: DiscoveryHost[]): DiscoveryHost[] {
+    return hosts.filter((h) => h.guestType !== 'static')
+  }
+
   get filteredHosts(): DiscoveryHost[] {
     const f = this.filter.trim().toLowerCase()
     const sorted = [...this.hosts].sort((a, b) => {
@@ -98,7 +108,7 @@ export class ServicesStore {
         api.request('GET', '/api/discovery'),
         (window as any).gyshell?.clusterSettings?.get?.(),
       ])
-      const hosts = Object.values(disc || {}) as DiscoveryHost[]
+      const hosts = this.normalize(Object.values(disc || {}) as DiscoveryHost[])
       const sn = settings?.settings?.serviceNames ?? { common: {}, custom: {} }
       runInAction(() => {
         this.hosts = hosts
@@ -122,7 +132,7 @@ export class ServicesStore {
     try {
       const r = await this.cluster().request('POST', '/api/discovery/scan')
       runInAction(() => {
-        this.hosts = Object.values(r || {}) as DiscoveryHost[]
+        this.hosts = this.normalize(Object.values(r || {}) as DiscoveryHost[])
         this.lastUpdated = Date.now()
       })
     } catch (e) {
