@@ -42,6 +42,12 @@
   gap: 2px;
 }
 
+.settings-nav-sep {
+  height: 1px;
+  margin: 8px 10px;
+  background: var(--border);
+}
+
 .settings-nav-item {
   height: 32px;
   border-radius: 4px;
