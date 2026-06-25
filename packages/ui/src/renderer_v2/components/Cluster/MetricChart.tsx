@@ -68,7 +68,6 @@ function thresholdColor(v: number | null, base: string, unit?: MetricUnit): stri
 }
 
 export const MetricChart: React.FC<Props> = ({
-  title,
   viz,
   unit,
   series,
