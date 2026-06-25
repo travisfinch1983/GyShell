@@ -1,6 +1,8 @@
-import React, { useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { Plus, Trash2, ArrowUp, ArrowDown, RotateCcw } from 'lucide-react'
 import { clusterStore } from '../../stores/ClusterStore'
+import { MetricChart } from './MetricChart'
+import { resolveQuery } from '../../stores/metricTemplates'
 import {
   defaultTemplate,
   VIZ_TYPES,
@@ -19,6 +21,16 @@ const GEARS: GearEdit[] = ['none', 'cores', 'memory', 'disk', 'order']
 let seq = 0
 const newId = () => `c${Date.now().toString(36)}${seq++}`
 
+/** Debounce a value so the live preview doesn't re-query Prometheus on every keystroke. */
+function useDebounced<T>(value: T, ms: number): T {
+  const [d, setD] = useState(value)
+  useEffect(() => {
+    const t = setTimeout(() => setD(value), ms)
+    return () => clearTimeout(t)
+  }, [value, ms])
+  return d
+}
+
 /**
  * In-page editor (coding std #2) for a category's metric template. Every entry in
  * the category renders from this template. `$id` in a query is replaced with the
@@ -32,6 +44,17 @@ export const MetricTemplateEditor: React.FC<{ category: MetricCategory; onClose:
   // which structuredClone rejects with DataCloneError and crashes the render).
   const [tpl, setTpl] = useState<MetricTemplate>(() =>
     JSON.parse(JSON.stringify(clusterStore.getTemplate(category))) as MetricTemplate,
+  )
+
+  // Live preview: render each chart against a real sample guest from this list,
+  // debounced so typing a query doesn't spam the metrics RPC. Errors in a PromQL
+  // expression surface directly in the preview chart.
+  const sampleGuest = (category === 'lxc' ? clusterStore.containers : clusterStore.vms)[0]
+  const sampleId = `${category === 'lxc' ? 'lxc' : 'qemu'}/${sampleGuest?.vmid ?? 100}`
+  const dtpl = useDebounced(tpl, 500)
+  const previewById = useMemo(
+    () => Object.fromEntries(dtpl.charts.map((c) => [c.id, c])),
+    [dtpl],
   )
 
   const setChart = (i: number, patch: Partial<MetricChartDef>) =>
@@ -142,6 +165,27 @@ export const MetricTemplateEditor: React.FC<{ category: MetricCategory; onClose:
                 placeholder='PromQL — use $id, e.g. pve_cpu_usage_ratio{id="$id"} * 100'
                 onChange={(e) => setChart(i, { query: e.target.value })}
               />
+              <div className={styles.tplPreview}>
+                <span className={styles.previewLabel}>preview · {sampleId}</span>
+                {(() => {
+                  const p = previewById[c.id]
+                  if (!p) return <span className={styles.previewLabel}>…</span>
+                  return (
+                    <MetricChart
+                      key={`${p.id}-${p.viz}`}
+                      label={p.label}
+                      unit={p.unit}
+                      color={p.color}
+                      viz={p.viz}
+                      query={resolveQuery(p.query, sampleId)}
+                      rangeSeconds={dtpl.rangeSeconds}
+                      stepSeconds={dtpl.stepSeconds}
+                      height={90}
+                      refreshMs={30000}
+                    />
+                  )
+                })()}
+              </div>
             </div>
           ))}
         </div>
