@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { Plus, Trash2, ArrowUp, ArrowDown, RotateCcw } from 'lucide-react'
 import { clusterStore } from '../../stores/ClusterStore'
 import { MetricChart } from './MetricChart'
+import { PromQLInput } from './PromQLInput'
 import {
   defaultTemplate,
   resolveQuery,
@@ -125,7 +126,7 @@ export const MetricTemplateEditor: React.FC<{ category: MetricCategory; onClose:
                   <div key={s.id} className={styles.qRow}>
                     <input className={styles.qLabel} value={s.label} placeholder="label" onChange={(e) => setQ(ci, 'series', si, { label: e.target.value })} />
                     <input type="color" className={styles.tplColor} value={s.color ?? '#4ea1ff'} onChange={(e) => setQ(ci, 'series', si, { color: e.target.value })} />
-                    <input className={styles.qQuery} value={s.query} placeholder='PromQL — $id' onChange={(e) => setQ(ci, 'series', si, { query: e.target.value })} />
+                    <PromQLInput className={styles.qQuery} value={s.query} placeholder='PromQL — $id' onChange={(v) => setQ(ci, 'series', si, { query: v })} />
                     <button className={`${styles.iconBtn} ${styles.danger}`} disabled={c.series.length <= 1} title="Remove series" onClick={() => mutQueries(ci, 'series', (a) => a.filter((_, i) => i !== si))}><Trash2 size={12} /></button>
                   </div>
                 ))}
@@ -143,7 +144,7 @@ export const MetricTemplateEditor: React.FC<{ category: MetricCategory; onClose:
                     <select className={styles.qUnit} value={f.unit ?? 'raw'} onChange={(e) => setQ(ci, 'fields', fi, { unit: e.target.value as MetricUnit })}>
                       {UNITS.map((u) => (<option key={u} value={u}>{u}</option>))}
                     </select>
-                    <input className={styles.qQuery} value={f.query} placeholder='PromQL — $id' onChange={(e) => setQ(ci, 'fields', fi, { query: e.target.value })} />
+                    <PromQLInput className={styles.qQuery} value={f.query} placeholder='PromQL — $id' onChange={(v) => setQ(ci, 'fields', fi, { query: v })} />
                     <button className={`${styles.iconBtn} ${styles.danger}`} title="Remove field" onClick={() => mutQueries(ci, 'fields', (a) => a.filter((_, i) => i !== fi))}><Trash2 size={12} /></button>
                   </div>
                 ))}

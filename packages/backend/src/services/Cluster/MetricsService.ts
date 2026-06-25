@@ -72,6 +72,21 @@ export class MetricsService {
     )
   }
 
+  /** All metric names known to Prometheus (for query autocomplete). */
+  async metricNames(): Promise<string[]> {
+    const data = await this.fetchJson('/api/v1/label/__name__/values', {})
+    return Array.isArray(data?.data) ? data.data : []
+  }
+
+  /** Values for a given label (e.g. label="id" → ["lxc/100", "node/pbs", ...]). */
+  async labelValues(label: string): Promise<string[]> {
+    if (typeof label !== 'string' || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(label)) {
+      throw new Error(`metrics: invalid label name: ${label}`)
+    }
+    const data = await this.fetchJson(`/api/v1/label/${encodeURIComponent(label)}/values`, {})
+    return Array.isArray(data?.data) ? data.data : []
+  }
+
   /** Instant scalar/vector query → array of { labels, value }. */
   async query(query: string): Promise<Array<{ labels: Record<string, string>; value: number | null }>> {
     if (typeof query !== 'string' || !query.trim()) throw new Error('metrics: empty query')

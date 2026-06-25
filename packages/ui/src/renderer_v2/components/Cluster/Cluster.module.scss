@@ -333,10 +333,23 @@
   background: var(--control-bg); color: var(--fg); font-size: 10px;
 }
 .qQuery {
-  flex: 1; min-width: 60px; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px;
+  width: 100%; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px;
   background: var(--app-bg); color: var(--fg); font-family: var(--font-mono); font-size: 11px;
   &:focus { outline: none; border-color: var(--accent); }
 }
+.acWrap { position: relative; flex: 1; min-width: 60px; }
+.acDropdown {
+  position: absolute; top: calc(100% + 2px); left: 0; right: 0; z-index: 60;
+  max-height: 220px; overflow: auto;
+  background: var(--panel-bg-2); border: 1px solid var(--border-strong); border-radius: 6px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.5); padding: 3px;
+}
+.acItem {
+  padding: 4px 8px; font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted);
+  border-radius: 4px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  &:hover, &.acActive { background: var(--control-bg-hover); color: var(--fg); }
+}
+.acActive { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--fg); }
 
 .tplPreview {
   margin-top: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;

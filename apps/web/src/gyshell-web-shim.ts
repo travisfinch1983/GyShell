@@ -110,6 +110,8 @@ const gyshellApi = {
     queryRangeBatch: (queries: string[], rangeSeconds?: number, stepSeconds?: number) =>
       rpc('metrics:queryRangeBatch', { queries, rangeSeconds, stepSeconds }),
     query: (query: string) => rpc('metrics:query', { query }),
+    metricNames: () => rpc('metrics:metricNames'),
+    labelValues: (label: string) => rpc('metrics:labelValues', { label }),
   },
 
   windowing: {

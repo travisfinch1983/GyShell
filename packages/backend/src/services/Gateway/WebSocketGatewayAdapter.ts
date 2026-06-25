@@ -74,7 +74,9 @@ type WebSocketRpcMethod =
   | 'cluster:request'
   | 'metrics:queryRange'
   | 'metrics:queryRangeBatch'
-  | 'metrics:query';
+  | 'metrics:query'
+  | 'metrics:metricNames'
+  | 'metrics:labelValues';
 
 interface WebSocketRpcRequest {
   id?: string | number;
@@ -120,6 +122,8 @@ export interface WebSocketGatewayAdapterOptions {
     queryRange: (query: string, rangeSeconds?: number, stepSeconds?: number) => Promise<unknown>;
     queryRangeBatch: (queries: string[], rangeSeconds?: number, stepSeconds?: number) => Promise<unknown>;
     query: (query: string) => Promise<unknown>;
+    metricNames: () => Promise<unknown>;
+    labelValues: (label: string) => Promise<unknown>;
   };
   agentBridge?: {
     exportHistory?: (sessionId: string, mode: 'simple' | 'detailed') => unknown | Promise<unknown>;
@@ -661,6 +665,19 @@ export class WebSocketGatewayAdapter {
         }
         const query = this.readStringParam(params, 'query');
         return { result: await this.options.metricsBridge.query(query) };
+      }
+      case 'metrics:metricNames': {
+        if (!this.options.metricsBridge?.metricNames) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'metrics:metricNames is not available on this websocket gateway.');
+        }
+        return { names: await this.options.metricsBridge.metricNames() };
+      }
+      case 'metrics:labelValues': {
+        if (!this.options.metricsBridge?.labelValues) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'metrics:labelValues is not available on this websocket gateway.');
+        }
+        const label = this.readStringParam(params, 'label');
+        return { values: await this.options.metricsBridge.labelValues(label) };
       }
       case 'session:list': {
         return { sessions: this.gateway.listSessionSummaries() };
