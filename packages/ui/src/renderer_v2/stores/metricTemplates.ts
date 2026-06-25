@@ -13,6 +13,9 @@
 export type MetricUnit = 'percent' | 'bytes' | 'raw'
 export type GearEdit = 'none' | 'cores' | 'memory' | 'disk' | 'order'
 export type MetricCategory = 'lxc' | 'qemu'
+export type VizType = 'timeseries' | 'area' | 'bar' | 'gauge' | 'stat'
+
+export const VIZ_TYPES: VizType[] = ['timeseries', 'area', 'bar', 'gauge', 'stat']
 
 export interface MetricChartDef {
   id: string
@@ -21,6 +24,7 @@ export interface MetricChartDef {
   unit: MetricUnit
   color: string
   gear: GearEdit // which in-row editor the ⚙ opens (none = no gear)
+  viz: VizType
 }
 
 export interface MetricTemplate {
@@ -34,11 +38,11 @@ const STORAGE_KEY = 'ai-lab-cluster-metric-templates'
 
 function baseCharts(): MetricChartDef[] {
   return [
-    { id: 'cpu', label: 'CPU %', unit: 'percent', color: '#4ea1ff', gear: 'cores',
+    { id: 'cpu', label: 'CPU %', unit: 'percent', color: '#4ea1ff', gear: 'cores', viz: 'timeseries',
       query: 'pve_cpu_usage_ratio{id="$id"} * 100' },
-    { id: 'mem', label: 'Memory %', unit: 'percent', color: '#7c5cff', gear: 'memory',
+    { id: 'mem', label: 'Memory %', unit: 'percent', color: '#7c5cff', gear: 'memory', viz: 'area',
       query: 'pve_memory_usage_bytes{id="$id"} / pve_memory_size_bytes{id="$id"} * 100' },
-    { id: 'disk', label: 'Disk %', unit: 'percent', color: '#2ecc71', gear: 'disk',
+    { id: 'disk', label: 'Disk %', unit: 'percent', color: '#2ecc71', gear: 'disk', viz: 'gauge',
       query: 'pve_disk_usage_bytes{id="$id"} / pve_disk_size_bytes{id="$id"} * 100' },
   ]
 }

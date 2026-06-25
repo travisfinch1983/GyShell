@@ -3,11 +3,13 @@ import { Plus, Trash2, ArrowUp, ArrowDown, RotateCcw } from 'lucide-react'
 import { clusterStore } from '../../stores/ClusterStore'
 import {
   defaultTemplate,
+  VIZ_TYPES,
   type MetricCategory,
   type MetricChartDef,
   type MetricTemplate,
   type MetricUnit,
   type GearEdit,
+  type VizType,
 } from '../../stores/metricTemplates'
 import styles from './Cluster.module.scss'
 
@@ -46,7 +48,7 @@ export const MetricTemplateEditor: React.FC<{ category: MetricCategory; onClose:
   const add = () =>
     setTpl((t) => ({
       ...t,
-      charts: [...t.charts, { id: newId(), label: 'New metric', query: 'pve_cpu_usage_ratio{id="$id"} * 100', unit: 'percent', color: '#4ea1ff', gear: 'none' }],
+      charts: [...t.charts, { id: newId(), label: 'New metric', query: 'pve_cpu_usage_ratio{id="$id"} * 100', unit: 'percent', color: '#4ea1ff', gear: 'none', viz: 'timeseries' }],
     }))
 
   const save = () => {
@@ -102,6 +104,13 @@ export const MetricTemplateEditor: React.FC<{ category: MetricCategory; onClose:
                   onChange={(e) => setChart(i, { color: e.target.value })}
                   title="Line color"
                 />
+                <select value={c.viz ?? 'timeseries'} onChange={(e) => setChart(i, { viz: e.target.value as VizType })} title="Visualization">
+                  {VIZ_TYPES.map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
                 <select value={c.unit} onChange={(e) => setChart(i, { unit: e.target.value as MetricUnit })} title="Unit">
                   {UNITS.map((u) => (
                     <option key={u} value={u}>

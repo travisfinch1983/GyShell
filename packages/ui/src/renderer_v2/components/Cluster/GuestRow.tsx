@@ -142,6 +142,7 @@ export const GuestRow: React.FC<{
                   label={chart.label}
                   unit={chart.unit}
                   color={chart.color}
+                  viz={chart.viz}
                   query={resolveQuery(chart.query, guestId)}
                   rangeSeconds={template.rangeSeconds}
                   stepSeconds={template.stepSeconds}
