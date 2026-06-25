@@ -103,6 +103,17 @@ const gyshellApi = {
       rpc('cluster:request', { method, path, body }),
   },
 
+  // Helper-Scripts installer stream (backend relays to ProxLab's node PTY; rule #1).
+  catalogInstall: {
+    start: (params: { host: string; command: string; cols?: number; rows?: number }) =>
+      rpc('catalogInstall:start', params),
+    input: (id: string, data: string) => rpc('catalogInstall:input', { id, data }),
+    resize: (id: string, cols: number, rows: number) => rpc('catalogInstall:resize', { id, cols, rows }),
+    close: (id: string) => rpc('catalogInstall:close', { id }),
+    onData: (cb: (data: any) => void): CleanupFn => onRaw('catalogInstall:data', cb),
+    onExit: (cb: (data: any) => void): CleanupFn => onRaw('catalogInstall:exit', cb),
+  },
+
   metrics: {
     // Native charts (rule #1): backend queries Prometheus, UI renders with uPlot.
     queryRange: (query: string, rangeSeconds?: number, stepSeconds?: number) =>

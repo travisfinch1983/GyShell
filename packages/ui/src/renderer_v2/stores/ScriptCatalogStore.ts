@@ -31,8 +31,64 @@ export interface Catalog {
   totalScripts?: number
   lastSync?: string
 }
+export interface SchemaField {
+  key: string
+  label: string
+  type: string
+  group: string
+  default?: string
+  min?: number
+  max?: number
+  step?: number
+  trueVal?: string
+  falseVal?: string
+  options?: Array<string | { value: string; label: string }>
+  contentFilter?: string
+}
+export interface ClusterData {
+  nodes?: Array<{ name: string; ip: string }>
+  storagesByNode?: Record<string, Array<{ storage: string; type: string; content?: string; shared?: boolean }>>
+  sshKeys?: Array<{ type: string; fingerprint: string; comment: string; full: string }>
+  timezones?: string[]
+}
+export interface ScriptDefaults {
+  global: Record<string, string>
+  app: Record<string, string>
+  hasGlobal: boolean
+  hasApp: boolean
+}
+export interface PveNode {
+  node: string
+  ip: string
+}
+
+/** Build the var-prefixed install command (mirrors ProxLab updateDisplayedCommand / runScriptOnNode). */
+export function buildInstallCommand(installUrl: string, vals: Record<string, string>, forNode?: string): string {
+  const parts: string[] = []
+  for (const [key, val] of Object.entries(vals)) {
+    if (!val) continue
+    if (key.includes('__')) {
+      const [base, node] = key.split('__')
+      if (forNode && node === forNode) parts.push(`${base}='${val.replace(/'/g, "'\\''")}'`)
+      continue
+    }
+    if (key === 'var_ssh_authorized_key') {
+      const first = val.split('\n').find((k) => k.trim().startsWith('ssh-'))
+      if (first) parts.push(`${key}='${first.replace(/'/g, "'\\''")}'`)
+      continue
+    }
+    if (key.startsWith('var_')) parts.push(`${key}='${val.replace(/'/g, "'\\''")}'`)
+  }
+  const prefix = parts.length ? `mode=generated ${parts.join(' ')} ` : ''
+  return `${prefix}bash -c "$(curl -fsSL ${installUrl})"`
+}
 
 export class ScriptCatalogStore {
+  // form deps (cached after first load)
+  schema: SchemaField[] = []
+  clusterData: ClusterData = {}
+  nodes: PveNode[] = []
+  formDepsLoaded = false
   catalog: Catalog | null = null
   loading = false
   error: string | null = null
@@ -115,6 +171,40 @@ export class ScriptCatalogStore {
   }
   setSearch(s: string): void {
     this.search = s
+  }
+
+  /** Load the var_* schema, cluster data (storages/ssh-keys/timezones), and online nodes — cached. */
+  async loadFormDeps(): Promise<void> {
+    if (this.formDepsLoaded) return
+    const api = this.cluster()
+    const [schema, cd, status] = await Promise.all([
+      api.request('GET', '/api/script-catalog/defaults/schema').catch(() => []),
+      api.request('GET', '/api/script-catalog/cluster-data').catch(() => ({})),
+      api.request('GET', '/api/pve/status').catch(() => ({})),
+    ])
+    const nodes: PveNode[] = ((status as any)?.nodes ?? [])
+      .filter((n: any) => n.status === 'online' && n.ip)
+      .map((n: any) => ({ node: n.node, ip: n.ip }))
+    runInAction(() => {
+      this.schema = Array.isArray(schema) ? (schema as SchemaField[]) : []
+      this.clusterData = (cd as ClusterData) ?? {}
+      this.nodes = nodes
+      this.formDepsLoaded = true
+    })
+  }
+
+  async getDefaults(slug: string): Promise<ScriptDefaults> {
+    const d = (await this.cluster().request('GET', `/api/script-catalog/defaults/${encodeURIComponent(slug)}`)) as any
+    return { global: d?.global ?? {}, app: d?.app ?? {}, hasGlobal: !!d?.hasGlobal, hasApp: !!d?.hasApp }
+  }
+  async getGlobalDefaults(): Promise<Record<string, string>> {
+    return ((await this.cluster().request('GET', '/api/script-catalog/defaults')) as any) ?? {}
+  }
+  async saveGlobalDefaults(vals: Record<string, string>): Promise<void> {
+    await this.cluster().request('PUT', '/api/script-catalog/defaults', vals)
+  }
+  async saveAppDefaults(slug: string, vals: Record<string, string>): Promise<void> {
+    await this.cluster().request('PUT', `/api/script-catalog/defaults/${encodeURIComponent(slug)}`, vals)
   }
 
   get filteredScripts(): CatalogScript[] {

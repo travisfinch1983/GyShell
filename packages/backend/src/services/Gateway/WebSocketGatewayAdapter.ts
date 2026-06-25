@@ -23,6 +23,10 @@ type WebSocketRpcMethod =
   | 'terminal:setSelection'
   | 'terminal:getBufferDelta'
   | 'terminal:generateCommandDraft'
+  | 'catalogInstall:start'
+  | 'catalogInstall:input'
+  | 'catalogInstall:resize'
+  | 'catalogInstall:close'
   | 'filesystem:list'
   | 'filesystem:readTextFile'
   | 'filesystem:readFileBase64'
@@ -122,6 +126,12 @@ export interface WebSocketGatewayAdapterOptions {
   clusterBridge?: {
     getStatus: () => Promise<unknown>;
     request: (method: string, path: string, body?: unknown) => Promise<unknown>;
+  };
+  catalogInstallBridge?: {
+    start: (opts: { host: string; command: string; cols?: number; rows?: number }) => { id: string };
+    input: (id: string, data: string) => void;
+    resize: (id: string, cols: number, rows: number) => void;
+    close: (id: string) => void;
   };
   metricsBridge?: {
     queryRange: (query: string, rangeSeconds?: number, stepSeconds?: number) => Promise<unknown>;
@@ -654,6 +664,36 @@ export class WebSocketGatewayAdapter {
         const method = this.readStringParam(params, 'method');
         const path = this.readStringParam(params, 'path');
         return await this.options.clusterBridge.request(method, path, (params as Record<string, unknown>).body);
+      }
+      case 'catalogInstall:start': {
+        if (!this.options.catalogInstallBridge) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'catalogInstall:start is not available on this websocket gateway.');
+        }
+        const p = (params ?? {}) as Record<string, unknown>;
+        return this.options.catalogInstallBridge.start({
+          host: String(p.host ?? ''),
+          command: String(p.command ?? ''),
+          cols: typeof p.cols === 'number' ? p.cols : undefined,
+          rows: typeof p.rows === 'number' ? p.rows : undefined,
+        });
+      }
+      case 'catalogInstall:input': {
+        if (!this.options.catalogInstallBridge) throw new WebSocketRpcError('METHOD_NOT_FOUND', 'catalogInstall:input is not available.');
+        const p = (params ?? {}) as Record<string, unknown>;
+        this.options.catalogInstallBridge.input(String(p.id ?? ''), String(p.data ?? ''));
+        return { ok: true };
+      }
+      case 'catalogInstall:resize': {
+        if (!this.options.catalogInstallBridge) throw new WebSocketRpcError('METHOD_NOT_FOUND', 'catalogInstall:resize is not available.');
+        const p = (params ?? {}) as Record<string, unknown>;
+        this.options.catalogInstallBridge.resize(String(p.id ?? ''), Number(p.cols ?? 80), Number(p.rows ?? 24));
+        return { ok: true };
+      }
+      case 'catalogInstall:close': {
+        if (!this.options.catalogInstallBridge) throw new WebSocketRpcError('METHOD_NOT_FOUND', 'catalogInstall:close is not available.');
+        const p = (params ?? {}) as Record<string, unknown>;
+        this.options.catalogInstallBridge.close(String(p.id ?? ''));
+        return { ok: true };
       }
       case 'metrics:queryRange': {
         if (!this.options.metricsBridge?.queryRange) {

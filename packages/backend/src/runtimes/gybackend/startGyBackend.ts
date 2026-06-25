@@ -9,6 +9,7 @@ import { ChatHistoryService } from '../../services/ChatHistoryService'
 import { GatewayService } from '../../services/Gateway/GatewayService'
 import { WebSocketGatewayAdapter } from '../../services/Gateway/WebSocketGatewayAdapter'
 import { clusterService } from '../../services/Cluster/ClusterService'
+import { CatalogInstallService } from '../../services/Cluster/CatalogInstallService'
 import { metricsService } from '../../services/Cluster/MetricsService'
 import { clusterSettingsService } from '../../services/Cluster/ClusterSettingsService'
 import { pveClient } from '../../services/Cluster/PveClient'
@@ -121,6 +122,9 @@ export async function startGyBackend(): Promise<void> {
     mcpToolService
   )
   const terminalCommandDraftService = new TerminalCommandDraftService(terminalService, settingsService)
+  const catalogInstallService = new CatalogInstallService({
+    publish: (channel, data) => gatewayService.broadcastRaw(channel, data)
+  })
 
   const terminalRestoreResult = await terminalService.restorePersistedTerminals()
   if (terminalRestoreResult.restored.length > 0 || terminalRestoreResult.failed.length > 0) {
@@ -173,6 +177,12 @@ export async function startGyBackend(): Promise<void> {
         clusterBridge: {
           getStatus: () => clusterService.getStatus(),
           request: (method, path, body) => clusterService.request(method, path, body)
+        },
+        catalogInstallBridge: {
+          start: (opts) => catalogInstallService.start(opts),
+          input: (id, data) => catalogInstallService.input(id, data),
+          resize: (id, cols, rows) => catalogInstallService.resize(id, cols, rows),
+          close: (id) => catalogInstallService.close(id)
         },
         metricsBridge: {
           queryRange: (query, rangeSeconds, stepSeconds) => metricsService.queryRange(query, rangeSeconds, stepSeconds),
