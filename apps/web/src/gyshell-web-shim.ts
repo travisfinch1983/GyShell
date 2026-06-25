@@ -114,6 +114,13 @@ const gyshellApi = {
     labelValues: (label: string) => rpc('metrics:labelValues', { label }),
   },
 
+  clusterSettings: {
+    // Native settings on CT 152 (AI-Lab is the new ProxLab) — rule #1, backend-stored.
+    get: () => rpc('clusterSettings:get'),
+    set: (patch: unknown) => rpc('clusterSettings:set', { patch }),
+    testPve: () => rpc('clusterSettings:testPve'),
+  },
+
   windowing: {
     openDetached: noop,
     onMainWindowClosing: noopCleanup,

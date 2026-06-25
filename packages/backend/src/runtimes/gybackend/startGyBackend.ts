@@ -10,6 +10,8 @@ import { GatewayService } from '../../services/Gateway/GatewayService'
 import { WebSocketGatewayAdapter } from '../../services/Gateway/WebSocketGatewayAdapter'
 import { clusterService } from '../../services/Cluster/ClusterService'
 import { metricsService } from '../../services/Cluster/MetricsService'
+import { clusterSettingsService } from '../../services/Cluster/ClusterSettingsService'
+import { pveClient } from '../../services/Cluster/PveClient'
 import {
   WebSocketGatewayControlService,
   resolveWsGatewayAccessFromHost,
@@ -178,6 +180,11 @@ export async function startGyBackend(): Promise<void> {
           query: (query) => metricsService.query(query),
           metricNames: () => metricsService.metricNames(),
           labelValues: (label) => metricsService.labelValues(label)
+        },
+        clusterSettingsBridge: {
+          get: () => clusterSettingsService.get(),
+          set: (patch) => clusterSettingsService.set(patch),
+          testPve: () => pveClient.testConnection()
         },
         terminalBridge: {
           listTerminals: () =>

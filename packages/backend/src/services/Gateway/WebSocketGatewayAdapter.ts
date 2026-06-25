@@ -76,7 +76,10 @@ type WebSocketRpcMethod =
   | 'metrics:queryRangeBatch'
   | 'metrics:query'
   | 'metrics:metricNames'
-  | 'metrics:labelValues';
+  | 'metrics:labelValues'
+  | 'clusterSettings:get'
+  | 'clusterSettings:set'
+  | 'clusterSettings:testPve';
 
 interface WebSocketRpcRequest {
   id?: string | number;
@@ -124,6 +127,11 @@ export interface WebSocketGatewayAdapterOptions {
     query: (query: string) => Promise<unknown>;
     metricNames: () => Promise<unknown>;
     labelValues: (label: string) => Promise<unknown>;
+  };
+  clusterSettingsBridge?: {
+    get: () => unknown;
+    set: (patch: unknown) => unknown;
+    testPve: () => Promise<unknown>;
   };
   agentBridge?: {
     exportHistory?: (sessionId: string, mode: 'simple' | 'detailed') => unknown | Promise<unknown>;
@@ -678,6 +686,24 @@ export class WebSocketGatewayAdapter {
         }
         const label = this.readStringParam(params, 'label');
         return { values: await this.options.metricsBridge.labelValues(label) };
+      }
+      case 'clusterSettings:get': {
+        if (!this.options.clusterSettingsBridge?.get) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'clusterSettings:get is not available on this websocket gateway.');
+        }
+        return { settings: this.options.clusterSettingsBridge.get() };
+      }
+      case 'clusterSettings:set': {
+        if (!this.options.clusterSettingsBridge?.set) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'clusterSettings:set is not available on this websocket gateway.');
+        }
+        return { settings: this.options.clusterSettingsBridge.set((params as Record<string, unknown>).patch) };
+      }
+      case 'clusterSettings:testPve': {
+        if (!this.options.clusterSettingsBridge?.testPve) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'clusterSettings:testPve is not available on this websocket gateway.');
+        }
+        return await this.options.clusterSettingsBridge.testPve();
       }
       case 'session:list': {
         return { sessions: this.gateway.listSessionSummaries() };

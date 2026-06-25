@@ -2,6 +2,22 @@
 
 Running backlog for the ProxLab-on-Ai-Lab rebuild. Add items as they surface; check off when done.
 
+## ⚑ DIRECTION (2026-06-25): ProxLab → decommissioned. AI-Lab becomes the native replacement.
+Everything must end up NATIVE in AI-Lab (CT 152): settings storage + the backend integration
+(PVE API client, SSH, GPU hookscripts, discovery, downloads). The `cluster:request`/`metrics:*`
+proxy-to-ProxLab calls are a TEMPORARY BRIDGE, retired piece-by-piece as each native port lands.
+
+### Settings migration (in progress)
+- [x] Map both settings systems (AI-Lab SettingsView + all ProxLab settings/endpoints).
+- [ ] **Phase 1 (now):** native cluster-settings store on CT 152 + native PVE client (connection + test).
+      Settings tabs: Proxmox connection, Tokens (HF/CivitAI), Cluster UI prefs.
+- [ ] Phase 2: GPU config/pools, AI agents, service-name overrides settings tabs.
+- [ ] Phase 3: shared folders, external services / vector DBs settings tabs.
+- [ ] Repoint cluster tab reads (getStatus/inventory) from ProxLab proxy → native PVE client.
+- [ ] Port write actions (config/migrate/GPU hookscripts via SSH) natively; retire cluster:request bridge.
+- [ ] Port HF/CivitAI downloaders + AI service launchers natively (later tabs).
+
+
 ## Cluster tab — metric cards (PARKED 2026-06-25, working but to be fleshed out)
 The configurable metric-template system is functional (per-category templates, multi-value
 series+fields entities, viz types, live preview, PromQL metric-name autocomplete). Deferred polish:
