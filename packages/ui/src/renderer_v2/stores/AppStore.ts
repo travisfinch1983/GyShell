@@ -229,6 +229,10 @@ export class AppStore {
   settings: AppSettings | null = null
   isBootstrapped = false
   settingsSection: SettingsSection = 'general'
+  // LIVE reachability per model id — computed, never persisted (coding std #5).
+  // values: 'checking' | 'active' | 'missing' | 'offline'
+  modelHealth: Record<string, string> = {}
+  modelHealthChecking = false
 
   terminalTabs: TerminalTabModel[] = []
   terminalTabsHydrated = false
@@ -346,6 +350,9 @@ export class AppStore {
       deleteModel: action,
       listRemoteModels: action,
       addRemoteModels: action,
+      modelHealth: observable,
+      modelHealthChecking: observable,
+      refreshModelHealth: action,
       loadAgents: action,
       saveAgent: action,
       deleteAgent: action,
@@ -2531,9 +2538,9 @@ export class AppStore {
         structuredOutputMode: 'auto',
         supportsStructuredOutput: false,
         supportsObjectToolChoice: false,
-        // Listed by the API's /v1/models, so treat as a reachable text model (shows
-        // Active). Image/structured capability is left unprobed until the model is opened.
-        profile: { imageInputs: false, textOutputs: true, supportsStructuredOutput: false, supportsObjectToolChoice: false, testedAt: Date.now(), ok: true },
+        // Capability profile left unprobed (filled when the model is opened). Reachability
+        // is NOT stored here — the Active/Offline tag is computed live (see refreshModelHealth).
+        profile: undefined,
       } as any)
       added++
     }
@@ -2548,6 +2555,43 @@ export class AppStore {
       ),
     ])
     return added
+  }
+
+  /**
+   * Live reachability for external models — coding std #5: the Active/Offline tag must
+   * reflect the real, current state, not a stored flag. One cheap /v1/models call per
+   * distinct endpoint (baseUrl+apiKey); each model is 'active' (endpoint up AND model
+   * listed), 'missing' (endpoint up, model not listed), or 'offline' (endpoint unreachable).
+   */
+  async refreshModelHealth(): Promise<void> {
+    const current = this.settings
+    if (!current) return
+    const externals = current.models.items.filter((m: any) => !m._proxlabAutoDiscovered && m.baseUrl)
+    // group by connection
+    const groups = new Map<string, { baseUrl: string; apiKey: string; ids: string[] }>()
+    for (const m of externals) {
+      const key = `${m.baseUrl}||${m.apiKey ?? ''}`
+      if (!groups.has(key)) groups.set(key, { baseUrl: m.baseUrl as string, apiKey: (m.apiKey as string) ?? '', ids: [] })
+      groups.get(key)!.ids.push(m.model)
+    }
+    runInAction(() => {
+      this.modelHealthChecking = true
+      for (const m of externals) this.modelHealth[m.model] = this.modelHealth[m.model] ?? 'checking'
+    })
+    await Promise.all(
+      [...groups.values()].map(async (g) => {
+        const res = await this.listRemoteModels(g.baseUrl, g.apiKey)
+        const listed = new Set((res.models ?? []).map((x) => x.id))
+        runInAction(() => {
+          for (const id of g.ids) {
+            this.modelHealth[id] = !res.ok ? 'offline' : listed.has(id) ? 'active' : 'missing'
+          }
+        })
+      }),
+    )
+    runInAction(() => {
+      this.modelHealthChecking = false
+    })
   }
 
   async deleteModel(id: string): Promise<void> {

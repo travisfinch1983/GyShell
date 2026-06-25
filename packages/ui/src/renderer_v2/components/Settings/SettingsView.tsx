@@ -542,6 +542,11 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
     const [editingModelId, setEditingModelId] = useState<string | null>(null);
     const [showModelEditor, setShowModelEditor] = useState(false);
     const [showConnectionImporter, setShowConnectionImporter] = useState(false);
+
+    // Live reachability: refresh whenever the Models section is shown (coding std #5).
+    React.useEffect(() => {
+      if (store.settingsSection === "models") void store.refreshModelHealth();
+    }, [store.settingsSection, store.settings?.models.items.length]);
     const skillImportInputRef = React.useRef<HTMLInputElement>(null);
 
     /**
@@ -1609,6 +1614,14 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                   <div style={{ display: "flex", gap: 6 }}>
                   <button
                     className="icon-btn-sm"
+                    title="Refresh reachability"
+                    onClick={() => void store.refreshModelHealth()}
+                    disabled={store.modelHealthChecking}
+                  >
+                      <RefreshCw size={16} strokeWidth={2} className={store.modelHealthChecking ? "spin" : ""} />
+                  </button>
+                  <button
+                    className="icon-btn-sm"
                     title="Add all models from an API"
                     onClick={() => setShowConnectionImporter(true)}
                   >
@@ -1631,19 +1644,15 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                       className="model-item"
                       onClick={() => openModelEditor(item.id)}
                     >
-                    {/** Active: text probe passed. Stateless: text failed but /v1/models passed. */}
+                    {/** Reachability tag is LIVE (coding std #5): from store.modelHealth, a /v1/models check. */}
                     {(() => {
-                        const isActive = Boolean(item.profile?.textOutputs);
+                        const health = store.modelHealth[item.model];
                         const supportsImage = Boolean(
                           item.profile?.imageInputs,
                         );
                       const supportsStructured =
                         item.profile?.supportsStructuredOutput === true ||
                           item.supportsStructuredOutput === true;
-                      const isStateless =
-                        Boolean(item.profile?.ok) &&
-                        item.profile?.textOutputs === false &&
-                          !supportsImage;
 
                       return (
                         <>
@@ -1655,12 +1664,14 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                               <div className="model-id">{item.model}</div>
                           </div>
                           <div className="model-meta">
-                              {isActive ? (
-                                  <span className="tag active">Active</span>
-                              ) : isStateless ? (
-                                  <span className="tag warning">Stateless</span>
+                              {health === "active" ? (
+                                  <span className="tag active" title="Endpoint reachable and model listed">Active</span>
+                              ) : health === "missing" ? (
+                                  <span className="tag warning" title="Endpoint reachable but this model is not listed">Missing</span>
+                              ) : health === "offline" ? (
+                                  <span className="tag inactive" title="Endpoint unreachable">Offline</span>
                               ) : (
-                                  <span className="tag inactive">NoActive</span>
+                                  <span className="tag ghost" title="Checking reachability…">Checking</span>
                               )}
                               {supportsImage ? (
                                   <span className="tag image">Image</span>
