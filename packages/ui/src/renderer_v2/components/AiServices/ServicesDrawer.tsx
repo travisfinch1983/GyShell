@@ -31,19 +31,41 @@ function fmtCtx(n?: number): string {
 }
 const gb = (mb?: number) => (mb ? (mb / 1024).toFixed(mb < 10240 ? 1 : 0) : '0')
 
-/** Tiny inline util sparkline (0–100). */
-const Sparkline: React.FC<{ data: number[]; color: string }> = ({ data, color }) => {
-  if (!data.length) return null
-  const w = 64, h = 18, max = 100
-  const pts = data.map((v, i) => {
-    const x = data.length === 1 ? w : (i / (data.length - 1)) * w
-    const y = h - (Math.max(0, Math.min(max, v)) / max) * h
-    return `${x.toFixed(1)},${y.toFixed(1)}`
-  })
+/** Element-wise average / sum across several equal-ish-length series. */
+function combine(series: number[][], mode: 'avg' | 'sum'): number[] {
+  const arrs = series.filter((a) => a?.length)
+  if (!arrs.length) return []
+  const len = Math.min(...arrs.map((a) => a.length))
+  const out: number[] = []
+  for (let i = 0; i < len; i++) {
+    const slice = arrs.map((a) => a[a.length - len + i])
+    const s = slice.reduce((n, v) => n + v, 0)
+    out.push(mode === 'avg' ? s / slice.length : s)
+  }
+  return out
+}
+
+/** Full-width labeled sparkline row. data scaled to [0,max]; stretches to container width. */
+const SparkRow: React.FC<{ label: string; data: number[]; max: number; color: string; value: string }> = ({ label, data, max, color, value }) => {
+  const h = 24
+  const pts =
+    data.length > 0
+      ? data
+          .map((v, i) => {
+            const x = data.length === 1 ? 100 : (i / (data.length - 1)) * 100
+            const y = h - (Math.max(0, Math.min(max || 1, v)) / (max || 1)) * h
+            return `${x.toFixed(2)},${y.toFixed(2)}`
+          })
+          .join(' ')
+      : ''
   return (
-    <svg width={w} height={h} className={styles.spark}>
-      <polyline points={pts.join(' ')} fill="none" stroke={color} strokeWidth="1.5" />
-    </svg>
+    <div className={styles.sparkRow}>
+      <span className={styles.sparkLabel}>{label}</span>
+      <svg className={styles.sparkSvg} height={h} viewBox={`0 0 100 ${h}`} preserveAspectRatio="none">
+        {pts && <polyline points={pts} fill="none" stroke={color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
+      </svg>
+      <span className={styles.sparkVal}>{value}</span>
+    </div>
   )
 }
 
@@ -58,7 +80,10 @@ const ServiceCard: React.FC<{ s: AiService; onKill: (s: AiService) => void }> = 
   const gpus = (s.gpuPciIds ?? []).map((pci) => ({ pci, info: store.gpuIndex[pci] })).filter((g) => g.info)
   const vramUsed = gpus.reduce((n, g) => n + (g.info?.memUsed ?? 0), 0)
   const vramTotal = gpus.reduce((n, g) => n + (g.info?.memTotal ?? 0), 0)
-  const sparkPci = s.gpuPciIds?.[0]
+  const pcis = gpus.map((g) => g.pci)
+  const utilSeries = combine(pcis.map((p) => store.utilHistory[p] ?? []), 'avg')
+  const vramSeries = combine(pcis.map((p) => store.vramHistory[p] ?? []), 'sum')
+  const curUtil = utilSeries.length ? Math.round(utilSeries[utilSeries.length - 1]) : 0
   const alias = stat?.modelIdentifier || s.aliasOverride
 
   const [editing, setEditing] = useState(false)
@@ -109,16 +134,22 @@ const ServiceCard: React.FC<{ s: AiService; onKill: (s: AiService) => void }> = 
         <span className={sd ? styles.sd : styles.tmux}>{sd ? 'systemd' : 'tmux'}</span>
       </div>
 
-      {/* GPU badges + VRAM + usage sparkline */}
+      {/* GPU badges (wrap to as many rows as needed) */}
       {gpus.length > 0 && (
         <div className={styles.gpuRow}>
           {gpus.map((g) => (
             <span key={g.pci} className={styles.gpuBadge} title={`${g.pci} · ${g.info!.util}% · ${gb(g.info!.memUsed)}/${gb(g.info!.memTotal)} GB`}>
-              <Cpu size={10} /> GPU{g.info!.index} {g.info!.name} · {g.info!.util}%
+              <Cpu size={10} /> GPU{g.info!.index} {g.info!.name}
             </span>
           ))}
-          <span className={styles.vram}>{gb(vramUsed)}/{gb(vramTotal)} GB</span>
-          {sparkPci && store.utilHistory[sparkPci]?.length ? <Sparkline data={store.utilHistory[sparkPci]} color={color} /> : null}
+        </div>
+      )}
+
+      {/* Full-width labeled GPU + VRAM usage sparklines */}
+      {gpus.length > 0 && (
+        <div className={styles.metrics}>
+          <SparkRow label="GPU" data={utilSeries} max={100} color={color} value={`${curUtil}%`} />
+          <SparkRow label="VRAM" data={vramSeries} max={vramTotal} color="#8aa0ff" value={`${gb(vramUsed)}/${gb(vramTotal)} GB`} />
         </div>
       )}
 

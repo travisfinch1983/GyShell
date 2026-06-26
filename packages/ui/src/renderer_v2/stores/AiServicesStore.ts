@@ -71,7 +71,8 @@ export class AiServicesStore {
   // live enrichment
   gpuIndex: Record<string, { name: string; index: number; util: number; memUsed: number; memTotal: number; node: string }> = {}
   statsById: Record<string, { alive?: boolean; tps?: number; systemdState?: string; modelIdentifier?: string }> = {}
-  utilHistory: Record<string, number[]> = {} // pciId → last N gpuUtil samples
+  utilHistory: Record<string, number[]> = {} // pciId → last N gpuUtil samples (%)
+  vramHistory: Record<string, number[]> = {} // pciId → last N memUsed samples (MB)
 
   constructor() {
     makeAutoObservable(this)
@@ -123,8 +124,8 @@ export class AiServicesStore {
         this.providers = ((prov as any)?.providers ?? []) as Provider[]
         this.gpuIndex = gpuIndex
         for (const [pci, g] of Object.entries(gpuIndex)) {
-          const hist = (this.utilHistory[pci] ?? []).concat(g.util)
-          this.utilHistory[pci] = hist.slice(-24)
+          this.utilHistory[pci] = (this.utilHistory[pci] ?? []).concat(g.util).slice(-24)
+          this.vramHistory[pci] = (this.vramHistory[pci] ?? []).concat(g.memUsed).slice(-24)
         }
         this.error = null
         this.loaded = true

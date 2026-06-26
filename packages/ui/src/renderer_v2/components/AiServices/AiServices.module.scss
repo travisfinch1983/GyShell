@@ -73,13 +73,17 @@
 .stUnknown { background: var(--control-bg); color: var(--fg-faint); }
 .tps { color: var(--success); }
 
-.aliasRow { display: flex; align-items: center; gap: 6px; }
-.alias { font-size: 11px; font-family: var(--font-mono); color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.aliasRow { display: flex; align-items: flex-start; gap: 6px; }
+.alias { font-size: 11px; font-family: var(--font-mono); color: var(--fg-muted); flex: 1; word-break: break-word; line-height: 1.4; }
 .aliasNone { color: var(--fg-faint); font-style: italic; }
 .aliasInput { flex: 1; padding: 3px 6px; border: 1px solid var(--accent); border-radius: 4px; background: var(--control-bg); color: var(--fg); font-size: 11px; font-family: var(--font-mono); }
 .iconMini { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border: none; background: transparent; color: var(--fg-faint); cursor: pointer; border-radius: 4px; &:hover { background: var(--control-bg); color: var(--fg); } }
 
 .gpuRow { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
-.gpuBadge { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; padding: 1px 6px; border-radius: 6px; background: var(--control-bg); color: var(--fg-muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.vram { font-size: 10px; font-family: var(--font-mono); color: var(--fg-faint); }
-.spark { margin-left: auto; opacity: 0.85; }
+.gpuBadge { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; padding: 2px 7px; border-radius: 6px; background: var(--control-bg); color: var(--fg-muted); word-break: break-word; }
+
+.metrics { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
+.sparkRow { display: flex; align-items: center; gap: 8px; }
+.sparkLabel { flex: 0 0 38px; font-size: 10px; font-weight: 600; color: var(--fg-muted); text-transform: uppercase; }
+.sparkSvg { flex: 1; min-width: 0; width: 100%; height: 24px; background: var(--app-bg); border-radius: 4px; }
+.sparkVal { flex: 0 0 auto; font-size: 10px; font-family: var(--font-mono); color: var(--fg-faint); white-space: nowrap; min-width: 64px; text-align: right; }
