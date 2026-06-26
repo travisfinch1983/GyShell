@@ -58,6 +58,23 @@ type Lifecycle = 'kill' | 'suspend' | 'start' | 'restart'
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
+const IMAGE_GEN_PROVIDERS = new Set(['comfyui', 'sdnext', 'fooocus', 'invokeai'])
+const STT_PROVIDERS = new Set(['faster-whisper'])
+/**
+ * Mirror the proxy's classifyService so the drawer cards/filters match /api/proxy/services:
+ * embeddings + rerankers come in as serviceType 'llm' (vLLM) but are really embed/rerank by model.
+ */
+function classifyServiceType(s: AiService): string {
+  const m = (s.model || '').toLowerCase()
+  if (/embed|bge-|e5-|gte-|encoder|encoding/.test(m)) return 'embed'
+  if (/rerank/.test(m)) return 'rerank'
+  if ((s as any).isTools) return 'tools'
+  if (s.providerId && IMAGE_GEN_PROVIDERS.has(s.providerId)) return 'image'
+  if (s.providerId && STT_PROVIDERS.has(s.providerId)) return 'stt'
+  if (s.serviceType && s.serviceType !== 'llm') return s.serviceType // trust explicit tts/etc
+  return 'llm'
+}
+
 export class AiServicesStore {
   services: AiService[] = []
   config: AiConfig = { pools: {}, agents: {} }
@@ -106,6 +123,8 @@ export class AiServicesStore {
       ])
       const rawSvc = (svc as any)?.services ?? svc ?? {}
       const services: AiService[] = Array.isArray(rawSvc) ? rawSvc : Object.values(rawSvc)
+      // Normalize serviceType to match the proxy's classification (embed/rerank/image hide under 'llm').
+      for (const s of services) s.serviceType = classifyServiceType(s)
       services.sort((a, b) => (a.node || '').localeCompare(b.node || '') || (a.port ?? 0) - (b.port ?? 0))
       // GPU inventory → per-pci {name, util, mem} + push util history
       const gpuIndex: typeof this.gpuIndex = {}
