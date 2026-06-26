@@ -34,8 +34,14 @@ export class ClusterService {
     this.timeoutMs = opts.timeoutMs ?? 20000
   }
 
+  // Prefixes served natively by AI-Lab's own proxy HTTP listener (not ProxLab). As tabs migrate
+  // to native execution, add their prefixes here so the bridge routes to localhost, not ProxLab.
+  private static readonly LOCAL_PREFIXES = ['/api/civitai']
+  private localBase = `http://127.0.0.1:${process.env.AILAB_PROXY_PORT || 17890}`
+
   private async send(method: HttpMethod, path: string, body?: unknown): Promise<unknown> {
-    const url = `${this.base}${path}`
+    const base = ClusterService.LOCAL_PREFIXES.some((p) => path.startsWith(p)) ? this.localBase : this.base
+    const url = `${base}${path}`
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.timeoutMs)
     try {

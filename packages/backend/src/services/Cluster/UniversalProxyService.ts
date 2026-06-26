@@ -124,10 +124,13 @@ export class UniversalProxyService {
     const { createVectorProxyRouter } = await import('./proxy/vector-proxy.js')
     // @ts-expect-error
     const { createAnthropicProxyRouter } = await import('./proxy/anthropic-proxy.js')
+    // @ts-expect-error — native CivitAI downloader (runs curl inside CT 152, writes to local /ai-assets)
+    const { createCivitaiRouter } = await import('./proxy/civitai.js')
     const app = express()
     app.use('/api/proxy/vector', createVectorProxyRouter())
     app.use('/api/proxy/anthropic', createAnthropicProxyRouter())
     app.use('/api/proxy', createProxyRouter({ exec: this.sshExec }))
+    app.use('/api/civitai', express.json({ limit: '10mb' }), createCivitaiRouter({}, { exec: this.sshExec }))
 
     this.server = http.createServer(app)
     this.server.on('error', (e) => console.warn('[universal-proxy] server error:', e))
