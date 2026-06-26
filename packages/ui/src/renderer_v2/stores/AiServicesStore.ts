@@ -22,6 +22,8 @@ export interface AiService {
   modelFamily?: string
   modelVariant?: string
   quantFormat?: string
+  quantSize?: string
+  aliasOverride?: string
   contextSize?: number
   serviceType?: string // llm | tts | stt | image | tools | embed | rerank | training
   isSystemService?: boolean
