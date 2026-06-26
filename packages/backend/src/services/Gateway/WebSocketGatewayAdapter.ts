@@ -28,6 +28,7 @@ type WebSocketRpcMethod =
   | 'catalogInstall:resize'
   | 'catalogInstall:close'
   | 'catalogInstall:listTemplates'
+  | 'proxy:state'
   | 'filesystem:list'
   | 'filesystem:readTextFile'
   | 'filesystem:readFileBase64'
@@ -134,6 +135,9 @@ export interface WebSocketGatewayAdapterOptions {
     resize: (id: string, cols: number, rows: number) => void;
     close: (id: string) => void;
     listTemplates: (host: string) => Promise<unknown>;
+  };
+  proxyBridge?: {
+    getState: () => unknown;
   };
   metricsBridge?: {
     queryRange: (query: string, rangeSeconds?: number, stepSeconds?: number) => Promise<unknown>;
@@ -687,6 +691,10 @@ export class WebSocketGatewayAdapter {
         if (!this.options.catalogInstallBridge) throw new WebSocketRpcError('METHOD_NOT_FOUND', 'catalogInstall:listTemplates is not available.');
         const p = (params ?? {}) as Record<string, unknown>;
         return await this.options.catalogInstallBridge.listTemplates(String(p.host ?? ''));
+      }
+      case 'proxy:state': {
+        if (!this.options.proxyBridge) throw new WebSocketRpcError('METHOD_NOT_FOUND', 'proxy:state is not available.');
+        return this.options.proxyBridge.getState();
       }
       case 'catalogInstall:input': {
         if (!this.options.catalogInstallBridge) throw new WebSocketRpcError('METHOD_NOT_FOUND', 'catalogInstall:input is not available.');

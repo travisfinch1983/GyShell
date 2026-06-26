@@ -115,6 +115,11 @@ const gyshellApi = {
     onExit: (cb: (data: any) => void): CleanupFn => onRaw('catalogInstall:exit', cb),
   },
 
+  // AI-Lab Universal API Proxy routing state (the proxy itself is a separate HTTP listener).
+  proxy: {
+    getState: () => rpc('proxy:state'),
+  },
+
   metrics: {
     // Native charts (rule #1): backend queries Prometheus, UI renders with uPlot.
     queryRange: (query: string, rangeSeconds?: number, stepSeconds?: number) =>

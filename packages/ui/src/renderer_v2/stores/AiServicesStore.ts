@@ -69,6 +69,7 @@ export class AiServicesStore {
   typeFilter = 'all'
   loaded = false
   // live enrichment
+  proxyState: { port?: number; lastRefresh?: number; types?: Record<string, any[]> } | null = null
   gpuIndex: Record<string, { name: string; index: number; util: number; memUsed: number; memTotal: number; node: string }> = {}
   statsById: Record<string, { alive?: boolean; tps?: number; systemdState?: string; modelIdentifier?: string }> = {}
   utilHistory: Record<string, number[]> = {} // pciId → last N gpuUtil samples (%)
@@ -130,6 +131,13 @@ export class AiServicesStore {
         this.error = null
         this.loaded = true
       })
+      // proxy routing state (best-effort)
+      try {
+        const ps = await (window as any).gyshell?.proxy?.getState?.()
+        if (ps) runInAction(() => { this.proxyState = ps })
+      } catch {
+        /* ignore */
+      }
       // per-service status/tps (parallel; best-effort)
       void Promise.all(
         services.map(async (s) => {

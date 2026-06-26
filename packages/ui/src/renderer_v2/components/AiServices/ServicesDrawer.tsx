@@ -173,6 +173,63 @@ const ServiceCard: React.FC<{ s: AiService; onKill: (s: AiService) => void }> = 
   )
 })
 
+const SUFFIX: Record<string, string> = {
+  llm: '/v1/chat/completions',
+  embed: '/v1/embeddings',
+  rerank: '/v1/rerank',
+  tts: '/v1/audio/speech',
+  stt: '/v1/audio/transcriptions',
+  image: '/v1',
+}
+const CopyRow: React.FC<{ url: string; label?: string }> = ({ url, label }) => {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      className={styles.copyRow}
+      title="Copy"
+      onClick={() => {
+        navigator.clipboard?.writeText(url)
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1500)
+      }}
+    >
+      {label && <span className={styles.copyLabel}>{label}</span>}
+      <code className={styles.copyUrl}>{url}</code>
+      {copied ? <Check size={11} /> : <Copy size={11} />}
+    </button>
+  )
+}
+
+/** AI-Lab Universal API Proxy card — base + per-type/slot endpoints, click-to-copy. */
+const ProxyCard: React.FC = observer(() => {
+  const ps = store.proxyState
+  if (!ps?.port) return null
+  const base = `http://${window.location.hostname}:${ps.port}`
+  const types = ps.types || {}
+  const present = Object.keys(types).filter((t) => (types[t] || []).length && SUFFIX[t])
+  return (
+    <div className={styles.proxyCard}>
+      <div className={styles.proxyHead}>
+        <Server size={13} className={styles.headerIcon} />
+        <span className={styles.proxyTitle}>Universal API Proxy</span>
+      </div>
+      {present.map((t) => {
+        const list = types[t]
+        return (
+          <div key={t} className={styles.proxyType}>
+            <div className={styles.proxyTypeLabel}>{t}</div>
+            <CopyRow url={`${base}/${t}${SUFFIX[t]}`} label="universal" />
+            {list.map((svc: any) => (
+              <CopyRow key={svc.slot} url={`${base}/${t}/${svc.slot}${SUFFIX[t]}`} label={`slot ${svc.slot}${svc.aliasOverride || svc.model ? ` · ${svc.aliasOverride || svc.model}` : ''}`} />
+            ))}
+          </div>
+        )
+      })}
+      {present.length === 0 && <div className={styles.proxyEmpty}>No routable services yet.</div>}
+    </div>
+  )
+})
+
 /** Global right-side running-services drawer — visible on any tab while open. */
 export const ServicesDrawer: React.FC<{ visible: boolean; onClose: () => void }> = observer(({ visible, onClose }) => {
   const [killing, setKilling] = useState<AiService | null>(null)
@@ -220,6 +277,7 @@ export const ServicesDrawer: React.FC<{ visible: boolean; onClose: () => void }>
       <div className={styles.drawerBody}>
         {store.error && <div className={styles.errorBar}>{store.error}</div>}
         {!store.loaded && !store.error && <div className={styles.loading}>Loading…</div>}
+        <ProxyCard />
         {store.filteredServices.map((s) => <ServiceCard key={s.id} s={s} onKill={setKilling} />)}
         {store.loaded && store.filteredServices.length === 0 && <div className={styles.empty}>No running services.</div>}
       </div>

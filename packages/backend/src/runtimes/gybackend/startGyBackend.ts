@@ -10,6 +10,7 @@ import { GatewayService } from '../../services/Gateway/GatewayService'
 import { WebSocketGatewayAdapter } from '../../services/Gateway/WebSocketGatewayAdapter'
 import { clusterService } from '../../services/Cluster/ClusterService'
 import { CatalogInstallService } from '../../services/Cluster/CatalogInstallService'
+import { universalProxyService } from '../../services/Cluster/UniversalProxyService'
 import { metricsService } from '../../services/Cluster/MetricsService'
 import { clusterSettingsService } from '../../services/Cluster/ClusterSettingsService'
 import { pveClient } from '../../services/Cluster/PveClient'
@@ -126,6 +127,8 @@ export async function startGyBackend(): Promise<void> {
     publish: (channel, data) => gatewayService.broadcastRaw(channel, data),
     keyPath: process.env.AILAB_SSH_KEY || path.join(dataDir, 'ssh', 'id_ed25519')
   })
+  // AI-Lab Universal API Proxy — dedicated HTTP listener fronting running services by slot.
+  void universalProxyService.start().catch((e) => console.warn('[gybackend] universal proxy failed to start:', e))
 
   const terminalRestoreResult = await terminalService.restorePersistedTerminals()
   if (terminalRestoreResult.restored.length > 0 || terminalRestoreResult.failed.length > 0) {
@@ -185,6 +188,9 @@ export async function startGyBackend(): Promise<void> {
           resize: (id, cols, rows) => catalogInstallService.resize(id, cols, rows),
           close: (id) => catalogInstallService.close(id),
           listTemplates: (host) => catalogInstallService.listTemplates(host)
+        },
+        proxyBridge: {
+          getState: () => universalProxyService.getState()
         },
         metricsBridge: {
           queryRange: (query, rangeSeconds, stepSeconds) => metricsService.queryRange(query, rangeSeconds, stepSeconds),
