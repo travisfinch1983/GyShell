@@ -494,7 +494,7 @@ export class ModelDownloadsStore {
       pathOverride: d.newDir,
       moves: d.moves,
       downloadMeta: true,
-    }).catch((e) => { runInAction(() => { this.civError = e instanceof Error ? e.message : String(e) }) })
+    }).catch((e: unknown) => { runInAction(() => { this.civError = e instanceof Error ? e.message : String(e) }) })
     await this.removeRenamer(item.id)
     await this.loadHistories()
   }
