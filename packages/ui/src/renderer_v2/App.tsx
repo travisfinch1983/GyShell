@@ -21,6 +21,7 @@ import { ServicesPanel } from './components/Services/ServicesPanel'
 import { ScriptsPanel } from './components/Scripts/ScriptsPanel'
 import { ScriptCatalogPanel } from './components/ScriptCatalog/ScriptCatalogPanel'
 import { FileManagerPanel } from './components/FileManager/FileManagerPanel'
+import { AiServicesPanel } from './components/AiServices/AiServicesPanel'
 import './styles/app.scss'
 
 const store = new AppStore()
@@ -326,6 +327,8 @@ export const App: React.FC = observer(() => {
           {primaryTab === 'scripts' && <ScriptsPanel />}
 
           {primaryTab === 'helper-scripts' && <ScriptCatalogPanel />}
+
+          {primaryTab === 'ai-services' && <AiServicesPanel />}
 
           {primaryTab === 'flowchart' && (
             <PlaceholderPanel
