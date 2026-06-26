@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { RefreshCw, X, ExternalLink, Pause, Play, RotateCw, Square, Loader2, Cpu, Server, Pencil, Check } from 'lucide-react'
+import { RefreshCw, X, ExternalLink, Pause, Play, RotateCw, Square, Loader2, Cpu, Server, Pencil, Check, Copy } from 'lucide-react'
 import { aiServicesStore as store, type AiService } from '../../stores/AiServicesStore'
 import { ConfirmModal } from '../Cluster/ClusterModals'
 import styles from './AiServices.module.scss'
