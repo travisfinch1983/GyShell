@@ -137,6 +137,13 @@
 .revImages { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
 .revImg { width: 100%; aspect-ratio: 3/4; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); background: var(--control-bg); }
 .revTarget { font-size: 11px; font-family: var(--font-mono); color: var(--accent); padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--app-bg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fileOrig { font-size: 9px; color: var(--fg-faint); font-style: italic; }
+.openLink { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--accent); text-decoration: none; &:hover { text-decoration: underline; } }
+
+/* review queue navigator (prev/next through extension-sent items) */
+.queueNav { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.navBtn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 24px; border: 1px solid var(--border); border-radius: 5px; background: var(--control-bg); color: var(--fg); cursor: pointer; &:hover:not(:disabled) { border-color: var(--accent); } &:disabled { opacity: 0.4; cursor: default; } }
+.navPos { font-size: 12px; font-weight: 600; }
 
 /* scheduler controls in queue column */
 .schedRow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--border); }

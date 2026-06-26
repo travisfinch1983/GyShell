@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Download, RefreshCw, Search, Square, Play, X, Loader2, Save, Pause, Clock, Check } from 'lucide-react'
+import { Download, RefreshCw, Search, Square, Play, X, Loader2, Save, Pause, Clock, Check, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
 import { modelDownloadsStore as store, type DLItem, type HFFile } from '../../stores/ModelDownloadsStore'
 import styles from './ModelDownloads.module.scss'
 
@@ -328,24 +328,12 @@ const ReviewBrowser: React.FC = observer(() => {
   return (
     <div className={styles.review}>
       {store.civQueue.length > 0 && (
-        <div className={styles.histSection}>
-          <div className={styles.histHeader}>
-            <span className={styles.sectionLabel}>Review Queue ({store.civQueue.length})</span>
-            <span className={styles.note}>sent from the browser extension</span>
-          </div>
-          <div className={styles.histList}>
-            {store.civQueue.map((it) => (
-              <div key={it.id} className={`${styles.histItem} ${store.civQueueItemId === it.id ? styles.histSel : ''}`}>
-                <div className={styles.histHead}>
-                  <span className={styles.histName} title={it.modelData?.name || it.modelId}>{it.modelData?.name || `model ${it.modelId}`}</span>
-                  {it.modelData?.type && <span className={styles.histType}>{it.modelData.type}</span>}
-                  <div className={styles.spacer} />
-                  <button className={styles.btnSm} onClick={() => store.reviewQueueItem(it)}><Search size={12} /> Review</button>
-                  <button className={styles.btnSm} onClick={() => void store.removeFromQueue(it.id)}><X size={12} /></button>
-                </div>
-              </div>
-            ))}
-          </div>
+        <div className={styles.queueNav}>
+          <button className={styles.navBtn} disabled={store.civQueueIndex <= 0} onClick={() => store.queueNav(-1)} title="Previous"><ChevronLeft size={16} /></button>
+          <span className={styles.navPos}>{store.civQueueIndex + 1} / {store.civQueue.length} <span className={styles.note}>in review queue</span></span>
+          <button className={styles.navBtn} disabled={store.civQueueIndex >= store.civQueue.length - 1} onClick={() => store.queueNav(1)} title="Next"><ChevronRight size={16} /></button>
+          <div className={styles.spacer} />
+          {store.currentQueueItem && <button className={styles.btnSm} onClick={() => void store.removeFromQueue(store.currentQueueItem.id)}><X size={12} /> Remove from queue</button>}
         </div>
       )}
       <div className={styles.row}>
@@ -366,6 +354,7 @@ const ReviewBrowser: React.FC = observer(() => {
             </div>
             <div className={styles.revMeta}>
               {m.creator?.username && <span>by {m.creator.username}</span>}
+              <a className={styles.openLink} href={`https://civitai.com/models/${m.id}`} target="_blank" rel="noreferrer"><ExternalLink size={11} /> Open on CivitAI</a>
               {(m.tags || []).slice(0, 6).map((t: string) => <span key={t} className={styles.hTagDim}>{t}</span>)}
             </div>
           </div>
@@ -381,15 +370,19 @@ const ReviewBrowser: React.FC = observer(() => {
           {v && (
             <>
               <div className={styles.fileSection}>
-                <div className={styles.sectionLabel}>Files</div>
-                {(v.files || []).map((f: any) => (
-                  <label key={f.name} className={styles.fileRow}>
-                    <input type="checkbox" checked={store.civSelFiles.has(f.name)} onChange={() => store.toggleReviewFile(f.name)} />
-                    <span className={styles.fileName}>{f.name}</span>
-                    {f.type && <span className={styles.quantBadge}>{f.type}</span>}
-                    <span className={styles.fileSize}>{kb(f.sizeKB)}</span>
-                  </label>
-                ))}
+                <div className={styles.sectionLabel}>Files → resolved name (live)</div>
+                {(v.files || []).map((f: any) => {
+                  const resolved = store.resolvedNameFor(f.name)
+                  return (
+                    <label key={f.name} className={styles.fileRow}>
+                      <input type="checkbox" checked={store.civSelFiles.has(f.name)} onChange={() => store.toggleReviewFile(f.name)} />
+                      <span className={styles.fileName} title={f.name}>{resolved}</span>
+                      {resolved !== f.name && <span className={styles.fileOrig} title={`original: ${f.name}`}>was {f.name}</span>}
+                      {f.type && <span className={styles.quantBadge}>{f.type}</span>}
+                      <span className={styles.fileSize}>{kb(f.sizeKB)}</span>
+                    </label>
+                  )
+                })}
               </div>
 
               {(v.images || []).length > 0 && (

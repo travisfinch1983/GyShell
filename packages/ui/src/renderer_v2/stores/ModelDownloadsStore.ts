@@ -70,10 +70,12 @@ export class ModelDownloadsStore {
   civSelVersionId: number | null = null
   civSelFiles = new Set<string>() // file names selected in the current version
   civResolvedDir = '' // resolved target dir from /resolve-paths
+  civResolvedFiles: Array<{ originalName: string; newName: string }> = [] // per-file resolved names
   civReviewUserDefined = ''
   civReviewFnOverride = ''
   civQueue: any[] = [] // /api/civitai/queue — items sent from the browser extension's "Review" button
   civQueueItemId: string | null = null // the queue item currently loaded into the browser
+  civQueueIndex = 0 // position in the review queue (navigated with prev/next arrows)
 
   // history (immutable download records)
   hfHistory: any[] = []
@@ -293,7 +295,7 @@ export class ModelDownloadsStore {
   setCivMode(m: 'downloader' | 'review' | 'renamer'): void {
     this.civMode = m
     if (m === 'renamer') void this.loadRenamer()
-    if (m === 'review') void this.loadCivQueue()
+    if (m === 'review') void this.loadCivQueue(true)
   }
   private histKey(i: any): string {
     return `${i.modelId}:${i.versionId || ''}`
@@ -603,16 +605,25 @@ export class ModelDownloadsStore {
     void this.resolveReviewPath()
   }
   /** Review queue — items the browser extension's "Review" button POSTed to /queue/add. */
-  async loadCivQueue(): Promise<void> {
+  async loadCivQueue(showCurrent = false): Promise<void> {
     const r = (await this.cluster().request('GET', '/api/civitai/queue').catch(() => null)) as any
     const items = Array.isArray(r) ? r : r?.items ?? []
-    runInAction(() => { this.civQueue = items })
+    runInAction(() => {
+      this.civQueue = items
+      if (this.civQueueIndex >= items.length) this.civQueueIndex = Math.max(0, items.length - 1)
+    })
+    if (showCurrent && items.length) this.showQueueItem(this.civQueueIndex)
   }
-  /** Load a queued item's cached modelData straight into the Review browser (no re-fetch needed). */
-  reviewQueueItem(item: any): void {
+  get currentQueueItem(): any | null {
+    return this.civQueue[this.civQueueIndex] ?? null
+  }
+  /** Load the queue item at index into the Review browser (cached modelData, no re-fetch). */
+  showQueueItem(index: number): void {
+    const item = this.civQueue[index]
+    if (!item) return
+    runInAction(() => { this.civQueueIndex = index })
     const model = item.modelData
     if (!model) {
-      // No cached data — fall back to fetching by id
       this.civUrl = item.pageUrl || `https://civitai.com/models/${item.modelId}`
       void this.reviewLoad()
       return
@@ -620,7 +631,8 @@ export class ModelDownloadsStore {
     runInAction(() => {
       this.civModel = model
       this.civQueueItemId = item.id
-      this.civMode = 'review'
+      this.civReviewUserDefined = ''
+      this.civReviewFnOverride = ''
       const versions = model.modelVersions ?? []
       const v = (item.versionId && versions.find((x: any) => String(x.id) === String(item.versionId))) || versions[0]
       this.civSelVersionId = v?.id ?? null
@@ -628,10 +640,19 @@ export class ModelDownloadsStore {
     })
     void this.resolveReviewPath()
   }
+  /** Navigate the review queue (delta = -1 / +1). */
+  queueNav(delta: number): void {
+    if (!this.civQueue.length) return
+    const next = Math.min(this.civQueue.length - 1, Math.max(0, this.civQueueIndex + delta))
+    this.showQueueItem(next)
+  }
   async removeFromQueue(id: string): Promise<void> {
     await this.cluster().request('DELETE', `/api/civitai/queue/${encodeURIComponent(id)}`).catch(() => undefined)
     if (this.civQueueItemId === id) runInAction(() => { this.civQueueItemId = null })
     await this.loadCivQueue()
+    // advance to the item now occupying this slot (or the new last), else clear the browser
+    if (this.civQueue.length) this.showQueueItem(Math.min(this.civQueueIndex, this.civQueue.length - 1))
+    else runInAction(() => { this.civModel = null })
   }
   toggleReviewFile(name: string): void {
     this.civSelFiles.has(name) ? this.civSelFiles.delete(name) : this.civSelFiles.add(name)
@@ -655,10 +676,22 @@ export class ModelDownloadsStore {
         userDefined: this.civReviewUserDefined || undefined,
         fileNameOverride: this.civReviewFnOverride || undefined,
       })) as any
-      runInAction(() => { this.civResolvedDir = r?.targetDir || '' })
+      runInAction(() => {
+        this.civResolvedDir = r?.targetDir || ''
+        this.civResolvedFiles = Array.isArray(r?.files) ? r.files : []
+      })
     } catch {
-      runInAction(() => { this.civResolvedDir = '' })
+      runInAction(() => { this.civResolvedDir = ''; this.civResolvedFiles = [] })
     }
+  }
+  private resolveTimer: ReturnType<typeof setTimeout> | null = null
+  /** Live (debounced) re-resolve as the user types subfolder / filename overrides. */
+  resolveReviewPathLive(): void {
+    if (this.resolveTimer) clearTimeout(this.resolveTimer)
+    this.resolveTimer = setTimeout(() => void this.resolveReviewPath(), 350)
+  }
+  resolvedNameFor(originalName: string): string {
+    return this.civResolvedFiles.find((f) => f.originalName === originalName)?.newName || originalName
   }
   async reviewDownload(): Promise<void> {
     const m = this.civModel
@@ -671,14 +704,14 @@ export class ModelDownloadsStore {
       if (this.civReviewUserDefined) body.userDefined = this.civReviewUserDefined
       if (this.civReviewFnOverride) body.fileNameOverride = this.civReviewFnOverride
       await this.cluster().request('POST', '/api/civitai/download', body)
-      // if this came from the review queue, clear it out of the queue
-      if (this.civQueueItemId) {
-        await this.cluster().request('DELETE', `/api/civitai/queue/${encodeURIComponent(this.civQueueItemId)}`).catch(() => undefined)
-        runInAction(() => { this.civQueueItemId = null })
-        await this.loadCivQueue()
-      }
-      runInAction(() => { this.subTab = 'queue' })
+      // if this came from the review queue, clear it out + advance to the next queued item
+      const fromQueueId = this.civQueueItemId
       await Promise.all([this.loadDownloads(), this.loadHistories()])
+      if (fromQueueId) {
+        await this.removeFromQueue(fromQueueId)
+      } else {
+        runInAction(() => { this.subTab = 'queue' })
+      }
     } catch (e) {
       runInAction(() => { this.civModelError = e instanceof Error ? e.message : String(e) })
     } finally {
