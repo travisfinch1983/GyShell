@@ -422,7 +422,7 @@ export function createHfRouter() {
    *  Falls back to legacy /models/{family} path if file-manager config not available. */
   function resolveSmartDest(category, destType, subfolder) {
     try {
-      const fmCfgPath = join(process.cwd(), 'data', 'file-manager.json');
+      const fmCfgPath = join(DATA_DIR, 'file-manager.json');
       const fmCfg = JSON.parse(readFileSync(fmCfgPath, 'utf8'));
 
       const destMap = {
