@@ -40,17 +40,19 @@ export async function detectServiceType(endpoint: string): Promise<'llm' | 'embe
   const models = await getJson(`${v1}/models`)
   const model = models?.data?.[0]?.id || 'model'
 
+  // Order matters: embedding servers answer BOTH /v1/embeddings AND /rerank (rerank is built on
+  // scoring), but cross-encoder rerankers reject /v1/embeddings (404). So /embeddings wins first.
   let type: 'llm' | 'embed' | 'rerank' = 'llm'
   const rerankBody = { model, query: 'q', documents: ['a'] }
-  if (
+  if (await postOk(`${v1}/embeddings`, { model, input: 'probe' })) {
+    type = 'embed'
+  } else if (
     (await postOk(`${root}/rerank`, rerankBody)) ||
     (await postOk(`${v1}/rerank`, rerankBody)) ||
     (await postOk(`${root}/v2/rerank`, rerankBody)) ||
     (await postOk(`${v1}/score`, { model, text_1: 'a', text_2: 'b' }))
   ) {
     type = 'rerank'
-  } else if (await postOk(`${v1}/embeddings`, { model, input: 'probe' })) {
-    type = 'embed'
   }
   cache.set(endpoint, { type, ts: Date.now() })
   return type
