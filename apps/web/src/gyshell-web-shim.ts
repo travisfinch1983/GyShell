@@ -120,6 +120,11 @@ const gyshellApi = {
     getState: () => rpc('proxy:state'),
   },
 
+  // Capability-based service-type detection (backend probes the endpoints).
+  ai: {
+    probeTypes: (items: Array<{ id: string; endpoint?: string }>) => rpc('ai:probeTypes', { items }),
+  },
+
   metrics: {
     // Native charts (rule #1): backend queries Prometheus, UI renders with uPlot.
     queryRange: (query: string, rangeSeconds?: number, stepSeconds?: number) =>

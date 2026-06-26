@@ -11,6 +11,7 @@ import { WebSocketGatewayAdapter } from '../../services/Gateway/WebSocketGateway
 import { clusterService } from '../../services/Cluster/ClusterService'
 import { CatalogInstallService } from '../../services/Cluster/CatalogInstallService'
 import { universalProxyService } from '../../services/Cluster/UniversalProxyService'
+import { detectServiceTypes } from '../../services/Cluster/probeServiceType'
 import { metricsService } from '../../services/Cluster/MetricsService'
 import { clusterSettingsService } from '../../services/Cluster/ClusterSettingsService'
 import { pveClient } from '../../services/Cluster/PveClient'
@@ -191,6 +192,9 @@ export async function startGyBackend(): Promise<void> {
         },
         proxyBridge: {
           getState: () => universalProxyService.getState()
+        },
+        aiProbeBridge: {
+          detectTypes: (items) => detectServiceTypes(items)
         },
         metricsBridge: {
           queryRange: (query, rangeSeconds, stepSeconds) => metricsService.queryRange(query, rangeSeconds, stepSeconds),

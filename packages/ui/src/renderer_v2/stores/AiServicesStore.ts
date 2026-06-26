@@ -61,13 +61,11 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 const IMAGE_GEN_PROVIDERS = new Set(['comfyui', 'sdnext', 'fooocus', 'invokeai'])
 const STT_PROVIDERS = new Set(['faster-whisper'])
 /**
- * Mirror the proxy's classifyService so the drawer cards/filters match /api/proxy/services:
- * embeddings + rerankers come in as serviceType 'llm' (vLLM) but are really embed/rerank by model.
+ * Baseline type from reliable signals only (provider / isTts) — NO model-name guessing.
+ * The ambiguous 'llm' bucket (vLLM can be chat OR embed OR rerank) is refined by a live
+ * capability probe of the endpoint (ai:probeTypes); this is just the fallback until that returns.
  */
 function classifyServiceType(s: AiService): string {
-  const m = (s.model || '').toLowerCase()
-  if (/embed|bge-|e5-|gte-|encoder|encoding/.test(m)) return 'embed'
-  if (/rerank/.test(m)) return 'rerank'
   if ((s as any).isTools) return 'tools'
   if (s.providerId && IMAGE_GEN_PROVIDERS.has(s.providerId)) return 'image'
   if (s.providerId && STT_PROVIDERS.has(s.providerId)) return 'stt'
@@ -93,6 +91,7 @@ export class AiServicesStore {
   statsById: Record<string, { alive?: boolean; tps?: number; systemdState?: string; modelIdentifier?: string }> = {}
   utilHistory: Record<string, number[]> = {} // pciId → last N gpuUtil samples (%)
   vramHistory: Record<string, number[]> = {} // pciId → last N memUsed samples (MB)
+  typeProbeCache: Record<string, string> = {} // endpoint → capability-detected type (llm/embed/rerank)
 
   constructor() {
     makeAutoObservable(this)
@@ -123,8 +122,13 @@ export class AiServicesStore {
       ])
       const rawSvc = (svc as any)?.services ?? svc ?? {}
       const services: AiService[] = Array.isArray(rawSvc) ? rawSvc : Object.values(rawSvc)
-      // Normalize serviceType to match the proxy's classification (embed/rerank/image hide under 'llm').
-      for (const s of services) s.serviceType = classifyServiceType(s)
+      // Baseline type (provider/isTts); apply any cached capability-probe result over the 'llm' bucket.
+      for (const s of services) {
+        s.serviceType = classifyServiceType(s)
+        if (s.serviceType === 'llm' && s.endpoint && this.typeProbeCache[s.endpoint]) {
+          s.serviceType = this.typeProbeCache[s.endpoint]
+        }
+      }
       services.sort((a, b) => (a.node || '').localeCompare(b.node || '') || (a.port ?? 0) - (b.port ?? 0))
       // GPU inventory → per-pci {name, util, mem} + push util history
       const gpuIndex: typeof this.gpuIndex = {}
@@ -172,6 +176,8 @@ export class AiServicesStore {
           }
         }),
       )
+      // Capability-probe the ambiguous 'llm' bucket (backend hits the endpoints) → refine to embed/rerank.
+      void this.refineTypes(services)
     } catch (e) {
       runInAction(() => {
         this.error = e instanceof Error ? e.message : String(e)
@@ -229,6 +235,32 @@ export class AiServicesStore {
       runInAction(() => {
         this.busyId = null
       })
+    }
+  }
+
+  /** Capability-probe the 'llm' bucket via the backend; cache + apply embed/rerank refinements. */
+  async refineTypes(services: AiService[]): Promise<void> {
+    const api = (window as any).gyshell?.ai
+    if (!api?.probeTypes) return
+    const todo = services.filter((s) => s.serviceType === 'llm' && s.endpoint && !this.typeProbeCache[s.endpoint])
+    if (!todo.length) return
+    try {
+      const res = (await api.probeTypes(todo.map((s) => ({ id: s.id, endpoint: s.endpoint })))) as Record<string, string>
+      runInAction(() => {
+        let changed = false
+        for (const s of services) {
+          const t = res?.[s.id]
+          if (!t || !s.endpoint) continue
+          this.typeProbeCache[s.endpoint] = t // cache even 'llm' so we don't re-probe
+          if (t !== 'llm' && s.serviceType !== t) {
+            s.serviceType = t
+            changed = true
+          }
+        }
+        if (changed) this.services = [...this.services]
+      })
+    } catch {
+      /* ignore */
     }
   }
 
