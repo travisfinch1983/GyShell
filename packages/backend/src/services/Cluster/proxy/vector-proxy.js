@@ -18,7 +18,7 @@ import http from 'http';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
-const CONFIG_FILE = join(process.cwd(), 'data', 'vector-db-config.json');
+const CONFIG_FILE = join(process.env.AILAB_PROXY_DATA_DIR || join(process.cwd(), 'data'), 'vector-db-config.json');
 
 function loadConfig() {
   try {
@@ -28,7 +28,7 @@ function loadConfig() {
 }
 
 function saveConfig(dbs) {
-  mkdirSync(join(process.cwd(), 'data'), { recursive: true });
+  mkdirSync(process.env.AILAB_PROXY_DATA_DIR || join(process.cwd(), 'data'), { recursive: true });
   writeFileSync(CONFIG_FILE, JSON.stringify(dbs, null, 2));
 }
 
