@@ -69,7 +69,9 @@ export class AiServicesStore {
   typeFilter = 'all'
   loaded = false
   // live enrichment
-  proxyState: { port?: number; lastRefresh?: number; types?: Record<string, any[]> } | null = null
+  proxyState:
+    | { port?: number; basePath?: string; lanIp?: string; lastRefresh?: number; types?: Record<string, any[]>; services?: any; vector?: any[] | null }
+    | null = null
   gpuIndex: Record<string, { name: string; index: number; util: number; memUsed: number; memTotal: number; node: string }> = {}
   statsById: Record<string, { alive?: boolean; tps?: number; systemdState?: string; modelIdentifier?: string }> = {}
   utilHistory: Record<string, number[]> = {} // pciId → last N gpuUtil samples (%)

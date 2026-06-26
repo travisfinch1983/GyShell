@@ -173,59 +173,167 @@ const ServiceCard: React.FC<{ s: AiService; onKill: (s: AiService) => void }> = 
   )
 })
 
-const SUFFIX: Record<string, string> = {
-  llm: '/v1/chat/completions',
-  embed: '/v1/embeddings',
-  rerank: '/v1/rerank',
-  tts: '/v1/audio/speech',
-  stt: '/v1/audio/transcriptions',
-  image: '/v1',
+type UrlMode = 'ip' | 'http' | 'https'
+// Per-type endpoint templates: (slot) → [ [label, pathSuffix], ... ] under /<type>/<slot>...
+const ENDPOINTS: Record<string, (slot: number) => Array<[string, string]>> = {
+  llm: (s) => [
+    ['chat', `/llm/${s}/v1/chat/completions`],
+    ['completions', `/llm/${s}/v1/completions`],
+    ['models', `/llm/${s}/v1/models`],
+  ],
+  embed: (s) => [
+    ['embeddings', `/embed/${s}/v1/embeddings`],
+    ['models', `/embed/${s}/v1/models`],
+  ],
+  rerank: (s) => [
+    ['rerank v1', `/rerank/${s}/v1/rerank`],
+    ['rerank v2', `/rerank/${s}/v2/rerank`],
+  ],
+  tts: (s) => [
+    ['speech', `/tts/${s}/v1/audio/speech`],
+    ['voices', `/tts/v1/providers/${s}/voices`],
+    ['models', `/tts/v1/providers/${s}/models`],
+  ],
+  stt: (s) => [
+    ['transcriptions', `/stt/${s}/v1/audio/transcriptions`],
+    ['models', `/stt/v1/providers/${s}/models`],
+  ],
+  image: (s) => [['base', `/image/${s}/v1`]],
 }
-const CopyRow: React.FC<{ url: string; label?: string }> = ({ url, label }) => {
+const MULTI_TTS: Array<[string, string]> = [
+  ['speech', '/multi-tts/v1/audio/speech'],
+  ['cloned-speech', '/multi-tts/v1/audio/cloned-speech'],
+  ['stream', '/multi-tts/stream'],
+  ['speech (raw)', '/multi-tts/speech'],
+  ['models', '/multi-tts/v1/models'],
+  ['voices', '/multi-tts/v1/voices'],
+  ['status', '/multi-tts/status'],
+]
+const TYPE_TITLES: Record<string, string> = { llm: 'LLM', tts: 'TTS', stt: 'STT', embed: 'Embeddings', rerank: 'Rerankers', image: 'Image Gen' }
+
+const UrlRow: React.FC<{ label: string; url: string }> = ({ label, url }) => {
   const [copied, setCopied] = useState(false)
   return (
-    <button
-      className={styles.copyRow}
-      title="Copy"
-      onClick={() => {
-        navigator.clipboard?.writeText(url)
-        setCopied(true)
-        setTimeout(() => setCopied(false), 1500)
-      }}
-    >
-      {label && <span className={styles.copyLabel}>{label}</span>}
-      <code className={styles.copyUrl}>{url}</code>
-      {copied ? <Check size={11} /> : <Copy size={11} />}
-    </button>
+    <div className={styles.epRow}>
+      <span className={styles.epLabel}>{label}</span>
+      <button
+        className={styles.epUrlBtn}
+        title="Copy"
+        onClick={() => {
+          navigator.clipboard?.writeText(url)
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1500)
+        }}
+      >
+        <code className={styles.epUrl}>{url}</code>
+        {copied ? <Check size={11} className={styles.epCopyIcon} /> : <Copy size={11} className={styles.epCopyIcon} />}
+      </button>
+    </div>
   )
 }
 
-/** AI-Lab Universal API Proxy card — base + per-type/slot endpoints, click-to-copy. */
+/** A proxy entry: header (name + model) on row 1, then each endpoint URL on its own row. */
+const ProxyEntry: React.FC<{ title: string; sub?: string; healthy?: boolean; endpoints: Array<[string, string]>; base: string }> = ({ title, sub, healthy, endpoints, base }) => (
+  <div className={styles.proxyEntry}>
+    <div className={styles.entryHeader}>
+      {healthy != null && <span className={`${styles.healthDot} ${healthy ? styles.hOk : styles.hDown}`} />}
+      <span className={styles.entryName}>{title}</span>
+      {sub && <span className={styles.entryModel}>{sub}</span>}
+    </div>
+    {endpoints.map(([label, path]) => (
+      <UrlRow key={path} label={label} url={`${base}${path}`} />
+    ))}
+  </div>
+)
+
+const URL_MODE_KEY = 'ai-lab-proxy-url-mode'
+
+/** AI-Lab Universal API Proxy card — full endpoint surface, click-to-copy, URL-format toggle. */
 const ProxyCard: React.FC = observer(() => {
   const ps = store.proxyState
+  const [mode, setMode] = useState<UrlMode>(() => (localStorage.getItem(URL_MODE_KEY) as UrlMode) || 'ip')
+  const setUrlMode = (m: UrlMode) => {
+    setMode(m)
+    localStorage.setItem(URL_MODE_KEY, m)
+  }
   if (!ps?.port) return null
-  const base = `http://${window.location.hostname}:${ps.port}${(ps as any).basePath || '/api/proxy'}`
-  const types = ps.types || {}
-  const present = Object.keys(types).filter((t) => (types[t] || []).length && SUFFIX[t])
+  const bp = ps.basePath || '/api/proxy'
+  const host = window.location.hostname
+  const base =
+    mode === 'ip' ? `http://${ps.lanIp || host}:${ps.port}${bp}` : mode === 'http' ? `http://${host}:${ps.port}${bp}` : `https://${host}${bp}`
+
+  const svc = (ps.services || {}) as Record<string, any>
+  const slotTypes = ['llm', 'embed', 'rerank', 'tts', 'stt', 'image']
+  const multi = svc.multiTts
+  const hasMulti = multi && ((multi.ttsCount ?? 0) > 0 || (multi.tts || []).length > 0)
+  const vector = ps.vector || []
+  const anySlots = slotTypes.some((t) => (svc[t] || []).length)
+
   return (
     <div className={styles.proxyCard}>
       <div className={styles.proxyHead}>
-        <Server size={13} className={styles.headerIcon} />
+        <Server size={14} className={styles.headerIcon} />
         <span className={styles.proxyTitle}>Universal API Proxy</span>
+        <div className={styles.urlToggle}>
+          {(['ip', 'http', 'https'] as UrlMode[]).map((m) => (
+            <button key={m} className={`${styles.urlMode} ${mode === m ? styles.urlModeActive : ''}`} onClick={() => setUrlMode(m)}>
+              {m.toUpperCase()}
+            </button>
+          ))}
+        </div>
       </div>
-      {present.map((t) => {
-        const list = types[t]
+
+      {slotTypes.map((t) => {
+        const list = svc[t] || []
+        if (!list.length || !ENDPOINTS[t]) return null
         return (
           <div key={t} className={styles.proxyType}>
-            <div className={styles.proxyTypeLabel}>{t}</div>
-            <CopyRow url={`${base}/${t}${SUFFIX[t]}`} label="universal" />
-            {list.map((svc: any) => (
-              <CopyRow key={svc.slot} url={`${base}/${t}/${svc.slot}${SUFFIX[t]}`} label={`slot ${svc.slot}${svc.aliasOverride || svc.model ? ` · ${svc.aliasOverride || svc.model}` : ''}`} />
+            <div className={styles.proxyTypeLabel}>{TYPE_TITLES[t] || t}</div>
+            {list.map((s: any) => (
+              <ProxyEntry
+                key={s.slot}
+                title={`Slot ${s.slot} · ${s.providerName || s.providerId || ''}`}
+                sub={s.aliasOverride || s.model || undefined}
+                endpoints={ENDPOINTS[t](s.slot)}
+                base={base}
+              />
             ))}
           </div>
         )
       })}
-      {present.length === 0 && <div className={styles.proxyEmpty}>No routable services yet.</div>}
+
+      {hasMulti && (
+        <div className={styles.proxyType}>
+          <div className={styles.proxyTypeLabel}>Multi-TTS Pipeline</div>
+          <ProxyEntry title={`${multi.ttsCount ?? (multi.tts || []).length} TTS · ${(multi.rvc || []).length} RVC`} endpoints={MULTI_TTS} base={base} />
+        </div>
+      )}
+
+      {vector.length > 0 && (
+        <div className={styles.proxyType}>
+          <div className={styles.proxyTypeLabel}>Vector Databases</div>
+          <ProxyEntry
+            title="Consensus (all DBs)"
+            endpoints={[
+              ['collections', '/vector/all/collections'],
+              ['search', '/vector/all/collections/{collection}/search'],
+            ]}
+            base={base}
+          />
+          {vector.map((db: any) => (
+            <ProxyEntry
+              key={db.name}
+              title={db.name}
+              sub={db.type}
+              healthy={db.healthy}
+              endpoints={[['proxy', `/vector/${db.name}`]]}
+              base={base}
+            />
+          ))}
+        </div>
+      )}
+
+      {!anySlots && !hasMulti && vector.length === 0 && <div className={styles.proxyEmpty}>No routable services yet.</div>}
     </div>
   )
 })

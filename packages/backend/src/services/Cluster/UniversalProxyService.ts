@@ -1,4 +1,5 @@
 import http from 'node:http'
+import os from 'node:os'
 import { writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import * as ssh2 from 'ssh2'
@@ -29,6 +30,23 @@ export class UniversalProxyService {
   private dataDir = '/opt/ai-lab/.gybackend-data'
   private keyPath = ''
   private privateKey?: Buffer
+  private lanIp = '127.0.0.1'
+  private fullServices: unknown = null
+  private vectorList: unknown = null
+
+  private detectLanIp(): string {
+    const ifaces = os.networkInterfaces()
+    let firstNonInternal = '127.0.0.1'
+    for (const list of Object.values(ifaces)) {
+      for (const ni of list || []) {
+        if (ni.family === 'IPv4' && !ni.internal) {
+          if (ni.address.startsWith('10.')) return ni.address
+          if (firstNonInternal === '127.0.0.1') firstNonInternal = ni.address
+        }
+      }
+    }
+    return firstNonInternal
+  }
 
   private loadKey(): Buffer {
     if (!this.privateKey) this.privateKey = readFileSync(this.keyPath)
@@ -82,6 +100,7 @@ export class UniversalProxyService {
     this.host = opts.host || this.host
     this.port = opts.port || this.port
     this.keyPath = process.env.AILAB_SSH_KEY || path.join(this.dataDir, 'ssh', 'id_ed25519')
+    this.lanIp = this.detectLanIp()
 
     // env consumed by the ported routers (data dir + vector self-refs at our port)
     process.env.AILAB_PROXY_DATA_DIR = this.dataDir
@@ -153,11 +172,30 @@ export class UniversalProxyService {
     for (const t of Object.keys(reg)) reg[t].sort((a, b) => a.slot - b.slot)
     this.registry = reg
     this.lastRefresh = Date.now()
+
+    // Pull the ported router's full /services + vector list (once listening) for the card.
+    if (this.server?.listening) {
+      const get = async (p: string) => {
+        const r = await fetch(`http://127.0.0.1:${this.port}${p}`, { signal: AbortSignal.timeout(8000) })
+        return r.ok ? r.json() : null
+      }
+      this.fullServices = await get('/api/proxy/services').catch(() => null)
+      const vl = await get('/api/proxy/vector/list').catch(() => null)
+      this.vectorList = (vl as any)?.databases ?? null
+    }
   }
 
   /** Routing-state for the proxy card (served over the WS gateway). */
   getState(): unknown {
-    return { port: this.port, basePath: '/api/proxy', lastRefresh: this.lastRefresh, types: this.registry }
+    return {
+      port: this.port,
+      basePath: '/api/proxy',
+      lanIp: this.lanIp,
+      lastRefresh: this.lastRefresh,
+      types: this.registry,
+      services: this.fullServices,
+      vector: this.vectorList,
+    }
   }
 }
 
