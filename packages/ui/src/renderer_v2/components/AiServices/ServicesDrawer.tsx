@@ -194,11 +194,28 @@ export const ServicesDrawer: React.FC<{ visible: boolean; onClose: () => void }>
         </button>
         <button className={styles.refreshBtn} title="Close" onClick={onClose}><X size={15} /></button>
       </div>
-      <div className={styles.drawerFilter}>
-        <select className={styles.filter} value={store.typeFilter} onChange={(e) => store.setTypeFilter(e.target.value)}>
-          <option value="all">all types</option>
-          {store.serviceTypes.map((t) => <option key={t} value={t}>{t}</option>)}
-        </select>
+      <div className={styles.filterChips}>
+        <button
+          className={`${styles.fChip} ${store.typeFilter === 'all' ? styles.fChipActive : ''}`}
+          onClick={() => store.setTypeFilter('all')}
+        >
+          All <span className={styles.fCount}>{store.services.length}</span>
+        </button>
+        {store.serviceTypes.map((t) => {
+          const c = TYPE_COLORS[t] || 'var(--fg-muted)'
+          const active = store.typeFilter === t
+          const n = store.services.filter((s) => (s.serviceType || 'other') === t).length
+          return (
+            <button
+              key={t}
+              className={`${styles.fChip} ${active ? styles.fChipActive : ''}`}
+              style={active ? { background: c, borderColor: c, color: '#06121f' } : { borderColor: `color-mix(in srgb, ${c} 50%, var(--border))`, color: c }}
+              onClick={() => store.setTypeFilter(t)}
+            >
+              {t} <span className={styles.fCount}>{n}</span>
+            </button>
+          )
+        })}
       </div>
       <div className={styles.drawerBody}>
         {store.error && <div className={styles.errorBar}>{store.error}</div>}

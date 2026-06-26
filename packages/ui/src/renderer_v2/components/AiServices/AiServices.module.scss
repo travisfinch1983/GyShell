@@ -63,6 +63,14 @@
 .drawerOpen { transform: translateX(0); pointer-events: auto; }
 .drawerHead { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--panel-bg-2); flex: 0 0 auto; }
 .drawerFilter { padding: 8px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.filterChips { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.fChip {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; text-transform: capitalize;
+  padding: 2px 9px; border-radius: 10px; border: 1px solid var(--border); background: transparent; color: var(--fg-muted); cursor: pointer;
+  &:hover { background: var(--control-bg); }
+}
+.fChipActive { background: var(--accent); border-color: var(--accent); color: #06121f; }
+.fCount { font-size: 9px; font-family: var(--font-mono); opacity: 0.8; }
 .drawerBody { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
 
 /* rich card extras */
