@@ -146,6 +146,17 @@ export class ModelDownloadsStore {
   toggleHfFile(path: string): void {
     this.hfSelected[path] = !this.hfSelected[path]
   }
+  /** Destination type expected by /hf/download's resolveSmartDest, derived from the detected repo type. */
+  get hfDestType(): string {
+    const rt = this.hfAnalysis?.repoType || ''
+    if (this.hfCategory === 'llm') return /gguf/.test(rt) ? 'gguf' : 'full-weights'
+    if (this.hfCategory === 'tts') return 'tts-model'
+    const map: Record<string, string> = {
+      diffusers: 'diffusers', lora: 'lora', gguf: 'diffusion-model', 'gguf-llm': 'diffusion-model',
+      vae: 'vae', 'text-encoder': 'text-encoder', unet: 'diffusion-model', safetensors: 'checkpoint',
+    }
+    return map[rt] || 'checkpoint'
+  }
   get hfSelectedFiles(): HFFile[] {
     const a = this.hfAnalysis
     if (!a) return []
@@ -159,6 +170,9 @@ export class ModelDownloadsStore {
   async downloadHf(): Promise<void> {
     const files = this.hfSelectedFiles
     if (!files.length) return
+    // The native /hf/download requires category + destType + subfolder all set, else it falls back
+    // to the legacy /models/<family> path. Derive destType from the detected repo type.
+    const subfolder = this.hfSuggestedSubfolder.trim() || this.hfAnalysis?.suggestedName || this.hfRepo.split('/').pop() || 'misc'
     this.busy = true
     try {
       await this.cluster().request('POST', '/api/ai/hf/download', {
@@ -167,7 +181,8 @@ export class ModelDownloadsStore {
         files,
         node: '_local',
         category: this.hfCategory,
-        subfolder: this.hfSuggestedSubfolder,
+        destType: this.hfDestType,
+        subfolder,
         includeExtras: this.hfIncludeExtras,
         maxActive: this.hfMaxActive,
       })
