@@ -72,6 +72,8 @@ export class ModelDownloadsStore {
   civResolvedDir = '' // resolved target dir from /resolve-paths
   civReviewUserDefined = ''
   civReviewFnOverride = ''
+  civQueue: any[] = [] // /api/civitai/queue — items sent from the browser extension's "Review" button
+  civQueueItemId: string | null = null // the queue item currently loaded into the browser
 
   // history (immutable download records)
   hfHistory: any[] = []
@@ -291,6 +293,7 @@ export class ModelDownloadsStore {
   setCivMode(m: 'downloader' | 'review' | 'renamer'): void {
     this.civMode = m
     if (m === 'renamer') void this.loadRenamer()
+    if (m === 'review') void this.loadCivQueue()
   }
   private histKey(i: any): string {
     return `${i.modelId}:${i.versionId || ''}`
@@ -599,6 +602,37 @@ export class ModelDownloadsStore {
     this.civSelFiles = new Set((v?.files ?? []).map((f: any) => f.name))
     void this.resolveReviewPath()
   }
+  /** Review queue — items the browser extension's "Review" button POSTed to /queue/add. */
+  async loadCivQueue(): Promise<void> {
+    const r = (await this.cluster().request('GET', '/api/civitai/queue').catch(() => null)) as any
+    const items = Array.isArray(r) ? r : r?.items ?? []
+    runInAction(() => { this.civQueue = items })
+  }
+  /** Load a queued item's cached modelData straight into the Review browser (no re-fetch needed). */
+  reviewQueueItem(item: any): void {
+    const model = item.modelData
+    if (!model) {
+      // No cached data — fall back to fetching by id
+      this.civUrl = item.pageUrl || `https://civitai.com/models/${item.modelId}`
+      void this.reviewLoad()
+      return
+    }
+    runInAction(() => {
+      this.civModel = model
+      this.civQueueItemId = item.id
+      this.civMode = 'review'
+      const versions = model.modelVersions ?? []
+      const v = (item.versionId && versions.find((x: any) => String(x.id) === String(item.versionId))) || versions[0]
+      this.civSelVersionId = v?.id ?? null
+      this.civSelFiles = new Set((v?.files ?? []).map((f: any) => f.name))
+    })
+    void this.resolveReviewPath()
+  }
+  async removeFromQueue(id: string): Promise<void> {
+    await this.cluster().request('DELETE', `/api/civitai/queue/${encodeURIComponent(id)}`).catch(() => undefined)
+    if (this.civQueueItemId === id) runInAction(() => { this.civQueueItemId = null })
+    await this.loadCivQueue()
+  }
   toggleReviewFile(name: string): void {
     this.civSelFiles.has(name) ? this.civSelFiles.delete(name) : this.civSelFiles.add(name)
   }
@@ -637,6 +671,12 @@ export class ModelDownloadsStore {
       if (this.civReviewUserDefined) body.userDefined = this.civReviewUserDefined
       if (this.civReviewFnOverride) body.fileNameOverride = this.civReviewFnOverride
       await this.cluster().request('POST', '/api/civitai/download', body)
+      // if this came from the review queue, clear it out of the queue
+      if (this.civQueueItemId) {
+        await this.cluster().request('DELETE', `/api/civitai/queue/${encodeURIComponent(this.civQueueItemId)}`).catch(() => undefined)
+        runInAction(() => { this.civQueueItemId = null })
+        await this.loadCivQueue()
+      }
       runInAction(() => { this.subTab = 'queue' })
       await Promise.all([this.loadDownloads(), this.loadHistories()])
     } catch (e) {

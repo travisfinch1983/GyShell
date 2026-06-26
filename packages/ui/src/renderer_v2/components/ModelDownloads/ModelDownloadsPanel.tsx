@@ -327,6 +327,27 @@ const ReviewBrowser: React.FC = observer(() => {
   const v = store.civCurrentVersion
   return (
     <div className={styles.review}>
+      {store.civQueue.length > 0 && (
+        <div className={styles.histSection}>
+          <div className={styles.histHeader}>
+            <span className={styles.sectionLabel}>Review Queue ({store.civQueue.length})</span>
+            <span className={styles.note}>sent from the browser extension</span>
+          </div>
+          <div className={styles.histList}>
+            {store.civQueue.map((it) => (
+              <div key={it.id} className={`${styles.histItem} ${store.civQueueItemId === it.id ? styles.histSel : ''}`}>
+                <div className={styles.histHead}>
+                  <span className={styles.histName} title={it.modelData?.name || it.modelId}>{it.modelData?.name || `model ${it.modelId}`}</span>
+                  {it.modelData?.type && <span className={styles.histType}>{it.modelData.type}</span>}
+                  <div className={styles.spacer} />
+                  <button className={styles.btnSm} onClick={() => store.reviewQueueItem(it)}><Search size={12} /> Review</button>
+                  <button className={styles.btnSm} onClick={() => void store.removeFromQueue(it.id)}><X size={12} /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div className={styles.row}>
         <input className={styles.input} placeholder="Paste CivitAI model URL to review" value={store.civUrl} onChange={(e) => (store.civUrl = e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void store.reviewLoad()} />
         <button className={styles.btn} disabled={store.civModelLoading || !store.civUrl.trim()} onClick={() => void store.reviewLoad()}>
@@ -411,7 +432,7 @@ const CivitaiView: React.FC = observer(() => {
           {(['downloader', 'review', 'renamer'] as const).map((m) => (
             <button key={m} className={`${styles.modeBtn} ${store.civMode === m ? styles.modeBtnActive : ''}`} onClick={() => store.setCivMode(m)}>
               {m === 'downloader' ? 'Downloader' : m === 'review' ? 'Review' : 'Renamer'}
-              {m === 'review' && store.civDownloads.length > 0 && <span className={styles.modeCount}>{store.civDownloads.length}</span>}
+              {m === 'review' && store.civQueue.length > 0 && <span className={styles.modeCount}>{store.civQueue.length}</span>}
             </button>
           ))}
         </div>
@@ -553,6 +574,7 @@ export const ModelDownloadsPanel: React.FC = observer(() => {
     void store.loadCivExtras()
     void store.loadHistories()
     void store.loadScheduler()
+    void store.loadCivQueue()
     return () => store.stopPolling()
   }, [])
 
