@@ -30,6 +30,7 @@ type WebSocketRpcMethod =
   | 'catalogInstall:listTemplates'
   | 'proxy:state'
   | 'ai:probeTypes'
+  | 'civitai:model'
   | 'filesystem:list'
   | 'filesystem:readTextFile'
   | 'filesystem:readFileBase64'
@@ -142,6 +143,9 @@ export interface WebSocketGatewayAdapterOptions {
   };
   aiProbeBridge?: {
     detectTypes: (items: Array<{ id: string; endpoint?: string }>) => Promise<Record<string, string>>;
+  };
+  civitaiBridge?: {
+    fetchModel: (modelId: string) => Promise<unknown>;
   };
   metricsBridge?: {
     queryRange: (query: string, rangeSeconds?: number, stepSeconds?: number) => Promise<unknown>;
@@ -705,6 +709,11 @@ export class WebSocketGatewayAdapter {
         const p = (params ?? {}) as Record<string, unknown>;
         const items = Array.isArray(p.items) ? (p.items as Array<{ id: string; endpoint?: string }>) : [];
         return await this.options.aiProbeBridge.detectTypes(items);
+      }
+      case 'civitai:model': {
+        if (!this.options.civitaiBridge) throw new WebSocketRpcError('METHOD_NOT_FOUND', 'civitai:model is not available.');
+        const p = (params ?? {}) as Record<string, unknown>;
+        return await this.options.civitaiBridge.fetchModel(String(p.modelId ?? ''));
       }
       case 'catalogInstall:input': {
         if (!this.options.catalogInstallBridge) throw new WebSocketRpcError('METHOD_NOT_FOUND', 'catalogInstall:input is not available.');

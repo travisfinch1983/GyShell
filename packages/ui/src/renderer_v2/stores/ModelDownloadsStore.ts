@@ -63,6 +63,16 @@ export class ModelDownloadsStore {
   civTplType = '_global' // which type's template is being edited
   civExtrasLoaded = false
 
+  // Review model/version browser
+  civModel: any = null // fetched civitai model JSON
+  civModelLoading = false
+  civModelError: string | null = null
+  civSelVersionId: number | null = null
+  civSelFiles = new Set<string>() // file names selected in the current version
+  civResolvedDir = '' // resolved target dir from /resolve-paths
+  civReviewUserDefined = ''
+  civReviewFnOverride = ''
+
   // history (immutable download records)
   hfHistory: any[] = []
   civHistory: any[] = []
@@ -396,6 +406,100 @@ export class ModelDownloadsStore {
       runInAction(() => {
         this.busy = false
       })
+    }
+  }
+
+  // ── Review model/version browser ──
+  private parseModelId(input: string): { modelId: string; versionId?: string } | null {
+    const s = (input || '').trim()
+    if (/^\d+$/.test(s)) return { modelId: s }
+    const m = s.match(/\/models\/(\d+)/)
+    if (!m) return null
+    const vid = s.match(/[?&]modelVersionId=(\d+)/)
+    return { modelId: m[1], versionId: vid?.[1] }
+  }
+  get civVersions(): any[] {
+    return this.civModel?.modelVersions ?? []
+  }
+  get civCurrentVersion(): any | null {
+    return this.civVersions.find((v) => v.id === this.civSelVersionId) ?? this.civVersions[0] ?? null
+  }
+  async reviewLoad(input?: string): Promise<void> {
+    const parsed = this.parseModelId(input ?? this.civUrl)
+    if (!parsed) {
+      runInAction(() => { this.civModelError = 'Paste a valid CivitAI model URL' })
+      return
+    }
+    this.civModelLoading = true
+    this.civModelError = null
+    try {
+      const api = (window as any).gyshell?.civitai
+      const model = await api.model(parsed.modelId)
+      runInAction(() => {
+        this.civModel = model
+        this.civMode = 'review'
+        const versions = model?.modelVersions ?? []
+        const v = (parsed.versionId && versions.find((x: any) => String(x.id) === parsed.versionId)) || versions[0]
+        this.civSelVersionId = v?.id ?? null
+        this.civSelFiles = new Set((v?.files ?? []).map((f: any) => f.name))
+      })
+      await this.resolveReviewPath()
+    } catch (e) {
+      runInAction(() => { this.civModelError = e instanceof Error ? e.message : String(e) })
+    } finally {
+      runInAction(() => { this.civModelLoading = false })
+    }
+  }
+  selectVersion(vid: number): void {
+    this.civSelVersionId = vid
+    const v = this.civCurrentVersion
+    this.civSelFiles = new Set((v?.files ?? []).map((f: any) => f.name))
+    void this.resolveReviewPath()
+  }
+  toggleReviewFile(name: string): void {
+    this.civSelFiles.has(name) ? this.civSelFiles.delete(name) : this.civSelFiles.add(name)
+  }
+  async resolveReviewPath(): Promise<void> {
+    const m = this.civModel
+    const v = this.civCurrentVersion
+    if (!m || !v) return
+    try {
+      const r = (await this.cluster().request('POST', '/api/civitai/resolve-paths', {
+        modelId: String(m.id),
+        versionId: String(v.id),
+        modelType: m.type,
+        modelName: m.name,
+        versionName: v.name,
+        baseModel: v.baseModel,
+        creatorName: m.creator?.username || '',
+        primaryTag: (m.tags || [])[0] || '',
+        tags: m.tags || [],
+        files: (v.files || []).map((f: any) => ({ name: f.name })),
+        userDefined: this.civReviewUserDefined || undefined,
+        fileNameOverride: this.civReviewFnOverride || undefined,
+      })) as any
+      runInAction(() => { this.civResolvedDir = r?.targetDir || '' })
+    } catch {
+      runInAction(() => { this.civResolvedDir = '' })
+    }
+  }
+  async reviewDownload(): Promise<void> {
+    const m = this.civModel
+    const v = this.civCurrentVersion
+    if (!m || !v) return
+    this.busy = true
+    this.civModelError = null
+    try {
+      const body: any = { modelId: String(m.id), versionId: String(v.id), pageUrl: `https://civitai.com/models/${m.id}?modelVersionId=${v.id}` }
+      if (this.civReviewUserDefined) body.userDefined = this.civReviewUserDefined
+      if (this.civReviewFnOverride) body.fileNameOverride = this.civReviewFnOverride
+      await this.cluster().request('POST', '/api/civitai/download', body)
+      runInAction(() => { this.subTab = 'queue' })
+      await Promise.all([this.loadDownloads(), this.loadHistories()])
+    } catch (e) {
+      runInAction(() => { this.civModelError = e instanceof Error ? e.message : String(e) })
+    } finally {
+      runInAction(() => { this.busy = false })
     }
   }
 

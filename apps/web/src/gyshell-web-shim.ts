@@ -125,6 +125,11 @@ const gyshellApi = {
     probeTypes: (items: Array<{ id: string; endpoint?: string }>) => rpc('ai:probeTypes', { items }),
   },
 
+  // CivitAI model fetch for the Review browser (backend proxies civitai.com).
+  civitai: {
+    model: (modelId: string) => rpc('civitai:model', { modelId }),
+  },
+
   metrics: {
     // Native charts (rule #1): backend queries Prometheus, UI renders with uPlot.
     queryRange: (query: string, rangeSeconds?: number, stepSeconds?: number) =>

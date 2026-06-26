@@ -123,3 +123,17 @@
 .dMonth { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
 .dYear { background: color-mix(in srgb, #e0a832 18%, transparent); color: #e0a832; }
 .dOld { background: var(--control-bg); color: var(--fg-faint); }
+
+/* review model/version browser */
+.review { display: flex; flex-direction: column; gap: 10px; }
+.revHeader { display: flex; flex-direction: column; gap: 4px; }
+.revTitleRow { display: flex; align-items: center; gap: 8px; }
+.revName { font-size: 15px; font-weight: 700; color: var(--fg); text-decoration: none; &:hover { color: var(--accent); } }
+.revMeta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-muted); }
+.revVersions { display: flex; flex-wrap: wrap; gap: 5px; }
+.revVerBtn { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 4px 11px; border-radius: 14px; border: 1px solid var(--border); background: var(--control-bg); color: var(--fg-muted); cursor: pointer; &:hover { color: var(--fg); } }
+.revVerActive { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: var(--accent); color: var(--fg); }
+.revBase { font-size: 9px; padding: 0 5px; border-radius: 6px; background: rgba(0,0,0,0.2); }
+.revImages { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+.revImg { width: 100%; aspect-ratio: 3/4; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); background: var(--control-bg); }
+.revTarget { font-size: 11px; font-family: var(--font-mono); color: var(--accent); padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--app-bg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

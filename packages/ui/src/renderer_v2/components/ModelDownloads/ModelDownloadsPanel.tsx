@@ -307,6 +307,89 @@ const CivHistory: React.FC = observer(() => {
   )
 })
 
+function kb(n?: number): string {
+  if (!n) return ''
+  return gb(n * 1024)
+}
+
+const ReviewBrowser: React.FC = observer(() => {
+  const m = store.civModel
+  const v = store.civCurrentVersion
+  return (
+    <div className={styles.review}>
+      <div className={styles.row}>
+        <input className={styles.input} placeholder="Paste CivitAI model URL to review" value={store.civUrl} onChange={(e) => (store.civUrl = e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void store.reviewLoad()} />
+        <button className={styles.btn} disabled={store.civModelLoading || !store.civUrl.trim()} onClick={() => void store.reviewLoad()}>
+          {store.civModelLoading ? <Loader2 size={13} className={styles.spin} /> : <Search size={13} />} Load
+        </button>
+      </div>
+      {store.civModelError && <div className={styles.errorBar}>{store.civModelError}</div>}
+      {!m && !store.civModelLoading && <div className={styles.note}>Paste a model URL above (or use the extension's “Review” button) to inspect versions, files, and images before downloading.</div>}
+
+      {m && (
+        <>
+          <div className={styles.revHeader}>
+            <div className={styles.revTitleRow}>
+              <a className={styles.revName} href={`https://civitai.com/models/${m.id}`} target="_blank" rel="noreferrer">{m.name}</a>
+              <span className={styles.histType}>{m.type}</span>
+            </div>
+            <div className={styles.revMeta}>
+              {m.creator?.username && <span>by {m.creator.username}</span>}
+              {(m.tags || []).slice(0, 6).map((t: string) => <span key={t} className={styles.hTagDim}>{t}</span>)}
+            </div>
+          </div>
+
+          <div className={styles.revVersions}>
+            {store.civVersions.map((ver: any) => (
+              <button key={ver.id} className={`${styles.revVerBtn} ${ver.id === store.civSelVersionId ? styles.revVerActive : ''}`} onClick={() => store.selectVersion(ver.id)}>
+                {ver.name}{ver.baseModel ? <span className={styles.revBase}>{ver.baseModel}</span> : null}
+              </button>
+            ))}
+          </div>
+
+          {v && (
+            <>
+              <div className={styles.fileSection}>
+                <div className={styles.sectionLabel}>Files</div>
+                {(v.files || []).map((f: any) => (
+                  <label key={f.name} className={styles.fileRow}>
+                    <input type="checkbox" checked={store.civSelFiles.has(f.name)} onChange={() => store.toggleReviewFile(f.name)} />
+                    <span className={styles.fileName}>{f.name}</span>
+                    {f.type && <span className={styles.quantBadge}>{f.type}</span>}
+                    <span className={styles.fileSize}>{kb(f.sizeKB)}</span>
+                  </label>
+                ))}
+              </div>
+
+              {(v.images || []).length > 0 && (
+                <div className={styles.fileSection}>
+                  <div className={styles.sectionLabel}>Preview Images</div>
+                  <div className={styles.revImages}>
+                    {(v.images || []).slice(0, 12).map((img: any, i: number) => (
+                      <img key={i} className={styles.revImg} src={img.url} alt="" loading="lazy" referrerPolicy="no-referrer" />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className={styles.settingRow}><label>Subfolder</label><input className={styles.input} placeholder="user-defined (optional)" value={store.civReviewUserDefined} onChange={(e) => (store.civReviewUserDefined = e.target.value)} onBlur={() => void store.resolveReviewPath()} /></div>
+              <div className={styles.settingRow}><label>Filename</label><input className={styles.input} placeholder="override (optional)" value={store.civReviewFnOverride} onChange={(e) => (store.civReviewFnOverride = e.target.value)} onBlur={() => void store.resolveReviewPath()} /></div>
+              <div className={styles.revTarget} title={store.civResolvedDir}>→ {store.civResolvedDir || '(resolving…)'}</div>
+
+              <div className={styles.actionsRow}>
+                <div className={styles.spacer} />
+                <button className={styles.btnPrimary} disabled={store.busy} onClick={() => void store.reviewDownload()}>
+                  {store.busy ? <Loader2 size={13} className={styles.spin} /> : <Download size={13} />} Download Version
+                </button>
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  )
+})
+
 const CivitaiView: React.FC = observer(() => {
   const c = store.civConfig
   const set = (k: string, v: any) => store.setCivConfig(k, v)
@@ -331,6 +414,9 @@ const CivitaiView: React.FC = observer(() => {
             </div>
             <div className={styles.row}>
               <input className={styles.input} placeholder="path override (optional)" value={store.civPathOverride} onChange={(e) => (store.civPathOverride = e.target.value)} />
+              <button className={styles.btn} disabled={store.civModelLoading || !store.civUrl.trim()} onClick={() => void store.reviewLoad()} title="Inspect versions/files/images before downloading">
+                <Search size={13} /> Review
+              </button>
               <button className={styles.btnPrimary} disabled={store.busy || !store.civUrl.trim()} onClick={() => void store.downloadCiv()}>
                 {store.busy ? <Loader2 size={13} className={styles.spin} /> : <Download size={13} />} Download
               </button>
@@ -338,9 +424,7 @@ const CivitaiView: React.FC = observer(() => {
             {store.civError && <div className={styles.errorBar}>{store.civError}</div>}
           </>
         )}
-        {store.civMode === 'review' && (
-          <div className={styles.note}>Review queue — items sent from the browser extension's “Review” button or “→ Queue” below appear in the Download Queue. (Full model/version review browser is the next parity pass.)</div>
-        )}
+        {store.civMode === 'review' && <ReviewBrowser />}
         {store.civMode === 'renamer' && (
           <div className={styles.note}>Renamer — select history items below and use “→ Renamer” to queue relocations/renames. (Full renamer review pane is the next parity pass.)</div>
         )}
