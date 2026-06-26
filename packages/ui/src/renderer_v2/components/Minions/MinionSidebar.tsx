@@ -22,6 +22,7 @@ import {
   Bot,
   Eye,
   MessageSquare,
+  Server,
 } from 'lucide-react'
 import { MinionStore } from '../../stores/MinionStore'
 import type { MinionCard } from '../../stores/MinionStore'
@@ -36,6 +37,10 @@ interface MinionSidebarProps {
   chatOpen: boolean
   /** Toggle the chat overlay open/closed. */
   onChatToggle: () => void
+  /** Whether the global running-services drawer is visible. */
+  servicesOpen: boolean
+  /** Toggle the services drawer open/closed. */
+  onServicesToggle: () => void
 }
 
 /** Map role names to lucide icons */
@@ -203,7 +208,7 @@ const AgentIcon: React.FC<{
   )
 }
 
-export const MinionSidebar = observer(({ store, appStore, chatOpen, onChatToggle }: MinionSidebarProps) => {
+export const MinionSidebar = observer(({ store, appStore, chatOpen, onChatToggle, servicesOpen, onServicesToggle }: MinionSidebarProps) => {
   // Now that the per-role model architecture is retired (chat + coder are
   // the only direct-target roles), filter the legacy minion list down to
   // those two roles. Drops orchestrator / thinking / compaction / action /
@@ -233,6 +238,15 @@ export const MinionSidebar = observer(({ store, appStore, chatOpen, onChatToggle
         style={{ color: 'var(--text-primary)' }}
       >
         <MessageSquare size={14} />
+      </button>
+
+      <button
+        className={`collapsed-vision-toggle ${servicesOpen ? 'active' : ''}`}
+        onClick={onServicesToggle}
+        title={servicesOpen ? 'Close services' : 'Open running services'}
+        style={{ color: 'var(--text-primary)' }}
+      >
+        <Server size={14} />
       </button>
 
       <button

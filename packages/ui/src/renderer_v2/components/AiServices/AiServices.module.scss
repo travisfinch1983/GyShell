@@ -49,3 +49,18 @@
 .poolEmpty { font-size: 12px; color: var(--fg-faint); }
 .provRow { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
 .provChip { font-size: 10px; padding: 1px 7px; border-radius: 8px; background: var(--control-bg); color: var(--fg-muted); }
+
+.subTitle { font-size: 12px; color: var(--fg-muted); }
+.openSvcBtn { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 5px 11px; border-radius: 6px; border: 1px solid var(--border); background: var(--control-bg); color: var(--fg); cursor: pointer; &:hover { background: var(--control-bg-hover); } }
+
+/* ── global right-side services drawer ── */
+.drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 360px; max-width: 90vw; z-index: 60;
+  display: flex; flex-direction: column; background: var(--panel-bg); border-left: 1px solid var(--border-strong);
+  box-shadow: -8px 0 28px rgba(0,0,0,0.4); transform: translateX(100%); transition: transform 0.18s ease;
+  pointer-events: none;
+}
+.drawerOpen { transform: translateX(0); pointer-events: auto; }
+.drawerHead { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--panel-bg-2); flex: 0 0 auto; }
+.drawerFilter { padding: 8px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.drawerBody { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }

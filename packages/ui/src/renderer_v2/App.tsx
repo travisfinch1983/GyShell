@@ -22,6 +22,7 @@ import { ScriptsPanel } from './components/Scripts/ScriptsPanel'
 import { ScriptCatalogPanel } from './components/ScriptCatalog/ScriptCatalogPanel'
 import { FileManagerPanel } from './components/FileManager/FileManagerPanel'
 import { AiServicesPanel } from './components/AiServices/AiServicesPanel'
+import { ServicesDrawer } from './components/AiServices/ServicesDrawer'
 import './styles/app.scss'
 
 const store = new AppStore()
@@ -45,6 +46,16 @@ export const App: React.FC = observer(() => {
   const [chatOpen, setChatOpen] = useState(
     () => localStorage.getItem('ai-lab-chat-open') === 'true'
   )
+  const [servicesDrawerOpen, setServicesDrawerOpen] = useState(
+    () => localStorage.getItem('ai-lab-services-drawer-open') === 'true'
+  )
+  const toggleServicesDrawer = useCallback(() => {
+    setServicesDrawerOpen(prev => {
+      const next = !prev
+      localStorage.setItem('ai-lab-services-drawer-open', String(next))
+      return next
+    })
+  }, [])
   const toggleChat = useCallback(() => {
     setChatOpen(prev => {
       const next = !prev
@@ -299,6 +310,8 @@ export const App: React.FC = observer(() => {
             appStore={store}
             chatOpen={chatOpen}
             onChatToggle={toggleChat}
+            servicesOpen={servicesDrawerOpen}
+            onServicesToggle={toggleServicesDrawer}
           />
         </div>
 
@@ -328,7 +341,7 @@ export const App: React.FC = observer(() => {
 
           {primaryTab === 'helper-scripts' && <ScriptCatalogPanel />}
 
-          {primaryTab === 'ai-services' && <AiServicesPanel />}
+          {primaryTab === 'ai-services' && <AiServicesPanel onOpenServices={() => setServicesDrawerOpen(true)} />}
 
           {primaryTab === 'flowchart' && (
             <PlaceholderPanel
@@ -391,6 +404,9 @@ export const App: React.FC = observer(() => {
         >
           <ConnectionsView store={store} />
         </div>
+
+        {/* Global running-services drawer — floats on the right over any tab while open. */}
+        <ServicesDrawer visible={servicesDrawerOpen} onClose={() => setServicesDrawerOpen(false)} />
       </div>
       <ContextMenuOverlay />
     </div>
