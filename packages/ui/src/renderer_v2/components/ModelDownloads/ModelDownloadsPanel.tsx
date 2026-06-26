@@ -119,6 +119,14 @@ const HFView: React.FC = observer(() => {
   return (
     <div className={styles.formWrap}>
       <div className={styles.row}>
+        <label className={styles.inlineLabel}>Category</label>
+        <select className={styles.select} value={store.hfCategory} onChange={(e) => (store.hfCategory = e.target.value as any)}>
+          {store.categories.map((c) => <option key={c} value={c}>{c === 'image-gen' ? 'Image Generation' : c === 'llm' ? 'LLM' : 'TTS'}</option>)}
+        </select>
+        <label className={styles.inlineLabel} title="Max concurrent file downloads">Concurrent</label>
+        <input className={styles.numInput} type="number" min={1} max={10} value={store.hfMaxActive} onChange={(e) => (store.hfMaxActive = Number(e.target.value))} />
+      </div>
+      <div className={styles.row}>
         <input className={styles.input} placeholder="HuggingFace repo (owner/model or URL)" value={store.hfRepo} onChange={(e) => (store.hfRepo = e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void store.browseHf()} />
         {store.hfBranches.length > 0 && (
           <select className={styles.select} value={store.hfRevision} onChange={(e) => (store.hfRevision = e.target.value)}>
@@ -135,9 +143,6 @@ const HFView: React.FC = observer(() => {
         <>
           <div className={styles.analysis}>
             <span className={styles.repoType}>{a.repoType || 'unknown'}</span>
-            <select className={styles.select} value={store.hfCategory} onChange={(e) => (store.hfCategory = e.target.value as any)}>
-              {store.categories.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
             <input className={styles.input} placeholder="subfolder" value={store.hfSuggestedSubfolder} onChange={(e) => (store.hfSuggestedSubfolder = e.target.value)} />
           </div>
 
@@ -215,28 +220,132 @@ const TemplateBuilder: React.FC = observer(() => {
   )
 })
 
+function dateBadge(ts?: string): { cls: string; str: string; title: string } | null {
+  if (!ts) return null
+  const dt = new Date(ts)
+  const str = dt.toLocaleDateString()
+  const days = (Date.now() - dt.getTime()) / 86400000
+  if (days < 1) return { cls: styles.dRecent, str, title: `Today — ${str}` }
+  if (days < 30) return { cls: styles.dMonth, str, title: `This month — ${str}` }
+  if (days < 365) return { cls: styles.dYear, str, title: `This year — ${str}` }
+  return { cls: styles.dOld, str, title: `Over a year — ${str}` }
+}
+
+const CivHistory: React.FC = observer(() => {
+  const items = store.civHistory
+  const types = Object.keys(store.histTypeCounts).sort()
+  const fc = store.histFlagCounts
+  const filtered = store.filteredHistory
+  const page = store.histPage
+  const ps = store.histPageSize
+  const from = filtered.length === 0 ? 0 : (ps === 0 ? 0 : page * ps) + 1
+  const to = ps === 0 ? filtered.length : Math.min(filtered.length, page * ps + store.histPageItems.length)
+  const noSel = store.histSelected.size === 0
+  return (
+    <div className={styles.histSection}>
+      <div className={styles.histHeader}>
+        <span className={styles.sectionLabel}>Download History ({items.length})</span>
+        <div className={styles.spacer} />
+        <button className={styles.btnSm} disabled={store.histSyncing} onClick={() => void store.histSync()}>{store.histSyncing ? 'Syncing…' : 'Sync'}</button>
+        <button className={styles.btnSm} onClick={() => void store.histLocate()}>Locate</button>
+        <button className={styles.btnSm} disabled={noSel} onClick={() => void store.histAction('/api/civitai/history/check-updates')}>Update</button>
+        <button className={styles.btnSm} disabled={noSel} onClick={() => void store.histAction('/api/civitai/renamer/add')}>→ Renamer</button>
+        <button className={styles.btnSmPrimary} disabled={noSel} onClick={() => void store.histAction('/api/civitai/history/send-to-queue')}>→ Queue</button>
+      </div>
+
+      <div className={styles.histBadges}>
+        <button className={`${styles.hBadge} ${store.histAllOn ? styles.hBadgeActive : ''}`} onClick={() => store.histShowAll()}>All ({items.length})</button>
+        {types.map((t) => (
+          <button key={t} className={`${styles.hBadge} ${!store.histHiddenTypes.has(t) ? styles.hBadgeActive : ''}`} onClick={() => store.toggleHistType(t)}>{t} ({store.histTypeCounts[t]})</button>
+        ))}
+        <button className={`${styles.hBadge} ${styles.hFlag} ${!store.histHiddenFlags.has('located') ? styles.hBadgeActive : ''}`} onClick={() => store.toggleHistFlag('located')}>Located ({fc.located})</button>
+        <button className={`${styles.hBadge} ${styles.hFlag} ${!store.histHiddenFlags.has('customPath') ? styles.hBadgeActive : ''}`} onClick={() => store.toggleHistFlag('customPath')}>Custom Path ({fc.customPath})</button>
+        <button className={`${styles.hBadge} ${styles.hFlag} ${!store.histHiddenFlags.has('customFilename') ? styles.hBadgeActive : ''}`} onClick={() => store.toggleHistFlag('customFilename')}>Custom Filename ({fc.customFilename})</button>
+      </div>
+
+      <input className={styles.input} placeholder="Filter by name…" value={store.histText} onChange={(e) => store.setHistText(e.target.value)} />
+
+      <div className={styles.histPager}>
+        <button className={styles.btnSm} disabled={page <= 0} onClick={() => store.histPrev()}>◀</button>
+        <span className={styles.pagerInfo}>{from}-{to} of {filtered.length}</span>
+        <button className={styles.btnSm} disabled={page >= store.histTotalPages - 1} onClick={() => store.histNext()}>▶</button>
+        <select className={styles.numInput} value={ps} onChange={(e) => store.setHistPageSize(Number(e.target.value))}>
+          {[10, 50, 100, 250, 500, 1000].map((n) => <option key={n} value={n}>{n}</option>)}
+          <option value={0}>All</option>
+        </select>
+        <button className={styles.btnSm} onClick={() => store.histSelectPage()}>Select Page</button>
+        <button className={styles.btnSm} onClick={() => store.histSelectAll()}>Select All</button>
+        <button className={styles.btnSm} disabled={noSel} onClick={() => store.histDeselectAll()}>Deselect ({store.histSelected.size})</button>
+      </div>
+
+      <div className={styles.histList}>
+        {filtered.length === 0 && <div className={styles.empty}>{items.length ? 'No items match filter' : 'No history — click Sync.'}</div>}
+        {store.histPageItems.map((it) => {
+          const db = dateBadge(it.downloadedAt)
+          const located = it.hasFiles || it.locatedFiles?.length
+          return (
+            <div key={`${it.modelId}:${it.versionId || ''}`} className={`${styles.histItem} ${store.isHistSelected(it) ? styles.histSel : ''}`}>
+              <div className={styles.histHead}>
+                <input type="checkbox" checked={store.isHistSelected(it)} onChange={() => store.toggleHistSelect(it)} />
+                <a className={styles.histName} href={it.pageUrl || `https://civitai.com/models/${it.modelId}`} target="_blank" rel="noreferrer" title={it.modelName}>{it.modelName}</a>
+              </div>
+              <div className={styles.histTags}>
+                <span className={styles.histType}>{it.modelType}</span>
+                {it.versionName && <span className={styles.hTag}>{it.versionName}</span>}
+                {it.baseModel && <span className={styles.hTagDim}>{it.baseModel}</span>}
+                {it.pathOverride && <span className={styles.hTagPath} title={it.pathOverride}>custom path</span>}
+                {it.fileNameOverride && <span className={styles.hTagFn} title={it.fileNameOverride}>custom filename</span>}
+                {located ? <span className={styles.hTagLoc} title={it.locatedPath || 'located'}>located</span> : null}
+                {db && <span className={`${styles.dBadge} ${db.cls}`} title={db.title}>{db.str}</span>}
+                {it.source === 'synced' && <span className={styles.hTagDim}>synced</span>}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+})
+
 const CivitaiView: React.FC = observer(() => {
   const c = store.civConfig
   const set = (k: string, v: any) => store.setCivConfig(k, v)
   return (
     <div className={styles.civLayout}>
-      {/* LEFT — downloader + history */}
+      {/* LEFT — mode toggle + downloader + history */}
       <div className={styles.civLeft}>
-        <div className={styles.row}>
-          <a className={styles.btn} href="https://civitai.com" target="_blank" rel="noreferrer">Open CivitAI</a>
-          <input className={styles.input} placeholder="Paste CivitAI model URL" value={store.civUrl} onChange={(e) => (store.civUrl = e.target.value)} />
+        <div className={styles.modeToggle}>
+          {(['downloader', 'review', 'renamer'] as const).map((m) => (
+            <button key={m} className={`${styles.modeBtn} ${store.civMode === m ? styles.modeBtnActive : ''}`} onClick={() => store.setCivMode(m)}>
+              {m === 'downloader' ? 'Downloader' : m === 'review' ? 'Review' : 'Renamer'}
+              {m === 'review' && store.civDownloads.length > 0 && <span className={styles.modeCount}>{store.civDownloads.length}</span>}
+            </button>
+          ))}
         </div>
-        <div className={styles.row}>
-          <input className={styles.input} placeholder="path override (optional)" value={store.civPathOverride} onChange={(e) => (store.civPathOverride = e.target.value)} />
-          <button className={styles.btnPrimary} disabled={store.busy || !store.civUrl.trim()} onClick={() => void store.downloadCiv()}>
-            {store.busy ? <Loader2 size={13} className={styles.spin} /> : <Download size={13} />} Download
-          </button>
-        </div>
-        {store.civError && <div className={styles.errorBar}>{store.civError}</div>}
-        <div className={styles.histSection}>
-          <div className={styles.sectionLabel}>Download History</div>
-          <HistoryList items={store.civHistory} kind="civ" />
-        </div>
+
+        {store.civMode === 'downloader' && (
+          <>
+            <div className={styles.row}>
+              <a className={styles.btn} href="https://civitai.com" target="_blank" rel="noreferrer">Open CivitAI</a>
+              <input className={styles.input} placeholder="Paste CivitAI model URL" value={store.civUrl} onChange={(e) => (store.civUrl = e.target.value)} />
+            </div>
+            <div className={styles.row}>
+              <input className={styles.input} placeholder="path override (optional)" value={store.civPathOverride} onChange={(e) => (store.civPathOverride = e.target.value)} />
+              <button className={styles.btnPrimary} disabled={store.busy || !store.civUrl.trim()} onClick={() => void store.downloadCiv()}>
+                {store.busy ? <Loader2 size={13} className={styles.spin} /> : <Download size={13} />} Download
+              </button>
+            </div>
+            {store.civError && <div className={styles.errorBar}>{store.civError}</div>}
+          </>
+        )}
+        {store.civMode === 'review' && (
+          <div className={styles.note}>Review queue — items sent from the browser extension's “Review” button or “→ Queue” below appear in the Download Queue. (Full model/version review browser is the next parity pass.)</div>
+        )}
+        {store.civMode === 'renamer' && (
+          <div className={styles.note}>Renamer — select history items below and use “→ Renamer” to queue relocations/renames. (Full renamer review pane is the next parity pass.)</div>
+        )}
+
+        <CivHistory />
       </div>
 
       {/* RIGHT — settings + template builder */}

@@ -89,3 +89,37 @@
 .tplVarGroupLabel { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--fg-muted); margin-bottom: 4px; }
 .tplVarChips { display: flex; flex-wrap: wrap; gap: 5px; }
 .tplVarChip { font-size: 11px; padding: 2px 9px; border-radius: 10px; border: 1px solid var(--border); background: var(--control-bg); color: var(--accent); cursor: pointer; &:hover { border-color: var(--accent); } }
+
+.inlineLabel { font-size: 12px; color: var(--fg-muted); }
+
+/* civitai mode toggle */
+.modeToggle { display: inline-flex; gap: 2px; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; align-self: flex-start; }
+.modeBtn { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 5px 14px; border: none; background: var(--control-bg); color: var(--fg-muted); cursor: pointer; &:hover { color: var(--fg); } }
+.modeBtnActive { background: var(--accent); color: #06121f; }
+.modeCount { font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 7px; background: rgba(0,0,0,0.25); }
+
+/* history toolbar */
+.histHeader { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.btnSm { font-size: 11px; padding: 3px 9px; border-radius: 5px; border: 1px solid var(--border); background: var(--control-bg); color: var(--fg); cursor: pointer; &:hover:not(:disabled) { background: var(--control-bg-hover); } &:disabled { opacity: 0.45; cursor: default; } }
+.btnSmPrimary { font-size: 11px; padding: 3px 10px; border-radius: 5px; border: 1px solid var(--accent); background: var(--accent); color: #06121f; font-weight: 600; cursor: pointer; &:disabled { opacity: 0.45; cursor: default; } }
+.histBadges { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.hBadge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 9px; border: 1px solid var(--border); background: transparent; color: var(--fg-muted); cursor: pointer; &:hover { color: var(--fg); } }
+.hBadgeActive { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--fg); }
+.hFlag.hBadgeActive { background: color-mix(in srgb, #e0a832 18%, transparent); border-color: color-mix(in srgb, #e0a832 45%, transparent); }
+.histPager { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0; }
+.pagerInfo { font-size: 11px; color: var(--fg-muted); }
+
+/* history item tags */
+.histSel { border-color: var(--accent) !important; background: color-mix(in srgb, var(--accent) 8%, var(--panel-bg)) !important; }
+.histTags { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 3px; }
+.histType { font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 1px 6px; border-radius: 5px; background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
+.hTag { font-size: 9px; padding: 1px 6px; border-radius: 5px; background: var(--control-bg); color: var(--fg-muted); }
+.hTagDim { font-size: 9px; padding: 1px 6px; border-radius: 5px; background: var(--control-bg); color: var(--fg-faint); }
+.hTagPath { font-size: 9px; padding: 1px 6px; border-radius: 5px; background: color-mix(in srgb, #c879e0 20%, transparent); color: #c879e0; }
+.hTagFn { font-size: 9px; padding: 1px 6px; border-radius: 5px; background: color-mix(in srgb, #79b8e0 20%, transparent); color: #79b8e0; }
+.hTagLoc { font-size: 9px; padding: 1px 6px; border-radius: 5px; background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
+.dBadge { font-size: 9px; padding: 1px 6px; border-radius: 5px; }
+.dRecent { background: color-mix(in srgb, var(--success) 22%, transparent); color: var(--success); }
+.dMonth { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
+.dYear { background: color-mix(in srgb, #e0a832 18%, transparent); color: #e0a832; }
+.dOld { background: var(--control-bg); color: var(--fg-faint); }

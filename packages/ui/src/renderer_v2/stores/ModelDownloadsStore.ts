@@ -44,6 +44,7 @@ export class ModelDownloadsStore {
   hfRevision = 'main'
   hfBranches: string[] = []
   hfCategory: (typeof CATEGORIES)[number] = 'llm'
+  hfMaxActive = 3
   hfAnalysis: HFAnalysis | null = null
   hfSelected: Record<string, boolean> = {} // path → selected
   hfIncludeExtras = false
@@ -65,6 +66,15 @@ export class ModelDownloadsStore {
   // history (immutable download records)
   hfHistory: any[] = []
   civHistory: any[] = []
+  // CivitAI mode toggle + history view state
+  civMode: 'downloader' | 'review' | 'renamer' = 'downloader'
+  histText = ''
+  histHiddenTypes = new Set<string>()
+  histHiddenFlags = new Set<string>() // 'located' | 'customPath' | 'customFilename'
+  histSelected = new Set<string>() // `${modelId}:${versionId}`
+  histPageSize = 50
+  histPage = 0
+  histSyncing = false
 
   // queue
   hfDownloads: DLItem[] = []
@@ -141,6 +151,7 @@ export class ModelDownloadsStore {
         category: this.hfCategory,
         subfolder: this.hfSuggestedSubfolder,
         includeExtras: this.hfIncludeExtras,
+        maxActive: this.hfMaxActive,
       })
       runInAction(() => {
         this.subTab = 'queue'
@@ -241,6 +252,127 @@ export class ModelDownloadsStore {
       this.hfHistory = ((hf as any)?.items ?? []) as any[]
       this.civHistory = ((civ as any)?.items ?? (civ as any)?.history ?? []) as any[]
     })
+  }
+
+  // ── CivitAI history view (filters/selection/pagination) ──
+  setCivMode(m: 'downloader' | 'review' | 'renamer'): void {
+    this.civMode = m
+  }
+  private histKey(i: any): string {
+    return `${i.modelId}:${i.versionId || ''}`
+  }
+  get histTypeCounts(): Record<string, number> {
+    const c: Record<string, number> = {}
+    for (const i of this.civHistory) c[i.modelType] = (c[i.modelType] || 0) + 1
+    return c
+  }
+  get histFlagCounts(): { located: number; customPath: number; customFilename: number } {
+    let located = 0, customPath = 0, customFilename = 0
+    for (const i of this.civHistory) {
+      if (i.hasFiles || i.locatedFiles?.length) located++
+      if (i.pathOverride) customPath++
+      if (i.fileNameOverride) customFilename++
+    }
+    return { located, customPath, customFilename }
+  }
+  get filteredHistory(): any[] {
+    let f = this.civHistory
+    if (this.histHiddenTypes.size) f = f.filter((i) => !this.histHiddenTypes.has(i.modelType))
+    if (this.histHiddenFlags.has('located')) f = f.filter((i) => !(i.hasFiles || i.locatedFiles?.length))
+    if (this.histHiddenFlags.has('customPath')) f = f.filter((i) => !i.pathOverride)
+    if (this.histHiddenFlags.has('customFilename')) f = f.filter((i) => !i.fileNameOverride)
+    if (this.histText.trim()) {
+      const q = this.histText.toLowerCase()
+      f = f.filter((i) => (i.modelName || '').toLowerCase().includes(q))
+    }
+    return f
+  }
+  get histTotalPages(): number {
+    return this.histPageSize === 0 ? 1 : Math.max(1, Math.ceil(this.filteredHistory.length / this.histPageSize))
+  }
+  get histPageItems(): any[] {
+    if (this.histPageSize === 0) return this.filteredHistory
+    const start = Math.min(this.histPage, this.histTotalPages - 1) * this.histPageSize
+    return this.filteredHistory.slice(start, start + this.histPageSize)
+  }
+  get histAllOn(): boolean {
+    return this.histHiddenTypes.size === 0 && this.histHiddenFlags.size === 0
+  }
+  isHistSelected(i: any): boolean {
+    return this.histSelected.has(this.histKey(i))
+  }
+  toggleHistType(t: string): void {
+    this.histHiddenTypes.has(t) ? this.histHiddenTypes.delete(t) : this.histHiddenTypes.add(t)
+    this.histPage = 0
+  }
+  toggleHistFlag(flag: string): void {
+    this.histHiddenFlags.has(flag) ? this.histHiddenFlags.delete(flag) : this.histHiddenFlags.add(flag)
+    this.histPage = 0
+  }
+  histShowAll(): void {
+    this.histHiddenTypes.clear()
+    this.histHiddenFlags.clear()
+    this.histPage = 0
+  }
+  setHistText(v: string): void {
+    this.histText = v
+    this.histPage = 0
+  }
+  setHistPageSize(n: number): void {
+    this.histPageSize = n
+    this.histPage = 0
+  }
+  histPrev(): void {
+    if (this.histPage > 0) this.histPage--
+  }
+  histNext(): void {
+    if (this.histPage < this.histTotalPages - 1) this.histPage++
+  }
+  toggleHistSelect(i: any): void {
+    const k = this.histKey(i)
+    this.histSelected.has(k) ? this.histSelected.delete(k) : this.histSelected.add(k)
+  }
+  histSelectPage(): void {
+    for (const i of this.histPageItems) this.histSelected.add(this.histKey(i))
+  }
+  histSelectAll(): void {
+    for (const i of this.filteredHistory) this.histSelected.add(this.histKey(i))
+  }
+  histDeselectAll(): void {
+    this.histSelected.clear()
+  }
+  private selectedKeysToIds(): Array<{ modelId: string; versionId: string }> {
+    return [...this.histSelected].map((k) => {
+      const [modelId, versionId] = k.split(':')
+      return { modelId, versionId }
+    })
+  }
+  async histSync(): Promise<void> {
+    this.histSyncing = true
+    try {
+      await this.cluster().request('POST', '/api/civitai/history/sync', {})
+      // poll sync-status briefly, then reload
+      for (let n = 0; n < 40; n++) {
+        await new Promise((r) => setTimeout(r, 1500))
+        const s = (await this.cluster().request('GET', '/api/civitai/history/sync-status').catch(() => null)) as any
+        if (s && !s.running && !s.syncing) break
+      }
+      await this.loadHistories()
+    } catch (e) {
+      runInAction(() => { this.civError = e instanceof Error ? e.message : String(e) })
+    } finally {
+      runInAction(() => { this.histSyncing = false })
+    }
+  }
+  async histLocate(): Promise<void> {
+    await this.cluster().request('POST', '/api/civitai/history/locate', {}).catch(() => undefined)
+    await this.loadHistories()
+  }
+  async histAction(path: string): Promise<void> {
+    const ids = this.selectedKeysToIds()
+    if (!ids.length) return
+    await this.cluster().request('POST', path, { items: ids, modelIds: ids.map((x) => x.modelId) }).catch(() => undefined)
+    await Promise.all([this.loadHistories(), this.loadDownloads()])
   }
   async downloadCiv(): Promise<void> {
     const url = this.civUrl.trim()
