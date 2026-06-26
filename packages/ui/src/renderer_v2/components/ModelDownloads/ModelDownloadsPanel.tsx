@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Download, RefreshCw, Search, Square, Play, X, Trash2, Loader2, Save } from 'lucide-react'
+import { Download, RefreshCw, Search, Square, Play, X, Loader2, Save } from 'lucide-react'
 import { modelDownloadsStore as store, type DLItem, type HFFile } from '../../stores/ModelDownloadsStore'
 import styles from './ModelDownloads.module.scss'
 
