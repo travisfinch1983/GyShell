@@ -9,12 +9,13 @@ import {
   FileCode,
   Package,
   BrainCircuit,
+  Download,
   Settings,
   type LucideIcon,
 } from 'lucide-react'
 import styles from './PrimarySidebar.module.scss'
 
-export type PrimaryTab = 'terminal' | 'cluster' | 'services' | 'ai-services' | 'scripts' | 'helper-scripts' | 'flowchart' | 'files' | 'monitor'
+export type PrimaryTab = 'terminal' | 'cluster' | 'services' | 'ai-services' | 'scripts' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'monitor'
 
 interface TabDef {
   id: PrimaryTab
@@ -29,6 +30,7 @@ const TABS: TabDef[] = [
   { id: 'ai-services', label: 'AI Services', Icon: BrainCircuit },
   { id: 'scripts',   label: 'Scripts',   Icon: FileCode },
   { id: 'helper-scripts', label: 'Helper Scripts', Icon: Package },
+  { id: 'model-downloads', label: 'Model Downloads', Icon: Download },
   { id: 'flowchart', label: 'Flowchart', Icon: Workflow },
   { id: 'files',     label: 'Files',     Icon: FolderOpen },
   { id: 'monitor',   label: 'Monitor',   Icon: Activity },

@@ -27,7 +27,7 @@ export class ClusterService {
   private readonly timeoutMs: number
 
   // Only cluster-management paths are proxyable from the renderer.
-  private static readonly ALLOWED_PREFIXES = ['/api/guests/', '/api/gpu', '/api/storages', '/api/pve/', '/api/ai', '/api/discovery', '/api/scripts', '/api/script-catalog', '/api/file-manager']
+  private static readonly ALLOWED_PREFIXES = ['/api/guests/', '/api/gpu', '/api/storages', '/api/pve/', '/api/ai', '/api/discovery', '/api/scripts', '/api/script-catalog', '/api/file-manager', '/api/civitai']
 
   constructor(opts: ClusterServiceOptions = {}) {
     this.base = (opts.proxlabBase || DEFAULT_BASE).replace(/\/+$/, '')
