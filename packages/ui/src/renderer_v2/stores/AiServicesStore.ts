@@ -66,6 +66,10 @@ export class AiServicesStore {
   view: AiView = 'services'
   typeFilter = 'all'
   loaded = false
+  // live enrichment
+  gpuIndex: Record<string, { name: string; index: number; util: number; memUsed: number; memTotal: number; node: string }> = {}
+  statsById: Record<string, { alive?: boolean; tps?: number; systemdState?: string; modelIdentifier?: string }> = {}
+  utilHistory: Record<string, number[]> = {} // pciId → last N gpuUtil samples
 
   constructor() {
     makeAutoObservable(this)
@@ -88,21 +92,54 @@ export class AiServicesStore {
     this.loading = true
     try {
       const api = this.cluster()
-      const [svc, cfg, prov] = await Promise.all([
+      const [svc, cfg, prov, gpu] = await Promise.all([
         api.request('GET', '/api/ai/active-services'),
         api.request('GET', '/api/ai/config'),
         api.request('GET', '/api/ai/providers').catch(() => ({ providers: [] })),
+        api.request('GET', '/api/gpu').catch(() => ({})),
       ])
       const rawSvc = (svc as any)?.services ?? svc ?? {}
       const services: AiService[] = Array.isArray(rawSvc) ? rawSvc : Object.values(rawSvc)
       services.sort((a, b) => (a.node || '').localeCompare(b.node || '') || (a.port ?? 0) - (b.port ?? 0))
+      // GPU inventory → per-pci {name, util, mem} + push util history
+      const gpuIndex: typeof this.gpuIndex = {}
+      for (const entry of Object.values((gpu as any) || {}) as any[]) {
+        for (const g of entry?.gpus ?? []) {
+          gpuIndex[g.pciId] = {
+            name: g.friendlyName || g.name || g.productName || g.pciId,
+            index: g.index ?? 0,
+            util: g.gpuUtil ?? 0,
+            memUsed: g.memUsed ?? 0,
+            memTotal: g.memTotal ?? 0,
+            node: entry.hostName || entry.hostId || '',
+          }
+        }
+      }
       runInAction(() => {
         this.services = services
         this.config = { pools: (cfg as any)?.pools ?? {}, agents: (cfg as any)?.agents ?? {} }
         this.providers = ((prov as any)?.providers ?? []) as Provider[]
+        this.gpuIndex = gpuIndex
+        for (const [pci, g] of Object.entries(gpuIndex)) {
+          const hist = (this.utilHistory[pci] ?? []).concat(g.util)
+          this.utilHistory[pci] = hist.slice(-24)
+        }
         this.error = null
         this.loaded = true
       })
+      // per-service status/tps (parallel; best-effort)
+      void Promise.all(
+        services.map(async (s) => {
+          try {
+            const st = await api.request('GET', `/api/ai/active-services/${encodeURIComponent(s.id)}/stats`)
+            runInAction(() => {
+              this.statsById[s.id] = st as any
+            })
+          } catch {
+            /* ignore per-service stat errors */
+          }
+        }),
+      )
     } catch (e) {
       runInAction(() => {
         this.error = e instanceof Error ? e.message : String(e)
@@ -126,6 +163,31 @@ export class AiServicesStore {
     this.busyId = id
     try {
       await this.cluster().request('POST', `/api/ai/active-services/${encodeURIComponent(id)}/${action}`)
+      await this.load()
+    } catch (e) {
+      runInAction(() => {
+        this.error = e instanceof Error ? e.message : String(e)
+      })
+    } finally {
+      runInAction(() => {
+        this.busyId = null
+      })
+    }
+  }
+
+  /** Running | suspended | down | unknown — derived from /stats. */
+  statusOf(id: string): 'running' | 'suspended' | 'down' | 'unknown' {
+    const st = this.statsById[id]
+    if (!st) return 'unknown'
+    if (st.alive) return 'running'
+    if (st.systemdState === 'inactive') return 'suspended'
+    return 'down'
+  }
+
+  async setAlias(id: string, identifier: string): Promise<void> {
+    this.busyId = id
+    try {
+      await this.cluster().request('POST', `/api/ai/active-services/${encodeURIComponent(id)}/identifier`, { identifier })
       await this.load()
     } catch (e) {
       runInAction(() => {

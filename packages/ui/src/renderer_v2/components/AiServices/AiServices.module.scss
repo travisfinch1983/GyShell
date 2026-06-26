@@ -64,3 +64,22 @@
 .drawerHead { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--panel-bg-2); flex: 0 0 auto; }
 .drawerFilter { padding: 8px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
 .drawerBody { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+
+/* rich card extras */
+.statusPill { font-size: 9px; font-weight: 700; padding: 1px 7px; border-radius: 8px; flex: 0 0 auto; }
+.stRun { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
+.stSusp { background: color-mix(in srgb, #e0a832 20%, transparent); color: #e0a832; }
+.stDown { background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); }
+.stUnknown { background: var(--control-bg); color: var(--fg-faint); }
+.tps { color: var(--success); }
+
+.aliasRow { display: flex; align-items: center; gap: 6px; }
+.alias { font-size: 11px; font-family: var(--font-mono); color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.aliasNone { color: var(--fg-faint); font-style: italic; }
+.aliasInput { flex: 1; padding: 3px 6px; border: 1px solid var(--accent); border-radius: 4px; background: var(--control-bg); color: var(--fg); font-size: 11px; font-family: var(--font-mono); }
+.iconMini { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border: none; background: transparent; color: var(--fg-faint); cursor: pointer; border-radius: 4px; &:hover { background: var(--control-bg); color: var(--fg); } }
+
+.gpuRow { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.gpuBadge { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; padding: 1px 6px; border-radius: 6px; background: var(--control-bg); color: var(--fg-muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vram { font-size: 10px; font-family: var(--font-mono); color: var(--fg-faint); }
+.spark { margin-left: auto; opacity: 0.85; }

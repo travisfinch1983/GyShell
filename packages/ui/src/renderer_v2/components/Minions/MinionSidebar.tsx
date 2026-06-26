@@ -28,6 +28,7 @@ import { MinionStore } from '../../stores/MinionStore'
 import type { MinionCard } from '../../stores/MinionStore'
 import type { AppStore } from '../../stores/AppStore'
 import { resolveAgentIcon } from '../../lib/agentIcons'
+import { aiServicesStore } from '../../stores/AiServicesStore'
 import './MinionSidebar.scss'
 
 interface MinionSidebarProps {
@@ -223,6 +224,12 @@ export const MinionSidebar = observer(({ store, appStore, chatOpen, onChatToggle
   // user can hide agents they rarely use without deleting them.
   const agents = (appStore.agents ?? []).filter((a) => a.showInSidebar !== false)
 
+  // One-time load so the services-count badge is populated even before the drawer opens.
+  useEffect(() => {
+    if (!aiServicesStore.loaded) void aiServicesStore.load()
+  }, [])
+  const serviceCount = aiServicesStore.services.length
+
   return (
     <div className="minion-sidebar collapsed-sidebar">
       {/* Chat-overlay toggle — lives at the very top of the strip (above
@@ -243,10 +250,21 @@ export const MinionSidebar = observer(({ store, appStore, chatOpen, onChatToggle
       <button
         className={`collapsed-vision-toggle ${servicesOpen ? 'active' : ''}`}
         onClick={onServicesToggle}
-        title={servicesOpen ? 'Close services' : 'Open running services'}
-        style={{ color: 'var(--text-primary)' }}
+        title={servicesOpen ? 'Close services' : `Open running services${serviceCount ? ` (${serviceCount})` : ''}`}
+        style={{ color: 'var(--text-primary)', position: 'relative' }}
       >
         <Server size={14} />
+        {serviceCount > 0 && (
+          <span
+            style={{
+              position: 'absolute', top: -3, right: -3, minWidth: 14, height: 14, padding: '0 3px',
+              borderRadius: 7, background: 'var(--accent)', color: '#06121f', fontSize: 9, fontWeight: 700,
+              lineHeight: '14px', textAlign: 'center',
+            }}
+          >
+            {serviceCount}
+          </span>
+        )}
       </button>
 
       <button
