@@ -509,10 +509,16 @@ export class ModelDownloadsStore {
   async downloadCiv(): Promise<void> {
     const url = this.civUrl.trim()
     if (!url) return
+    const parsed = this.parseModelId(url)
+    if (!parsed) {
+      runInAction(() => { this.civError = 'Paste a valid CivitAI model URL (…/models/<id>)' })
+      return
+    }
     this.busy = true
     this.civError = null
     try {
-      const body: any = { pageUrl: url }
+      const body: any = { modelId: parsed.modelId, pageUrl: url }
+      if (parsed.versionId) body.versionId = parsed.versionId
       if (this.civPathOverride.trim()) body.pathOverride = this.civPathOverride.trim()
       await this.cluster().request('POST', '/api/civitai/download', body)
       runInAction(() => {
