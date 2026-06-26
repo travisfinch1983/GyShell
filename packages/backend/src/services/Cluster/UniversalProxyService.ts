@@ -2,12 +2,6 @@ import http from 'node:http'
 import { writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import * as ssh2 from 'ssh2'
-// @ts-expect-error — ported ProxLab routers are plain JS (run under tsx), no .d.ts
-import { createProxyRouter } from './proxy/proxy.js'
-// @ts-expect-error
-import { createVectorProxyRouter } from './proxy/vector-proxy.js'
-// @ts-expect-error
-import { createAnthropicProxyRouter } from './proxy/anthropic-proxy.js'
 import { clusterService } from './ClusterService'
 
 /**
@@ -103,7 +97,14 @@ export class UniversalProxyService {
     await this.refresh().catch(() => undefined)
     this.refreshTimer = setInterval(() => void this.refresh().catch(() => undefined), 10000)
 
+    // Dynamic import AFTER env is set — the ported proxy.js reads PROXY_DATA_DIR at module load.
     const express = (await import('express')).default
+    // @ts-expect-error — ported ProxLab routers are plain JS (run under tsx), no .d.ts
+    const { createProxyRouter } = await import('./proxy/proxy.js')
+    // @ts-expect-error
+    const { createVectorProxyRouter } = await import('./proxy/vector-proxy.js')
+    // @ts-expect-error
+    const { createAnthropicProxyRouter } = await import('./proxy/anthropic-proxy.js')
     const app = express()
     app.use('/api/proxy/vector', createVectorProxyRouter())
     app.use('/api/proxy/anthropic', createAnthropicProxyRouter())
