@@ -1,6 +1,6 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Download, RefreshCw, Search, Square, Play, X, Loader2, Save } from 'lucide-react'
+import { Download, RefreshCw, Search, Square, Play, X, Loader2, Save, Pause, Clock, Check } from 'lucide-react'
 import { modelDownloadsStore as store, type DLItem, type HFFile } from '../../stores/ModelDownloadsStore'
 import styles from './ModelDownloads.module.scss'
 
@@ -88,15 +88,25 @@ const QueueItem: React.FC<{ source: 'hf' | 'civ'; item: DLItem }> = observer(({ 
   )
 })
 
-const QueueColumn: React.FC<{ source: 'hf' | 'civ'; title: string; items: DLItem[] }> = observer(({ source, title, items }) => {
+const QueueColumn: React.FC<{ source: 'hf' | 'civ'; title: string; items: DLItem[]; onSchedule: () => void }> = observer(({ source, title, items, onSchedule }) => {
   const active = items.filter((i) => i.status !== 'complete')
   const done = items.filter((i) => i.status === 'complete')
+  const sched = store.schedOf(source)
+  const running = store.schedAllowed(source)
   return (
     <div className={styles.qCol}>
       <div className={styles.qColHead}>
         <span>{title}</span>
         <span className={styles.qCount}>{active.length} active</span>
         {done.length > 0 && <button className={styles.linkBtn} onClick={() => void store.clearCompleted(source)}>clear {done.length} done</button>}
+      </div>
+      <div className={styles.schedRow}>
+        <span className={`${styles.schedDot} ${running ? styles.schedOn : styles.schedOff}`} title={running ? 'Downloads allowed now' : 'Paused / outside schedule'} />
+        <button className={styles.btnSm} title={sched.manualState === 'running' ? 'Pause' : 'Resume'} onClick={() => store.toggleManual(source)}>
+          {sched.manualState === 'running' ? <Pause size={12} /> : <Play size={12} />} {sched.manualState === 'running' ? 'Pause' : 'Resume'}
+        </button>
+        <label className={styles.check}><input type="checkbox" checked={sched.mode === 'auto'} onChange={() => store.toggleAuto(source)} /> Auto</label>
+        <button className={styles.btnSm} disabled={sched.mode !== 'auto'} title="Edit weekly schedule" onClick={onSchedule}><Clock size={12} /> Schedule</button>
       </div>
       {active.length === 0 && done.length === 0 && <div className={styles.empty}>No downloads.</div>}
       {active.map((i) => <QueueItem key={i.id} source={source} item={i} />)}
@@ -425,9 +435,7 @@ const CivitaiView: React.FC = observer(() => {
           </>
         )}
         {store.civMode === 'review' && <ReviewBrowser />}
-        {store.civMode === 'renamer' && (
-          <div className={styles.note}>Renamer — select history items below and use “→ Renamer” to queue relocations/renames. (Full renamer review pane is the next parity pass.)</div>
-        )}
+        {store.civMode === 'renamer' && <RenamerPane />}
 
         <CivHistory />
       </div>
@@ -461,12 +469,90 @@ const CivitaiView: React.FC = observer(() => {
   )
 })
 
+const RenamerPane: React.FC = observer(() => {
+  const items = store.renamerItems
+  return (
+    <div className={styles.review}>
+      <div className={styles.histHeader}>
+        <span className={styles.sectionLabel}>Renamer Queue ({items.length})</span>
+        {store.renamerLoading && <Loader2 size={13} className={styles.spin} />}
+        <div className={styles.spacer} />
+        <button className={styles.btnSm} onClick={() => void store.loadRenamer()}>Refresh</button>
+        {items.length > 0 && <button className={styles.btnSm} onClick={() => void store.clearRenamer()}>Clear All</button>}
+      </div>
+      {items.length === 0 && <div className={styles.note}>No items queued. Select history items below and click “→ Renamer” to queue relocations/renames.</div>}
+      {items.map((it) => {
+        const d = store.renamerDetails[String(it.modelId)] || {}
+        const moves = d.moves || []
+        return (
+          <div key={it.id} className={styles.renItem}>
+            <div className={styles.histHead}>
+              <span className={styles.histName}>{d.modelName || `model ${it.modelId}`}</span>
+              {d.modelType && <span className={styles.histType}>{d.modelType}</span>}
+              <div className={styles.spacer} />
+              <button className={styles.btnSm} disabled={!moves.length} onClick={() => void store.applyRename(it)}><Check size={12} /> Apply</button>
+              <button className={`${styles.btnSm}`} onClick={() => void store.removeRenamer(it.id)}><X size={12} /></button>
+            </div>
+            <div className={styles.renPaths}>
+              <div className={styles.renFrom} title={d.currentDir}>{d.currentDir || '(not located on disk)'}</div>
+              <div className={styles.renTo} title={d.newDir}>→ {d.newDir || '(resolving…)'}</div>
+              {moves.length > 0 && <div className={styles.renMoves}>{moves.length} file{moves.length === 1 ? '' : 's'} to move</div>}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+})
+
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const SchedulerModal: React.FC<{ source: 'hf' | 'civ'; onClose: () => void }> = ({ source, onClose }) => {
+  const [grid, setGrid] = useState<boolean[][]>(() => store.schedOf(source).schedule.map((r) => [...r]))
+  const setAll = (v: boolean) => setGrid(Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => v)))
+  const toggle = (d: number, h: number) => setGrid((g) => g.map((row, di) => (di === d ? row.map((c, hi) => (hi === h ? !c : c)) : row)))
+  return (
+    <div className={styles.modalOverlay} onClick={onClose}>
+      <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div className={styles.modalHead}>
+          <span className={styles.title}>{source === 'hf' ? 'HuggingFace' : 'CivitAI'} Download Schedule</span>
+          <div className={styles.spacer} />
+          <button className={styles.btnSm} onClick={() => setAll(true)}>Enable All</button>
+          <button className={styles.btnSm} onClick={() => setAll(false)}>Disable All</button>
+          <button className={styles.qAct} onClick={onClose}><X size={14} /></button>
+        </div>
+        <div className={styles.schedGrid}>
+          <div className={styles.schedHourHdr}>
+            <span className={styles.schedDayLabel} />
+            {Array.from({ length: 24 }, (_, h) => <span key={h} className={styles.schedHourLabel}>{h}</span>)}
+          </div>
+          {grid.map((row, d) => (
+            <div key={d} className={styles.schedDayRow}>
+              <span className={styles.schedDayLabel}>{DAYS[d]}</span>
+              {row.map((on, h) => (
+                <button key={h} className={`${styles.schedCell} ${on ? styles.schedCellOn : ''}`} onClick={() => toggle(d, h)} title={`${DAYS[d]} ${h}:00`} />
+              ))}
+            </div>
+          ))}
+        </div>
+        <div className={styles.modalFoot}>
+          <span className={styles.note}>Green = downloads allowed during that hour (Auto mode).</span>
+          <div className={styles.spacer} />
+          <button className={styles.btn} onClick={onClose}>Cancel</button>
+          <button className={styles.btnPrimary} onClick={() => { void store.saveSchedule(source, grid); onClose() }}><Save size={13} /> Save Schedule</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export const ModelDownloadsPanel: React.FC = observer(() => {
+  const [schedSource, setSchedSource] = useState<'hf' | 'civ' | null>(null)
   useEffect(() => {
     store.startPolling(3000)
     void store.loadCivConfig()
     void store.loadCivExtras()
     void store.loadHistories()
+    void store.loadScheduler()
     return () => store.stopPolling()
   }, [])
 
@@ -490,13 +576,14 @@ export const ModelDownloadsPanel: React.FC = observer(() => {
       <div className={styles.body}>
         {store.subTab === 'queue' && (
           <div className={styles.queueCols}>
-            <QueueColumn source="hf" title="HuggingFace" items={store.hfDownloads} />
-            <QueueColumn source="civ" title="CivitAI" items={store.civDownloads} />
+            <QueueColumn source="hf" title="HuggingFace" items={store.hfDownloads} onSchedule={() => setSchedSource('hf')} />
+            <QueueColumn source="civ" title="CivitAI" items={store.civDownloads} onSchedule={() => setSchedSource('civ')} />
           </div>
         )}
         {store.subTab === 'hf' && <HFView />}
         {store.subTab === 'civitai' && <CivitaiView />}
       </div>
+      {schedSource && <SchedulerModal source={schedSource} onClose={() => setSchedSource(null)} />}
     </div>
   )
 })

@@ -91,6 +91,14 @@ export class ModelDownloadsStore {
   civDownloads: DLItem[] = []
   busy = false
 
+  // download scheduler (per source: mode auto/manual, manualState running/paused, schedule[7][24])
+  scheduler: Record<string, any> = {}
+
+  // renamer queue
+  renamerItems: any[] = []
+  renamerDetails: Record<string, any> = {} // modelId → {currentDir, locatedFiles, newDir, moves}
+  renamerLoading = false
+
   private poll: ReturnType<typeof setInterval> | null = null
 
   constructor() {
@@ -267,6 +275,7 @@ export class ModelDownloadsStore {
   // ── CivitAI history view (filters/selection/pagination) ──
   setCivMode(m: 'downloader' | 'review' | 'renamer'): void {
     this.civMode = m
+    if (m === 'renamer') void this.loadRenamer()
   }
   private histKey(i: any): string {
     return `${i.modelId}:${i.versionId || ''}`
@@ -383,6 +392,119 @@ export class ModelDownloadsStore {
     if (!ids.length) return
     await this.cluster().request('POST', path, { items: ids, modelIds: ids.map((x) => x.modelId) }).catch(() => undefined)
     await Promise.all([this.loadHistories(), this.loadDownloads()])
+    if (path.includes('renamer')) {
+      runInAction(() => { this.civMode = 'renamer' })
+      await this.loadRenamer()
+    }
+  }
+
+  // ── Download Scheduler ──
+  async loadScheduler(): Promise<void> {
+    const s = (await this.cluster().request('GET', '/api/civitai/download-scheduler').catch(() => null)) as any
+    if (s) runInAction(() => { this.scheduler = s })
+  }
+  schedOf(source: 'hf' | 'civ'): { mode: string; manualState: string; schedule: boolean[][] } {
+    const s = this.scheduler[source]
+    return {
+      mode: s?.mode || 'manual',
+      manualState: s?.manualState || 'running',
+      schedule: s?.schedule || Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => true)),
+    }
+  }
+  schedAllowed(source: 'hf' | 'civ'): boolean {
+    const s = this.schedOf(source)
+    if (s.mode === 'manual') return s.manualState === 'running'
+    const now = new Date()
+    return !!s.schedule?.[now.getDay()]?.[now.getHours()]
+  }
+  async putScheduler(source: 'hf' | 'civ', patch: Record<string, any>): Promise<void> {
+    const next = { ...this.scheduler, [source]: { ...this.schedOf(source), ...patch } }
+    runInAction(() => { this.scheduler = next })
+    await this.cluster().request('PUT', `/api/civitai/download-scheduler/${source}`, patch).catch(() => undefined)
+  }
+  toggleManual(source: 'hf' | 'civ'): void {
+    void this.putScheduler(source, { manualState: this.schedOf(source).manualState === 'running' ? 'paused' : 'running' })
+  }
+  toggleAuto(source: 'hf' | 'civ'): void {
+    void this.putScheduler(source, { mode: this.schedOf(source).mode === 'auto' ? 'manual' : 'auto' })
+  }
+  async saveSchedule(source: 'hf' | 'civ', schedule: boolean[][]): Promise<void> {
+    await this.putScheduler(source, { schedule })
+  }
+
+  // ── Renamer queue ──
+  async loadRenamer(): Promise<void> {
+    this.renamerLoading = true
+    try {
+      const r = (await this.cluster().request('GET', '/api/civitai/renamer').catch(() => ({ items: [] }))) as any
+      const items = (r?.items ?? []) as any[]
+      runInAction(() => { this.renamerItems = items })
+      // fetch details (located files + current dir) for the queued models, then resolve new paths
+      const modelIds = [...new Set(items.map((i) => String(i.modelId)))]
+      if (modelIds.length) {
+        const det = (await this.cluster().request('POST', '/api/civitai/history/details', { modelIds }).catch(() => null)) as any
+        const byId: Record<string, any> = {}
+        const list = det?.items ?? det?.details ?? det ?? []
+        for (const d of Array.isArray(list) ? list : Object.values(list || {})) {
+          if (d && (d.modelId != null)) byId[String(d.modelId)] = d
+        }
+        runInAction(() => { this.renamerDetails = byId })
+        await Promise.all(items.map((it) => this.resolveRenamerItem(it)))
+      }
+    } finally {
+      runInAction(() => { this.renamerLoading = false })
+    }
+  }
+  private async resolveRenamerItem(item: any): Promise<void> {
+    const d = this.renamerDetails[String(item.modelId)]
+    const located = d?.locatedFiles || []
+    const currentDir = d?.currentDir || d?.targetDir || (located[0]?.path ? located[0].path.replace(/\/[^/]+$/, '') : '')
+    if (!located.length) return
+    try {
+      const r = (await this.cluster().request('POST', '/api/civitai/resolve-paths', {
+        modelId: String(item.modelId),
+        versionId: String(item.versionId || ''),
+        modelType: d?.modelType,
+        modelName: d?.modelName,
+        versionName: d?.versionName,
+        baseModel: d?.baseModel,
+        creatorName: d?.creator || '',
+        files: located.map((f: any) => ({ name: f.name })),
+      })) as any
+      const newDir = r?.targetDir || ''
+      const fileMap: Record<string, string> = {}
+      for (const f of r?.files || []) fileMap[f.originalName] = f.newName
+      const moves = located.map((f: any) => ({
+        from: f.path || `${currentDir}/${f.name}`,
+        to: `${newDir}/${fileMap[f.name] || f.name}`,
+      }))
+      runInAction(() => {
+        this.renamerDetails[String(item.modelId)] = { ...d, currentDir, newDir, moves }
+      })
+    } catch {
+      /* ignore */
+    }
+  }
+  async applyRename(item: any): Promise<void> {
+    const d = this.renamerDetails[String(item.modelId)]
+    if (!d?.moves?.length) return
+    await this.cluster().request('POST', '/api/civitai/rename', {
+      modelId: String(item.modelId),
+      versionId: String(item.versionId || ''),
+      pathOverride: d.newDir,
+      moves: d.moves,
+      downloadMeta: true,
+    }).catch((e) => { runInAction(() => { this.civError = e instanceof Error ? e.message : String(e) }) })
+    await this.removeRenamer(item.id)
+    await this.loadHistories()
+  }
+  async removeRenamer(id: string): Promise<void> {
+    await this.cluster().request('DELETE', `/api/civitai/renamer/${encodeURIComponent(id)}`).catch(() => undefined)
+    await this.loadRenamer()
+  }
+  async clearRenamer(): Promise<void> {
+    await this.cluster().request('POST', '/api/civitai/renamer/clear', {}).catch(() => undefined)
+    await this.loadRenamer()
   }
   async downloadCiv(): Promise<void> {
     const url = this.civUrl.trim()

@@ -137,3 +137,28 @@
 .revImages { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
 .revImg { width: 100%; aspect-ratio: 3/4; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); background: var(--control-bg); }
 .revTarget { font-size: 11px; font-family: var(--font-mono); color: var(--accent); padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--app-bg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* scheduler controls in queue column */
+.schedRow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--border); }
+.schedDot { width: 8px; height: 8px; border-radius: 50%; }
+.schedOn { background: var(--success); }
+.schedOff { background: var(--fg-faint); }
+
+/* scheduler modal + grid */
+.modalOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.modal { background: var(--panel-bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px; width: min(880px, 94vw); max-height: 90vh; overflow: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+.modalHead { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.modalFoot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.schedGrid { display: flex; flex-direction: column; gap: 2px; font-size: 9px; }
+.schedHourHdr, .schedDayRow { display: grid; grid-template-columns: 36px repeat(24, 1fr); gap: 2px; align-items: center; }
+.schedDayLabel { font-size: 10px; color: var(--fg-muted); text-align: right; padding-right: 4px; }
+.schedHourLabel { font-size: 8px; color: var(--fg-faint); text-align: center; }
+.schedCell { height: 20px; border-radius: 3px; border: 1px solid var(--border); background: var(--control-bg); cursor: pointer; padding: 0; &:hover { border-color: var(--accent); } }
+.schedCellOn { background: color-mix(in srgb, var(--success) 55%, transparent); border-color: color-mix(in srgb, var(--success) 60%, transparent); }
+
+/* renamer */
+.renItem { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: var(--panel-bg); margin-bottom: 6px; }
+.renPaths { margin-top: 5px; }
+.renFrom { font-size: 11px; font-family: var(--font-mono); color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.renTo { font-size: 11px; font-family: var(--font-mono); color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.renMoves { font-size: 10px; color: var(--fg-faint); margin-top: 2px; }
