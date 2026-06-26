@@ -9,5 +9,8 @@
   "scripts": {
     "build": "echo \"backend: source-only workspace package\"",
     "typecheck": "echo \"backend: checked by workspace consumers\""
+  },
+  "dependencies": {
+    "express": "^5.1.0"
   }
 }

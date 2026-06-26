@@ -204,7 +204,7 @@ const CopyRow: React.FC<{ url: string; label?: string }> = ({ url, label }) => {
 const ProxyCard: React.FC = observer(() => {
   const ps = store.proxyState
   if (!ps?.port) return null
-  const base = `http://${window.location.hostname}:${ps.port}`
+  const base = `http://${window.location.hostname}:${ps.port}${(ps as any).basePath || '/api/proxy'}`
   const types = ps.types || {}
   const present = Object.keys(types).filter((t) => (types[t] || []).length && SUFFIX[t])
   return (

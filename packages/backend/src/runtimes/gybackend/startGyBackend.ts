@@ -128,7 +128,7 @@ export async function startGyBackend(): Promise<void> {
     keyPath: process.env.AILAB_SSH_KEY || path.join(dataDir, 'ssh', 'id_ed25519')
   })
   // AI-Lab Universal API Proxy — dedicated HTTP listener fronting running services by slot.
-  void universalProxyService.start().catch((e) => console.warn('[gybackend] universal proxy failed to start:', e))
+  void universalProxyService.start({ dataDir }).catch((e) => console.warn('[gybackend] universal proxy failed to start:', e))
 
   const terminalRestoreResult = await terminalService.restorePersistedTerminals()
   if (terminalRestoreResult.restored.length > 0 || terminalRestoreResult.failed.length > 0) {
