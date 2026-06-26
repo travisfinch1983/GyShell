@@ -57,6 +57,14 @@ export class ModelDownloadsStore {
   civPathOverride = ''
   civError: string | null = null
   civConfigLoaded = false
+  civVariables: any = null // /civitai/variables (template vars, grouped or flat)
+  civFolderTypes: any[] = [] // /civitai/folder-types
+  civTplType = '_global' // which type's template is being edited
+  civExtrasLoaded = false
+
+  // history (immutable download records)
+  hfHistory: any[] = []
+  civHistory: any[] = []
 
   // queue
   hfDownloads: DLItem[] = []
@@ -168,6 +176,71 @@ export class ModelDownloadsStore {
   }
   async saveCivConfig(): Promise<void> {
     await this.cluster().request('PUT', '/api/civitai/config', this.civConfig)
+  }
+
+  /** Template variables + folder types for the template builder (loaded once). */
+  async loadCivExtras(): Promise<void> {
+    if (this.civExtrasLoaded) return
+    const api = this.cluster()
+    const [vars, types] = await Promise.all([
+      api.request('GET', '/api/civitai/variables').catch(() => null),
+      api.request('GET', '/api/civitai/folder-types').catch(() => []),
+    ])
+    runInAction(() => {
+      this.civVariables = vars
+      this.civFolderTypes = Array.isArray(types) ? types : (types as any)?.types ?? []
+      this.civExtrasLoaded = true
+    })
+  }
+
+  setCivTplType(t: string): void {
+    this.civTplType = t
+  }
+  get currentTpl(): string {
+    const tt = this.civConfig.typeTemplates?.[this.civTplType]
+    if (this.civTplType !== '_global' && tt?.pathTemplate) return tt.pathTemplate
+    return this.civConfig.pathTemplate || '$REPO_NAME/$MODEL_FILE_NAME$EXTENSION'
+  }
+  get currentSep(): string {
+    return this.civConfig.typeTemplates?.[this.civTplType]?.separator || this.civConfig.separator || '-'
+  }
+  get currentCase(): string {
+    return this.civConfig.typeTemplates?.[this.civTplType]?.caseMode || this.civConfig.caseMode || 'standard'
+  }
+  private writeTpl(patch: { pathTemplate?: string; separator?: string; caseMode?: string }): void {
+    const cfg = { ...this.civConfig }
+    if (this.civTplType === '_global') {
+      Object.assign(cfg, patch)
+    } else {
+      const tt = { ...(cfg.typeTemplates || {}) }
+      tt[this.civTplType] = { ...(tt[this.civTplType] || {}), ...patch }
+      cfg.typeTemplates = tt
+    }
+    this.civConfig = cfg
+  }
+  setTpl(str: string): void {
+    this.writeTpl({ pathTemplate: str })
+  }
+  insertTplVar(v: string): void {
+    this.writeTpl({ pathTemplate: this.currentTpl + v })
+  }
+  setTplField(k: 'separator' | 'caseMode', v: string): void {
+    this.writeTpl({ [k]: v })
+  }
+  async saveTemplate(): Promise<void> {
+    await this.saveCivConfig()
+  }
+
+  async loadHistories(): Promise<void> {
+    const api = this.cluster()
+    const [hf, civ] = await Promise.all([
+      api.request('GET', '/api/ai/hf/history').catch(() => ({ items: [] })),
+      api.request('GET', '/api/civitai/history').catch(() => ({ items: [] })),
+    ])
+    runInAction(() => {
+      this.hfHistory = ((hf as any)?.items ?? []) as any[]
+      this.civHistory = ((civ as any)?.items ?? (civ as any)?.history ?? []) as any[]
+    })
   }
   async downloadCiv(): Promise<void> {
     const url = this.civUrl.trim()

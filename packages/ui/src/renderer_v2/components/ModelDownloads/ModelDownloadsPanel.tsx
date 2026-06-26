@@ -13,6 +13,51 @@ function pct(item: DLItem): number {
   if (!item.size || !item.progress) return 0
   return Math.min(100, Math.round((item.progress / item.size) * 100))
 }
+function when(ts?: string): string {
+  if (!ts) return ''
+  const d = Date.parse(ts)
+  return d ? new Date(d).toLocaleDateString() : ''
+}
+
+/** Flatten /civitai/variables (array | grouped object | strings) into {token,label,group}[]. */
+function flatVars(v: any): Array<{ token: string; label: string; group: string }> {
+  const out: Array<{ token: string; label: string; group: string }> = []
+  const tok = (s: string) => (s.startsWith('$') ? s : '$' + s)
+  const push = (x: any, group = '') => {
+    if (typeof x === 'string') out.push({ token: tok(x), label: x, group })
+    else if (x && typeof x === 'object') {
+      const t = x.token || x.name || x.var || x.key || x.value
+      if (t) out.push({ token: tok(String(t)), label: x.label || x.name || String(t), group: x.group || group })
+    }
+  }
+  if (Array.isArray(v)) v.forEach((x) => push(x))
+  else if (v && typeof v === 'object') for (const [g, arr] of Object.entries(v)) (Array.isArray(arr) ? arr : [arr]).forEach((x) => push(x, g))
+  return out
+}
+
+const HistoryList: React.FC<{ items: any[]; kind: 'hf' | 'civ' }> = ({ items, kind }) => {
+  if (!items.length) return <div className={styles.empty}>No download history.</div>
+  return (
+    <div className={styles.histList}>
+      {items.slice(0, 200).map((h, i) => {
+        const name = kind === 'hf' ? h.repo : h.modelName || h.repo
+        const dir = h.targetDir
+        const size = kind === 'hf' ? h.totalSize : h.size
+        return (
+          <div key={(h.repo || h.modelId || i) + ':' + i} className={styles.histItem}>
+            <div className={styles.histHead}>
+              <span className={styles.histName} title={name}>{name}</span>
+              {h.modelType && <span className={styles.histType}>{h.modelType}</span>}
+              <span className={styles.histDate}>{when(h.lastDownloadedAt || h.downloadedAt)}</span>
+            </div>
+            {dir && <div className={styles.histDir} title={dir}>{dir}</div>}
+            <div className={styles.histMeta}>{gb(size)}{(h.files?.length ?? 0) > 0 ? ` · ${h.files.length} files` : ''}</div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 
 const QueueItem: React.FC<{ source: 'hf' | 'civ'; item: DLItem }> = observer(({ source, item }) => {
   const st = item.status || ''
@@ -119,6 +164,53 @@ const HFView: React.FC = observer(() => {
           </div>
         </>
       )}
+      <div className={styles.histSection}>
+        <div className={styles.sectionLabel}>Download History</div>
+        <HistoryList items={store.hfHistory} kind="hf" />
+      </div>
+    </div>
+  )
+})
+
+const TemplateBuilder: React.FC = observer(() => {
+  const vars = flatVars(store.civVariables)
+  const groups = [...new Set(vars.map((v) => v.group || 'Variables'))]
+  const types = store.civFolderTypes.map((ft: any) => (typeof ft === 'string' ? { id: ft, label: ft } : { id: ft.id || ft.value || ft.type, label: ft.label || ft.name || ft.id }))
+  return (
+    <div className={styles.tplBuilder}>
+      <div className={styles.tplHeader}>
+        <span className={styles.tplTitle}>Path Template</span>
+        <select className={styles.select} value={store.civTplType} onChange={(e) => store.setCivTplType(e.target.value)}>
+          <option value="_global">Global Default</option>
+          {types.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+        </select>
+        <select className={styles.select} value={store.currentSep} onChange={(e) => store.setTplField('separator', e.target.value)} title="Separator">
+          <option value="-">Dash (-)</option><option value="_">Underscore (_)</option><option value=".">Dot (.)</option><option value=" ">Space</option>
+        </select>
+        <select className={styles.select} value={store.currentCase} onChange={(e) => store.setTplField('caseMode', e.target.value)} title="Case">
+          <option value="standard">Standard</option><option value="lowercase">lowercase</option><option value="uppercase">UPPERCASE</option>
+        </select>
+      </div>
+      <input className={styles.tplInput} value={store.currentTpl} onChange={(e) => store.setTpl(e.target.value)} spellCheck={false} />
+      <div className={styles.tplControls}>
+        <button className={styles.btn} title="Insert folder separator" onClick={() => store.setTpl(store.currentTpl + '/')}>/ New Folder</button>
+        <button className={styles.btn} onClick={() => store.insertTplVar('$EXTENSION')}>$EXTENSION</button>
+        <button className={styles.btn} onClick={() => store.setTpl('')}>Clear</button>
+        <div className={styles.spacer} />
+        <button className={styles.btnPrimary} onClick={() => void store.saveTemplate()}><Save size={13} /> Save Template</button>
+      </div>
+      <div className={styles.tplVarGroups}>
+        {groups.map((g) => (
+          <div key={g} className={styles.tplVarGroup}>
+            <div className={styles.tplVarGroupLabel}>{g}</div>
+            <div className={styles.tplVarChips}>
+              {vars.filter((v) => (v.group || 'Variables') === g).map((v) => (
+                <button key={v.token} className={styles.tplVarChip} title={v.token} onClick={() => store.insertTplVar(v.token)}>{v.label}</button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   )
 })
@@ -127,31 +219,50 @@ const CivitaiView: React.FC = observer(() => {
   const c = store.civConfig
   const set = (k: string, v: any) => store.setCivConfig(k, v)
   return (
-    <div className={styles.formWrap}>
-      <div className={styles.row}>
-        <input className={styles.input} placeholder="CivitAI model URL" value={store.civUrl} onChange={(e) => (store.civUrl = e.target.value)} />
-        <button className={styles.btnPrimary} disabled={store.busy || !store.civUrl.trim()} onClick={() => void store.downloadCiv()}>
-          {store.busy ? <Loader2 size={13} className={styles.spin} /> : <Download size={13} />} Download
-        </button>
-      </div>
-      <input className={styles.input} placeholder="path override (optional)" value={store.civPathOverride} onChange={(e) => (store.civPathOverride = e.target.value)} />
-      {store.civError && <div className={styles.errorBar}>{store.civError}</div>}
-
-      <div className={styles.settings}>
-        <div className={styles.sectionLabel}>Settings</div>
-        <div className={styles.settingRow}><label>Concurrent</label><input className={styles.numInput} type="number" value={c.concurrent ?? 3} onChange={(e) => set('concurrent', Number(e.target.value))} /></div>
-        <label className={styles.check}><input type="checkbox" checked={c.downloadModel ?? true} onChange={(e) => set('downloadModel', e.target.checked)} /> Download model file</label>
-        <label className={styles.check}><input type="checkbox" checked={c.saveMetadata ?? true} onChange={(e) => set('saveMetadata', e.target.checked)} /> Save metadata JSON</label>
-        <label className={styles.check}><input type="checkbox" checked={c.downloadImages ?? false} onChange={(e) => set('downloadImages', e.target.checked)} /> Download preview images</label>
-        {c.downloadImages && (
-          <div className={styles.settingRow}><label>Image count</label><input className={styles.numInput} type="number" value={c.imageCount ?? 10} onChange={(e) => set('imageCount', Number(e.target.value))} /></div>
-        )}
-        <div className={styles.settingRow}><label>Path template</label><input className={styles.input} value={c.pathTemplate ?? '$REPO_NAME/$MODEL_FILE_NAME$EXTENSION'} onChange={(e) => set('pathTemplate', e.target.value)} /></div>
-        <div className={styles.actionsRow}>
-          <div className={styles.spacer} />
-          <button className={styles.btn} onClick={() => void store.saveCivConfig()}><Save size={13} /> Save Settings</button>
+    <div className={styles.civLayout}>
+      {/* LEFT — downloader + history */}
+      <div className={styles.civLeft}>
+        <div className={styles.row}>
+          <a className={styles.btn} href="https://civitai.com" target="_blank" rel="noreferrer">Open CivitAI</a>
+          <input className={styles.input} placeholder="Paste CivitAI model URL" value={store.civUrl} onChange={(e) => (store.civUrl = e.target.value)} />
         </div>
-        <div className={styles.note}>Template vars: $REPO_NAME, $MODEL_TYPE, $BASE_MODEL_SHORT, $VERSION_NAME, $MODEL_FILE_NAME, $EXTENSION, $USER_DEFINED, … (full visual template builder deferred)</div>
+        <div className={styles.row}>
+          <input className={styles.input} placeholder="path override (optional)" value={store.civPathOverride} onChange={(e) => (store.civPathOverride = e.target.value)} />
+          <button className={styles.btnPrimary} disabled={store.busy || !store.civUrl.trim()} onClick={() => void store.downloadCiv()}>
+            {store.busy ? <Loader2 size={13} className={styles.spin} /> : <Download size={13} />} Download
+          </button>
+        </div>
+        {store.civError && <div className={styles.errorBar}>{store.civError}</div>}
+        <div className={styles.histSection}>
+          <div className={styles.sectionLabel}>Download History</div>
+          <HistoryList items={store.civHistory} kind="civ" />
+        </div>
+      </div>
+
+      {/* RIGHT — settings + template builder */}
+      <div className={styles.civRight}>
+        <div className={styles.settings}>
+          <div className={styles.sectionLabel}>Download Settings</div>
+          <div className={styles.settingRow}><label>Concurrent</label><input className={styles.numInput} type="number" value={c.concurrent ?? 3} onChange={(e) => set('concurrent', Number(e.target.value))} /></div>
+          <label className={styles.check}><input type="checkbox" checked={c.downloadModel ?? true} onChange={(e) => set('downloadModel', e.target.checked)} /> Download model file</label>
+          <label className={styles.check}><input type="checkbox" checked={c.saveMetadata ?? true} onChange={(e) => set('saveMetadata', e.target.checked)} /> Save metadata JSON</label>
+          {c.saveMetadata !== false && (
+            <div className={styles.settingRow}><label>Meta suffix</label><input className={styles.numInput} style={{ width: 100 }} value={c.metadataSuffix ?? 'civitai'} onChange={(e) => set('metadataSuffix', e.target.value)} /><span className={styles.note}>.json</span></div>
+          )}
+          <label className={styles.check}><input type="checkbox" checked={c.downloadImages ?? false} onChange={(e) => set('downloadImages', e.target.checked)} /> Download preview images</label>
+          {c.downloadImages && (
+            <>
+              <div className={styles.settingRow}><label>Image count</label><input className={styles.numInput} type="number" value={c.imageCount ?? 10} onChange={(e) => set('imageCount', Number(e.target.value))} /></div>
+              <div className={styles.settingRow}><label>Size</label><select className={styles.select} value={c.imageSize ?? 'original'} onChange={(e) => set('imageSize', e.target.value)}><option value="preview">Preview</option><option value="original">Original</option><option value="both">Both</option></select></div>
+              <div className={styles.settingRow}><label>Source</label><select className={styles.select} value={c.imageSource ?? 'model-card-first'} onChange={(e) => set('imageSource', e.target.value)}><option value="model-card-first">Model Card First</option><option value="model-card">Model Card Only</option><option value="gallery-first">Gallery First</option><option value="gallery">Gallery Only</option></select></div>
+            </>
+          )}
+          <div className={styles.actionsRow}>
+            <div className={styles.spacer} />
+            <button className={styles.btn} onClick={() => void store.saveCivConfig()}><Save size={13} /> Save Settings</button>
+          </div>
+        </div>
+        <TemplateBuilder />
       </div>
     </div>
   )
@@ -161,6 +272,8 @@ export const ModelDownloadsPanel: React.FC = observer(() => {
   useEffect(() => {
     store.startPolling(3000)
     void store.loadCivConfig()
+    void store.loadCivExtras()
+    void store.loadHistories()
     return () => store.stopPolling()
   }, [])
 
