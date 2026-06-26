@@ -7,7 +7,7 @@ import styles from './AiServices.module.scss'
 
 const TYPE_COLORS: Record<string, string> = {
   llm: 'var(--accent)', tts: '#c879e0', stt: '#79b8e0', image: '#e0a832',
-  tools: '#5fd38a', embed: '#8aa0ff', rerank: '#8aa0ff', training: '#e0794f',
+  tools: '#5fd38a', embed: '#ec4899', rerank: '#ec4899', training: '#e0794f',
 }
 const STATUS: Record<string, { label: string; cls: string }> = {
   running: { label: 'Running', cls: 'stRun' },
