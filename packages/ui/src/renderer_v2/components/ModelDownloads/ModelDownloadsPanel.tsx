@@ -396,8 +396,8 @@ const ReviewBrowser: React.FC = observer(() => {
                 </div>
               )}
 
-              <div className={styles.settingRow}><label>Subfolder</label><input className={styles.input} placeholder="user-defined (optional)" value={store.civReviewUserDefined} onChange={(e) => (store.civReviewUserDefined = e.target.value)} onBlur={() => void store.resolveReviewPath()} /></div>
-              <div className={styles.settingRow}><label>Filename</label><input className={styles.input} placeholder="override (optional)" value={store.civReviewFnOverride} onChange={(e) => (store.civReviewFnOverride = e.target.value)} onBlur={() => void store.resolveReviewPath()} /></div>
+              <div className={styles.settingRow}><label>Subfolder</label><input className={styles.input} placeholder="user-defined (optional)" value={store.civReviewUserDefined} onChange={(e) => { store.civReviewUserDefined = e.target.value; store.resolveReviewPathLive() }} /></div>
+              <div className={styles.settingRow}><label>Filename</label><input className={styles.input} placeholder="override (optional)" value={store.civReviewFnOverride} onChange={(e) => { store.civReviewFnOverride = e.target.value; store.resolveReviewPathLive() }} /></div>
               <div className={styles.revTarget} title={store.civResolvedDir}>→ {store.civResolvedDir || '(resolving…)'}</div>
 
               <div className={styles.actionsRow}>
