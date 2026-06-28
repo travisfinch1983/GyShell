@@ -155,6 +155,16 @@ export class UniversalProxyService {
     // watchdogs would double-restart services. Re-enable once ProxLab is decommissioned.
     const aiModule = createAiRouter(llmConfig, llmGpuMon, llmPve, llmSsh, llmHook)
 
+    // Start live polling so /agent-gpus + /estimate placements populate (PVE guests + GPU metrics).
+    // Read-only; runs alongside ProxLab's pollers until it's decommissioned.
+    try {
+      await llmPve.refreshAll?.()
+    } catch {
+      /* first poll may race; the interval will catch up */
+    }
+    llmPve.startRefresh?.(10000)
+    Promise.resolve(llmGpuMon.start?.()).catch(() => undefined)
+
     const app = express()
     app.use('/api/proxy/vector', createVectorProxyRouter())
     app.use('/api/proxy/anthropic', createAnthropicProxyRouter())
