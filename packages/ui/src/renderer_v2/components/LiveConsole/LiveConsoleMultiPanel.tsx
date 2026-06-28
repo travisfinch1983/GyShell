@@ -79,7 +79,7 @@ export const LiveConsoleMultiPanel: React.FC = observer(() => {
           ))}
         </div>
         <div className={styles.addWrap}>
-          <button className={styles.addBtn} title="Open a service console" onClick={openPicker}><Plus size={14} /></button>
+          <button className={styles.addBtn} title="Open a service console" onClick={openPicker}><Plus size={14} /> Console</button>
           {pickerOpen && (
             <>
               <div className={styles.pickerBackdrop} onClick={() => setPickerOpen(false)} />

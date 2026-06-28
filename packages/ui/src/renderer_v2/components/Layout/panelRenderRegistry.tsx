@@ -40,14 +40,16 @@ const TerminalPanelRenderer: LayoutPanelRenderer = ({
   />
 )
 
-// Chat moved to the global sidebar overlay (components/Chat/GlobalChat.tsx). This legacy panel renders
-// a stub so existing layouts can close it; the Live Console lives in its own primary tab.
-const ChatPanelRenderer: LayoutPanelRenderer = () => (
-  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: 24, gap: 8, color: 'var(--fg-muted)', textAlign: 'center' }}>
-    <div style={{ color: 'var(--fg)', fontWeight: 500 }}>Chat moved to the sidebar</div>
-    <div style={{ fontSize: 11, maxWidth: 360 }}>This panel is no longer used — you can close it. Live consoles are in the Live Console tab.</div>
-  </div>
-)
+// Chat moved to the global sidebar overlay (components/Chat/GlobalChat.tsx). The legacy chat panel is
+// defunct + just takes space, so auto-remove it from the layout on mount (removePanel no-ops if it's
+// the only panel). Live consoles live in their own primary tab.
+const ChatPanelRenderer: LayoutPanelRenderer = ({ store, panelId }) => {
+  React.useEffect(() => {
+    const t = setTimeout(() => { try { store.layout.removePanel(panelId) } catch { /* ignore */ } }, 0)
+    return () => clearTimeout(t)
+  }, [store, panelId])
+  return null
+}
 
 const FileSystemPanelRenderer: LayoutPanelRenderer = ({
   store,
