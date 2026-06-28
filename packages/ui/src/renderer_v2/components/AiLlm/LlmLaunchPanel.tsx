@@ -62,6 +62,7 @@ const SettingField: React.FC<{ k: string; arg: any }> = observer(({ k, arg }) =>
 })
 
 export const LlmLaunchPanel: React.FC = observer(() => {
+  const [advOpen, setAdvOpen] = React.useState(false)
   React.useEffect(() => {
     if (!store.models) void store.load()
   }, [])
@@ -69,6 +70,13 @@ export const LlmLaunchPanel: React.FC = observer(() => {
   const t = store.template
   const est = store.lastEstimate
   const placements: any[] = est?.placements || []
+
+  // Auto-expand Advanced when the active preset owns any advanced-arg keys (so its highlighted fields show).
+  const advKeys = t?.advancedArgs ? Object.keys(t.advancedArgs) : []
+  const advFromPreset = store.samplerPresetActive ? advKeys.filter((k) => store.isPresetKey(k)).length : 0
+  React.useEffect(() => {
+    if (advFromPreset > 0) setAdvOpen(true)
+  }, [advFromPreset, store.selectedSamplerPresetId])
 
   return (
     <div className={styles.panel}>
@@ -197,8 +205,8 @@ export const LlmLaunchPanel: React.FC = observer(() => {
               {Object.entries<any>(t.args || {}).filter(([k]) => k !== 'model').map(([k, a]) => <SettingField key={k} k={k} arg={a} />)}
             </div>
             {t.advancedArgs && (
-              <details className={styles.advanced}>
-                <summary>Advanced ({Object.keys(t.advancedArgs).length})</summary>
+              <details className={styles.advanced} open={advOpen} onToggle={(e) => setAdvOpen((e.currentTarget as HTMLDetailsElement).open)}>
+                <summary>Advanced ({advKeys.length}){advFromPreset > 0 ? ` · ${advFromPreset} from preset` : ''}</summary>
                 <div className={styles.fieldGrid}>
                   {Object.entries<any>(t.advancedArgs).map(([k, a]) => <SettingField key={k} k={k} arg={a} />)}
                 </div>
