@@ -234,17 +234,22 @@ export const LlmLaunchPanel: React.FC = observer(() => {
               </div>
             )}
             {placements.length > 0 && <div className={styles.suggestLabel}>Suggested placements</div>}
+            {placements.length === 0 && store.availableNvidiaGpus.length > 0 && est?.estimate && (
+              <div className={styles.warn}>No GPU combination has enough estimated VRAM — use custom selection below to launch anyway.</div>
+            )}
             <div className={styles.placements}>
               {placements.slice(0, 6).map((p: any, i: number) => {
                 const sel = !store.isCustomSelected && store.selectedPlacement === p
                 const names = (p.gpus || []).map((g: any) => g.friendlyName || g.model || g.name || g.pciId).join(' + ')
                 const node = p.node || (p.gpus || []).map((g: any) => g.node).join(', ')
+                const showAvail = p.availableVramMB != null && p.totalVramMB != null && p.availableVramMB < p.totalVramMB
                 return (
                   <button key={i} className={`${styles.placement} ${sel ? styles.placeSel : ''}`} onClick={() => store.setPlacement(p)}>
                     {p.gpuCount > 1 && <span className={styles.countLabel}>{p.gpuCount}-GPU</span>}
                     <span className={styles.placeNode}>{node}:</span>
                     <span className={styles.placeGpus}>{names}</span>
                     {p.headroomMB != null && <span className={styles.headroom}>{fmtMB(p.headroomMB)} headroom</span>}
+                    {showAvail && <span className={styles.headroomAvail}>({(p.availableVramMB / 1024).toFixed(1)}/{(p.totalVramMB / 1024).toFixed(1)} GB avail)</span>}
                     {p.mixedPlacement && <span className={styles.mixedBadge}>Mixed</span>}
                     <RiskBadge label={p.riskLabel} />
                   </button>
