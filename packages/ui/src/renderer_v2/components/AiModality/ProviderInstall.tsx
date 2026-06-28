@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Loader2, Download, Trash2, ArrowUpCircle, ExternalLink, CheckCircle2, Circle } from 'lucide-react'
 import { aiProvidersStore as store, type Provider } from '../../stores/AiProvidersStore'
-import { InstallTerminal, type InstallSession } from '../ScriptCatalog/InstallTerminal'
+import { liveConsoleStore } from '../../stores/LiveConsoleStore'
 import styles from './AiModality.module.scss'
 
 const CAT_LABEL: Record<string, string> = {
@@ -10,7 +10,7 @@ const CAT_LABEL: Record<string, string> = {
 }
 const COMPLEXITY_COLOR: Record<string, string> = { easy: 'var(--success)', medium: '#e0a832', complex: 'var(--danger)' }
 
-const ProviderCard: React.FC<{ p: Provider; onInstall: (s: InstallSession, id: string) => void }> = observer(({ p, onInstall }) => {
+const ProviderCard: React.FC<{ p: Provider }> = observer(({ p }) => {
   const [extras, setExtras] = useState<Set<string>>(new Set())
   const [models, setModels] = useState<Set<string>>(new Set())
   const nodes = Object.keys(p.agents ?? {})
@@ -21,10 +21,8 @@ const ProviderCard: React.FC<{ p: Provider; onInstall: (s: InstallSession, id: s
       ? await store.prepareUpdate(p.id, node)
       : await store.prepareInstall(p.id, node, [...extras], [...models])
     if (!r) return
-    onInstall(
-      { scriptName: `${isUpdate ? 'update' : 'install'} ${p.id}`, nodeName: node, hostIp: r.pveHostIp, command: `pct exec ${r.vmid} -- ${r.command}` },
-      p.id,
-    )
+    // Run in the Live Console (focuses that tab); no popup terminal.
+    liveConsoleStore.openInstall(`${isUpdate ? 'update' : 'install'} ${p.id} on ${node}`, r.pveHostIp, `pct exec ${r.vmid} -- ${r.command}`)
   }
 
   return (
@@ -81,9 +79,6 @@ const ProviderCard: React.FC<{ p: Provider; onInstall: (s: InstallSession, id: s
 })
 
 export const ProviderInstall: React.FC<{ categories: string[] }> = observer(({ categories }) => {
-  const [session, setSession] = useState<InstallSession | null>(null)
-  const [installedId, setInstalledId] = useState<string | null>(null)
-
   useEffect(() => {
     void (async () => {
       if (!store.providers.length) await store.load()
@@ -92,9 +87,6 @@ export const ProviderInstall: React.FC<{ categories: string[] }> = observer(({ c
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [categories.join(',')])
-
-  const onInstall = (s: InstallSession, id: string) => { setInstalledId(id); setSession(s) }
-  const closeTerminal = () => { setSession(null); if (installedId) void store.refreshStatus(installedId); setInstalledId(null) }
 
   const providers = store.byCategory(categories)
   // group by category when the tab spans more than one (e.g. image + training)
@@ -111,18 +103,10 @@ export const ProviderInstall: React.FC<{ categories: string[] }> = observer(({ c
       {groups.map((g) => (
         <div key={g.cat} className={styles.provGroup}>
           {groups.length > 1 && <div className={styles.groupLabel}>{CAT_LABEL[g.cat] || g.cat}</div>}
-          {g.items.map((p) => <ProviderCard key={p.id} p={p} onInstall={onInstall} />)}
+          {g.items.map((p) => <ProviderCard key={p.id} p={p} />)}
         </div>
       ))}
       {providers.length === 0 && !store.loading && <div className={styles.empty}>No providers in this category.</div>}
-
-      {session && (
-        <div className={styles.termOverlay} onClick={closeTerminal}>
-          <div className={styles.termBox} onClick={(e) => e.stopPropagation()}>
-            <InstallTerminal session={session} onClose={closeTerminal} />
-          </div>
-        </div>
-      )}
     </div>
   )
 })

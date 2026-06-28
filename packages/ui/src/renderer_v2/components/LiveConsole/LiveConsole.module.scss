@@ -1,0 +1,13 @@
+.container { display: flex; flex-direction: column; position: absolute; inset: 0; background: var(--app-bg); color: var(--fg); overflow: hidden; }
+.header { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-bottom: 1px solid var(--border); background: var(--panel-bg-2); flex: 0 0 auto; }
+.headerIcon { color: var(--accent); }
+.title { font-weight: 600; font-size: 14px; }
+.spacer { flex: 1; }
+.select { padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--control-bg); color: var(--fg); font-size: 12px; min-width: 240px; max-width: 420px; }
+.status { font-size: 11px; color: var(--fg-muted); font-family: var(--font-mono); }
+.stErr { color: var(--danger); }
+.iconBtn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 6px; background: var(--control-bg); color: var(--fg-muted); cursor: pointer; &:hover { color: var(--fg); } }
+
+.body { flex: 1; position: relative; min-height: 0; background: #0f1117; }
+.placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 40px; text-align: center; color: var(--fg-faint); font-size: 13px; line-height: 1.6; }
+.term { position: absolute; inset: 0; padding: 8px 10px; }

@@ -13,6 +13,7 @@ export interface AiService {
   providerId?: string
   providerName?: string
   node?: string
+  pveHostIp?: string
   vmid?: number
   port?: number
   containerName?: string

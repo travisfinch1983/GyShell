@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { RefreshCw, X, ExternalLink, Pause, Play, RotateCw, Square, Loader2, Cpu, Server, Pencil, Check, Copy } from 'lucide-react'
+import { RefreshCw, X, ExternalLink, Pause, Play, RotateCw, Square, Loader2, Cpu, Server, Pencil, Check, Copy, TerminalSquare } from 'lucide-react'
+import { liveConsoleStore } from '../../stores/LiveConsoleStore'
 import { aiServicesStore as store, type AiService } from '../../stores/AiServicesStore'
 import { ConfirmModal } from '../Cluster/ClusterModals'
 import styles from './AiServices.module.scss'
@@ -160,6 +161,7 @@ const ServiceCard: React.FC<{ s: AiService; onKill: (s: AiService) => void }> = 
           </a>
         )}
         <div className={styles.spacer} />
+        <button className={styles.act} title="Live console / logs (attach to tmux session)" onClick={() => liveConsoleStore.openService(s)}><TerminalSquare size={13} /></button>
         {sd && (
           <>
             <button className={styles.act} title="Suspend" disabled={busy} onClick={() => void store.lifecycle(s.id, 'suspend')}><Pause size={13} /></button>

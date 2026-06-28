@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from 'react'
+import { reaction } from 'mobx'
 import { observer } from 'mobx-react-lite'
 import { SlidersHorizontal, Plus } from 'lucide-react'
 import { AppStore } from './stores/AppStore'
@@ -26,6 +27,8 @@ import { ServicesDrawer } from './components/AiServices/ServicesDrawer'
 import { ModelDownloadsPanel } from './components/ModelDownloads/ModelDownloadsPanel'
 import { LogsPanel } from './components/Logs/LogsPanel'
 import { AiLlmPanel, AiImagePanel, AiTtsSttPanel } from './components/AiModality/AiModalityPanels'
+import { LiveConsolePanel } from './components/LiveConsole/LiveConsolePanel'
+import { liveConsoleStore } from './stores/LiveConsoleStore'
 import './styles/app.scss'
 
 const store = new AppStore()
@@ -74,6 +77,11 @@ export const App: React.FC = observer(() => {
     setPrimaryTab(id)
     localStorage.setItem('ai-lab-primary-tab', id)
   }, [])
+
+  // Service "Logs" buttons + provider install/update bump liveConsoleStore.focusSeq → jump to the Live Console.
+  React.useEffect(() => {
+    return reaction(() => liveConsoleStore.focusSeq, () => handlePrimaryTabChange('live-console'))
+  }, [handlePrimaryTabChange])
 
   React.useEffect(() => {
     store.bootstrap().then(() => {
@@ -351,6 +359,8 @@ export const App: React.FC = observer(() => {
           {primaryTab === 'ai-tts-stt' && <AiTtsSttPanel />}
 
           {primaryTab === 'model-downloads' && <ModelDownloadsPanel />}
+
+          {primaryTab === 'live-console' && <LiveConsolePanel />}
 
           {primaryTab === 'logs' && <LogsPanel />}
 
