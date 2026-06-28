@@ -1,7 +1,8 @@
 import React, { useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Rocket, PackagePlus, BrainCircuit, Image as ImageIcon, AudioLines } from 'lucide-react'
+import { PackagePlus, BrainCircuit, Image as ImageIcon, AudioLines } from 'lucide-react'
 import { ProviderInstall } from './ProviderInstall'
+import { LlmLaunchPanel } from '../AiLlm/LlmLaunchPanel'
 import styles from './AiModality.module.scss'
 
 interface SubTab {
@@ -29,17 +30,10 @@ const Shell: React.FC<{ title: string; Icon: React.ComponentType<any>; tabs: Sub
   )
 }
 
-const LaunchPlaceholder: React.FC<{ what: string }> = ({ what }) => (
-  <div className={styles.placeholder}>
-    <Rocket size={28} />
-    <div className={styles.phTitle}>{what} — migration in progress</div>
-    <div className={styles.phSub}>The full launcher (model picker, GPU/VRAM planning, per-provider settings, command preview, launch as service/template) is the next migration phase. Provider Install is available now.</div>
-  </div>
-)
 
 export const AiLlmPanel: React.FC = observer(() => (
   <Shell title="AI · LLM" Icon={BrainCircuit} tabs={[
-    { id: 'launch', label: 'LLM Launch', render: () => <LaunchPlaceholder what="LLM Launch" /> },
+    { id: 'launch', label: 'LLM Launch', render: () => <LlmLaunchPanel /> },
     { id: 'providers', label: 'Provider Install', render: () => <ProviderInstall categories={['llm']} /> },
   ]} />
 ))
