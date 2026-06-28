@@ -25,6 +25,7 @@ import { AiServicesPanel } from './components/AiServices/AiServicesPanel'
 import { ServicesDrawer } from './components/AiServices/ServicesDrawer'
 import { ModelDownloadsPanel } from './components/ModelDownloads/ModelDownloadsPanel'
 import { LogsPanel } from './components/Logs/LogsPanel'
+import { AiLlmPanel, AiImagePanel, AiTtsSttPanel } from './components/AiModality/AiModalityPanels'
 import './styles/app.scss'
 
 const store = new AppStore()
@@ -344,6 +345,10 @@ export const App: React.FC = observer(() => {
           {primaryTab === 'helper-scripts' && <ScriptCatalogPanel />}
 
           {primaryTab === 'ai-services' && <AiServicesPanel onOpenServices={() => setServicesDrawerOpen(true)} />}
+
+          {primaryTab === 'ai-llm' && <AiLlmPanel />}
+          {primaryTab === 'ai-image' && <AiImagePanel />}
+          {primaryTab === 'ai-tts-stt' && <AiTtsSttPanel />}
 
           {primaryTab === 'model-downloads' && <ModelDownloadsPanel />}
 

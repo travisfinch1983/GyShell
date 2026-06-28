@@ -1,0 +1,54 @@
+.container { display: flex; flex-direction: column; position: absolute; inset: 0; background: var(--app-bg); color: var(--fg); overflow: hidden; }
+.header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel-bg-2); flex: 0 0 auto; }
+.headerIcon { color: var(--accent); }
+.title { font-weight: 600; font-size: 14px; }
+.spacer { flex: 1; }
+.subTabs { display: flex; gap: 4px; margin-left: 8px; }
+.subTab { font-size: 12px; padding: 5px 12px; border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--fg-muted); cursor: pointer; &:hover { background: var(--control-bg); color: var(--fg); } }
+.subTabActive { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--fg); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.body { flex: 1; overflow: auto; }
+
+.spin { animation: aim-spin 0.9s linear infinite; }
+@keyframes aim-spin { to { transform: rotate(360deg); } }
+
+/* launch placeholder */
+.placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; height: 100%; color: var(--fg-faint); text-align: center; padding: 40px; }
+.phTitle { font-size: 15px; font-weight: 600; color: var(--fg-muted); }
+.phSub { font-size: 12px; max-width: 520px; line-height: 1.6; }
+
+/* provider install */
+.provWrap { padding: 14px 16px; max-width: 900px; }
+.provBar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.provCount { font-size: 12px; color: var(--fg-muted); }
+.errorBar { margin-bottom: 10px; padding: 8px 11px; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: 6px; color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); font-size: 12px; }
+.provGroup { margin-bottom: 14px; }
+.groupLabel { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--fg-faint); margin: 6px 0 6px; }
+.empty { padding: 30px; text-align: center; color: var(--fg-faint); font-size: 13px; }
+.note { font-size: 11px; color: var(--fg-faint); }
+
+.provCard { border: 1px solid var(--border); border-radius: 8px; background: var(--panel-bg); padding: 11px 13px; margin-bottom: 8px; }
+.provHead { display: flex; align-items: center; gap: 8px; }
+.provName { font-size: 13px; font-weight: 700; }
+.provComplexity { font-size: 10px; font-weight: 700; text-transform: uppercase; }
+.provPort { font-size: 10px; color: var(--fg-faint); font-family: var(--font-mono); }
+.provLink { color: var(--fg-muted); display: inline-flex; &:hover { color: var(--accent); } }
+.provDesc { font-size: 11px; color: var(--fg-muted); margin-top: 4px; line-height: 1.5; }
+.provOpts { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+.optChk { font-size: 11px; color: var(--fg-muted); display: inline-flex; align-items: center; gap: 5px; }
+
+.provNodes { margin-top: 9px; display: flex; flex-direction: column; gap: 4px; }
+.nodeRow { display: flex; align-items: center; gap: 7px; padding: 4px 7px; border-radius: 5px; background: var(--app-bg); border: 1px solid var(--border); }
+.okIcon { color: var(--success); flex: 0 0 auto; }
+.offIcon { color: var(--fg-faint); flex: 0 0 auto; }
+.nodeName { font-size: 12px; font-weight: 600; }
+.nodeVer { font-size: 10px; color: var(--fg-muted); font-family: var(--font-mono); }
+.updBadge { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 5px; background: color-mix(in srgb, #e0a832 22%, transparent); color: #e0a832; }
+
+.iconBtnSm { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: 1px solid var(--border); border-radius: 5px; background: var(--control-bg); color: var(--fg-muted); cursor: pointer; &:hover { color: var(--fg); } }
+.linkBtn { font-size: 10px; color: var(--accent); background: none; border: none; cursor: pointer; &:hover { text-decoration: underline; } }
+.btnSm { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 4px 9px; border-radius: 5px; border: 1px solid var(--border); background: var(--control-bg); color: var(--fg); cursor: pointer; &:hover:not(:disabled) { background: var(--control-bg-hover); } &:disabled { opacity: 0.5; cursor: default; } &.danger:hover { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); } }
+.btnSmPrimary { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 4px 11px; border-radius: 5px; border: 1px solid var(--accent); background: var(--accent); color: #06121f; font-weight: 600; cursor: pointer; }
+
+/* install terminal overlay */
+.termOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.termBox { width: min(960px, 94vw); height: min(640px, 88vh); display: flex; }
