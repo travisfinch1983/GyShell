@@ -1,0 +1,43 @@
+.container { display: flex; flex-direction: column; position: absolute; inset: 0; background: var(--app-bg); color: var(--fg); overflow: hidden; }
+.header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel-bg-2); flex: 0 0 auto; }
+.headerIcon { color: var(--accent); }
+.title { font-weight: 600; font-size: 14px; }
+.spacer { flex: 1; }
+.select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--control-bg); color: var(--fg); font-size: 12px; }
+.iconBtn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 6px; background: var(--control-bg); color: var(--fg-muted); cursor: pointer; &:hover { color: var(--fg); } }
+.iconBtnOn { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.spin { animation: logs-spin 0.9s linear infinite; }
+@keyframes logs-spin { to { transform: rotate(360deg); } }
+.srcBadge { font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 2px 8px; border-radius: 6px; }
+.srcLog { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
+.srcTmux { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
+.srcNone { background: var(--control-bg); color: var(--fg-faint); }
+
+.body { flex: 1; display: grid; grid-template-columns: 300px 1fr; min-height: 0; }
+
+/* left listbox */
+.list { display: flex; flex-direction: column; border-right: 1px solid var(--border); min-height: 0; background: var(--panel-bg); }
+.listHead { display: flex; align-items: center; gap: 6px; padding: 8px 12px; font-size: 12px; font-weight: 600; color: var(--fg-muted); border-bottom: 1px solid var(--border); }
+.refreshSm { margin-left: auto; display: inline-flex; width: 22px; height: 22px; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: 5px; background: var(--control-bg); color: var(--fg-muted); cursor: pointer; &:hover { color: var(--fg); } }
+.listScroll { flex: 1; overflow-y: auto; padding: 6px; }
+.groupLabel { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--fg-faint); padding: 8px 6px 4px; }
+.svcRow { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 7px 9px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; &:hover { background: var(--control-bg); } }
+.svcSel { background: color-mix(in srgb, var(--accent) 16%, transparent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.dotRun { background: var(--success); }
+.dotStop { background: var(--fg-faint); }
+.svcMain { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.svcName { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.svcModel { font-size: 10px; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.svcMeta { font-size: 9px; color: var(--fg-faint); font-family: var(--font-mono); flex: 0 0 auto; }
+.empty { padding: 20px; text-align: center; font-size: 12px; color: var(--fg-faint); }
+
+/* right viewer */
+.viewer { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.placeholder { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--fg-faint); font-size: 13px; }
+.viewerHead { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+.vName { font-size: 13px; font-weight: 600; }
+.vModel { font-size: 11px; color: var(--fg-muted); font-family: var(--font-mono); }
+.vTime { font-size: 10px; color: var(--fg-faint); }
+.errorBar { margin: 8px 14px 0; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: 6px; color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); font-size: 12px; }
+.pre { flex: 1; margin: 0; padding: 12px 14px; overflow: auto; font-family: var(--font-mono); font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; color: var(--fg); background: var(--app-bg); }

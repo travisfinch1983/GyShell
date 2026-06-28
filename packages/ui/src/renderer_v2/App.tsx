@@ -24,6 +24,7 @@ import { FileManagerPanel } from './components/FileManager/FileManagerPanel'
 import { AiServicesPanel } from './components/AiServices/AiServicesPanel'
 import { ServicesDrawer } from './components/AiServices/ServicesDrawer'
 import { ModelDownloadsPanel } from './components/ModelDownloads/ModelDownloadsPanel'
+import { LogsPanel } from './components/Logs/LogsPanel'
 import './styles/app.scss'
 
 const store = new AppStore()
@@ -345,6 +346,8 @@ export const App: React.FC = observer(() => {
           {primaryTab === 'ai-services' && <AiServicesPanel onOpenServices={() => setServicesDrawerOpen(true)} />}
 
           {primaryTab === 'model-downloads' && <ModelDownloadsPanel />}
+
+          {primaryTab === 'logs' && <LogsPanel />}
 
           {primaryTab === 'flowchart' && (
             <PlaceholderPanel

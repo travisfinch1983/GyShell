@@ -10,12 +10,13 @@ import {
   Package,
   BrainCircuit,
   Download,
+  ScrollText,
   Settings,
   type LucideIcon,
 } from 'lucide-react'
 import styles from './PrimarySidebar.module.scss'
 
-export type PrimaryTab = 'terminal' | 'cluster' | 'services' | 'ai-services' | 'scripts' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'monitor'
+export type PrimaryTab = 'terminal' | 'cluster' | 'services' | 'ai-services' | 'scripts' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'monitor'
 
 interface TabDef {
   id: PrimaryTab
@@ -33,6 +34,7 @@ const TABS: TabDef[] = [
   { id: 'model-downloads', label: 'Model Downloads', Icon: Download },
   { id: 'flowchart', label: 'Flowchart', Icon: Workflow },
   { id: 'files',     label: 'Files',     Icon: FolderOpen },
+  { id: 'logs',      label: 'Logs',      Icon: ScrollText },
   { id: 'monitor',   label: 'Monitor',   Icon: Activity },
 ]
 
