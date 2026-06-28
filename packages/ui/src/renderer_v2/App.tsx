@@ -12,6 +12,7 @@ import { SettingsView } from './components/Settings/SettingsView'
 import { ConnectionsView } from './components/Connections/ConnectionsView'
 import { ConfirmDialog } from './components/Common/ConfirmDialog'
 import { ConfirmHost } from './components/Common/ConfirmHost'
+import { PromptHost } from './components/Common/PromptHost'
 import { TerminalWorkspace } from './components/Terminal/TerminalWorkspace'
 import { MinionSidebar } from './components/Minions/MinionSidebar'
 import { PrimarySidebar, type PrimaryTab } from './components/PrimarySidebar/PrimarySidebar'
@@ -286,6 +287,7 @@ export const App: React.FC = observer(() => {
     <MinionProvider value={minionStore}>
     <div className={`gyshell ${platformClass}`}>
       <ConfirmHost />
+      <PromptHost />
       <ConfirmDialog
         open={store.showVersionUpdateDialog && hasVersionDifference}
         title={t.settings.versionUpdateTitle}

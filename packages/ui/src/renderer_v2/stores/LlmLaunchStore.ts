@@ -105,6 +105,10 @@ export class LlmLaunchStore {
   launchMsg = ''
   launchErr = ''
 
+  // saved launch templates
+  savedTemplates: any[] = []
+  loadedTemplateId: string | null = null
+
   constructor() {
     makeAutoObservable(this)
   }
@@ -113,12 +117,13 @@ export class LlmLaunchStore {
     this.loading = true
     this.error = ''
     try {
-      const [scan, provs, gpus, cache, samplers] = await Promise.all([
+      const [scan, provs, gpus, cache, samplers, templates] = await Promise.all([
         bridge().request('GET', '/api/ai/models/scan').catch(() => null),
         bridge().request('GET', '/api/ai/providers').catch(() => null),
         bridge().request('GET', '/api/ai/agent-gpus').catch(() => null),
         bridge().request('GET', '/api/ai/models/cache').catch(() => null),
         bridge().request('GET', '/api/ai/sampler-presets').catch(() => null),
+        bridge().request('GET', '/api/ai/templates').catch(() => null),
       ])
       runInAction(() => {
         this.models = scan || { models: [] }
@@ -127,6 +132,7 @@ export class LlmLaunchStore {
         this.agents = ((gpus as any)?.agents ?? []) as Agent[]
         this.cacheEntries = (((cache as any)?.entries ?? []) as any[]).filter((e) => e.status === 'cached' || e.cachedAt)
         this.userSamplerPresets = (((samplers as any)?.presets) ?? []) as any[]
+        this.savedTemplates = (((templates as any)?.templates) ?? []) as any[]
       })
     } catch (e: any) {
       runInAction(() => { this.error = e?.message || 'Failed to load launch data' })
@@ -165,6 +171,89 @@ export class LlmLaunchStore {
     } finally {
       runInAction(() => { this.rescanning = false })
     }
+  }
+
+  // ─── saved launch templates ───
+  async reloadTemplates(): Promise<void> {
+    const r: any = await bridge().request('GET', '/api/ai/templates').catch(() => null)
+    runInAction(() => { this.savedTemplates = (r?.templates ?? []) as any[] })
+  }
+
+  /** Load a saved template's model + provider + settings into the launcher. */
+  loadTemplate(id: string): void {
+    const t = this.savedTemplates.find((x) => x.id === id)
+    if (!t) return
+    runInAction(() => {
+      this.selectedFamily = t.family || ''
+      this.selectedVariant = t.variant || ''
+      this.selectedFormat = t.format || ''
+      this.selectedQuant = t.quant || ''
+      this.selectedProvider = t.providerId || ''
+      this.settings = { ...(t.settings || {}) }
+      this.loadedTemplateId = id
+      // sampler-preset binding doesn't carry across template loads
+      this.selectedSamplerPresetId = ''
+      this.presetKeys = []
+    })
+    this.scheduleEstimate()
+  }
+
+  get canSaveChanges(): boolean { return !!this.loadedTemplateId }
+  get canSaveAsNew(): boolean { return !!this.selectedProvider }
+  get loadedTemplateName(): string { return this.savedTemplates.find((t) => t.id === this.loadedTemplateId)?.name || '' }
+
+  private templateBody(extra: Record<string, any> = {}): any {
+    return {
+      providerId: this.selectedProvider,
+      family: this.selectedFamily,
+      variant: this.selectedVariant,
+      format: this.selectedFormat,
+      quant: this.selectedQuant,
+      settings: { ...this.settings },
+      ...extra,
+    }
+  }
+
+  /** Save Changes — overwrite the currently-loaded template in place. */
+  async saveTemplateChanges(): Promise<void> {
+    if (!this.loadedTemplateId) return
+    const existing = this.savedTemplates.find((t) => t.id === this.loadedTemplateId)
+    if (!existing) return
+    try {
+      await bridge().request('POST', '/api/ai/templates', this.templateBody({ id: this.loadedTemplateId, name: existing.name }))
+      runInAction(() => { this.launchMsg = `Saved changes to "${existing.name}"` })
+      await this.reloadTemplates()
+    } catch (e: any) { runInAction(() => { this.launchErr = 'Save failed: ' + (e?.message || e) }) }
+  }
+
+  /** Save As New Template — create a new template from the current launcher state. */
+  async saveAsNewTemplate(name: string): Promise<void> {
+    if (!name.trim() || !this.selectedProvider) return
+    try {
+      const r: any = await bridge().request('POST', '/api/ai/templates', this.templateBody({ name: name.trim() }))
+      runInAction(() => { this.loadedTemplateId = r?.id || null; this.launchMsg = `Saved template "${name.trim()}"` })
+      await this.reloadTemplates()
+    } catch (e: any) { runInAction(() => { this.launchErr = 'Save failed: ' + (e?.message || e) }) }
+  }
+
+  /** Inline rename — keeps all other fields of the template intact. */
+  async renameTemplate(id: string, name: string): Promise<void> {
+    const t = this.savedTemplates.find((x) => x.id === id)
+    if (!t || !name.trim()) return
+    try {
+      await bridge().request('POST', '/api/ai/templates', {
+        id, name: name.trim(), providerId: t.providerId, family: t.family, variant: t.variant, format: t.format, quant: t.quant, settings: t.settings,
+      })
+      await this.reloadTemplates()
+    } catch (e: any) { runInAction(() => { this.launchErr = 'Rename failed: ' + (e?.message || e) }) }
+  }
+
+  async deleteTemplate(id: string): Promise<void> {
+    try {
+      await bridge().request('DELETE', `/api/ai/templates/${encodeURIComponent(id)}`)
+      runInAction(() => { if (this.loadedTemplateId === id) this.loadedTemplateId = null })
+      await this.reloadTemplates()
+    } catch (e: any) { runInAction(() => { this.launchErr = 'Delete failed: ' + (e?.message || e) }) }
   }
 
   // ─── derived ───

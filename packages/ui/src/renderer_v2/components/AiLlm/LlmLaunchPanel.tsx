@@ -1,7 +1,9 @@
 import React from 'react'
 import { observer } from 'mobx-react-lite'
-import { Rocket, Server, RefreshCw, Cpu } from 'lucide-react'
+import { Rocket, Server, RefreshCw, Cpu, Pencil, Trash2, Check, X, Save, FilePlus, Upload } from 'lucide-react'
 import { llmLaunchStore as store, type QuantRow } from '../../stores/LlmLaunchStore'
+import { confirmStore } from '../../stores/confirmStore'
+import { promptStore } from '../../stores/promptStore'
 import styles from './LlmLaunch.module.scss'
 
 const fmtMB = (mb?: number | null) => (mb == null ? '' : mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : Math.ceil(mb) + ' MB')
@@ -69,6 +71,50 @@ const SettingField: React.FC<{ k: string; arg: any }> = observer(({ k, arg }) =>
   )
 })
 
+/** Saved launch-templates list box — inline rename + load. */
+const TemplateList: React.FC = observer(() => {
+  const [editId, setEditId] = React.useState<string | null>(null)
+  const [editName, setEditName] = React.useState('')
+  const begin = (t: any) => { setEditId(t.id); setEditName(t.name) }
+  const commit = async () => { if (editId && editName.trim()) await store.renameTemplate(editId, editName); setEditId(null) }
+  return (
+    <section className={styles.card}>
+      <div className={styles.cardHead}>Saved Templates <span className={styles.muted}>({store.savedTemplates.length})</span></div>
+      <div className={styles.tplList}>
+        {store.savedTemplates.length === 0 && <div className={styles.muted}>No saved templates yet — configure a launch and use “Save As New Template”.</div>}
+        {store.savedTemplates.map((t) => {
+          const loaded = store.loadedTemplateId === t.id
+          return (
+            <div key={t.id} className={`${styles.tplRow} ${loaded ? styles.tplRowActive : ''}`}>
+              {editId === t.id ? (
+                <input
+                  className={styles.tplNameInput} autoFocus value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void commit(); if (e.key === 'Escape') setEditId(null) }}
+                  onBlur={() => void commit()}
+                />
+              ) : (
+                <span className={styles.tplName} title={`${t.family} ${t.variant} · ${t.providerId}`}>{t.name}</span>
+              )}
+              <span className={styles.tplMeta}>{[t.family, t.variant, t.providerId].filter(Boolean).join(' · ')}</span>
+              <span className={styles.spacer} />
+              {editId === t.id ? (
+                <button className={styles.tplIcon} title="Save name" onMouseDown={(e) => { e.preventDefault(); void commit() }}><Check size={13} /></button>
+              ) : (
+                <button className={styles.tplIcon} title="Rename" onClick={() => begin(t)}><Pencil size={13} /></button>
+              )}
+              <button className={styles.tplLoad} title="Load this template into the launcher" onClick={() => store.loadTemplate(t.id)}><Upload size={13} /> Load</button>
+              <button className={styles.tplIconDanger} title="Delete template" onClick={async () => {
+                if (await confirmStore.confirm({ title: 'Delete template', message: `Delete launch template “${t.name}”?`, confirmText: 'Delete' })) void store.deleteTemplate(t.id)
+              }}><Trash2 size={13} /></button>
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+})
+
 export const LlmLaunchPanel: React.FC = observer(() => {
   const [advOpen, setAdvOpen] = React.useState(false)
   React.useEffect(() => {
@@ -123,6 +169,8 @@ export const LlmLaunchPanel: React.FC = observer(() => {
             </button>
           </div>
         </section>
+
+        <TemplateList />
 
         {/* 2 — Quant table (imported as-is; to be reworked) */}
         {store.model && (
@@ -199,7 +247,7 @@ export const LlmLaunchPanel: React.FC = observer(() => {
                 <button
                   className={styles.scanBtn}
                   title="Save the checked settings as a new preset"
-                  onClick={async () => { const n = window.prompt('Name for this preset:'); if (n) { const id = await store.saveSamplerPreset(n, store.samplerReadOnly); if (id) store.selectSamplerPreset(id) } }}
+                  onClick={async () => { const n = await promptStore.prompt({ title: 'New sampler preset', label: 'Name for this preset', placeholder: 'My preset' }); if (n) { const id = await store.saveSamplerPreset(n, store.samplerReadOnly); if (id) store.selectSamplerPreset(id) } }}
                 >Save As…</button>
                 <label className={styles.roChk} title="When checked, the preset is protected — it can't be overwritten in place, only copied.">
                   <input type="checkbox" checked={store.samplerReadOnly} onChange={(e) => store.setSamplerReadOnly(e.target.checked)} /> Read Only
@@ -307,6 +355,17 @@ export const LlmLaunchPanel: React.FC = observer(() => {
                 <Server size={14} /> Launch as Service
               </button>
               {!store.isOnDisk && store.selectedQuant && <span className={styles.warn}>Selected quant not on disk</span>}
+            </div>
+            <div className={styles.launchRow}>
+              <button className={styles.scanBtn} disabled={!store.canSaveChanges} title={store.canSaveChanges ? `Overwrite "${store.loadedTemplateName}" with the current settings` : 'Load a template first to enable saving changes'} onClick={() => void store.saveTemplateChanges()}>
+                <Save size={13} /> Save Changes{store.loadedTemplateName ? ` to "${store.loadedTemplateName}"` : ''}
+              </button>
+              <button className={styles.scanBtn} disabled={!store.canSaveAsNew} title="Save the current model + engine + settings as a new template" onClick={async () => {
+                const n = await promptStore.prompt({ title: 'Save As New Template', label: 'Template name', placeholder: 'e.g. Qwen3 235B — fast', defaultValue: store.loadedTemplateName ? `${store.loadedTemplateName} (copy)` : '' })
+                if (n) void store.saveAsNewTemplate(n)
+              }}>
+                <FilePlus size={13} /> Save As New Template
+              </button>
             </div>
             {store.launchMsg && <div className={styles.ok}>{store.launchMsg}</div>}
             {store.launchErr && <div className={styles.error}>{store.launchErr}</div>}
