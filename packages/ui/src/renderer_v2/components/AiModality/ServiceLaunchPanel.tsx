@@ -48,7 +48,9 @@ const TrainWorkspace: React.FC<{ store: ServiceLaunchStore; providerId: string }
 
 /** Per-provider launch cards for the simple service launchers (TTS / Imagegen / Training). */
 export const ServiceLaunchPanel: React.FC<{ store: ServiceLaunchStore; emptyLabel: string }> = observer(({ store, emptyLabel }) => {
-  useEffect(() => { if (!store.loaded) void store.load() }, [])
+  // Depend on `store` — the Shell reuses this component instance across sub-tabs (Imagegen ↔ Training),
+  // so the effect must re-run when the store prop changes, else the new store never loads.
+  useEffect(() => { if (!store.loaded) void store.load() }, [store])
   const installed = store.installedProviders
 
   return (
