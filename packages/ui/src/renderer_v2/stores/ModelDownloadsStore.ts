@@ -611,7 +611,7 @@ export class ModelDownloadsStore {
         modelName: m.name,
         versions: m.modelVersions.map((v: any) => ({ id: v.id, name: v.name, baseModel: v.baseModel, files: v.files || [] })),
       })) as any
-      const result = r?.result ?? r ?? {}
+      const result = r?.versions ?? r?.result ?? {}
       runInAction(() => { this.civVersionStatus = result })
     } catch {
       runInAction(() => { this.civVersionStatus = {} })
