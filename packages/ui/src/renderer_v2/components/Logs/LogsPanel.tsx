@@ -9,24 +9,43 @@ const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g
 function clean(s: string): string {
   return (s || '').replace(ANSI, '')
 }
-function when(ts?: string | null): string {
-  if (!ts) return ''
-  const d = Date.parse(ts)
-  return d ? new Date(d).toLocaleString() : ''
+function toDate(ts?: number | string | null): Date | null {
+  if (ts == null || ts === '') return null
+  const n = typeof ts === 'number' ? ts : /^\d+$/.test(ts) ? Number(ts) : Date.parse(ts)
+  return Number.isFinite(n) ? new Date(n) : null
+}
+function when(ts?: number | string | null): string {
+  const d = toDate(ts)
+  return d ? d.toLocaleString() : ''
+}
+function daysAgo(ts?: number | string | null): string {
+  const d = toDate(ts)
+  if (!d) return ''
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000)
+  if (days <= 0) return 'today'
+  if (days === 1) return 'yesterday'
+  if (days < 30) return `${days} days ago`
+  const mo = Math.floor(days / 30)
+  return mo < 12 ? `${mo} mo ago` : `${Math.floor(days / 365)} yr ago`
 }
 
 const ServiceRow: React.FC<{ svc: LogService }> = observer(({ svc }) => {
   const sel = store.selectedId === svc.id
+  const stopped = svc.status !== 'running'
+  // bottom row: custom model name → model id → blank
+  const modelName = svc.aliasOverride || svc.model || ''
+  // middle row: port - node - stop reason
+  const mid = [svc.port ? `:${svc.port}` : '', svc.node, stopped ? svc.exitReason : null].filter(Boolean).join(' · ')
   return (
     <button className={`${styles.svcRow} ${sel ? styles.svcSel : ''}`} onClick={() => store.select(svc.id)}>
-      <span className={`${styles.dot} ${svc.status === 'running' ? styles.dotRun : styles.dotStop}`} />
+      <span className={`${styles.dot} ${stopped ? styles.dotStop : styles.dotRun}`} />
       <span className={styles.svcMain}>
         <span className={styles.svcName} title={svc.providerName || svc.id}>{svc.providerName || svc.providerId || svc.id}</span>
-        {svc.model && <span className={styles.svcModel} title={svc.model}>{svc.model}</span>}
-      </span>
-      <span className={styles.svcMeta}>
-        {svc.port ? `:${svc.port}` : ''}{svc.node ? ` · ${svc.node}` : ''}
-        {svc.status !== 'running' && svc.exitReason ? ` · ${svc.exitReason}` : ''}
+        {mid && <span className={styles.svcMid} title={mid}>{mid}</span>}
+        {modelName && <span className={styles.svcModel} title={modelName}>{modelName}</span>}
+        {stopped && svc.stoppedAt != null && (
+          <span className={styles.svcStopped} title={`Last running: ${when(svc.stoppedAt)}`}>last ran {when(svc.stoppedAt).split(',')[0]} · {daysAgo(svc.stoppedAt)}</span>
+        )}
       </span>
     </button>
   )

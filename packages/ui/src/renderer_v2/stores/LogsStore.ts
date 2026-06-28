@@ -11,13 +11,14 @@ export interface LogService {
   providerId?: string
   providerName?: string
   model?: string | null
+  aliasOverride?: string | null // custom model name (preferred display)
   node?: string
   vmid?: number
   port?: number
   status: 'running' | 'stopped'
   exitReason?: string | null
-  startedAt?: string
-  stoppedAt?: string | null
+  startedAt?: number | string
+  stoppedAt?: number | string | null
 }
 
 export class LogsStore {
