@@ -208,6 +208,9 @@ export class LlmLaunchStore {
       for (const [k, a] of Object.entries<any>(t.advancedArgs || {})) s[k] = a.default
     }
     this.settings = s
+    this.selectedSamplerPresetId = ''
+    this.presetKeys = []
+    this.samplerReadOnly = false
     this.scheduleEstimate()
   }
   setSetting(key: string, val: any): void {
@@ -215,22 +218,53 @@ export class LlmLaunchStore {
   }
 
   // ─── sampler presets (llama.cpp / ik_llama.cpp) ───
+  selectedSamplerPresetId = ''
+  samplerReadOnly = false
+  /** The settings keys "in" the current preset — drives the highlight border + which keys get saved. */
+  presetKeys: string[] = []
+
   get supportsSamplerPresets(): boolean {
     return SAMPLER_PRESET_PROVIDERS.has(this.selectedProvider)
   }
   get allSamplerPresets(): any[] {
     return [...(SAMPLER_PRESETS_BUILTIN as any[]), ...this.userSamplerPresets]
   }
+  /** True when the per-setting preset checkboxes/borders should show (provider supports + preset chosen). */
+  get samplerPresetActive(): boolean {
+    return this.supportsSamplerPresets && this.selectedSamplerPresetId !== ''
+  }
+  isPresetKey(key: string): boolean {
+    return this.presetKeys.includes(key)
+  }
+  setSamplerReadOnly(v: boolean): void {
+    this.samplerReadOnly = v
+  }
+  /** Select (not apply) a preset in the dropdown — reveals which keys it owns (checkboxes + borders). */
+  selectSamplerPreset(id: string): void {
+    this.selectedSamplerPresetId = id
+    const p = this.samplerPresetById(id)
+    this.samplerReadOnly = !!p?.readOnly
+    this.presetKeys = p?.values ? Object.keys(p.values) : []
+  }
+  /** Toggle whether a setting key is part of the preset (checkbox next to its label). */
+  togglePresetKey(key: string): void {
+    this.presetKeys = this.presetKeys.includes(key)
+      ? this.presetKeys.filter((k) => k !== key)
+      : [...this.presetKeys, key]
+  }
   /** Apply a preset's values onto the current settings (overwrites only the keys it defines). */
   applySamplerPreset(id: string): void {
     const p = this.allSamplerPresets.find((x) => x.id === id)
     if (!p?.values) return
     this.settings = { ...this.settings, ...p.values }
+    this.presetKeys = Object.keys(p.values) // highlight what the preset changed
   }
-  /** Snapshot the preset-managed keys from current settings (for saving a new preset). */
+  /** Snapshot the values to save — only the keys the user has checked into the preset (presetKeys);
+   *  falls back to the default sampler key set if nothing is explicitly checked. */
   private snapshotSamplerValues(): Record<string, any> {
+    const keys = this.presetKeys.length ? this.presetKeys : SAMPLER_PRESET_KEYS
     const out: Record<string, any> = {}
-    for (const k of SAMPLER_PRESET_KEYS) if (this.settings[k] !== undefined) out[k] = this.settings[k]
+    for (const k of keys) if (this.settings[k] !== undefined) out[k] = this.settings[k]
     return out
   }
   async loadSamplerPresets(): Promise<void> {

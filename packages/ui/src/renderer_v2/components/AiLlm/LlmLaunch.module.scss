@@ -65,3 +65,9 @@
 .samplerRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--control-bg); }
 .samplerSelect { min-width: 260px; flex: 0 1 340px; }
 .roChk { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--fg-muted); cursor: pointer; input { accent-color: var(--accent); } }
+
+/* Per-setting preset checkbox + "in this preset" highlight border */
+.presetChk { accent-color: var(--accent); margin-right: 6px; vertical-align: middle; cursor: pointer; }
+.flagInner { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; input { accent-color: var(--accent); } }
+.inPreset { border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border)); background: color-mix(in srgb, var(--accent) 9%, transparent); border-radius: 7px; padding: 7px 9px; }
+.inPreset .input { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }

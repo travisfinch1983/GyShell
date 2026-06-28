@@ -6,22 +6,40 @@ import styles from './LlmLaunch.module.scss'
 
 const fmtMB = (mb?: number | null) => (mb == null ? '' : mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : Math.ceil(mb) + ' MB')
 
+/** Small checkbox before a setting label — toggles whether the setting is saved with the preset.
+ *  Only shown when a sampler preset is active. */
+const PresetChk: React.FC<{ k: string }> = observer(({ k }) =>
+  store.samplerPresetActive ? (
+    <input
+      type="checkbox"
+      className={styles.presetChk}
+      checked={store.isPresetKey(k)}
+      title="Include this setting in the selected preset"
+      onChange={() => store.togglePresetKey(k)}
+    />
+  ) : null,
+)
+
 /** One settings field rendered from a LAUNCH_TEMPLATES arg definition. */
 const SettingField: React.FC<{ k: string; arg: any }> = observer(({ k, arg }) => {
   const val = store.settings[k] ?? arg.default
   const label = arg.label || k
   const common = { title: arg.tooltip || '' }
+  const inPreset = store.samplerPresetActive && store.isPresetKey(k)
   if (arg.type === 'flag') {
     return (
-      <label className={styles.fieldFlag} {...common}>
-        <input type="checkbox" checked={!!val} onChange={(e) => store.setSetting(k, e.target.checked)} />
-        <span>{label}</span>
-      </label>
+      <div className={`${styles.fieldFlag} ${inPreset ? styles.inPreset : ''}`}>
+        <PresetChk k={k} />
+        <label className={styles.flagInner} {...common}>
+          <input type="checkbox" checked={!!val} onChange={(e) => store.setSetting(k, e.target.checked)} />
+          <span>{label}</span>
+        </label>
+      </div>
     )
   }
   return (
-    <label className={styles.field} {...common}>
-      <span className={styles.fieldLabel}>{label}</span>
+    <div className={`${styles.field} ${inPreset ? styles.inPreset : ''}`} {...common}>
+      <span className={styles.fieldLabel}><PresetChk k={k} />{label}</span>
       {arg.type === 'select' ? (
         <select className={styles.input} value={String(val ?? '')} onChange={(e) => store.setSetting(k, e.target.value)}>
           {(arg.options || []).map((o: string) => (
@@ -36,16 +54,14 @@ const SettingField: React.FC<{ k: string; arg: any }> = observer(({ k, arg }) =>
           min={arg.min}
           max={arg.max}
           value={val ?? ''}
-          onChange={(e) => store.setSetting(k, arg.type === 'number' ? e.target.value : e.target.value)}
+          onChange={(e) => store.setSetting(k, e.target.value)}
         />
       )}
-    </label>
+    </div>
   )
 })
 
 export const LlmLaunchPanel: React.FC = observer(() => {
-  const [samplerSel, setSamplerSel] = React.useState('')
-  const [samplerRO, setSamplerRO] = React.useState(false)
   React.useEffect(() => {
     if (!store.models) void store.load()
   }, [])
@@ -144,8 +160,8 @@ export const LlmLaunchPanel: React.FC = observer(() => {
                 <span className={styles.fieldLabel}>Sampler preset</span>
                 <select
                   className={`${styles.input} ${styles.samplerSelect}`}
-                  value={samplerSel}
-                  onChange={(e) => { const id = e.target.value; setSamplerSel(id); setSamplerRO(!!store.samplerPresetById(id)?.readOnly) }}
+                  value={store.selectedSamplerPresetId}
+                  onChange={(e) => store.selectSamplerPreset(e.target.value)}
                 >
                   <option value="">— select a preset —</option>
                   <optgroup label="Built-in">
@@ -157,23 +173,23 @@ export const LlmLaunchPanel: React.FC = observer(() => {
                     </optgroup>
                   )}
                 </select>
-                <button className={styles.scanBtn} disabled={!samplerSel} onClick={() => store.applySamplerPreset(samplerSel)}>Apply</button>
+                <button className={styles.scanBtn} disabled={!store.selectedSamplerPresetId} onClick={() => store.applySamplerPreset(store.selectedSamplerPresetId)}>Apply</button>
                 <button
                   className={styles.scanBtn}
-                  disabled={!samplerSel}
-                  title="Overwrite the selected preset with the current settings. Built-in presets are read-only — they fork into a (custom) copy."
-                  onClick={async () => { const id = await store.updateSamplerPreset(samplerSel, samplerRO); if (id) setSamplerSel(id) }}
+                  disabled={!store.selectedSamplerPresetId}
+                  title="Overwrite the selected preset with the current settings (only the checked settings). Built-in presets are read-only — they fork into a (custom) copy."
+                  onClick={async () => { const id = await store.updateSamplerPreset(store.selectedSamplerPresetId, store.samplerReadOnly); if (id) store.selectSamplerPreset(id) }}
                 >Update</button>
                 <button
                   className={styles.scanBtn}
-                  title="Save the current sampler settings as a new preset"
-                  onClick={async () => { const n = window.prompt('Name for this preset:'); if (n) { const id = await store.saveSamplerPreset(n, samplerRO); if (id) setSamplerSel(id) } }}
+                  title="Save the checked settings as a new preset"
+                  onClick={async () => { const n = window.prompt('Name for this preset:'); if (n) { const id = await store.saveSamplerPreset(n, store.samplerReadOnly); if (id) store.selectSamplerPreset(id) } }}
                 >Save As…</button>
                 <label className={styles.roChk} title="When checked, the preset is protected — it can't be overwritten in place, only copied.">
-                  <input type="checkbox" checked={samplerRO} onChange={(e) => setSamplerRO(e.target.checked)} /> Read Only
+                  <input type="checkbox" checked={store.samplerReadOnly} onChange={(e) => store.setSamplerReadOnly(e.target.checked)} /> Read Only
                 </label>
-                {samplerSel && !samplerSel.startsWith('builtin-') && (
-                  <button className={styles.scanBtn} onClick={async () => { await store.deleteSamplerPreset(samplerSel); setSamplerSel(''); setSamplerRO(false) }}>Delete</button>
+                {store.selectedSamplerPresetId && !store.selectedSamplerPresetId.startsWith('builtin-') && (
+                  <button className={styles.scanBtn} onClick={async () => { const id = store.selectedSamplerPresetId; await store.deleteSamplerPreset(id); store.selectSamplerPreset('') }}>Delete</button>
                 )}
               </div>
             )}
