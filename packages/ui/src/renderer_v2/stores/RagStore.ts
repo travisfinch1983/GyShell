@@ -11,6 +11,7 @@ export class RagStore {
   loaded = false
   err = ''
   form = { url: '', collection: '', description: '', branch: '' }
+  private collectionTouched = false
   private timer: any = null
   private wasActive = false
 
@@ -46,7 +47,24 @@ export class RagStore {
     void this.refreshStatus()
   }
 
-  setForm(k: string, v: string): void { this.form = { ...this.form, [k]: v } }
+  setForm(k: string, v: string): void {
+    if (k === 'collection') {
+      // Once the user types a collection name, stop auto-deriving from the URL (clearing re-enables it).
+      this.collectionTouched = v.trim() !== ''
+      this.form = { ...this.form, collection: v }
+      return
+    }
+    if (k === 'url') {
+      const next = { ...this.form, url: v }
+      if (!this.collectionTouched) {
+        const m = v.trim().match(/\/([^/]+?)(?:\.git)?$/)
+        if (m) next.collection = m[1].toLowerCase().replace(/[^a-z0-9-]/g, '-')
+      }
+      this.form = next
+      return
+    }
+    this.form = { ...this.form, [k]: v }
+  }
 
   async refreshStatus(): Promise<void> {
     const s = await bridge().request('GET', '/api/ai/rag/index/status').catch(() => null)

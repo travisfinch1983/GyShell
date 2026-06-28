@@ -73,7 +73,7 @@ export const CodebaseRagPanel: React.FC = observer(() => {
         </div>
         {store.collections.length === 0 ? <div className={styles.muted}>No codebase collections indexed yet.</div> : (
           <table className={styles.ragTable}>
-            <thead><tr><th>Name</th><th>Repository</th><th>Files</th><th>Chunks</th><th>Languages</th><th>Indexed</th><th /></tr></thead>
+            <thead><tr><th>Name</th><th>Repository</th><th>Files</th><th>Chunks</th><th>Languages</th><th>Indexed</th><th>Last Check</th><th /></tr></thead>
             <tbody>
               {store.collections.map((c) => (
                 <tr key={c.name}>
@@ -83,6 +83,7 @@ export const CodebaseRagPanel: React.FC = observer(() => {
                   <td>{c.chunks_created || 0}</td>
                   <td className={styles.dim}>{langs(c.languages)}</td>
                   <td className={styles.dim}>{when(c.indexed_at)}</td>
+                  <td className={styles.dim}>{when(c.last_checked)}</td>
                   <td className={styles.rowActions}>
                     <button className={styles.iconBtn} title="Update (re-index)" disabled={st.active} onClick={() => void store.updateCollection(c)}><RotateCw size={13} /></button>
                     <button className={styles.iconDanger} title="Delete" onClick={() => { if (window.confirm(`Delete collection "${c.display_name || c.name}"? Removes it from all vector DBs.`)) void store.deleteCollection(c.name) }}><Trash2 size={13} /></button>
