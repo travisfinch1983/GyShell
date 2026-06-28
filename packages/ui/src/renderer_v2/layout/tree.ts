@@ -160,7 +160,9 @@ const parsePersistedV2 = (raw: unknown): LayoutTree | null => {
 }
 
 const createLegacyRoot = (order: string[] | undefined, sizes: number[] | undefined): LayoutNode => {
-  const panelOrder = Array.isArray(order) && order.length > 0 ? order : ['chat', 'terminal']
+  // Default workspace is a single terminal pane — the chat moved to the global sidebar overlay, so we
+  // no longer seed a (defunct) chat panel. (Live consoles have their own primary tab.)
+  const panelOrder = Array.isArray(order) && order.length > 0 ? order : ['terminal']
   const nodes = panelOrder.map((panelName) => {
     const kind: PanelKind =
       panelName === 'chat'
