@@ -300,7 +300,7 @@ export const App: React.FC = observer(() => {
         }}
       />
 
-      <TopBar store={store} />
+      <TopBar store={store} servicesOpen={servicesDrawerOpen} onServicesToggle={toggleServicesDrawer} />
 
       <div className="gyshell-body">
         <PrimarySidebar
@@ -320,8 +320,6 @@ export const App: React.FC = observer(() => {
             appStore={store}
             chatOpen={chatOpen}
             onChatToggle={toggleChat}
-            servicesOpen={servicesDrawerOpen}
-            onServicesToggle={toggleServicesDrawer}
           />
         </div>
 
