@@ -472,7 +472,8 @@ const createRuntime = (
 
   const onContextMenuAction = (data: {
     id: string;
-    action: "copy" | "paste";
+    action: "copy" | "replace" | "paste";
+    payload?: string;
   }) => {
     if (data.id !== runtime.contextMenuId) return;
     if (data.action === "copy") {
