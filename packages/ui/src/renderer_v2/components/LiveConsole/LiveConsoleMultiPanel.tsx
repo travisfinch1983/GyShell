@@ -69,13 +69,15 @@ export const LiveConsoleMultiPanel: React.FC = observer(() => {
   return (
     <div className={styles.multiContainer}>
       <div className={styles.tabbar}>
-        {sessions.map((s) => (
-          <div key={s.id} className={`${styles.tab} ${activeId === s.id ? styles.tabActive : ''}`} onClick={() => store.setActive(s.id)} title={s.label}>
-            <span className={`${styles.tabDot} ${s.kind === 'install' ? styles.dotInstall : styles.dotService}`} />
-            <span className={styles.tabLabel}>{s.label}</span>
-            <button className={styles.tabClose} title="Close" onClick={(e) => { e.stopPropagation(); store.close(s.id) }}><X size={11} /></button>
-          </div>
-        ))}
+        <div className={styles.tabScroll}>
+          {sessions.map((s) => (
+            <div key={s.id} className={`${styles.tab} ${activeId === s.id ? styles.tabActive : ''}`} onClick={() => store.setActive(s.id)} title={s.label}>
+              <span className={`${styles.tabDot} ${s.kind === 'install' ? styles.dotInstall : styles.dotService}`} />
+              <span className={styles.tabLabel}>{s.label}</span>
+              <button className={styles.tabClose} title="Close" onClick={(e) => { e.stopPropagation(); store.close(s.id) }}><X size={11} /></button>
+            </div>
+          ))}
+        </div>
         <div className={styles.addWrap}>
           <button className={styles.addBtn} title="Open a service console" onClick={openPicker}><Plus size={14} /></button>
           {pickerOpen && (

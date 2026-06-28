@@ -14,7 +14,8 @@
 
 /* ── multi-tab console (embedded in the pane) ── */
 .multiContainer { display: flex; flex-direction: column; position: absolute; inset: 0; background: var(--app-bg); overflow: hidden; }
-.tabbar { display: flex; align-items: stretch; gap: 2px; padding: 4px 6px; border-bottom: 1px solid var(--border); background: var(--panel-bg-2); flex: 0 0 auto; overflow-x: auto; }
+.tabbar { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-bottom: 1px solid var(--border); background: var(--panel-bg-2); flex: 0 0 auto; }
+.tabScroll { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; }
 .tab { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 4px 8px; border: 1px solid transparent; border-radius: 6px; background: var(--control-bg); color: var(--fg-muted); cursor: pointer; font-size: 12px; white-space: nowrap; &:hover { color: var(--fg); } }
 .tabActive { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); color: var(--fg); }
 .tabDot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
