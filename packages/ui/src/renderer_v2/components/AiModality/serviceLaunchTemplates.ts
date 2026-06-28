@@ -1,4 +1,4 @@
-// Ported verbatim from ProxLab public/js/modules/ai.js — TTS + Imagegen launch templates.
+// Ported verbatim from ProxLab public/js/modules/ai.js — TTS + Imagegen/Training launch templates.
 /* eslint-disable */
 // @ts-nocheck
 export const TTS_LAUNCH_TEMPLATES: Record<string, any> = {
@@ -206,7 +206,9 @@ export const TTS_LAUNCH_TEMPLATES: Record<string, any> = {
     },
 }
 
-export const IMAGE_LAUNCH_TEMPLATES: Record<string, any> = {
+// Image-gen + LoRA-training launch templates (ProxLab GENERIC_LAUNCH_TEMPLATES).
+export const GENERIC_LAUNCH_TEMPLATES: Record<string, any> = {
+    // Image Generation
     comfyui: {
       defaultPort: 8188,
       multiGpu: true,
@@ -337,26 +339,85 @@ export const IMAGE_LAUNCH_TEMPLATES: Record<string, any> = {
     // Training — expandable_segments helps especially here: gradient buffers
     // + activation checkpoints + variable batch shapes between fwd/bwd cycles
     // are exactly the workload pattern the new allocator targets.
+    fluxgym: {
+      defaultPort: 7860,
+      multiGpu: false,
+      buildCommand(port) {
+        return [
+          'export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
+          'cd /opt/fluxgym &&',
+          `/opt/conda/envs/fluxgym/bin/python app.py \\`,
+          `  --server-name 0.0.0.0 --server-port ${port}`,
+        ].join('\n');
+      },
+    },
+    'kohya-ss': {
+      defaultPort: 7860,
+      multiGpu: true,
+      buildCommand(port) {
+        return [
+          'export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
+          'cd /opt/kohya-ss &&',
+          `/opt/conda/envs/kohya-ss/bin/python kohya_gui.py \\`,
+          `  --listen 0.0.0.0 --server_port ${port}`,
+        ].join('\n');
+      },
+    },
+    simpletuner: {
+      defaultPort: null,
+      multiGpu: true,
+      buildCommand(port, opts) {
+        const configName = (opts && opts.configName) || 'default';
+        return [
+          'export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
+          'cd /opt/simpletuner &&',
+          `/opt/conda/envs/simpletuner/bin/python -m simpletuner train \\`,
+          `  --env /opt/simpletuner/configs/${configName}.json`,
+        ].join('\n');
+      },
+    },
+    onetrainer: {
+      defaultPort: null,
+      multiGpu: true,
+      buildCommand(port, opts) {
+        const configName = (opts && opts.configName) || 'default';
+        return [
+          'export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
+          'cd /opt/onetrainer &&',
+          `/opt/conda/envs/onetrainer/bin/python scripts/train.py \\`,
+          `  --config-path /opt/onetrainer/training_configs/${configName}.json`,
+        ].join('\n');
+      },
+    },
+    'ai-toolkit': {
+      defaultPort: null,
+      multiGpu: false,
+      buildCommand(port, opts) {
+        const configName = (opts && opts.configName) || 'train';
+        return [
+          'export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
+          'cd /opt/ai-toolkit &&',
+          `/opt/conda/envs/ai-toolkit/bin/python run.py \\`,
+          `  config/user/${configName}.yaml`,
+        ].join('\n');
+      },
+    },
 }
 
-// ─── Command builders (ported verbatim from ProxLab) ───
+// ─── Command builders (ported from ProxLab, opts-aware for training configName) ───
 export function buildTtsLaunchCommand(providerId, port, model, gpuIndex, backend) {
   const template = TTS_LAUNCH_TEMPLATES[providerId]
   if (!template || !template.buildCommand) return ''
   const cmd = template.buildCommand(port, model || template.defaultModel, gpuIndex, backend || template.defaultBackend)
   const envLines = ['export CUDA_DEVICE_ORDER=PCI_BUS_ID']
-  if (gpuIndex !== undefined && gpuIndex !== null && gpuIndex !== 'auto') {
-    envLines.push(`export CUDA_VISIBLE_DEVICES=${gpuIndex}`)
-  }
+  if (gpuIndex !== undefined && gpuIndex !== null && gpuIndex !== 'auto') envLines.push(`export CUDA_VISIBLE_DEVICES=${gpuIndex}`)
   return envLines.join('\n') + '\n' + cmd
 }
-export function buildGenericLaunchCommand(providerId, port, gpuIndices) {
-  const template = IMAGE_LAUNCH_TEMPLATES[providerId]
+export function buildGenericLaunchCommand(providerId, port, gpuIndices, opts) {
+  const template = GENERIC_LAUNCH_TEMPLATES[providerId]
   if (!template || !template.buildCommand) return ''
-  const cmd = template.buildCommand(port || template.defaultPort)
+  const cmd = template.buildCommand(port || template.defaultPort, opts || {})
   const envLines = ['export CUDA_DEVICE_ORDER=PCI_BUS_ID']
-  if (gpuIndices && gpuIndices !== 'auto') {
-    envLines.push(`export CUDA_VISIBLE_DEVICES=${gpuIndices}`)
-  }
+  if (gpuIndices && gpuIndices !== 'auto') envLines.push(`export CUDA_VISIBLE_DEVICES=${gpuIndices}`)
   return envLines.join('\n') + '\n' + cmd
 }

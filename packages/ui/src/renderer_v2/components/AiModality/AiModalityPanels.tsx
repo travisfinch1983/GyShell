@@ -4,7 +4,7 @@ import { PackagePlus, BrainCircuit, Image as ImageIcon, AudioLines } from 'lucid
 import { ProviderInstall } from './ProviderInstall'
 import { LlmLaunchPanel } from '../AiLlm/LlmLaunchPanel'
 import { ServiceLaunchPanel } from './ServiceLaunchPanel'
-import { ttsLaunchStore, imageLaunchStore } from '../../stores/ServiceLaunchStore'
+import { ttsLaunchStore, imageLaunchStore, trainingLaunchStore } from '../../stores/ServiceLaunchStore'
 import styles from './AiModality.module.scss'
 
 interface SubTab {
@@ -43,6 +43,7 @@ export const AiLlmPanel: React.FC = observer(() => (
 export const AiImagePanel: React.FC = observer(() => (
   <Shell title="AI · Image Gen" Icon={ImageIcon} tabs={[
     { id: 'launch', label: 'Imagegen Launch', render: () => <ServiceLaunchPanel store={imageLaunchStore} emptyLabel="image-generation" /> },
+    { id: 'training', label: 'Training Launch', render: () => <ServiceLaunchPanel store={trainingLaunchStore} emptyLabel="training" /> },
     { id: 'providers', label: 'Provider Install', render: () => <ProviderInstall categories={['image', 'training']} /> },
   ]} />
 ))
