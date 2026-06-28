@@ -37,6 +37,12 @@ export const ModelCacherPanel: React.FC = observer(() => {
       {store.err && <div className={styles.error}>{store.err}</div>}
       {store.msg && <div className={styles.ok}>{store.msg}</div>}
 
+      {/* Per-node cache config */}
+      <div className={styles.ragCard}>
+        <div className={styles.head}><h4 className={styles.h4}>Node Cache Config</h4><span className={styles.spacer} /><button className={styles.btn} onClick={() => void store.load()}><RefreshCw size={13} /> Refresh</button></div>
+        {store.nodes.map((n) => <NodeConfigRow key={n} node={n} />)}
+      </div>
+
       {/* RAM-drive capacity (detected live via df) */}
       <div className={styles.ragCard}>
         <div className={styles.head}><h4 className={styles.h4}>RAM Drive Capacity</h4><span className={styles.spacer} /><button className={styles.btn} onClick={() => void store.refreshList()}><RefreshCw size={13} /> Refresh</button></div>
