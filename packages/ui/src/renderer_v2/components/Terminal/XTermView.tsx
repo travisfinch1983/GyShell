@@ -45,6 +45,41 @@ import {
   type TerminalSystemInfoLike,
 } from "./terminalWindowsPty";
 
+/**
+ * Copy text to the clipboard with a fallback for non-secure contexts. AI-Lab is served over plain
+ * HTTP on a LAN IP, where `navigator.clipboard` is unavailable/blocked — so fall back to a hidden
+ * textarea + document.execCommand('copy'), which works without a secure context.
+ */
+function copyTextToClipboard(text: string): void {
+  if (!text) return;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+      return;
+    }
+  } catch {
+    /* fall through */
+  }
+  fallbackCopy(text);
+}
+
+function fallbackCopy(text: string): void {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+  } catch {
+    /* nothing else we can do */
+  }
+}
+
 const SCROLLBAR_HIDE_DELAY = 2000; // ms
 const RUNTIME_RELEASE_DELAY = 4000; // ms
 const COMMAND_DRAFT_SPINNER_FRAMES = ["|", "/", "-", "\\"];
@@ -361,9 +396,7 @@ const createRuntime = (
     const selectionText = term.getSelection();
     runtime.selectionHandler?.(selectionText);
     if (selectionText && runtime.settings?.copyOnSelect) {
-      navigator.clipboard.writeText(selectionText).catch(() => {
-        // ignore
-      });
+      copyTextToClipboard(selectionText);
     }
   });
 
@@ -375,14 +408,8 @@ const createRuntime = (
     const selectionText = term.getSelection();
     if (selectionText) {
       event.preventDefault();
-      navigator.clipboard
-        .writeText(selectionText)
-        .then(() => {
-          term.paste(selectionText);
-        })
-        .catch(() => {
-          term.paste(selectionText);
-        });
+      copyTextToClipboard(selectionText);
+      term.paste(selectionText);
     }
   };
 
@@ -415,6 +442,9 @@ const createRuntime = (
     });
   };
 
+  // The selection captured when the context menu was opened. Opening/clicking the menu can blur the
+  // terminal and clear xterm's live selection, so we must snapshot it here and copy THAT, not re-read.
+  let lastContextMenuSelection = "";
   const handleContextMenu = (event: MouseEvent) => {
     if (runtime.settings?.rightClickToPaste) {
       event.preventDefault();
@@ -430,6 +460,7 @@ const createRuntime = (
     }
     event.preventDefault();
     const selectionText = term.getSelection();
+    lastContextMenuSelection = selectionText;
     window.gyshell.ui.showContextMenu({
       id: runtime.contextMenuId,
       canCopy: selectionText.trim().length > 0,
@@ -445,25 +476,17 @@ const createRuntime = (
   }) => {
     if (data.id !== runtime.contextMenuId) return;
     if (data.action === "copy") {
-      const selectionText = term.getSelection();
+      const selectionText = lastContextMenuSelection || term.getSelection();
       if (selectionText) {
-        navigator.clipboard.writeText(selectionText).catch(() => {
-          // ignore
-        });
+        copyTextToClipboard(selectionText);
       }
       return;
     }
     if (data.action === "paste") {
-      const selectionText = term.getSelection();
+      const selectionText = lastContextMenuSelection || term.getSelection();
       if (selectionText) {
-        navigator.clipboard
-          .writeText(selectionText)
-          .then(() => {
-            term.paste(selectionText);
-          })
-          .catch(() => {
-            term.paste(selectionText);
-          });
+        copyTextToClipboard(selectionText);
+        term.paste(selectionText);
         return;
       }
       navigator.clipboard

@@ -336,6 +336,7 @@ export class AppStore {
       deleteSshConnection: action,
       closeTab: action,
       setActiveTerminal: action,
+      reorderTerminalTabs: action,
       setTerminalSelection: action,
       setFileSystemClipboard: action,
       clearFileSystemClipboard: action,
@@ -3075,6 +3076,15 @@ export class AppStore {
 
   setActiveTerminal(id: string): void {
     this.activeTerminalId = id
+  }
+
+  /** Reorder terminalTabs to match the given id order (drag-to-reorder in the tab bar). */
+  reorderTerminalTabs(orderedIds: string[]): void {
+    const byId = new Map(this.terminalTabs.map((t) => [t.id, t]))
+    const next = orderedIds.map((id) => byId.get(id)).filter((t): t is TerminalTabModel => !!t)
+    // keep any tabs not present in orderedIds (defensive) appended in their current order
+    for (const t of this.terminalTabs) if (!orderedIds.includes(t.id)) next.push(t)
+    if (next.length === this.terminalTabs.length) this.terminalTabs = next
   }
 
   getPreferredLocalTerminalId(): string | null {

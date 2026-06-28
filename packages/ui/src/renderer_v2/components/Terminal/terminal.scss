@@ -290,3 +290,30 @@
 .terminal-layer.is-active {
   display: block;
 }
+
+/* Tab-bar overflow scrolling (arrows appear when tabs overflow) */
+.terminal-tabs-bar-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  height: var(--panel-tab-header-height);
+}
+.terminal-tabs-bar-wrap .terminal-tabs-bar { flex: 1; }
+/* keep tabs at natural width so they overflow (and can be scrolled) instead of shrinking away */
+.terminal-tabs-bar-wrap .tab { flex: 0 0 auto; }
+.tab-scroll-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: var(--panel-tab-header-height);
+  border: none;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  color: var(--fg-muted);
+  cursor: pointer;
+  &:hover { color: var(--fg); background: color-mix(in srgb, var(--fg) 13%, transparent); }
+}
+.tab-scroll-left { border-right: 1px solid var(--border); }
+.tab-scroll-right { border-left: 1px solid var(--border); }

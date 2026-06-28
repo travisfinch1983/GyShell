@@ -29,6 +29,7 @@ export const TerminalWorkspace: React.FC<{ store: AppStore }> = observer(({ stor
           activeTabId={activeTabId}
           onSelectTab={(id) => store.setActiveTerminal(id)}
           onRequestCloseTabs={(ids) => ids.forEach((id) => void store.closeTab(id))}
+          onReorderTabs={(ids) => store.reorderTerminalTabs(ids)}
         />
       </Panel>
       <PanelResizeHandle className={styles.handle} />

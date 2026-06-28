@@ -1,6 +1,8 @@
 import React from "react";
 import { createPortal } from "react-dom";
 import {
+  ChevronLeft,
+  ChevronRight,
   GripVertical,
   Laptop,
   MoreVertical,
@@ -36,6 +38,7 @@ interface TerminalPanelProps {
   activeTabId: string | null;
   onSelectTab: (tabId: string) => void;
   onRequestCloseTabs?: (tabIds: string[]) => void;
+  onReorderTabs?: (orderedIds: string[]) => void;
   onLayoutHeaderContextMenu?: (event: React.MouseEvent<HTMLElement>) => void;
 }
 
@@ -47,6 +50,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = observer(
     activeTabId,
     onSelectTab,
     onRequestCloseTabs,
+    onReorderTabs,
     onLayoutHeaderContextMenu,
   }) => {
     const [openMenu, setOpenMenu] = React.useState<"add" | "more" | null>(null);
@@ -69,6 +73,29 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = observer(
     const addMenuRef = React.useRef<HTMLDivElement | null>(null);
     const moreMenuButtonRef = React.useRef<HTMLButtonElement | null>(null);
     const moreMenuRef = React.useRef<HTMLDivElement | null>(null);
+    // Tab strip horizontal scrolling (arrows appear when tabs overflow) + drag-to-reorder
+    const tabBarRef = React.useRef<HTMLDivElement | null>(null);
+    const dragTabIdRef = React.useRef<string | null>(null);
+    const [tabScroll, setTabScroll] = React.useState<{ left: boolean; right: boolean }>({ left: false, right: false });
+    const updateTabScroll = React.useCallback(() => {
+      const el = tabBarRef.current;
+      if (!el) return;
+      const left = el.scrollLeft > 1;
+      const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+      setTabScroll((prev) => (prev.left === left && prev.right === right ? prev : { left, right }));
+    }, []);
+    const scrollTabs = (dir: number) => {
+      tabBarRef.current?.scrollBy({ left: dir * 220, behavior: "smooth" });
+    };
+    const reorderTabs = (fromId: string, toId: string) => {
+      if (!onReorderTabs || fromId === toId) return;
+      const ids = tabs.map((t) => t.id);
+      const from = ids.indexOf(fromId);
+      const to = ids.indexOf(toId);
+      if (from < 0 || to < 0) return;
+      ids.splice(to, 0, ids.splice(from, 1)[0]);
+      onReorderTabs(ids);
+    };
     const [menuStyle, setMenuStyle] = React.useState<
       React.CSSProperties | undefined
     >(undefined);
@@ -85,6 +112,17 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = observer(
     );
     const activeTab =
       tabs.find((tab) => tab.id === activeTabId) || tabs[0] || null;
+    // Recompute tab-overflow (scroll arrows) when tab count, mode, or pane size changes.
+    React.useEffect(() => {
+      updateTabScroll();
+    }, [tabs.length, tabBarMode, layoutSignature, updateTabScroll]);
+    React.useEffect(() => {
+      const el = tabBarRef.current;
+      if (!el || typeof ResizeObserver === "undefined") return;
+      const ro = new ResizeObserver(() => updateTabScroll());
+      ro.observe(el);
+      return () => ro.disconnect();
+    }, [updateTabScroll, tabBarMode]);
     const activeSearchHandle = activeTab
       ? terminalViewRefs.current[activeTab.id] || null
       : null;
@@ -361,12 +399,24 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = observer(
               }
             />
           ) : (
-            <div
-              className="terminal-tabs-bar"
-              data-layout-tab-bar="true"
-              data-layout-tab-panel-id={panelId}
-              data-layout-tab-kind="terminal"
-            >
+            <div className="terminal-tabs-bar-wrap">
+              {tabScroll.left && (
+                <button
+                  className="tab-scroll-btn tab-scroll-left"
+                  title="Scroll tabs left"
+                  onClick={() => scrollTabs(-1)}
+                >
+                  <ChevronLeft size={15} strokeWidth={2.2} />
+                </button>
+              )}
+              <div
+                className="terminal-tabs-bar"
+                ref={tabBarRef}
+                onScroll={updateTabScroll}
+                data-layout-tab-bar="true"
+                data-layout-tab-panel-id={panelId}
+                data-layout-tab-kind="terminal"
+              >
               {tabs.map((tab, index) => {
                 const isActive = tab.id === activeTabId;
                 const runtimeState = tab.runtimeState || "initializing";
@@ -386,7 +436,32 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = observer(
                     role="button"
                     tabIndex={0}
                     draggable
-                    data-layout-tab-draggable="true"
+                    onDragStart={(e) => {
+                      dragTabIdRef.current = tab.id;
+                      e.stopPropagation();
+                      try {
+                        e.dataTransfer.effectAllowed = "move";
+                        e.dataTransfer.setData("text/plain", tab.id);
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                    onDragOver={(e) => {
+                      if (dragTabIdRef.current && dragTabIdRef.current !== tab.id) {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "move";
+                      }
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const from = dragTabIdRef.current;
+                      dragTabIdRef.current = null;
+                      if (from) reorderTabs(from, tab.id);
+                    }}
+                    onDragEnd={() => {
+                      dragTabIdRef.current = null;
+                    }}
                     data-layout-tab-id={tab.id}
                     data-layout-tab-kind="terminal"
                     data-layout-tab-panel-id={panelId}
@@ -417,6 +492,16 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = observer(
                   </div>
                 );
               })}
+              </div>
+              {tabScroll.right && (
+                <button
+                  className="tab-scroll-btn tab-scroll-right"
+                  title="Scroll tabs right"
+                  onClick={() => scrollTabs(1)}
+                >
+                  <ChevronRight size={15} strokeWidth={2.2} />
+                </button>
+              )}
             </div>
           )}
 
