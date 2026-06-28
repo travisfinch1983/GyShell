@@ -361,15 +361,19 @@ const ReviewBrowser: React.FC = observer(() => {
 
           <div className={styles.revVersions}>
             {store.civVersions.map((ver: any) => {
-              const owned = store.isVersionOwned(ver.id)
+              const state = store.versionDiskState(ver.id)
+              const cls = state === 'all' ? styles.revVerOwned : state === 'partial' ? styles.revVerPartial : state === 'history' ? styles.revVerHistory : ''
+              const title = state === 'all' ? 'All files present on disk' : state === 'partial' ? 'Some files present on disk (incomplete)' : state === 'history' ? 'In download history (files not found on disk)' : ''
               return (
-                <button key={ver.id} className={`${styles.revVerBtn} ${ver.id === store.civSelVersionId ? styles.revVerActive : ''} ${owned ? styles.revVerOwned : ''}`} onClick={() => store.selectVersion(ver.id)} title={owned ? 'Already in your download history' : ''}>
-                  {owned && <Check size={11} />}{ver.name}{ver.baseModel ? <span className={styles.revBase}>{ver.baseModel}</span> : null}
+                <button key={ver.id} className={`${styles.revVerBtn} ${ver.id === store.civSelVersionId ? styles.revVerActive : ''} ${cls}`} onClick={() => store.selectVersion(ver.id)} title={title}>
+                  {state === 'all' && <Check size={11} />}{state === 'partial' && '◐ '}{ver.name}{ver.baseModel ? <span className={styles.revBase}>{ver.baseModel}</span> : null}
                 </button>
               )
             })}
           </div>
-          {store.ownedVersionIds.size > 0 && <div className={styles.note}><Check size={11} /> green = already downloaded</div>}
+          {store.civVersions.some((v: any) => store.versionDiskState(v.id) !== 'none') && (
+            <div className={styles.note}><Check size={11} /> green = on disk · ◐ amber = partial · dim green = in history only</div>
+          )}
 
           {v && (
             <>

@@ -76,6 +76,7 @@ export class ModelDownloadsStore {
   civQueue: any[] = [] // /api/civitai/queue — items sent from the browser extension's "Review" button
   civQueueItemId: string | null = null // the queue item currently loaded into the browser
   civQueueIndex = 0 // position in the review queue (navigated with prev/next arrows)
+  civVersionStatus: Record<string, any> = {} // versionId → {inHistory, allExist, someExist, noneExist} from /check-existing (on-disk)
 
   // history (immutable download records)
   hfHistory: any[] = []
@@ -587,7 +588,34 @@ export class ModelDownloadsStore {
     return set
   }
   isVersionOwned(vid: number | string): boolean {
-    return this.ownedVersionIds.has(String(vid))
+    if (this.ownedVersionIds.has(String(vid))) return true
+    const st = this.civVersionStatus[String(vid)]
+    return !!(st && (st.allExist || st.inHistory))
+  }
+  /** On-disk presence state for a version pill: 'all' | 'partial' | 'history' | 'none'. */
+  versionDiskState(vid: number | string): 'all' | 'partial' | 'history' | 'none' {
+    const st = this.civVersionStatus[String(vid)]
+    if (st?.allExist) return 'all'
+    if (st?.someExist) return 'partial'
+    if (st?.inHistory || this.ownedVersionIds.has(String(vid))) return 'history'
+    return 'none'
+  }
+  /** Ask the native router which versions already exist on disk (checks /ai-assets via resolveTargetPath). */
+  async checkVersionsOnDisk(): Promise<void> {
+    const m = this.civModel
+    if (!m?.id || !Array.isArray(m.modelVersions)) return
+    try {
+      const r = (await this.cluster().request('POST', '/api/civitai/check-existing', {
+        modelId: String(m.id),
+        modelType: m.type,
+        modelName: m.name,
+        versions: m.modelVersions.map((v: any) => ({ id: v.id, name: v.name, baseModel: v.baseModel, files: v.files || [] })),
+      })) as any
+      const result = r?.result ?? r ?? {}
+      runInAction(() => { this.civVersionStatus = result })
+    } catch {
+      runInAction(() => { this.civVersionStatus = {} })
+    }
   }
   async reviewLoad(input?: string): Promise<void> {
     const parsed = this.parseModelId(input ?? this.civUrl)
@@ -602,6 +630,7 @@ export class ModelDownloadsStore {
       const model = await api.model(parsed.modelId)
       runInAction(() => {
         this.civModel = model
+        this.civVersionStatus = {}
         this.civMode = 'review'
         const versions = model?.modelVersions ?? []
         const v = (parsed.versionId && versions.find((x: any) => String(x.id) === parsed.versionId)) || versions[0]
@@ -609,6 +638,7 @@ export class ModelDownloadsStore {
         this.civSelFiles = new Set((v?.files ?? []).map((f: any) => f.name))
       })
       await this.resolveReviewPath()
+      void this.checkVersionsOnDisk()
     } catch (e) {
       runInAction(() => { this.civModelError = e instanceof Error ? e.message : String(e) })
     } finally {
@@ -647,6 +677,7 @@ export class ModelDownloadsStore {
     }
     runInAction(() => {
       this.civModel = model
+      this.civVersionStatus = {}
       this.civQueueItemId = item.id
       this.civReviewUserDefined = ''
       this.civReviewFnOverride = ''
@@ -656,6 +687,7 @@ export class ModelDownloadsStore {
       this.civSelFiles = new Set((v?.files ?? []).map((f: any) => f.name))
     })
     void this.resolveReviewPath()
+    void this.checkVersionsOnDisk()
   }
   /** Navigate the review queue (delta = -1 / +1). */
   queueNav(delta: number): void {
