@@ -47,6 +47,14 @@ export class LiveConsoleStore {
     if (this.activeId === id) this.activeId = this.sessions[Math.max(0, idx - 1)]?.id ?? null
   }
 
+  /** Reorder sessions to match the given id order (drag-to-reorder in the tab bar). */
+  reorder(orderedIds: string[]): void {
+    const byId = new Map(this.sessions.map((s) => [s.id, s]))
+    const next = orderedIds.map((id) => byId.get(id)).filter((s): s is ConsoleSession => !!s)
+    for (const s of this.sessions) if (!orderedIds.includes(s.id)) next.push(s)
+    if (next.length === this.sessions.length) this.sessions = next
+  }
+
   private upsert(sess: ConsoleSession): void {
     const existing = this.sessions.find((s) => s.id === sess.id)
     if (existing) {

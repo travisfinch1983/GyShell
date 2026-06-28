@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { Plus, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Download, Plus, ScrollText, X } from 'lucide-react'
 import '@xterm/xterm/css/xterm.css'
+import '../Terminal/terminal.scss' // reuse the gyshell terminal tab-bar styling (.terminal-tabs-*)
 import { liveConsoleStore as store, serviceConsoleLabel, type ConsoleSession } from '../../stores/LiveConsoleStore'
 import { aiServicesStore } from '../../stores/AiServicesStore'
 import styles from './LiveConsole.module.scss'
@@ -56,6 +57,9 @@ const XtermConsole: React.FC<{ session: ConsoleSession; active: boolean }> = ({ 
 
 export const LiveConsoleMultiPanel: React.FC = observer(() => {
   const [pickerOpen, setPickerOpen] = useState(false)
+  const barRef = useRef<HTMLDivElement | null>(null)
+  const dragIdRef = useRef<string | null>(null)
+  const [scroll, setScroll] = useState<{ left: boolean; right: boolean }>({ left: false, right: false })
 
   useEffect(() => {
     if (!aiServicesStore.services.length) void aiServicesStore.load()
@@ -64,36 +68,108 @@ export const LiveConsoleMultiPanel: React.FC = observer(() => {
   const sessions = store.sessions
   const activeId = store.activeId
 
+  const updateScroll = useCallback(() => {
+    const el = barRef.current
+    if (!el) return
+    const left = el.scrollLeft > 1
+    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+    setScroll((p) => (p.left === left && p.right === right ? p : { left, right }))
+  }, [])
+  useEffect(() => { updateScroll() }, [sessions.length, updateScroll])
+  useEffect(() => {
+    const el = barRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => updateScroll())
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [updateScroll])
+  const scrollTabs = (dir: number) => barRef.current?.scrollBy({ left: dir * 220, behavior: 'smooth' })
+  const reorder = (fromId: string, toId: string) => {
+    if (fromId === toId) return
+    const ids = sessions.map((s) => s.id)
+    const from = ids.indexOf(fromId)
+    const to = ids.indexOf(toId)
+    if (from < 0 || to < 0) return
+    ids.splice(to, 0, ids.splice(from, 1)[0])
+    store.reorder(ids)
+  }
+
   const openPicker = () => { void aiServicesStore.load(); setPickerOpen((o) => !o) }
 
   return (
     <div className={styles.multiContainer}>
-      <div className={styles.tabbar}>
-        <div className={styles.tabScroll}>
-          {sessions.map((s) => (
-            <div key={s.id} className={`${styles.tab} ${activeId === s.id ? styles.tabActive : ''}`} onClick={() => store.setActive(s.id)} title={s.label}>
-              <span className={`${styles.tabDot} ${s.kind === 'install' ? styles.dotInstall : styles.dotService}`} />
-              <span className={styles.tabLabel}>{s.label}</span>
-              <button className={styles.tabClose} title="Close" onClick={(e) => { e.stopPropagation(); store.close(s.id) }}><X size={11} /></button>
-            </div>
-          ))}
-        </div>
-        <div className={styles.addWrap}>
-          <button className={styles.addBtn} title="Open a service console" onClick={openPicker}><Plus size={14} /> Console</button>
-          {pickerOpen && (
-            <>
-              <div className={styles.pickerBackdrop} onClick={() => setPickerOpen(false)} />
-              <div className={styles.picker}>
-                <div className={styles.pickerHead}>Running services</div>
-                {aiServicesStore.services.length === 0 && <div className={styles.pickerEmpty}>No running services.</div>}
-                {aiServicesStore.services.map((svc) => (
-                  <button key={svc.id} className={styles.pickerItem} onClick={() => { store.openService(svc); setPickerOpen(false) }}>{serviceConsoleLabel(svc)}</button>
-                ))}
-              </div>
-            </>
+      <div className="terminal-tabs-container">
+        <div className="terminal-tabs-bar-wrap">
+          {scroll.left && (
+            <button className="tab-scroll-btn tab-scroll-left" title="Scroll tabs left" onClick={() => scrollTabs(-1)}>
+              <ChevronLeft size={15} strokeWidth={2.2} />
+            </button>
+          )}
+          <div className="terminal-tabs-bar" ref={barRef} onScroll={updateScroll}>
+            {sessions.map((s) => {
+              const isActive = s.id === activeId
+              const Icon = s.kind === 'install' ? Download : ScrollText
+              return (
+                <div
+                  key={s.id}
+                  className={isActive ? 'tab is-active' : 'tab'}
+                  role="button"
+                  tabIndex={0}
+                  title={s.label}
+                  onClick={() => store.setActive(s.id)}
+                  draggable
+                  onDragStart={(e) => {
+                    dragIdRef.current = s.id
+                    e.stopPropagation()
+                    try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', s.id) } catch { /* ignore */ }
+                  }}
+                  onDragOver={(e) => {
+                    if (dragIdRef.current && dragIdRef.current !== s.id) { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault(); e.stopPropagation()
+                    const f = dragIdRef.current; dragIdRef.current = null
+                    if (f) reorder(f, s.id)
+                  }}
+                  onDragEnd={() => { dragIdRef.current = null }}
+                >
+                  <span className="tab-icon"><Icon size={14} strokeWidth={2} /></span>
+                  <span className="tab-title">{s.label}</span>
+                  <button className="tab-close" title="Close" onClick={(e) => { e.stopPropagation(); store.close(s.id) }}>
+                    <X size={14} strokeWidth={2} />
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+          {scroll.right && (
+            <button className="tab-scroll-btn tab-scroll-right" title="Scroll tabs right" onClick={() => scrollTabs(1)}>
+              <ChevronRight size={15} strokeWidth={2.2} />
+            </button>
           )}
         </div>
+        <div className="terminal-tabs-actions">
+          <button className="tab-add-btn" title="Open a service console" onClick={openPicker}>
+            <Plus size={14} strokeWidth={2} />
+          </button>
+        </div>
       </div>
+
+      {pickerOpen && (
+        <>
+          <div className={styles.pickerBackdrop} onClick={() => setPickerOpen(false)} />
+          <div className={styles.picker}>
+            <div className={styles.pickerHead}>Running services</div>
+            {aiServicesStore.services.length === 0 && <div className={styles.pickerEmpty}>No running services.</div>}
+            {aiServicesStore.services.map((svc) => (
+              <button key={svc.id} className={styles.pickerItem} onClick={() => { store.openService(svc); setPickerOpen(false) }}>
+                {serviceConsoleLabel(svc)}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
       <div className={styles.multiBody}>
         {sessions.length === 0 && (
           <div className={styles.placeholder}>No consoles open. Click <Plus size={13} /> to attach to a running service's log, or launch an install/update from a provider card — it opens here.</div>
