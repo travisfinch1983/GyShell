@@ -25,7 +25,7 @@ import { AiServicesPanel } from './components/AiServices/AiServicesPanel'
 import { ServicesDrawer } from './components/AiServices/ServicesDrawer'
 import { ModelDownloadsPanel } from './components/ModelDownloads/ModelDownloadsPanel'
 import { LogsPanel } from './components/Logs/LogsPanel'
-import { AiLlmPanel, AiImagePanel, AiTtsSttPanel } from './components/AiModality/AiModalityPanels'
+import { AiLlmPanel, AiImagePanel, AiTtsSttPanel, AiToolsPanel } from './components/AiModality/AiModalityPanels'
 import { liveConsoleStore } from './stores/LiveConsoleStore'
 import './styles/app.scss'
 
@@ -354,6 +354,7 @@ export const App: React.FC = observer(() => {
           {primaryTab === 'ai-llm' && <AiLlmPanel />}
           {primaryTab === 'ai-image' && <AiImagePanel />}
           {primaryTab === 'ai-tts-stt' && <AiTtsSttPanel />}
+          {primaryTab === 'ai-tools' && <AiToolsPanel />}
 
           {primaryTab === 'model-downloads' && <ModelDownloadsPanel />}
 

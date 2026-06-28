@@ -15,11 +15,12 @@ import {
   Download,
   ScrollText,
   Settings,
+  Wrench,
   type LucideIcon,
 } from 'lucide-react'
 import styles from './PrimarySidebar.module.scss'
 
-export type PrimaryTab = 'terminal' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'scripts' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'monitor'
+export type PrimaryTab = 'terminal' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'scripts' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'monitor'
 
 interface TabDef {
   id: PrimaryTab
@@ -35,6 +36,7 @@ const TABS: TabDef[] = [
   { id: 'ai-llm', label: 'AI · LLM', Icon: Bot },
   { id: 'ai-image', label: 'AI · Image Gen', Icon: ImageIcon },
   { id: 'ai-tts-stt', label: 'AI · TTS & STT', Icon: AudioLines },
+  { id: 'ai-tools', label: 'AI · Tools', Icon: Wrench },
   { id: 'scripts',   label: 'Scripts',   Icon: FileCode },
   { id: 'helper-scripts', label: 'Helper Scripts', Icon: Package },
   { id: 'model-downloads', label: 'Model Downloads', Icon: Download },

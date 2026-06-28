@@ -1,7 +1,8 @@
 import React, { useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { PackagePlus, BrainCircuit, Image as ImageIcon, AudioLines } from 'lucide-react'
+import { PackagePlus, BrainCircuit, Image as ImageIcon, AudioLines, Wrench } from 'lucide-react'
 import { ProviderInstall } from './ProviderInstall'
+import { McpServersPanel } from '../AiTools/McpServersPanel'
 import { LlmLaunchPanel } from '../AiLlm/LlmLaunchPanel'
 import { QuantizationPanel } from '../AiLlm/QuantizationPanel'
 import { ServiceLaunchPanel } from './ServiceLaunchPanel'
@@ -54,6 +55,12 @@ export const AiTtsSttPanel: React.FC = observer(() => (
   <Shell title="AI · TTS & STT" Icon={AudioLines} tabs={[
     { id: 'launch', label: 'TTS Launch', render: () => <ServiceLaunchPanel store={ttsLaunchStore} emptyLabel="TTS" /> },
     { id: 'providers', label: 'Provider Install', render: () => <ProviderInstall categories={['tts']} /> },
+  ]} />
+))
+
+export const AiToolsPanel: React.FC = observer(() => (
+  <Shell title="AI · Tools" Icon={Wrench} tabs={[
+    { id: 'mcp', label: 'MCP Servers', render: () => <McpServersPanel /> },
   ]} />
 ))
 

@@ -172,6 +172,8 @@ export class UniversalProxyService {
     app.use('/api/civitai', express.json({ limit: '10mb' }), createCivitaiRouter({}, { exec: this.sshExec }))
     app.use('/api/ai', express.json({ limit: '50mb' }), aiModule.router)
     app.use('/api/system', createSystemRouter({ exec: this.sshExec }))
+    const { createMcpRouter } = await import('./proxy/mcp.js')
+    app.use('/api/mcp', createMcpRouter({ exec: this.sshExec }))
 
     this.server = http.createServer(app)
     this.server.on('error', (e) => console.warn('[universal-proxy] server error:', e))
