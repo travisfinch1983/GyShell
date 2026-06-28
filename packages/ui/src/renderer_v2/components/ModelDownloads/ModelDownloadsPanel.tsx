@@ -19,19 +19,33 @@ function when(ts?: string): string {
   return d ? new Date(d).toLocaleDateString() : ''
 }
 
-/** Flatten /civitai/variables (array | grouped object | strings) into {token,label,group}[]. */
+/** Flatten /civitai/variables into {token,label,group}[]. The endpoint returns a token→metadata map
+ *  ({"$REPO_NAME": {desc,example,cat}, …}); also tolerate arrays / group→array maps. */
 function flatVars(v: any): Array<{ token: string; label: string; group: string }> {
   const out: Array<{ token: string; label: string; group: string }> = []
   const tok = (s: string) => (s.startsWith('$') ? s : '$' + s)
-  const push = (x: any, group = '') => {
+  const pushObj = (x: any, group: string) => {
     if (typeof x === 'string') out.push({ token: tok(x), label: x, group })
     else if (x && typeof x === 'object') {
       const t = x.token || x.name || x.var || x.key || x.value
-      if (t) out.push({ token: tok(String(t)), label: x.label || x.name || String(t), group: x.group || group })
+      if (t) out.push({ token: tok(String(t)), label: x.label || x.name || String(t), group: x.cat || x.group || group })
     }
   }
-  if (Array.isArray(v)) v.forEach((x) => push(x))
-  else if (v && typeof v === 'object') for (const [g, arr] of Object.entries(v)) (Array.isArray(arr) ? arr : [arr]).forEach((x) => push(x, g))
+  if (!v) return out
+  if (Array.isArray(v)) { v.forEach((x) => pushObj(x, 'Variables')); return out }
+  if (typeof v === 'object') {
+    const entries = Object.entries<any>(v)
+    if (entries.some(([, val]) => Array.isArray(val))) {
+      // group → array map
+      for (const [g, arr] of entries) (Array.isArray(arr) ? arr : [arr]).forEach((x) => pushObj(x, g))
+    } else {
+      // token → metadata map: key is the variable, value is {desc, example, cat}
+      for (const [token, meta] of entries) {
+        if (token === '$EXTENSION') continue // inserted via its own button
+        out.push({ token: tok(token), label: token, group: (meta && typeof meta === 'object' && meta.cat) || 'Other' })
+      }
+    }
+  }
   return out
 }
 
