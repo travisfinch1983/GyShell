@@ -56,3 +56,7 @@
 .gpuChipSel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 20%, transparent); }
 .gpuVram { color: var(--fg-faint); font-size: 10px; }
 .suggestLabel { font-size: 11px; color: var(--fg-faint); margin: 6px 0 6px; }
+
+/* Rescan / Rescan-Selected buttons under the family dropdown */
+.scanRow { display: flex; gap: 8px; margin-top: 12px; }
+.scanBtn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--control-bg); color: var(--fg-muted); font-size: 12px; cursor: pointer; &:hover:not(:disabled) { color: var(--fg); border-color: var(--accent); } &:disabled { opacity: 0.5; cursor: not-allowed; } }

@@ -57,10 +57,7 @@ export const LlmLaunchPanel: React.FC = observer(() => {
       <div className={styles.header}>
         <Rocket size={16} className={styles.hIcon} />
         <span className={styles.title}>LLM Launch</span>
-        <span className={styles.spacer} />
-        <button className={styles.refresh} onClick={() => void store.load()} disabled={store.loading}>
-          <RefreshCw size={13} className={store.loading ? styles.spin : ''} /> {store.loading ? 'Loading…' : 'Rescan'}
-        </button>
+        {store.loading && <span className={styles.muted}> · loading…</span>}
       </div>
       {store.error && <div className={styles.error}>{store.error}</div>}
 
@@ -82,6 +79,14 @@ export const LlmLaunchPanel: React.FC = observer(() => {
                 {store.variantsFor(store.selectedFamily).map((v) => <option key={v} value={v}>{v}</option>)}
               </select>
             </label>
+          </div>
+          <div className={styles.scanRow}>
+            <button className={styles.scanBtn} onClick={() => void store.rescanAll()} disabled={store.rescanning} title="Full rescan of all model folders (SSH walk)">
+              <RefreshCw size={13} className={store.rescanning ? styles.spin : ''} /> {store.rescanning ? 'Scanning…' : 'Rescan'}
+            </button>
+            <button className={styles.scanBtn} onClick={() => void store.rescanFamily(store.selectedFamily)} disabled={store.rescanning || !store.selectedFamily} title="Rescan only the selected family folder">
+              <RefreshCw size={13} /> Rescan Selected
+            </button>
           </div>
         </section>
 

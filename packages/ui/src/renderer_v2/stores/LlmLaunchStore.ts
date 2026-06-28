@@ -42,6 +42,7 @@ export class LlmLaunchStore {
   cacheEntries: any[] = []
 
   loading = false
+  rescanning = false
   error = ''
 
   selectedFamily = ''
@@ -87,6 +88,38 @@ export class LlmLaunchStore {
       runInAction(() => { this.error = e?.message || 'Failed to load launch data' })
     } finally {
       runInAction(() => { this.loading = false })
+    }
+  }
+
+  /** Full rescan — forces a fresh SSH walk of the model dirs (not the cached index). */
+  async rescanAll(): Promise<void> {
+    this.rescanning = true
+    this.error = ''
+    try {
+      const scan = await bridge().request('GET', '/api/ai/models/scan?refresh=1')
+      runInAction(() => {
+        this.models = scan || { models: [] }
+        if ((scan as any)?.presets) this.presets = (scan as any).presets
+      })
+    } catch (e: any) {
+      runInAction(() => { this.error = e?.message || 'Rescan failed' })
+    } finally {
+      runInAction(() => { this.rescanning = false })
+    }
+  }
+
+  /** Targeted rescan of just the selected family folder; merges fresh results into the index. */
+  async rescanFamily(family: string): Promise<void> {
+    if (!family) return
+    this.rescanning = true
+    this.error = ''
+    try {
+      const r: any = await bridge().request('POST', '/api/ai/models/scan/family', { family })
+      runInAction(() => { if (r?.models) this.models = { ...this.models, ...r } })
+    } catch (e: any) {
+      runInAction(() => { this.error = e?.message || 'Family rescan failed' })
+    } finally {
+      runInAction(() => { this.rescanning = false })
     }
   }
 
