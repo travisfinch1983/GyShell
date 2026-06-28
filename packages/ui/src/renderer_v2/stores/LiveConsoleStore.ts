@@ -35,20 +35,27 @@ export class LiveConsoleStore {
     this.focusSeq++
   }
 
-  /** Attach to a running service's tmux session (from the "Logs" button or the dropdown). */
+  /** Attach to a running service's live console (from the "Logs" button or the dropdown).
+   *  tmux-launched services have a live pane to attach to; systemd services don't (they log to a
+   *  file), so we attach to tmux IF a session exists, otherwise follow the live log file. */
   openService(s: AiService): void {
-    if (!s.pveHostIp || !s.vmid || !s.tmuxSession) {
-      // no attachable tmux session (e.g. a systemd service w/o a live pane)
+    if (!s.pveHostIp || !s.vmid) {
       this.target = { id: s.id, kind: 'service', label: serviceConsoleLabel(s), host: s.pveHostIp || '', command: '' }
       this.focus()
       return
     }
+    const session = (s.tmuxSession || '').replace(/'/g, "'\\''")
+    const logFile = `/var/log/proxlab/${s.tmuxSession || s.id}.log`.replace(/'/g, "'\\''")
+    // attach to tmux if the session is live; else tail -f the persistent log (universal live output)
+    const inner = session
+      ? `tmux attach -t '${session}' 2>/dev/null || tail -n 400 -f '${logFile}'`
+      : `tail -n 400 -f '${logFile}'`
     this.target = {
       id: s.id,
       kind: 'service',
       label: serviceConsoleLabel(s),
       host: s.pveHostIp,
-      command: `pct exec ${s.vmid} -- tmux attach -t '${s.tmuxSession.replace(/'/g, "'\\''")}'`,
+      command: `pct exec ${s.vmid} -- bash -lc "${inner.replace(/"/g, '\\"')}"`,
     }
     this.focus()
   }

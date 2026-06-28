@@ -146,6 +146,18 @@ textarea {
   border-radius: 2px; /* Set a sharp base radius */
 }
 
+/* Native <select> popups render options with OS/browser defaults (white bg + white text here)
+   unless themed explicitly. Apply globally so every dropdown obeys the color theme. */
+select {
+  background-color: var(--control-bg, #1a1d27);
+  color: var(--fg, #e4e6ef);
+}
+option,
+optgroup {
+  background-color: var(--control-bg, #1a1d27);
+  color: var(--fg, #e4e6ef);
+}
+
 .icon-btn-sm {
   height: 24px;
   width: 24px;
