@@ -60,3 +60,7 @@
 /* Rescan / Rescan-Selected buttons under the family dropdown */
 .scanRow { display: flex; gap: 8px; margin-top: 12px; }
 .scanBtn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--control-bg); color: var(--fg-muted); font-size: 12px; cursor: pointer; &:hover:not(:disabled) { color: var(--fg); border-color: var(--accent); } &:disabled { opacity: 0.5; cursor: not-allowed; } }
+
+/* Sampler preset row (llama.cpp / ik_llama.cpp) */
+.samplerRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--control-bg); }
+.samplerSelect { min-width: 260px; flex: 0 1 340px; }

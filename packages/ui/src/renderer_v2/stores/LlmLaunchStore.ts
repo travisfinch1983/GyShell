@@ -5,6 +5,17 @@ import {
   SLOT_SETTING_KEY_BY_PROVIDER,
 } from '../components/AiLlm/launchTemplates'
 import { liveConsoleStore } from './LiveConsoleStore'
+import { SAMPLER_PRESETS_BUILTIN } from '../components/AiLlm/samplerPresets'
+
+// Setting keys a sampler preset captures (mirrors ProxLab snapshotCurrentSamplerValues).
+const SAMPLER_PRESET_KEYS = [
+  'temp', 'topK', 'topP', 'minP', 'repeatPenalty', 'presencePenalty', 'frequencyPenalty',
+  'dryMultiplier', 'mirostat', 'samplers', 'contextSize', 'ropeScaling', 'ropeScale',
+  'ropeFreqBase', 'yarnOrigCtx', 'parallel', 'reasoning', 'chatTemplateKwargs',
+  'reasoningFormat', 'reasoningBudget', 'specType', 'draftMax',
+]
+// Providers that take llama.cpp-style sampler args (where presets apply).
+export const SAMPLER_PRESET_PROVIDERS = new Set(['llama-server', 'llama-server-mtp'])
 
 /**
  * LlmLaunchStore — native port of ProxLab's LLM Launch tab engine. Drives the AI·LLM › Launch UI:
@@ -40,6 +51,7 @@ export class LlmLaunchStore {
   providers: any[] = []
   agents: Agent[] = []
   cacheEntries: any[] = []
+  userSamplerPresets: any[] = []
 
   loading = false
   rescanning = false
@@ -71,11 +83,12 @@ export class LlmLaunchStore {
     this.loading = true
     this.error = ''
     try {
-      const [scan, provs, gpus, cache] = await Promise.all([
+      const [scan, provs, gpus, cache, samplers] = await Promise.all([
         bridge().request('GET', '/api/ai/models/scan').catch(() => null),
         bridge().request('GET', '/api/ai/providers').catch(() => null),
         bridge().request('GET', '/api/ai/agent-gpus').catch(() => null),
         bridge().request('GET', '/api/ai/models/cache').catch(() => null),
+        bridge().request('GET', '/api/ai/sampler-presets').catch(() => null),
       ])
       runInAction(() => {
         this.models = scan || { models: [] }
@@ -83,6 +96,7 @@ export class LlmLaunchStore {
         this.providers = ((provs as any)?.providers ?? []) as any[]
         this.agents = ((gpus as any)?.agents ?? []) as Agent[]
         this.cacheEntries = (((cache as any)?.entries ?? []) as any[]).filter((e) => e.status === 'cached' || e.cachedAt)
+        this.userSamplerPresets = (((samplers as any)?.presets) ?? []) as any[]
       })
     } catch (e: any) {
       runInAction(() => { this.error = e?.message || 'Failed to load launch data' })
@@ -198,6 +212,42 @@ export class LlmLaunchStore {
   }
   setSetting(key: string, val: any): void {
     this.settings = { ...this.settings, [key]: val }
+  }
+
+  // ─── sampler presets (llama.cpp / ik_llama.cpp) ───
+  get supportsSamplerPresets(): boolean {
+    return SAMPLER_PRESET_PROVIDERS.has(this.selectedProvider)
+  }
+  get allSamplerPresets(): any[] {
+    return [...(SAMPLER_PRESETS_BUILTIN as any[]), ...this.userSamplerPresets]
+  }
+  /** Apply a preset's values onto the current settings (overwrites only the keys it defines). */
+  applySamplerPreset(id: string): void {
+    const p = this.allSamplerPresets.find((x) => x.id === id)
+    if (!p?.values) return
+    this.settings = { ...this.settings, ...p.values }
+  }
+  /** Snapshot the preset-managed keys from current settings (for saving a new preset). */
+  private snapshotSamplerValues(): Record<string, any> {
+    const out: Record<string, any> = {}
+    for (const k of SAMPLER_PRESET_KEYS) if (this.settings[k] !== undefined) out[k] = this.settings[k]
+    return out
+  }
+  async loadSamplerPresets(): Promise<void> {
+    try {
+      const r: any = await bridge().request('GET', '/api/ai/sampler-presets')
+      runInAction(() => { this.userSamplerPresets = (r?.presets ?? []) as any[] })
+    } catch { /* keep built-ins */ }
+  }
+  async saveSamplerPreset(name: string): Promise<void> {
+    if (!name?.trim()) return
+    await bridge().request('POST', '/api/ai/sampler-presets', { name: name.trim(), readOnly: false, values: this.snapshotSamplerValues() })
+    await this.loadSamplerPresets()
+  }
+  async deleteSamplerPreset(id: string): Promise<void> {
+    if (!id || String(id).startsWith('builtin-')) return // built-ins are read-only
+    await bridge().request('DELETE', `/api/ai/sampler-presets/${encodeURIComponent(id)}`)
+    await this.loadSamplerPresets()
   }
   setPlacement(p: any): void {
     this.manualGpus = [] // choosing an auto/suggested placement clears the manual selection

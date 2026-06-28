@@ -44,6 +44,7 @@ const SettingField: React.FC<{ k: string; arg: any }> = observer(({ k, arg }) =>
 })
 
 export const LlmLaunchPanel: React.FC = observer(() => {
+  const [samplerSel, setSamplerSel] = React.useState('')
   React.useEffect(() => {
     if (!store.models) void store.load()
   }, [])
@@ -137,6 +138,27 @@ export const LlmLaunchPanel: React.FC = observer(() => {
         {t && (
           <section className={styles.card}>
             <div className={styles.cardHead}>4 · Settings</div>
+            {store.supportsSamplerPresets && (
+              <div className={styles.samplerRow}>
+                <span className={styles.fieldLabel}>Sampler preset</span>
+                <select className={`${styles.input} ${styles.samplerSelect}`} value={samplerSel} onChange={(e) => setSamplerSel(e.target.value)}>
+                  <option value="">Select preset…</option>
+                  <optgroup label="Built-in">
+                    {store.allSamplerPresets.filter((p) => String(p.id).startsWith('builtin-')).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </optgroup>
+                  {store.userSamplerPresets.length > 0 && (
+                    <optgroup label="Custom">
+                      {store.userSamplerPresets.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </optgroup>
+                  )}
+                </select>
+                <button className={styles.scanBtn} disabled={!samplerSel} onClick={() => store.applySamplerPreset(samplerSel)}>Apply</button>
+                <button className={styles.scanBtn} onClick={async () => { const n = window.prompt('Save current sampler settings as a preset — name:'); if (n) await store.saveSamplerPreset(n) }}>Save current…</button>
+                {samplerSel && !samplerSel.startsWith('builtin-') && (
+                  <button className={styles.scanBtn} onClick={async () => { await store.deleteSamplerPreset(samplerSel); setSamplerSel('') }}>Delete</button>
+                )}
+              </div>
+            )}
             <div className={styles.fieldGrid}>
               {Object.entries<any>(t.args || {}).filter(([k]) => k !== 'model').map(([k, a]) => <SettingField key={k} k={k} arg={a} />)}
             </div>
