@@ -174,6 +174,13 @@ export class UniversalProxyService {
     // codebase/document-RAG paths match first.
     const { registerRagRoutes } = await import('./proxy/rag.js')
     registerRagRoutes(app, { exec: this.sshExec, selfPort: this.port })
+    // Cluster Inventory / Hardware / Credential vault (also under /api/ai/* — mount before the /api/ai router)
+    const { createInventoryRouter } = await import('./proxy/inventory.js')
+    const invModule = createInventoryRouter(llmPve)
+    const invJson = express.json({ limit: '10mb' })
+    app.use('/api/ai/inventory', invJson, invModule.invRouter)
+    app.use('/api/ai/hosts', invJson, invModule.hostRouter)
+    app.use('/api/ai/credentials', invJson, invModule.credRouter)
     app.use('/api/ai', express.json({ limit: '50mb' }), aiModule.router)
     app.use('/api/system', createSystemRouter({ exec: this.sshExec }))
     const { createMcpRouter } = await import('./proxy/mcp.js')
