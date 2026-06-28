@@ -279,6 +279,17 @@ export class ModelDownloadsStore {
   async saveTemplate(): Promise<void> {
     await this.saveCivConfig()
   }
+  /** Variable Config popup: base models seen in history + their current $BASE_MODEL_LONG mapping. */
+  async loadBaseModels(): Promise<Array<{ short: string; long: string }>> {
+    try {
+      const r = await this.cluster().request('GET', '/api/civitai/base-models')
+      return Array.isArray(r) ? (r as any[]) : []
+    } catch { return [] }
+  }
+  async saveBaseModelMap(map: Record<string, string>): Promise<void> {
+    runInAction(() => { this.civConfig = { ...this.civConfig, baseModelMap: map } })
+    await this.cluster().request('PUT', '/api/civitai/config', this.civConfig)
+  }
 
   async loadHistories(): Promise<void> {
     const api = this.cluster()

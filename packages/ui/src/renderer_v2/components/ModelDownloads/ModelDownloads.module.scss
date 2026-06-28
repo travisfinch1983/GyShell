@@ -172,3 +172,25 @@
 .renFrom { font-size: 11px; font-family: var(--font-mono); color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .renTo { font-size: 11px; font-family: var(--font-mono); color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .renMoves { font-size: 10px; color: var(--fg-faint); margin-top: 2px; }
+
+/* Template builder: contenteditable badge editor + preview + Variable Config */
+.tplDisplay {
+  width: 100%; min-height: 38px; padding: 8px 10px; border: 1px solid var(--accent); border-radius: 6px;
+  background: var(--app-bg); color: var(--fg); font-size: 12px; font-family: var(--font-mono);
+  line-height: 1.9; white-space: pre-wrap; word-break: break-word; outline: none;
+  &:focus { box-shadow: 0 0 0 1px var(--accent); }
+  &:empty::before { content: 'Click variables below to build a path template…'; color: var(--fg-faint); }
+}
+.tplToken {
+  display: inline-block; padding: 1px 7px; margin: 0 2px; border-radius: 4px; font-size: 11px;
+  font-weight: 600; user-select: none; white-space: nowrap; vertical-align: baseline; cursor: default;
+}
+.tplTokenVar { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); }
+.tplTokenExt { background: color-mix(in srgb, var(--success, #98c379) 22%, transparent); color: var(--success, #98c379); border: 1px solid color-mix(in srgb, var(--success, #98c379) 50%, transparent); }
+.tplPreviewRow { display: flex; align-items: baseline; gap: 8px; font-size: 11px; }
+.tplPreviewLabel { color: var(--fg-faint); text-transform: uppercase; letter-spacing: 0.4px; font-weight: 700; }
+.tplPreview { color: var(--fg-muted); font-family: var(--font-mono); word-break: break-all; }
+.varCfgList { display: flex; flex-direction: column; gap: 8px; margin: 4px 0; }
+.varCfgRow { display: flex; align-items: center; gap: 8px; }
+.varCfgShort { min-width: 110px; font-size: 12px; font-family: var(--font-mono); color: var(--fg); }
+.varCfgArrow { color: var(--fg-faint); }

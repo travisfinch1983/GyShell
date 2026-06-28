@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { Download, RefreshCw, Search, Square, Play, X, Loader2, Save, Pause, Clock, Check, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
 import { modelDownloadsStore as store, type DLItem, type HFFile } from '../../stores/ModelDownloadsStore'
@@ -187,10 +187,135 @@ const HFView: React.FC = observer(() => {
   )
 })
 
+// ─── Template builder: contenteditable with inline variable badges (ProxLab parity) ───
+const TPL_EXAMPLES: Record<string, string> = {
+  $REPO_NAME: 'Hairstyles Collection', $MODEL_ID: '76937', $MODEL_TYPE: 'LORA',
+  $CREATOR_NAME: 'antonio_riolo2610', $PRIMARY_TAG: 'clothing',
+  $VERSION_NAME: 'Short Dreads', $VERSION_ID: '103767', $UPLOAD_DATE: '2023-06-25', $UPLOAD_YEAR: '2023',
+  $BASE_MODEL_SHORT: 'SD 1.5', $BASE_MODEL_LONG: 'Stable-Diffusion-1.5', $BASE_MODEL_TYPE: 'Standard',
+  $MODEL_FILE_NAME: 'short_dreads_hairstyle', $FILE_SIZE: '144 MB', $FILE_HASH: '9AD55BD84D',
+  $QUANT_FORMAT: 'SafeTensor', $QUANT_LEVEL: 'Full', $QUANT_SIZE: '', $QUANT_FULL: 'Full SafeTensor',
+  $EXTENSION: '.safetensors', $USER_DEFINED: 'anime', $TYPE_FOLDER: 'loras',
+}
+function applyCase(s: string, mode: string): string {
+  if (mode === 'lowercase') return s.toLowerCase()
+  if (mode === 'uppercase') return s.toUpperCase()
+  return s.replace(/\b\w/g, (c) => c.toUpperCase())
+}
+function tplPreview(tpl: string, sep: string, caseMode: string, tplType: string): string {
+  const ex: Record<string, string> = { ...TPL_EXAMPLES }
+  const typeFolder = tplType === '_global' ? '<model-type>' : tplType
+  if (tplType !== '_global') { ex.$TYPE_FOLDER = tplType; ex.$MODEL_TYPE = tplType }
+  let result = `/imagegen/${typeFolder}/`
+  const regex = /(\$[A-Z_]+)/g
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = regex.exec(tpl)) !== null) {
+    result += tpl.substring(last, m.index)
+    const v = m[1]
+    if (v === '$EXTENSION') result += ex.$EXTENSION || '.safetensors'
+    else if (v === '$USER_DEFINED') { const ud = ex.$USER_DEFINED || ''; if (ud) result += applyCase(ud, caseMode).replace(/\s+/g, sep) }
+    else result += applyCase(ex[v] ?? v, caseMode).replace(/\s+/g, sep)
+    last = regex.lastIndex
+  }
+  result += tpl.substring(last)
+  return result.replace(/\/+/g, '/')
+}
+function tplMakeBadge(varName: string): HTMLSpanElement {
+  const span = document.createElement('span')
+  span.className = `${styles.tplToken} ${varName === '$EXTENSION' ? styles.tplTokenExt : styles.tplTokenVar}`
+  span.contentEditable = 'false'
+  span.dataset.var = varName
+  span.textContent = varName
+  return span
+}
+function tplInsertAtCursor(div: HTMLElement, node: Node): void {
+  div.focus()
+  const sel = window.getSelection()
+  if (sel && sel.rangeCount && div.contains(sel.getRangeAt(0).commonAncestorContainer)) {
+    const range = sel.getRangeAt(0)
+    range.deleteContents(); range.insertNode(node)
+    range.setStartAfter(node); range.setEndAfter(node)
+    sel.removeAllRanges(); sel.addRange(range)
+  } else {
+    div.appendChild(node)
+  }
+}
+function tplToString(div: HTMLElement): string {
+  let r = ''
+  div.childNodes.forEach((n) => {
+    if (n.nodeType === Node.TEXT_NODE) r += n.textContent
+    else if (n.nodeType === Node.ELEMENT_NODE) { const el = n as HTMLElement; r += el.dataset?.var ?? el.textContent ?? '' }
+  })
+  return r.trim()
+}
+function tplLoadInto(str: string, div: HTMLElement): void {
+  div.innerHTML = ''
+  if (!str) return
+  const regex = /(\$[A-Z_]+)/g
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = regex.exec(str)) !== null) {
+    if (m.index > last) div.appendChild(document.createTextNode(str.substring(last, m.index)))
+    div.appendChild(tplMakeBadge(m[1]))
+    last = regex.lastIndex
+  }
+  if (last < str.length) div.appendChild(document.createTextNode(str.substring(last)))
+}
+
+const VarConfigModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const [rows, setRows] = useState<Array<{ short: string; long: string }>>([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  useEffect(() => { void (async () => { const r = await store.loadBaseModels(); setRows(r.map((x) => ({ short: x.short, long: x.long || '' }))); setLoading(false) })() }, [])
+  const save = async () => {
+    setSaving(true)
+    const map: Record<string, string> = {}
+    for (const r of rows) if (r.long.trim()) map[r.short] = r.long.trim()
+    await store.saveBaseModelMap(map)
+    onClose()
+  }
+  return (
+    <div className={styles.modalOverlay} onClick={onClose}>
+      <div className={styles.modal} style={{ maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
+        <div className={styles.modalHead}><strong>Base Model Name Mapping</strong></div>
+        <p className={styles.note}>Map CivitAI base model names (<code>$BASE_MODEL_SHORT</code>) to your custom long names (<code>$BASE_MODEL_LONG</code>). Leave blank to use the CivitAI name as-is.</p>
+        {loading ? <div className={styles.note}>Loading…</div>
+          : rows.length === 0 ? <div className={styles.note}>No base models found in history.</div>
+          : (
+            <div className={styles.varCfgList}>
+              {rows.map((r, i) => (
+                <div key={r.short} className={styles.varCfgRow}>
+                  <span className={styles.varCfgShort}>{r.short}</span>
+                  <span className={styles.varCfgArrow}>→</span>
+                  <input className={styles.input} value={r.long} placeholder={r.short} spellCheck={false}
+                    onChange={(e) => setRows((p) => p.map((x, j) => (j === i ? { ...x, long: e.target.value } : x)))} />
+                </div>
+              ))}
+            </div>
+          )}
+        <div className={styles.modalFoot}>
+          <div className={styles.spacer} />
+          <button className={styles.btn} onClick={onClose}>Cancel</button>
+          <button className={styles.btnPrimary} disabled={saving} onClick={() => void save()}>Save</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const TemplateBuilder: React.FC = observer(() => {
+  const editorRef = useRef<HTMLDivElement>(null)
+  const [varCfgOpen, setVarCfgOpen] = useState(false)
   const vars = flatVars(store.civVariables)
   const groups = [...new Set(vars.map((v) => v.group || 'Variables'))]
   const types = store.civFolderTypes.map((ft: any) => (typeof ft === 'string' ? { id: ft, label: ft } : { id: ft.id || ft.value || ft.type, label: ft.label || ft.name || ft.id }))
+  // Re-seed the badge editor when the active template type changes or config (re)loads — NOT on every keystroke.
+  useEffect(() => { if (editorRef.current) tplLoadInto(store.currentTpl, editorRef.current) }, [store.civTplType, store.civConfigLoaded])
+  const sync = () => { if (editorRef.current) store.setTpl(tplToString(editorRef.current)) }
+  const insertVar = (token: string) => { const d = editorRef.current; if (!d) return; tplInsertAtCursor(d, tplMakeBadge(token)); sync() }
+  const insertText = (t: string) => { const d = editorRef.current; if (!d) return; tplInsertAtCursor(d, document.createTextNode(t)); sync() }
+  const clear = () => { const d = editorRef.current; if (d) { d.innerHTML = ''; sync() } }
   return (
     <div className={styles.tplBuilder}>
       <div className={styles.tplHeader}>
@@ -206,11 +331,24 @@ const TemplateBuilder: React.FC = observer(() => {
           <option value="standard">Standard</option><option value="lowercase">lowercase</option><option value="uppercase">UPPERCASE</option>
         </select>
       </div>
-      <input className={styles.tplInput} value={store.currentTpl} onChange={(e) => store.setTpl(e.target.value)} spellCheck={false} />
+      <div
+        ref={editorRef}
+        className={styles.tplDisplay}
+        contentEditable
+        suppressContentEditableWarning
+        spellCheck={false}
+        title="Type text, or click variables below to insert. Backspace deletes a whole variable badge."
+        onInput={sync}
+      />
+      <div className={styles.tplPreviewRow}>
+        <span className={styles.tplPreviewLabel}>Preview:</span>
+        <span className={styles.tplPreview}>{tplPreview(store.currentTpl, store.currentSep, store.currentCase, store.civTplType)}</span>
+      </div>
       <div className={styles.tplControls}>
-        <button className={styles.btn} title="Insert folder separator" onClick={() => store.setTpl(store.currentTpl + '/')}>/ New Folder</button>
-        <button className={styles.btn} onClick={() => store.insertTplVar('$EXTENSION')}>$EXTENSION</button>
-        <button className={styles.btn} onClick={() => store.setTpl('')}>Clear</button>
+        <button className={styles.btn} title="Insert folder separator at cursor" onMouseDown={(e) => e.preventDefault()} onClick={() => insertText('/')}>/ New Folder</button>
+        <button className={styles.btn} onMouseDown={(e) => e.preventDefault()} onClick={() => insertVar('$EXTENSION')}>$EXTENSION</button>
+        <button className={styles.btn} onClick={clear}>Clear</button>
+        <button className={styles.btn} title="Configure $BASE_MODEL_LONG name mappings" onClick={() => setVarCfgOpen(true)}>Variable Config</button>
         <div className={styles.spacer} />
         <button className={styles.btnPrimary} onClick={() => void store.saveTemplate()}><Save size={13} /> Save Template</button>
       </div>
@@ -220,12 +358,13 @@ const TemplateBuilder: React.FC = observer(() => {
             <div className={styles.tplVarGroupLabel}>{g}</div>
             <div className={styles.tplVarChips}>
               {vars.filter((v) => (v.group || 'Variables') === g).map((v) => (
-                <button key={v.token} className={styles.tplVarChip} title={v.token} onClick={() => store.insertTplVar(v.token)}>{v.label}</button>
+                <button key={v.token} className={styles.tplVarChip} title={v.token} onMouseDown={(e) => e.preventDefault()} onClick={() => insertVar(v.token)}>{v.label}</button>
               ))}
             </div>
           </div>
         ))}
       </div>
+      {varCfgOpen && <VarConfigModal onClose={() => setVarCfgOpen(false)} />}
     </div>
   )
 })
