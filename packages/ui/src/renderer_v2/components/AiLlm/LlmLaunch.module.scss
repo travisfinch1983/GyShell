@@ -71,3 +71,16 @@
 .flagInner { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; input { accent-color: var(--accent); } }
 .inPreset { border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border)); background: color-mix(in srgb, var(--accent) 9%, transparent); border-radius: 7px; padding: 7px 9px; }
 .inPreset .input { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+
+/* Suggested-placement badges + Custom GPU selector row */
+.countLabel { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
+.headroom { font-size: 11px; color: var(--fg-muted); font-family: var(--font-mono); }
+.mixedBadge { font-size: 9px; padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--warning, #d8a657) 22%, transparent); color: var(--warning, #d8a657); }
+.riskTight { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--danger, #e06c75) 22%, transparent); color: var(--danger, #e06c75); }
+.riskSafe { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--success, #98c379) 22%, transparent); color: var(--success, #98c379); }
+.riskSpacious { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.customPlacement { flex-wrap: wrap; cursor: default; }
+.customSelectors { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 1; }
+.customGpuPill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid var(--accent); border-radius: 6px; background: color-mix(in srgb, var(--accent) 14%, transparent); font-size: 11px; font-family: var(--font-mono); }
+.customGpuRemove { border: none; background: none; color: var(--fg-muted); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; &:hover { color: var(--danger, #e06c75); } }
+.customGpuSelect { min-width: 220px; flex: 0 1 280px; height: 28px; }

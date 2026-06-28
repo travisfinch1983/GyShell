@@ -20,6 +20,14 @@ const PresetChk: React.FC<{ k: string }> = observer(({ k }) =>
   ) : null,
 )
 
+/** VRAM headroom risk badge (ported from ProxLab riskBadgeHtml). */
+const RiskBadge: React.FC<{ label?: string | null }> = ({ label }) => {
+  if (label === 'tight') return <span className={styles.riskTight}>Tight</span>
+  if (label === 'safe') return <span className={styles.riskSafe}>Safe</span>
+  if (label === 'spacious') return <span className={styles.riskSpacious}>Spacious</span>
+  return null
+}
+
 /** One settings field rendered from a LAUNCH_TEMPLATES arg definition. */
 const SettingField: React.FC<{ k: string; arg: any }> = observer(({ k, arg }) => {
   const val = store.settings[k] ?? arg.default
@@ -225,40 +233,58 @@ export const LlmLaunchPanel: React.FC = observer(() => {
                 ~{fmtMB(est.estimate.totalMB)} total · weights {fmtMB(est.estimate.weightsMB)} · KV {fmtMB(est.estimate.kvCacheMB)} · {est.availableGpuCount} GPUs available
               </div>
             )}
-            {/* Manual GPU selection bar — pick specific GPUs (overrides the suggestions below) */}
-            <div className={styles.manualBar}>
-              <div className={styles.manualLabel}>Manual GPU selection</div>
-              {store.agents.length === 0 && <div className={styles.muted}>No GPU agents found.</div>}
-              {store.agents.map((a) => (
-                <div key={a.vmid} className={styles.agentRow}>
-                  <span className={styles.agentName}>{a.name}</span>
-                  <div className={styles.gpuChips}>
-                    {a.gpus.map((g) => (
-                      <button
-                        key={g.pci_id}
-                        className={`${styles.gpuChip} ${store.manualGpus.includes(g.pci_id) ? styles.gpuChipSel : ''}`}
-                        title={`${g.pci_id}${g.arch ? ' · ' + g.arch : ''}`}
-                        onClick={() => store.toggleGpu(a, g)}
-                      >
-                        {g.name} <span className={styles.gpuVram}>{fmtMB(g.vram_mb)}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-
             {placements.length > 0 && <div className={styles.suggestLabel}>Suggested placements</div>}
             <div className={styles.placements}>
-              {placements.slice(0, 8).map((p: any, i: number) => {
-                const sel = store.selectedPlacement === p || (store.selectedPlacement?.node === p.node && JSON.stringify(store.selectedPlacement?.gpus) === JSON.stringify(p.gpus))
+              {placements.slice(0, 6).map((p: any, i: number) => {
+                const sel = !store.isCustomSelected && store.selectedPlacement === p
+                const names = (p.gpus || []).map((g: any) => g.friendlyName || g.model || g.name || g.pciId).join(' + ')
+                const node = p.node || (p.gpus || []).map((g: any) => g.node).join(', ')
                 return (
                   <button key={i} className={`${styles.placement} ${sel ? styles.placeSel : ''}`} onClick={() => store.setPlacement(p)}>
-                    <span className={styles.placeNode}>{p.node || p.gpus?.[0]?.node}</span>
-                    <span className={styles.placeGpus}>{(p.gpus || []).length} GPU{(p.gpus || []).length === 1 ? '' : 's'}: {(p.gpus || []).map((g: any) => g.name || g.pciId).join(', ')}</span>
+                    {p.gpuCount > 1 && <span className={styles.countLabel}>{p.gpuCount}-GPU</span>}
+                    <span className={styles.placeNode}>{node}:</span>
+                    <span className={styles.placeGpus}>{names}</span>
+                    {p.headroomMB != null && <span className={styles.headroom}>{fmtMB(p.headroomMB)} headroom</span>}
+                    {p.mixedPlacement && <span className={styles.mixedBadge}>Mixed</span>}
+                    <RiskBadge label={p.riskLabel} />
                   </button>
                 )
               })}
+
+              {/* Custom GPU selection — pick specific GPUs to build your own placement (ProxLab parity) */}
+              {store.availableNvidiaGpus.length > 0 && (
+                <div className={`${styles.placement} ${styles.customPlacement} ${store.isCustomSelected ? styles.placeSel : ''}`}>
+                  <span className={styles.countLabel}>Custom</span>
+                  <div className={styles.customSelectors}>
+                    {store.customGpus.map((g: any) => (
+                      <span key={`${g.node}:${g.pciId}`} className={styles.customGpuPill}>
+                        {g.node}: {g.friendlyName || g.model || 'GPU'}
+                        <button className={styles.customGpuRemove} title="Remove GPU" onClick={() => store.removeCustomGpu(g.node, g.pciId)}>×</button>
+                      </span>
+                    ))}
+                    {store.customAddableGpus.length > 0 && (
+                      <select
+                        className={`${styles.input} ${styles.customGpuSelect}`}
+                        value=""
+                        onChange={(e) => { if (e.target.value) store.addCustomGpu(e.target.value) }}
+                      >
+                        <option value="">+ Add GPU…</option>
+                        {store.customAddableGpus.map((g: any) => (
+                          <option key={`${g.node}:${g.pciId}`} value={`${g.node}:${g.pciId}`}>
+                            {g.node}: {g.friendlyName || g.model || 'GPU'} ({(((g.availableVramMB ?? g.vramMB)) / 1024).toFixed(1)}/{(g.vramMB / 1024).toFixed(0)} GB)
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                  {store.customGpus.length > 0 && store.customEval && (
+                    <>
+                      <span className={styles.headroom}>{fmtMB(store.customEval.headroomMB)} headroom</span>
+                      {store.customEval.fits === false ? <span className={styles.riskTight}>Impossible</span> : <RiskBadge label={store.customEval.riskLabel} />}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           </section>
         )}

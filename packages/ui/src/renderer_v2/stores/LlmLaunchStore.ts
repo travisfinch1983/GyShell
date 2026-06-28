@@ -17,6 +17,36 @@ const SAMPLER_PRESET_KEYS = [
 // Providers that take llama.cpp-style sampler args (where presets apply).
 export const SAMPLER_PRESET_PROVIDERS = new Set(['llama-server', 'llama-server-mtp'])
 
+// ─── VRAM placement evaluation (ported verbatim from ProxLab) ───
+function computeBufferPerGpu(params: number | undefined, numGpus: number): number {
+  const p = params || 7
+  const infBuf = Math.min(4200, Math.max(800, Math.round(1000 + 500 * Math.log2(p + 1))))
+  const cudaCtx = 300
+  if (!numGpus || numGpus <= 1) return cudaCtx + infBuf
+  const perGpu = Math.round((infBuf / numGpus) * 1.3)
+  return cudaCtx + Math.min(perGpu, infBuf)
+}
+function evaluateCustomGpus(selectedGpus: any[], weightsMB: number, kvCacheMB: number, params: number | undefined): any {
+  if (!selectedGpus.length) return null
+  const cbPerGpu = computeBufferPerGpu(params, selectedGpus.length)
+  const usable = selectedGpus.map((g) => Math.max(0, (g.availableVramMB ?? g.vramMB) - cbPerGpu))
+  const totalUsable = usable.reduce((a, b) => a + b, 0)
+  const modelPayload = weightsMB + kvCacheMB
+  if (selectedGpus.length === 1) {
+    const headroom = totalUsable - modelPayload
+    return { fits: headroom >= 0, headroomMB: Math.floor(headroom), riskLabel: null, splitRatios: usable }
+  }
+  if (totalUsable < modelPayload) return { fits: false, headroomMB: Math.floor(totalUsable - modelPayload), riskLabel: null, splitRatios: usable }
+  let minH = Infinity
+  for (let i = 0; i < selectedGpus.length; i++) {
+    const load = modelPayload * (usable[i] / totalUsable) + cbPerGpu
+    minH = Math.min(minH, (selectedGpus[i].availableVramMB ?? selectedGpus[i].vramMB) - load)
+  }
+  const headroom = Math.floor(minH)
+  const riskLabel = headroom < 1024 ? 'tight' : headroom < 4096 ? 'safe' : 'spacious'
+  return { fits: true, headroomMB: headroom, riskLabel, splitRatios: usable }
+}
+
 /**
  * LlmLaunchStore — native port of ProxLab's LLM Launch tab engine. Drives the AI·LLM › Launch UI:
  * model/quant selection, per-engine settings, VRAM estimate + GPU placement, command building, and
@@ -68,7 +98,7 @@ export class LlmLaunchStore {
 
   lastEstimate: any = null
   selectedPlacement: any = null
-  manualGpus: string[] = [] // pci_ids chosen via the manual GPU bar (overrides auto-placement)
+  customGpus: any[] = [] // GPUs chosen via the Custom placement selector (availableGpus entries)
   estimating = false
 
   launching = false
@@ -305,28 +335,93 @@ export class LlmLaunchStore {
     await this.loadSamplerPresets()
   }
   setPlacement(p: any): void {
-    this.manualGpus = [] // choosing an auto/suggested placement clears the manual selection
+    this.customGpus = [] // choosing a suggested placement clears any custom GPU selection
     this.selectedPlacement = p
     this.selectedNode = p?.node || p?.gpus?.[0]?.node || this.selectedNode
+    this.applyPlacementSettings(p)
   }
 
-  /** Manual GPU bar: toggle a specific GPU, rebuilding the placement from the current selection. */
-  toggleGpu(_agent: Agent, gpu: AgentGpu): void {
-    this.manualGpus = this.manualGpus.includes(gpu.pci_id)
-      ? this.manualGpus.filter((x) => x !== gpu.pci_id)
-      : [...this.manualGpus, gpu.pci_id]
-    this.applyManualPlacement()
+  // ─── Custom GPU selector (ProxLab "Custom" placement row) ───
+  get availableNvidiaGpus(): any[] {
+    return ((this.lastEstimate?.availableGpus ?? []) as any[]).filter((g) => g.provider === 'nvidia' && g.vramMB > 0)
   }
-  private applyManualPlacement(): void {
-    if (!this.manualGpus.length) { this.selectedPlacement = null; return }
-    // A service runs on one agent: anchor to the agent of the first selected GPU, include only its picks.
-    const owner = this.agents.find((a) => a.gpus.some((g) => this.manualGpus.includes(g.pci_id)))
-    if (!owner) { this.selectedPlacement = null; return }
-    const gpus = owner.gpus
-      .filter((g) => this.manualGpus.includes(g.pci_id))
-      .map((g) => ({ pciId: g.pci_id, node: owner.host_node, cudaIndex: g.cuda_index, name: g.name, vramMB: g.vram_mb }))
-    this.selectedPlacement = { node: owner.host_node, gpus, manual: true }
-    this.selectedNode = owner.host_node
+  get customAddableGpus(): any[] {
+    return this.availableNvidiaGpus.filter((g) => !this.customGpus.some((s) => s.node === g.node && s.pciId === g.pciId))
+  }
+  get isCustomSelected(): boolean {
+    return !!this.selectedPlacement?.custom
+  }
+  get customEval(): any {
+    const est = this.lastEstimate?.estimate
+    if (!this.customGpus.length || !est) return null
+    return evaluateCustomGpus(this.customGpus, est.weightsMB, est.kvCacheMB, est.breakdown?.params)
+  }
+  /** Add a GPU to the custom selection — value is "node:pciId" from the dropdown. */
+  addCustomGpu(value: string): void {
+    if (!value) return
+    const [node, ...rest] = value.split(':')
+    const pciId = rest.join(':')
+    const gpu = this.availableNvidiaGpus.find((g) => g.node === node && g.pciId === pciId)
+    if (!gpu || this.customGpus.some((s) => s.node === node && s.pciId === pciId)) return
+    this.customGpus = [...this.customGpus, gpu]
+    this.selectCustomPlacement()
+  }
+  removeCustomGpu(node: string, pciId: string): void {
+    this.customGpus = this.customGpus.filter((g) => !(g.node === node && g.pciId === pciId))
+    if (this.customGpus.length) this.selectCustomPlacement()
+    else { this.selectedPlacement = null } // nothing selected — user can pick a suggested placement
+  }
+  private selectCustomPlacement(): void {
+    const gpus = this.customGpus
+    if (!gpus.length) return
+    const ev = this.customEval
+    const p = {
+      type: gpus.length === 1 ? 'single' : 'multi-gpu',
+      gpus, node: gpus[0].node, gpuCount: gpus.length,
+      totalVramMB: gpus.reduce((s, g) => s + g.vramMB, 0),
+      availableVramMB: gpus.reduce((s, g) => s + (g.availableVramMB ?? g.vramMB), 0),
+      headroomMB: ev?.headroomMB, riskLabel: ev?.riskLabel, splitRatios: ev?.splitRatios,
+      nvlink: false, custom: true,
+    }
+    this.selectedPlacement = p
+    this.selectedNode = p.node
+    this.applyPlacementSettings(p)
+  }
+
+  private hasArg(key: string): boolean {
+    const t = this.template
+    return !!(t && ((t.args && key in t.args) || (t.advancedArgs && key in t.advancedArgs)))
+  }
+  /** Auto-config tensor-parallel / split settings from the chosen placement (ProxLab applyPlacementSettings). */
+  applyPlacementSettings(p: any): void {
+    if (!this.template || !p) return
+    const set = (k: string, v: any) => { this.settings = { ...this.settings, [k]: v } }
+    const gpus: any[] = p.gpus || []
+    const count = p.gpuCount ?? gpus.length
+    const isTabby = this.selectedProvider === 'tabbyapi'
+    const llamaLike = this.selectedProvider === 'llama-server' || this.selectedProvider === 'llama-server-mtp'
+    if (count > 1) {
+      const smallestMB = Math.min(...gpus.map((g) => g.vramMB))
+      const perGpuGB = Math.floor((smallestMB - 2048) / 1024)
+      if (this.hasArg('tensorParallel')) set('tensorParallel', isTabby ? 'true' : count)
+      if (this.hasArg('tpBackend')) set('tpBackend', p.nvlink ? 'nccl' : 'native')
+      if (this.hasArg('gpuSplit')) {
+        if (p.splitRatios?.length === count) set('gpuSplit', p.splitRatios.map((r: number) => Math.floor(r / 1024)).join(' '))
+        else set('gpuSplit', Array(count).fill(perGpuGB).join(' '))
+      }
+      if (this.hasArg('tensorSplit')) {
+        const sep = llamaLike ? ',' : ' '
+        if (p.splitRatios?.length === count) {
+          const maxR = Math.max(...p.splitRatios)
+          set('tensorSplit', p.splitRatios.map((r: number) => (maxR > 0 ? (r / maxR).toFixed(2) : '1')).join(sep))
+        } else set('tensorSplit', Array(count).fill('1').join(sep))
+      }
+    } else {
+      if (this.hasArg('tensorParallel')) set('tensorParallel', isTabby ? '' : 1)
+      if (this.hasArg('tpBackend')) set('tpBackend', 'native')
+      if (this.hasArg('gpuSplit')) set('gpuSplit', '')
+      if (this.hasArg('tensorSplit')) set('tensorSplit', '')
+    }
   }
 
   // ─── command helpers (ported) ───
@@ -499,8 +594,9 @@ export class LlmLaunchStore {
       const r = await bridge().request('POST', '/api/ai/estimate', body)
       runInAction(() => {
         this.lastEstimate = r
+        this.customGpus = [] // availableGpus refreshed — drop any stale custom selection
         const placements = (r as any)?.placements || []
-        if (placements.length && !this.selectedPlacement) this.setPlacement(placements[0])
+        if (placements.length) this.setPlacement(placements[0]) // auto-select best (ProxLab parity)
       })
     } catch { /* estimate is best-effort */ } finally {
       runInAction(() => { this.estimating = false })
