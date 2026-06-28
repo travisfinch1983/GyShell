@@ -11,3 +11,23 @@
 .body { flex: 1; position: relative; min-height: 0; background: #0f1117; }
 .placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 40px; text-align: center; color: var(--fg-faint); font-size: 13px; line-height: 1.6; }
 .term { position: absolute; inset: 0; padding: 8px 10px; }
+
+/* ── multi-tab console (embedded in the pane) ── */
+.multiContainer { display: flex; flex-direction: column; position: absolute; inset: 0; background: var(--app-bg); overflow: hidden; }
+.tabbar { display: flex; align-items: stretch; gap: 2px; padding: 4px 6px; border-bottom: 1px solid var(--border); background: var(--panel-bg-2); flex: 0 0 auto; overflow-x: auto; }
+.tab { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 4px 8px; border: 1px solid transparent; border-radius: 6px; background: var(--control-bg); color: var(--fg-muted); cursor: pointer; font-size: 12px; white-space: nowrap; &:hover { color: var(--fg); } }
+.tabActive { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); color: var(--fg); }
+.tabDot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.dotService { background: var(--success); }
+.dotInstall { background: var(--accent); }
+.tabLabel { overflow: hidden; text-overflow: ellipsis; }
+.tabClose { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border: none; background: transparent; color: var(--fg-faint); border-radius: 3px; cursor: pointer; &:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 18%, transparent); } }
+.addWrap { position: relative; display: inline-flex; align-items: center; }
+.addBtn { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: 1px dashed var(--border); border-radius: 6px; background: transparent; color: var(--fg-muted); cursor: pointer; &:hover { color: var(--accent); border-color: var(--accent); } }
+.pickerBackdrop { position: fixed; inset: 0; z-index: 40; }
+.picker { position: absolute; top: 30px; left: 0; z-index: 41; min-width: 240px; max-height: 360px; overflow-y: auto; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.45); padding: 5px; }
+.pickerHead { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--fg-faint); padding: 5px 8px; }
+.pickerEmpty { font-size: 12px; color: var(--fg-faint); padding: 8px; }
+.pickerItem { display: block; width: 100%; text-align: left; font-size: 12px; padding: 6px 9px; border: none; background: transparent; color: var(--fg); border-radius: 5px; cursor: pointer; font-family: var(--font-mono); &:hover { background: var(--control-bg); } }
+.multiBody { flex: 1; position: relative; min-height: 0; background: #0f1117; }
+.termHost { position: absolute; inset: 0; }

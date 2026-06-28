@@ -2,19 +2,18 @@ import { makeAutoObservable } from 'mobx'
 import type { AiService } from './AiServicesStore'
 
 /**
- * LiveConsoleStore — the single home for interactive PTY sessions (tmux attach + install/update
- * scripts). Other parts of the UI (service-card "Logs", provider Install/Update) set a target here
- * and bump `focusSeq`; App watches focusSeq to switch to the Live Console tab. This replaces the
- * per-tab popup xterm windows — everything attaches in one place.
+ * LiveConsoleStore — multiple interactive PTY sessions (service log tails + install/update scripts)
+ * shown as tabs in the Live Console pane. Service-card "Logs" + provider Install/Update push a
+ * session here and bump focusSeq; App watches focusSeq to surface the console pane.
  */
-export type ConsoleTargetKind = 'service' | 'install'
+export type ConsoleSessionKind = 'service' | 'install'
 
-export interface ConsoleTarget {
-  id: string // stable session key (re-selecting the same id won't restart)
-  kind: ConsoleTargetKind
+export interface ConsoleSession {
+  id: string // stable key (service id, or install:<n>)
+  kind: ConsoleSessionKind
   label: string
   host: string // PVE host IP to SSH into
-  command: string // full command to run on the host (e.g. `pct exec <vmid> -- tmux attach -t <s>`)
+  command: string // command to run on the host
 }
 
 /** Display name by priority: port:aliasOverride → port:model → port:providerName/tmux. */
@@ -24,47 +23,61 @@ export function serviceConsoleLabel(s: AiService): string {
 }
 
 export class LiveConsoleStore {
-  target: ConsoleTarget | null = null
-  focusSeq = 0 // bump to ask App to switch to the Live Console tab
+  sessions: ConsoleSession[] = []
+  activeId: string | null = null
+  focusSeq = 0 // bump to ask App to surface the Live Console pane
+  private installSeq = 0
 
   constructor() {
     makeAutoObservable(this)
   }
-
   private focus() {
     this.focusSeq++
   }
+  get active(): ConsoleSession | null {
+    return this.sessions.find((s) => s.id === this.activeId) ?? null
+  }
+  setActive(id: string): void {
+    if (this.sessions.some((s) => s.id === id)) this.activeId = id
+  }
+  close(id: string): void {
+    const idx = this.sessions.findIndex((s) => s.id === id)
+    if (idx < 0) return
+    this.sessions.splice(idx, 1)
+    if (this.activeId === id) this.activeId = this.sessions[Math.max(0, idx - 1)]?.id ?? null
+  }
 
-  /** Attach to a running service's live console (from the "Logs" button or the dropdown).
-   *  tmux-launched services have a live pane to attach to; systemd services don't (they log to a
-   *  file), so we attach to tmux IF a session exists, otherwise follow the live log file. */
-  openService(s: AiService): void {
-    if (!s.pveHostIp || !s.vmid) {
-      this.target = { id: s.id, kind: 'service', label: serviceConsoleLabel(s), host: s.pveHostIp || '', command: '' }
-      this.focus()
-      return
+  private upsert(sess: ConsoleSession): void {
+    const existing = this.sessions.find((s) => s.id === sess.id)
+    if (existing) {
+      // refresh the command (e.g. re-open) but keep tab position
+      existing.label = sess.label
+      existing.host = sess.host
+      existing.command = sess.command
+    } else {
+      this.sessions.push(sess)
     }
-    // Match ProxLab: follow the persistent log file (fast, universal). tmux-attach was slow to
-    // start (waits, fails on systemd services) — services log to /var/log/proxlab/<session>.log.
+    this.activeId = sess.id
+    this.focus()
+  }
+
+  /** Tail a running service's live log (ProxLab-style; works for tmux + systemd). */
+  openService(s: AiService): void {
+    if (!s.pveHostIp || !s.vmid) return
     const logFile = `/var/log/proxlab/${s.tmuxSession || s.id}.log`.replace(/'/g, "'\\''")
-    this.target = {
+    this.upsert({
       id: s.id,
       kind: 'service',
       label: serviceConsoleLabel(s),
       host: s.pveHostIp,
       command: `pct exec ${s.vmid} -- tail -n 400 -f '${logFile}'`,
-    }
-    this.focus()
+    })
   }
 
-  /** Run an install/update script for a provider in the console (new live term). */
+  /** Run an install/update script as a new console tab. */
   openInstall(label: string, host: string, command: string): void {
-    this.target = { id: `install:${label}:${this.focusSeq + 1}`, kind: 'install', label, host, command }
-    this.focus()
-  }
-
-  clear(): void {
-    this.target = null
+    this.installSeq++
+    this.upsert({ id: `install:${this.installSeq}`, kind: 'install', label, host, command })
   }
 }
 
