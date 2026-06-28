@@ -239,10 +239,31 @@ export class LlmLaunchStore {
       runInAction(() => { this.userSamplerPresets = (r?.presets ?? []) as any[] })
     } catch { /* keep built-ins */ }
   }
-  async saveSamplerPreset(name: string): Promise<void> {
-    if (!name?.trim()) return
-    await bridge().request('POST', '/api/ai/sampler-presets', { name: name.trim(), readOnly: false, values: this.snapshotSamplerValues() })
+  samplerPresetById(id: string): any {
+    return this.allSamplerPresets.find((x) => x.id === id) || null
+  }
+  /** Save As — create a NEW preset from current sampler settings (optionally read-only). */
+  async saveSamplerPreset(name: string, readOnly = false): Promise<string | null> {
+    if (!name?.trim()) return null
+    const r: any = await bridge().request('POST', '/api/ai/sampler-presets', { name: name.trim(), readOnly, values: this.snapshotSamplerValues() })
     await this.loadSamplerPresets()
+    return r?.preset?.id ?? null
+  }
+  /** Update — overwrite the selected preset with current settings. Built-ins are JS constants and
+   *  can't be mutated, so they fork into a "(custom)" copy (matches ProxLab). Returns the live id. */
+  async updateSamplerPreset(id: string, readOnly: boolean): Promise<string | null> {
+    if (!id) return null
+    const preset = this.samplerPresetById(id)
+    if (String(id).startsWith('builtin-')) {
+      const r: any = await bridge().request('POST', '/api/ai/sampler-presets', {
+        name: `${preset?.name ?? 'Preset'} (custom)`, readOnly, values: this.snapshotSamplerValues(),
+      })
+      await this.loadSamplerPresets()
+      return r?.preset?.id ?? null
+    }
+    await bridge().request('PUT', `/api/ai/sampler-presets/${encodeURIComponent(id)}`, { values: this.snapshotSamplerValues(), readOnly })
+    await this.loadSamplerPresets()
+    return id
   }
   async deleteSamplerPreset(id: string): Promise<void> {
     if (!id || String(id).startsWith('builtin-')) return // built-ins are read-only

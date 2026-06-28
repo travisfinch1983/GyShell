@@ -45,6 +45,7 @@ const SettingField: React.FC<{ k: string; arg: any }> = observer(({ k, arg }) =>
 
 export const LlmLaunchPanel: React.FC = observer(() => {
   const [samplerSel, setSamplerSel] = React.useState('')
+  const [samplerRO, setSamplerRO] = React.useState(false)
   React.useEffect(() => {
     if (!store.models) void store.load()
   }, [])
@@ -141,21 +142,38 @@ export const LlmLaunchPanel: React.FC = observer(() => {
             {store.supportsSamplerPresets && (
               <div className={styles.samplerRow}>
                 <span className={styles.fieldLabel}>Sampler preset</span>
-                <select className={`${styles.input} ${styles.samplerSelect}`} value={samplerSel} onChange={(e) => setSamplerSel(e.target.value)}>
-                  <option value="">Select preset…</option>
+                <select
+                  className={`${styles.input} ${styles.samplerSelect}`}
+                  value={samplerSel}
+                  onChange={(e) => { const id = e.target.value; setSamplerSel(id); setSamplerRO(!!store.samplerPresetById(id)?.readOnly) }}
+                >
+                  <option value="">— select a preset —</option>
                   <optgroup label="Built-in">
-                    {store.allSamplerPresets.filter((p) => String(p.id).startsWith('builtin-')).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    {store.allSamplerPresets.filter((p) => String(p.id).startsWith('builtin-')).map((p) => <option key={p.id} value={p.id}>{p.name}{p.readOnly ? '  🔒' : ''}</option>)}
                   </optgroup>
                   {store.userSamplerPresets.length > 0 && (
                     <optgroup label="Custom">
-                      {store.userSamplerPresets.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      {store.userSamplerPresets.map((p) => <option key={p.id} value={p.id}>{p.name}{p.readOnly ? '  🔒' : ''}</option>)}
                     </optgroup>
                   )}
                 </select>
                 <button className={styles.scanBtn} disabled={!samplerSel} onClick={() => store.applySamplerPreset(samplerSel)}>Apply</button>
-                <button className={styles.scanBtn} onClick={async () => { const n = window.prompt('Save current sampler settings as a preset — name:'); if (n) await store.saveSamplerPreset(n) }}>Save current…</button>
+                <button
+                  className={styles.scanBtn}
+                  disabled={!samplerSel}
+                  title="Overwrite the selected preset with the current settings. Built-in presets are read-only — they fork into a (custom) copy."
+                  onClick={async () => { const id = await store.updateSamplerPreset(samplerSel, samplerRO); if (id) setSamplerSel(id) }}
+                >Update</button>
+                <button
+                  className={styles.scanBtn}
+                  title="Save the current sampler settings as a new preset"
+                  onClick={async () => { const n = window.prompt('Name for this preset:'); if (n) { const id = await store.saveSamplerPreset(n, samplerRO); if (id) setSamplerSel(id) } }}
+                >Save As…</button>
+                <label className={styles.roChk} title="When checked, the preset is protected — it can't be overwritten in place, only copied.">
+                  <input type="checkbox" checked={samplerRO} onChange={(e) => setSamplerRO(e.target.checked)} /> Read Only
+                </label>
                 {samplerSel && !samplerSel.startsWith('builtin-') && (
-                  <button className={styles.scanBtn} onClick={async () => { await store.deleteSamplerPreset(samplerSel); setSamplerSel('') }}>Delete</button>
+                  <button className={styles.scanBtn} onClick={async () => { await store.deleteSamplerPreset(samplerSel); setSamplerSel(''); setSamplerRO(false) }}>Delete</button>
                 )}
               </div>
             )}

@@ -64,3 +64,4 @@
 /* Sampler preset row (llama.cpp / ik_llama.cpp) */
 .samplerRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--control-bg); }
 .samplerSelect { min-width: 260px; flex: 0 1 340px; }
+.roChk { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--fg-muted); cursor: pointer; input { accent-color: var(--accent); } }
