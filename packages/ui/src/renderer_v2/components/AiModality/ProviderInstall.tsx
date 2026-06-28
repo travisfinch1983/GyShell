@@ -85,8 +85,13 @@ export const ProviderInstall: React.FC<{ categories: string[] }> = observer(({ c
   const [installedId, setInstalledId] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!store.providers.length) void store.load()
-  }, [])
+    void (async () => {
+      if (!store.providers.length) await store.load()
+      // Reflect reality, not stale ai-config: live-verify the providers shown in this tab.
+      void store.liveVerify(store.byCategory(categories).map((p) => p.id))
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categories.join(',')])
 
   const onInstall = (s: InstallSession, id: string) => { setInstalledId(id); setSession(s) }
   const closeTerminal = () => { setSession(null); if (installedId) void store.refreshStatus(installedId); setInstalledId(null) }

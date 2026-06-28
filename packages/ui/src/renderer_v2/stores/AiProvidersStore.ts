@@ -95,12 +95,35 @@ export class AiProvidersStore {
       return null
     }
   }
-  /** Live status re-check (reads /opt/<id>/.version on each node + persists to ai-config). */
+  /** Merge a live { results: { node: {status, version, updateAvailable} } } into a provider's agents.
+   *  We trust the LIVE check over the persisted ai-config flags (which go stale — version null,
+   *  phantom updateAvailable, installed:true after a manual removal, etc.). */
+  private mergeStatus(id: string, results: Record<string, any>): void {
+    const p = this.providers.find((x) => x.id === id)
+    if (!p || !results) return
+    runInAction(() => {
+      const agents = { ...(p.agents ?? {}) }
+      for (const [node, r] of Object.entries(results)) {
+        if (!r || (r as any).ok === false) continue
+        const prev = agents[node] ?? {}
+        const installed = (r as any).status === 'installed'
+        agents[node] = {
+          ...prev,
+          installed,
+          version: installed ? ((r as any).version ?? prev.version ?? null) : null,
+          updateAvailable: (r as any).updateAvailable || null,
+        }
+      }
+      p.agents = agents
+      this.providers = [...this.providers] // trigger observers
+    })
+  }
+  /** Live status re-check (reads /opt/<id>/.version on each node). Merges live result; does NOT reload stale data. */
   async refreshStatus(id: string): Promise<void> {
     this.busyId = `${id}:status`
     try {
-      await this.cluster().request('POST', `/api/ai/providers/${encodeURIComponent(id)}/status`, {})
-      await this.load()
+      const r = (await this.cluster().request('POST', `/api/ai/providers/${encodeURIComponent(id)}/status`, {})) as any
+      this.mergeStatus(id, r?.results ?? {})
     } catch {
       /* ignore */
     } finally {
@@ -110,19 +133,33 @@ export class AiProvidersStore {
   async checkUpdate(id: string): Promise<void> {
     this.busyId = `${id}:update`
     try {
-      await this.cluster().request('POST', `/api/ai/providers/${encodeURIComponent(id)}/check-update`, {})
-      await this.load()
+      const r = (await this.cluster().request('POST', `/api/ai/providers/${encodeURIComponent(id)}/check-update`, {})) as any
+      this.mergeStatus(id, r?.results ?? {})
     } catch {
       /* ignore */
     } finally {
       runInAction(() => { this.busyId = null })
     }
   }
+  /** Live-verify a set of providers in parallel (used on tab open so cards reflect reality, not stale config). */
+  async liveVerify(ids: string[]): Promise<void> {
+    await Promise.all(ids.map((id) => this.refreshStatusQuiet(id)))
+  }
+  private async refreshStatusQuiet(id: string): Promise<void> {
+    try {
+      const r = (await this.cluster().request('POST', `/api/ai/providers/${encodeURIComponent(id)}/status`, {})) as any
+      this.mergeStatus(id, r?.results ?? {})
+    } catch {
+      /* ignore */
+    }
+  }
   async uninstall(id: string, node: string): Promise<void> {
     this.busyId = `${id}:${node}`
     try {
-      await this.cluster().request('POST', `/api/ai/providers/${encodeURIComponent(id)}/uninstall`, { node })
-      await this.load()
+      const r = (await this.cluster().request('POST', `/api/ai/providers/${encodeURIComponent(id)}/uninstall`, { node })) as any
+      // merge the uninstall result; if it didn't report status, force this node not-installed
+      const results = r?.results ?? { [node]: { ok: true, status: 'not_installed' } }
+      this.mergeStatus(id, results)
     } catch (e) {
       runInAction(() => { this.error = e instanceof Error ? e.message : String(e) })
     } finally {
