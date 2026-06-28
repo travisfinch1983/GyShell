@@ -13,7 +13,8 @@
 .srcTmux { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
 .srcNone { background: var(--control-bg); color: var(--fg-faint); }
 
-.body { flex: 1; display: grid; grid-template-columns: 300px 1fr; min-height: 0; }
+.body { flex: 1; display: grid; grid-template-columns: 300px 6px 1fr; min-height: 0; }
+.divider { cursor: col-resize; background: var(--border); transition: background 0.15s; &:hover { background: var(--accent); } }
 
 /* left listbox */
 .list { display: flex; flex-direction: column; border-right: 1px solid var(--border); min-height: 0; background: var(--panel-bg); }

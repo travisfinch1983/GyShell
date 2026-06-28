@@ -51,8 +51,30 @@ const ServiceRow: React.FC<{ svc: LogService }> = observer(({ svc }) => {
   )
 })
 
+const LIST_W_KEY = 'ailab-logs-list-width'
+
 export const LogsPanel: React.FC = observer(() => {
   const preRef = useRef<HTMLPreElement>(null)
+  const [listW, setListW] = React.useState<number>(() => {
+    const v = Number(localStorage.getItem(LIST_W_KEY))
+    return Number.isFinite(v) && v >= 180 ? v : 300
+  })
+
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = listW
+    const onMove = (ev: MouseEvent) => setListW(Math.min(700, Math.max(180, startW + (ev.clientX - startX))))
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      setListW((w) => { localStorage.setItem(LIST_W_KEY, String(w)); return w })
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    document.body.style.cursor = 'col-resize'
+  }
 
   useEffect(() => {
     store.startListPoll(8000)
@@ -86,7 +108,7 @@ export const LogsPanel: React.FC = observer(() => {
         )}
       </div>
 
-      <div className={styles.body}>
+      <div className={styles.body} style={{ gridTemplateColumns: `${listW}px 6px 1fr` }}>
         {/* LEFT — service listbox */}
         <div className={styles.list}>
           <div className={styles.listHead}>
@@ -101,6 +123,9 @@ export const LogsPanel: React.FC = observer(() => {
             {store.services.length === 0 && <div className={styles.empty}>{store.loadingList ? 'Loading…' : 'No services.'}</div>}
           </div>
         </div>
+
+        {/* draggable divider */}
+        <div className={styles.divider} onMouseDown={startResize} title="Drag to resize" />
 
         {/* RIGHT — log viewer */}
         <div className={styles.viewer}>
