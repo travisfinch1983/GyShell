@@ -1,6 +1,6 @@
 import React from 'react'
 import { observer } from 'mobx-react-lite'
-import { Rocket, Server, RefreshCw, Cpu, Pencil, Trash2, Check, X, Save, FilePlus, Upload } from 'lucide-react'
+import { Rocket, Server, RefreshCw, Cpu, Pencil, Trash2, Check, Save, FilePlus, Upload } from 'lucide-react'
 import { llmLaunchStore as store, type QuantRow } from '../../stores/LlmLaunchStore'
 import { confirmStore } from '../../stores/confirmStore'
 import { promptStore } from '../../stores/promptStore'
