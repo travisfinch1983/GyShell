@@ -3,6 +3,8 @@ import { observer } from 'mobx-react-lite'
 import { PackagePlus, BrainCircuit, Image as ImageIcon, AudioLines } from 'lucide-react'
 import { ProviderInstall } from './ProviderInstall'
 import { LlmLaunchPanel } from '../AiLlm/LlmLaunchPanel'
+import { ServiceLaunchPanel } from './ServiceLaunchPanel'
+import { ttsLaunchStore, imageLaunchStore } from '../../stores/ServiceLaunchStore'
 import styles from './AiModality.module.scss'
 
 interface SubTab {
@@ -40,12 +42,14 @@ export const AiLlmPanel: React.FC = observer(() => (
 
 export const AiImagePanel: React.FC = observer(() => (
   <Shell title="AI · Image Gen" Icon={ImageIcon} tabs={[
+    { id: 'launch', label: 'Imagegen Launch', render: () => <ServiceLaunchPanel store={imageLaunchStore} emptyLabel="image-generation" /> },
     { id: 'providers', label: 'Provider Install', render: () => <ProviderInstall categories={['image', 'training']} /> },
   ]} />
 ))
 
 export const AiTtsSttPanel: React.FC = observer(() => (
   <Shell title="AI · TTS & STT" Icon={AudioLines} tabs={[
+    { id: 'launch', label: 'TTS Launch', render: () => <ServiceLaunchPanel store={ttsLaunchStore} emptyLabel="TTS" /> },
     { id: 'providers', label: 'Provider Install', render: () => <ProviderInstall categories={['tts']} /> },
   ]} />
 ))
