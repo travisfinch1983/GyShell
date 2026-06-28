@@ -36,7 +36,10 @@ export class ClusterService {
 
   // Prefixes served natively by AI-Lab's own proxy HTTP listener (not ProxLab). As tabs migrate
   // to native execution, add their prefixes here so the bridge routes to localhost, not ProxLab.
-  private static readonly LOCAL_PREFIXES = ['/api/civitai', '/api/ai/hf', '/api/system']
+  // /api/ai is now fully native (the ported launch/scan/estimate/gpu/providers/services/HF router on the
+  // universal proxy). AI-Lab only uses /api/ai/{providers,hf,active-services,config} + the launch
+  // endpoints — none of the un-ported RAG/inventory sub-paths — so the whole prefix routes local.
+  private static readonly LOCAL_PREFIXES = ['/api/civitai', '/api/ai', '/api/system']
   private localBase = `http://127.0.0.1:${process.env.AILAB_PROXY_PORT || 17890}`
 
   private async send(method: HttpMethod, path: string, body?: unknown): Promise<unknown> {
