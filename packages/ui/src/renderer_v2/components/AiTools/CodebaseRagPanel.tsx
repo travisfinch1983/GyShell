@@ -55,7 +55,21 @@ export const CodebaseRagPanel: React.FC = observer(() => {
         <div className={styles.head}>
           <h4 className={styles.h4}>Indexed Collections</h4>
           <span className={styles.spacer} />
+          <button className={styles.btn} disabled={st.active} onClick={() => void store.updateAll()}>Update All</button>
           <button className={styles.btn} onClick={() => void store.load()}><RefreshCw size={13} /> Refresh</button>
+        </div>
+        <div className={styles.autosyncRow}>
+          <label className={styles.chk}>
+            <input type="checkbox" checked={!!store.autosync.enabled} onChange={(e) => void store.saveAutosync({ enabled: e.target.checked })} />
+            Auto-sync
+          </label>
+          <span className={styles.dim}>every</span>
+          <select className={styles.miniSelect} value={store.autosync.frequency} onChange={(e) => void store.saveAutosync({ frequency: e.target.value })}>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+          </select>
+          <span className={styles.dim}>at</span>
+          <input className={styles.miniSelect} type="time" value={store.autosync.time} onChange={(e) => void store.saveAutosync({ time: e.target.value })} />
         </div>
         {store.collections.length === 0 ? <div className={styles.muted}>No codebase collections indexed yet.</div> : (
           <table className={styles.ragTable}>

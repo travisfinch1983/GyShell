@@ -7,6 +7,7 @@ export class RagStore {
   collections: any[] = []
   checkpoints: any[] = []
   status: any = { active: false, phase: '', progress: 0, detail: '' }
+  autosync: any = { enabled: false, frequency: 'daily', time: '01:00' }
   loaded = false
   err = ''
   form = { url: '', collection: '', description: '', branch: '' }
@@ -27,6 +28,21 @@ export class RagStore {
         this.loaded = true
       })
     } catch (e: any) { runInAction(() => { this.err = e?.message || 'load failed' }) }
+    void this.refreshStatus()
+    void this.loadAutosync()
+  }
+
+  async loadAutosync(): Promise<void> {
+    const c = await bridge().request('GET', '/api/ai/rag/autosync').catch(() => null)
+    if (c) runInAction(() => { this.autosync = c })
+  }
+  async saveAutosync(patch: Record<string, any>): Promise<void> {
+    const next = { ...this.autosync, ...patch }
+    runInAction(() => { this.autosync = next })
+    await bridge().request('PUT', '/api/ai/rag/autosync', next).catch(() => undefined)
+  }
+  async updateAll(): Promise<void> {
+    await bridge().request('POST', '/api/ai/rag/update-all', {}).catch(() => undefined)
     void this.refreshStatus()
   }
 

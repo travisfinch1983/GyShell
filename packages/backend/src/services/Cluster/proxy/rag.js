@@ -7,7 +7,7 @@ import express from 'express'
 import multer from 'multer'
 import { readFile as readFileAsync } from 'node:fs/promises'
 import { extname, join } from 'node:path'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
 // Document extractors are optional — lazy + graceful so codebase-RAG never breaks if they're absent.
@@ -998,4 +998,69 @@ app.get('/api/ai/docrag/collections/:name/stats', async (req, res) => {
     res.status(502).json({ error: e.message });
   }
 });
+
+// ── RAG Queue status ──
+app.get('/api/ai/rag/queue', (req, res) => {
+  res.json({ queue: ragQueue.map(q => ({ type: q.type, collection: q.collection, url: q.url })), length: ragQueue.length });
+});
+
+// ── Update-all: re-index every collection that has a repo_url ──
+app.post('/api/ai/rag/update-all', async (req, res) => {
+  try {
+    const manifestResult = await exec(MCPJUNGLE_HOST,
+      'cat /opt/mcp-codebase-rag/data/collections.json 2>/dev/null || echo "[]"',
+      { timeout: 10000 });
+    const manifest = JSON.parse(manifestResult.stdout || '[]');
+    let queued = 0;
+    for (const col of manifest) {
+      if (!col.repo_url) continue;
+      ragQueue.push({ type: 'update', collection: col.name });
+      queued++;
+    }
+    if (!ragJob.active && ragQueue.length > 0) processRagQueue();
+    res.json({ queued, collections: manifest.map(c => c.name) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── RAG Auto-Sync Config + scheduler ──
+const AUTOSYNC_PATH = join(process.env.AILAB_PROXY_DATA_DIR || '/tmp', 'rag-autosync.json');
+let ragAutoSyncTimer = null;
+function loadRagAutoSyncConfig() {
+  try { if (existsSync(AUTOSYNC_PATH)) return JSON.parse(readFileSync(AUTOSYNC_PATH, 'utf-8')); } catch {}
+  return { enabled: false, frequency: 'daily', time: '01:00' };
+}
+function saveRagAutoSyncConfig(cfg) {
+  try { mkdirSync(process.env.AILAB_PROXY_DATA_DIR || '/tmp', { recursive: true }); } catch {}
+  writeFileSync(AUTOSYNC_PATH, JSON.stringify(cfg, null, 2));
+}
+function setupRagAutoSync(cfg) {
+  if (ragAutoSyncTimer) { clearInterval(ragAutoSyncTimer); ragAutoSyncTimer = null; }
+  if (!cfg.enabled) return;
+  ragAutoSyncTimer = setInterval(async () => {
+    const now = new Date();
+    const hhmm = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    if (hhmm !== (cfg.time || '01:00')) return;
+    if (cfg.frequency === 'weekly' && now.getDay() !== 0) return;
+    console.log('[rag-autosync] Running scheduled update-all at ' + hhmm);
+    try {
+      const resp = await fetch('http://127.0.0.1:' + selfPort + '/api/ai/rag/update-all', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(10000),
+      });
+      const data = await resp.json();
+      console.log('[rag-autosync] Queued ' + data.queued + ' collections for update');
+    } catch (e) { console.warn('[rag-autosync] Failed:', e.message); }
+  }, 60000);
+  console.log('[rag-autosync] Scheduled ' + cfg.frequency + ' at ' + cfg.time);
+}
+app.get('/api/ai/rag/autosync', (req, res) => { res.json(loadRagAutoSyncConfig()); });
+app.put('/api/ai/rag/autosync', express.json(), (req, res) => {
+  const { enabled, frequency, time } = req.body || {};
+  const cfg = { enabled: !!enabled, frequency: frequency || 'daily', time: time || '01:00' };
+  saveRagAutoSyncConfig(cfg);
+  setupRagAutoSync(cfg);
+  res.json(cfg);
+});
+try { setupRagAutoSync(loadRagAutoSyncConfig()); } catch {}
 }
