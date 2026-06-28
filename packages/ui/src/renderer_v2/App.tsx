@@ -1,7 +1,6 @@
 import React, { useState, useCallback } from 'react'
 import { reaction } from 'mobx'
 import { observer } from 'mobx-react-lite'
-import { SlidersHorizontal, Plus } from 'lucide-react'
 import { AppStore } from './stores/AppStore'
 import { MinionStore } from './stores/MinionStore'
 import { MinionProvider } from './stores/MinionContext'
@@ -12,7 +11,7 @@ import { TopBar } from './components/TopBar/TopBar'
 import { SettingsView } from './components/Settings/SettingsView'
 import { ConnectionsView } from './components/Connections/ConnectionsView'
 import { ConfirmDialog } from './components/Common/ConfirmDialog'
-import { LayoutWorkspace } from './components/Layout/LayoutWorkspace'
+import { TerminalWorkspace } from './components/Terminal/TerminalWorkspace'
 import { MinionSidebar } from './components/Minions/MinionSidebar'
 import { PrimarySidebar, type PrimaryTab } from './components/PrimarySidebar/PrimarySidebar'
 import { GlobalChat } from './components/Chat/GlobalChat'
@@ -27,7 +26,6 @@ import { ServicesDrawer } from './components/AiServices/ServicesDrawer'
 import { ModelDownloadsPanel } from './components/ModelDownloads/ModelDownloadsPanel'
 import { LogsPanel } from './components/Logs/LogsPanel'
 import { AiLlmPanel, AiImagePanel, AiTtsSttPanel } from './components/AiModality/AiModalityPanels'
-import { LiveConsoleMultiPanel } from './components/LiveConsole/LiveConsoleMultiPanel'
 import { liveConsoleStore } from './stores/LiveConsoleStore'
 import './styles/app.scss'
 
@@ -78,9 +76,10 @@ export const App: React.FC = observer(() => {
     localStorage.setItem('ai-lab-primary-tab', id)
   }, [])
 
-  // Service "Logs" buttons + provider install/update bump liveConsoleStore.focusSeq → jump to the Live Console.
+  // Service "Logs" buttons + provider install/update bump liveConsoleStore.focusSeq → surface the
+  // Terminal tab, whose right pane is the Live Console.
   React.useEffect(() => {
-    return reaction(() => liveConsoleStore.focusSeq, () => handlePrimaryTabChange('live-console'))
+    return reaction(() => liveConsoleStore.focusSeq, () => handlePrimaryTabChange('terminal'))
   }, [handlePrimaryTabChange])
 
   React.useEffect(() => {
@@ -341,7 +340,7 @@ export const App: React.FC = observer(() => {
               inset: 0,
             }}
           >
-            <LayoutWorkspace store={store} />
+            <TerminalWorkspace store={store} />
           </div>
 
           {primaryTab === 'cluster' && <ClusterPanel />}
@@ -360,8 +359,6 @@ export const App: React.FC = observer(() => {
 
           {primaryTab === 'model-downloads' && <ModelDownloadsPanel />}
 
-          {primaryTab === 'live-console' && <LiveConsoleMultiPanel />}
-
           {primaryTab === 'logs' && <LogsPanel />}
 
           {primaryTab === 'flowchart' && (
@@ -376,37 +373,6 @@ export const App: React.FC = observer(() => {
               title="Monitor"
               body="The Monitor panel will be extracted from the multi-panel terminal layout and rendered here as a top-level workspace tab."
             />
-          )}
-
-          {/* Terminal-scoped action buttons — only visible on the Terminal tab.
-              Always present even when no terminal tabs are open, so the user
-              can always spawn a new one. */}
-          {primaryTab === 'terminal' && (
-            <div
-              style={{
-                position: 'absolute',
-                top: 6,
-                right: 8,
-                zIndex: 5,
-                display: 'flex',
-                gap: 4,
-              }}
-            >
-              <button
-                className="icon-btn"
-                title="New terminal tab"
-                onClick={() => store.createLocalTab(undefined, { ensurePanel: true })}
-              >
-                <Plus size={16} strokeWidth={2} />
-              </button>
-              <button
-                className="icon-btn"
-                title={store.i18n.t.connections.title}
-                onClick={() => store.openConnections()}
-              >
-                <SlidersHorizontal size={16} strokeWidth={2} />
-              </button>
-            </div>
           )}
 
           {/* Global chat overlay — toggled independently from the model sidebar. */}

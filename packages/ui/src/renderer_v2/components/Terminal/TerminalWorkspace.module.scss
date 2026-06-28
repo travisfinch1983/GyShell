@@ -1,0 +1,11 @@
+.group { position: absolute; inset: 0; width: 100%; height: 100%; }
+.pane { position: relative; overflow: hidden; }
+.handle {
+  position: relative;
+  width: 6px;
+  flex: 0 0 6px;
+  background: var(--border);
+  cursor: col-resize;
+  transition: background 0.12s ease;
+  &:hover, &[data-resize-handle-active] { background: var(--accent); }
+}
