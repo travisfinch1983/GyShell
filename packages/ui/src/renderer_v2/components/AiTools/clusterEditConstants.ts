@@ -13,7 +13,7 @@ export const GPU_INTERLINK_GEN: Record<string, string[]> = {
 export const ZPOOL_TYPE_OPTIONS = ['Stripe', 'Mirror', 'RAIDZ1', 'RAIDZ2', 'RAIDZ3', 'Single', 'Special']
 
 /** MT/s * 8 bytes * channels * cpus / 1000 = GB/s (ported verbatim). */
-export function calcRamBandwidth(ramType: string, speedStr: string, channelsStr: string, cpuCount: number): string {
+export function calcRamBandwidth(_ramType: string, speedStr: string, channelsStr: string, cpuCount: number): string {
   const speed = parseFloat((speedStr || '').replace(/[^0-9.]/g, ''))
   const channels = parseInt(channelsStr) || 1
   const cpus = Math.max(1, Math.min(4, parseInt(String(cpuCount)) || 1))
