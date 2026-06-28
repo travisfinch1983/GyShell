@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Trash2, X, FileText } from 'lucide-react'
 import { docRagStore as store } from '../../stores/DocRagStore'
+import { confirmStore } from '../../stores/confirmStore'
 import styles from './AiTools.module.scss'
 
 const types = (m: any) => (m ? Object.entries(m).sort((a: any, b: any) => b[1] - a[1]).map(([t, c]) => `${t} (${c})`).join(', ') : '')
@@ -77,7 +78,7 @@ export const DocRagPanel: React.FC = observer(() => {
                   <td className={styles.dim}>{types(c.file_types)}</td>
                   <td className={styles.dim}>{when(c.indexed_at)}</td>
                   <td className={styles.rowActions}>
-                    <button className={styles.iconDanger} title="Delete" onClick={() => { if (window.confirm(`Delete collection "${c.display_name || c.name}"? Removes it from all vector DBs.`)) void store.deleteCollection(c.name) }}><Trash2 size={13} /></button>
+                    <button className={styles.iconDanger} title="Delete" onClick={async () => { if (await confirmStore.confirm({ title: 'Delete collection', message: `Delete collection “${c.display_name || c.name}”? Removes it from all vector DBs.`, confirmText: 'Delete' })) void store.deleteCollection(c.name) }}><Trash2 size={13} /></button>
                   </td>
                 </tr>
               ))}

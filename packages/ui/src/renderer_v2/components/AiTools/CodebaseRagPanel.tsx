@@ -2,6 +2,7 @@ import React, { useEffect } from 'react'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Trash2, RotateCw } from 'lucide-react'
 import { ragStore as store } from '../../stores/RagStore'
+import { confirmStore } from '../../stores/confirmStore'
 import styles from './AiTools.module.scss'
 
 const langs = (m: any) => (m ? Object.entries(m).sort((a: any, b: any) => b[1] - a[1]).slice(0, 3).map(([l, c]) => `${l} (${c})`).join(', ') : '')
@@ -86,7 +87,7 @@ export const CodebaseRagPanel: React.FC = observer(() => {
                   <td className={styles.dim}>{when(c.last_checked)}</td>
                   <td className={styles.rowActions}>
                     <button className={styles.iconBtn} title="Update (re-index)" disabled={st.active} onClick={() => void store.updateCollection(c)}><RotateCw size={13} /></button>
-                    <button className={styles.iconDanger} title="Delete" onClick={() => { if (window.confirm(`Delete collection "${c.display_name || c.name}"? Removes it from all vector DBs.`)) void store.deleteCollection(c.name) }}><Trash2 size={13} /></button>
+                    <button className={styles.iconDanger} title="Delete" onClick={async () => { if (await confirmStore.confirm({ title: 'Delete collection', message: `Delete collection “${c.display_name || c.name}”? Removes it from all vector DBs.`, confirmText: 'Delete' })) void store.deleteCollection(c.name) }}><Trash2 size={13} /></button>
                   </td>
                 </tr>
               ))}

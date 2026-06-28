@@ -2,6 +2,7 @@ import React, { useEffect } from 'react'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Trash2, Save } from 'lucide-react'
 import { mcpServersStore as store } from '../../stores/McpServersStore'
+import { confirmStore } from '../../stores/confirmStore'
 import styles from './AiTools.module.scss'
 
 export const McpServersPanel: React.FC = observer(() => {
@@ -36,7 +37,7 @@ export const McpServersPanel: React.FC = observer(() => {
                 </div>
                 <div className={styles.serverActions}>
                   <span className={styles.toolCount}>{tc.enabled}/{tc.total} tools</span>
-                  <button className={styles.iconDanger} title="Remove server" onClick={() => { if (window.confirm(`Remove MCP server "${s.name}"? This removes all its tools.`)) void store.deleteServer(s.name) }}><Trash2 size={13} /></button>
+                  <button className={styles.iconDanger} title="Remove server" onClick={async () => { if (await confirmStore.confirm({ title: 'Remove MCP server', message: `Remove MCP server “${s.name}”? This removes all its tools.`, confirmText: 'Remove' })) void store.deleteServer(s.name) }}><Trash2 size={13} /></button>
                 </div>
               </div>
               {s.description && <div className={styles.serverDesc}>{s.description}</div>}

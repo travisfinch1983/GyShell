@@ -3,6 +3,7 @@ import { observer } from 'mobx-react-lite'
 import { RefreshCw, Trash2, RotateCw, Eye, EyeOff, Search, Pencil, Plus } from 'lucide-react'
 import { clusterInfoStore as store } from '../../stores/ClusterInfoStore'
 import { HardwareEditModal, CredentialEditModal } from './ClusterEditModals'
+import { confirmStore } from '../../stores/confirmStore'
 import styles from './AiTools.module.scss'
 
 const CRED_LABELS: Record<string, string> = { login: 'Login', api_token: 'API Token', ssh_key: 'SSH Key', bearer_token: 'Bearer' }
@@ -45,7 +46,7 @@ export const ClusterInfoPanel: React.FC = observer(() => {
                 <span className={statusClass(e.status)}>{e.status || '?'}</span>
                 <span className={styles.spacer} />
                 {e.vmid && <button className={styles.iconBtn} title="Rescan" onClick={() => void store.rescanInventory(e.id)}><RotateCw size={12} /></button>}
-                <button className={styles.iconDanger} title="Delete" onClick={() => { if (window.confirm(`Remove "${e.name}" from inventory?`)) void store.deleteInventory(e.id) }}><Trash2 size={12} /></button>
+                <button className={styles.iconDanger} title="Delete" onClick={async () => { if (await confirmStore.confirm({ title: 'Remove inventory entry', message: `Remove “${e.name}” from inventory?`, confirmText: 'Remove' })) void store.deleteInventory(e.id) }}><Trash2 size={12} /></button>
               </div>
               <div className={styles.invMeta}>
                 {e.ip && <span>IP: {e.ip}</span>}
@@ -81,7 +82,7 @@ export const ClusterInfoPanel: React.FC = observer(() => {
                   <span className={statusClass(h.status)}>{h.status || '?'}</span>
                   <span className={styles.spacer} />
                   <button className={styles.iconBtn} title="Edit" onClick={() => setEditHost(h.id)}><Pencil size={12} /></button>
-                  <button className={styles.iconDanger} title="Delete" onClick={() => { if (window.confirm(`Remove host "${h.name}"?`)) void store.deleteHost(h.id) }}><Trash2 size={12} /></button>
+                  <button className={styles.iconDanger} title="Delete" onClick={async () => { if (await confirmStore.confirm({ title: 'Remove host', message: `Remove host “${h.name}”?`, confirmText: 'Remove' })) void store.deleteHost(h.id) }}><Trash2 size={12} /></button>
                 </div>
                 <div className={styles.invMeta}>
                   {h.ip && <span>IP: {h.ip}</span>}
@@ -118,7 +119,7 @@ export const ClusterInfoPanel: React.FC = observer(() => {
                   {(e.password || e.tokenSecret || e.type === 'ssh_key') && (
                     <button className={styles.iconBtn} title={rev ? 'Hide' : 'Reveal'} onClick={() => void store.toggleReveal(e.id)}>{rev ? <EyeOff size={12} /> : <Eye size={12} />}</button>
                   )}
-                  <button className={styles.iconDanger} title="Delete" onClick={() => { if (window.confirm(`Delete credential "${e.name}"?`)) void store.deleteCredential(e.id) }}><Trash2 size={12} /></button>
+                  <button className={styles.iconDanger} title="Delete" onClick={async () => { if (await confirmStore.confirm({ title: 'Delete credential', message: `Delete credential “${e.name}”?`, confirmText: 'Delete' })) void store.deleteCredential(e.id) }}><Trash2 size={12} /></button>
                 </div>
                 <div className={styles.invMeta}>
                   {e.url && <span>URL: {e.url}</span>}

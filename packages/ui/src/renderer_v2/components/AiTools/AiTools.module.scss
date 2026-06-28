@@ -120,3 +120,11 @@
 .dirBtn { display: inline-flex; align-items: center; gap: 6px; border: none; background: none; color: var(--accent); font-size: 12px; cursor: pointer; font-family: var(--font-mono); }
 .cacheGroup { margin-top: 6px; }
 .cacheGroupLabel { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--fg-muted); margin: 6px 0 3px; }
+
+/* Model Cacher — F/V/Q form + progress */
+.qcGrid { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.qcGrid .cfgField { min-width: 140px; flex: 1; }
+.capFillHot { height: 100%; background: var(--danger, #f87171); border-radius: 4px; }
+.cacheEntry { display: flex; flex-direction: column; gap: 3px; padding: 2px 0; }
+.capIndeterminate { height: 100%; width: 35%; border-radius: 4px; background: var(--accent); animation: cacheSlide 1.2s ease-in-out infinite; }
+@keyframes cacheSlide { 0% { margin-left: 0; } 50% { margin-left: 65%; } 100% { margin-left: 0; } }
