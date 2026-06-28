@@ -360,12 +360,16 @@ const ReviewBrowser: React.FC = observer(() => {
           </div>
 
           <div className={styles.revVersions}>
-            {store.civVersions.map((ver: any) => (
-              <button key={ver.id} className={`${styles.revVerBtn} ${ver.id === store.civSelVersionId ? styles.revVerActive : ''}`} onClick={() => store.selectVersion(ver.id)}>
-                {ver.name}{ver.baseModel ? <span className={styles.revBase}>{ver.baseModel}</span> : null}
-              </button>
-            ))}
+            {store.civVersions.map((ver: any) => {
+              const owned = store.isVersionOwned(ver.id)
+              return (
+                <button key={ver.id} className={`${styles.revVerBtn} ${ver.id === store.civSelVersionId ? styles.revVerActive : ''} ${owned ? styles.revVerOwned : ''}`} onClick={() => store.selectVersion(ver.id)} title={owned ? 'Already in your download history' : ''}>
+                  {owned && <Check size={11} />}{ver.name}{ver.baseModel ? <span className={styles.revBase}>{ver.baseModel}</span> : null}
+                </button>
+              )
+            })}
           </div>
+          {store.ownedVersionIds.size > 0 && <div className={styles.note}><Check size={11} /> green = already downloaded</div>}
 
           {v && (
             <>

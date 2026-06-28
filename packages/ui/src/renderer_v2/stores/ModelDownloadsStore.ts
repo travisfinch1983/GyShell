@@ -572,6 +572,23 @@ export class ModelDownloadsStore {
   get civCurrentVersion(): any | null {
     return this.civVersions.find((v) => v.id === this.civSelVersionId) ?? this.civVersions[0] ?? null
   }
+  /** Version IDs of the loaded model already in the download history (so the UI can green them). */
+  get ownedVersionIds(): Set<string> {
+    const set = new Set<string>()
+    const mid = String(this.civModel?.id ?? '')
+    if (!mid) return set
+    for (const h of this.civHistory) {
+      if (String(h.modelId) !== mid) continue
+      if (h.versionId) set.add(String(h.versionId))
+      if (Array.isArray(h.downloadedVersions)) for (const v of h.downloadedVersions) set.add(String(v))
+      // some history rows record the version only by name — match those too
+      if (h.versionName) for (const ver of this.civVersions) if (ver.name === h.versionName) set.add(String(ver.id))
+    }
+    return set
+  }
+  isVersionOwned(vid: number | string): boolean {
+    return this.ownedVersionIds.has(String(vid))
+  }
   async reviewLoad(input?: string): Promise<void> {
     const parsed = this.parseModelId(input ?? this.civUrl)
     if (!parsed) {

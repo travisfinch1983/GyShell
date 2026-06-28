@@ -133,6 +133,7 @@
 .revVersions { display: flex; flex-wrap: wrap; gap: 5px; }
 .revVerBtn { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 4px 11px; border-radius: 14px; border: 1px solid var(--border); background: var(--control-bg); color: var(--fg-muted); cursor: pointer; &:hover { color: var(--fg); } }
 .revVerActive { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: var(--accent); color: var(--fg); }
+.revVerOwned { border-color: color-mix(in srgb, var(--success) 60%, transparent); background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); &.revVerActive { background: color-mix(in srgb, var(--success) 30%, transparent); color: var(--fg); box-shadow: inset 0 0 0 1px var(--success); } }
 .revBase { font-size: 9px; padding: 0 5px; border-radius: 6px; background: rgba(0,0,0,0.2); }
 .revImages { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
 .revImg { width: 100%; aspect-ratio: 3/4; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); background: var(--control-bg); }
