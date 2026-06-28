@@ -32,7 +32,8 @@ export const ConnectionsView: React.FC<{ store: AppStore }> = observer(({ store 
   const [deleteConfirm, setDeleteConfirm] = React.useState<null | { section: ConnectionsSection; id: string }>(null)
 
   // Managed SSH keys + the upload-keyfile flow
-  const sshKeys = store.settings?.connections?.sshKeys ?? []
+  const sshKeys: Array<{ id: string; name: string; content: string }> =
+    (store.settings?.connections as any)?.sshKeys ?? []
   const [showKeyUpload, setShowKeyUpload] = React.useState(false)
   const [keyDragOver, setKeyDragOver] = React.useState(false)
   const [keyError, setKeyError] = React.useState<string | null>(null)

@@ -2340,8 +2340,8 @@ export class AppStore {
       : undefined
     // Resolve a managed key (connections.sshKeys[keyId]) to its raw contents. Falls back to any
     // legacy inline key / path still on the entry.
-    const managedKey = entry.keyId
-      ? this.settings?.connections?.sshKeys?.find((k) => k.id === entry.keyId)?.content
+    const managedKey = (entry as any).keyId
+      ? (this.settings?.connections as any)?.sshKeys?.find((k: any) => k.id === (entry as any).keyId)?.content
       : undefined
     const cfg: TerminalConfig = {
       type: 'ssh',
@@ -2419,12 +2419,12 @@ export class AppStore {
 
   async saveSshKey(key: { id: string; name: string; content: string; createdAt?: number }): Promise<string> {
     const current = this.settings ?? (await this.fetchCombinedSettings())
-    const list = (current.connections.sshKeys ?? []).slice().map((x) => toJS(x))
+    const list = ((current.connections as any).sshKeys ?? []).slice().map((x: any) => toJS(x))
     const nextList = upsertById(list, toJS(key))
     const nextConnections = { ...toJS(current.connections), sshKeys: nextList }
     runInAction(() => {
       if (this.settings) {
-        this.settings.connections.sshKeys = nextList as any
+        (this.settings.connections as any).sshKeys = nextList
       }
     })
     await window.gyshell.settings.set({ connections: nextConnections })
@@ -2433,11 +2433,11 @@ export class AppStore {
 
   async deleteSshKey(id: string): Promise<void> {
     const current = this.settings ?? (await this.fetchCombinedSettings())
-    const list = removeById(current.connections.sshKeys ?? [], id).map((x) => toJS(x))
+    const list = removeById((current.connections as any).sshKeys ?? [], id).map((x: any) => toJS(x))
     const nextConnections = { ...toJS(current.connections), sshKeys: list }
     runInAction(() => {
       if (this.settings) {
-        this.settings.connections.sshKeys = list as any
+        (this.settings.connections as any).sshKeys = list
       }
     })
     await window.gyshell.settings.set({ connections: nextConnections })
