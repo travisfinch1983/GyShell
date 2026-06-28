@@ -13,21 +13,7 @@ import { liveConsoleStore } from './LiveConsoleStore'
  * /api/ai endpoints through the cluster bridge.
  */
 
-// ─── Quant table data (ported verbatim) ───────────────────────────────
-const GGUF_CURATED = [
-  'Q8_0', 'Q8_K', 'Q8_K_XL',
-  'Q6_K', 'Q6_K_L', 'Q6_K_XL',
-  'Q5_K_M', 'Q5_K_S', 'Q5_K_L',
-  'Q4_K_M', 'Q4_K_S', 'Q4_K_L', 'Q4_K_XL', 'Q4_0',
-  'Q3_K_M', 'Q3_K_S',
-  'IQ4_XS', 'IQ3_M', 'IQ2_M',
-]
-const NON_GGUF_QUANTS: Record<string, { name: string; bpw: number }[]> = {
-  AWQ: [{ name: '4-bit', bpw: 4.5 }, { name: '8-bit', bpw: 8.5 }],
-  GPTQ: [{ name: '2-bit', bpw: 2.5 }, { name: '3-bit', bpw: 3.5 }, { name: '4-bit', bpw: 4.5 }, { name: '8-bit', bpw: 8.5 }],
-  EXL2: [2.0, 2.5, 3.0, 3.5, 4.0, 4.25, 4.5, 4.75, 5.0, 5.5, 6.0, 8.0].map((b) => ({ name: (b % 1 === 0 ? b.toFixed(1) : b.toString()) + ' bpw', bpw: b })),
-  EXL3: [2.0, 2.5, 3.0, 3.5, 4.0, 4.25, 4.5, 4.75, 5.0, 5.5, 6.0, 8.0].map((b) => ({ name: (b % 1 === 0 ? b.toFixed(1) : b.toString()) + ' bpw', bpw: b })),
-}
+// ─── Format → compatible engines (ported) ─────────────────────────────
 const FORMAT_PROVIDER_MAP: Record<string, string[]> = {
   GGUF: ['koboldcpp', 'llama-server', 'llama-server-mtp', 'ollama'],
   FP16: ['vllm', '1cat-vllm', 'lmdeploy', 'sglang', 'aphrodite'],
@@ -69,6 +55,7 @@ export class LlmLaunchStore {
 
   lastEstimate: any = null
   selectedPlacement: any = null
+  manualGpus: string[] = [] // pci_ids chosen via the manual GPU bar (overrides auto-placement)
   estimating = false
 
   launching = false
@@ -116,27 +103,22 @@ export class LlmLaunchStore {
     return (this.models?.models ?? []).find((m: any) => m.family === this.selectedFamily && m.variant === this.selectedVariant) || null
   }
 
-  /** Build the quant table rows for the selected model (curated GGUF + non-GGUF bpw rows), on-disk flagged. */
+  /** One unified table of ONLY the quants actually present on disk for the selected model, any format. */
   get quantRows(): QuantRow[] {
     const m = this.model
     if (!m) return []
     const rows: QuantRow[] = []
-    const formats = m.formats || {}
-    for (const [format, data] of Object.entries<any>(formats)) {
-      if (format === 'GGUF') {
-        const present = Object.keys(data)
-        const ordered = [...GGUF_CURATED.filter((q) => present.includes(q)), ...present.filter((q) => !GGUF_CURATED.includes(q))]
-        for (const quant of ordered) {
-          rows.push({ format, quant, bpw: null, path: data[quant]?.path ?? null, sizeMB: data[quant]?.sizeMB ?? null, onDisk: !!data[quant]?.path })
-        }
-      } else if (NON_GGUF_QUANTS[format]) {
-        for (const opt of NON_GGUF_QUANTS[format]) {
-          // on-disk if a matching entry exists in the scanned format data
-          const onDisk = !!(data && (data.path || Object.keys(data).some((k) => parseFloat(k) === opt.bpw || k === opt.name)))
-          rows.push({ format, quant: opt.name, bpw: opt.bpw, path: data?.path ?? null, sizeMB: data?.sizeMB ?? null, onDisk })
-        }
-      } else if (data?.path) {
+    for (const [format, data] of Object.entries<any>(m.formats || {})) {
+      if (!data || typeof data !== 'object') continue
+      if (typeof data.path === 'string') {
+        // flat single-variant format (e.g. FP16/BF16) → one row
         rows.push({ format, quant: format, bpw: null, path: data.path, sizeMB: data.sizeMB ?? null, onDisk: true })
+        continue
+      }
+      for (const [quant, v] of Object.entries<any>(data)) {
+        if (!v || typeof v.path !== 'string') continue // skip anything not actually on disk
+        const bpw = /bpw/i.test(quant) ? parseFloat(quant) : null
+        rows.push({ format, quant, bpw: Number.isFinite(bpw as number) ? bpw : null, path: v.path, sizeMB: v.sizeMB ?? null, onDisk: true })
       }
     }
     return rows
@@ -185,8 +167,28 @@ export class LlmLaunchStore {
     this.settings = { ...this.settings, [key]: val }
   }
   setPlacement(p: any): void {
+    this.manualGpus = [] // choosing an auto/suggested placement clears the manual selection
     this.selectedPlacement = p
     this.selectedNode = p?.node || p?.gpus?.[0]?.node || this.selectedNode
+  }
+
+  /** Manual GPU bar: toggle a specific GPU, rebuilding the placement from the current selection. */
+  toggleGpu(agent: Agent, gpu: AgentGpu): void {
+    this.manualGpus = this.manualGpus.includes(gpu.pci_id)
+      ? this.manualGpus.filter((x) => x !== gpu.pci_id)
+      : [...this.manualGpus, gpu.pci_id]
+    this.applyManualPlacement()
+  }
+  private applyManualPlacement(): void {
+    if (!this.manualGpus.length) { this.selectedPlacement = null; return }
+    // A service runs on one agent: anchor to the agent of the first selected GPU, include only its picks.
+    const owner = this.agents.find((a) => a.gpus.some((g) => this.manualGpus.includes(g.pci_id)))
+    if (!owner) { this.selectedPlacement = null; return }
+    const gpus = owner.gpus
+      .filter((g) => this.manualGpus.includes(g.pci_id))
+      .map((g) => ({ pciId: g.pci_id, node: owner.host_node, cudaIndex: g.cuda_index, name: g.name, vramMB: g.vram_mb }))
+    this.selectedPlacement = { node: owner.host_node, gpus, manual: true }
+    this.selectedNode = owner.host_node
   }
 
   // ─── command helpers (ported) ───
@@ -222,6 +224,8 @@ export class LlmLaunchStore {
   private cudaIndices(): number[] | null {
     const p = this.selectedPlacement
     if (!p?.gpus?.length) return null
+    // Manual placements carry the real container cuda_index per GPU — use it directly.
+    if (p.gpus.every((g: any) => g.cudaIndex != null)) return p.gpus.map((g: any) => g.cudaIndex)
     const pNode = p.node || p.gpus[0]?.node
     const allNodeGpus = (this.lastEstimate?.availableGpus || [])
       .filter((g: any) => g.node === pNode && g.provider === 'nvidia' && g.vramMB > 0)

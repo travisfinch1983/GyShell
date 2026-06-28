@@ -89,20 +89,23 @@ export const LlmLaunchPanel: React.FC = observer(() => {
         {store.model && (
           <section className={styles.card}>
             <div className={styles.cardHead}>2 · Quantization</div>
-            <table className={styles.quantTable}>
-              <thead><tr><th>Format</th><th>Quant</th><th>BPW</th><th>Size</th><th>On disk</th></tr></thead>
-              <tbody>
-                {store.quantRows.map((r: QuantRow, i) => {
-                  const sel = r.format === store.selectedFormat && r.quant === store.selectedQuant
-                  return (
-                    <tr key={i} className={`${styles.qRow} ${sel ? styles.qSel : ''} ${!r.onDisk ? styles.qOff : ''}`} onClick={() => store.selectQuant(r)}>
-                      <td>{r.format}</td><td>{r.quant}</td><td>{r.bpw ?? '—'}</td><td>{fmtMB(r.sizeMB)}</td>
-                      <td>{r.onDisk ? <span className={styles.diskYes}>●</span> : <span className={styles.diskNo}>○</span>}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+            {store.quantRows.length === 0 ? (
+              <div className={styles.muted}>No quants on disk for this model.</div>
+            ) : (
+              <table className={styles.quantTable}>
+                <thead><tr><th>Format</th><th>Quant</th><th>BPW</th><th>Size</th></tr></thead>
+                <tbody>
+                  {store.quantRows.map((r: QuantRow, i) => {
+                    const sel = r.format === store.selectedFormat && r.quant === store.selectedQuant
+                    return (
+                      <tr key={i} className={`${styles.qRow} ${sel ? styles.qSel : ''}`} onClick={() => store.selectQuant(r)}>
+                        <td>{r.format}</td><td>{r.quant}</td><td>{r.bpw ?? '—'}</td><td>{fmtMB(r.sizeMB)}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            )}
           </section>
         )}
 
@@ -153,7 +156,30 @@ export const LlmLaunchPanel: React.FC = observer(() => {
                 ~{fmtMB(est.estimate.totalMB)} total · weights {fmtMB(est.estimate.weightsMB)} · KV {fmtMB(est.estimate.kvCacheMB)} · {est.availableGpuCount} GPUs available
               </div>
             )}
-            {placements.length === 0 && <div className={styles.muted}>No placements yet — pick a quant/provider.</div>}
+            {/* Manual GPU selection bar — pick specific GPUs (overrides the suggestions below) */}
+            <div className={styles.manualBar}>
+              <div className={styles.manualLabel}>Manual GPU selection</div>
+              {store.agents.length === 0 && <div className={styles.muted}>No GPU agents found.</div>}
+              {store.agents.map((a) => (
+                <div key={a.vmid} className={styles.agentRow}>
+                  <span className={styles.agentName}>{a.name}</span>
+                  <div className={styles.gpuChips}>
+                    {a.gpus.map((g) => (
+                      <button
+                        key={g.pci_id}
+                        className={`${styles.gpuChip} ${store.manualGpus.includes(g.pci_id) ? styles.gpuChipSel : ''}`}
+                        title={`${g.pci_id}${g.arch ? ' · ' + g.arch : ''}`}
+                        onClick={() => store.toggleGpu(a, g)}
+                      >
+                        {g.name} <span className={styles.gpuVram}>{fmtMB(g.vram_mb)}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {placements.length > 0 && <div className={styles.suggestLabel}>Suggested placements</div>}
             <div className={styles.placements}>
               {placements.slice(0, 8).map((p: any, i: number) => {
                 const sel = store.selectedPlacement === p || (store.selectedPlacement?.node === p.node && JSON.stringify(store.selectedPlacement?.gpus) === JSON.stringify(p.gpus))
