@@ -6,7 +6,9 @@
 import express from 'express'
 import multer from 'multer'
 import { readFile as readFileAsync } from 'node:fs/promises'
-import { extname } from 'node:path'
+import { extname, join } from 'node:path'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 
 // Document extractors are optional — lazy + graceful so codebase-RAG never breaks if they're absent.
 let pdfParse, mammoth, XLSX
@@ -18,6 +20,28 @@ export function registerRagRoutes(app, { exec, selfPort }) {
   const MCPJUNGLE_HOST = process.env.MCPJUNGLE_HOST || '10.0.0.52'
   // JSON body parsing for the codebase-RAG POST routes (docrag/index uses multer instead).
   app.use('/api/ai/rag', express.json({ limit: '10mb' }))
+
+  // Bridge-friendly doc upload: AI-Lab's browser reaches the backend over the WS bridge (JSON only),
+  // so doc files arrive base64-encoded here, get written to temp files, then handed to runDocRagIndexing
+  // exactly like the multer path. (Mirrors the CivitAI key-upload base64 pattern.)
+  app.post('/api/ai/docrag/index-b64', express.json({ limit: '120mb' }), (req, res) => {
+    const { collection, description, files } = req.body || {}
+    if (!collection || !Array.isArray(files) || !files.length) return res.status(400).json({ error: 'collection and files are required' })
+    if (docRagJob.active) return res.status(409).json({ error: 'A document indexing job is already running.' })
+    try {
+      const dir = mkdtempSync(join(tmpdir(), 'docrag-'))
+      const written = files.map((f, i) => {
+        const safe = (f.name || `file_${i}`).replace(/[^a-zA-Z0-9._-]/g, '_')
+        const p = join(dir, `${i}_${safe}`)
+        writeFileSync(p, Buffer.from(f.dataB64 || '', 'base64'))
+        return { path: p, originalname: f.name || `file_${i}` }
+      })
+      runDocRagIndexing(written, collection, description)
+      res.json({ started: true, collection, fileCount: written.length })
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
+  })
 
 // ─── Codebase RAG (async indexing with progress) ────────────────────────────
 

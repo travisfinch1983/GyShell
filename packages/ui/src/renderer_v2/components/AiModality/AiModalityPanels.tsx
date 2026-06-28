@@ -3,6 +3,8 @@ import { observer } from 'mobx-react-lite'
 import { PackagePlus, BrainCircuit, Image as ImageIcon, AudioLines, Wrench } from 'lucide-react'
 import { ProviderInstall } from './ProviderInstall'
 import { McpServersPanel } from '../AiTools/McpServersPanel'
+import { CodebaseRagPanel } from '../AiTools/CodebaseRagPanel'
+import { DocRagPanel } from '../AiTools/DocRagPanel'
 import { LlmLaunchPanel } from '../AiLlm/LlmLaunchPanel'
 import { QuantizationPanel } from '../AiLlm/QuantizationPanel'
 import { ServiceLaunchPanel } from './ServiceLaunchPanel'
@@ -61,6 +63,8 @@ export const AiTtsSttPanel: React.FC = observer(() => (
 export const AiToolsPanel: React.FC = observer(() => (
   <Shell title="AI · Tools" Icon={Wrench} tabs={[
     { id: 'mcp', label: 'MCP Servers', render: () => <McpServersPanel /> },
+    { id: 'codebase-rag', label: 'Codebase RAG', render: () => <CodebaseRagPanel /> },
+    { id: 'doc-rag', label: 'Document RAG', render: () => <DocRagPanel /> },
   ]} />
 ))
 
