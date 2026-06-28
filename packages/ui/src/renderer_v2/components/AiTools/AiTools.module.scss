@@ -63,3 +63,24 @@
 .fileName { flex: 1; font-family: var(--font-mono); }
 .autosyncRow { display: flex; align-items: center; gap: 8px; margin: 6px 0; padding: 6px 10px; background: var(--control-bg); border-radius: 6px; font-size: 11px; flex-wrap: wrap; }
 .miniSelect { height: 24px; padding: 0 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--app-bg); color: var(--fg); font-size: 11px; }
+
+/* Cluster Info (inventory / hardware / credentials) */
+.filterRow { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px; }
+.searchWrap { display: inline-flex; align-items: center; gap: 6px; flex: 1; padding: 0 9px; height: 30px; border: 1px solid var(--border); border-radius: 6px; background: var(--control-bg); color: var(--fg-faint); }
+.searchInput { flex: 1; border: none; background: none; color: var(--fg); font-size: 12px; outline: none; }
+.invList { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; }
+.invEntry { border: 1px solid var(--border); border-radius: 7px; background: var(--panel-bg); padding: 8px 10px; }
+.invHead { display: flex; align-items: center; gap: 8px; }
+.invMeta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 5px; font-size: 11px; color: var(--fg-muted); font-family: var(--font-mono); }
+.typeBadge { font-size: 9px; font-weight: 700; letter-spacing: 0.4px; padding: 2px 6px; border-radius: 4px; background: var(--control-bg); color: var(--fg-muted); }
+.t_lxc { background: color-mix(in srgb, #4ea1ff 22%, transparent); color: #4ea1ff; }
+.t_vm { background: color-mix(in srgb, #a78bfa 22%, transparent); color: #a78bfa; }
+.t_host { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+.t_external { background: color-mix(in srgb, var(--warning,#d8a657) 22%, transparent); color: var(--warning,#d8a657); }
+.vmid { font-size: 10px; font-family: var(--font-mono); color: var(--fg-faint); }
+.up { font-size: 10px; color: var(--success,#4ade80); }
+.down { font-size: 10px; color: var(--danger,#f87171); }
+.unknown { font-size: 10px; color: var(--fg-faint); }
+.credBadge { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.masked { font-family: var(--font-mono); color: var(--fg-faint); letter-spacing: 1px; }
+.secret { font-family: var(--font-mono); color: var(--success,#4ade80); word-break: break-all; }
