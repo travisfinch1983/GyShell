@@ -4,7 +4,6 @@ import { TerminalPanel } from '../Terminal/TerminalPanel'
 import { FileSystemPanel } from '../FileSystem/FileSystemPanel'
 import { FileEditorPanel } from '../FileSystem/FileEditorPanel'
 import { MonitorPanel } from '../Monitor/MonitorPanel'
-import { LiveConsoleMultiPanel } from '../LiveConsole/LiveConsoleMultiPanel'
 import type { PanelKind } from '../../layout'
 
 export interface LayoutPanelRenderProps {
@@ -41,9 +40,14 @@ const TerminalPanelRenderer: LayoutPanelRenderer = ({
   />
 )
 
-// The chat moved to the global sidebar overlay (components/Chat/GlobalChat.tsx), freeing this pane.
-// We repurpose it to host the multi-tab Live Console (service log tails + install/update terminals).
-const ChatPanelRenderer: LayoutPanelRenderer = () => <LiveConsoleMultiPanel />
+// Chat moved to the global sidebar overlay (components/Chat/GlobalChat.tsx). This legacy panel renders
+// a stub so existing layouts can close it; the Live Console lives in its own primary tab.
+const ChatPanelRenderer: LayoutPanelRenderer = () => (
+  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: 24, gap: 8, color: 'var(--fg-muted)', textAlign: 'center' }}>
+    <div style={{ color: 'var(--fg)', fontWeight: 500 }}>Chat moved to the sidebar</div>
+    <div style={{ fontSize: 11, maxWidth: 360 }}>This panel is no longer used — you can close it. Live consoles are in the Live Console tab.</div>
+  </div>
+)
 
 const FileSystemPanelRenderer: LayoutPanelRenderer = ({
   store,

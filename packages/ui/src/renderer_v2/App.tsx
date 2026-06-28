@@ -27,6 +27,7 @@ import { ServicesDrawer } from './components/AiServices/ServicesDrawer'
 import { ModelDownloadsPanel } from './components/ModelDownloads/ModelDownloadsPanel'
 import { LogsPanel } from './components/Logs/LogsPanel'
 import { AiLlmPanel, AiImagePanel, AiTtsSttPanel } from './components/AiModality/AiModalityPanels'
+import { LiveConsoleMultiPanel } from './components/LiveConsole/LiveConsoleMultiPanel'
 import { liveConsoleStore } from './stores/LiveConsoleStore'
 import './styles/app.scss'
 
@@ -77,10 +78,9 @@ export const App: React.FC = observer(() => {
     localStorage.setItem('ai-lab-primary-tab', id)
   }, [])
 
-  // Service "Logs" buttons + provider install/update bump liveConsoleStore.focusSeq → surface the
-  // Terminal tab, where the Live Console pane lives.
+  // Service "Logs" buttons + provider install/update bump liveConsoleStore.focusSeq → jump to the Live Console.
   React.useEffect(() => {
-    return reaction(() => liveConsoleStore.focusSeq, () => handlePrimaryTabChange('terminal'))
+    return reaction(() => liveConsoleStore.focusSeq, () => handlePrimaryTabChange('live-console'))
   }, [handlePrimaryTabChange])
 
   React.useEffect(() => {
@@ -359,6 +359,8 @@ export const App: React.FC = observer(() => {
           {primaryTab === 'ai-tts-stt' && <AiTtsSttPanel />}
 
           {primaryTab === 'model-downloads' && <ModelDownloadsPanel />}
+
+          {primaryTab === 'live-console' && <LiveConsoleMultiPanel />}
 
           {primaryTab === 'logs' && <LogsPanel />}
 

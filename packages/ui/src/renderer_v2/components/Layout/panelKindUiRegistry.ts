@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Activity, FolderTree, SquareTerminal, TerminalSquare } from 'lucide-react'
+import { Activity, FolderTree, MessageSquare, SquareTerminal } from 'lucide-react'
 import { PANEL_KINDS_WITH_RAIL } from '../../layout'
 import type { AppStore } from '../../stores/AppStore'
 
@@ -33,7 +33,7 @@ const createPanelKindUiItem = (item: PanelKindUiRegistryItem): PanelKindUiRegist
 export const PANEL_KIND_UI_REGISTRY: Record<RailPanelKind, PanelKindUiRegistryItem> = {
   chat: createPanelKindUiItem({
     kind: 'chat',
-    icon: TerminalSquare,
+    icon: MessageSquare,
     labelKey: 'chatKind',
     resolveRailClickIntent: resolveDefaultRailClickIntent,
     getOwnerTabCount: (store) => store.chat.sessions.length,

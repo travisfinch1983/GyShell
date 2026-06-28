@@ -447,7 +447,7 @@ export const en = {
     closeAllTabs: "Close All",
     detachToWindow: "Detach to Window",
     mergeToMain: "Merge to Main Window",
-    chatKind: "Live Console",
+    chatKind: "Chat",
     terminalKind: "Terminal",
     filesystemKind: "Files",
     monitorKind: "Monitor",
