@@ -1026,7 +1026,7 @@ app.post('/api/ai/rag/update-all', async (req, res) => {
 
 // ── RAG Auto-Sync Config + scheduler ──
 const AUTOSYNC_PATH = join(process.env.AILAB_PROXY_DATA_DIR || '/tmp', 'rag-autosync.json');
-let ragAutoSyncTimer = null;
+// (ragAutoSyncTimer is already declared in the ported body above)
 function loadRagAutoSyncConfig() {
   try { if (existsSync(AUTOSYNC_PATH)) return JSON.parse(readFileSync(AUTOSYNC_PATH, 'utf-8')); } catch {}
   return { enabled: false, frequency: 'daily', time: '01:00' };
