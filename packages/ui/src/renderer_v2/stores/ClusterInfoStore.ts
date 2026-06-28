@@ -65,6 +65,23 @@ export class ClusterInfoStore {
     runInAction(() => { delete this.revealed[id] })
     await this.load()
   }
+  async getHost(id: string): Promise<any> {
+    return bridge().request('GET', `/api/ai/hosts/${encodeURIComponent(id)}`).catch(() => null)
+  }
+  async saveHost(body: any, id?: string): Promise<void> {
+    if (id) await bridge().request('PUT', `/api/ai/hosts/${encodeURIComponent(id)}`, body)
+    else await bridge().request('POST', '/api/ai/hosts', body)
+    await this.load()
+  }
+  async getCredential(id: string): Promise<any> {
+    return bridge().request('GET', `/api/ai/credentials/${encodeURIComponent(id)}`).catch(() => null)
+  }
+  async saveCredential(body: any, id?: string): Promise<void> {
+    if (id) await bridge().request('PUT', `/api/ai/credentials/${encodeURIComponent(id)}`, body)
+    else await bridge().request('POST', '/api/ai/credentials', body)
+    await this.load()
+  }
+
   /** Reveal toggles: fetch the full entry (with secrets) once, or hide it. */
   async toggleReveal(id: string): Promise<void> {
     if (this.revealed[id]) { runInAction(() => { delete this.revealed[id] }); return }

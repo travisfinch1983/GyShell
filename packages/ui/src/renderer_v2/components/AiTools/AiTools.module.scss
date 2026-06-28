@@ -84,3 +84,24 @@
 .credBadge { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
 .masked { font-family: var(--font-mono); color: var(--fg-faint); letter-spacing: 1px; }
 .secret { font-family: var(--font-mono); color: var(--success,#4ade80); word-break: break-all; }
+
+/* Cluster edit modals */
+.modalOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.modal { background: var(--panel-bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px; width: min(900px, 94vw); max-height: 90vh; overflow: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.5); display: flex; flex-direction: column; gap: 10px; }
+.modalHead { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.modalFoot { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.editForm { display: flex; flex-direction: column; gap: 8px; }
+.efGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 12px; }
+.efRow { display: flex; align-items: center; gap: 8px; }
+.efCol { display: flex; flex-direction: column; gap: 4px; }
+.efLbl { font-size: 12px; color: var(--fg-muted); min-width: 90px; flex: 0 0 auto; }
+.bwVal { font-size: 12px; color: var(--accent); font-family: var(--font-mono); }
+.revealRow { display: flex; }
+.efCheck { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-muted); }
+.subSection { border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; }
+.subHead { display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 600; color: var(--fg-muted); margin-bottom: 6px; }
+.subRow { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px; padding: 6px; border: 1px solid color-mix(in srgb, var(--border) 60%, transparent); border-radius: 5px; margin-bottom: 5px; }
+.subField { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 90px; }
+.subFieldWide { display: flex; flex-direction: column; gap: 2px; flex: 1 1 100%; }
+.subLbl { font-size: 10px; color: var(--fg-faint); }
+.subInput { height: 26px; padding: 0 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--control-bg); color: var(--fg); font-size: 11px; &:focus { border-color: var(--accent); outline: none; } }

@@ -1,7 +1,8 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { RefreshCw, Trash2, RotateCw, Eye, EyeOff, Search } from 'lucide-react'
+import { RefreshCw, Trash2, RotateCw, Eye, EyeOff, Search, Pencil, Plus } from 'lucide-react'
 import { clusterInfoStore as store } from '../../stores/ClusterInfoStore'
+import { HardwareEditModal, CredentialEditModal } from './ClusterEditModals'
 import styles from './AiTools.module.scss'
 
 const CRED_LABELS: Record<string, string> = { login: 'Login', api_token: 'API Token', ssh_key: 'SSH Key', bearer_token: 'Bearer' }
@@ -9,9 +10,13 @@ const statusClass = (s: string) => (s === 'running' || s === 'online' ? styles.u
 
 export const ClusterInfoPanel: React.FC = observer(() => {
   useEffect(() => { if (!store.loaded) void store.load() }, [])
+  const [editHost, setEditHost] = useState<string | null>(null)
+  const [editCred, setEditCred] = useState<string | null>(null)
 
   return (
     <div className={styles.panel}>
+      {editHost && <HardwareEditModal id={editHost} onClose={() => setEditHost(null)} />}
+      {editCred && <CredentialEditModal id={editCred} onClose={() => setEditCred(null)} />}
       {store.err && <div className={styles.error}>{store.err}</div>}
 
       {/* Cluster Inventory */}
@@ -58,6 +63,7 @@ export const ClusterInfoPanel: React.FC = observer(() => {
         <div className={styles.head}>
           <h4 className={styles.h4}>Cluster Hardware <span className={styles.dim}>({store.hosts.length})</span></h4>
           <span className={styles.spacer} />
+          <button className={styles.btn} onClick={() => setEditHost('new')}><Plus size={13} /> Add Host</button>
           <button className={styles.btn} onClick={() => void store.load()}><RefreshCw size={13} /> Refresh</button>
         </div>
         <div className={styles.invList}>
@@ -74,6 +80,7 @@ export const ClusterInfoPanel: React.FC = observer(() => {
                   <span className={styles.bold}>{h.name}</span>
                   <span className={statusClass(h.status)}>{h.status || '?'}</span>
                   <span className={styles.spacer} />
+                  <button className={styles.iconBtn} title="Edit" onClick={() => setEditHost(h.id)}><Pencil size={12} /></button>
                   <button className={styles.iconDanger} title="Delete" onClick={() => { if (window.confirm(`Remove host "${h.name}"?`)) void store.deleteHost(h.id) }}><Trash2 size={12} /></button>
                 </div>
                 <div className={styles.invMeta}>
@@ -96,6 +103,7 @@ export const ClusterInfoPanel: React.FC = observer(() => {
         <div className={styles.head}>
           <h4 className={styles.h4}>Credential Vault <span className={styles.dim}>({store.credentials.length})</span></h4>
           <span className={styles.spacer} />
+          <button className={styles.btn} onClick={() => setEditCred('new')}><Plus size={13} /> Add Credential</button>
           <button className={styles.btn} onClick={() => void store.load()}><RefreshCw size={13} /> Refresh</button>
         </div>
         <div className={styles.invList}>
