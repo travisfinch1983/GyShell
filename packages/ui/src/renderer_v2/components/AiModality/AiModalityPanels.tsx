@@ -3,6 +3,7 @@ import { observer } from 'mobx-react-lite'
 import { PackagePlus, BrainCircuit, Image as ImageIcon, AudioLines } from 'lucide-react'
 import { ProviderInstall } from './ProviderInstall'
 import { LlmLaunchPanel } from '../AiLlm/LlmLaunchPanel'
+import { QuantizationPanel } from '../AiLlm/QuantizationPanel'
 import { ServiceLaunchPanel } from './ServiceLaunchPanel'
 import { ttsLaunchStore, imageLaunchStore, trainingLaunchStore } from '../../stores/ServiceLaunchStore'
 import styles from './AiModality.module.scss'
@@ -36,6 +37,7 @@ const Shell: React.FC<{ title: string; Icon: React.ComponentType<any>; tabs: Sub
 export const AiLlmPanel: React.FC = observer(() => (
   <Shell title="AI · LLM" Icon={BrainCircuit} tabs={[
     { id: 'launch', label: 'LLM Launch', render: () => <LlmLaunchPanel /> },
+    { id: 'quant', label: 'Quantization Scripts', render: () => <QuantizationPanel /> },
     { id: 'providers', label: 'Provider Install', render: () => <ProviderInstall categories={['llm']} /> },
   ]} />
 ))
