@@ -126,16 +126,41 @@ export class UniversalProxyService {
     const { createAnthropicProxyRouter } = await import('./proxy/anthropic-proxy.js')
     // @ts-expect-error — native CivitAI downloader (runs curl inside CT 152, writes to local /ai-assets)
     const { createCivitaiRouter } = await import('./proxy/civitai.js')
-    // @ts-expect-error — native HuggingFace downloader (mounted at /api/ai so /hf/* routes resolve)
-    const { createHfRouter } = await import('./proxy/hf-download.js')
     // @ts-expect-error — native service-log viewer (tails logs over AI-Lab's own SSH, reads local data)
     const { createSystemRouter } = await import('./proxy/system.js')
+    // @ts-expect-error — full native LLM/AI router: launch, models/scan, estimate, gpu, providers, services, HF
+    const { createAiRouter } = await import('./proxy/llm/routes/ai.js')
+    // @ts-expect-error
+    const { SSHService } = await import('./proxy/llm/services/ssh.js')
+    // @ts-expect-error
+    const { PveApi } = await import('./proxy/llm/services/pve-api.js')
+    // @ts-expect-error
+    const { GpuMonitor } = await import('./proxy/llm/services/gpu-monitor.js')
+    // @ts-expect-error
+    const { HookscriptDeploy } = await import('./proxy/llm/services/hookscript-deploy.js')
+
+    // LLM backend config (PVE API token + cluster metadata); force AI-Lab's own SSH key regardless of file.
+    let llmConfig: any = {}
+    try {
+      llmConfig = JSON.parse(readFileSync(path.join(this.dataDir, 'llm-config.json'), 'utf8'))
+    } catch {
+      /* seeded on deploy */
+    }
+    llmConfig.ssh = { ...(llmConfig.ssh || {}), privateKeyPath: this.keyPath, defaultUser: 'root', connectTimeout: 10000 }
+    const llmSsh = new SSHService(llmConfig.ssh)
+    const llmPve = new PveApi(llmConfig)
+    const llmGpuMon = new GpuMonitor(llmConfig, llmSsh, llmPve, { interval: 5000 })
+    const llmHook = new HookscriptDeploy(llmSsh, llmPve, llmGpuMon, llmConfig)
+    // Deliberately NOT calling startWatchdog()/startScanTimer() — ProxLab still runs those; dueling
+    // watchdogs would double-restart services. Re-enable once ProxLab is decommissioned.
+    const aiModule = createAiRouter(llmConfig, llmGpuMon, llmPve, llmSsh, llmHook)
+
     const app = express()
     app.use('/api/proxy/vector', createVectorProxyRouter())
     app.use('/api/proxy/anthropic', createAnthropicProxyRouter())
     app.use('/api/proxy', createProxyRouter({ exec: this.sshExec }))
     app.use('/api/civitai', express.json({ limit: '10mb' }), createCivitaiRouter({}, { exec: this.sshExec }))
-    app.use('/api/ai', express.json({ limit: '10mb' }), createHfRouter())
+    app.use('/api/ai', express.json({ limit: '50mb' }), aiModule.router)
     app.use('/api/system', createSystemRouter({ exec: this.sshExec }))
 
     this.server = http.createServer(app)

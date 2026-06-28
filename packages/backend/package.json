@@ -11,6 +11,7 @@
     "typecheck": "echo \"backend: checked by workspace consumers\""
   },
   "dependencies": {
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "multer": "^1.4.5-lts.1"
   }
 }
