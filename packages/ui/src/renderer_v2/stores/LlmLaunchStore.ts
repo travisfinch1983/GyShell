@@ -173,7 +173,7 @@ export class LlmLaunchStore {
   }
 
   /** Manual GPU bar: toggle a specific GPU, rebuilding the placement from the current selection. */
-  toggleGpu(agent: Agent, gpu: AgentGpu): void {
+  toggleGpu(_agent: Agent, gpu: AgentGpu): void {
     this.manualGpus = this.manualGpus.includes(gpu.pci_id)
       ? this.manualGpus.filter((x) => x !== gpu.pci_id)
       : [...this.manualGpus, gpu.pci_id]
