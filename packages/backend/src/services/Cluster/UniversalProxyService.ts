@@ -170,6 +170,10 @@ export class UniversalProxyService {
     app.use('/api/proxy/anthropic', createAnthropicProxyRouter())
     app.use('/api/proxy', createProxyRouter({ exec: this.sshExec }))
     app.use('/api/civitai', express.json({ limit: '10mb' }), createCivitaiRouter({}, { exec: this.sshExec }))
+    // RAG routes (/api/ai/rag/*, /api/ai/docrag/*) registered BEFORE the /api/ai router so the specific
+    // codebase/document-RAG paths match first.
+    const { registerRagRoutes } = await import('./proxy/rag.js')
+    registerRagRoutes(app, { exec: this.sshExec, selfPort: this.port })
     app.use('/api/ai', express.json({ limit: '50mb' }), aiModule.router)
     app.use('/api/system', createSystemRouter({ exec: this.sshExec }))
     const { createMcpRouter } = await import('./proxy/mcp.js')
