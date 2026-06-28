@@ -105,3 +105,18 @@
 .subFieldWide { display: flex; flex-direction: column; gap: 2px; flex: 1 1 100%; }
 .subLbl { font-size: 10px; color: var(--fg-faint); }
 .subInput { height: 26px; padding: 0 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--control-bg); color: var(--fg); font-size: 11px; &:focus { border-color: var(--accent); outline: none; } }
+
+/* Model Cacher */
+.cfgGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 10px; margin-top: 6px; }
+.cfgField { display: flex; flex-direction: column; gap: 2px; }
+.capRow { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.capBox { display: flex; flex-direction: column; gap: 4px; }
+.capLabel { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-muted); font-family: var(--font-mono); }
+.capBar { height: 7px; background: var(--control-bg); border-radius: 4px; overflow: hidden; }
+.capFill { height: 100%; background: var(--accent); border-radius: 4px; }
+.browser { border: 1px solid var(--border); border-radius: 7px; padding: 6px; margin-top: 6px; max-height: 360px; overflow-y: auto; background: var(--app-bg); }
+.crumb { display: flex; align-items: center; gap: 8px; font-size: 11px; font-family: var(--font-mono); color: var(--fg-faint); margin-bottom: 5px; }
+.browseRow { display: flex; align-items: center; gap: 10px; padding: 4px 6px; border-radius: 5px; &:hover { background: var(--control-bg); } }
+.dirBtn { display: inline-flex; align-items: center; gap: 6px; border: none; background: none; color: var(--accent); font-size: 12px; cursor: pointer; font-family: var(--font-mono); }
+.cacheGroup { margin-top: 6px; }
+.cacheGroupLabel { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--fg-muted); margin: 6px 0 3px; }
