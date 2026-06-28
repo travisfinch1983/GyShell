@@ -357,3 +357,24 @@
 }
 
 
+
+/* SSH managed-key upload dropzone */
+.ssh-key-dropzone {
+  flex: 1;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--control-bg);
+  color: var(--fg-muted);
+  font-size: 12px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+  &:hover { color: var(--fg); border-color: var(--accent); }
+  &.is-drag { border-color: var(--accent); color: var(--fg); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+}
+.ssh-key-error { flex: 1; color: var(--danger); font-size: 12px; padding: 2px 0; }

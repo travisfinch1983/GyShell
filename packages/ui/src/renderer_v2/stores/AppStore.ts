@@ -2338,6 +2338,11 @@ export class AppStore {
     const jumpHost = (entry as any).jumpHost
       ? (toJS((entry as any).jumpHost) as any)
       : undefined
+    // Resolve a managed key (connections.sshKeys[keyId]) to its raw contents. Falls back to any
+    // legacy inline key / path still on the entry.
+    const managedKey = entry.keyId
+      ? this.settings?.connections?.sshKeys?.find((k) => k.id === entry.keyId)?.content
+      : undefined
     const cfg: TerminalConfig = {
       type: 'ssh',
       id,
@@ -2349,8 +2354,8 @@ export class AppStore {
       username: entry.username,
       authMethod: entry.authMethod,
       password: entry.password,
-      privateKey: entry.privateKey,
-      privateKeyPath: entry.privateKeyPath,
+      privateKey: managedKey ?? entry.privateKey,
+      privateKeyPath: managedKey ? undefined : entry.privateKeyPath,
       passphrase: entry.passphrase,
       proxy,
       tunnels,
@@ -2407,6 +2412,32 @@ export class AppStore {
     runInAction(() => {
       if (this.settings) {
         this.settings.connections.ssh = list as any
+      }
+    })
+    await window.gyshell.settings.set({ connections: nextConnections })
+  }
+
+  async saveSshKey(key: { id: string; name: string; content: string; createdAt?: number }): Promise<string> {
+    const current = this.settings ?? (await this.fetchCombinedSettings())
+    const list = (current.connections.sshKeys ?? []).slice().map((x) => toJS(x))
+    const nextList = upsertById(list, toJS(key))
+    const nextConnections = { ...toJS(current.connections), sshKeys: nextList }
+    runInAction(() => {
+      if (this.settings) {
+        this.settings.connections.sshKeys = nextList as any
+      }
+    })
+    await window.gyshell.settings.set({ connections: nextConnections })
+    return key.id
+  }
+
+  async deleteSshKey(id: string): Promise<void> {
+    const current = this.settings ?? (await this.fetchCombinedSettings())
+    const list = removeById(current.connections.sshKeys ?? [], id).map((x) => toJS(x))
+    const nextConnections = { ...toJS(current.connections), sshKeys: list }
+    runInAction(() => {
+      if (this.settings) {
+        this.settings.connections.sshKeys = list as any
       }
     })
     await window.gyshell.settings.set({ connections: nextConnections })

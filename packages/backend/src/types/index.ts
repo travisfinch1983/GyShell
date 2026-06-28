@@ -75,12 +75,23 @@ export interface SSHConnectionEntry {
   password?: string
   privateKey?: string
   privateKeyPath?: string
+  /** Ref to a managed key in connections.sshKeys; resolved to privateKey content at connect time. */
+  keyId?: string
   passphrase?: string
   // optional proxy/tunnel refs (future)
   proxyId?: string
   tunnelIds?: string[]
   /** Optional jump host configuration for this SSH connection */
   jumpHost?: SSHConnectionEntry
+}
+
+/** A managed SSH private key, uploaded once and reusable across connections. */
+export interface SshKeyEntry {
+  id: string
+  name: string
+  /** Raw private key file contents (PEM / OpenSSH). */
+  content: string
+  createdAt?: number
 }
 
 export interface ProxyEntry {
@@ -233,6 +244,8 @@ export interface BackendSettings {
     ssh: SSHConnectionEntry[]
     proxies: ProxyEntry[]
     tunnels: TunnelEntry[]
+    /** Managed SSH private keys, referenced by SSHConnectionEntry.keyId. */
+    sshKeys?: SshKeyEntry[]
   }
 
   /** Tools enablement (built-in only; MCP is managed separately) */

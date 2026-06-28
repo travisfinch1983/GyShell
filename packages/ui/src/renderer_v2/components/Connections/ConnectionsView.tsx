@@ -1,6 +1,7 @@
 import React from 'react'
 import { observer } from 'mobx-react-lite'
-import { ArrowLeft, KeyRound, LockKeyhole, Pencil, Plus, Save, Server, Shield, Trash2, Waypoints } from 'lucide-react'
+import { ArrowLeft, KeyRound, LockKeyhole, Pencil, Plus, Save, Server, Shield, Trash2, Upload, Waypoints } from 'lucide-react'
+import { v4 as uuidv4 } from 'uuid'
 import type { AppStore } from '../../stores/AppStore'
 import { PortForwardType, type TunnelEntry } from '../../lib/ipcTypes'
 import './connections.scss'
@@ -29,6 +30,31 @@ export const ConnectionsView: React.FC<{ store: AppStore }> = observer(({ store 
 
   const [draft, setDraft] = React.useState<any>(null)
   const [deleteConfirm, setDeleteConfirm] = React.useState<null | { section: ConnectionsSection; id: string }>(null)
+
+  // Managed SSH keys + the upload-keyfile flow
+  const sshKeys = store.settings?.connections?.sshKeys ?? []
+  const [showKeyUpload, setShowKeyUpload] = React.useState(false)
+  const [keyDragOver, setKeyDragOver] = React.useState(false)
+  const [keyError, setKeyError] = React.useState<string | null>(null)
+  const keyFileInputRef = React.useRef<HTMLInputElement | null>(null)
+
+  async function ingestKeyFile(file: File | null | undefined) {
+    if (!file) return
+    setKeyError(null)
+    try {
+      const content = (await file.text()).trim()
+      if (!/PRIVATE KEY|BEGIN .*KEY/.test(content)) {
+        setKeyError('That file does not look like a private key.')
+        return
+      }
+      const id = uuidv4()
+      await store.saveSshKey({ id, name: file.name, content, createdAt: Date.now() })
+      setDraft((d: any) => ({ ...d, keyId: id, privateKey: undefined, privateKeyPath: undefined }))
+      setShowKeyUpload(false)
+    } catch {
+      setKeyError('Could not read that file.')
+    }
+  }
 
   React.useEffect(() => {
     // reset editor when switching sections
@@ -237,28 +263,62 @@ export const ConnectionsView: React.FC<{ store: AppStore }> = observer(({ store 
                     </div>
                     ) : (
                       <>
+                        {/* SSH key picker — choose a managed key or upload a new one */}
                         <div className="editor-row">
                           <span className="editor-icon">
-                            <LockKeyhole size={16} strokeWidth={2} />
+                            <KeyRound size={16} strokeWidth={2} />
                           </span>
-                          <input
-                            className="editor-input"
-                            placeholder={t.common.privateKeyPath}
-                            value={draft.privateKeyPath ?? ''}
-                            onChange={(e) => setDraft({ ...draft, privateKeyPath: e.target.value })}
+                          <Select
+                            className="editor-select"
+                            value={sshKeys.length ? (draft.keyId ?? '') : '__upload_key__'}
+                            onChange={(val) => {
+                              if (val === '__upload_key__') {
+                                setShowKeyUpload(true)
+                              } else {
+                                setShowKeyUpload(false)
+                                setKeyError(null)
+                                setDraft({ ...draft, keyId: val || undefined, privateKey: undefined, privateKeyPath: undefined })
+                              }
+                            }}
+                            options={
+                              sshKeys.length
+                                ? [
+                                    { value: '', label: 'Select a key…' },
+                                    ...sshKeys.map((k) => ({ value: k.id, label: k.name })),
+                                    { value: '__upload_key__', label: '⬆  Upload keyfile…' },
+                                  ]
+                                : [{ value: '__upload_key__', label: '⬆  Upload keyfile…' }]
+                            }
                           />
                         </div>
-                        <div className="editor-row">
-                          <span className="editor-icon">
-                            <LockKeyhole size={16} strokeWidth={2} />
-                          </span>
-                          <input
-                            className="editor-input"
-                            placeholder={t.common.privateKeyInline}
-                            value={draft.privateKey ?? ''}
-                            onChange={(e) => setDraft({ ...draft, privateKey: e.target.value })}
-                          />
-                        </div>
+                        {(showKeyUpload || sshKeys.length === 0) && (
+                          <div className="editor-row">
+                            <span className="editor-icon">
+                              <Upload size={16} strokeWidth={2} />
+                            </span>
+                            <div
+                              className={`ssh-key-dropzone${keyDragOver ? ' is-drag' : ''}`}
+                              onClick={() => keyFileInputRef.current?.click()}
+                              onDragOver={(e) => { e.preventDefault(); setKeyDragOver(true) }}
+                              onDragLeave={() => setKeyDragOver(false)}
+                              onDrop={(e) => { e.preventDefault(); setKeyDragOver(false); void ingestKeyFile(e.dataTransfer.files?.[0]) }}
+                            >
+                              Drag a private key file here, or click to browse…
+                            </div>
+                            <input
+                              ref={keyFileInputRef}
+                              type="file"
+                              style={{ display: 'none' }}
+                              onChange={(e) => { void ingestKeyFile(e.target.files?.[0]); e.target.value = '' }}
+                            />
+                          </div>
+                        )}
+                        {keyError && (
+                          <div className="editor-row">
+                            <span className="editor-icon" />
+                            <div className="ssh-key-error">{keyError}</div>
+                          </div>
+                        )}
                         <div className="editor-row">
                           <span className="editor-icon">
                             <LockKeyhole size={16} strokeWidth={2} />
