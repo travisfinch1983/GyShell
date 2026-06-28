@@ -44,18 +44,15 @@ export class LiveConsoleStore {
       this.focus()
       return
     }
-    const session = (s.tmuxSession || '').replace(/'/g, "'\\''")
+    // Match ProxLab: follow the persistent log file (fast, universal). tmux-attach was slow to
+    // start (waits, fails on systemd services) — services log to /var/log/proxlab/<session>.log.
     const logFile = `/var/log/proxlab/${s.tmuxSession || s.id}.log`.replace(/'/g, "'\\''")
-    // attach to tmux if the session is live; else tail -f the persistent log (universal live output)
-    const inner = session
-      ? `tmux attach -t '${session}' 2>/dev/null || tail -n 400 -f '${logFile}'`
-      : `tail -n 400 -f '${logFile}'`
     this.target = {
       id: s.id,
       kind: 'service',
       label: serviceConsoleLabel(s),
       host: s.pveHostIp,
-      command: `pct exec ${s.vmid} -- bash -lc "${inner.replace(/"/g, '\\"')}"`,
+      command: `pct exec ${s.vmid} -- tail -n 400 -f '${logFile}'`,
     }
     this.focus()
   }

@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark; /* native controls (select popups, scrollbars) render dark */
   /* Layout */
   --app-bg: #0b0f14;
   --panel-bg: #0f1620;
@@ -147,14 +148,20 @@ textarea {
 }
 
 /* Native <select> popups render options with OS/browser defaults (white bg + white text here)
-   unless themed explicitly. Apply globally so every dropdown obeys the color theme. */
+   unless themed explicitly. --control-bg is a translucent white overlay (≈white on the OS popup),
+   so options must use a SOLID dark color; color-scheme:dark also tells the browser to render the
+   native popup dark. Applied globally so every dropdown obeys the theme. */
 select {
-  background-color: var(--control-bg, #1a1d27);
+  color-scheme: dark;
+  background-color: #0f1620;
+  background-color: var(--panel-bg, #0f1620);
   color: var(--fg, #e4e6ef);
 }
 option,
 optgroup {
-  background-color: var(--control-bg, #1a1d27);
+  background-color: #0f1620;
+  background-color: var(--panel-bg, #0f1620);
+  color: #e4e6ef;
   color: var(--fg, #e4e6ef);
 }
 
