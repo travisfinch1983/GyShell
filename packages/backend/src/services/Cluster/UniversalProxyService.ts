@@ -192,6 +192,9 @@ export class UniversalProxyService {
     // @ts-expect-error — JS router: LoRA training-image browser/organizer (local-fs + sharp on /ai-assets/imagegen)
     const { createImagegenRouter } = await import('./proxy/llm/routes/imagegen.js')
     app.use('/api/imagegen', createImagegenRouter({ keyPath: this.keyPath }))
+    // @ts-expect-error — JS router: native service discovery (replaces ProxLab-bridged /api/discovery)
+    const { createDiscoveryRouter } = await import('./proxy/discovery.js')
+    app.use('/api/discovery', createDiscoveryRouter({ dataDir: this.dataDir }))
 
     this.server = http.createServer(app)
     attachClaudeTermUpgrade(this.server) // ttyd WebSocket reverse-proxy for the Claude tab terminals

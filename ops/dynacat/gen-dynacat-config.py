@@ -14,7 +14,7 @@ import json, os, subprocess, sys
 
 DATA = "/opt/ai-lab/.gybackend-data"
 ACTIVE = os.path.join(DATA, "active-services.json")
-CLUSTER = "/opt/dynacat/cluster-services.json"
+CLUSTER = os.path.join(DATA, "cluster-services.json")
 OUT = "/opt/dynacat/dynacat.yml"
 
 AI_TYPES = {"llm", "tts", "stt", "tools", "image", "embed", "rerank", "ai"}  # owned by the AI section
@@ -100,13 +100,15 @@ def primary(ports):
 def cluster_by_node():
     d = load(CLUSTER)
     nodes = {}
-    for c in d.get("containers", []):
-        p = primary(c.get("ports", []))
+    for c in d.get("hosts", []):
+        if c.get("guestType") == "node":  # PVE nodes live in the Services tab, not the dashboard
+            continue
+        p = primary(c.get("services", []))
         if not p or p.get("category") in AI_TYPES:  # AI endpoints handled by the AI section
             continue
-        label = p.get("app") or c.get("name") or "service"
+        label = p.get("app") or c.get("hostName") or "service"
         nodes.setdefault(c.get("node") or "other", []).append(
-            {"label": label, "url": p["url"], "https": p["proto"] == "https"})
+            {"label": label, "url": p["url"], "https": p["proto"] == "https", "icon": p.get("icon")})
     for items in nodes.values():
         items.sort(key=lambda x: x["label"].lower())
     return nodes
@@ -118,6 +120,8 @@ def monitor(title, sites, cache, indent=10, alt=True):
     for s in sites:
         out.append(f"{p3}- title: {q(s['label'])}")
         out.append(f"{p3}  url: {q(s['url'])}")
+        if s.get("icon"):
+            out.append(f"{p3}  icon: {q('di:' + s['icon'])}")  # dashboard-icons
         if alt:
             out.append(f"{p3}  alt-status-codes: {ALT_CODES}")
         if s.get("https"):
