@@ -189,8 +189,8 @@ def identify(process, name, title, port):
     known = bool(slug and slug in CATALOG_SLUGS)
     if p in PROC_MAP and PROC_MAP[p][0] is not None:
         app, cat = PROC_MAP[p]
-    elif p in PROC_MAP:  # known system daemon, no app label
-        app, cat = (name.title() if name else process), PROC_MAP[p][1]
+    elif p in PROC_MAP:  # known system daemon (sshd/postfix/etc.) — label by process, not container name
+        app, cat = (process or "service"), PROC_MAP[p][1]
     else:
         app = (name.replace("-", " ").title() if name else (title or process or "service"))
         cat = SLUG_CAT.get(slug, "app")

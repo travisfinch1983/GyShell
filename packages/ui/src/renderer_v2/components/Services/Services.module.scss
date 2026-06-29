@@ -52,6 +52,9 @@
 .off { background: var(--fg-faint); }
 .svcLink { flex: 1; display: inline-flex; align-items: center; gap: 4px; color: var(--fg); text-decoration: none; font-size: 12px; min-width: 0; &:hover { color: var(--accent); } }
 .svcName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.svcIco { width: 14px; height: 14px; flex: 0 0 auto; object-fit: contain; border-radius: 2px; }
+.svcNoLink { cursor: default; &:hover { color: var(--fg); } }
+.svcTag { font-size: 8.5px; font-weight: 700; letter-spacing: 0.3px; padding: 0 3px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); flex: 0 0 auto; }
 .svcPort { color: var(--fg-faint); font-family: var(--font-mono); font-size: 11px; }
 .extIcon { color: var(--fg-faint); flex: 0 0 auto; }
 .svcEdit { flex: 1; padding: 3px 6px; border: 1px solid var(--accent); border-radius: 4px; background: var(--control-bg); color: var(--fg); font-size: 12px; }

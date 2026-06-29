@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Radar, Pencil, ExternalLink } from 'lucide-react'
-import { servicesStore, type DiscoveryHost, type DiscoveredService } from '../../stores/ServicesStore'
+import { servicesStore, iconUrl, type DiscoveryHost, type DiscoveredService } from '../../stores/ServicesStore'
 import styles from './Services.module.scss'
 
 const TYPE_BADGE: Record<string, string> = { lxc: 'CT', qemu: 'VM', node: 'NODE', static: 'HOST' }
@@ -37,11 +37,26 @@ const ServiceRow: React.FC<{ host: DiscoveryHost; svc: DiscoveredService }> = ob
           onBlur={commit}
         />
       ) : (
-        <a className={styles.svcLink} href={`http://${host.hostIp}:${svc.port}`} target="_blank" rel="noreferrer" title={`${svc.process} · open`}>
-          <span className={styles.svcName}>{name}</span>
-          <span className={styles.svcPort}>:{svc.port}</span>
-          <ExternalLink size={11} className={styles.extIcon} />
-        </a>
+        (() => {
+          const ico = iconUrl(svc.icon)
+          const inner = (
+            <>
+              {ico && <img className={styles.svcIco} src={ico} alt="" loading="lazy" onError={(e) => ((e.target as HTMLImageElement).style.display = 'none')} />}
+              <span className={styles.svcName}>{name}</span>
+              <span className={styles.svcPort}>:{svc.port}</span>
+              {svc.knownScript && <span className={styles.svcTag} title="community-scripts app">CS</span>}
+              {svc.url && <ExternalLink size={11} className={styles.extIcon} />}
+            </>
+          )
+          // web service → open its real URL (proto-aware); raw tcp port → no link
+          return svc.url ? (
+            <a className={styles.svcLink} href={svc.url} target="_blank" rel="noreferrer" title={`${svc.process || ''} · ${svc.proto} ${svc.status ?? ''} · open`}>
+              {inner}
+            </a>
+          ) : (
+            <span className={`${styles.svcLink} ${styles.svcNoLink}`} title={`${svc.process || ''} · ${svc.proto || 'tcp'}`}>{inner}</span>
+          )
+        })()
       )}
       <button className={styles.editBtn} title="Rename" onClick={startEdit}>
         <Pencil size={12} />

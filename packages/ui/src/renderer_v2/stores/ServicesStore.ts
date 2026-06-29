@@ -13,6 +13,19 @@ export interface DiscoveredService {
   process: string
   name: string
   configured?: boolean
+  // enriched by the native ground-truth probe (community-scripts catalog + http probe):
+  proto?: 'http' | 'https' | 'tcp'
+  status?: number | null
+  url?: string | null
+  category?: string
+  icon?: string | null // dashboard-icons slug
+  knownScript?: boolean
+  title?: string
+}
+
+/** dashboard-icons CDN URL for a slug (public CDN — not a LAN resource, browser-direct is fine). */
+export function iconUrl(slug?: string | null): string | null {
+  return slug ? `https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/${slug}.svg` : null
 }
 export interface DiscoveryHost {
   hostId: string
@@ -29,9 +42,6 @@ interface ServiceNames {
   common: Record<string, string>
   custom: Record<string, string>
 }
-
-// Generic runtimes whose process name isn't a meaningful service label.
-const GENERIC = new Set(['node', 'python', 'python3', 'java', 'beam.smp', 'ruby', 'php', 'perl', 'dotnet'])
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -90,14 +100,19 @@ export class ServicesStore {
     this.filter = v
   }
 
-  /** Friendly name + whether it's a reliable/known label (drives the status dot). */
+  /**
+   * Friendly name + whether it's a reachable web service (drives the status dot: green = http(s) up,
+   * grey = raw tcp port). The native probe already identifies the app (svc.name), so a manual rename
+   * (custom) or the shared serviceNames map only override it.
+   */
   resolveName(hostId: string, svc: DiscoveredService): { name: string; reliable: boolean } {
+    const reachable = svc.proto === 'http' || svc.proto === 'https'
     const custom = this.serviceNames.custom[`${hostId}:${svc.port}`]
-    if (custom) return { name: custom, reliable: true }
+    if (custom) return { name: custom, reliable: reachable }
     const common = this.serviceNames.common[`${svc.port}:${svc.process}`]
-    if (common) return { name: common, reliable: true }
-    if (GENERIC.has(svc.process) || /^port-\d+$/.test(svc.name || '')) return { name: 'Unknown', reliable: false }
-    return { name: svc.name || svc.process || `:${svc.port}`, reliable: true }
+    if (common) return { name: common, reliable: reachable }
+    const name = svc.name && svc.name !== 'Unknown' ? svc.name : (svc.process || `:${svc.port}`)
+    return { name, reliable: reachable }
   }
 
   async load(): Promise<void> {
