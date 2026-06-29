@@ -123,11 +123,12 @@ export const TtsTestPanel: React.FC = observer(() => {
           <button className={styles.btn} onClick={() => { void store.refreshVoices(); void store.refreshModels() }}><RefreshCw size={13} /> Refresh Voices</button>
           <button className={styles.btnPrimary} disabled={store.busy || store.streaming} onClick={() => void store.submit()}>{(store.busy || store.streaming) ? <Loader2 size={13} className={styles.spin} /> : <Play size={13} />} Generate Speech</button>
           <button className={styles.btn} onClick={() => store.resetDefaults()}><RotateCcw size={13} /> Reset Defaults</button>
+          <label className={styles.check}><input type="checkbox" checked={store.autoPlay} onChange={(e) => store.set('autoPlay', e.target.checked)} /> Auto-play</label>
           {store.isMultiTts && <span className={styles.dim}>multi-TTS pipeline (streamed)</span>}
           <span className={styles.dim}>{store.status}</span>
         </div>
 
-        {store.audioUrl && <audio className={styles.audio} controls src={store.audioUrl} autoPlay />}
+        {store.audioUrl && <audio className={styles.audio} controls src={store.audioUrl} autoPlay={store.autoPlay} />}
         {store.info && <div className={styles.dim}>{store.info}</div>}
 
         {/* streaming sentences */}

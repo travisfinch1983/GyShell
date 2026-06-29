@@ -53,6 +53,7 @@ export class TtsTestStore {
   streamSummary = ''
   // output
   status = ''; info = ''; audioUrl = ''
+  autoPlay = true
   busy = false
   loaded = false
   readonly TAGS = TAGS
@@ -317,7 +318,7 @@ export class TtsTestStore {
     uiPrefsStore.set('ttsTest', {
       selectedService: this.selectedService, endpoint: this.endpoint, selectedVoice: this.selectedVoice, selectedModel: this.selectedModel, format: this.format,
       speed: this.speed, temperature: this.temperature, topK: this.topK, topP: this.topP, repPen: this.repPen, exag: this.exag, cfg: this.cfg, minP: this.minP,
-      qwenLanguage: this.qwenLanguage, qwenInstruction: this.qwenInstruction, text: this.text,
+      qwenLanguage: this.qwenLanguage, qwenInstruction: this.qwenInstruction, text: this.text, autoPlay: this.autoPlay,
       dbCfg: this.dbCfg, dbStg: this.dbStg, dbDurMult: this.dbDurMult, dbSeed: this.dbSeed, dbNoWatermark: this.dbNoWatermark,
     })
     uiPrefsStore.set('ttsRvc', { rvcEnabled: this.rvcEnabled, rvcModel: this.rvcModel, rvcF0Method: this.rvcF0Method, rvcF0Key: this.rvcF0Key, rvcIndexRate: this.rvcIndexRate, rvcFilter: this.rvcFilter, rvcRmsMix: this.rvcRmsMix, rvcProtect: this.rvcProtect })
