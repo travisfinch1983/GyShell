@@ -74,7 +74,7 @@ cat > /usr/local/bin/claude-term-$ID.sh <<LAUNCH
 #!/bin/sh
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin
 export IS_SANDBOX=1
-[ -S "$SOCK" ] || "$DTACH" -n "$SOCK" sh -c "cd /root 2>/dev/null; while :; do IS_SANDBOX=1 $CLAUDE -c; sleep 2; done # ailab-managed" >/dev/null 2>&1 || true
+[ -S "$SOCK" ] || "$DTACH" -n "$SOCK" sh -c "export TERM=xterm-256color; cd /root 2>/dev/null; while :; do IS_SANDBOX=1 $CLAUDE -c; sleep 2; done # ailab-managed" >/dev/null 2>&1 || true
 sleep 1
 exec "$TTYD" --base-path $BASE --writable -p $PORT "$DTACH" -a "$SOCK"
 LAUNCH
