@@ -167,7 +167,13 @@ export class LlmMetricsPoller {
       : Array.isArray(svcData?.services) ? svcData.services
       : (svcData?.services && typeof svcData.services === 'object') ? Object.values(svcData.services)
       : []
-    const llm = all.filter((s) => s && typeof s === 'object' && s.containerIp && s.port && !s.isTts && !s.isImageGen && !s.isStt && !s.isTools)
+    const IMAGE = new Set(['comfyui', 'sdnext', 'fooocus', 'invokeai'])
+    const llm = all.filter((s) =>
+      s && typeof s === 'object' && s.containerIp && s.port &&
+      !s.isTts && !s.isImageGen && !s.isStt && !s.isTools &&
+      !IMAGE.has((s.providerId || '').toLowerCase()) &&
+      !/embed|rerank/i.test(`${s.model || ''} ${s.aliasOverride || ''} ${s.providerId || ''}`), // generative LLMs only
+    )
     const now = Date.now()
     const seen = new Set()
 
