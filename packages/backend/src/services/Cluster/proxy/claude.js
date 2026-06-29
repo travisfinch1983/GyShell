@@ -28,7 +28,7 @@ export function createClaudeRouter({ exec }) {
   }
   const load = () => {
     try { if (existsSync(file)) return JSON.parse(readFileSync(file, 'utf-8')) } catch {}
-    return { connections: [], directives: { nodeIp: '10.0.0.17', vmid: '161', path: '/claude/CENTRAL-DIRECTIVES.md' } }
+    return { connections: [], directives: { nodeIp: '10.0.0.17', vmid: '180', path: '/claude/CENTRAL-DIRECTIVES.md' } }
   }
   const save = (d) => { try { writeFileSync(file, JSON.stringify(d, null, 2)) } catch {} }
   const nodeIpOf = (conn) => conn.nodeIp || loadHostMap()[conn.node] || conn.node
