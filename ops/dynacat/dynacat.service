@@ -1,0 +1,13 @@
+[Unit]
+Description=Dynacat dashboard (AI-Lab Home tab backend)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/dynacat
+ExecStart=/opt/dynacat/dynacat -config /opt/dynacat/dynacat.yml
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

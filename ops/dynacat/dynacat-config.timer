@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically regenerate Dynacat config from AI-Lab inventory
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

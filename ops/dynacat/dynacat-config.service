@@ -1,0 +1,7 @@
+[Unit]
+Description=Regenerate Dynacat config from AI-Lab inventory
+After=ai-lab.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/dynacat/gen-dynacat-config.py
