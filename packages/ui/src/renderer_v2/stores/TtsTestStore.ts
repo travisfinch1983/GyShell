@@ -51,6 +51,9 @@ export class TtsTestStore {
   streaming = false
   streamSentences: any[] = []
   streamSummary = ''
+  private seqAudio: HTMLAudioElement | null = null // sequential player for streamed clips
+  private playCursor = 0
+  private seqPlaying = false
   // output
   status = ''; info = ''; audioUrl = ''
   autoPlay = true
@@ -58,7 +61,7 @@ export class TtsTestStore {
   loaded = false
   readonly TAGS = TAGS
 
-  constructor() { makeAutoObservable(this) }
+  constructor() { makeAutoObservable(this, { seqAudio: false, playCursor: false, seqPlaying: false }) }
 
   get isCustom() { return this.selectedService === 'custom' }
   // Turbo only when the model id says so; plain "chatterbox" / "chatterbox (original)" is the 7-setting model.
@@ -259,6 +262,9 @@ export class TtsTestStore {
   async streamGenerate(): Promise<void> {
     if (!this.text.trim()) return
     runInAction(() => { this.streaming = true; this.streamSentences = []; this.streamSummary = ''; this.status = 'Streaming…' })
+    // reset the sequential auto-player
+    this.playCursor = 0; this.seqPlaying = false
+    if (this.seqAudio) { try { this.seqAudio.pause() } catch { /* ignore */ } }
     const body: any = { input: this.text, voice: this.selectedVoice, model: this.selectedModel, output_format: this.format, speed: this.speed, temperature: this.temperature, top_p: this.topP, repetition_penalty: this.repPen }
     if (this.isTurbo) body.top_k = this.topK; else { body.exaggeration = this.exag; body.cfg_weight = this.cfg; body.min_p = this.minP }
     if (this.rvcEnabled) Object.assign(body, this.rvcParams())
@@ -294,6 +300,23 @@ export class TtsTestStore {
       else if (ev === 'error') { const s = this.streamSentences[d.index]; if (s) s.status = 'error' }
       else if (ev === 'done') { this.streamSummary = `Done · ${d.total_sentences || this.streamSentences.length} sentences`; this.status = 'Stream complete' }
     })
+    if (ev === 'audio' || ev === 'error') this.playStreamQueue()
+  }
+
+  /** Auto-play streamed clips in order as they arrive (when Auto-play is on). */
+  private playStreamQueue(): void {
+    if (!this.autoPlay || this.seqPlaying) return
+    const next = this.streamSentences[this.playCursor]
+    if (!next) return
+    if (next.status === 'error') { this.playCursor++; this.playStreamQueue(); return }
+    if (next.status !== 'ready' || !next.url) return // not ready yet — re-triggered by the next audio event
+    if (!this.seqAudio) this.seqAudio = new Audio()
+    const a = this.seqAudio
+    this.seqPlaying = true
+    a.src = next.url
+    a.onended = () => { this.seqPlaying = false; this.playCursor++; this.playStreamQueue() }
+    a.onerror = () => { this.seqPlaying = false; this.playCursor++; this.playStreamQueue() }
+    void a.play().catch(() => { this.seqPlaying = false })
   }
 
   async rvcConvert(file: File): Promise<void> {
