@@ -270,7 +270,13 @@ export class TtsTestStore {
   }
   private handleStreamEvent(ev: string, d: any): void {
     runInAction(() => {
-      if (ev === 'info') { this.streamSentences = (d.sentences || []).map((txt: string, i: number) => ({ i, txt, status: 'pending', url: '', detail: null })); this.status = `Streaming ${d.sentences?.length || 0} sentences · ${d.pipelines || 1} pipelines` }
+      if (ev === 'info') {
+        // The native /multi-tts/stream sends `sentences` as a COUNT (number); older/array form also handled.
+        const arr = Array.isArray(d.sentences) ? d.sentences : null
+        const n = arr ? arr.length : (Number(d.sentences) || 0)
+        this.streamSentences = Array.from({ length: n }, (_, i) => ({ i, txt: arr ? arr[i] : '', status: 'pending', url: '', detail: null }))
+        this.status = `Streaming ${n} sentences · ${d.pipelines || d.tts_instances || 1} pipelines`
+      }
       else if (ev === 'audio') { const s = this.streamSentences[d.index]; if (s) { try { const bin = atob(d.audio); const u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); s.url = URL.createObjectURL(new Blob([u8], { type: 'audio/wav' })) } catch { /* ignore */ } s.status = 'ready'; if (d.text) s.txt = d.text; s.detail = d } }
       else if (ev === 'error') { const s = this.streamSentences[d.index]; if (s) s.status = 'error' }
       else if (ev === 'done') { this.streamSummary = `Done · ${d.total_sentences || this.streamSentences.length} sentences`; this.status = 'Stream complete' }

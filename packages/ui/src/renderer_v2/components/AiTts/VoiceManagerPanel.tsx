@@ -48,10 +48,10 @@ export const VoiceManagerPanel: React.FC = observer(() => {
   const vmFileRef = useRef<HTMLInputElement>(null)
 
   // redraw canvases when data/selection change
-  useEffect(() => { draw(origCanvas.current, [{ color: STEP_COLORS.original, peaks: store.origPeaks }], store.origDuration, 0, 0) }, [store.origPeaks, store.origDuration])
+  useEffect(() => { draw(origCanvas.current, [{ color: STEP_COLORS.original, peaks: store.origPeaks }], store.origDuration, 0, 0) }, [store.origPeaks, store.origDuration, store.loaded])
   useEffect(() => {
     draw(workCanvas.current, store.layers.map((l) => ({ color: STEP_COLORS[l.type] || '#64748b', peaks: l.peaks })), store.duration, store.selStart, store.selEnd)
-  }, [store.layers, store.duration, store.selStart, store.selEnd])
+  }, [store.layers, store.duration, store.selStart, store.selEnd, store.loaded])
 
   const stopPlay = () => { const a = audio.current; if (a) { a.pause() } setPlayingWhich(''); setPlayhead(0) }
   const play = (which: 'orig' | 'work', start = 0, end?: number) => {
@@ -78,6 +78,11 @@ export const VoiceManagerPanel: React.FC = observer(() => {
 
   const phPct = store.duration > 0 ? (playhead / store.duration) * 100 : 0
   const origPhPct = store.origDuration > 0 ? (playhead / store.origDuration) * 100 : 0
+
+  // Gate until loaded so early clicks aren't clobbered by the initial load (see TtsTestPanel note).
+  if (!store.loaded) return (
+    <div className={styles.panel}><section className={styles.card}><div className={styles.muted}>Loading Voice Manager…</div></section></div>
+  )
 
   return (
     <div className={styles.panel}>

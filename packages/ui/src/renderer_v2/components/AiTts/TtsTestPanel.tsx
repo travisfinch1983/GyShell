@@ -32,6 +32,12 @@ export const TtsTestPanel: React.FC = observer(() => {
   useEffect(() => { if (!store.loaded) void store.load() }, [])
   const rvcFileRef = useRef<HTMLInputElement>(null)
 
+  // Gate interaction until the store has loaded + restored saved settings — otherwise early clicks land on
+  // default state and get overwritten when load()/restore() completes (the "flashes then reverts" bug).
+  if (!store.loaded) return (
+    <div className={styles.panel}><section className={styles.card}><div className={styles.muted}>Loading TTS console…</div></section></div>
+  )
+
   return (
     <div className={styles.panel}>
       {/* ── TTS Test Console ── */}
