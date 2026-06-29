@@ -1,14 +1,32 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { Plus, Trash2, RefreshCw, Save, RotateCcw, Terminal as TermIcon } from 'lucide-react'
 import { claudeStore as store, CLAUDE_FILES } from '../../stores/ClaudeStore'
 import { confirmStore } from '../../stores/confirmStore'
+import { uiPrefsStore } from '../../stores/uiPrefsStore'
 import styles from './Claude.module.scss'
 
 const DIRECTIVES = '__directives__'
 const ADD = '__add__'
 
+/** Resizable element whose height persists to the backend (uiPrefsStore), keyed per consumer. */
+function usePersistedHeight(key: string, def: number) {
+  const ref = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el || !uiPrefsStore.loaded) return
+    const ro = new ResizeObserver(() => {
+      const h = Math.round(el.offsetHeight)
+      if (h && h !== uiPrefsStore.get(key, def)) uiPrefsStore.set(key, h)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [key, uiPrefsStore.loaded])
+  return { ref, height: uiPrefsStore.get(key, def) as number }
+}
+
 const FileEditor: React.FC<{ connId: string }> = observer(({ connId }) => {
+  const { ref, height } = usePersistedHeight(`claudeFile:${connId}`, 480)
   const [file, setFile] = useState('CLAUDE.md')
   const [content, setContent] = useState('')
   const [orig, setOrig] = useState('')
@@ -35,12 +53,13 @@ const FileEditor: React.FC<{ connId: string }> = observer(({ connId }) => {
         <button className={styles.btn} onClick={() => void loadFile(file)}><RefreshCw size={12} /> Reload</button>
         <button className={styles.btnPrimary} disabled={busy || content === orig} onClick={() => void save()}><Save size={12} /> Save</button>
       </div>
-      <textarea className={styles.code} spellCheck={false} value={content} onChange={(e) => setContent(e.target.value)} />
+      <textarea ref={ref as any} style={{ height }} className={styles.code} spellCheck={false} value={content} onChange={(e) => setContent(e.target.value)} />
     </div>
   )
 })
 
 const ConnectionView: React.FC<{ conn: any }> = observer(({ conn }) => {
+  const { ref: termRef, height: termHeight } = usePersistedHeight(`claudeTerm:${conn.id}`, 960)
   const [restartMsg, setRestartMsg] = useState('')
   const [setupBusy, setSetupBusy] = useState(false)
   const [setupLog, setSetupLog] = useState('')
@@ -65,7 +84,7 @@ const ConnectionView: React.FC<{ conn: any }> = observer(({ conn }) => {
       {setupLog && <pre className={styles.setupLog}>{setupLog}</pre>}
 
       {conn.provisioned
-        ? <iframe key={reloadKey} className={styles.term} src={store.termUrl(conn.id)} title={`${conn.name} terminal`} />
+        ? <div ref={termRef as any} className={styles.termWrap} style={{ height: termHeight }}><iframe key={reloadKey} className={styles.term} src={store.termUrl(conn.id)} title={`${conn.name} terminal`} /></div>
         : <div className={styles.termPlaceholder}><TermIcon size={16} /> No live terminal yet — click “Set up terminal” to install ttyd + the auto-starting Claude session on this container.</div>}
 
       <FileEditor connId={conn.id} />
@@ -74,6 +93,7 @@ const ConnectionView: React.FC<{ conn: any }> = observer(({ conn }) => {
 })
 
 const DirectivesView: React.FC = observer(() => {
+  const { ref, height } = usePersistedHeight('claudeDirectives', 520)
   const [content, setContent] = useState('')
   const [orig, setOrig] = useState('')
   const [status, setStatus] = useState('Loading…')
@@ -89,7 +109,7 @@ const DirectivesView: React.FC = observer(() => {
         <span className={styles.dim}>{status}</span>
         <button className={styles.btnPrimary} disabled={busy || content === orig} onClick={() => void save()}><Save size={12} /> Save</button>
       </div>
-      <textarea className={styles.code} spellCheck={false} value={content} onChange={(e) => setContent(e.target.value)} />
+      <textarea ref={ref as any} style={{ height }} className={styles.code} spellCheck={false} value={content} onChange={(e) => setContent(e.target.value)} />
     </div>
   )
 })
@@ -130,7 +150,8 @@ const AddView: React.FC<{ onAdded: (id: string) => void }> = observer(({ onAdded
         </select>
       </label>
       <label className={styles.field}><span>Display name</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. DHB-Claude" /></label>
-      <label className={styles.field}><span>Workspace path (where CLAUDE.md etc live)</span><input value={ws} onChange={(e) => setWs(e.target.value)} placeholder="/root/openclaw-claude" /></label>
+      <label className={styles.field}><span>Workspace path — directory that holds this instance's CLAUDE.md / RULES.md / MEMORY.md / TOOLS.md</span><input value={ws} onChange={(e) => setWs(e.target.value)} placeholder="e.g. /root/openclaw-claude or /root/.claude" /></label>
+      <p className={styles.dim}>This is the folder the .md editors read/write — not necessarily /root. If a file isn't there the editor shows “(file does not exist yet)”; check the instance (e.g. <code>ls ~/CLAUDE.md ~/.claude/CLAUDE.md</code>) and set the right directory.</p>
       <label className={styles.field}><span>Restart command (optional, run via pct exec)</span><input value={restartCommand} onChange={(e) => setRestartCommand(e.target.value)} placeholder="systemctl restart openclaw-claude.service" /></label>
       {err && <div className={styles.error}>{err}</div>}
       <button className={styles.btnPrimary} disabled={busy || !sel || !name.trim()} onClick={() => void add()}><Plus size={13} /> Add Connection</button>
@@ -140,7 +161,7 @@ const AddView: React.FC<{ onAdded: (id: string) => void }> = observer(({ onAdded
 })
 
 export const ClaudePanel: React.FC = observer(() => {
-  useEffect(() => { if (!store.loaded) void store.load() }, [])
+  useEffect(() => { if (!store.loaded) void store.load(); void uiPrefsStore.ensureLoaded() }, [])
   const [active, setActive] = useState<string>(DIRECTIVES)
   const conn = store.connections.find((c) => c.id === active)
 
