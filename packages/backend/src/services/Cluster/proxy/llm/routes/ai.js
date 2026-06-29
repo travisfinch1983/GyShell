@@ -6743,6 +6743,25 @@ WantedBy=multi-user.target
     res.json({ ok: !!ok });
   });
 
+  // Lean per-(model+config) tool-call metrics for external consumers (e.g. openclaw-claude).
+  // API-level, authoritative; structure = malformed/schema-invalid args, hallucination = tool name not offered.
+  router.get('/tool-call-metrics', (req, res) => {
+    if (!metricsPoller) return res.json({ models: [], generatedAt: Date.now() });
+    const ratio = (e, t) => (t ? Math.round((e / t) * 1000) / 1000 : 0);
+    const models = metricsPoller.getRows()
+      .filter((r) => (r.toolCalls || 0) > 0)
+      .map((r) => ({
+        model: r.model, config: r.displayName || r.model, provider: r.provider, fingerprint: r.fingerprint,
+        running: !!r.running,
+        totalToolCalls: r.toolCalls || 0,
+        structureErrors: r.toolErrStructure || 0,
+        structureErrorRatio: ratio(r.toolErrStructure || 0, r.toolCalls || 0),
+        hallucinationErrors: r.toolErrHallucination || 0,
+        hallucinationErrorRatio: ratio(r.toolErrHallucination || 0, r.toolCalls || 0),
+      }));
+    res.json({ models, generatedAt: Date.now(), note: 'API-level counts at the AI-Lab proxy boundary; authoritative for the dashboard.' });
+  });
+
   return {
     router,
     metricsPoller,

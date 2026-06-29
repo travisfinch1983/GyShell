@@ -26,6 +26,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 import { isAuthenticated, getAuthStatus, CLAUDE_MODELS } from './anthropic-proxy.js';
+import { extractToolCalls, recordToolUsage } from './tool-call-metrics.js';
 
 // ─── kvcache-proxy companion detection ──────────────────────────────────
 // Convention: each LLM service that has a kvcache-proxy companion listens
@@ -693,7 +694,7 @@ function bufferBody(req) {
 /**
  * Proxy a buffered request body to a target service.
  */
-function proxyBuffered(req, res, targetHost, targetPort, targetPath, body) {
+function proxyBuffered(req, res, targetHost, targetPort, targetPath, body, capture) {
   const proxyReq = http.request(
     {
       hostname: targetHost,
@@ -709,6 +710,13 @@ function proxyBuffered(req, res, targetHost, targetPort, targetPath, body) {
     (proxyRes) => {
       const isSSE = (proxyRes.headers['content-type'] || '').includes('event-stream');
       res.writeHead(proxyRes.statusCode, proxyRes.headers);
+
+      // Optional response capture (tool-call metrics) — accumulate a text copy without disturbing the
+      // client stream, then hand it to `capture` on end. Capped so a runaway response can't bloat memory.
+      let capBuf = capture ? '' : null;
+      const CAP_MAX = 2 * 1024 * 1024;
+      const capAppend = (chunk) => { if (capBuf != null && capBuf.length < CAP_MAX) capBuf += chunk.toString(); };
+      const capDone = () => { if (capture) { try { capture(capBuf, isSSE); } catch {} } };
 
       if (isSSE) {
         // Streaming SSE: forward chunks + inject empty-delta heartbeats during
@@ -738,10 +746,14 @@ function proxyBuffered(req, res, targetHost, targetPort, targetPath, body) {
         };
 
         scheduleHeartbeat();
-        proxyRes.on('data', (chunk) => { res.write(chunk); scheduleHeartbeat(); });
-        proxyRes.on('end', () => { clearHeartbeat(); res.end(); });
+        proxyRes.on('data', (chunk) => { res.write(chunk); capAppend(chunk); scheduleHeartbeat(); });
+        proxyRes.on('end', () => { clearHeartbeat(); res.end(); capDone(); });
         proxyRes.on('error', () => { clearHeartbeat(); if (!res.writableEnded) res.end(); });
         res.on('close', clearHeartbeat);
+      } else if (capture) {
+        proxyRes.on('data', (chunk) => { res.write(chunk); capAppend(chunk); });
+        proxyRes.on('end', () => { res.end(); capDone(); });
+        proxyRes.on('error', () => { if (!res.writableEnded) res.end(); });
       } else {
         proxyRes.pipe(res);
       }
@@ -878,7 +890,14 @@ async function handleChatWithTools(req, res) {
   }
 
   const forwardPort = await getForwardPort(svc);
-  proxyBuffered(req, res, svc.containerIp, forwardPort, "/v1/chat/completions", body);
+  // Tool-call metrics: only capture the response when the request actually offered tools (cheap no-op otherwise).
+  const requestTools = Array.isArray(parsed.tools) ? parsed.tools : null;
+  const capture = requestTools
+    ? (text, isSSE) => {
+        try { recordToolUsage({ svc, requestTools, toolCalls: extractToolCalls(text, isSSE) }); } catch {}
+      }
+    : undefined;
+  proxyBuffered(req, res, svc.containerIp, forwardPort, "/v1/chat/completions", body, capture);
 }
 
 /**

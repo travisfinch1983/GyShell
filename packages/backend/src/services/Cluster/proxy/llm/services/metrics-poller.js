@@ -8,6 +8,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import crypto from 'node:crypto'
+import { toolCallSnapshot } from '../../tool-call-metrics.js'
 
 const STORE_VERSION = 1
 
@@ -234,6 +235,25 @@ export class LlmMetricsPoller {
         if (m.optaneRestoreMs != null) row.optaneRestoreMs = m.optaneRestoreMs
       }
     }
+    // Fold API-level tool-call counts (accumulated in-process per serviceId) into the durable rows.
+    // Delta-accumulate keyed by currentServiceId so totals persist across model relaunches + AI-Lab restarts.
+    try {
+      const snap = toolCallSnapshot()
+      const bySvc = new Map(snap.map((e) => [e.svcId, e]))
+      for (const row of Object.values(this.store.rows)) {
+        const e = row.currentServiceId ? bySvc.get(row.currentServiceId) : null
+        if (!e) continue
+        const base = row._toolBase
+        const fresh = !base || base.svcId !== row.currentServiceId
+        for (const [field, cur] of [['toolCalls', e.total], ['toolErrStructure', e.structureErrors], ['toolErrHallucination', e.hallucinationErrors]]) {
+          const last = fresh ? 0 : (base[field] || 0)
+          const delta = cur < last ? cur : cur - last // guard against in-process reset
+          row[field] = (row[field] || 0) + delta
+        }
+        row._toolBase = { svcId: row.currentServiceId, toolCalls: e.total, toolErrStructure: e.structureErrors, toolErrHallucination: e.hallucinationErrors }
+      }
+    } catch {}
+
     // Any row not seen this cycle → its service is down; keep the row for history.
     for (const [fp, row] of Object.entries(this.store.rows)) {
       if (!seen.has(fp) && row.running) { row.running = false; row._last = undefined; row._lastRun = undefined }
@@ -254,6 +274,6 @@ export class LlmMetricsPoller {
   }
 
   /** Rows for the dashboard, newest-active first within model groups handled client-side. */
-  getRows() { return Object.values(this.store.rows).map((r) => { const { _last, _lastRun, ...rest } = r; return rest }) }
+  getRows() { return Object.values(this.store.rows).map((r) => { const { _last, _lastRun, _toolBase, ...rest } = r; return rest }) }
   deleteRow(fp) { if (this.store.rows[fp]) { delete this.store.rows[fp]; this._flush(); return true } return false }
 }
