@@ -165,7 +165,7 @@ export class TtsTestStore {
     if (base.includes('/multi-tts')) return
     try {
       const d = await jget(`${base}/v1/models`)
-      const ms = (d?.data || d?.models || []).map((m: any) => (typeof m === 'string' ? m : m.id || m.name)).filter(Boolean)
+      const ms = (d?.data || d?.models || []).map((m: any) => (typeof m === 'string' ? m : m.id || m.name)).filter(Boolean) as string[]
       runInAction(() => { if (ms.length) { this.models = ms; if (!ms.includes(this.selectedModel)) this.selectedModel = ms[0] } })
     } catch { /* models optional */ }
   }
@@ -208,7 +208,7 @@ export class TtsTestStore {
     try {
       const d = await jget('/api/proxy/rvc/models')
       const ms = (d?.models || []).map((m: any) => ({ name: m.name || m, loaded: !!m.loaded }))
-      runInAction(() => { this.rvcModels = ms; if (!ms.find((m) => m.name === this.rvcModel)) this.rvcModel = ms[0]?.name || ''; this.rvcStatus = `${ms.length} model(s)` })
+      runInAction(() => { this.rvcModels = ms; if (!ms.find((m: any) => m.name === this.rvcModel)) this.rvcModel = ms[0]?.name || ''; this.rvcStatus = `${ms.length} model(s)` })
     } catch { runInAction(() => { this.rvcStatus = 'RVC service offline' }) }
   }
 
