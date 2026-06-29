@@ -61,7 +61,7 @@ export class TtsTestStore {
   loaded = false
   readonly TAGS = TAGS
 
-  constructor() { makeAutoObservable(this, { seqAudio: false, playCursor: false, seqPlaying: false }) }
+  constructor() { makeAutoObservable(this, { seqAudio: false, playCursor: false, seqPlaying: false } as any) }
 
   get isCustom() { return this.selectedService === 'custom' }
   // Turbo only when the model id says so; plain "chatterbox" / "chatterbox (original)" is the 7-setting model.
