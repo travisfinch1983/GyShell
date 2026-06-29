@@ -30,6 +30,7 @@ function promSum(text, name) {
 export class LlmMetricsPoller {
   constructor({ dataDir, gpuMonitor, getActiveServices, getServiceHistory, interval = 20000 }) {
     this.file = join(dataDir, 'llm-metrics.json')
+    this.gpuConfigFile = join(dataDir, 'gpu-config.json')
     this.gpuMonitor = gpuMonitor
     this.getActiveServices = getActiveServices || (() => ({ services: [] }))
     this.getServiceHistory = getServiceHistory || (() => ({ services: [] }))
@@ -83,17 +84,19 @@ export class LlmMetricsPoller {
     return crypto.createHash('sha1').update(key).digest('hex').slice(0, 12)
   }
 
+  _gpuConfig() {
+    try { return JSON.parse(readFileSync(this.gpuConfigFile, 'utf8')) } catch { return {} }
+  }
   _gpuNames(svc) {
-    // Prefer the configured friendly name (gpu-config.json, keyed node:pci → "V100 #0"); fall back to
-    // the enriched device name, then the raw PCI id.
-    let inv = []
-    try { inv = this.gpuMonitor?.getEnrichedInventory?.() || [] } catch {}
-    const nameMap = {}
-    for (const g of inv) nameMap[`${g.node}:${g.pciId}`] = g.friendlyName || g.name
+    // Friendly names live in gpu-config.json keyed `node:pci` → "V100 #0". Read it directly (authoritative);
+    // fall back to gpuMonitor's resolver, then the raw PCI id.
+    const cfg = this._gpuConfig()
     return [...(svc.gpuPciIds || [])].sort().map((pci) => {
+      const key = `${svc.node}:${pci}`
+      if (cfg[key]?.friendlyName) return cfg[key].friendlyName
       let fn = null
       try { fn = this.gpuMonitor?.getFriendlyName?.(svc.node, pci) } catch {}
-      return fn || nameMap[`${svc.node}:${pci}`] || pci
+      return fn || pci
     })
   }
 
