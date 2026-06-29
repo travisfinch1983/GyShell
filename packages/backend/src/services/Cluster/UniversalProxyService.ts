@@ -187,10 +187,11 @@ export class UniversalProxyService {
     app.use('/api/mcp', createMcpRouter({ exec: this.sshExec }))
     const { createUiPrefsRouter } = await import('./proxy/ui-prefs.js')
     app.use('/api/ui-prefs', createUiPrefsRouter())
-    const { createClaudeRouter } = await import('./proxy/claude.js')
+    const { createClaudeRouter, attachClaudeTermUpgrade } = await import('./proxy/claude.js')
     app.use('/api/claude', createClaudeRouter({ exec: this.sshExec }))
 
     this.server = http.createServer(app)
+    attachClaudeTermUpgrade(this.server) // ttyd WebSocket reverse-proxy for the Claude tab terminals
     this.server.on('error', (e) => console.warn('[universal-proxy] server error:', e))
     await new Promise<void>((resolve) => this.server!.listen(this.port, this.host, resolve))
     console.log(`[universal-proxy] listening on http://${this.host}:${this.port}/api/proxy`)

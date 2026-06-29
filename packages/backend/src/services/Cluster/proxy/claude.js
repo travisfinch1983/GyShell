@@ -6,11 +6,61 @@
 // @ts-nocheck
 import { Router } from 'express'
 import express from 'express'
+import http from 'node:http'
+import net from 'node:net'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 const FILE_WHITELIST = new Set(['CLAUDE.md', 'RULES.md', 'MEMORY.md', 'TOOLS.md'])
 const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'` // single-quote shell-escape
+const MANAGED_TTYD_PORT = 7690 // AI-Lab's own base-path ttyd (distinct from any pre-existing ttyd on 7681)
+
+const DATA = () => process.env.AILAB_PROXY_DATA_DIR || '/tmp'
+function loadConns() { try { return JSON.parse(readFileSync(join(DATA(), 'claude-connections.json'), 'utf-8')) } catch { return { connections: [] } } }
+/** container IP for a connection: explicit, else resolved from the seeded inventory by vmid. */
+function containerIpFor(conn) {
+  if (conn.containerIp) return conn.containerIp
+  try {
+    const inv = JSON.parse(readFileSync(join(DATA(), 'inventory.json'), 'utf-8'))
+    const e = (inv.entries || []).find((x) => String(x.vmid) === String(conn.vmid))
+    return e?.ip || ''
+  } catch { return '' }
+}
+
+/** Provisioning script (run via `pct exec <vmid> -- sh -c '<b64 | base64 -d | sh>'`). Idempotent:
+ *  reuses an existing dtach session if present, installs ttyd if missing, and registers a managed
+ *  base-path ttyd systemd unit that auto-starts at boot. Auto-accept via the env var (the --flag fails as root). */
+function provisionScript(conn) {
+  const id = conn.id, port = MANAGED_TTYD_PORT, base = `/api/claude/term/${id}`, ws = conn.workspacePath || '/root'
+  const sockHint = conn.sessionSock || ''
+  return `set -e
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin:$PATH
+ID=${q(id)}; PORT=${q(String(port))}; BASE=${q(base)}; WS=${q(ws)}; SOCK=${q(sockHint)}
+TTYD=$(command -v ttyd || { [ -x /usr/local/bin/ttyd ] && echo /usr/local/bin/ttyd; } || true)
+if [ -z "$TTYD" ]; then ARCH=$(uname -m); wget -qO /usr/local/bin/ttyd "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.$ARCH" 2>/dev/null && chmod +x /usr/local/bin/ttyd && TTYD=/usr/local/bin/ttyd; fi
+[ -z "$TTYD" ] && { echo "ERR: ttyd unavailable (install failed)"; exit 1; }
+DTACH=$(command -v dtach || echo /bin/dtach)
+CLAUDE=$(command -v claude || true)
+[ -z "$CLAUDE" ] && for p in /root/.local/bin/claude /usr/local/bin/claude /usr/bin/claude $(ls /root/.nvm/versions/node/*/bin/claude 2>/dev/null); do [ -x "$p" ] && CLAUDE="$p" && break; done
+if [ -z "$SOCK" ]; then EXIST=$(ls /tmp/*.sock 2>/dev/null | head -1); [ -n "$EXIST" ] && SOCK="$EXIST" || SOCK="/tmp/claude-$ID.sock"; fi
+if [ ! -S "$SOCK" ] && [ -n "$CLAUDE" ]; then "$DTACH" -n "$SOCK" sh -c "cd $WS 2>/dev/null; while :; do DANGEROUSLY_SKIP_PERMISSIONS=true $CLAUDE; sleep 2; done" >/dev/null 2>&1 || true; fi
+cat > /etc/systemd/system/claude-term-$ID.service <<UNIT
+[Unit]
+Description=AI-Lab Claude terminal ($ID)
+After=network-online.target
+[Service]
+Environment=DANGEROUSLY_SKIP_PERMISSIONS=true
+ExecStart=$TTYD --base-path $BASE --writable -p $PORT $DTACH -a $SOCK
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now claude-term-$ID.service >/dev/null 2>&1 || true
+sleep 1
+echo "ttyd=$TTYD"; echo "claude=\${CLAUDE:-NONE}"; echo "sock=$SOCK"; echo "port=$PORT"; echo "active=$(systemctl is-active claude-term-$ID.service 2>/dev/null)"`
+}
 
 export function createClaudeRouter({ exec }) {
   const router = Router()
@@ -119,5 +169,66 @@ export function createClaudeRouter({ exec }) {
     } catch (e) { res.status(502).json({ error: e?.message || String(e) }) }
   })
 
+  // ── auto-provisioning (ttyd + dtach session + boot auto-start, auto-accept via env) ──
+  router.post('/connections/:id/setup', async (req, res) => {
+    const d = load(); const conn = d.connections.find((c) => c.id === req.params.id)
+    if (!conn) return res.status(404).json({ error: 'connection not found' })
+    try {
+      const b64 = Buffer.from(provisionScript(conn), 'utf-8').toString('base64')
+      const r = await exec(nodeIpOf(conn), `pct exec ${conn.vmid} -- sh -c ${q(`printf %s ${b64} | base64 -d | sh`)}`, { timeout: 90000 })
+      const out = (r.stdout || '') + (r.stderr || '')
+      const sock = (out.match(/^sock=(.+)$/m) || [])[1]
+      const claudePath = (out.match(/^claude=(.+)$/m) || [])[1]
+      const active = (out.match(/^active=(.+)$/m) || [])[1]
+      runInActionSave(d, conn, { ttydPort: MANAGED_TTYD_PORT, sessionSock: sock && sock !== '' ? sock : conn.sessionSock, claudePath, provisioned: active === 'active' })
+      res.json({ ok: r.code === 0 && active === 'active', active, log: out.trim() })
+    } catch (e) { res.status(502).json({ error: e?.message || String(e) }) }
+  })
+
+  // helper to persist a patch onto a connection
+  function runInActionSave(d, conn, patch) {
+    const idx = d.connections.findIndex((c) => c.id === conn.id)
+    if (idx >= 0) { d.connections[idx] = { ...d.connections[idx], ...patch }; save(d) }
+  }
+
+  // ── ttyd reverse-proxy (HTTP) — /api/claude/term/:id/* → container ttyd (base-path matches) ──
+  const termProxy = (req, res) => {
+    const conn = load().connections.find((c) => c.id === req.params.id)
+    if (!conn) return res.status(404).send('connection not found')
+    const ip = containerIpFor(conn), port = conn.ttydPort || MANAGED_TTYD_PORT
+    if (!ip) return res.status(502).send('no container IP')
+    const up = http.request({ host: ip, port, method: req.method, path: req.originalUrl, headers: { ...req.headers, host: `${ip}:${port}` } }, (r) => {
+      res.writeHead(r.statusCode || 502, r.headers); r.pipe(res)
+    })
+    up.on('error', (e) => { if (!res.headersSent) res.status(502).send('ttyd proxy: ' + e.message) })
+    req.pipe(up)
+  }
+  router.all('/term/:id', termProxy)
+  router.all('/term/:id/{*rest}', termProxy)
+
   return router
+}
+
+/** Attach the ttyd WebSocket reverse-proxy to the universal-proxy HTTP server (raw TCP pipe). */
+export function attachClaudeTermUpgrade(server) {
+  server.on('upgrade', (req, socket, head) => {
+    const m = (req.url || '').match(/^\/api\/claude\/term\/([^/]+)\//)
+    if (!m) return
+    const conn = loadConns().connections.find((c) => c.id === m[1])
+    if (!conn) { socket.destroy(); return }
+    const ip = containerIpFor(conn), port = conn.ttydPort || MANAGED_TTYD_PORT
+    if (!ip) { socket.destroy(); return }
+    const up = net.connect(port, ip, () => {
+      let head_ = `${req.method} ${req.url} HTTP/1.1\r\n`
+      for (let i = 0; i < req.rawHeaders.length; i += 2) {
+        const k = req.rawHeaders[i]
+        head_ += `${k}: ${k.toLowerCase() === 'host' ? `${ip}:${port}` : req.rawHeaders[i + 1]}\r\n`
+      }
+      head_ += '\r\n'
+      up.write(head_); if (head && head.length) up.write(head)
+      socket.pipe(up); up.pipe(socket)
+    })
+    up.on('error', () => socket.destroy())
+    socket.on('error', () => up.destroy())
+  })
 }

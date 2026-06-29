@@ -37,6 +37,10 @@ export class ClaudeStore {
     await bridge().request('DELETE', `/api/claude/connections/${encodeURIComponent(id)}`).catch(() => undefined)
     await this.load()
   }
+  async setup(id: string): Promise<any> {
+    return bridge().request('POST', `/api/claude/connections/${encodeURIComponent(id)}/setup`).catch((e: any) => ({ error: e?.message || String(e) }))
+  }
+  termUrl(id: string): string { return `/api/claude/term/${encodeURIComponent(id)}/` }
   async restart(id: string): Promise<any> {
     return bridge().request('POST', `/api/claude/connections/${encodeURIComponent(id)}/restart`).catch((e: any) => ({ error: e?.message || String(e) }))
   }

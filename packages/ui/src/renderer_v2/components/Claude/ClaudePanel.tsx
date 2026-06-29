@@ -42,21 +42,31 @@ const FileEditor: React.FC<{ connId: string }> = observer(({ connId }) => {
 
 const ConnectionView: React.FC<{ conn: any }> = observer(({ conn }) => {
   const [restartMsg, setRestartMsg] = useState('')
+  const [setupBusy, setSetupBusy] = useState(false)
+  const [setupLog, setSetupLog] = useState('')
+  const [reloadKey, setReloadKey] = useState(0)
+  const runSetup = async () => {
+    setSetupBusy(true); setSetupLog('Provisioning ttyd + session + boot auto-start…')
+    const r = await store.setup(conn.id)
+    setSetupLog(r?.error ? `Error: ${r.error}` : (r?.log || '') + (r?.ok ? '\n\n✓ terminal active' : '\n\n⚠ not active — see log'))
+    setSetupBusy(false); await store.load(); setReloadKey((k) => k + 1)
+  }
   return (
     <div className={styles.connView}>
       <div className={styles.connHead}>
         <strong>{conn.name}</strong>
-        <span className={styles.dim}>CT {conn.vmid} · {conn.node || conn.nodeIp} · {conn.workspacePath}</span>
+        <span className={styles.dim}>CT {conn.vmid} · {conn.node || conn.nodeIp} · {conn.workspacePath}{conn.provisioned ? ' · ✓ provisioned' : ''}</span>
         <span className={styles.spacer} />
+        <button className={styles.btn} disabled={setupBusy} onClick={() => void runSetup()}><TermIcon size={13} /> {conn.provisioned ? 'Re-provision' : 'Set up terminal'}</button>
         {conn.restartCommand && <button className={styles.btn} onClick={async () => { setRestartMsg('Restarting…'); const r = await store.restart(conn.id); setRestartMsg(r?.ok ? 'Restarted' : `Failed: ${r?.error || r?.stderr || r?.code}`) }}><RotateCcw size={13} /> Restart</button>}
         <button className={styles.btnDanger} onClick={async () => { if (await confirmStore.confirm({ title: 'Remove connection', message: `Remove the “${conn.name}” connection from the Claude tab? (does not touch the container)`, confirmText: 'Remove' })) void store.deleteConnection(conn.id) }}><Trash2 size={13} /> Remove</button>
       </div>
       {restartMsg && <div className={styles.dim}>{restartMsg}</div>}
+      {setupLog && <pre className={styles.setupLog}>{setupLog}</pre>}
 
-      {/* Live terminal — ttyd reverse-proxy lands in phase 2 */}
-      <div className={styles.termPlaceholder}>
-        <TermIcon size={16} /> Live terminal (ttyd proxy + auto-provisioning) arrives in the next phase.
-      </div>
+      {conn.provisioned
+        ? <iframe key={reloadKey} className={styles.term} src={store.termUrl(conn.id)} title={`${conn.name} terminal`} />
+        : <div className={styles.termPlaceholder}><TermIcon size={16} /> No live terminal yet — click “Set up terminal” to install ttyd + the auto-starting Claude session on this container.</div>}
 
       <FileEditor connId={conn.id} />
     </div>
@@ -102,7 +112,12 @@ const AddView: React.FC<{ onAdded: (id: string) => void }> = observer(({ onAdded
     setBusy(true); setErr('')
     try {
       const r = await store.addConnection({ name: name.trim(), vmid: c.vmid, node: c.node, containerIp: c.ip, workspacePath: ws.trim() || '/root', restartCommand: restartCommand.trim() })
+      setErr(''); setBusy(true)
+      // fully-automatic provisioning on add (install ttyd + auto-starting Claude session)
+      const setupRes = await store.setup(r?.id)
+      await store.load()
       onAdded(r?.id)
+      if (setupRes?.error) setErr('Added, but provisioning failed: ' + setupRes.error)
     } catch (e: any) { setErr(e?.message || String(e)) } finally { setBusy(false) }
   }
   return (
