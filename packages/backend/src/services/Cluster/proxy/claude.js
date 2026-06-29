@@ -44,6 +44,15 @@ CLAUDE=$(command -v claude || true)
 [ -z "$CLAUDE" ] && for p in /root/.local/bin/claude /usr/local/bin/claude /usr/bin/claude $(ls /root/.nvm/versions/node/*/bin/claude 2>/dev/null); do [ -x "$p" ] && CLAUDE="$p" && break; done
 if [ -z "$SOCK" ]; then EXIST=$(ls /tmp/*.sock 2>/dev/null | head -1); [ -n "$EXIST" ] && SOCK="$EXIST" || SOCK="/tmp/claude-$ID.sock"; fi
 if [ ! -S "$SOCK" ] && [ -n "$CLAUDE" ]; then "$DTACH" -n "$SOCK" sh -c "cd $WS 2>/dev/null; while :; do DANGEROUSLY_SKIP_PERMISSIONS=true $CLAUDE; sleep 2; done" >/dev/null 2>&1 || true; fi
+# One managed terminal per container: tear down any OTHER claude-term unit (e.g. an orphan from a prior
+# add with a different connection id) so it can't hold port $PORT and block this one.
+for f in /etc/systemd/system/claude-term-*.service; do
+  [ -e "$f" ] || continue
+  u=$(basename "$f")
+  [ "$u" = "claude-term-$ID.service" ] && continue
+  systemctl disable --now "$u" >/dev/null 2>&1 || true
+  rm -f "$f"
+done
 cat > /etc/systemd/system/claude-term-$ID.service <<UNIT
 [Unit]
 Description=AI-Lab Claude terminal ($ID)
@@ -58,8 +67,8 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now claude-term-$ID.service >/dev/null 2>&1 || true
-sleep 1
-echo "ttyd=$TTYD"; echo "claude=\${CLAUDE:-NONE}"; echo "sock=$SOCK"; echo "port=$PORT"; echo "active=$(systemctl is-active claude-term-$ID.service 2>/dev/null)"`
+sleep 3
+echo "ttyd=$TTYD"; echo "claude=\${CLAUDE:-NONE}"; echo "sock=$SOCK"; echo "port=$PORT"; echo "active=$(systemctl is-active claude-term-$ID.service 2>/dev/null)"; echo "log=$(journalctl -u claude-term-$ID.service -n 3 --no-pager 2>/dev/null | tail -1)"`
 }
 
 export function createClaudeRouter({ exec }) {
@@ -103,8 +112,14 @@ export function createClaudeRouter({ exec }) {
     save(d)
     res.json(conn)
   })
-  router.delete('/connections/:id', (req, res) => {
-    const d = load(); d.connections = d.connections.filter((c) => c.id !== req.params.id); save(d); res.json({ ok: true })
+  router.delete('/connections/:id', async (req, res) => {
+    const d = load(); const conn = d.connections.find((c) => c.id === req.params.id)
+    // Tear down the container's managed terminal so it doesn't orphan (and keep holding the ttyd port).
+    if (conn && conn.vmid) {
+      const td = `sh -c ${q(`systemctl disable --now claude-term-${conn.id}.service >/dev/null 2>&1; rm -f /etc/systemd/system/claude-term-${conn.id}.service; systemctl daemon-reload`)}`
+      try { await exec(nodeIpOf(conn), `pct exec ${conn.vmid} -- ${td}`, { timeout: 20000 }) } catch {}
+    }
+    d.connections = d.connections.filter((c) => c.id !== req.params.id); save(d); res.json({ ok: true })
   })
 
   // ── LXC list for the add dropdown (from the seeded inventory) ──
