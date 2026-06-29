@@ -47,25 +47,11 @@ for p in /root/.local/bin/claude "$HOME/.local/bin/claude" /usr/local/bin/claude
   [ -n "$p" ] && [ -x "$p" ] && CLAUDE="$p" && break
 done
 
-# 1) Kill permission prompts the version-stable way: ~/.claude/settings.json bypassPermissions (+ skip the
-#    initial dangerous-mode prompt). Merge into any existing settings; don't clobber. (No magic env var exists.)
-SETTINGS="$HOME/.claude/settings.json"; mkdir -p "$HOME/.claude"
-if command -v python3 >/dev/null 2>&1; then
-python3 - "$SETTINGS" <<'PY'
-import json, sys
-p = sys.argv[1]
-try: d = json.load(open(p))
-except Exception: d = {}
-if not isinstance(d, dict): d = {}
-d["skipDangerousModePermissionPrompt"] = True
-perm = d.get("permissions"); perm = perm if isinstance(perm, dict) else {}
-perm["defaultMode"] = "bypassPermissions"; d["permissions"] = perm
-json.dump(d, open(p, "w"), indent=2)
-PY
-SETTINGS_DONE=merged
-elif [ ! -f "$SETTINGS" ]; then
-  printf '%s' '{"skipDangerousModePermissionPrompt":true,"permissions":{"defaultMode":"bypassPermissions"}}' > "$SETTINGS"; SETTINGS_DONE=written
-else SETTINGS_DONE="skipped (no python3, file exists)"; fi
+# 1) Permissions: do NOT touch ~/.claude/settings.json. Setting permissions.defaultMode=bypassPermissions
+#    makes Claude Code REFUSE TO LAUNCH AS ROOT ("--dangerously-skip-permissions cannot be used with
+#    root/sudo") — the same guard as the flag. These containers run as root and already skip prompts via
+#    their trusted folder (~/.claude.json) + their own allow-list. Leave their settings alone.
+SETTINGS_DONE=untouched
 
 # 2) Resolve the session socket: explicit hint, else the user's own dtach session (skip our managed ones),
 #    else the canonical /tmp/claude.sock (matches the user's claudecode alias so they converge — no duplicate).
@@ -88,7 +74,7 @@ cat > /usr/local/bin/claude-term-$ID.sh <<LAUNCH
 #!/bin/sh
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin
 export IS_SANDBOX=1
-[ -S "$SOCK" ] || "$DTACH" -n "$SOCK" sh -c "cd $WS 2>/dev/null; while :; do IS_SANDBOX=1 $CLAUDE -c; sleep 2; done # ailab-managed" >/dev/null 2>&1 || true
+[ -S "$SOCK" ] || "$DTACH" -n "$SOCK" sh -c "cd /root 2>/dev/null; while :; do IS_SANDBOX=1 $CLAUDE -c; sleep 2; done # ailab-managed" >/dev/null 2>&1 || true
 sleep 1
 exec "$TTYD" --base-path $BASE --writable -p $PORT "$DTACH" -a "$SOCK"
 LAUNCH
