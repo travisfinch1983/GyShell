@@ -20,8 +20,7 @@ import { GlobalChat } from './components/Chat/GlobalChat'
 import { ContextMenuOverlay } from './components/Common/ContextMenuOverlay'
 import { ClusterPanel } from './components/Cluster/ClusterPanel'
 import { ServicesPanel } from './components/Services/ServicesPanel'
-import { ScriptsPanel } from './components/Scripts/ScriptsPanel'
-import { ScriptCatalogPanel } from './components/ScriptCatalog/ScriptCatalogPanel'
+import { ScriptsTabPanel } from './components/Scripts/ScriptsTabPanel'
 import { FileManagerPanel } from './components/FileManager/FileManagerPanel'
 import { AiServicesPanel } from './components/AiServices/AiServicesPanel'
 import { ServicesDrawer } from './components/AiServices/ServicesDrawer'
@@ -351,9 +350,7 @@ export const App: React.FC = observer(() => {
 
           {primaryTab === 'services' && <ServicesPanel />}
 
-          {primaryTab === 'scripts' && <ScriptsPanel />}
-
-          {primaryTab === 'helper-scripts' && <ScriptCatalogPanel />}
+          {primaryTab === 'scripts' && <ScriptsTabPanel />}
 
           {primaryTab === 'ai-services' && <AiServicesPanel onOpenServices={() => setServicesDrawerOpen(true)} />}
 

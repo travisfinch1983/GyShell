@@ -7,7 +7,6 @@ import {
   Server,
   Radar,
   FileCode,
-  Package,
   BrainCircuit,
   Bot,
   Image as ImageIcon,
@@ -21,7 +20,7 @@ import {
 } from 'lucide-react'
 import styles from './PrimarySidebar.module.scss'
 
-export type PrimaryTab = 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'scripts' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'monitor'
+export type PrimaryTab = 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'monitor'
 
 interface TabDef {
   id: PrimaryTab
@@ -40,7 +39,6 @@ const TABS: TabDef[] = [
   { id: 'ai-tts-stt', label: 'AI · TTS & STT', Icon: AudioLines },
   { id: 'ai-tools', label: 'AI · Tools', Icon: Wrench },
   { id: 'scripts',   label: 'Scripts',   Icon: FileCode },
-  { id: 'helper-scripts', label: 'Helper Scripts', Icon: Package },
   { id: 'model-downloads', label: 'Model Downloads', Icon: Download },
   { id: 'flowchart', label: 'Flowchart', Icon: Workflow },
   { id: 'files',     label: 'Files',     Icon: FolderOpen },

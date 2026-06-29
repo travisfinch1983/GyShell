@@ -15,13 +15,13 @@ import { VoiceManagerPanel } from '../AiTts/VoiceManagerPanel'
 import { ttsLaunchStore, imageLaunchStore, trainingLaunchStore } from '../../stores/ServiceLaunchStore'
 import styles from './AiModality.module.scss'
 
-interface SubTab {
+export interface SubTab {
   id: string
   label: string
   render: () => React.ReactNode
 }
 
-const Shell: React.FC<{ title: string; Icon: React.ComponentType<any>; tabs: SubTab[] }> = ({ title, Icon, tabs }) => {
+export const Shell: React.FC<{ title: string; Icon: React.ComponentType<any>; tabs: SubTab[] }> = ({ title, Icon, tabs }) => {
   const [active, setActive] = useState(tabs[0]?.id)
   const cur = tabs.find((t) => t.id === active) ?? tabs[0]
   return (
