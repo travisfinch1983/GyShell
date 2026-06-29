@@ -40,10 +40,24 @@ TTYD=$(command -v ttyd || { [ -x /usr/local/bin/ttyd ] && echo /usr/local/bin/tt
 if [ -z "$TTYD" ]; then ARCH=$(uname -m); wget -qO /usr/local/bin/ttyd "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.$ARCH" 2>/dev/null && chmod +x /usr/local/bin/ttyd && TTYD=/usr/local/bin/ttyd; fi
 [ -z "$TTYD" ] && { echo "ERR: ttyd unavailable (install failed)"; exit 1; }
 DTACH=$(command -v dtach || echo /bin/dtach)
-CLAUDE=$(command -v claude || true)
-[ -z "$CLAUDE" ] && for p in /root/.local/bin/claude /usr/local/bin/claude /usr/bin/claude $(ls /root/.nvm/versions/node/*/bin/claude 2>/dev/null); do [ -x "$p" ] && CLAUDE="$p" && break; done
-if [ -z "$SOCK" ]; then EXIST=$(ls /tmp/*.sock 2>/dev/null | head -1); [ -n "$EXIST" ] && SOCK="$EXIST" || SOCK="/tmp/claude-$ID.sock"; fi
-if [ ! -S "$SOCK" ] && [ -n "$CLAUDE" ]; then "$DTACH" -n "$SOCK" sh -c "cd $WS 2>/dev/null; while :; do DANGEROUSLY_SKIP_PERMISSIONS=true $CLAUDE; sleep 2; done" >/dev/null 2>&1 || true; fi
+# Prefer the versioned ~/.local/bin/claude over a possibly-stale /usr/bin/claude (avoids attaching an old build).
+CLAUDE=""
+for p in /root/.local/bin/claude "$HOME/.local/bin/claude" /usr/local/bin/claude $(command -v claude 2>/dev/null) /usr/bin/claude $(ls /root/.nvm/versions/node/*/bin/claude 2>/dev/null); do
+  [ -n "$p" ] && [ -x "$p" ] && CLAUDE="$p" && break
+done
+# We use dtach (not tmux — buggy with Claude Code). Attach an EXISTING dtach session (the user's real one),
+# skipping our own respawn-loop wrappers; only spawn a fresh session if none exists.
+ATTACH=""; SESSION=""; DS=""
+[ -n "$SOCK" ] && [ -S "$SOCK" ] && DS="$SOCK"
+[ -z "$DS" ] && DS=$(pgrep -af dtach 2>/dev/null | grep -v 'while :; do DANGEROUSLY_SKIP_PERMISSIONS' | grep -oE '/[^ ]+\\.sock' | head -1)
+if [ -n "$DS" ] && [ -S "$DS" ]; then
+  ATTACH="$DTACH -a $DS"; SESSION="attached:$DS"
+  pkill -f 'while :; do DANGEROUSLY_SKIP_PERMISSIONS=true' 2>/dev/null || true
+else
+  NS="/tmp/claude-$ID.sock"
+  [ -S "$NS" ] || "$DTACH" -n "$NS" sh -c "cd $WS 2>/dev/null; while :; do DANGEROUSLY_SKIP_PERMISSIONS=true $CLAUDE; sleep 2; done" >/dev/null 2>&1 || true
+  ATTACH="$DTACH -a $NS"; SESSION="spawned:$NS"
+fi
 # One managed terminal per container: tear down any OTHER claude-term unit (e.g. an orphan from a prior
 # add with a different connection id) so it can't hold port $PORT and block this one.
 for f in /etc/systemd/system/claude-term-*.service; do
@@ -59,7 +73,7 @@ Description=AI-Lab Claude terminal ($ID)
 After=network-online.target
 [Service]
 Environment=DANGEROUSLY_SKIP_PERMISSIONS=true
-ExecStart=$TTYD --base-path $BASE --writable -p $PORT $DTACH -a $SOCK
+ExecStart=$TTYD --base-path $BASE --writable -p $PORT $ATTACH
 Restart=always
 RestartSec=3
 [Install]
@@ -68,7 +82,7 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now claude-term-$ID.service >/dev/null 2>&1 || true
 sleep 3
-echo "ttyd=$TTYD"; echo "claude=\${CLAUDE:-NONE}"; echo "sock=$SOCK"; echo "port=$PORT"; echo "active=$(systemctl is-active claude-term-$ID.service 2>/dev/null)"; echo "log=$(journalctl -u claude-term-$ID.service -n 3 --no-pager 2>/dev/null | tail -1)"`
+echo "ttyd=$TTYD"; echo "claude=\${CLAUDE:-NONE}"; echo "session=$SESSION"; echo "port=$PORT"; echo "active=$(systemctl is-active claude-term-$ID.service 2>/dev/null)"; echo "log=$(journalctl -u claude-term-$ID.service -n 3 --no-pager 2>/dev/null | tail -1)"`
 }
 
 export function createClaudeRouter({ exec }) {
