@@ -1,46 +1,34 @@
 #!/usr/bin/env python3
-"""Generate /opt/dynacat/dynacat.yml from AI-Lab's cluster inventory.
+"""Generate /opt/dynacat/dynacat.yml from AI-Lab inventory + the cluster probe.
 
-Dynamic AI services come from active-services.json (endpoint/serviceType/model/provider).
-Infra services resolve their IP from inventory.json by guest name (so IP changes are picked
-up automatically); ports are conventional/best-effort and easy to tune in INFRA below.
-News/feeds are static. Re-runnable + idempotent: only rewrites + restarts dynacat on change.
+Two sources:
+  - active-services.json  -> AI services (LLM/TTS/Tools), grouped by serviceType, model labels,
+                             LLMs health-checked at /health.
+  - cluster-services.json  (from cluster-probe.py) -> every other container's real web endpoints,
+                             one PRIMARY endpoint per container, grouped by PVE node. Because the probe
+                             confirmed the port is listening + returns HTTP, the monitor uses a broad
+                             alt-status-codes (301/401/404... = OK) so reachable services show green.
+News/feeds static. Idempotent: validates + only rewrites/restarts dynacat on change.
 """
 import json, os, subprocess, sys
 
 DATA = "/opt/ai-lab/.gybackend-data"
 ACTIVE = os.path.join(DATA, "active-services.json")
-INV = os.path.join(DATA, "inventory.json")
+CLUSTER = "/opt/dynacat/cluster-services.json"
 OUT = "/opt/dynacat/dynacat.yml"
 
-# Infra services: (label, inventory-name, port, scheme, path). IP resolved from inventory by name.
-# inventory-name=None means use the fixed IP in FIXED below. Ports are best-effort — tune as needed.
-INFRA = [
-    ("AI-Lab",         None,             17889, "http",  ""),
-    ("Grafana",        "grafana",        3000,  "http",  ""),
-    ("Prometheus",     "prometheus",     9090,  "http",  ""),
-    ("Gitea",          "gitea",          3000,  "http",  ""),
-    ("MCPJungle",      "mcpjungle",      8080,  "http",  ""),
-    ("Immich",         "immich",         2283,  "http",  ""),
-    ("Home Assistant", "home-assistant", 8123,  "http",  ""),
-    ("Jellyfin",       "jellyfin",       8096,  "http",  ""),
-    ("Frigate",        "frigate",        5000,  "http",  ""),
-    ("Nextcloud",      "nextcloud",      443,   "https", ""),
-    ("Qdrant",         "qdrant",         6333,  "http",  "/dashboard"),
-    ("MinIO Console",  "minio",          9001,  "http",  ""),
-]
-FIXED = {"AI-Lab": "10.0.0.219"}
+AI_TYPES = {"llm", "tts", "stt", "tools", "image", "embed", "rerank", "ai"}  # owned by the AI section
+TYPE_TITLE = {"llm": "LLM Endpoints", "tts": "TTS / Voice", "stt": "STT", "tools": "Tools",
+              "image": "Image Gen", "embed": "Embeddings", "rerank": "Rerankers"}
+NODE_ORDER = ["pbs", "px-epyc", "px-gpu", "px-vault", "px-micronode", "px-micronode3", "px-micronode4"]
+NODE_TITLE = {"pbs": "pbs", "px-epyc": "px-epyc", "px-gpu": "px-gpu", "px-vault": "px-vault",
+              "px-micronode": "micronode-1", "px-micronode3": "micronode-3", "px-micronode4": "micronode-4"}
+ALT_CODES = "[301, 302, 303, 307, 308, 400, 401, 403, 404]"  # reachable-but-non-200 still = up
 
-# Static news feeds.
-RSS_FEEDS = [
-    ("Hacker News",  "https://news.ycombinator.com/rss"),
-    ("The Register", "https://www.theregister.com/headlines.atom"),
-    ("Ars Technica", "https://feeds.arstechnica.com/arstechnica/index"),
-]
+RSS_FEEDS = [("Hacker News", "https://news.ycombinator.com/rss"),
+             ("The Register", "https://www.theregister.com/headlines.atom"),
+             ("Ars Technica", "https://feeds.arstechnica.com/arstechnica/index")]
 SUBREDDITS = ["selfhosted", "LocalLLaMA", "homelab"]
-
-# serviceType -> display title for its monitor widget.
-TYPE_TITLE = {"llm": "LLM Endpoints", "tts": "TTS / Voice", "stt": "STT", "tools": "Tools", "image": "Image Gen"}
 
 
 def load(p):
@@ -51,17 +39,7 @@ def load(p):
 
 
 def q(s):
-    """Double-quote a YAML scalar, escaping backslashes and quotes."""
     return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-def base(endpoint):
-    """scheme://host:port from a full endpoint URL (drop any path)."""
-    e = endpoint.rstrip("/")
-    if "://" not in e:
-        return e
-    scheme, rest = e.split("://", 1)
-    return scheme + "://" + rest.split("/", 1)[0]
 
 
 def short(s, n=42):
@@ -69,123 +47,134 @@ def short(s, n=42):
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def base(ep):
+    e = ep.rstrip("/")
+    if "://" not in e:
+        return e
+    sc, rest = e.split("://", 1)
+    return sc + "://" + rest.split("/", 1)[0]
+
+
+# ---- AI services from active-services.json ----
 def ai_groups():
-    """Return ordered dict serviceType -> list of (label, url) from active-services.json."""
     d = load(ACTIVE)
     svcs = d.get("services", d)
     vals = list(svcs.values()) if isinstance(svcs, dict) else (svcs or [])
     groups = {}
     for v in vals:
-        if not isinstance(v, dict):
-            continue
-        ep = v.get("endpoint")
-        if not ep:
+        if not isinstance(v, dict) or not v.get("endpoint"):
             continue
         st = (v.get("serviceType") or "other").lower()
-        provider = v.get("providerName") or v.get("providerId") or "service"
-        model = v.get("model")
-        port = v.get("port")
-        label = short(model) if model else provider
-        # LLM up/down via /health (both llama.cpp + vLLM expose it); others check the base.
-        url = base(ep) + ("/health" if st == "llm" else "")
-        groups.setdefault(st, []).append({"label": label, "url": url, "port": port, "provider": provider})
-    # disambiguate duplicate labels within a group by appending the port
-    for st, items in groups.items():
-        seen = {}
+        label = short(v.get("model")) if v.get("model") else (v.get("providerName") or "service")
+        url = base(v["endpoint"]) + ("/health" if st == "llm" else "")
+        groups.setdefault(st, []).append({"label": label, "url": url, "port": v.get("port")})
+    for items in groups.values():
+        cnt = {}
         for it in items:
-            seen[it["label"]] = seen.get(it["label"], 0) + 1
+            cnt[it["label"]] = cnt.get(it["label"], 0) + 1
         for it in items:
-            if seen[it["label"]] > 1 and it.get("port"):
-                it["label"] = f'{it["label"]} :{it["port"]}'
+            if cnt[it["label"]] > 1 and it.get("port"):
+                it["label"] += f' :{it["port"]}'
     return groups
 
 
-def infra_sites():
-    inv = load(INV)
-    by_name = {(e.get("name") or "").lower(): e for e in inv.get("entries", [])}
-    out = []
-    for label, name, port, scheme, path in INFRA:
-        ip = FIXED.get(label) if name is None else (by_name.get(name, {}) or {}).get("ip")
-        if not ip:
+# ---- cluster web services from the probe: one primary endpoint per container ----
+def primary(ports):
+    web = [p for p in ports if p.get("proto") in ("http", "https")]
+    if not web:
+        return None
+
+    def score(p):
+        s = 0
+        st = p.get("status", 0)
+        if 200 <= st < 400:
+            s += 3
+        if p.get("app") and p["app"].lower() not in ("nginx", "caddy", "apache", "traefik"):
+            s += 1
+        if p["port"] not in (80, 443):
+            s += 1
+        return (s, -p["port"])  # higher score, then lower port
+    return sorted(web, key=score, reverse=True)[0]
+
+
+def cluster_by_node():
+    d = load(CLUSTER)
+    nodes = {}
+    for c in d.get("containers", []):
+        p = primary(c.get("ports", []))
+        if not p or p.get("category") in AI_TYPES:  # AI endpoints handled by the AI section
             continue
-        out.append((label, f"{scheme}://{ip}:{port}{path}", scheme == "https"))
-    return out
+        label = p.get("app") or c.get("name") or "service"
+        nodes.setdefault(c.get("node") or "other", []).append(
+            {"label": label, "url": p["url"], "https": p["proto"] == "https"})
+    for items in nodes.values():
+        items.sort(key=lambda x: x["label"].lower())
+    return nodes
 
 
-def monitor_widget(title, sites, cache="1m", indent=10):
-    """sites: list of (label, url, allow_insecure)."""
-    pad = " " * indent
-    p2 = " " * (indent + 2)
-    p3 = " " * (indent + 4)
+def monitor(title, sites, cache, indent=10, alt=True):
+    pad, p2, p3 = " " * indent, " " * (indent + 2), " " * (indent + 4)
     out = [f"{pad}- type: monitor", f"{p2}title: {q(title)}", f"{p2}cache: {cache}", f"{p2}sites:"]
-    for label, url, insecure in sites:
-        out.append(f"{p3}- title: {q(label)}")
-        out.append(f"{p3}  url: {q(url)}")
-        if insecure:
+    for s in sites:
+        out.append(f"{p3}- title: {q(s['label'])}")
+        out.append(f"{p3}  url: {q(s['url'])}")
+        if alt:
+            out.append(f"{p3}  alt-status-codes: {ALT_CODES}")
+        if s.get("https"):
             out.append(f"{p3}  allow-insecure: true")
     return "\n".join(out)
 
 
 def build():
-    groups = ai_groups()
-    L = []
-    L.append("# AUTO-GENERATED by gen-dynacat-config.py from AI-Lab inventory. Edits will be overwritten.")
-    L.append("server:")
-    L.append("  host: 127.0.0.1")
-    L.append("  port: 8081")
-    L.append("  base-url: /dash")
-    L.append("  allowed-embed-hosts:")
-    L.append("    - https://ai-lab.deeveeyant.com")
-    L.append("")
-    L.append("pages:")
-    L.append("  - name: Lab")
-    L.append("    columns:")
-    # left column: host stats + infra monitor
-    L.append("      - size: small")
-    L.append("        widgets:")
-    L.append("          - type: server-stats")
-    L.append("            servers:")
-    L.append("              - type: local")
-    L.append(f"                name: {q('CT152 · AI-Lab')}")
-    inf = infra_sites()
-    if inf:
-        L.append(monitor_widget("Infrastructure", inf, cache="2m"))
-    # middle column: AI service monitors grouped by type (LLM first)
-    L.append("      - size: full")
-    L.append("        widgets:")
-    order = sorted(groups.keys(), key=lambda k: (k != "llm", k))
-    if not order:
-        L.append("          - type: rss")
-        L.append("            title: " + q("(no active AI services found)"))
-        L.append("            feeds:")
-        L.append("              - url: " + q(RSS_FEEDS[0][1]))
-    for st in order:
-        sites = [(it["label"], it["url"], False) for it in groups[st]]
-        L.append(monitor_widget(TYPE_TITLE.get(st, st.capitalize()), sites, cache="30s"))
-    # right column: hacker news
-    L.append("      - size: small")
-    L.append("        widgets:")
-    L.append("          - type: hacker-news")
-    L.append("            limit: 12")
-    # News page
-    L.append("  - name: News")
-    L.append("    columns:")
-    L.append("      - size: full")
-    L.append("        widgets:")
-    L.append("          - type: rss")
-    L.append("            title: " + q("Feeds"))
-    L.append("            style: detailed-list")
-    L.append("            limit: 25")
-    L.append("            feeds:")
-    for title, url in RSS_FEEDS:
-        L.append("              - url: " + q(url))
-        L.append("                title: " + q(title))
-    L.append("      - size: small")
-    L.append("        widgets:")
+    ai = ai_groups()
+    nodes = cluster_by_node()
+    L = ["# AUTO-GENERATED by gen-dynacat-config.py (sources: active-services.json + cluster-services.json).",
+         "# Do not hand-edit — run /opt/dynacat/refresh.sh to regenerate.",
+         "server:", "  host: 127.0.0.1", "  port: 8081", "  base-url: /dash",
+         "  allowed-embed-hosts:", "    - https://ai-lab.deeveeyant.com", "",
+         "pages:"]
+
+    # Page 1: AI Services
+    L += ["  - name: AI Services", "    columns:",
+          "      - size: small", "        widgets:",
+          "          - type: server-stats", "            servers:",
+          "              - type: local", f"                name: {q('CT152 · AI-Lab')}",
+          "          - type: hacker-news", "            limit: 10",
+          "      - size: full", "        widgets:"]
+    if ai:
+        for st in sorted(ai, key=lambda k: (k != "llm", k)):
+            L.append(monitor(TYPE_TITLE.get(st, st.capitalize()), ai[st], "30s"))
+    else:
+        L += ["          - type: rss", f"            title: {q('(no active AI services)')}",
+              "            feeds:", f"              - url: {q(RSS_FEEDS[0][1])}"]
+
+    # Page 2: Cluster (every container's primary web endpoint, grouped by node)
+    L += ["  - name: Cluster", "    columns:"]
+    ordered = [n for n in NODE_ORDER if n in nodes] + [n for n in nodes if n not in NODE_ORDER]
+    # split nodes across 2 full columns roughly evenly by site count (Dynacat allows max 2 full cols)
+    cols = [[], []]
+    load_ = [0, 0]
+    for n in ordered:
+        i = load_.index(min(load_))
+        cols[i].append(n)
+        load_[i] += len(nodes[n]) + 2
+    for col in cols:
+        L += ["      - size: full", "        widgets:"]
+        if not col:
+            L += ["          - type: rss", f"            title: {q('—')}", "            feeds:",
+                  f"              - url: {q(RSS_FEEDS[0][1])}"]
+        for n in col:
+            L.append(monitor(f"{NODE_TITLE.get(n, n)} ({len(nodes[n])})", nodes[n], "2m"))
+
+    # Page 3: News
+    L += ["  - name: News", "    columns:", "      - size: full", "        widgets:",
+          "          - type: rss", f"            title: {q('Feeds')}", "            style: detailed-list",
+          "            limit: 25", "            feeds:"]
+    for t, u in RSS_FEEDS:
+        L += [f"              - url: {q(u)}", f"                title: {q(t)}"]
+    L += ["      - size: small", "        widgets:"]
     for sub in SUBREDDITS:
-        L.append("          - type: reddit")
-        L.append("            subreddit: " + q(sub))
-        L.append("            limit: 8")
+        L += ["          - type: reddit", f"            subreddit: {q(sub)}", "            limit: 8"]
     return "\n".join(L) + "\n"
 
 
@@ -197,10 +186,9 @@ def main():
         return
     tmp = OUT + ".tmp"
     open(tmp, "w").write(new)
-    v = subprocess.run(["/opt/dynacat/dynacat", "-config", tmp, "config:validate"],
-                       capture_output=True, text=True)
+    v = subprocess.run(["/opt/dynacat/dynacat", "-config", tmp, "config:validate"], capture_output=True, text=True)
     if v.returncode != 0:
-        sys.stderr.write("VALIDATION FAILED, keeping old config:\n" + v.stdout + v.stderr + "\n")
+        sys.stderr.write("VALIDATION FAILED:\n" + v.stdout + v.stderr + "\n")
         os.remove(tmp)
         sys.exit(1)
     os.replace(tmp, OUT)
