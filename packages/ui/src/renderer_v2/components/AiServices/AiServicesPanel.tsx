@@ -2,6 +2,7 @@ import React, { useEffect } from 'react'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, BrainCircuit, Cpu, PanelRightOpen } from 'lucide-react'
 import { aiServicesStore as store } from '../../stores/AiServicesStore'
+import { LlmMetricsDashboard } from './LlmMetricsDashboard'
 import styles from './AiServices.module.scss'
 
 const PoolView: React.FC = observer(() => (
@@ -67,6 +68,7 @@ export const AiServicesPanel: React.FC<{ onOpenServices?: () => void }> = observ
 
       <div className={styles.body}>
         <PoolView />
+        <LlmMetricsDashboard />
       </div>
     </div>
   )

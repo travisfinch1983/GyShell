@@ -125,3 +125,34 @@
 /* service cards grouped by type */
 .svcGroup { display: flex; flex-direction: column; gap: 8px; margin-bottom: 6px; }
 .svcGroupLabel { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; padding: 4px 2px 2px; border-bottom: 1px solid var(--border); }
+
+/* ── LLM performance metrics dashboard ── */
+.metricsWrap { margin-top: 18px; display: flex; flex-direction: column; gap: 8px; }
+.metricsBar { display: flex; align-items: center; gap: 10px; }
+.metricsTitle { font-size: 14px; font-weight: 700; }
+.metricsSub { font-size: 11px; color: var(--fg-faint); }
+.metricsScroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+.metricsTable { border-collapse: collapse; font-size: 12px; white-space: nowrap; min-width: 100%; }
+.metricsTable th, .metricsTable td { padding: 5px 9px; text-align: right; border-bottom: 1px solid var(--border); }
+.metricsTable thead th { position: sticky; top: 0; background: var(--panel-bg); z-index: 2; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--fg-muted); font-weight: 600; }
+.metricsTable th:first-child, .metricsTable td:first-child { text-align: left; }
+.stickyCol { position: sticky; left: 0; background: var(--app-bg); z-index: 1; font-weight: 600; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+.metricsTable thead th.stickyCol { z-index: 3; background: var(--panel-bg); }
+.groupRow td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.groupCell { position: sticky; left: 0; text-align: left !important; font-weight: 700; font-size: 12px; color: var(--accent); }
+.groupCount { display: inline-block; margin-left: 6px; font-size: 10px; color: var(--fg-faint); border: 1px solid var(--border); border-radius: 8px; padding: 0 6px; }
+.stoppedRow td { color: var(--fg-faint); }
+.gpuCell { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px; vertical-align: middle; }
+.dotOn { background: #34d399; }
+.dotOff { background: var(--fg-faint); }
+.actionCell { display: flex; gap: 4px; justify-content: flex-end; }
+.iconBtn { display: inline-flex; align-items: center; padding: 3px; border: 1px solid var(--border); border-radius: 5px; background: var(--control-bg); color: var(--fg-muted); cursor: pointer; &:hover { color: var(--fg); border-color: var(--accent); } }
+
+.modalBackdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.modalCard { background: var(--app-bg); border: 1px solid var(--border); border-radius: 10px; max-width: 560px; width: 90%; max-height: 80vh; overflow: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+.modalHead { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 13px; position: sticky; top: 0; background: var(--app-bg); }
+.settingsTable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.settingsTable th { text-align: left; padding: 7px 14px; color: var(--fg-muted); font-weight: 500; width: 40%; vertical-align: top; }
+.settingsTable td { padding: 7px 14px; font-family: var(--font-mono); word-break: break-all; }
+.settingsTable tr { border-bottom: 1px solid var(--border); }

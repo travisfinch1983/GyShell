@@ -23,6 +23,7 @@ import { getAllProviders, getProvider } from '../services/providers.js';
 import { ProviderInstaller } from '../services/provider-installer.js';
 import { inspectModel, detectFormat, recommendedHeaderSize, safetensorsHeaderSize } from '../services/model-inspector.js';
 import { getProviderSymlinks } from '../services/shared-folder-mappings.js';
+import { LlmMetricsPoller } from '../services/metrics-poller.js';
 
 // Per-provider VRAM reservation strategy:
 //   null  = static LLM — trust live nvidia-smi (no hot-swap, VRAM won't change mid-run)
@@ -6718,8 +6719,33 @@ WantedBy=multi-user.target
     res.json({ ok: true });
   });
 
+  // ── LLM metrics dashboard: persistent per-(model+backend+settings) performance rows ──
+  let metricsPoller = null;
+  try {
+    metricsPoller = new LlmMetricsPoller({
+      dataDir,
+      gpuMonitor,
+      getActiveServices: () => loadActiveServices(), // full records (config + isTts/etc flags)
+      getServiceHistory: () => loadServiceHistory(),
+      interval: 20000,
+    });
+    metricsPoller.start();
+  } catch (e) { console.warn('[ai] LLM metrics poller failed to start:', e?.message); }
+
+  // GET all rows for the dashboard (every model ever run, running + stopped)
+  router.get('/llm-metrics', (req, res) => {
+    if (!metricsPoller) return res.json({ rows: [], generatedAt: Date.now() });
+    res.json({ rows: metricsPoller.getRows(), generatedAt: Date.now() });
+  });
+  // DELETE a single row (e.g. retire a stale config)
+  router.delete('/llm-metrics/:fp', (req, res) => {
+    const ok = metricsPoller?.deleteRow(req.params.fp);
+    res.json({ ok: !!ok });
+  });
+
   return {
     router,
+    metricsPoller,
     startScanTimer,
     stopScanTimer,
     startWatchdog,
