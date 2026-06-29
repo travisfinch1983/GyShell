@@ -84,12 +84,17 @@ export class LlmMetricsPoller {
   }
 
   _gpuNames(svc) {
-    try {
-      const inv = this.gpuMonitor?.getEnrichedInventory?.() || []
-      const map = {}
-      for (const g of inv) map[`${g.node}:${g.pciId}`] = g.friendlyName || g.name || g.pciId
-      return [...(svc.gpuPciIds || [])].sort().map((pci) => map[`${svc.node}:${pci}`] || map[pci] || pci)
-    } catch { return [...(svc.gpuPciIds || [])] }
+    // Prefer the configured friendly name (gpu-config.json, keyed node:pci → "V100 #0"); fall back to
+    // the enriched device name, then the raw PCI id.
+    let inv = []
+    try { inv = this.gpuMonitor?.getEnrichedInventory?.() || [] } catch {}
+    const nameMap = {}
+    for (const g of inv) nameMap[`${g.node}:${g.pciId}`] = g.friendlyName || g.name
+    return [...(svc.gpuPciIds || [])].sort().map((pci) => {
+      let fn = null
+      try { fn = this.gpuMonitor?.getFriendlyName?.(svc.node, pci) } catch {}
+      return fn || nameMap[`${svc.node}:${pci}`] || pci
+    })
   }
 
   /** Fetch + parse a service's Prometheus metrics into normalised counters/gauges. */
