@@ -90,3 +90,26 @@ $sidebar-expanded: 200px;
   flex-direction: column;
   gap: 2px;
 }
+
+/* ── edit mode (keep expanded so labels + drag are usable) ── */
+.sidebar.editing { width: 200px; }
+.sidebar.editing .label { display: inline; }
+.sidebar.editing .tab { justify-content: flex-start; }
+.draggable { cursor: grab; &:active { cursor: grabbing; } }
+.grip { color: var(--fg-faint); flex-shrink: 0; }
+
+/* settings + 3-dot side by side */
+.bottomRow { display: flex; align-items: center; gap: 2px; }
+.bottomRow > .tab:first-child { flex: 1; }
+.moreBtn { flex: 0 0 auto; min-width: 36px; }
+/* keep the rail clean when collapsed — the 3-dot appears once expanded on hover */
+.sidebar:not(:hover) .moreBtn { display: none; }
+
+.menuWrap { position: relative; }
+.menuBackdrop { position: fixed; inset: 0; z-index: 40; }
+.menu { position: absolute; bottom: calc(100% + 4px); right: 0; z-index: 50; min-width: 150px; background: var(--panel-bg, var(--app-bg)); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.45); padding: 4px; }
+.menuItem { display: block; width: 100%; text-align: left; padding: 7px 10px; font-size: 12px; border: none; border-radius: 5px; background: none; color: var(--fg); cursor: pointer; &:hover { background: var(--control-bg-hover); } }
+
+.editActions { display: flex; flex-direction: column; gap: 2px; }
+.saveBtn { color: #34d399; &:hover { background: color-mix(in srgb, #34d399 16%, transparent); color: #34d399; border-color: #34d399; } }
+.cancelBtn { color: var(--danger,#f87171); &:hover { background: color-mix(in srgb, var(--danger,#f87171) 16%, transparent); color: var(--danger,#f87171); border-color: var(--danger,#f87171); } }

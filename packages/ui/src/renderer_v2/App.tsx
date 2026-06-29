@@ -52,9 +52,8 @@ export const App: React.FC = observer(() => {
   const [chatOpen, setChatOpen] = useState(
     () => localStorage.getItem('ai-lab-chat-open') === 'true'
   )
-  const [servicesDrawerOpen, setServicesDrawerOpen] = useState(
-    () => localStorage.getItem('ai-lab-services-drawer-open') === 'true'
-  )
+  // Always start collapsed on page load (don't restore a previously-open state).
+  const [servicesDrawerOpen, setServicesDrawerOpen] = useState(false)
   const toggleServicesDrawer = useCallback(() => {
     setServicesDrawerOpen(prev => {
       const next = !prev
@@ -352,7 +351,7 @@ export const App: React.FC = observer(() => {
 
           {primaryTab === 'helper-scripts' && <ScriptsTabPanel />}
 
-          {primaryTab === 'ai-services' && <AiServicesPanel onOpenServices={() => setServicesDrawerOpen(true)} />}
+          {primaryTab === 'ai-services' && <AiServicesPanel />}
 
           {primaryTab === 'ai-llm' && <AiLlmPanel />}
           {primaryTab === 'ai-image' && <AiImagePanel />}

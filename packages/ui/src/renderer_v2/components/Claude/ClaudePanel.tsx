@@ -186,7 +186,16 @@ const AddView: React.FC<{ onAdded: (id: string) => void }> = observer(({ onAdded
 
 export const ClaudePanel: React.FC = observer(() => {
   useEffect(() => { if (!store.loaded) void store.load(); void uiPrefsStore.ensureLoaded() }, [])
-  const [active, setActive] = useState<string>(DIRECTIVES)
+  const [active, setActiveState] = useState<string>(DIRECTIVES)
+  const restored = useRef(false)
+  // Restore the last-viewed sub-tab once prefs + connections have loaded (fall back if it's a stale connection).
+  useEffect(() => {
+    if (restored.current || !uiPrefsStore.loaded || !store.loaded) return
+    restored.current = true
+    const saved = uiPrefsStore.get('claudeActiveTab', DIRECTIVES) as string
+    if (saved === DIRECTIVES || saved === ADD || store.connections.some((c) => c.id === saved)) setActiveState(saved)
+  }, [uiPrefsStore.loaded, store.loaded])
+  const setActive = (id: string) => { setActiveState(id); uiPrefsStore.set('claudeActiveTab', id) }
   const conn = store.connections.find((c) => c.id === active)
 
   return (

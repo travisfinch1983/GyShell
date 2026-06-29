@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react'
 import { observer } from 'mobx-react-lite'
-import { RefreshCw, BrainCircuit, Cpu, PanelRightOpen } from 'lucide-react'
+import { RefreshCw, BrainCircuit, Cpu } from 'lucide-react'
 import { aiServicesStore as store } from '../../stores/AiServicesStore'
 import { LlmMetricsDashboard } from './LlmMetricsDashboard'
 import styles from './AiServices.module.scss'
@@ -41,7 +41,7 @@ const PoolView: React.FC = observer(() => (
  * AI Services tab. Running-services cards now live in the global right-side drawer
  * (ServicesDrawer); this tab is GPU Pool + (future phases) the launch UI.
  */
-export const AiServicesPanel: React.FC<{ onOpenServices?: () => void }> = observer(({ onOpenServices }) => {
+export const AiServicesPanel: React.FC = observer(() => {
   useEffect(() => {
     void store.load()
   }, [])
@@ -53,11 +53,6 @@ export const AiServicesPanel: React.FC<{ onOpenServices?: () => void }> = observ
         <span className={styles.title}>AI Services</span>
         <span className={styles.subTitle}>GPU Pool</span>
         <div className={styles.spacer} />
-        {onOpenServices && (
-          <button className={styles.openSvcBtn} title="Open running services" onClick={onOpenServices}>
-            <PanelRightOpen size={13} /> Services <span className={styles.count}>{store.services.length}</span>
-          </button>
-        )}
         <button className={styles.refreshBtn} title="Refresh" onClick={() => void store.load()}>
           <RefreshCw size={14} className={store.loading ? styles.spin : ''} />
         </button>
