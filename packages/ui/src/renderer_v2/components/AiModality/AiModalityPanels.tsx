@@ -10,6 +10,7 @@ import { ModelCacherPanel } from '../AiTools/ModelCacherPanel'
 import { LlmLaunchPanel } from '../AiLlm/LlmLaunchPanel'
 import { QuantizationPanel } from '../AiLlm/QuantizationPanel'
 import { ServiceLaunchPanel } from './ServiceLaunchPanel'
+import { TtsTestPanel } from '../AiTts/TtsTestPanel'
 import { ttsLaunchStore, imageLaunchStore, trainingLaunchStore } from '../../stores/ServiceLaunchStore'
 import styles from './AiModality.module.scss'
 
@@ -58,6 +59,7 @@ export const AiImagePanel: React.FC = observer(() => (
 export const AiTtsSttPanel: React.FC = observer(() => (
   <Shell title="AI · TTS & STT" Icon={AudioLines} tabs={[
     { id: 'launch', label: 'TTS Launch', render: () => <ServiceLaunchPanel store={ttsLaunchStore} emptyLabel="TTS" /> },
+    { id: 'test', label: 'TTS Test Panel', render: () => <TtsTestPanel /> },
     { id: 'providers', label: 'Provider Install', render: () => <ProviderInstall categories={['tts']} /> },
   ]} />
 ))

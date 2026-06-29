@@ -34,6 +34,15 @@ export default defineConfig({
     port: 17889,
     allowedHosts: ['ai-lab.deeveeyant.com', 'gyshell.deeveeyant.com'],
     proxy: {
+      // Native universal proxy (AI-Lab's own backend on :17890). Lets the browser make same-origin
+      // direct HTTP requests for things the WS RPC bridge can't carry: binary audio (TTS/RVC blobs),
+      // <audio> element src (workspace playback), SSE streaming (multi-tts/stream), and large uploads.
+      // Additive — the WS cluster bridge still handles JSON RPC for every other panel.
+      '/api': {
+        target: 'http://127.0.0.1:17890',
+        changeOrigin: true,
+        ws: true,
+      },
       // Proxy all ProxLab API requests through Vite dev server
       // Covers: LLM, embeddings, reranker, vector, TTS, STT, image, services
       // Browser makes same-origin requests — no CORS, no mixed content
