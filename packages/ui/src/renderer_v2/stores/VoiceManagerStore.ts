@@ -131,7 +131,7 @@ export class VoiceManagerStore {
       if (this.duration < 5) log('Audio under 5s — too short to save as a voice', 'warn')
     } catch (e: any) { log(`Load workspace failed: ${e?.message || e}`, 'err') }
   }
-  async refreshLayers(width = 1000): Promise<void> {
+  async refreshLayers(): Promise<void> {
     if (!this.wsId) return
     try {
       const [info, layers] = await Promise.all([jget(`/api/ai/workspace/${this.wsId}/info`), jget(`/api/ai/workspace/${this.wsId}/layers`)])
@@ -216,8 +216,9 @@ export class VoiceManagerStore {
     // must go through a direct upload+extract. Use save-audio of the raw file then extract is overkill;
     // instead inform the user to use "From Server". For parity we attempt dynamic import, else throw clear msg.
     try {
-      const mod: any = await import(/* @vite-ignore */ '/vendor/ffmpeg/index.js')
-      const { fetchFile }: any = await import(/* @vite-ignore */ '/vendor/ffmpeg-util/index.js')
+      const ffPath = '/vendor/ffmpeg/index.js', utilPath = '/vendor/ffmpeg-util/index.js'
+      const mod: any = await import(/* @vite-ignore */ ffPath)
+      const { fetchFile }: any = await import(/* @vite-ignore */ utilPath)
       const ff = new mod.FFmpeg(); await ff.load({ coreURL: '/vendor/ffmpeg-core/ffmpeg-core.js', wasmURL: '/vendor/ffmpeg-core/ffmpeg-core.wasm' })
       await ff.writeFile('in', await fetchFile(file))
       await ff.exec(['-i', 'in', '-vn', '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '1', 'out.wav'])
