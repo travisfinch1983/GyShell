@@ -209,6 +209,9 @@ const UNIVERSAL_LLM: Array<[string, string]> = [
   ['models', '/llm/v1/models'],
 ]
 const MULTI_TTS: Array<[string, string]> = [
+  ['preset base (OpenAI-compat)', '/preset-tts/v1'],
+  ['preset-speech', '/preset-tts/v1/audio/speech'],
+  ['voice-presets', '/multi-tts/voice-presets'],
   ['speech', '/multi-tts/v1/audio/speech'],
   ['cloned-speech', '/multi-tts/v1/audio/cloned-speech'],
   ['stream', '/multi-tts/stream'],
