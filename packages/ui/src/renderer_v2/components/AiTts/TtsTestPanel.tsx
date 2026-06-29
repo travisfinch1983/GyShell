@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Play, RefreshCw, Save, Trash2, Radio, RotateCcw, Loader2 } from 'lucide-react'
+import { Play, RefreshCw, Save, Trash2, RotateCcw, Loader2 } from 'lucide-react'
 import { ttsTestStore as store } from '../../stores/TtsTestStore'
 import { ttsLogStore } from '../../stores/ttsLogStore'
 import { promptStore } from '../../stores/promptStore'
@@ -121,11 +121,9 @@ export const TtsTestPanel: React.FC = observer(() => {
 
         <div className={styles.actions}>
           <button className={styles.btn} onClick={() => { void store.refreshVoices(); void store.refreshModels() }}><RefreshCw size={13} /> Refresh Voices</button>
-          {!store.dualEnable
-            ? <button className={styles.btnPrimary} disabled={store.busy} onClick={() => void store.generate()}>{store.busy ? <Loader2 size={13} className={styles.spin} /> : <Play size={13} />} Generate Speech</button>
-            : <button className={styles.btnPrimary} disabled={store.streaming} onClick={() => void store.streamGenerate()}>{store.streaming ? <Loader2 size={13} className={styles.spin} /> : <Radio size={13} />} Stream Speech</button>}
+          <button className={styles.btnPrimary} disabled={store.busy || store.streaming} onClick={() => void store.submit()}>{(store.busy || store.streaming) ? <Loader2 size={13} className={styles.spin} /> : <Play size={13} />} Generate Speech</button>
           <button className={styles.btn} onClick={() => store.resetDefaults()}><RotateCcw size={13} /> Reset Defaults</button>
-          {store.showMultiPipeline && <label className={styles.check}><input type="checkbox" checked={store.dualEnable} onChange={(e) => store.set('dualEnable', e.target.checked)} /> Multi Pipeline (stream)</label>}
+          {store.isMultiTts && <span className={styles.dim}>multi-TTS pipeline (streamed)</span>}
           <span className={styles.dim}>{store.status}</span>
         </div>
 

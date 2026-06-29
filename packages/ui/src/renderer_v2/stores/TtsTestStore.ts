@@ -48,7 +48,6 @@ export class TtsTestStore {
   rvcF0Method = 'rmvpe'; rvcF0Key = 0; rvcIndexRate = 0.75; rvcFilter = 3; rvcRmsMix = 0.25; rvcProtect = 0.33
   rvcStatus = ''
   // streaming
-  dualEnable = false
   streaming = false
   streamSentences: any[] = []
   streamSummary = ''
@@ -67,7 +66,14 @@ export class TtsTestStore {
   get isChatterbox() { return this.engine === 'chatterbox' }
   get voiceDesign() { return /VoiceDesign/i.test(this.selectedModel) || /VoiceDesign/i.test(this.engineDetail) }
   get cloneOnQwen() { return this.isQwen && this.selectedVoice && this.voices.find((v) => v.name === this.selectedVoice)?.kind === 'clone' }
-  get showMultiPipeline() { const b = this.activeBase(); return !b || b.includes('/multi-tts') }
+  /** The multi-TTS aggregator endpoint always drives the streaming pipeline (handles RVC, won't time out). */
+  get isMultiTts() { const b = this.activeBase(); return !b || b.includes('/multi-tts') }
+
+  /** Single entry point — endpoint decides the path (no separate stream toggle). */
+  async submit(): Promise<void> {
+    if (this.isMultiTts) await this.streamGenerate()
+    else await this.generate()
+  }
 
   normalizeBase(url: string): string { return (url || '').replace(/\/+$/, '').replace(/\/v1$/, '') }
   activeBase(): string {
@@ -308,7 +314,7 @@ export class TtsTestStore {
       qwenLanguage: this.qwenLanguage, qwenInstruction: this.qwenInstruction, text: this.text,
       dbCfg: this.dbCfg, dbStg: this.dbStg, dbDurMult: this.dbDurMult, dbSeed: this.dbSeed, dbNoWatermark: this.dbNoWatermark,
     })
-    uiPrefsStore.set('ttsRvc', { rvcEnabled: this.rvcEnabled, rvcModel: this.rvcModel, rvcF0Method: this.rvcF0Method, rvcF0Key: this.rvcF0Key, rvcIndexRate: this.rvcIndexRate, rvcFilter: this.rvcFilter, rvcRmsMix: this.rvcRmsMix, rvcProtect: this.rvcProtect, dualEnable: this.dualEnable })
+    uiPrefsStore.set('ttsRvc', { rvcEnabled: this.rvcEnabled, rvcModel: this.rvcModel, rvcF0Method: this.rvcF0Method, rvcF0Key: this.rvcF0Key, rvcIndexRate: this.rvcIndexRate, rvcFilter: this.rvcFilter, rvcRmsMix: this.rvcRmsMix, rvcProtect: this.rvcProtect })
   }
   restore(): void {
     const t = uiPrefsStore.get('ttsTest', null) as any
