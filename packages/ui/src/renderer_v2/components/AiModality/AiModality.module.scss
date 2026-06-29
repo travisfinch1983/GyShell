@@ -6,7 +6,7 @@
 .subTabs { display: flex; gap: 4px; margin-left: 8px; }
 .subTab { font-size: 12px; padding: 5px 12px; border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--fg-muted); cursor: pointer; &:hover { background: var(--control-bg); color: var(--fg); } }
 .subTabActive { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--fg); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
-.body { flex: 1; overflow: auto; }
+.body { flex: 1; overflow: auto; position: relative; min-height: 0; }
 
 .spin { animation: aim-spin 0.9s linear infinite; }
 @keyframes aim-spin { to { transform: rotate(360deg); } }
