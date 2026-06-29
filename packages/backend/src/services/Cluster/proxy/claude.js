@@ -116,6 +116,44 @@ export function createClaudeRouter({ exec }) {
     } catch (e) { res.json({ entries: [] }) }
   })
 
+  // ── auto-detect the workspace dir holding the CLAUDE/RULES/MEMORY/TOOLS files on a container ──
+  // Searches likely roots for the four agent files, ranks candidate directories by how many they hold
+  // (CLAUDE.md weighted highest), and also reports the running Claude Code process's cwd as a hint.
+  router.get('/detect-workspace', async (req, res) => {
+    const node = req.query.node || ''
+    const vmid = req.query.vmid
+    if (!vmid) return res.status(400).json({ error: 'vmid required' })
+    const nodeIp = req.query.nodeIp || loadHostMap()[node] || node
+    const wanted = ['CLAUDE.md', 'RULES.md', 'MEMORY.md', 'TOOLS.md']
+    // -L follows symlinks (ClawHub skill workspaces are symlinked); bounded depth + roots to stay fast.
+    const findCmd = `sh -c ${q(
+      'for r in /root /root/.claude "$HOME" "$HOME/.claude" /opt; do [ -d "$r" ] && find -L "$r" -maxdepth 4 -type f ' +
+      '\\( -iname CLAUDE.md -o -iname RULES.md -o -iname MEMORY.md -o -iname TOOLS.md \\) 2>/dev/null; done | sort -u; ' +
+      'echo "===CWD==="; for p in $(pgrep -f "claude" 2>/dev/null); do readlink /proc/$p/cwd 2>/dev/null; done | sort -u'
+    )}`
+    try {
+      const r = await exec(nodeIp, `pct exec ${vmid} -- ${findCmd}`, { timeout: 25000 })
+      const out = (r.stdout || '')
+      const [filesPart, cwdPart = ''] = out.split('===CWD===')
+      const byDir = {}
+      for (const line of filesPart.split('\n').map((l) => l.trim()).filter(Boolean)) {
+        const slash = line.lastIndexOf('/')
+        if (slash < 0) continue
+        const dir = line.slice(0, slash) || '/'
+        const file = line.slice(slash + 1)
+        if (!wanted.some((w) => w.toLowerCase() === file.toLowerCase())) continue
+        ;(byDir[dir] = byDir[dir] || new Set()).add(file)
+      }
+      const candidates = Object.entries(byDir).map(([dir, set]) => {
+        const files = [...set]
+        const hasClaude = files.some((f) => /^claude\.md$/i.test(f))
+        return { dir, files, score: files.length + (hasClaude ? 10 : 0) }
+      }).sort((a, b) => b.score - a.score)
+      const cwds = cwdPart.split('\n').map((l) => l.trim()).filter(Boolean)
+      res.json({ candidates, cwds, best: candidates[0]?.dir || cwds[0] || '/root' })
+    } catch (e) { res.status(502).json({ error: e?.message || String(e), candidates: [], cwds: [] }) }
+  })
+
   // ── per-connection workspace files ──
   router.get('/connections/:id/file', async (req, res) => {
     const d = load(); const conn = d.connections.find((c) => c.id === req.params.id)

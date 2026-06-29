@@ -37,6 +37,10 @@ export class ClaudeStore {
     await bridge().request('DELETE', `/api/claude/connections/${encodeURIComponent(id)}`).catch(() => undefined)
     await this.load()
   }
+  async detectWorkspace(node: string, vmid: any): Promise<any> {
+    return bridge().request('GET', `/api/claude/detect-workspace?node=${encodeURIComponent(node || '')}&vmid=${encodeURIComponent(String(vmid))}`)
+      .catch((e: any) => ({ error: e?.message || String(e), candidates: [], cwds: [] }))
+  }
   async setup(id: string): Promise<any> {
     return bridge().request('POST', `/api/claude/connections/${encodeURIComponent(id)}/setup`).catch((e: any) => ({ error: e?.message || String(e) }))
   }

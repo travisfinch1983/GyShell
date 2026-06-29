@@ -123,10 +123,22 @@ const AddView: React.FC<{ onAdded: (id: string) => void }> = observer(({ onAdded
   const [restartCommand, setRestartCommand] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
-  const pick = (vmid: string) => {
+  const [detecting, setDetecting] = useState(false)
+  const [candidates, setCandidates] = useState<{ dir: string; files: string[] }[]>([])
+  const [cwds, setCwds] = useState<string[]>([])
+  const [detectMsg, setDetectMsg] = useState('')
+  const pick = async (vmid: string) => {
     setSel(vmid)
     const c = store.lxc.find((l) => String(l.vmid) === String(vmid))
-    if (c && !name) setName(c.name)
+    if (!c) return
+    if (!name) setName(c.name)
+    setCandidates([]); setCwds([]); setDetectMsg(''); setDetecting(true)
+    const r = await store.detectWorkspace(c.node, c.vmid)
+    setDetecting(false)
+    if (r?.error) { setDetectMsg('Auto-detect failed: ' + r.error); return }
+    setCandidates(r.candidates || []); setCwds(r.cwds || [])
+    if (r.best) setWs(r.best)
+    setDetectMsg((r.candidates || []).length ? `Found the agent files in ${(r.candidates || []).length} location(s) — auto-selected the best match.` : 'No CLAUDE/RULES/MEMORY/TOOLS files found in the usual spots — set the path manually.')
   }
   const add = async () => {
     const c = store.lxc.find((l) => String(l.vmid) === String(sel))
@@ -146,14 +158,24 @@ const AddView: React.FC<{ onAdded: (id: string) => void }> = observer(({ onAdded
     <div className={styles.addForm}>
       <h4 className={styles.h4}>Add Claude Connection</h4>
       <label className={styles.field}><span>Container</span>
-        <select value={sel} onChange={(e) => pick(e.target.value)}>
+        <select value={sel} onChange={(e) => void pick(e.target.value)}>
           <option value="">Select an LXC…</option>
           {store.lxc.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '')).map((l) => <option key={l.vmid} value={l.vmid}>{l.name} (CT {l.vmid} · {l.node}{l.ip ? ` · ${l.ip}` : ''})</option>)}
         </select>
       </label>
       <label className={styles.field}><span>Display name</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. DHB-Claude" /></label>
-      <label className={styles.field}><span>Workspace path — directory that holds this instance's CLAUDE.md / RULES.md / MEMORY.md / TOOLS.md</span><input value={ws} onChange={(e) => setWs(e.target.value)} placeholder="e.g. /root/openclaw-claude or /root/.claude" /></label>
-      <p className={styles.dim}>This is the folder the .md editors read/write — not necessarily /root. If a file isn't there the editor shows “(file does not exist yet)”; check the instance (e.g. <code>ls ~/CLAUDE.md ~/.claude/CLAUDE.md</code>) and set the right directory.</p>
+      <label className={styles.field}><span>Workspace path — directory that holds this instance's CLAUDE.md / RULES.md / MEMORY.md / TOOLS.md {detecting && <em>· detecting…</em>}</span><input value={ws} onChange={(e) => setWs(e.target.value)} placeholder="auto-detected when you pick a container" /></label>
+      {detectMsg && <p className={styles.dim}>{detectMsg}</p>}
+      {candidates.length > 0 && (
+        <div className={styles.detectRow}>
+          {candidates.map((c) => (
+            <button key={c.dir} type="button" className={`${styles.detectChip} ${ws === c.dir ? styles.detectChipActive : ''}`} onClick={() => setWs(c.dir)} title={`contains: ${c.files.join(', ')}`}>
+              {c.dir} <span className={styles.detectFiles}>{c.files.length}/4</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {cwds.length > 0 && <p className={styles.dim}>Claude Code running dir{cwds.length > 1 ? 's' : ''}: {cwds.join(', ')} (working folder ≠ where the .md files live — the chips above are the file locations).</p>}
       <label className={styles.field}><span>Restart command (optional, run via pct exec)</span><input value={restartCommand} onChange={(e) => setRestartCommand(e.target.value)} placeholder="systemctl restart openclaw-claude.service" /></label>
       {err && <div className={styles.error}>{err}</div>}
       <button className={styles.btnPrimary} disabled={busy || !sel || !name.trim()} onClick={() => void add()}><Plus size={13} /> Add Connection</button>
