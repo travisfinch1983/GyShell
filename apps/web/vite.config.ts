@@ -42,6 +42,11 @@ export default defineConfig({
         target: 'http://127.0.0.1:17890',
         changeOrigin: true,
         ws: true,
+        // TTS/RVC synth holds the connection many seconds before the (buffered) audio arrives. Disable the
+        // dev-proxy's timeouts and keep the upstream socket alive so slow binary responses aren't reset
+        // (which surfaces as a Cloudflare 502 through the tunnel chain).
+        timeout: 0,
+        proxyTimeout: 0,
       },
       // Proxy all ProxLab API requests through Vite dev server
       // Covers: LLM, embeddings, reranker, vector, TTS, STT, image, services
