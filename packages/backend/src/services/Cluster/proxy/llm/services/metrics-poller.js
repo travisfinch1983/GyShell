@@ -162,7 +162,12 @@ export class LlmMetricsPoller {
 
   async poll() {
     const svcData = await this.getActiveServices()
-    const llm = Array.isArray(svcData?.llm) ? svcData.llm : (Array.isArray(svcData?.services) ? svcData.services.filter((s) => !s.isTts && !s.isImageGen && !s.isStt && !s.isTools) : [])
+    // active-services.json stores `services` as an object keyed by id (proxy uses Object.values).
+    const all = Array.isArray(svcData?.llm) ? svcData.llm
+      : Array.isArray(svcData?.services) ? svcData.services
+      : (svcData?.services && typeof svcData.services === 'object') ? Object.values(svcData.services)
+      : []
+    const llm = all.filter((s) => s && typeof s === 'object' && s.containerIp && s.port && !s.isTts && !s.isImageGen && !s.isStt && !s.isTools)
     const now = Date.now()
     const seen = new Set()
 
