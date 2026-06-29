@@ -87,7 +87,7 @@
 .headroomAvail { font-size: 10px; color: var(--fg-faint); font-family: var(--font-mono); }
 
 /* Saved templates list box */
-.tplList { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; }
+.tplList { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; resize: vertical; min-height: 120px; }
 .tplRow { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-bg); }
 .tplRowActive { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .tplName { font-size: 12px; font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }

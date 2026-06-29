@@ -4,7 +4,11 @@ import { Rocket, Server, RefreshCw, Cpu, Pencil, Trash2, Check, Save, FilePlus, 
 import { llmLaunchStore as store, type QuantRow } from '../../stores/LlmLaunchStore'
 import { confirmStore } from '../../stores/confirmStore'
 import { promptStore } from '../../stores/promptStore'
+import { uiPrefsStore } from '../../stores/uiPrefsStore'
 import styles from './LlmLaunch.module.scss'
+
+const TPL_LIST_HEIGHT_KEY = 'llmTemplateListHeight'
+const TPL_LIST_DEFAULT_H = 360 // ~10 rows
 
 const fmtMB = (mb?: number | null) => (mb == null ? '' : mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : Math.ceil(mb) + ' MB')
 
@@ -75,12 +79,25 @@ const SettingField: React.FC<{ k: string; arg: any }> = observer(({ k, arg }) =>
 const TemplateList: React.FC = observer(() => {
   const [editId, setEditId] = React.useState<string | null>(null)
   const [editName, setEditName] = React.useState('')
+  const listRef = React.useRef<HTMLDivElement>(null)
   const begin = (t: any) => { setEditId(t.id); setEditName(t.name) }
   const commit = async () => { if (editId && editName.trim()) await store.renameTemplate(editId, editName); setEditId(null) }
+  // Persist the user's resized height to the backend (debounced inside the store).
+  React.useEffect(() => {
+    const el = listRef.current
+    if (!el || !uiPrefsStore.loaded) return
+    const ro = new ResizeObserver(() => {
+      const h = Math.round(el.offsetHeight)
+      if (h && h !== uiPrefsStore.get(TPL_LIST_HEIGHT_KEY, TPL_LIST_DEFAULT_H)) uiPrefsStore.set(TPL_LIST_HEIGHT_KEY, h)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [uiPrefsStore.loaded])
+  const height = uiPrefsStore.get(TPL_LIST_HEIGHT_KEY, TPL_LIST_DEFAULT_H)
   return (
     <section className={styles.card}>
       <div className={styles.cardHead}>Saved Templates <span className={styles.muted}>({store.savedTemplates.length})</span></div>
-      <div className={styles.tplList}>
+      <div ref={listRef} className={styles.tplList} style={{ height }}>
         {store.savedTemplates.length === 0 && <div className={styles.muted}>No saved templates yet — configure a launch and use “Save As New Template”.</div>}
         {store.savedTemplates.map((t) => {
           const loaded = store.loadedTemplateId === t.id
@@ -119,6 +136,7 @@ export const LlmLaunchPanel: React.FC = observer(() => {
   const [advOpen, setAdvOpen] = React.useState(false)
   React.useEffect(() => {
     if (!store.models) void store.load()
+    void uiPrefsStore.ensureLoaded()
   }, [])
 
   const t = store.template
