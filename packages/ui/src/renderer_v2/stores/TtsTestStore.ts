@@ -141,7 +141,7 @@ export class TtsTestStore {
       const d = await jget(url)
       const arr: any[] = d?.voices || d || []
       const out = arr.map((v: any) => {
-        const name = typeof v === 'string' ? v : v.name
+        const name = typeof v === 'string' ? v : (v.name || v.id)
         const kind = v?.kind || (this.isQwen ? 'preset' : 'native')
         const dur = v?.duration ? ` (${Math.round(v.duration)}s)` : ''
         const lang = v?.language ? ` [${v.language}]` : ''

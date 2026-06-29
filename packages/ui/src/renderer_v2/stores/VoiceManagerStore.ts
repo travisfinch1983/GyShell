@@ -96,7 +96,7 @@ export class VoiceManagerStore {
 
   // ── saved voices ──
   async loadVoices(): Promise<void> {
-    try { const d = await jget('/api/proxy/multi-tts/voices'); const arr = (d?.voices || []).map((v: any) => ({ name: typeof v === 'string' ? v : v.name, duration: v?.duration || 0 })); runInAction(() => { this.voices = arr }) }
+    try { const d = await jget('/api/proxy/multi-tts/voices'); const arr = (d?.voices || []).map((v: any) => ({ name: typeof v === 'string' ? v : (v.id || v.name), duration: v?.duration || 0 })); runInAction(() => { this.voices = arr }) }
     catch { /* ignore */ }
   }
   async deleteVoice(name: string): Promise<void> { await fetch(`/api/proxy/multi-tts/voices/${encodeURIComponent(name)}`, { method: 'DELETE' }); await this.loadVoices(); log(`Deleted voice "${name}"`, 'ok') }
