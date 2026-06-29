@@ -35,47 +35,73 @@ function provisionScript(conn) {
   const sockHint = conn.sessionSock || ''
   return `set -e
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin:$PATH
-ID=${q(id)}; PORT=${q(String(port))}; BASE=${q(base)}; WS=${q(ws)}; SOCK=${q(sockHint)}
+export IS_SANDBOX=1
+ID=${q(id)}; PORT=${q(String(port))}; BASE=${q(base)}; WS=${q(ws)}; SOCKHINT=${q(sockHint)}
 TTYD=$(command -v ttyd || { [ -x /usr/local/bin/ttyd ] && echo /usr/local/bin/ttyd; } || true)
 if [ -z "$TTYD" ]; then ARCH=$(uname -m); wget -qO /usr/local/bin/ttyd "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.$ARCH" 2>/dev/null && chmod +x /usr/local/bin/ttyd && TTYD=/usr/local/bin/ttyd; fi
 [ -z "$TTYD" ] && { echo "ERR: ttyd unavailable (install failed)"; exit 1; }
 DTACH=$(command -v dtach || echo /bin/dtach)
-# Prefer the versioned ~/.local/bin/claude over a possibly-stale /usr/bin/claude (avoids attaching an old build).
+# Prefer the versioned ~/.local/bin/claude over a possibly-stale /usr/bin/claude (avoids running an old build).
 CLAUDE=""
 for p in /root/.local/bin/claude "$HOME/.local/bin/claude" /usr/local/bin/claude $(command -v claude 2>/dev/null) /usr/bin/claude $(ls /root/.nvm/versions/node/*/bin/claude 2>/dev/null); do
   [ -n "$p" ] && [ -x "$p" ] && CLAUDE="$p" && break
 done
-# We use dtach (not tmux — buggy with Claude Code). Attach an EXISTING dtach session (the user's real one),
-# skipping our own respawn-loop wrappers; only spawn a fresh session if none exists.
-ATTACH=""; SESSION=""; DS=""
-[ -n "$SOCK" ] && [ -S "$SOCK" ] && DS="$SOCK"
-# Prefer the user's own dtach session (their claudecode alias uses /tmp/claude.sock); skip our managed spawns.
-[ -z "$DS" ] && DS=$(pgrep -af dtach 2>/dev/null | grep -v 'ailab-managed' | grep -oE '/[^ ]+\\.sock' | head -1)
-if [ -n "$DS" ] && [ -S "$DS" ]; then
-  ATTACH="$DTACH -a $DS"; SESSION="attached:$DS"
-  pkill -f 'ailab-managed' 2>/dev/null || true
-else
-  NS="/tmp/claude-$ID.sock"
-  [ -S "$NS" ] || "$DTACH" -n "$NS" sh -c "cd $WS 2>/dev/null; while :; do CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS=true DANGEROUSLY_SKIP_PERMISSIONS=true $CLAUDE; sleep 2; done # ailab-managed" >/dev/null 2>&1 || true
-  ATTACH="$DTACH -a $NS"; SESSION="spawned:$NS"
-fi
-# One managed terminal per container: tear down any OTHER claude-term unit (e.g. an orphan from a prior
-# add with a different connection id) so it can't hold port $PORT and block this one.
+
+# 1) Kill permission prompts the version-stable way: ~/.claude/settings.json bypassPermissions (+ skip the
+#    initial dangerous-mode prompt). Merge into any existing settings; don't clobber. (No magic env var exists.)
+SETTINGS="$HOME/.claude/settings.json"; mkdir -p "$HOME/.claude"
+if command -v python3 >/dev/null 2>&1; then
+python3 - "$SETTINGS" <<'PY'
+import json, sys
+p = sys.argv[1]
+try: d = json.load(open(p))
+except Exception: d = {}
+if not isinstance(d, dict): d = {}
+d["skipDangerousModePermissionPrompt"] = True
+perm = d.get("permissions"); perm = perm if isinstance(perm, dict) else {}
+perm["defaultMode"] = "bypassPermissions"; d["permissions"] = perm
+json.dump(d, open(p, "w"), indent=2)
+PY
+SETTINGS_DONE=merged
+elif [ ! -f "$SETTINGS" ]; then
+  printf '%s' '{"skipDangerousModePermissionPrompt":true,"permissions":{"defaultMode":"bypassPermissions"}}' > "$SETTINGS"; SETTINGS_DONE=written
+else SETTINGS_DONE="skipped (no python3, file exists)"; fi
+
+# 2) Resolve the session socket: explicit hint, else the user's own dtach session (skip our managed ones),
+#    else the canonical /tmp/claude.sock (matches the user's claudecode alias so they converge — no duplicate).
+SOCK="$SOCKHINT"
+[ -z "$SOCK" ] && SOCK=$(pgrep -af dtach 2>/dev/null | grep -v 'ailab-managed' | grep -oE '/[^ ]+\\.sock' | head -1)
+[ -z "$SOCK" ] && SOCK="/tmp/claude.sock"
+
+# 3) Retire legacy per-connection managed sessions/sockets (we now converge on the stable socket).
+pkill -f '/tmp/claude-[0-9a-f][0-9a-f]*\\.sock' 2>/dev/null || true
+rm -f /tmp/claude-*.sock 2>/dev/null || true
+# One managed terminal per container: tear down any OTHER claude-term unit so it can't hold port $PORT.
 for f in /etc/systemd/system/claude-term-*.service; do
   [ -e "$f" ] || continue
-  u=$(basename "$f")
-  [ "$u" = "claude-term-$ID.service" ] && continue
-  systemctl disable --now "$u" >/dev/null 2>&1 || true
-  rm -f "$f"
+  u=$(basename "$f"); [ "$u" = "claude-term-$ID.service" ] && continue
+  systemctl disable --now "$u" >/dev/null 2>&1 || true; rm -f "$f"
 done
+
+# 4) Boot launcher: ensure the dtach session exists (spawn a respawning claude -c if absent), then serve ttyd.
+cat > /usr/local/bin/claude-term-$ID.sh <<LAUNCH
+#!/bin/sh
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin
+export IS_SANDBOX=1
+[ -S "$SOCK" ] || "$DTACH" -n "$SOCK" sh -c "cd $WS 2>/dev/null; while :; do IS_SANDBOX=1 $CLAUDE -c; sleep 2; done # ailab-managed" >/dev/null 2>&1 || true
+sleep 1
+exec "$TTYD" --base-path $BASE --writable -p $PORT "$DTACH" -a "$SOCK"
+LAUNCH
+chmod +x /usr/local/bin/claude-term-$ID.sh
+
+# 5) Boot-enabled service (owns lifecycle: session + terminal come back after reboot).
 cat > /etc/systemd/system/claude-term-$ID.service <<UNIT
 [Unit]
-Description=AI-Lab Claude terminal ($ID)
+Description=AI-Lab Claude session + terminal ($ID)
 After=network-online.target
 [Service]
-Environment=CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS=true
-Environment=DANGEROUSLY_SKIP_PERMISSIONS=true
-ExecStart=$TTYD --base-path $BASE --writable -p $PORT $ATTACH
+Environment=IS_SANDBOX=1
+ExecStart=/usr/local/bin/claude-term-$ID.sh
 Restart=always
 RestartSec=3
 [Install]
@@ -83,8 +109,8 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now claude-term-$ID.service >/dev/null 2>&1 || true
-sleep 3
-echo "ttyd=$TTYD"; echo "claude=\${CLAUDE:-NONE}"; echo "session=$SESSION"; echo "port=$PORT"; echo "active=$(systemctl is-active claude-term-$ID.service 2>/dev/null)"; echo "log=$(journalctl -u claude-term-$ID.service -n 3 --no-pager 2>/dev/null | tail -1)"`
+sleep 4
+echo "ttyd=$TTYD"; echo "claude=\${CLAUDE:-NONE}"; echo "session=$SOCK"; echo "settings=\${SETTINGS_DONE}"; echo "port=$PORT"; echo "active=$(systemctl is-active claude-term-$ID.service 2>/dev/null)"; echo "log=$(journalctl -u claude-term-$ID.service -n 3 --no-pager 2>/dev/null | tail -1)"`
 }
 
 export function createClaudeRouter({ exec }) {
