@@ -15,7 +15,9 @@ function usePersistedHeight(key: string, def: number) {
   useEffect(() => {
     const el = ref.current
     if (!el || !uiPrefsStore.loaded) return
+    let first = true // ignore the initial layout measurement — only persist user drags
     const ro = new ResizeObserver(() => {
+      if (first) { first = false; return }
       const h = Math.round(el.offsetHeight)
       if (h && h !== uiPrefsStore.get(key, def)) uiPrefsStore.set(key, h)
     })

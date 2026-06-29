@@ -5,7 +5,7 @@
 .addTab { display: inline-flex; align-items: center; gap: 4px; }
 .body { flex: 1; overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 
-.connView, .editor, .addForm { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.connView, .editor, .addForm { display: flex; flex-direction: column; gap: 10px; min-height: 0; flex-shrink: 0; }
 .connHead { display: flex; align-items: center; gap: 10px; }
 .termPlaceholder { display: flex; align-items: center; gap: 8px; padding: 14px; border: 1px dashed var(--border); border-radius: 8px; color: var(--fg-faint); font-size: 12px; }
 
@@ -27,6 +27,6 @@
 .btnDanger { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--control-bg); color: var(--fg-muted); cursor: pointer; &:hover { color: var(--danger,#f87171); border-color: var(--danger,#f87171); } }
 
 /* phase 2: live terminal + provisioning */
-.termWrap { width: 100%; resize: vertical; overflow: hidden; min-height: 240px; border: 1px solid var(--border); border-radius: 8px; background: #000; }
+.termWrap { width: 100%; flex-shrink: 0; resize: vertical; overflow: hidden; min-height: 240px; border: 1px solid var(--border); border-radius: 8px; background: #000; }
 .term { width: 100%; height: 100%; border: 0; display: block; background: #000; }
 .setupLog { font-family: var(--font-mono); font-size: 11px; white-space: pre-wrap; max-height: 180px; overflow: auto; background: var(--app-bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; color: var(--fg-muted); margin: 0; }
