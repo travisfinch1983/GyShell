@@ -210,22 +210,20 @@ export class VoiceManagerStore {
     return out
   }
   private async ripLocal(file: File): Promise<Uint8Array> {
-    // ffmpeg-wasm is not bundled in AI-Lab; fall back to server-side extraction transparently.
-    log('Local ffmpeg-wasm not bundled — using server extraction', 'warn')
-    // Upload the file to a temp server path? Simpler: server extraction needs a server path. So local files
-    // must go through a direct upload+extract. Use save-audio of the raw file then extract is overkill;
-    // instead inform the user to use "From Server". For parity we attempt dynamic import, else throw clear msg.
-    try {
-      const ffPath = '/vendor/ffmpeg/index.js', utilPath = '/vendor/ffmpeg-util/index.js'
-      const mod: any = await import(/* @vite-ignore */ ffPath)
-      const { fetchFile }: any = await import(/* @vite-ignore */ utilPath)
-      const ff = new mod.FFmpeg(); await ff.load({ coreURL: '/vendor/ffmpeg-core/ffmpeg-core.js', wasmURL: '/vendor/ffmpeg-core/ffmpeg-core.wasm' })
-      await ff.writeFile('in', await fetchFile(file))
-      await ff.exec(['-i', 'in', '-vn', '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '1', 'out.wav'])
-      const data = await ff.readFile('out.wav'); return data as Uint8Array
-    } catch {
-      throw new Error('Local extraction unavailable (ffmpeg-wasm not bundled). Use “From Server” instead.')
-    }
+    // In-browser extraction via the self-hosted @ffmpeg/wasm bundle under /vendor (single-threaded core).
+    runInAction(() => { this.arStatus = 'Loading ffmpeg-wasm…' })
+    const ffPath = '/vendor/ffmpeg/index.js', utilPath = '/vendor/ffmpeg-util/index.js'
+    const mod: any = await import(/* @vite-ignore */ ffPath)
+    const { fetchFile }: any = await import(/* @vite-ignore */ utilPath)
+    const ff = new mod.FFmpeg()
+    ff.on?.('progress', ({ progress }: any) => { runInAction(() => { this.arProgress = Math.min(80, Math.round((progress || 0) * 80)) }) })
+    await ff.load({ coreURL: '/vendor/ffmpeg-core/ffmpeg-core.js', wasmURL: '/vendor/ffmpeg-core/ffmpeg-core.wasm', classWorkerURL: '/vendor/ffmpeg/worker.js' })
+    runInAction(() => { this.arStatus = 'Extracting (local ffmpeg)…' })
+    const inName = 'in' + (file.name.match(/\.[a-z0-9]+$/i)?.[0] || '')
+    await ff.writeFile(inName, await fetchFile(file))
+    await ff.exec(['-i', inName, '-vn', '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '1', 'out.wav'])
+    const data = await ff.readFile('out.wav')
+    return data as Uint8Array
   }
   private async ripUpload(savePath: string, bytes: Uint8Array): Promise<void> {
     runInAction(() => { this.arProgress = 90; this.arStatus = 'Uploading…' })
