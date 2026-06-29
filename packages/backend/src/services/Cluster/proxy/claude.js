@@ -49,13 +49,14 @@ done
 # skipping our own respawn-loop wrappers; only spawn a fresh session if none exists.
 ATTACH=""; SESSION=""; DS=""
 [ -n "$SOCK" ] && [ -S "$SOCK" ] && DS="$SOCK"
-[ -z "$DS" ] && DS=$(pgrep -af dtach 2>/dev/null | grep -v 'while :; do DANGEROUSLY_SKIP_PERMISSIONS' | grep -oE '/[^ ]+\\.sock' | head -1)
+# Prefer the user's own dtach session (their claudecode alias uses /tmp/claude.sock); skip our managed spawns.
+[ -z "$DS" ] && DS=$(pgrep -af dtach 2>/dev/null | grep -v 'ailab-managed' | grep -oE '/[^ ]+\\.sock' | head -1)
 if [ -n "$DS" ] && [ -S "$DS" ]; then
   ATTACH="$DTACH -a $DS"; SESSION="attached:$DS"
-  pkill -f 'while :; do DANGEROUSLY_SKIP_PERMISSIONS=true' 2>/dev/null || true
+  pkill -f 'ailab-managed' 2>/dev/null || true
 else
   NS="/tmp/claude-$ID.sock"
-  [ -S "$NS" ] || "$DTACH" -n "$NS" sh -c "cd $WS 2>/dev/null; while :; do DANGEROUSLY_SKIP_PERMISSIONS=true $CLAUDE; sleep 2; done" >/dev/null 2>&1 || true
+  [ -S "$NS" ] || "$DTACH" -n "$NS" sh -c "cd $WS 2>/dev/null; while :; do CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS=true DANGEROUSLY_SKIP_PERMISSIONS=true $CLAUDE; sleep 2; done # ailab-managed" >/dev/null 2>&1 || true
   ATTACH="$DTACH -a $NS"; SESSION="spawned:$NS"
 fi
 # One managed terminal per container: tear down any OTHER claude-term unit (e.g. an orphan from a prior
@@ -72,6 +73,7 @@ cat > /etc/systemd/system/claude-term-$ID.service <<UNIT
 Description=AI-Lab Claude terminal ($ID)
 After=network-online.target
 [Service]
+Environment=CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS=true
 Environment=DANGEROUSLY_SKIP_PERMISSIONS=true
 ExecStart=$TTYD --base-path $BASE --writable -p $PORT $ATTACH
 Restart=always
