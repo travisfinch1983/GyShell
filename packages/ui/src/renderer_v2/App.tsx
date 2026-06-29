@@ -350,7 +350,7 @@ export const App: React.FC = observer(() => {
 
           {primaryTab === 'services' && <ServicesPanel />}
 
-          {primaryTab === 'scripts' && <ScriptsTabPanel />}
+          {primaryTab === 'helper-scripts' && <ScriptsTabPanel />}
 
           {primaryTab === 'ai-services' && <AiServicesPanel onOpenServices={() => setServicesDrawerOpen(true)} />}
 

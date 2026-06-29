@@ -1,13 +1,13 @@
 import React from 'react'
-import { FileCode } from 'lucide-react'
+import { Package } from 'lucide-react'
 import { Shell } from '../AiModality/AiModalityPanels'
 import { ScriptsPanel } from './ScriptsPanel'
 import { ScriptCatalogPanel } from '../ScriptCatalog/ScriptCatalogPanel'
 
-/** Merged Scripts tab: the original Scripts content under "System Scripts" + the Helper Scripts catalog. */
+/** Helper Scripts tab: the Helper Scripts catalog + the original Scripts content under a "System Scripts" sub-tab. */
 export const ScriptsTabPanel: React.FC = () => (
-  <Shell title="Scripts" Icon={FileCode} tabs={[
-    { id: 'system', label: 'System Scripts', render: () => <ScriptsPanel /> },
+  <Shell title="Helper Scripts" Icon={Package} tabs={[
     { id: 'helper', label: 'Helper Scripts', render: () => <ScriptCatalogPanel /> },
+    { id: 'system', label: 'System Scripts', render: () => <ScriptsPanel /> },
   ]} />
 )
