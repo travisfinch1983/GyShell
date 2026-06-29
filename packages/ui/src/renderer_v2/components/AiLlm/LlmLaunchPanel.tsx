@@ -75,10 +75,32 @@ const SettingField: React.FC<{ k: string; arg: any }> = observer(({ k, arg }) =>
   )
 })
 
-/** Saved launch-templates list box — inline rename + load. */
+/** Distinct badge colour per backend; unknown providers fall back to a stable hashed hue. */
+const PROVIDER_COLORS: Record<string, string> = {
+  'koboldcpp': '#d8a657', 'llama-server': '#4ea1ff', 'llama-server-mtp': '#22d3ee',
+  'vllm': '#a78bfa', '1cat-vllm': '#f472b6', 'ollama': '#fb923c', 'sglang': '#f87171',
+  'tabbyapi': '#818cf8', 'aphrodite': '#fb7185', 'lmdeploy': '#2dd4bf', 'exllama': '#c084fc',
+}
+const providerColor = (p: string): string => {
+  if (PROVIDER_COLORS[p]) return PROVIDER_COLORS[p]
+  let h = 0; for (let i = 0; i < (p || '').length; i++) h = (h * 31 + p.charCodeAt(i)) >>> 0
+  return `hsl(${h % 360}, 60%, 65%)`
+}
+const badgeStyle = (color: string): React.CSSProperties => ({ background: `${color}26`, color, border: `1px solid ${color}66` })
+/** ProxLab stores context in contextSize (llama/kobold) or maxModelLen (vLLM). */
+const contextOf = (t: any): number | null => {
+  const s = t?.settings || {}
+  const v = s.contextSize ?? s.maxModelLen ?? s.ctxSize ?? s.maxSeqLen ?? null
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+const fmtCtx = (n: number): string => (n >= 1048576 ? `${(n / 1048576).toFixed(n % 1048576 ? 1 : 0)}M` : n >= 1024 ? `${Math.round(n / 1024)}K` : String(n))
+
+/** Saved launch-templates list box — inline rename + load + backend filter badges. */
 const TemplateList: React.FC = observer(() => {
   const [editId, setEditId] = React.useState<string | null>(null)
   const [editName, setEditName] = React.useState('')
+  const [hidden, setHidden] = React.useState<Set<string>>(new Set())
   const listRef = React.useRef<HTMLDivElement>(null)
   const begin = (t: any) => { setEditId(t.id); setEditName(t.name) }
   const commit = async () => { if (editId && editName.trim()) await store.renameTemplate(editId, editName); setEditId(null) }
@@ -94,13 +116,30 @@ const TemplateList: React.FC = observer(() => {
     return () => ro.disconnect()
   }, [uiPrefsStore.loaded])
   const height = uiPrefsStore.get(TPL_LIST_HEIGHT_KEY, TPL_LIST_DEFAULT_H)
+  const providers = [...new Set(store.savedTemplates.map((t) => t.providerId).filter(Boolean))].sort()
+  const toggle = (p: string) => setHidden((prev) => { const n = new Set(prev); n.has(p) ? n.delete(p) : n.add(p); return n })
+  const visible = store.savedTemplates.filter((t) => !hidden.has(t.providerId))
   return (
     <section className={styles.card}>
-      <div className={styles.cardHead}>Saved Templates <span className={styles.muted}>({store.savedTemplates.length})</span></div>
+      <div className={styles.cardHead}>
+        Saved Templates <span className={styles.muted}>({visible.length}{hidden.size ? ` / ${store.savedTemplates.length}` : ''})</span>
+        <span className={styles.spacer} />
+        <span className={styles.filterBadges}>
+          {providers.map((p) => {
+            const off = hidden.has(p)
+            return (
+              <button key={p} className={`${styles.fBadge} ${off ? styles.fBadgeOff : ''}`} style={off ? undefined : badgeStyle(providerColor(p))} title={off ? `Show ${p} templates` : `Hide ${p} templates`} onClick={() => toggle(p)}>{p}</button>
+            )
+          })}
+        </span>
+      </div>
       <div ref={listRef} className={styles.tplList} style={{ height }}>
         {store.savedTemplates.length === 0 && <div className={styles.muted}>No saved templates yet — configure a launch and use “Save As New Template”.</div>}
-        {store.savedTemplates.map((t) => {
+        {store.savedTemplates.length > 0 && visible.length === 0 && <div className={styles.muted}>All templates hidden by the backend filters above.</div>}
+        {visible.map((t) => {
           const loaded = store.loadedTemplateId === t.id
+          const ctx = contextOf(t)
+          const fam = [t.family, t.variant].filter(Boolean).join(' ')
           return (
             <div key={t.id} className={`${styles.tplRow} ${loaded ? styles.tplRowActive : ''}`}>
               {editId === t.id ? (
@@ -111,10 +150,11 @@ const TemplateList: React.FC = observer(() => {
                   onBlur={() => void commit()}
                 />
               ) : (
-                <span className={styles.tplName} title={`${t.family} ${t.variant} · ${t.providerId}`}>{t.name}</span>
+                <span className={styles.tplName} title={t.name}>{t.name}</span>
               )}
-              <span className={styles.tplMeta}>{[t.family, t.variant, t.providerId].filter(Boolean).join(' · ')}</span>
-              <span className={styles.spacer} />
+              {fam && <span className={styles.badgeFamily} title={`${t.family} ${t.variant} · ${t.format || ''} ${t.quant || ''}`.trim()}>{fam}</span>}
+              {ctx != null && <span className={styles.badgeCtx} title="Context window saved with this template">{fmtCtx(ctx)} ctx</span>}
+              <span className={styles.badgeProvider} style={badgeStyle(providerColor(t.providerId))}>{t.providerId}</span>
               {editId === t.id ? (
                 <button className={styles.tplIcon} title="Save name" onMouseDown={(e) => { e.preventDefault(); void commit() }}><Check size={13} /></button>
               ) : (

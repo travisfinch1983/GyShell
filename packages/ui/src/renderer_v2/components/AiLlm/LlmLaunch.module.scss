@@ -90,7 +90,13 @@
 .tplList { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; resize: vertical; min-height: 120px; }
 .tplRow { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-bg); }
 .tplRowActive { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
-.tplName { font-size: 12px; font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+.tplName { flex: 1 1 auto; min-width: 40px; font-size: 12px; font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.badgeFamily { flex: 0 0 auto; font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 10px; white-space: nowrap; background: color-mix(in srgb, var(--success,#4ade80) 18%, transparent); color: var(--success,#4ade80); border: 1px solid color-mix(in srgb, var(--success,#4ade80) 45%, transparent); max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+.badgeCtx { flex: 0 0 auto; font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 10px; white-space: nowrap; background: var(--control-bg); color: var(--fg-muted); border: 1px solid var(--border); font-family: var(--font-mono); }
+.badgeProvider { flex: 0 0 auto; font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 10px; white-space: nowrap; }
+.filterBadges { display: flex; flex-wrap: wrap; gap: 5px; }
+.fBadge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 10px; cursor: pointer; text-transform: none; letter-spacing: 0; border: 1px solid var(--border); background: var(--control-bg); color: var(--fg-muted); }
+.fBadgeOff { opacity: 0.45; text-decoration: line-through; }
 .tplNameInput { font-size: 12px; padding: 2px 6px; border: 1px solid var(--accent); border-radius: 4px; background: var(--control-bg); color: var(--fg); min-width: 180px; }
 .tplMeta { font-size: 10px; color: var(--fg-faint); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tplIcon { display: inline-flex; align-items: center; border: none; background: none; color: var(--fg-muted); cursor: pointer; padding: 3px; border-radius: 4px; &:hover { background: var(--control-bg); color: var(--fg); } }
