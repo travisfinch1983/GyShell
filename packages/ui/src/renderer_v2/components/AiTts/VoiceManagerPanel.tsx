@@ -113,6 +113,16 @@ export const VoiceManagerPanel: React.FC = observer(() => {
             </div>
           ))}
         </div>
+      </section>
+
+      {/* Add New Voice */}
+      <section className={styles.card}>
+        <h4 className={styles.h4}>Add New Voice</h4>
+        <p className={styles.muted}>
+          Chatterbox-Turbo clones voices from audio alone — no transcript needed. Clips must be <b>longer than 5 seconds</b>;
+          10–15s is ideal, and audio beyond 15s is truncated. Upload or pick a clip below, then use the workspace tools to
+          isolate / denoise / upscale / trim before saving.
+        </p>
         <div className={styles.actions}>
           <input ref={vmFileRef} type="file" accept="audio/*,video/*" className={styles.fileInput} onChange={(e) => { const f = e.target.files?.[0]; if (f) void store.createFromFile(f) }} />
           <button className={styles.btn} onClick={() => store.openBrowser('workspace')}><FolderOpen size={13} /> Browse Server</button>
