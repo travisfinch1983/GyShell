@@ -16,11 +16,12 @@ import {
   ScrollText,
   Settings,
   Wrench,
+  Sparkles,
   type LucideIcon,
 } from 'lucide-react'
 import styles from './PrimarySidebar.module.scss'
 
-export type PrimaryTab = 'terminal' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'scripts' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'monitor'
+export type PrimaryTab = 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'scripts' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'monitor'
 
 interface TabDef {
   id: PrimaryTab
@@ -30,6 +31,7 @@ interface TabDef {
 
 const TABS: TabDef[] = [
   { id: 'terminal',  label: 'Terminal',  Icon: Terminal },
+  { id: 'claude',    label: 'Claude',    Icon: Sparkles },
   { id: 'cluster',   label: 'Cluster',   Icon: Server },
   { id: 'services',  label: 'Services',  Icon: Radar },
   { id: 'ai-services', label: 'AI Services', Icon: BrainCircuit },

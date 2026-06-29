@@ -187,6 +187,8 @@ export class UniversalProxyService {
     app.use('/api/mcp', createMcpRouter({ exec: this.sshExec }))
     const { createUiPrefsRouter } = await import('./proxy/ui-prefs.js')
     app.use('/api/ui-prefs', createUiPrefsRouter())
+    const { createClaudeRouter } = await import('./proxy/claude.js')
+    app.use('/api/claude', createClaudeRouter({ exec: this.sshExec }))
 
     this.server = http.createServer(app)
     this.server.on('error', (e) => console.warn('[universal-proxy] server error:', e))

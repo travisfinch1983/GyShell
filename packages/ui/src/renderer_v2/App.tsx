@@ -28,6 +28,7 @@ import { ServicesDrawer } from './components/AiServices/ServicesDrawer'
 import { ModelDownloadsPanel } from './components/ModelDownloads/ModelDownloadsPanel'
 import { LogsPanel } from './components/Logs/LogsPanel'
 import { AiLlmPanel, AiImagePanel, AiTtsSttPanel, AiToolsPanel } from './components/AiModality/AiModalityPanels'
+import { ClaudePanel } from './components/Claude/ClaudePanel'
 import { liveConsoleStore } from './stores/LiveConsoleStore'
 import './styles/app.scss'
 
@@ -345,6 +346,7 @@ export const App: React.FC = observer(() => {
             <TerminalWorkspace store={store} />
           </div>
 
+          {primaryTab === 'claude' && <ClaudePanel />}
           {primaryTab === 'cluster' && <ClusterPanel />}
 
           {primaryTab === 'services' && <ServicesPanel />}
