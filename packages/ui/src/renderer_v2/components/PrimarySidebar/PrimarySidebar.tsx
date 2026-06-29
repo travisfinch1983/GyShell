@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import {
   Terminal,
+  LayoutDashboard,
   Workflow,
   FolderOpen,
   Activity,
@@ -26,7 +27,7 @@ import {
 import { uiPrefsStore } from '../../stores/uiPrefsStore'
 import styles from './PrimarySidebar.module.scss'
 
-export type PrimaryTab = 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'monitor'
+export type PrimaryTab = 'home' | 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'monitor'
 
 interface TabDef {
   id: PrimaryTab
@@ -35,6 +36,7 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
+  { id: 'home',      label: 'Home',      Icon: LayoutDashboard },
   { id: 'terminal',  label: 'Terminal',  Icon: Terminal },
   { id: 'claude',    label: 'Claude',    Icon: Sparkles },
   { id: 'cluster',   label: 'Cluster',   Icon: Server },

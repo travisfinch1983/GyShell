@@ -71,6 +71,16 @@ export default defineConfig({
           ? { Authorization: `Bearer ${process.env.GRAFANA_SA_TOKEN}` }
           : {},
       },
+      // Dynacat dashboard (Home tab) — runs as a sidecar on :8081 in this container.
+      // Dynacat serves at root but is configured with base-url=/dash so it emits /dash-prefixed
+      // asset + page URLs; we strip the prefix on the way in so it serves them. Same-origin iframe,
+      // so its CSP frame-ancestors 'self' covers the embed (no token, no CORS, no mixed content).
+      '/dash': {
+        target: 'http://127.0.0.1:8081',
+        changeOrigin: true,
+        ws: true,
+        rewrite: (path) => path.replace(/^\/dash/, '') || '/',
+      },
     },
   }
 })

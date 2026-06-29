@@ -21,6 +21,7 @@ import { ContextMenuOverlay } from './components/Common/ContextMenuOverlay'
 import { ClusterPanel } from './components/Cluster/ClusterPanel'
 import { ServicesPanel } from './components/Services/ServicesPanel'
 import { ScriptsTabPanel } from './components/Scripts/ScriptsTabPanel'
+import { HomePanel } from './components/Home/HomePanel'
 import { FileManagerPanel } from './components/FileManager/FileManagerPanel'
 import { AiServicesPanel } from './components/AiServices/AiServicesPanel'
 import { ServicesDrawer } from './components/AiServices/ServicesDrawer'
@@ -344,6 +345,7 @@ export const App: React.FC = observer(() => {
             <TerminalWorkspace store={store} />
           </div>
 
+          {primaryTab === 'home' && <HomePanel />}
           {primaryTab === 'claude' && <ClaudePanel />}
           {primaryTab === 'cluster' && <ClusterPanel />}
 
