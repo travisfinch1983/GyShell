@@ -202,6 +202,12 @@ const ENDPOINTS: Record<string, (slot: number) => Array<[string, string]>> = {
   ],
   image: (s) => [['base', `/image/${s}/v1`]],
 }
+// Universal, load-balanced LLM endpoint (1st/any active LLM slot) — the headline endpoint apps point at.
+const UNIVERSAL_LLM: Array<[string, string]> = [
+  ['chat', '/llm/v1/chat/completions'],
+  ['completions', '/llm/v1/completions'],
+  ['models', '/llm/v1/models'],
+]
 const MULTI_TTS: Array<[string, string]> = [
   ['speech', '/multi-tts/v1/audio/speech'],
   ['cloned-speech', '/multi-tts/v1/audio/cloned-speech'],
@@ -284,6 +290,13 @@ const ProxyCard: React.FC = observer(() => {
           ))}
         </div>
       </div>
+
+      {(svc.llm || []).length > 0 && (
+        <div className={styles.proxyType}>
+          <div className={styles.proxyTypeLabel}>Universal LLM (load-balanced)</div>
+          <ProxyEntry title={`${(svc.llm || []).length} LLM slot${(svc.llm || []).length > 1 ? 's' : ''} · auto-routed`} endpoints={UNIVERSAL_LLM} base={base} />
+        </div>
+      )}
 
       {slotTypes.map((t) => {
         const list = svc[t] || []
