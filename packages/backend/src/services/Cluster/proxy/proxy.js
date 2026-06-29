@@ -969,6 +969,32 @@ export function createProxyRouter(sshService) {
     });
   });
 
+  // ─── Generic passthrough for user-supplied (custom) endpoints ──────
+  // The TTS-test "Custom endpoint" field lets the user type any URL. Fetching it directly from the browser
+  // would hit a private LAN IP from a remote (https) origin → Chrome Private-Network-Access permission
+  // prompt + mixed-content + unreachable. Routing it through here keeps every LAN fetch on the backend.
+  router.all('/passthrough', async (req, res) => {
+    let target = req.query.url;
+    if (!target) return res.status(400).json({ error: 'url query param required' });
+    target = preferLanEndpoint(String(target));
+    try {
+      const headers = {};
+      if (req.headers['content-type']) headers['content-type'] = req.headers['content-type'];
+      if (req.headers['accept']) headers['accept'] = req.headers['accept'];
+      const init = { method: req.method, headers, signal: AbortSignal.timeout(600000) };
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        const body = await bufferBody(req);
+        if (body && body.length) init.body = body;
+      }
+      const r = await fetch(target, init);
+      res.status(r.status);
+      const ct = r.headers.get('content-type'); if (ct) res.setHeader('content-type', ct);
+      res.send(Buffer.from(await r.arrayBuffer()));
+    } catch (e) {
+      res.status(502).json({ error: 'passthrough failed: ' + (e?.message || e) });
+    }
+  });
+
   // ─── Universal LLM Endpoint: /llm/v1/* ─────────────────────────────
   // This is a dedicated universal router — separate from numbered slots.
   // GET  /llm/v1/models           → aggregated model list from all backends

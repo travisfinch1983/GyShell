@@ -60,7 +60,8 @@ export class TtsTestStore {
   constructor() { makeAutoObservable(this) }
 
   get isCustom() { return this.selectedService === 'custom' }
-  get isTurbo() { return /turbo/i.test(this.selectedModel) || (!/original/i.test(this.selectedModel) && this.engine === 'chatterbox') }
+  // Turbo only when the model id says so; plain "chatterbox" / "chatterbox (original)" is the 7-setting model.
+  get isTurbo() { return /turbo/i.test(this.selectedModel) }
   get isQwen() { return this.engine === 'qwen3-tts' }
   get isDramabox() { return this.engine === 'dramabox' }
   get isChatterbox() { return this.engine === 'chatterbox' }
@@ -76,6 +77,11 @@ export class TtsTestStore {
   }
 
   normalizeBase(url: string): string { return (url || '').replace(/\/+$/, '').replace(/\/v1$/, '') }
+  /** Custom endpoints are absolute http(s) URLs to LAN services — route them through the backend
+   *  passthrough so the browser never fetches a private IP directly (no PNA prompt / mixed content). */
+  private u(url: string): string {
+    return /^https?:\/\//i.test(url) ? `/api/proxy/passthrough?url=${encodeURIComponent(url)}` : url
+  }
   activeBase(): string {
     if (this.isCustom) return this.normalizeBase(this.endpoint)
     return this.services.find((s) => s.id === this.selectedService)?.base || '/api/proxy/multi-tts'
@@ -125,7 +131,7 @@ export class TtsTestStore {
     }
     if (base.includes('/multi-tts') || base === '/api/proxy/multi-tts') { runInAction(() => { this.engine = 'chatterbox'; this.engineDetail = 'multi-TTS aggregator' }); return }
     try {
-      const h = await jget(`${base}/health`)
+      const h = await jget(this.u(`${base}/health`))
       runInAction(() => {
         if (h?.engine === 'dramabox') { this.engine = 'dramabox'; this.engineDetail = `Dramabox · ${h.sample_rate || ''}Hz` }
         else if (h?.engine === 'chatterbox') { this.engine = 'chatterbox'; this.engineDetail = 'Chatterbox' }
@@ -144,7 +150,7 @@ export class TtsTestStore {
     else if (this.isChatterbox && !this.isCustom) url = `${base}/voices`
     else url = base ? `${base}/v1/voices` : '/api/proxy/multi-tts/voices'
     try {
-      const d = await jget(url)
+      const d = await jget(this.u(url))
       const arr: any[] = d?.voices || d || []
       const out = arr.map((v: any) => {
         const name = typeof v === 'string' ? v : (v.name || v.id)
@@ -170,7 +176,7 @@ export class TtsTestStore {
     const base = this.activeBase()
     if (base.includes('/multi-tts')) return
     try {
-      const d = await jget(`${base}/v1/models`)
+      const d = await jget(this.u(`${base}/v1/models`))
       const ms = (d?.data || d?.models || []).map((m: any) => (typeof m === 'string' ? m : m.id || m.name)).filter(Boolean) as string[]
       runInAction(() => { if (ms.length) { this.models = ms; if (!ms.includes(this.selectedModel)) this.selectedModel = ms[0] } })
     } catch { /* models optional */ }
@@ -238,8 +244,8 @@ export class TtsTestStore {
     try {
       if (this.rvcEnabled) { log('Generate via RVC pipeline'); resp = await jpost('/api/proxy/rvc/pipeline', { input: this.text, voice: this.selectedVoice, response_format: this.format, ...gp, ...this.rvcParams(), output_format: this.format }) }
       else if (this.cloneOnQwen && !this.voiceDesign) { log('Generate via cloned-speech (Qwen)'); resp = await jpost('/api/proxy/multi-tts/v1/audio/cloned-speech', { voice_name: this.selectedVoice, input: this.text, target_endpoint: base, response_format: this.format, ...gp }) }
-      else if (this.isDramabox) { const drBase = base || '/api/proxy/dramabox'; log('Generate via Dramabox'); resp = await jpost(`${drBase}/generate`, { prompt: this.text, voice: this.selectedVoice || 'none', response_format: this.format, cfg_scale: this.dbCfg, stg_scale: this.dbStg, duration_multiplier: this.dbDurMult, seed: this.dbSeed, no_watermark: this.dbNoWatermark }) }
-      else { resp = await jpost(`${base}/v1/audio/speech`, { model: this.selectedModel, input: this.text, voice: this.selectedVoice, response_format: this.format, ...gp }) }
+      else if (this.isDramabox) { const drBase = base || '/api/proxy/dramabox'; log('Generate via Dramabox'); resp = await jpost(this.u(`${drBase}/generate`), { prompt: this.text, voice: this.selectedVoice || 'none', response_format: this.format, cfg_scale: this.dbCfg, stg_scale: this.dbStg, duration_multiplier: this.dbDurMult, seed: this.dbSeed, no_watermark: this.dbNoWatermark }) }
+      else { resp = await jpost(this.u(`${base}/v1/audio/speech`), { model: this.selectedModel, input: this.text, voice: this.selectedVoice, response_format: this.format, ...gp }) }
       if (!resp.ok) throw new Error(`${resp.status} ${await resp.text().catch(() => '')}`.trim())
       const blob = await resp.blob()
       const url = URL.createObjectURL(blob)
