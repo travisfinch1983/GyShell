@@ -137,13 +137,16 @@ export class LlmMetricsPoller {
         prefillTps: promSum(text, 'llamacpp:prompt_tokens_seconds'),
         cacheHits: null, cacheQueries: null, optaneHits: null, optaneQueries: null,
       }
-      // llama.cpp's Optane KV cache lives in the kvcache shim (servicePort + 1000).
+      // llama.cpp's Optane KV cache lives in the kvcache shim (servicePort + 1000), when one fronts it.
       const shim = await this._get(`http://${svc.containerIp}:${svc.port + 1000}/shim/stats`, 2000)
       if (shim) { try {
         const j = JSON.parse(shim)
-        const hits = j.hits ?? 0, misses = j.misses ?? 0
+        const st = j.stats || j
+        const hits = j.hits ?? st.cache_hits ?? 0
+        const misses = j.misses ?? st.cache_misses ?? 0
         r.optaneHits = hits; r.optaneQueries = hits + misses
-        if (j.avgRestoreMs != null) r.optaneRestoreMs = j.avgRestoreMs
+        const avg = j.avgRestoreMs != null ? j.avgRestoreMs : (st.cache_hits ? st.restore_ms_total / st.cache_hits : null)
+        if (avg != null) r.optaneRestoreMs = avg
       } catch {} }
       return r
     }
