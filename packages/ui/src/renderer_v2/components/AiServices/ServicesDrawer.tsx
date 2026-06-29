@@ -401,7 +401,19 @@ export const ServicesDrawer: React.FC<{ visible: boolean; onClose: () => void }>
         {store.error && <div className={styles.errorBar}>{store.error}</div>}
         {!store.loaded && !store.error && <div className={styles.loading}>Loading…</div>}
         <ProxyCard />
-        {store.filteredServices.map((s) => <ServiceCard key={s.id} s={s} onKill={setKilling} />)}
+        {store.typeFilter === 'all'
+          ? store.serviceTypes.map((t) => {
+              const cards = store.filteredServices.filter((s) => (s.serviceType || 'other') === t)
+              if (!cards.length) return null
+              const c = TYPE_COLORS[t] || 'var(--fg-muted)'
+              return (
+                <div key={t} className={styles.svcGroup}>
+                  <div className={styles.svcGroupLabel} style={{ color: c }}>{t}<span className={styles.fCount}>{cards.length}</span></div>
+                  {cards.map((s) => <ServiceCard key={s.id} s={s} onKill={setKilling} />)}
+                </div>
+              )
+            })
+          : store.filteredServices.map((s) => <ServiceCard key={s.id} s={s} onKill={setKilling} />)}
         {store.loaded && store.filteredServices.length === 0 && <div className={styles.empty}>No running services.</div>}
       </div>
       {killing && (

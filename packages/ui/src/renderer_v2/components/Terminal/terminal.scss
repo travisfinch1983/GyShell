@@ -174,9 +174,14 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-left: auto;
-  padding-right: 4px;
+  /* Sit on the LEFT (just right of the drag handle), so the + / more buttons aren't covered
+     by the Services drawer that overlays the right edge. */
+  order: -1;
+  margin-left: 2px;
+  margin-right: 6px;
+  padding-right: 0;
 }
+.terminal-tabs-container > .panel-tab-drag-handle { order: -2; }
 
 .terminal-tabs-select {
   flex: 1 1 auto;

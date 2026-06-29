@@ -190,6 +190,15 @@ export const LlmLaunchPanel: React.FC = observer(() => {
     if (advFromPreset > 0) setAdvOpen(true)
   }, [advFromPreset, store.selectedSamplerPresetId])
 
+  // Auto-scroll: as each choice reveals the next step, bring that step into focus.
+  const quantRef = React.useRef<HTMLElement | null>(null)
+  const engineRef = React.useRef<HTMLElement | null>(null)
+  const settingsRef = React.useRef<HTMLElement | null>(null)
+  const scrollTo = (el: HTMLElement | null) => { if (el) requestAnimationFrame(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' })) }
+  React.useEffect(() => { if (store.model) scrollTo(quantRef.current) }, [store.model])
+  React.useEffect(() => { if (store.selectedQuant) scrollTo(engineRef.current) }, [store.selectedFormat, store.selectedQuant])
+  React.useEffect(() => { if (store.selectedProvider) scrollTo(settingsRef.current) }, [store.selectedProvider])
+
   return (
     <div className={styles.panel}>
       <div className={styles.header}>
@@ -200,6 +209,9 @@ export const LlmLaunchPanel: React.FC = observer(() => {
       {store.error && <div className={styles.error}>{store.error}</div>}
 
       <div className={styles.body}>
+        {/* Saved templates — kept at the top, above model selection */}
+        <TemplateList />
+
         {/* 1 — Model */}
         <section className={styles.card}>
           <div className={styles.cardHead}>1 · Model</div>
@@ -228,11 +240,9 @@ export const LlmLaunchPanel: React.FC = observer(() => {
           </div>
         </section>
 
-        <TemplateList />
-
         {/* 2 — Quant table (imported as-is; to be reworked) */}
         {store.model && (
-          <section className={styles.card}>
+          <section className={styles.card} ref={quantRef as any}>
             <div className={styles.cardHead}>2 · Quantization</div>
             {store.quantRows.length === 0 ? (
               <div className={styles.muted}>No quants on disk for this model.</div>
@@ -256,7 +266,7 @@ export const LlmLaunchPanel: React.FC = observer(() => {
 
         {/* 3 — Provider */}
         {store.selectedQuant && (
-          <section className={styles.card}>
+          <section className={styles.card} ref={engineRef as any}>
             <div className={styles.cardHead}>3 · Engine</div>
             <div className={styles.row}>
               <label className={styles.field}>
@@ -275,7 +285,7 @@ export const LlmLaunchPanel: React.FC = observer(() => {
 
         {/* 4 — Settings */}
         {t && (
-          <section className={styles.card}>
+          <section className={styles.card} ref={settingsRef as any}>
             <div className={styles.cardHead}>4 · Settings</div>
             {store.supportsSamplerPresets && (
               <div className={styles.samplerRow}>
