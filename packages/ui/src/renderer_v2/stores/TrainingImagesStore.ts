@@ -129,6 +129,19 @@ export class TrainingImagesStore {
   async listTrainingSets(): Promise<any> { return ig('/training-sets') }
   async merge(name: string, sources: string[]): Promise<any> { return ig('/merge', { method: 'POST', body: { name, sources } }) }
   async browseRaw(p: string): Promise<any> { return ig(`/browse?path=${encodeURIComponent(p)}`) }
+
+  // ── crop editor + captions + ratings + auto-caption (phase 2c) ──
+  async getCaption(rel: string, ext: 'txt' | 'caption'): Promise<any> { return ig(`/caption?path=${encodeURIComponent(rel)}&ext=${ext}`) }
+  async setCaption(rel: string, caption: string, ext: 'txt' | 'caption'): Promise<any> { return ig('/caption', { method: 'POST', body: { path: rel, caption, ext } }) }
+  async setRating(file: string, score: number, comment: string): Promise<any> { return ig('/rating', { method: 'POST', body: { path: this.cwd, file, score, comment } }) }
+  async crop(body: any): Promise<any> { return ig('/crop', { method: 'POST', body }) }
+  async resetCrop(rel: string): Promise<any> { return ig('/reset-crop', { method: 'POST', body: { path: rel } }) }
+  async upscale(rel: string): Promise<any> { return ig('/upscale', { method: 'POST', body: { path: rel } }) }
+  async upscaleStatus(jobId: string): Promise<any> { return ig(`/upscale-status?jobId=${jobId}`) }
+  async swapUpscale(rel: string): Promise<any> { return ig('/swap-upscale', { method: 'POST', body: { path: rel } }) }
+  async taggers(): Promise<any> { return ig('/taggers') }
+  async autoCaption(body: any): Promise<any> { return ig('/auto-caption', { method: 'POST', body }) }
+  async autoCaptionStatus(jobId: string): Promise<any> { return ig(`/auto-caption-status?jobId=${jobId}`) }
 }
 
 export const trainingImagesStore = new TrainingImagesStore()

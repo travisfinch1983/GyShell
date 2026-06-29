@@ -56,3 +56,30 @@
 .mgList { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow: auto; }
 .mgRow { display: flex; align-items: center; gap: 8px; padding: 5px 6px; font-size: 12px; border-radius: 5px; &:hover { background: var(--control-bg); } }
 .mgPath { flex: 1; font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* crop editor */
+.crBg { position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+.crInner { width: 96%; height: 94%; background: var(--app-bg); border: 1px solid var(--border); border-radius: 10px; display: flex; flex-direction: column; overflow: hidden; }
+.crBar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto; flex-wrap: wrap; }
+.crName { font-weight: 600; font-size: 13px; }
+.crInfo { font-size: 11px; color: var(--fg-faint); font-family: var(--font-mono); }
+.crStage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: #0a0a0a; overflow: hidden; position: relative; }
+.crCanvas { position: relative; }
+.crCanvas img { display: block; width: 100%; height: 100%; user-select: none; }
+.crBox { position: absolute; border: 2px solid var(--accent); box-shadow: 0 0 0 9999px rgba(0,0,0,0.45); cursor: move; box-sizing: border-box; }
+.crH { position: absolute; width: 14px; height: 14px; background: var(--accent); border: 2px solid #fff; border-radius: 50%; }
+.crH_nw { left: -8px; top: -8px; cursor: nwse-resize; }
+.crH_ne { right: -8px; top: -8px; cursor: nesw-resize; }
+.crH_sw { left: -8px; bottom: -8px; cursor: nesw-resize; }
+.crH_se { right: -8px; bottom: -8px; cursor: nwse-resize; }
+.crCap { flex: 0 0 auto; border-top: 1px solid var(--border); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.crCapCols { display: flex; gap: 12px; }
+.crCapCol { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.crCapHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; font-weight: 600; }
+.crText { width: 100%; height: 64px; resize: vertical; font-family: var(--font-mono); font-size: 12px; padding: 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--app-bg); color: var(--fg); box-sizing: border-box; }
+.crRate { display: flex; align-items: center; gap: 10px; }
+
+/* auto-caption modal labels */
+.acl { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fg-muted); justify-content: space-between; }
+.acl select, .acl input { flex: 0 0 auto; }
+.aclChk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-muted); }

@@ -4,6 +4,8 @@ import { RefreshCw, Layers, FolderOpen, Star, X, ChevronUp, ChevronDown } from '
 import { trainingImagesStore as store, igThumb, igImage, type IgImage } from '../../stores/TrainingImagesStore'
 import { confirmStore } from '../../stores/confirmStore'
 import { promptStore } from '../../stores/promptStore'
+import { CropEditor } from './CropEditor'
+import { AutoCaptionModal } from './AutoCaptionModal'
 import styles from './TrainingImages.module.scss'
 
 const SORT_KEYS: { v: any; label: string }[] = [
@@ -150,7 +152,11 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   const [lb, setLb] = useState<{ rel: string; name: string; bust?: number } | null>(null)
   const [picker, setPicker] = useState<'move' | 'copy' | null>(null)
   const [merge, setMerge] = useState(false)
+  const [crop, setCrop] = useState<{ rel: string; name: string } | null>(null)
+  const [autoCap, setAutoCap] = useState(false)
   useEffect(() => { void store.browse('') }, [])
+  // In a training_set, click = crop/resize editor; elsewhere, click = zoom preview.
+  const openImage = (im: IgImage) => store.inTrainingSet ? setCrop({ rel: im.rel, name: im.name }) : setLb({ rel: im.rel, name: im.name })
 
   const doSend = async () => {
     const suffix = await promptStore.prompt({ title: 'Send to training set', placeholder: 'optional suffix, e.g. yellow_glossy (blank = training_set)', confirmText: 'Send' })
@@ -202,7 +208,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
 
       {store.inTrainingSet && (
         <div className={styles.setbar}>
-          <button className={styles.btn} disabled title="Auto-caption arrives in the next phase">🏷 Auto-caption…</button>
+          <button className={styles.btn} onClick={() => setAutoCap(true)}>🏷 Auto-caption…</button>
           <button className={styles.btn} onClick={() => void doCollage()}>🖼 Generate collage</button>
           {store.hasCollage && <button className={styles.btn} onClick={() => setLb({ rel: `${store.cwd}/${store.collageFirst}`, name: 'collage', bust: Date.now() })}>View collage</button>}
           <button className={styles.btn} onClick={() => void doStrip()}>🧹 Strip tags</button>
@@ -245,10 +251,12 @@ export const TrainingImagesPanel: React.FC = observer(() => {
 
       <div className={styles.grid}>
         {store.images.length === 0 && !store.loading && <div className={styles.dim}>No images here.</div>}
-        {store.images.map((im, i) => <Tile key={im.rel} im={im} i={i} onOpen={() => setLb({ rel: im.rel, name: im.name })} />)}
+        {store.images.map((im, i) => <Tile key={im.rel} im={im} i={i} onOpen={() => openImage(im)} />)}
       </div>
 
       {lb && <Lightbox rel={lb.rel} name={lb.name} bust={lb.bust} onClose={() => setLb(null)} />}
+      {crop && <CropEditor rel={crop.rel} name={crop.name} onClose={() => setCrop(null)} onChanged={() => void store.browse(store.cwd)} />}
+      {autoCap && <AutoCaptionModal onClose={() => setAutoCap(false)} onDone={() => void store.browse(store.cwd)} />}
       {picker && <Picker op={picker} files={[...store.selected]} onClose={() => setPicker(null)} onDone={() => void store.browse(store.cwd)} />}
       {merge && <MergeModal onClose={() => setMerge(false)} />}
     </div>
