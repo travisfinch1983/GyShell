@@ -22,7 +22,7 @@ import { ClusterPanel } from './components/Cluster/ClusterPanel'
 import { ServicesPanel } from './components/Services/ServicesPanel'
 import { ScriptsTabPanel } from './components/Scripts/ScriptsTabPanel'
 import { HomePanel } from './components/Home/HomePanel'
-import { FileManagerPanel } from './components/FileManager/FileManagerPanel'
+import { FilesPanel } from './components/FileManager/FilesPanel'
 import { AiServicesPanel } from './components/AiServices/AiServicesPanel'
 import { ServicesDrawer } from './components/AiServices/ServicesDrawer'
 import { ModelDownloadsPanel } from './components/ModelDownloads/ModelDownloadsPanel'
@@ -370,7 +370,7 @@ export const App: React.FC = observer(() => {
               body="Visual structure builder coming in Phase 2 — port of the xyflow-based diagram tool from claude-dhb, generalized for rect / circle / group shapes with nesting + a saved diagram library."
             />
           )}
-          {primaryTab === 'files' && <FileManagerPanel />}
+          {primaryTab === 'files' && <FilesPanel />}
           {primaryTab === 'monitor' && (
             <PlaceholderPanel
               title="Monitor"

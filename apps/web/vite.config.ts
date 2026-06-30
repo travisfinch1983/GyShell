@@ -81,6 +81,14 @@ export default defineConfig({
         ws: true,
         rewrite: (path) => path.replace(/^\/dash/, '') || '/',
       },
+      // FileBrowser Quantum (File Manager tab) — sidecar on :8082 in this container, browsing the mounted
+      // NAS pools (/nas). Configured with baseURL=/files so it SERVES under /files (no rewrite — keep the
+      // prefix). Same-origin iframe, so X-Frame-Options:SAMEORIGIN (if any) permits it. ws for live updates.
+      '/files': {
+        target: 'http://127.0.0.1:8082',
+        changeOrigin: true,
+        ws: true,
+      },
     },
   }
 })
