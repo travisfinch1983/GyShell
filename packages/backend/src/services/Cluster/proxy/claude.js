@@ -273,13 +273,43 @@ export function createClaudeRouter({ exec }) {
   }
 
   // ── ttyd reverse-proxy (HTTP) — /api/claude/term/:id/* → container ttyd (base-path matches) ──
+  // Browser-side trace shim: injected into the ttyd HTML so we capture the JS STACK TRACE at the moment
+  // any "/clear"-ish input is sent over the WebSocket. A human keystroke comes from xterm's key handler;
+  // an auto-injection comes from a reconnect/visibility/timer handler — the stack tells them apart, which
+  // the server-side input log (same connection, same UA) cannot. Beacons to POST /api/claude/termtrace.
+  const TERMTRACE_SHIM = `<script>(function(){try{var OS=WebSocket.prototype.send;WebSocket.prototype.send=function(d){try{var s=typeof d==='string'?d:((d&&(d.byteLength!=null))?new TextDecoder().decode(d):'');if(s&&s.charCodeAt(0)===48){var p=s.slice(1);var cl=p.indexOf('/clear')!==-1;var en=(p==='\\r'||p==='\\n')&&window.__cz&&(Date.now()-window.__cz)<3000;if(cl||en){var rec={t:Date.now(),path:location.pathname,payload:p,vis:document.visibilityState,focus:document.hasFocus&&document.hasFocus(),stack:(new Error()).stack};try{navigator.sendBeacon('/api/claude/termtrace',new Blob([JSON.stringify(rec)],{type:'application/json'}));}catch(e){}console.warn('[termtrace] clear-ish send',rec);}if(cl)window.__cz=Date.now();}}catch(e){}return OS.apply(this,arguments);};console.log('[termtrace] shim installed');}catch(e){}})();</script>`
+
+  // Receives the browser trace beacons and appends them (with stack trace) to the trace log.
+  router.post('/termtrace', express.json({ type: () => true, limit: '256kb' }), (req, res) => {
+    try {
+      const b = req.body || {}
+      _termLog(`${new Date().toISOString()} TRACE path=${b.path} payload=${JSON.stringify(b.payload)} vis=${b.vis} focus=${b.focus}\n    stack: ${String(b.stack || '').replace(/\n/g, ' | ')}`)
+    } catch {}
+    res.status(204).end()
+  })
+
   const termProxy = (req, res) => {
     const conn = load().connections.find((c) => c.id === req.params.id)
     if (!conn) return res.status(404).send('connection not found')
     const ip = containerIpFor(conn), port = conn.ttydPort || MANAGED_TTYD_PORT
     if (!ip) return res.status(502).send('no container IP')
     const up = http.request({ host: ip, port, method: req.method, path: req.originalUrl, headers: { ...req.headers, host: `${ip}:${port}` } }, (r) => {
-      res.writeHead(r.statusCode || 502, r.headers); r.pipe(res)
+      const ct = String(r.headers['content-type'] || '')
+      // Inject the trace shim into the main HTML doc (skip if compressed — don't corrupt the body).
+      if (ct.includes('text/html') && !r.headers['content-encoding']) {
+        const chunks = []
+        r.on('data', (c) => chunks.push(c))
+        r.on('end', () => {
+          let html = Buffer.concat(chunks).toString('utf8')
+          html = html.includes('<head>') ? html.replace('<head>', '<head>' + TERMTRACE_SHIM) : TERMTRACE_SHIM + html
+          const body = Buffer.from(html, 'utf8')
+          const headers = { ...r.headers }; delete headers['content-length']; headers['content-length'] = String(body.length)
+          res.writeHead(r.statusCode || 502, headers); res.end(body)
+        })
+        r.on('error', () => { if (!res.headersSent) res.status(502).end() })
+      } else {
+        res.writeHead(r.statusCode || 502, r.headers); r.pipe(res)
+      }
     })
     up.on('error', (e) => { if (!res.headersSent) res.status(502).send('ttyd proxy: ' + e.message) })
     req.pipe(up)
