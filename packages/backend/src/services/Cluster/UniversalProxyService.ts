@@ -195,6 +195,14 @@ export class UniversalProxyService {
     // @ts-expect-error — JS router: native service discovery (replaces ProxLab-bridged /api/discovery)
     const { createDiscoveryRouter } = await import('./proxy/discovery.js')
     app.use('/api/discovery', createDiscoveryRouter({ dataDir: this.dataDir }))
+    // @ts-expect-error — JS router: native Proxmox cluster/guest/GPU management (replaces ProxLab-bridged
+    // /api/pve, /api/guests, /api/gpu, /api/storages). Mounted at /api (declares its real public paths);
+    // placed AFTER the specific /api/* routers so it can't shadow them.
+    const { createClusterRouter } = await import('./proxy/cluster.js')
+    app.use('/api', express.json({ limit: '10mb' }), createClusterRouter({
+      pveApi: llmPve, gpuMonitor: llmGpuMon, hookscriptDeploy: llmHook,
+      sshExec: this.sshExec, dataDir: this.dataDir,
+    }))
 
     this.server = http.createServer(app)
     attachClaudeTermUpgrade(this.server) // ttyd WebSocket reverse-proxy for the Claude tab terminals
