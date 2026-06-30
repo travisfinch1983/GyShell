@@ -235,6 +235,19 @@ export function createHfRouter() {
         && f.path !== 'adapter_config.json';
     });
 
+    // Model weight files for non-GGUF / non-diffusers repos (plain safetensors / full-weights /
+    // transformers repos with custom .py code, e.g. an LLM/VLM original). These weights land in
+    // neither ggufQuants (GGUF only) nor components (diffusers only) nor extras (README/images),
+    // so without this list the UI shows "0 files available to download". Include the weights plus
+    // their required companions (config.json, custom *.py, *.index.json, tokenizer files).
+    const extraPaths = new Set(extras.map((e) => e.path));
+    const weightFiles = (!hasGguf && !hasModelIndex)
+      ? files
+          .filter((f) => !extraPaths.has(f.path) && !f.path.endsWith('.gguf'))
+          .map((f) => ({ path: f.path, name: f.path.split('/').pop(), size: f.size || 0 }))
+          .sort((a, b) => (b.size || 0) - (a.size || 0))
+      : [];
+
     // ── Determine repo type ──
     let repoType = 'unknown';
     let suggestedFolder = '';
@@ -306,6 +319,7 @@ export function createHfRouter() {
       analysisLabel: typeMeta.label,
       analysisHint: typeMeta.hint,
       ggufQuants,
+      weightFiles,
       components,
       extras: extras.map(f => ({ path: f.path, size: f.size })),
       flags: { hasGguf, hasModelIndex, hasAdapterConfig, hasSafetensors, hasConfig, hasVaeFolder, hasTextEncoderFolder, hasTokenizer },
@@ -370,7 +384,11 @@ export function createHfRouter() {
           }
         }
       }
-      const args = ['-L', '-o', partFile, '--retry', '3', '--retry-delay', '5', '-C', '-'];
+      // -f (--fail): on HTTP >= 400 (expired signed CDN URL, 416 from a stale-range resume, 5xx,
+      // gated/404) curl must EXIT NON-ZERO instead of writing the error body to the output file.
+      // Without it, curl saves e.g. a tiny error page as the .part, exits 0, the `&& mv` promotes it
+      // to the final path, and the monitor reports a bogus "Download process exited unexpectedly".
+      const args = ['-fL', '-o', partFile, '--retry', '3', '--retry-delay', '5', '-C', '-'];
       if (token) args.push('-H', `Authorization: Bearer ${token}`);
       args.push(url);
 
@@ -731,7 +749,8 @@ export function createHfRouter() {
               dl.error = logContent.slice(-300) || 'Download failed — no output';
             } else {
               dl.status = 'failed';
-              dl.error = 'Download process exited unexpectedly';
+              const exp = expectedSize ? `${expectedSize}` : 'unknown';
+              dl.error = `Download incomplete: got ${finalSize || currentSize} of ${exp} bytes${logContent ? ` — ${logContent.slice(-200)}` : ''}`;
             }
             dl.checkFailures = 0;
             saveHfDownloads(manifest);

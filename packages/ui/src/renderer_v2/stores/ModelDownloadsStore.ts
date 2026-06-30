@@ -29,6 +29,7 @@ export interface HFFile {
 interface HFAnalysis {
   repoType?: string
   ggufQuants?: HFFile[]
+  weightFiles?: HFFile[]
   components?: Record<string, { files: HFFile[]; totalSize?: number }>
   extras?: HFFile[]
   suggestedName?: string
@@ -167,6 +168,7 @@ export class ModelDownloadsStore {
     if (!a) return []
     const all: HFFile[] = [
       ...(a.ggufQuants ?? []),
+      ...(a.weightFiles ?? []),
       ...Object.values(a.components ?? {}).flatMap((c) => c.files ?? []),
     ]
     const seen = new Set<string>()

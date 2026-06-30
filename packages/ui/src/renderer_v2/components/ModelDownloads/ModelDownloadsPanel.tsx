@@ -176,6 +176,12 @@ const HFView: React.FC = observer(() => {
               {a.ggufQuants!.map((f) => <HFFileRow key={f.path} f={f} />)}
             </div>
           )}
+          {(a.weightFiles?.length ?? 0) > 0 && (
+            <div className={styles.fileSection}>
+              <div className={styles.sectionLabel}>Model files</div>
+              {a.weightFiles!.map((f) => <HFFileRow key={f.path} f={f} />)}
+            </div>
+          )}
           {a.components && Object.entries(a.components).map(([name, c]) => (
             <div key={name} className={styles.fileSection}>
               <div className={styles.sectionLabel}>{name} ({gb(c.totalSize)})</div>
