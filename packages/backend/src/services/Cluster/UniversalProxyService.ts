@@ -195,6 +195,12 @@ export class UniversalProxyService {
     // @ts-expect-error — JS router: native service discovery (replaces ProxLab-bridged /api/discovery)
     const { createDiscoveryRouter } = await import('./proxy/discovery.js')
     app.use('/api/discovery', createDiscoveryRouter({ dataDir: this.dataDir }))
+    // @ts-expect-error — JS router: native helper-script list/run (replaces ProxLab-bridged /api/scripts)
+    const { createScriptsRouter } = await import('./proxy/scripts.js')
+    app.use('/api/scripts', express.json({ limit: '10mb' }), createScriptsRouter({ sshExec: this.sshExec, pveApi: llmPve, dataDir: this.dataDir }))
+    // @ts-expect-error — JS router: native community-scripts catalog (replaces ProxLab-bridged /api/script-catalog)
+    const { createScriptCatalogRouter } = await import('./proxy/script-catalog.js')
+    app.use('/api/script-catalog', express.json({ limit: '10mb' }), createScriptCatalogRouter({ pveApi: llmPve, sshExec: this.sshExec, dataDir: this.dataDir }))
     // @ts-expect-error — JS router: native Proxmox cluster/guest/GPU management (replaces ProxLab-bridged
     // /api/pve, /api/guests, /api/gpu, /api/storages). Mounted at /api (declares its real public paths);
     // placed AFTER the specific /api/* routers so it can't shadow them.
