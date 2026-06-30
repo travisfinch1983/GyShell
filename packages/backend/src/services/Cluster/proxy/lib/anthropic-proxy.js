@@ -17,6 +17,7 @@
 
 import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
+import { anthropicMetrics, newMeter, meterEvent, finalizeStreamRecord, usageToRecord } from './anthropic-metrics.js';
 
 const CREDENTIALS_FILE = join(process.env.HOME || '/root', '.claude', '.credentials.json');
 const ANTHROPIC_API_URL = 'https://api.anthropic.com';
@@ -337,6 +338,7 @@ async function callAnthropicMessages(body, token, betaHeader, signal) {
     const base = Number.isFinite(ra) && ra > 0 ? Math.min(ra * 1000, RETRY_CAP_MS) : backoff;
     const waitMs = base + Math.floor(Math.random() * 250);
     try { await res.text(); } catch { /* drain body to free the socket */ }
+    try { anthropicMetrics.recordRetry(body?.model); } catch { /* metrics best-effort */ }
     console.log(`[anthropic-proxy] upstream ${res.status}, retry ${attempt + 1}/${RETRY_MAX} in ${waitMs}ms`);
     await new Promise((r) => setTimeout(r, waitMs));
     if (signal?.aborted) return res;
@@ -586,6 +588,8 @@ export async function proxyMessages(req, res) {
   req.on('close', () => controller.abort());
 
   console.log('[anthropic-proxy] POST /v1/messages (native)');
+  const startMs = Date.now();
+  const reqModel = req.body?.model;
 
   try {
     const upstream = await callAnthropicMessages(prepareBody(req.body), token, req.headers['anthropic-beta'], controller.signal);
@@ -593,6 +597,7 @@ export async function proxyMessages(req, res) {
     if (!upstream.ok) {
       const errorBody = await upstream.text();
       console.log(`[anthropic-proxy] Upstream ${upstream.status}: ${errorBody.slice(0, 200)}`);
+      try { anthropicMetrics.record({ model: reqModel, endpoint: 'messages', stream: isStreaming, ok: false, status: upstream.status, latencyMs: Date.now() - startMs }); } catch { /* best-effort */ }
       return res.status(upstream.status).setHeader('Content-Type', 'application/json').end(errorBody);
     }
 
@@ -606,19 +611,33 @@ export async function proxyMessages(req, res) {
 
       const reader = upstream.body.getReader();
       const decoder = new TextDecoder();
+      const meter = newMeter(reqModel);   // tee the raw passthrough to extract usage/timing
+      let sbuf = '';
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          res.write(decoder.decode(value, { stream: true }));
+          const text = decoder.decode(value, { stream: true });
+          res.write(text);
+          sbuf += text;
+          let nl;
+          while ((nl = sbuf.indexOf('\n')) >= 0) {
+            const line = sbuf.slice(0, nl); sbuf = sbuf.slice(nl + 1);
+            if (line.startsWith('data: ')) {
+              const d = line.slice(6).trim();
+              if (d && d !== '[DONE]') { try { meterEvent(meter, JSON.parse(d)); } catch { /* skip */ } }
+            }
+          }
         }
       } catch (err) {
         if (err.name !== 'AbortError') console.log(`[anthropic-proxy] Stream error: ${err.message}`);
       } finally {
+        try { anthropicMetrics.record(finalizeStreamRecord(meter, startMs, 'messages', true, 200)); } catch { /* best-effort */ }
         res.end();
       }
     } else {
       const body = await upstream.text();
+      try { const j = JSON.parse(body); anthropicMetrics.record(usageToRecord(j.usage, { model: j.model || reqModel, endpoint: 'messages', ok: true, status: 200, latencyMs: Date.now() - startMs })); } catch { /* best-effort */ }
       res.status(200).setHeader('Content-Type', 'application/json').end(body);
     }
   } catch (err) {
@@ -648,6 +667,7 @@ export async function proxyChatCompletions(req, res) {
   }
 
   console.log(`[anthropic-proxy] POST /v1/chat/completions -> /v1/messages (model: ${anthropicBody.model})`);
+  const startMs = Date.now();
 
   try {
     const upstream = await callAnthropicMessages(anthropicBody, token, req.headers['anthropic-beta'], controller.signal);
@@ -655,6 +675,7 @@ export async function proxyChatCompletions(req, res) {
     if (!upstream.ok) {
       const errorBody = await upstream.text();
       console.log(`[anthropic-proxy] Upstream ${upstream.status}: ${errorBody.slice(0, 200)}`);
+      try { anthropicMetrics.record({ model: anthropicBody.model, endpoint: 'chat', stream: isStreaming, ok: false, status: upstream.status, latencyMs: Date.now() - startMs }); } catch { /* best-effort */ }
       try {
         const parsed = JSON.parse(errorBody);
         return res.status(upstream.status).json({ error: parsed.error || parsed });
@@ -674,6 +695,7 @@ export async function proxyChatCompletions(req, res) {
       const reader = upstream.body.getReader();
       const decoder = new TextDecoder();
       const state = {};
+      const meter = newMeter(anthropicBody.model);
       let buffer = '';
 
       try {
@@ -692,6 +714,7 @@ export async function proxyChatCompletions(req, res) {
               if (!data || data === '[DONE]') continue;
               try {
                 const event = JSON.parse(data);
+                meterEvent(meter, event);
                 const chunks = convertStreamEvent(event, state);
                 for (const chunk of chunks) {
                   res.write(`data: ${JSON.stringify(chunk)}\n\n`);
@@ -703,11 +726,13 @@ export async function proxyChatCompletions(req, res) {
       } catch (err) {
         if (err.name !== 'AbortError') console.log(`[anthropic-proxy] Stream error: ${err.message}`);
       } finally {
+        try { anthropicMetrics.record(finalizeStreamRecord(meter, startMs, 'chat', true, 200)); } catch { /* best-effort */ }
         res.write('data: [DONE]\n\n');
         res.end();
       }
     } else {
       const body = await upstream.json();
+      try { anthropicMetrics.record(usageToRecord(body.usage, { model: body.model || anthropicBody.model, endpoint: 'chat', ok: true, status: 200, latencyMs: Date.now() - startMs })); } catch { /* best-effort */ }
       const openaiResp = anthropicToOpenai(body, req.body.model);
       res.json(openaiResp);
     }

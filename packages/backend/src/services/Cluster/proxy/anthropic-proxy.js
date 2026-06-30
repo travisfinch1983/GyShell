@@ -19,6 +19,7 @@
 
 import { Router } from 'express';
 import { proxyMessages, proxyChatCompletions, isAuthenticated, getAuthStatus, startBackgroundRefresh } from './lib/anthropic-proxy.js';
+import { anthropicMetrics } from './lib/anthropic-metrics.js';
 
 // Latest version of each Anthropic model family available on the MAX subscription.
 // The shortName drives the per-model shortcut routes (/opus, /sonnet, /haiku).
@@ -70,6 +71,17 @@ export function createAnthropicProxyRouter() {
   router.get('/status', async (req, res) => {
     const status = await getAuthStatus();
     res.json(status);
+  });
+
+  // Usage/perf metrics (token counts, prompt-cache hits, latency, TTFT, decode t/s).
+  router.get('/metrics', (req, res) => {
+    res.json(anthropicMetrics.snapshot());
+  });
+  router.delete('/metrics/:model', (req, res) => {
+    res.json({ ok: anthropicMetrics.reset(decodeURIComponent(req.params.model)) });
+  });
+  router.delete('/metrics', (req, res) => {
+    res.json({ ok: anthropicMetrics.reset() });
   });
 
   // Models endpoint (OpenAI-compatible)

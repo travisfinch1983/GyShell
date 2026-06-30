@@ -156,3 +156,5 @@
 .settingsTable th { text-align: left; padding: 7px 14px; color: var(--fg-muted); font-weight: 500; width: 40%; vertical-align: top; }
 .settingsTable td { padding: 7px 14px; font-family: var(--font-mono); word-break: break-all; }
 .settingsTable tr { border-bottom: 1px solid var(--border); }
+.recentWrap { margin-top: 10px; }
+.recentSummary { cursor: pointer; font-size: 12px; color: var(--fg-muted); padding: 4px 2px; user-select: none; }

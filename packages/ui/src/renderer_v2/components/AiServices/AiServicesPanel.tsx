@@ -3,6 +3,7 @@ import { observer } from 'mobx-react-lite'
 import { RefreshCw, BrainCircuit, Cpu } from 'lucide-react'
 import { aiServicesStore as store } from '../../stores/AiServicesStore'
 import { LlmMetricsDashboard } from './LlmMetricsDashboard'
+import { ClaudeMaxMetricsDashboard } from './ClaudeMaxMetricsDashboard'
 import styles from './AiServices.module.scss'
 
 const PoolView: React.FC = observer(() => (
@@ -64,6 +65,7 @@ export const AiServicesPanel: React.FC = observer(() => {
       <div className={styles.body}>
         <PoolView />
         <LlmMetricsDashboard />
+        <ClaudeMaxMetricsDashboard />
       </div>
     </div>
   )
