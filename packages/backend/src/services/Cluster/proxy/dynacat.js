@@ -59,6 +59,54 @@ export function createDynacatRouter() {
     }
   });
 
+  // GET /api/dynacat/config-parsed — the config as structured JSON (for the GUI builder).
+  // YAML↔JSON conversion uses PyYAML (already on CT152); avoids a node dep + a deploy install step.
+  router.get('/config-parsed', (_req, res) => {
+    try {
+      const manual = existsSync(OVERRIDE);
+      if (!existsSync(CFG)) return res.json({ config: {}, manualOverride: manual });
+      const out = execFileSync('python3', ['-c',
+        'import yaml,json,sys; print(json.dumps(yaml.safe_load(open(sys.argv[1])) or {}))', CFG],
+        { encoding: 'utf-8', timeout: 15000, maxBuffer: 16 * 1024 * 1024 });
+      res.json({ config: JSON.parse(out), manualOverride: manual });
+    } catch (e) {
+      res.status(500).json({ error: `${e?.stderr || ''}${e?.message || e}` });
+    }
+  });
+
+  // PUT /api/dynacat/config-parsed { config } — serialize JSON→YAML, validate, then save + pin manual mode + reload.
+  router.put('/config-parsed', (req, res) => {
+    const config = req.body?.config;
+    if (!config || typeof config !== 'object') return res.status(400).json({ ok: false, error: 'config (object) required' });
+    const tmp = `${CFG}.editor.tmp`;
+    let yaml;
+    try {
+      yaml = execFileSync('python3', ['-c',
+        'import yaml,json,sys; sys.stdout.write(yaml.safe_dump(json.load(sys.stdin), sort_keys=False, allow_unicode=True, default_flow_style=False, width=4096))'],
+        { input: JSON.stringify(config), encoding: 'utf-8', timeout: 15000, maxBuffer: 16 * 1024 * 1024 });
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: 'YAML serialize failed: ' + `${e?.stderr || ''}${e?.message || e}` });
+    }
+    try {
+      writeFileSync(tmp, yaml);
+      try {
+        execFileSync(BIN, ['-config', tmp, 'config:validate'], { timeout: 15000, stdio: 'pipe' });
+      } catch (ve) {
+        const out = `${ve?.stdout || ''}${ve?.stderr || ''}`.trim() || String(ve?.message || ve);
+        try { unlinkSync(tmp); } catch {}
+        return res.status(422).json({ ok: false, error: out, yaml });
+      }
+      writeFileSync(CFG, yaml);
+      try { unlinkSync(tmp); } catch {}
+      writeFileSync(OVERRIDE, `manual edit via AI-Lab Home builder\n`); // pause auto-regen
+      restart();
+      res.json({ ok: true, manualOverride: true, yaml });
+    } catch (e) {
+      try { unlinkSync(tmp); } catch {}
+      res.status(500).json({ ok: false, error: String(e?.message || e) });
+    }
+  });
+
   // POST /api/dynacat/regenerate — hand control back to the generator (clear override + rebuild from inventory).
   router.post('/regenerate', (_req, res) => {
     try {

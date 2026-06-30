@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
-import { Settings, RefreshCw, Save, RotateCcw, X } from 'lucide-react'
+import { Settings, RefreshCw, Save, RotateCcw, X, LayoutGrid } from 'lucide-react'
 import { confirmStore } from '../../stores/confirmStore'
+import { DynacatBuilder } from './DynacatBuilder'
 
 /**
  * Home tab — embeds the Dynacat dashboard (lab status + news), served same-origin via the Vite /dash proxy.
@@ -16,6 +17,7 @@ export const HomePanel: React.FC = () => {
   const [status, setStatus] = useState('')
   const [busy, setBusy] = useState(false)
   const [iframeKey, setIframeKey] = useState(0)
+  const [building, setBuilding] = useState(false)
 
   const open = async () => {
     setEditing(true); setStatus('Loading…')
@@ -64,8 +66,16 @@ export const HomePanel: React.FC = () => {
         </span>
         <span style={{ flex: 1 }} />
         <button style={btn} onClick={() => setIframeKey((k) => k + 1)} title="Reload dashboard"><RefreshCw size={12} /> Reload</button>
+        <button style={btn} onClick={() => setBuilding(true)}><LayoutGrid size={12} /> Build dashboard</button>
         <button style={btn} onClick={() => void open()}><Settings size={12} /> Edit config</button>
       </div>
+      {building && (
+        <DynacatBuilder
+          onClose={() => setBuilding(false)}
+          onSaved={() => { setManual(true); setIframeKey((k) => k + 1) }}
+          openRaw={() => { setBuilding(false); void open() }}
+        />
+      )}
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <iframe key={iframeKey} src="/dash/" title="Dashboard" style={{ width: '100%', height: '100%', border: 'none', display: 'block' }} />
       </div>
