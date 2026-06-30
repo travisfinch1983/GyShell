@@ -349,11 +349,18 @@ export class LlmLaunchStore {
   /** Path of the multimodal projector the selected model ships (scan exposes it as a MMPROJ "format"),
    *  or null. Used to auto-fill the mmproj field for vision-capable GGUF models. */
   detectedMmprojPath(): string | null {
+    return this.mmprojOptions[0]?.value || null
+  }
+
+  /** All multimodal projectors in the selected model's shared mmproj/ folder (sits in the GGUF parent
+   *  alongside the quant folders, shared across quants). The scan exposes them as MMPROJ "format" entries.
+   *  Drives the mmproj dropdown in the launcher. */
+  get mmprojOptions(): { label: string; value: string }[] {
     const fmts = this.model?.formats?.MMPROJ
-    if (fmts && typeof fmts === 'object') {
-      for (const v of Object.values<any>(fmts)) if (v && typeof v.path === 'string') return v.path
-    }
-    return null
+    if (!fmts || typeof fmts !== 'object') return []
+    return Object.entries<any>(fmts)
+      .filter(([, v]) => v && typeof v.path === 'string')
+      .map(([name, v]) => ({ label: name, value: v.path as string }))
   }
   setSetting(key: string, val: any): void {
     this.settings = { ...this.settings, [key]: val }

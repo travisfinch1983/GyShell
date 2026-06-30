@@ -54,7 +54,13 @@ const SettingField: React.FC<{ k: string; arg: any }> = observer(({ k, arg }) =>
   return (
     <div className={`${styles.field} ${inPreset ? styles.inPreset : ''}`} {...common}>
       <span className={styles.fieldLabel}><PresetChk k={k} />{label}</span>
-      {arg.type === 'select' ? (
+      {k === 'mmproj' ? (
+        // Vision projector: dropdown of the .gguf files in the model's shared mmproj/ folder (+ text-only).
+        <select className={styles.input} value={String(val ?? '')} onChange={(e) => store.setSetting(k, e.target.value)}>
+          <option value="">— none (text-only) —</option>
+          {store.mmprojOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      ) : arg.type === 'select' ? (
         <select className={styles.input} value={String(val ?? '')} onChange={(e) => store.setSetting(k, e.target.value)}>
           {(arg.options || []).map((o: string) => (
             <option key={o} value={o}>{arg.labels?.[o] ?? (o === '' ? '(default)' : o)}</option>
