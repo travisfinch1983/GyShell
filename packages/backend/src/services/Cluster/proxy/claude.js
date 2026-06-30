@@ -357,6 +357,13 @@ function _makeWsInputTap(cid) {
           const data = payload.subarray(1).toString('utf8')
           const flag = /\/clear|\/exit|\/quit/.test(data) ? '  <<<<<< SLASH-COMMAND' : ''
           _termLog(`${new Date().toISOString()} conn#${cid} INPUT ${JSON.stringify(data)}${flag}`)
+        } else if (len <= 96) {
+          // RAW: log every other SMALL client→server frame (resize, init, or input under a non-'0' command
+          // byte) so a /clear on reconnect is captured regardless of how ttyd frames it. Reveals the real
+          // command byte if our INPUT decode ('0') is wrong. Capped to avoid paste/output spam.
+          const full = payload.toString('utf8')
+          const flag = /clear|exit|quit/i.test(full) ? '  <<<<<< CLEAR-ISH' : ''
+          _termLog(`${new Date().toISOString()} conn#${cid} RAW cmd=${JSON.stringify(cmd)} op=${opcode} len=${len} payload=${JSON.stringify(full.slice(0, 80))}${flag}`)
         }
       } else if (opcode === 0x8) _termLog(`${new Date().toISOString()} conn#${cid} WS-CLOSE`)
     }
