@@ -29,9 +29,16 @@ function loadGpuAssignments() {
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const projectRoot = join(__dirname, '..', '..');
-const scriptsDir = join(projectRoot, 'scripts', 'providers');
-const setupDir = join(projectRoot, 'scripts', 'setup');
+// Provider install/status/update scripts are runtime data under the proxy DATA_DIR
+// (AILAB_PROXY_DATA_DIR, normally /opt/ai-lab/.gybackend-data/scripts) — they are NOT in the
+// source tree. Resolving against the source dir (join(__dirname,'..','..')) pointed at
+// .../Cluster/proxy/scripts/, which doesn't exist on deploy, so checkStatus/checkUpdate/install
+// died with ENOENT reading the script → the endpoint never updated the cached provider version
+// (the Provider Install tab kept showing the install-time version forever). Use the same
+// env-based resolver as ai.js/hf-download.js so it finds the deployed scripts.
+const DATA_DIR = process.env.AILAB_PROXY_DATA_DIR || join(__dirname, '..', '..', 'data');
+const scriptsDir = join(DATA_DIR, 'scripts', 'providers');
+const setupDir = join(DATA_DIR, 'scripts', 'setup');
 
 export class ProviderInstaller {
   constructor({ sshService, pveApi, gpuMonitor }) {
