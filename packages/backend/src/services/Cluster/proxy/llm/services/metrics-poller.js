@@ -138,6 +138,28 @@ export class LlmMetricsPoller {
         prefillTps: promSum(text, 'llamacpp:prompt_tokens_seconds'),
         cacheHits: null, cacheQueries: null, optaneHits: null, optaneQueries: null,
       }
+      // llama.cpp exposes NO prefix-cache counter in /metrics, but /slots reports per-request
+      // n_prompt_tokens (total prompt) vs n_prompt_tokens_cache (served from the in-VRAM prompt cache).
+      // Accumulate each distinct request (id_task) once per slot into monotonic token totals so _accum
+      // treats them like any other counter — this is the "regular" KV / prompt-cache hit rate.
+      const slotsText = await this._get(`${base}/slots`, 2000)
+      if (slotsText) { try {
+        const slots = JSON.parse(slotsText)
+        if (Array.isArray(slots)) {
+          const map = (this._slotState ||= {})
+          const st = map[svc.id] || (map[svc.id] = { last: {}, cacheTok: 0, totalTok: 0 })
+          for (const sl of slots) {
+            const task = sl?.id_task, total = sl?.n_prompt_tokens, cached = sl?.n_prompt_tokens_cache
+            if (typeof task === 'number' && task >= 0 && typeof total === 'number' && total > 0 && st.last[sl.id] !== task) {
+              st.cacheTok += (typeof cached === 'number' ? cached : 0)
+              st.totalTok += total
+              st.last[sl.id] = task
+            }
+          }
+          r.cacheHits = st.cacheTok
+          r.cacheQueries = st.totalTok
+        }
+      } catch {} }
       // llama.cpp's Optane KV cache lives in the kvcache shim (servicePort + 1000), when one fronts it.
       const shim = await this._get(`http://${svc.containerIp}:${svc.port + 1000}/shim/stats`, 2000)
       if (shim) { try {
