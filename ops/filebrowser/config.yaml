@@ -1,0 +1,9 @@
+server:
+  port: 8082
+  baseURL: "/files"
+  sources:
+    - path: "/nas"
+      name: "NAS"
+auth:
+  methods:
+    noauth: true
