@@ -212,6 +212,9 @@ export const LAUNCH_TEMPLATES = {
                           tooltip: 'CPU threads for work not on the GPU. -1 = auto-detect physical cores' },
       },
       advancedArgs: {
+        mmproj:          { type: 'string', default: '',
+                            label: 'mmproj (vision projector)',
+                            tooltip: 'Multimodal projector .gguf that enables image/vision input. Auto-filled from the model folder’s mmproj/ subdir when the selected model ships one — clear it to run text-only, or paste a different projector path. Emitted as --mmproj (no flag here; handled by the command builder so the path is cache-translated).' },
         batchSize:       { flag: '--batch-size',        type: 'number', default: 2048,
                             label: 'Batch Size',
                             tooltip: 'Logical batch size for prompt processing. Larger = faster ingest, more VRAM' },

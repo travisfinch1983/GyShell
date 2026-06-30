@@ -282,6 +282,7 @@ export class LlmLaunchStore {
     const rows: QuantRow[] = []
     for (const [format, data] of Object.entries<any>(m.formats || {})) {
       if (!data || typeof data !== 'object') continue
+      if (format === 'MMPROJ') continue // vision projector, not a selectable model quant (auto-wired via mmproj)
       if (typeof data.path === 'string') {
         // flat single-variant format (e.g. FP16/BF16) → one row
         rows.push({ format, quant: format, bpw: null, path: data.path, sizeMB: data.sizeMB ?? null, onDisk: true })
@@ -335,11 +336,24 @@ export class LlmLaunchStore {
       for (const [k, a] of Object.entries<any>(t.args || {})) s[k] = (prev[k] !== undefined ? prev[k] : a.default)
       for (const [k, a] of Object.entries<any>(t.advancedArgs || {})) s[k] = (prev[k] !== undefined ? prev[k] : a.default)
     }
+    // Auto-wire the vision projector: a model that ships an mmproj/ gets it pre-filled (enables image
+    // input); others are cleared. Overrides any persisted value so mmproj always matches the chosen model.
+    if (t?.supportsMmproj) s.mmproj = this.detectedMmprojPath() || ''
     this.settings = s
     this.selectedSamplerPresetId = ''
     this.presetKeys = []
     this.samplerReadOnly = false
     this.scheduleEstimate()
+  }
+
+  /** Path of the multimodal projector the selected model ships (scan exposes it as a MMPROJ "format"),
+   *  or null. Used to auto-fill the mmproj field for vision-capable GGUF models. */
+  detectedMmprojPath(): string | null {
+    const fmts = this.model?.formats?.MMPROJ
+    if (fmts && typeof fmts === 'object') {
+      for (const v of Object.values<any>(fmts)) if (v && typeof v.path === 'string') return v.path
+    }
+    return null
   }
   setSetting(key: string, val: any): void {
     this.settings = { ...this.settings, [key]: val }
