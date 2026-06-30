@@ -51,8 +51,11 @@ export default defineConfig({
       // Proxy all ProxLab API requests through Vite dev server
       // Covers: LLM, embeddings, reranker, vector, TTS, STT, image, services
       // Browser makes same-origin requests — no CORS, no mixed content
+      // ProxLab is decommissioned — the discovery/TTS/STT/minion layer (ProxlabDiscovery, MinionRouter,
+      // TtsPlayback, SttCapture) routes here. Retargeted from 10.0.0.140 to AI-Lab's OWN native proxy
+      // (127.0.0.1:17890), which serves the same /api/proxy/* discovery endpoints (services, *_/v1/models).
       '/proxlab-api': {
-        target: 'http://10.0.0.140:7777',
+        target: 'http://127.0.0.1:17890',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/proxlab-api/, '/api/proxy'),
         ws: true, // Support WebSocket for streaming
