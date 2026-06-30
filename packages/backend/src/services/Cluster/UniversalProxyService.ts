@@ -195,6 +195,9 @@ export class UniversalProxyService {
     // @ts-expect-error — JS router: native service discovery (replaces ProxLab-bridged /api/discovery)
     const { createDiscoveryRouter } = await import('./proxy/discovery.js')
     app.use('/api/discovery', createDiscoveryRouter({ dataDir: this.dataDir }))
+    // @ts-expect-error — JS router: Dynacat (Home dashboard) config editor — read/validate/save the YAML
+    const { createDynacatRouter } = await import('./proxy/dynacat.js')
+    app.use('/api/dynacat', createDynacatRouter())
     // @ts-expect-error — JS router: native helper-script list/run (replaces ProxLab-bridged /api/scripts)
     const { createScriptsRouter } = await import('./proxy/scripts.js')
     app.use('/api/scripts', express.json({ limit: '10mb' }), createScriptsRouter({ sshExec: this.sshExec, pveApi: llmPve, dataDir: this.dataDir }))

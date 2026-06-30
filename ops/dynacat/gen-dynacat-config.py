@@ -183,6 +183,11 @@ def build():
 
 
 def main():
+    # If the user hand-edited the config via the AI-Lab Home editor, a sentinel pauses auto-regen so their
+    # edits aren't clobbered. POST /api/dynacat/regenerate (the "Reset to auto-generated" button) clears it.
+    if os.path.exists("/opt/dynacat/.manual-override"):
+        print("manual override active — skipping regen (Home editor owns dynacat.yml)")
+        return
     new = build()
     old = open(OUT).read() if os.path.exists(OUT) else ""
     if new == old:
