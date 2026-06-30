@@ -70,11 +70,15 @@ export class LlmMetricsPoller {
     return '—'
   }
 
-  /** Stable fingerprint: one row per (model + backend + the settings that define a distinct run). */
+  /** Stable fingerprint: one row per (model + backend + the settings that define a distinct run).
+   *  Model identity comes from the SELECTION (family/variant) or the base model id — NEVER the
+   *  aliasOverride / display name. Two instances of the same model + settings that differ only by a
+   *  cosmetic name override are the same run and collapse into one row. */
   fingerprint(svc) {
+    const modelId = [svc.modelFamily, svc.modelVariant].filter(Boolean).join('/') || svc.model || ''
     const key = [
       svc.providerId || svc.providerName || '',
-      svc.model || '',
+      modelId,
       svc.quantFormat || '', svc.quantSize || '',
       String(svc.contextSize ?? ''),
       String(svc.slots ?? ''),

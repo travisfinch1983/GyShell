@@ -382,7 +382,7 @@ export const LAUNCH_TEMPLATES = {
                             tooltip: 'Mount API under a path prefix, e.g. /llama (no trailing slash). Useful behind a reverse proxy' },
         slotSavePath:    { flag: '--slot-save-path',    type: 'string', default: '',
                             label: 'Slot Save Path',
-                            tooltip: 'Directory to persist KV cache slots to disk (session resume across restarts). LEAVE BLANK (recommended): the server auto-routes it to Optane at /optane-sock0/kvcache/<model-name-slug>, keyed by the served model name so it survives port changes. A /tmp or /dev/shm path is auto-corrected to Optane. Any other explicit path you set is honored as-is.' },
+                            tooltip: 'Directory to persist KV cache slots to disk (session resume across restarts). LEAVE BLANK (recommended): every llama.cpp launch auto-gets an Optane slot under /optane-sock0/kvcache/, named by priority — (1) an explicit path you set here, (2) else the model-name override (--alias), (3) else <model-file>-<content-fingerprint>. The fingerprint hashes only KV-affecting settings (model file, ctx, cache dtypes), NOT the name override or GPUs, so the same model+settings reuses one slot across ports/GPUs/renames. A /tmp or /dev/shm path is auto-corrected to Optane.' },
         metrics:         { flag: '--metrics',           type: 'flag',   default: true,
                             label: 'Prometheus Metrics',
                             tooltip: 'Enable /metrics endpoint — ProxLab reads llamacpp:predicted_tokens_seconds from here for live TPS' },
