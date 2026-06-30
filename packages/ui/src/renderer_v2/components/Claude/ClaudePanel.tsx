@@ -86,7 +86,7 @@ const ConnectionView: React.FC<{ conn: any }> = observer(({ conn }) => {
       {setupLog && <pre className={styles.setupLog}>{setupLog}</pre>}
 
       {conn.provisioned
-        ? <div ref={termRef as any} className={styles.termWrap} style={{ height: termHeight }}><iframe key={reloadKey} className={styles.term} src={store.termUrl(conn.id)} title={`${conn.name} terminal`} sandbox="allow-scripts allow-same-origin allow-forms allow-clipboard-write" /></div>
+        ? <div ref={termRef as any} className={styles.termWrap} style={{ height: termHeight }}><iframe key={reloadKey} className={styles.term} src={`${store.termUrl(conn.id)}?cb=${reloadKey}`} title={`${conn.name} terminal`} sandbox="allow-scripts allow-same-origin allow-forms" /></div>
         : <div className={styles.termPlaceholder}><TermIcon size={16} /> No live terminal yet — click “Set up terminal” to install ttyd + the auto-starting Claude session on this container.</div>}
 
       <FileEditor connId={conn.id} />
