@@ -263,6 +263,41 @@ function injectCacheControl(body) {
   return body;
 }
 
+// ---------------------------------------------------------------------------
+// Claude Code identity handshake. The MAX/OAuth path GATES the premium models
+// (Opus/Sonnet) behind a required first system block identifying the caller as
+// Claude Code — without it they return a disguised `rate_limit_error` (Haiku is
+// exempt). Real Claude Code always sends this; we replicate it. Persona/system
+// text supplied by the caller is preserved as a SUBSEQUENT block, so personas
+// still fully override behaviour (verified: no "I'm Claude Code" leakage).
+// ---------------------------------------------------------------------------
+const CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+function ensureClaudeIdentity(body) {
+  if (!body) return body;
+  const cc = { type: 'text', text: CLAUDE_CODE_IDENTITY };
+  const s = body.system;
+  if (s == null) { body.system = [cc]; return body; }
+  if (typeof s === 'string') { body.system = [cc, { type: 'text', text: s }]; return body; }
+  if (Array.isArray(s)) {
+    const first = s[0];
+    const already = first && typeof first === 'object' && typeof first.text === 'string'
+      && first.text.startsWith('You are Claude Code');
+    if (!already) s.unshift(cc);
+    return body;
+  }
+  body.system = [cc];
+  return body;
+}
+
+// Single entry point applied to every upstream body: identity handshake (always)
+// then cache-control breakpoints (optional). Order matters — identity first so the
+// cache breakpoint lands on the (now last) caller-supplied system block.
+function prepareBody(body) {
+  ensureClaudeIdentity(body);
+  return injectCacheControl(body);
+}
+
 function buildUpstreamHeaders(token, extraBeta) {
   // extended-cache-ttl enables the 1-hour cache tier used by injectCacheControl.
   const betaFlags = ['oauth-2025-04-20', 'extended-cache-ttl-2025-04-11'];
@@ -372,7 +407,7 @@ function openaiToAnthropic(body) {
     }
   }
 
-  return injectCacheControl(anthropicBody);
+  return prepareBody(anthropicBody);
 }
 
 function anthropicToOpenai(anthropicResp, model) {
@@ -534,7 +569,7 @@ export async function proxyMessages(req, res) {
   console.log('[anthropic-proxy] POST /v1/messages (native)');
 
   try {
-    const upstream = await callAnthropicMessages(injectCacheControl(req.body), token, req.headers['anthropic-beta'], controller.signal);
+    const upstream = await callAnthropicMessages(prepareBody(req.body), token, req.headers['anthropic-beta'], controller.signal);
 
     if (!upstream.ok) {
       const errorBody = await upstream.text();

@@ -24,7 +24,7 @@ import { proxyMessages, proxyChatCompletions, isAuthenticated, getAuthStatus, st
 // The shortName drives the per-model shortcut routes (/opus, /sonnet, /haiku).
 const CLAUDE_MODELS = [
   { id: 'claude-opus-4-8', shortName: 'opus', label: 'Opus 4.8' },
-  { id: 'claude-sonnet-4-6', shortName: 'sonnet', label: 'Sonnet 4.6' },
+  { id: 'claude-sonnet-5', shortName: 'sonnet', label: 'Sonnet 5' },
   { id: 'claude-haiku-4-5', shortName: 'haiku', label: 'Haiku 4.5' },
 ];
 
