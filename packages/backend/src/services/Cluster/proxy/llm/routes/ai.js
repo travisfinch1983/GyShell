@@ -58,6 +58,20 @@ function loadSettings() {
   return {};
 }
 
+// The HuggingFace token the user enters in Settings is saved by the UI to cluster-settings.json
+// under `tokens.hfToken` — NOT to proxlab-ui-settings.json's `ui.hfToken` that loadSettings() reads.
+// Without this fallback the downloader stays unauthenticated, and HF throttles concurrent Xet-CDN
+// transfers of large public files with HTTP 401. Read the cluster token as a fallback.
+const clusterSettingsFile = join(dataDir, 'cluster-settings.json');
+function loadClusterHfToken() {
+  try {
+    if (existsSync(clusterSettingsFile)) {
+      return (JSON.parse(readFileSync(clusterSettingsFile, 'utf-8')).tokens || {}).hfToken || '';
+    }
+  } catch {}
+  return '';
+}
+
 function loadAiConfig() {
   try {
     if (existsSync(aiConfigFile)) return JSON.parse(readFileSync(aiConfigFile, 'utf-8'));
@@ -277,7 +291,7 @@ async function enrichHfHistoryEntry(entry) {
   if (!entry.repo) return;
   try {
     const ui = loadSettings().ui || {};
-    const token = ui.hfToken || '';
+    const token = ui.hfToken || loadClusterHfToken();
     const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
     const repoUrl = `https://huggingface.co/api/models/${entry.repo}`;
@@ -5324,7 +5338,7 @@ WantedBy=multi-user.target
 
       // Use saved token if none provided in request
       const ui = loadSettings().ui || {};
-      const effectiveToken = token || ui.hfToken || '';
+      const effectiveToken = token || ui.hfToken || loadClusterHfToken();
 
       // Fetch branches in parallel with file tree
       const [files, branches] = await Promise.all([
@@ -5579,7 +5593,7 @@ WantedBy=multi-user.target
       next.startedAt = new Date().toISOString();
       saveHfDownloads(manifest);
 
-      const token = next.token || ui.hfToken || '';
+      const token = next.token || ui.hfToken || loadClusterHfToken();
       const revision = next.revision || 'main';
       const hfPath = (next.hfPath || next.fileName).split('/').map(s => encodeURIComponent(s)).join('/');
       const url = `https://huggingface.co/${next.repo}/resolve/${revision}/${hfPath}`;
@@ -5813,7 +5827,7 @@ WantedBy=multi-user.target
       }
 
       const ui = loadSettings().ui || {};
-      const effectiveToken = token || ui.hfToken || null;
+      const effectiveToken = token || ui.hfToken || loadClusterHfToken() || null;
 
       const manifest = loadHfDownloads();
       const queued = [];
