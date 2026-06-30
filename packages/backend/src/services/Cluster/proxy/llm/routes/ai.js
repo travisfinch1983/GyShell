@@ -1879,6 +1879,13 @@ if out: print(json.dumps(out))
 
   // ─── Model Launch ──────────────────────────────────────────────────────
 
+  /** GET /next-port — a conflict-free port for the launcher (blank Port field = auto-assign). Scans
+   *  active-services + in-flight reservations; reserves the returned port for ~5 min. */
+  router.get('/next-port', (_req, res) => {
+    try { res.json({ port: getNextPort() }); }
+    catch (e) { res.status(500).json({ error: String(e?.message || e) }); }
+  });
+
   /**
    * POST /launch — Launch a model on an agent container via tmux.
    * Writes the command to a temp script, wraps in tmux new-session + attach.

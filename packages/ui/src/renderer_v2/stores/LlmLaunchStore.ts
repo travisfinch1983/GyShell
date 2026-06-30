@@ -95,6 +95,9 @@ export class LlmLaunchStore {
   selectedProvider = ''
   selectedNode = ''
   settings: Record<string, any> = {}
+  // Auto-assigned free port used when the Port field is left blank (blank = auto, a value = manual override).
+  // Fetched from the backend's conflict-aware allocator; cleared after each launch so the next is fresh.
+  autoPort: number | null = null
 
   lastEstimate: any = null
   selectedPlacement: any = null
@@ -195,6 +198,9 @@ export class LlmLaunchStore {
       this.selectedSamplerPresetId = ''
       this.presetKeys = []
     })
+    // The quant table (step 2) is gated on `model` resolving from the scan. If the template's model isn't
+    // in the current index (e.g. not yet scanned), pull that family so the table + quant rows appear (#4).
+    if (this.selectedFamily && !this.model) void this.rescanFamily(this.selectedFamily)
     this.scheduleEstimate()
   }
 
@@ -319,12 +325,15 @@ export class LlmLaunchStore {
   }
   selectProvider(id: string): void {
     this.selectedProvider = id
-    // seed settings from template defaults
+    // Seed the provider's settings, but PRESERVE values the user already set (settings persist across
+    // model/provider changes). Only fill defaults for keys not already present; keys the new provider
+    // doesn't have are dropped. This is why switching models keeps your tweaked settings (#1/#5).
     const t = (LAUNCH_TEMPLATES as any)[id]
+    const prev = this.settings || {}
     const s: Record<string, any> = {}
     if (t) {
-      for (const [k, a] of Object.entries<any>(t.args || {})) s[k] = a.default
-      for (const [k, a] of Object.entries<any>(t.advancedArgs || {})) s[k] = a.default
+      for (const [k, a] of Object.entries<any>(t.args || {})) s[k] = (prev[k] !== undefined ? prev[k] : a.default)
+      for (const [k, a] of Object.entries<any>(t.advancedArgs || {})) s[k] = (prev[k] !== undefined ? prev[k] : a.default)
     }
     this.settings = s
     this.selectedSamplerPresetId = ''
@@ -539,7 +548,27 @@ export class LlmLaunchStore {
     return this.getSelectedModelPath() !== null
   }
   getTmuxSession(): string {
-    return `${this.selectedProvider}-${this.settings.port || 5001}`
+    return `${this.selectedProvider}-${this.effectivePort}`
+  }
+
+  /** The port a launch will actually use: a manual value in the Port field overrides; otherwise the
+   *  auto-assigned free port (blank = auto). 5001 is only a last-resort fallback if the fetch failed. */
+  get effectivePort(): number {
+    const manual = parseInt(this.settings.port, 10)
+    if (Number.isFinite(manual) && manual > 0) return manual
+    return this.autoPort || 5001
+  }
+
+  /** Fetch a conflict-free port from the backend allocator when the Port field is blank. Cached until a
+   *  launch consumes it (or force=true), so we don't burn a reserved port on every re-estimate. */
+  async ensureAutoPort(force = false): Promise<void> {
+    const manual = parseInt(this.settings.port, 10)
+    if (Number.isFinite(manual) && manual > 0) return // manual override → no auto
+    if (this.autoPort && !force) return
+    try {
+      const r: any = await bridge().request('GET', '/api/ai/next-port')
+      if (r?.port) runInAction(() => { this.autoPort = Number(r.port) })
+    } catch { /* keep fallback */ }
   }
 
   /** Container-local CUDA indices for the chosen placement (PCI-sorted, matching nvidia-smi order). */
@@ -593,6 +622,8 @@ export class LlmLaunchStore {
       if ((flag === null || flag === undefined) && !arg.positional) return
       if (arg.type === 'derived') { if (key === 'modelName' && modelName) parts.push(`${flag} ${modelName}`); return }
       let val = key === 'model' ? modelDir : (this.settings[key] ?? arg.default)
+      // Port: blank field → use the auto-assigned free port (blank = auto).
+      if (key === 'port' && (val === '' || val == null || Number(val) === 0)) val = this.effectivePort
       if (key === 'speculativeConfig' && typeof val === 'string') {
         const t = val.trim(); val = t && !t.startsWith('{') && !t.startsWith('[') ? `{${t}}` : t
       }
@@ -668,6 +699,7 @@ export class LlmLaunchStore {
   scheduleEstimate(): void {
     if (this.estTimer) clearTimeout(this.estTimer)
     this.estTimer = setTimeout(() => void this.runEstimate(), 300)
+    void this.ensureAutoPort() // warm a free port for the command preview (cached; only fetches if blank)
   }
   async runEstimate(): Promise<void> {
     const m = this.model
@@ -706,18 +738,20 @@ export class LlmLaunchStore {
 
   // ─── launch ───
   async launch(): Promise<void> {
-    const command = this.command
-    if (!this.selectedProvider || !this.selectedNode || !command) { this.launchErr = 'Select a model, provider and GPU placement first.'; return }
+    if (!this.selectedProvider || !this.selectedNode) { this.launchErr = 'Select a model, provider and GPU placement first.'; return }
     this.launching = true; this.launchErr = ''; this.launchMsg = ''
     try {
-      const port = parseInt(this.settings.port, 10) || 5001
+      await this.ensureAutoPort(true) // resolve a fresh free port if the field is blank, BEFORE building the command
+      const command = this.command
+      if (!command) { this.launchErr = 'Select a model, provider and GPU placement first.'; return }
+      const port = this.effectivePort
       const tmuxSession = this.getTmuxSession()
       const data: any = await bridge().request('POST', '/api/ai/launch', { node: this.selectedNode, providerId: this.selectedProvider, command, port, tmuxSession })
       // Run the returned (tmux-wrapping) command in the Live Console PTY on the target host.
       if (data?.command && data?.pveHostIp) {
         liveConsoleStore.openInstall(`launch:${tmuxSession}`, data.pveHostIp, data.command)
       }
-      runInAction(() => { this.launchMsg = `Launched ${this.selectedProvider} on ${this.selectedNode}:${port} — see the Live Console.` })
+      runInAction(() => { this.launchMsg = `Launched ${this.selectedProvider} on ${this.selectedNode}:${port} — see the Live Console.`; this.autoPort = null })
     } catch (e: any) {
       runInAction(() => { this.launchErr = 'Launch failed: ' + (e?.message || e) })
     } finally {
@@ -726,11 +760,13 @@ export class LlmLaunchStore {
   }
 
   async launchAsService(): Promise<void> {
-    const command = this.command
-    if (!this.selectedProvider || !this.selectedNode || !command) { this.launchErr = 'Select a model, provider and GPU placement first.'; return }
+    if (!this.selectedProvider || !this.selectedNode) { this.launchErr = 'Select a model, provider and GPU placement first.'; return }
     this.launching = true; this.launchErr = ''; this.launchMsg = ''
     try {
-      const port = parseInt(this.settings.port, 10) || 5001
+      await this.ensureAutoPort(true) // resolve a fresh free port if the field is blank, BEFORE building the command
+      const command = this.command
+      if (!command) { this.launchErr = 'Select a model, provider and GPU placement first.'; return }
+      const port = this.effectivePort
       const body: any = {
         node: this.selectedNode, providerId: this.selectedProvider, command, port, tmuxSession: this.getTmuxSession(),
         model: `${this.selectedFamily}/${this.selectedVariant}`, modelFamily: this.selectedFamily, modelVariant: this.selectedVariant,
@@ -741,7 +777,7 @@ export class LlmLaunchStore {
       const cuda = this.cudaIndices()
       if (cuda) { body.cudaDevices = cuda; body.gpuPciIds = this.selectedPlacement.gpus.map((g: any) => g.pciId) }
       const r: any = await bridge().request('POST', '/api/ai/launch-service', toJS(body))
-      runInAction(() => { this.launchMsg = r?.service ? `Service created for ${this.selectedProvider} on port ${port} (auto-starts on boot).` : 'Launch-as-service submitted.' })
+      runInAction(() => { this.launchMsg = r?.service ? `Service created for ${this.selectedProvider} on port ${port} (auto-starts on boot).` : 'Launch-as-service submitted.'; this.autoPort = null })
     } catch (e: any) {
       runInAction(() => { this.launchErr = 'Launch as service failed: ' + (e?.message || e) })
     } finally {

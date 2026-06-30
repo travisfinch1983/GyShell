@@ -28,7 +28,7 @@ export const LAUNCH_TEMPLATES = {
       useKcpps: true,
       args: {
         model:       { type: 'path', required: true },
-        port:        { type: 'number', default: 5001 },
+        port:        { type: 'number', default: '' },
         contextSize: { kcpps: 'contextsize',    type: 'number', default: 8192 },
         gpuLayers:   { kcpps: 'gpulayers',      type: 'number', default: 999 },
         tensorSplit: { kcpps: 'tensor_split',   type: 'string', default: '' },
@@ -114,7 +114,7 @@ export const LAUNCH_TEMPLATES = {
       command: '/opt/conda/envs/vllm/bin/vllm serve',
       args: {
         model:          { flag: '',                         type: 'path',   required: true, positional: true },
-        port:           { flag: '--port',                   type: 'number', default: 8000 },
+        port:           { flag: '--port',                   type: 'number', default: '' },
         contextSize:    { flag: '--max-model-len',          type: 'number', default: 8192 },
         tensorParallel: { flag: '--tensor-parallel-size',   type: 'number', default: 1 },
         dtype:          { flag: '--dtype',                  type: 'select', default: 'float16', options: ['float16', 'bfloat16', 'auto'] },
@@ -129,7 +129,7 @@ export const LAUNCH_TEMPLATES = {
       command: '/opt/conda/envs/sglang/bin/python -m sglang.launch_server',
       args: {
         model:          { flag: '--model-path',            type: 'path',   required: true },
-        port:           { flag: '--port',                  type: 'number', default: 30000 },
+        port:           { flag: '--port',                  type: 'number', default: '' },
         contextSize:    { flag: '--context-length',        type: 'number', default: 8192 },
         tensorParallel: { flag: '--tp',                    type: 'number', default: 1 },
         dtype:          { flag: '--dtype',                 type: 'select', default: 'float16', options: ['float16', 'bfloat16', 'auto'] },
@@ -142,7 +142,7 @@ export const LAUNCH_TEMPLATES = {
       command: '/opt/conda/envs/lmdeploy/bin/lmdeploy serve api_server',
       args: {
         model:          { flag: '',                        type: 'path',   required: true, positional: true },
-        port:           { flag: '--server-port',           type: 'number', default: 23333 },
+        port:           { flag: '--server-port',           type: 'number', default: '' },
         contextSize:    { flag: '--session-len',           type: 'number', default: 8192 },
         tensorParallel: { flag: '--tp',                    type: 'number', default: 1 },
         cacheMaxEntry:  { flag: '--cache-max-entry-count', type: 'number', default: 0.8, step: 0.1, min: 0.1, max: 0.99 },
@@ -155,7 +155,7 @@ export const LAUNCH_TEMPLATES = {
       args: {
         model:          { flag: '--model-dir',               type: 'path',   required: true },
         modelName:      { flag: '--model-name',              type: 'derived' },
-        port:           { flag: '--port',                    type: 'number', default: 5000 },
+        port:           { flag: '--port',                    type: 'number', default: '' },
         contextSize:    { flag: '--max-seq-len',             type: 'number', default: 8192 },
         tensorParallel: { flag: '--tensor-parallel',         type: 'select', default: '', options: ['true', 'false'] },
         tpBackend:      { flag: '--tensor-parallel-backend', type: 'select', default: 'native', options: ['native', 'nccl'] },
@@ -171,7 +171,7 @@ export const LAUNCH_TEMPLATES = {
       command: '/opt/conda/envs/aphrodite/bin/aphrodite run',
       args: {
         model:          { flag: '',                         type: 'path',   required: true, positional: true },
-        port:           { flag: '--port',                   type: 'number', default: 2242 },
+        port:           { flag: '--port',                   type: 'number', default: '' },
         contextSize:    { flag: '--max-model-len',          type: 'number', default: 8192 },
         tensorParallel: { flag: '--tensor-parallel-size',   type: 'number', default: 1 },
         dtype:          { flag: '--dtype',                  type: 'select', default: 'float16', options: ['float16', 'bfloat16', 'auto'] },
@@ -186,7 +186,7 @@ export const LAUNCH_TEMPLATES = {
       supportsMmproj: true,
       args: {
         model:        { flag: '--model',         type: 'path',   required: true },
-        port:         { flag: '--port',          type: 'number', default: 8080,
+        port:         { flag: '--port',          type: 'number', default: '',
                           tooltip: 'HTTP port the server listens on' },
         host:         { flag: '--host',          type: 'string', default: '0.0.0.0',
                           tooltip: 'Bind address. 0.0.0.0 accepts from anywhere, 127.0.0.1 localhost only' },
@@ -502,7 +502,7 @@ export const LAUNCH_TEMPLATES = {
       model:        { type: 'path',   positional: true, required: true,
                         label: 'Model Path',
                         tooltip: 'Local HuggingFace checkpoint dir or hub repo id. Positional first argument to `vllm serve`.' },
-      port:         { flag: '--port', type: 'number', default: 8000,
+      port:         { flag: '--port', type: 'number', default: '',
                         tooltip: 'HTTP port the OpenAI-compatible server listens on' },
       host:         { flag: '--host', type: 'string', default: '0.0.0.0',
                         tooltip: 'Bind address. 0.0.0.0 = LAN-reachable, 127.0.0.1 = loopback only' },
