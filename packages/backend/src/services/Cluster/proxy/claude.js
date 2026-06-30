@@ -386,6 +386,11 @@ export function attachClaudeTermUpgrade(server) {
       let head_ = `${req.method} ${req.url} HTTP/1.1\r\n`
       for (let i = 0; i < req.rawHeaders.length; i += 2) {
         const k = req.rawHeaders[i]
+        // Strip permessage-deflate so ttyd negotiates UNCOMPRESSED frames. Otherwise client→server
+        // keystroke frames are DEFLATE-compressed and the input tap below decodes them as garbled
+        // op=2 RAW bytes — which is exactly why prior "/clear" injections were never flagged. With
+        // compression off, the tap logs readable INPUT lines and flags /clear with its conn#.
+        if (k.toLowerCase() === 'sec-websocket-extensions') continue
         head_ += `${k}: ${k.toLowerCase() === 'host' ? `${ip}:${port}` : req.rawHeaders[i + 1]}\r\n`
       }
       head_ += '\r\n'
