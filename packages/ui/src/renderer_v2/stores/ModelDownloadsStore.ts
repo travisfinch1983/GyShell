@@ -28,6 +28,7 @@ export interface HFFile {
 }
 interface HFAnalysis {
   repoType?: string
+  analysisLabel?: string
   ggufQuants?: HFFile[]
   weightFiles?: HFFile[]
   components?: Record<string, { files: HFFile[]; totalSize?: number }>
@@ -52,6 +53,8 @@ export class ModelDownloadsStore {
   hfBrowsing = false
   hfError: string | null = null
   hfSuggestedSubfolder = ''
+  hfFamilies: string[] = []                       // existing family folders under the category root
+  hfHiddenQuants: Record<string, boolean> = {}    // quant badge → hidden (filter the file list)
 
   // CivitAI
   civUrl = ''
@@ -136,9 +139,11 @@ export class ModelDownloadsStore {
         this.hfBranches = r?.branches ?? []
         this.hfSuggestedSubfolder = r?.suggestedFamily ? `${r.suggestedFamily}${r.suggestedVariant ? '/' + r.suggestedVariant : ''}` : r?.analysis?.suggestedName || ''
         this.hfSelected = {}
+        this.hfHiddenQuants = {}
         // preselect GGUF quants + diffusers components by default
         for (const q of r?.analysis?.ggufQuants ?? []) this.hfSelected[q.path] = false
       })
+      void this.loadFamilies()
     } catch (e) {
       runInAction(() => {
         this.hfError = e instanceof Error ? e.message : String(e)
@@ -151,6 +156,15 @@ export class ModelDownloadsStore {
   }
   toggleHfFile(path: string): void {
     this.hfSelected[path] = !this.hfSelected[path]
+  }
+  toggleQuant(q: string): void {
+    this.hfHiddenQuants[q] = !this.hfHiddenQuants[q]
+  }
+  async loadFamilies(): Promise<void> {
+    try {
+      const r = (await this.cluster().request('GET', `/api/ai/hf/families?category=${encodeURIComponent(this.hfCategory)}`)) as any
+      runInAction(() => { this.hfFamilies = Array.isArray(r?.families) ? r.families : [] })
+    } catch { /* non-fatal — picker just stays empty */ }
   }
   /** Destination type expected by /hf/download's resolveSmartDest, derived from the detected repo type. */
   get hfDestType(): string {

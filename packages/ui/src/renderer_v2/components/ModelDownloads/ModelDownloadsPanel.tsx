@@ -173,7 +173,17 @@ const HFView: React.FC = observer(() => {
           {(a.ggufQuants?.length ?? 0) > 0 && (
             <div className={styles.fileSection}>
               <div className={styles.sectionLabel}>GGUF quants</div>
-              {a.ggufQuants!.map((f) => <HFFileRow key={f.path} f={f} />)}
+              {(() => {
+                const quants = Array.from(new Set(a.ggufQuants!.map((f) => f.quant || 'other')))
+                return quants.length > 1 ? (
+                  <div className={styles.filterBar}>
+                    {quants.map((q) => (
+                      <button key={q} className={`${styles.filterBadge} ${store.hfHiddenQuants[q] ? styles.filterOff : ''}`} onClick={() => store.toggleQuant(q)} title={store.hfHiddenQuants[q] ? `Show ${q}` : `Hide ${q}`}>{q}</button>
+                    ))}
+                  </div>
+                ) : null
+              })()}
+              {a.ggufQuants!.filter((f) => !store.hfHiddenQuants[f.quant || 'other']).map((f) => <HFFileRow key={f.path} f={f} />)}
             </div>
           )}
           {(a.weightFiles?.length ?? 0) > 0 && (
@@ -199,6 +209,15 @@ const HFView: React.FC = observer(() => {
 
           <div className={styles.destBlock}>
             <label className={styles.destLabel}>Save location</label>
+            {store.hfFamilies.length > 0 && (
+              <div className={styles.famRow}>
+                <span className={styles.famLabel}>Family</span>
+                <select className={styles.select} value="" onChange={(e) => { const v = e.target.value; if (v) store.hfSuggestedSubfolder = v }}>
+                  <option value="">— pick an existing family —</option>
+                  {store.hfFamilies.map((f) => <option key={f} value={f}>{f}</option>)}
+                </select>
+              </div>
+            )}
             <input className={styles.input} placeholder="model family / variant (e.g. Qwen_3.6/27B)" value={store.hfSuggestedSubfolder} onChange={(e) => (store.hfSuggestedSubfolder = e.target.value)} />
             <div className={styles.destDesc}>Subfolder under the {store.hfCategory.toUpperCase()} models root. Files auto-sort into format/quant subfolders inside it, and the repo README is copied into every quant folder.</div>
             <div className={styles.destHint}>{store.hfCategory === 'llm'

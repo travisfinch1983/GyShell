@@ -63,6 +63,11 @@
 .destDesc { font-size: 11px; color: var(--fg-faint); line-height: 1.4; }
 .destHint { font-size: 11px; color: var(--accent); font-family: var(--font-mono); }
 .destPreview { font-size: 11px; color: var(--fg-muted); font-family: var(--font-mono); word-break: break-all; }
+.famRow { display: flex; align-items: center; gap: 8px; }
+.famLabel { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--fg-muted); min-width: 48px; }
+.filterBar { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+.filterBadge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); cursor: pointer; &:hover { background: color-mix(in srgb, var(--accent) 30%, transparent); } }
+.filterOff { border-color: var(--border); background: transparent; color: var(--fg-faint); opacity: 0.55; text-decoration: line-through; }
 
 .settings { display: flex; flex-direction: column; gap: 8px; }
 .settingRow { display: flex; align-items: center; gap: 10px; font-size: 12px; label { width: 100px; color: var(--fg-muted); } }

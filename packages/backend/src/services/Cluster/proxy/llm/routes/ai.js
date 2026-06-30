@@ -5383,6 +5383,27 @@ WantedBy=multi-user.target
   });
 
   /**
+   * GET /hf/families — list existing model-family folders (immediate subdirs of the category's
+   * basePath) so the downloader's "Save location" can offer them as a picker. Local fs read on CT152
+   * (the ZFS bind mount), no SSH.
+   */
+  router.get('/hf/families', (req, res) => {
+    try {
+      const category = req.query.category || 'llm';
+      const fmCfg = JSON.parse(readFileSync(join(dataDir, 'file-manager.json'), 'utf8'));
+      const basePath = fmCfg.tabs?.[category]?.basePath;
+      if (!basePath || !existsSync(basePath)) return res.json({ families: [] });
+      const families = readdirSync(basePath, { withFileTypes: true })
+        .filter(d => d.isDirectory() && !d.name.startsWith('.') && !d.name.startsWith('_'))
+        .map(d => d.name)
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+      res.json({ families });
+    } catch (err) {
+      res.status(500).json({ error: err.message, families: [] });
+    }
+  });
+
+  /**
    * Analyze a HuggingFace repo's file listing to determine model type.
    * Returns { repoType, modelTypes (dropdown options), suggestedFolder, suggestedName, ggufQuants, components }
    */
