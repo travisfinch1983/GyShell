@@ -304,6 +304,10 @@ export function createClaudeRouter({ exec }) {
           html = html.includes('<head>') ? html.replace('<head>', '<head>' + TERMTRACE_SHIM) : TERMTRACE_SHIM + html
           const body = Buffer.from(html, 'utf8')
           const headers = { ...r.headers }; delete headers['content-length']; headers['content-length'] = String(body.length)
+          // Never let the browser cache the injected HTML — otherwise the iframe reloads a pre-shim copy
+          // and the termtrace shim never arms. (This is the document that carries the shim.)
+          delete headers['etag']; delete headers['last-modified']
+          headers['cache-control'] = 'no-store, no-cache, must-revalidate'
           res.writeHead(r.statusCode || 502, headers); res.end(body)
         })
         r.on('error', () => { if (!res.headersSent) res.status(502).end() })
