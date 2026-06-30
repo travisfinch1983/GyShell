@@ -8,7 +8,7 @@ import { Router } from 'express'
 import express from 'express'
 import http from 'node:http'
 import net from 'node:net'
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const FILE_WHITELIST = new Set(['CLAUDE.md', 'RULES.md', 'MEMORY.md', 'TOOLS.md'])
@@ -291,6 +291,44 @@ export function createClaudeRouter({ exec }) {
 }
 
 /** Attach the ttyd WebSocket reverse-proxy to the universal-proxy HTTP server (raw TCP pipe). */
+// ── Terminal input audit log ──────────────────────────────────────────────
+// Every keystroke the browser sends to a Claude terminal passes through this WS proxy. We decode the
+// client→server ttyd frames and log the actual input + which connection it came from, so an erroneously
+// injected command (e.g. a stray "/clear") can be traced to its source connection + timing. Logs to
+// <dataDir>/claude-term-input.log. Output (server→client) is left as a plain pipe.
+let _termConnSeq = 0
+function _termLog(line) { try { appendFileSync(join(DATA(), 'claude-term-input.log'), line + '\n') } catch {} }
+
+// Stateful parser for masked client WS frames → decode ttyd commands ('0' = INPUT). Returns a fn(chunk).
+function _makeWsInputTap(cid) {
+  let buf = Buffer.alloc(0)
+  return (chunk) => {
+    buf = buf.length ? Buffer.concat([buf, chunk]) : Buffer.from(chunk)
+    while (buf.length >= 2) {
+      const opcode = buf[0] & 0x0f, masked = (buf[1] & 0x80) !== 0
+      let len = buf[1] & 0x7f, off = 2
+      if (len === 126) { if (buf.length < 4) break; len = buf.readUInt16BE(2); off = 4 }
+      else if (len === 127) { if (buf.length < 10) break; len = Number(buf.readBigUInt64BE(2)); off = 10 }
+      const need = off + (masked ? 4 : 0) + len
+      if (buf.length < need) break
+      let payload
+      if (masked) {
+        const mk = buf.subarray(off, off + 4); payload = Buffer.allocUnsafe(len)
+        for (let i = 0; i < len; i++) payload[i] = buf[off + 4 + i] ^ mk[i & 3]
+      } else payload = buf.subarray(off, off + len)
+      buf = buf.subarray(need)
+      if (opcode === 0x1 || opcode === 0x2) {
+        const cmd = payload.length ? String.fromCharCode(payload[0]) : ''
+        if (cmd === '0') { // ttyd INPUT
+          const data = payload.subarray(1).toString('utf8')
+          const flag = /\/clear|\/exit|\/quit/.test(data) ? '  <<<<<< SLASH-COMMAND' : ''
+          _termLog(`${new Date().toISOString()} conn#${cid} INPUT ${JSON.stringify(data)}${flag}`)
+        }
+      } else if (opcode === 0x8) _termLog(`${new Date().toISOString()} conn#${cid} WS-CLOSE`)
+    }
+  }
+}
+
 export function attachClaudeTermUpgrade(server) {
   server.on('upgrade', (req, socket, head) => {
     const m = (req.url || '').match(/^\/api\/claude\/term\/([^/]+)\//)
@@ -299,6 +337,10 @@ export function attachClaudeTermUpgrade(server) {
     if (!conn) { socket.destroy(); return }
     const ip = containerIpFor(conn), port = conn.ttydPort || MANAGED_TTYD_PORT
     if (!ip) { socket.destroy(); return }
+    const cid = ++_termConnSeq
+    const h = req.headers || {}
+    _termLog(`${new Date().toISOString()} conn#${cid} OPEN id=${m[1]} url=${req.url} remote=${socket.remoteAddress} xff=${h['x-forwarded-for'] || '-'} ua=${JSON.stringify(h['user-agent'] || '-')} ref=${JSON.stringify(h['referer'] || '-')} wskey=${h['sec-websocket-key'] || '-'}`)
+    const tap = _makeWsInputTap(cid)
     const up = net.connect(port, ip, () => {
       let head_ = `${req.method} ${req.url} HTTP/1.1\r\n`
       for (let i = 0; i < req.rawHeaders.length; i += 2) {
@@ -306,9 +348,12 @@ export function attachClaudeTermUpgrade(server) {
         head_ += `${k}: ${k.toLowerCase() === 'host' ? `${ip}:${port}` : req.rawHeaders[i + 1]}\r\n`
       }
       head_ += '\r\n'
-      up.write(head_); if (head && head.length) up.write(head)
-      socket.pipe(up); up.pipe(socket)
+      up.write(head_); if (head && head.length) { try { tap(head) } catch {} up.write(head) }
+      // tap client→server (input) for the audit log, then forward unchanged; output stays a plain pipe
+      socket.on('data', (chunk) => { try { tap(chunk) } catch {} ; up.write(chunk) })
+      up.pipe(socket)
     })
+    socket.on('close', () => { _termLog(`${new Date().toISOString()} conn#${cid} SOCKET-CLOSE`); up.destroy() })
     up.on('error', () => socket.destroy())
     socket.on('error', () => up.destroy())
   })
