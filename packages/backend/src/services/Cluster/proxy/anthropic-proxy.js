@@ -20,6 +20,7 @@
 import { Router } from 'express';
 import { proxyMessages, proxyChatCompletions, isAuthenticated, getAuthStatus, startBackgroundRefresh } from './lib/anthropic-proxy.js';
 import { anthropicMetrics } from './lib/anthropic-metrics.js';
+import { anthropicCapture } from './lib/anthropic-capture.js';
 
 // Latest version of each Anthropic model family available on the MAX subscription.
 // The shortName drives the per-model shortcut routes (/opus, /sonnet, /haiku).
@@ -82,6 +83,20 @@ export function createAnthropicProxyRouter() {
   });
   router.delete('/metrics', (req, res) => {
     res.json({ ok: anthropicMetrics.reset() });
+  });
+
+  // Prompt-capture debug (OFF by default) — diagnose cache-busting clients.
+  // POST /debug/capture {enabled:true,max?:N}  → toggle; then send 2 messages; then GET /debug/diff.
+  router.post('/debug/capture', parseJsonBody, (req, res) => {
+    res.json(anthropicCapture.setEnabled(req.body?.enabled, req.body?.max));
+  });
+  router.get('/debug/captures', (req, res) => {
+    res.json(anthropicCapture.list());
+  });
+  router.get('/debug/diff', (req, res) => {
+    const a = req.query.a != null ? parseInt(req.query.a, 10) : undefined;
+    const b = req.query.b != null ? parseInt(req.query.b, 10) : undefined;
+    res.json(anthropicCapture.diff(a, b));
   });
 
   // Models endpoint (OpenAI-compatible)

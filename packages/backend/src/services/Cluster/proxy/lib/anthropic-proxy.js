@@ -18,6 +18,7 @@
 import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { anthropicMetrics, newMeter, meterEvent, finalizeStreamRecord, usageToRecord } from './anthropic-metrics.js';
+import { anthropicCapture } from './anthropic-capture.js';
 
 const CREDENTIALS_FILE = join(process.env.HOME || '/root', '.claude', '.credentials.json');
 const ANTHROPIC_API_URL = 'https://api.anthropic.com';
@@ -592,7 +593,9 @@ export async function proxyMessages(req, res) {
   const reqModel = req.body?.model;
 
   try {
-    const upstream = await callAnthropicMessages(prepareBody(req.body), token, req.headers['anthropic-beta'], controller.signal);
+    const prepared = prepareBody(req.body);
+    try { anthropicCapture.record(prepared, 'messages'); } catch { /* debug best-effort */ }
+    const upstream = await callAnthropicMessages(prepared, token, req.headers['anthropic-beta'], controller.signal);
 
     if (!upstream.ok) {
       const errorBody = await upstream.text();
@@ -668,6 +671,8 @@ export async function proxyChatCompletions(req, res) {
 
   console.log(`[anthropic-proxy] POST /v1/chat/completions -> /v1/messages (model: ${anthropicBody.model})`);
   const startMs = Date.now();
+
+  try { anthropicCapture.record(anthropicBody, 'chat'); } catch { /* debug best-effort */ }
 
   try {
     const upstream = await callAnthropicMessages(anthropicBody, token, req.headers['anthropic-beta'], controller.signal);
