@@ -8,9 +8,9 @@
  *   POST /v1/chat/completions    — OpenAI-compat with format conversion
  *
  * Per-model shortcut routes (force model regardless of request body):
- *   /opus/v1/...                 — Always uses claude-opus-4-6
- *   /sonnet/v1/...               — Always uses claude-sonnet-4-6
- *   /haiku/v1/...                — Always uses claude-haiku-4-5-20251001
+ *   /opus/v1/...                 — Always uses the latest Opus
+ *   /sonnet/v1/...               — Always uses the latest Sonnet
+ *   /haiku/v1/...                — Always uses the latest Haiku
  *
  * Uses manual JSON body parsing (same pattern as existing proxy.js).
  *
@@ -20,10 +20,12 @@
 import { Router } from 'express';
 import { proxyMessages, proxyChatCompletions, isAuthenticated, getAuthStatus, startBackgroundRefresh } from './lib/anthropic-proxy.js';
 
+// Latest version of each Anthropic model family available on the MAX subscription.
+// The shortName drives the per-model shortcut routes (/opus, /sonnet, /haiku).
 const CLAUDE_MODELS = [
-  { id: 'claude-opus-4-6', shortName: 'opus', label: 'Opus 4.6' },
+  { id: 'claude-opus-4-8', shortName: 'opus', label: 'Opus 4.8' },
   { id: 'claude-sonnet-4-6', shortName: 'sonnet', label: 'Sonnet 4.6' },
-  { id: 'claude-haiku-4-5-20251001', shortName: 'haiku', label: 'Haiku 4.5' },
+  { id: 'claude-haiku-4-5', shortName: 'haiku', label: 'Haiku 4.5' },
 ];
 
 /**

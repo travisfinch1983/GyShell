@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { RefreshCw, X, ExternalLink, Pause, Play, RotateCw, Square, Loader2, Cpu, Server, Pencil, Check, Copy, TerminalSquare } from 'lucide-react'
+import { RefreshCw, X, ExternalLink, Pause, Play, RotateCw, Square, Loader2, Cpu, Server, Pencil, Check, Copy, TerminalSquare, Sparkles } from 'lucide-react'
 import { liveConsoleStore } from '../../stores/LiveConsoleStore'
 import { aiServicesStore as store, type AiService } from '../../stores/AiServicesStore'
 import { ConfirmModal } from '../Cluster/ClusterModals'
@@ -356,6 +356,83 @@ const ProxyCard: React.FC = observer(() => {
   )
 })
 
+// Claude MAX-subscription proxy endpoints. The universal endpoint takes the model in the
+// request body; the per-model shortcuts force the model from the URL.
+const CLAUDE_UNIVERSAL: Array<[string, string]> = [
+  ['chat (OpenAI)', '/claude-max/v1/chat/completions'],
+  ['messages (Anthropic)', '/claude-max/v1/messages'],
+  ['models', '/claude-max/v1/models'],
+]
+
+/** Claude Max card — MAX subscription proxied to api.anthropic.com via OAuth. Its own card,
+ *  separate from the cluster Universal Proxy: a universal endpoint + per-model endpoint URLs. */
+const ClaudeMaxCard: React.FC = observer(() => {
+  const ps = store.proxyState
+  const [mode, setMode] = useState<UrlMode>(() => (localStorage.getItem(URL_MODE_KEY) as UrlMode) || 'ip')
+  const setUrlMode = (m: UrlMode) => {
+    setMode(m)
+    localStorage.setItem(URL_MODE_KEY, m)
+  }
+  if (!ps?.port) return null
+  const anth = (ps.services as Record<string, any> | undefined)?.anthropic
+  if (!anth?.configured) return null
+  const bp = ps.basePath || '/api/proxy'
+  const host = window.location.hostname
+  const base =
+    mode === 'ip' ? `http://${ps.lanIp || host}:${ps.port}${bp}` : mode === 'http' ? `http://${host}:${ps.port}${bp}` : `https://${host}${bp}`
+  const models: Array<{ id: string; shortName: string; label: string }> = anth.models || []
+  const authed = !!anth.authenticated
+
+  return (
+    <div className={styles.proxyCard}>
+      <div className={styles.proxyHead}>
+        <Sparkles size={14} className={styles.headerIcon} />
+        <span className={styles.proxyTitle}>Claude Max (Subscription)</span>
+        <span
+          className={`${styles.healthDot} ${authed ? styles.hOk : styles.hDown}`}
+          title={authed ? 'Authenticated' : 'Not authenticated — run `claude setup-token` on the host'}
+        />
+        <div className={styles.urlToggle}>
+          {(['ip', 'http', 'https'] as UrlMode[]).map((m) => (
+            <button key={m} className={`${styles.urlMode} ${mode === m ? styles.urlModeActive : ''}`} onClick={() => setUrlMode(m)}>
+              {m.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className={styles.proxyType}>
+        <div className={styles.proxyTypeLabel}>Universal (model in request body)</div>
+        <ProxyEntry title="Auto · routes by model field" endpoints={CLAUDE_UNIVERSAL} base={base} />
+      </div>
+
+      {models.length > 0 && (
+        <div className={styles.proxyType}>
+          <div className={styles.proxyTypeLabel}>Per-model endpoints (latest)</div>
+          {models.map((m) => (
+            <ProxyEntry
+              key={m.shortName}
+              title={m.label || m.shortName}
+              sub={m.id}
+              endpoints={[
+                ['chat', `/claude-max/${m.shortName}/v1/chat/completions`],
+                ['messages', `/claude-max/${m.shortName}/v1/messages`],
+              ]}
+              base={base}
+            />
+          ))}
+        </div>
+      )}
+
+      {!authed && (
+        <div className={styles.proxyEmpty}>
+          Not authenticated — run <code>claude setup-token</code> on the AI-Lab host and save the token, then refresh.
+        </div>
+      )}
+    </div>
+  )
+})
+
 /** Global right-side running-services drawer — visible on any tab while open. */
 export const ServicesDrawer: React.FC<{ visible: boolean; onClose: () => void }> = observer(({ visible, onClose }) => {
   const [killing, setKilling] = useState<AiService | null>(null)
@@ -404,6 +481,7 @@ export const ServicesDrawer: React.FC<{ visible: boolean; onClose: () => void }>
         {store.error && <div className={styles.errorBar}>{store.error}</div>}
         {!store.loaded && !store.error && <div className={styles.loading}>Loading…</div>}
         <ProxyCard />
+        <ClaudeMaxCard />
         {store.typeFilter === 'all'
           ? store.serviceTypes.map((t) => {
               const cards = store.filteredServices.filter((s) => (s.serviceType || 'other') === t)

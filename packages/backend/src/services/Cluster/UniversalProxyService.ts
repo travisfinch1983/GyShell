@@ -167,7 +167,12 @@ export class UniversalProxyService {
 
     const app = express()
     app.use('/api/proxy/vector', createVectorProxyRouter())
-    app.use('/api/proxy/anthropic', createAnthropicProxyRouter())
+    // Claude MAX-subscription proxy (direct api.anthropic.com via OAuth). Mounted at the
+    // canonical /claude-max path the proxy card advertises, with /anthropic kept as a
+    // back-compat alias. One router instance serves both mounts.
+    const claudeMaxRouter = createAnthropicProxyRouter()
+    app.use('/api/proxy/claude-max', claudeMaxRouter)
+    app.use('/api/proxy/anthropic', claudeMaxRouter)
     app.use('/api/proxy', createProxyRouter({ exec: this.sshExec }))
     app.use('/api/civitai', express.json({ limit: '10mb' }), createCivitaiRouter({}, { exec: this.sshExec }))
     // RAG routes (/api/ai/rag/*, /api/ai/docrag/*) registered BEFORE the /api/ai router so the specific

@@ -25,8 +25,29 @@ const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 
 const REFRESH_BUFFER_MS = 5 * 60 * 1000;
 
+// Prompt-cache tier for auto-injected breakpoints ('1h' keeps a paused chat warm
+// far longer than the default 5-minute ephemeral cache). Override via env.
+const CACHE_TTL = process.env.ANTHROPIC_CACHE_TTL || '1h';
+const CACHE_INJECT = process.env.ANTHROPIC_CACHE_INJECT !== '0';
+
+// Static long-lived token path: `claude setup-token` mints an OAuth token that works
+// as a Bearer with no refresh dance — ideal on a headless box, and it can't disturb
+// any interactive Claude login elsewhere. Preferred over the refreshable credentials
+// file when present. Source order: env → token file → ~/.claude/.credentials.json.
+const STATIC_TOKEN_ENV = (process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.ANTHROPIC_OAUTH_TOKEN || '').trim();
+const TOKEN_FILE = process.env.CLAUDE_MAX_TOKEN_FILE || join(process.env.HOME || '/root', '.claude', 'max-oauth-token');
+
 let cachedToken = null;
 let cachedExpiry = 0;
+
+async function readStaticToken() {
+  if (STATIC_TOKEN_ENV) return STATIC_TOKEN_ENV;
+  try {
+    const t = (await readFile(TOKEN_FILE, 'utf-8')).trim();
+    if (t) return t;
+  } catch { /* no token file */ }
+  return null;
+}
 
 async function readCredentials() {
   const raw = await readFile(CREDENTIALS_FILE, 'utf-8');
@@ -72,6 +93,10 @@ async function refreshToken(creds) {
 }
 
 export async function getAuthToken() {
+  // A static setup-token wins: it's long-lived and needs no refresh.
+  const stat = await readStaticToken();
+  if (stat) return stat;
+
   if (cachedToken && Date.now() < cachedExpiry - REFRESH_BUFFER_MS) {
     return cachedToken;
   }
@@ -110,6 +135,7 @@ export function clearTokenCache() {
  * Quick sync check: do credentials exist on disk?
  */
 export async function isAuthenticated() {
+  if (await readStaticToken()) return true;
   try {
     await access(CREDENTIALS_FILE);
     const raw = await readFile(CREDENTIALS_FILE, 'utf-8');
@@ -124,6 +150,9 @@ export async function isAuthenticated() {
  * Detailed auth status for UI display.
  */
 export async function getAuthStatus() {
+  if (await readStaticToken()) {
+    return { authenticated: true, source: 'setup-token', hasRefreshToken: false, expiresAt: null, expired: false };
+  }
   try {
     await access(CREDENTIALS_FILE);
     const raw = await readFile(CREDENTIALS_FILE, 'utf-8');
@@ -135,6 +164,7 @@ export async function getAuthStatus() {
     const expired = expiresAt && Date.now() > expiresAt;
     return {
       authenticated: !expired,
+      source: 'credentials',
       hasRefreshToken: hasRefresh,
       expiresAt: oauth.expiresAt || null,
       expired: !!expired,
@@ -185,8 +215,57 @@ export function stopBackgroundRefresh() {
 // Upstream helper — calls Anthropic /v1/messages with OAuth
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Prompt-cache breakpoint injection — turns a blind passthrough into one that
+// caches automatically. We place ephemeral breakpoints on (a) the system prompt
+// and (b) the rolling tail of the conversation, so even naive OpenAI clients that
+// resend the whole transcript every turn get prefix cache HITS instead of misses.
+// Skipped if the caller already supplied any cache_control (don't exceed 4 marks).
+// ---------------------------------------------------------------------------
+
+function hasCacheControl(body) {
+  try {
+    if (Array.isArray(body.system) && body.system.some((b) => b && b.cache_control)) return true;
+    for (const m of body.messages || []) {
+      if (Array.isArray(m.content) && m.content.some((b) => b && b.cache_control)) return true;
+    }
+  } catch { /* ignore */ }
+  return false;
+}
+
+function markLastBlock(content) {
+  // content may be a string or an array of blocks; normalize to a marked array.
+  const cc = { type: 'ephemeral', ttl: CACHE_TTL };
+  if (typeof content === 'string') {
+    return content.length ? [{ type: 'text', text: content, cache_control: cc }] : content;
+  }
+  if (Array.isArray(content) && content.length) {
+    const last = content[content.length - 1];
+    if (last && typeof last === 'object') last.cache_control = cc;
+  }
+  return content;
+}
+
+function injectCacheControl(body) {
+  if (!CACHE_INJECT || !body || hasCacheControl(body)) return body;
+  // (a) system prompt
+  if (typeof body.system === 'string' && body.system.length) {
+    body.system = [{ type: 'text', text: body.system, cache_control: { type: 'ephemeral', ttl: CACHE_TTL } }];
+  } else if (Array.isArray(body.system) && body.system.length) {
+    markLastBlock(body.system);
+  }
+  // (b) rolling conversation tail — breakpoint on the final message's last block
+  const msgs = body.messages || [];
+  if (msgs.length) {
+    const lastMsg = msgs[msgs.length - 1];
+    lastMsg.content = markLastBlock(lastMsg.content);
+  }
+  return body;
+}
+
 function buildUpstreamHeaders(token, extraBeta) {
-  const betaFlags = ['oauth-2025-04-20'];
+  // extended-cache-ttl enables the 1-hour cache tier used by injectCacheControl.
+  const betaFlags = ['oauth-2025-04-20', 'extended-cache-ttl-2025-04-11'];
   if (extraBeta) {
     for (const flag of extraBeta.split(',')) {
       const trimmed = flag.trim();
@@ -293,7 +372,7 @@ function openaiToAnthropic(body) {
     }
   }
 
-  return anthropicBody;
+  return injectCacheControl(anthropicBody);
 }
 
 function anthropicToOpenai(anthropicResp, model) {
@@ -455,7 +534,7 @@ export async function proxyMessages(req, res) {
   console.log('[anthropic-proxy] POST /v1/messages (native)');
 
   try {
-    const upstream = await callAnthropicMessages(req.body, token, req.headers['anthropic-beta'], controller.signal);
+    const upstream = await callAnthropicMessages(injectCacheControl(req.body), token, req.headers['anthropic-beta'], controller.signal);
 
     if (!upstream.ok) {
       const errorBody = await upstream.text();
