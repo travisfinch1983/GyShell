@@ -92,12 +92,12 @@ const QueueItem: React.FC<{ source: 'hf' | 'civ'; item: DLItem }> = observer(({ 
       )}
       <div className={styles.qMeta}>
         {active ? <span>{pct(item)}% · {gb(item.progress)} / {gb(item.size)}{item.speed ? ` · ${gb(item.speed)}/s` : ''}</span> : <span>{gb(item.size)}</span>}
-        {item.error && <span className={styles.qErr} title={item.error}>{item.error}</span>}
         <div className={styles.spacer} />
         {active && <button className={styles.qAct} title="Stop" onClick={() => void store.action(source, item.id, 'stop')}><Square size={12} /></button>}
         {(st === 'queued' || st === 'pending' || st === 'failed') && <button className={styles.qAct} title="Force start" onClick={() => void store.action(source, item.id, 'force')}><Play size={12} /></button>}
         <button className={`${styles.qAct} ${styles.danger}`} title="Cancel / remove" onClick={() => void store.action(source, item.id, 'cancel')}><X size={12} /></button>
       </div>
+      {item.error && <div className={styles.qErrFull}>{item.error}</div>}
     </div>
   )
 })
@@ -167,7 +167,7 @@ const HFView: React.FC = observer(() => {
         <>
           <div className={styles.analysis}>
             <span className={styles.repoType}>{a.repoType || 'unknown'}</span>
-            <input className={styles.input} placeholder="subfolder" value={store.hfSuggestedSubfolder} onChange={(e) => (store.hfSuggestedSubfolder = e.target.value)} />
+            {a.analysisLabel && <span className={styles.destDesc}>{a.analysisLabel}</span>}
           </div>
 
           {(a.ggufQuants?.length ?? 0) > 0 && (
@@ -190,12 +190,20 @@ const HFView: React.FC = observer(() => {
           ))}
 
           <div className={styles.actionsRow}>
-            <label className={styles.check}><input type="checkbox" checked={store.hfIncludeExtras} onChange={() => (store.hfIncludeExtras = !store.hfIncludeExtras)} /> include README/config</label>
-            <div className={styles.spacer} />
             <span className={styles.selSummary}>{store.hfSelectedFiles.length} files · {gb(store.hfSelectedFiles.reduce((n, f) => n + (f.size || 0), 0))}</span>
+            <div className={styles.spacer} />
             <button className={styles.btnPrimary} disabled={store.busy || !store.hfSelectedFiles.length} onClick={() => void store.downloadHf()}>
               <Download size={13} /> Download Selected
             </button>
+          </div>
+
+          <div className={styles.destBlock}>
+            <label className={styles.destLabel}>Save location</label>
+            <input className={styles.input} placeholder="model family / variant (e.g. Qwen_3.6/27B)" value={store.hfSuggestedSubfolder} onChange={(e) => (store.hfSuggestedSubfolder = e.target.value)} />
+            <div className={styles.destDesc}>Subfolder under the {store.hfCategory.toUpperCase()} models root. Files auto-sort into format/quant subfolders inside it, and the repo README is copied into every quant folder.</div>
+            <div className={styles.destHint}>{store.hfCategory === 'llm'
+              ? (/gguf/.test(store.hfAnalysis?.repoType || '') ? '…/<family>/<variant>/GGUF/{quant}/' : '…/<family>/<variant>/{GGUF|EXL2|EXL3|AWQ|GPTQ|NVFP4|BF16-Safetensors}/{quant}/')
+              : '…/<subfolder>/'}</div>
           </div>
         </>
       )}

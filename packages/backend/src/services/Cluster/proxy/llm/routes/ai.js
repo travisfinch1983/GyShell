@@ -62,6 +62,19 @@ function loadSettings() {
 // under `tokens.hfToken` — NOT to proxlab-ui-settings.json's `ui.hfToken` that loadSettings() reads.
 // Without this fallback the downloader stays unauthenticated, and HF throttles concurrent Xet-CDN
 // transfers of large public files with HTTP 401. Read the cluster token as a fallback.
+// Strip curl's progress-meter spam (carriage-return-overwritten lines) from a download log so the
+// stored error shows the actual message (e.g. "curl: (22) ... 401") instead of a giant
+// download-status table. Keeps real output lines (the curl error, "Running as unit", etc.).
+function cleanCurlLog(s) {
+  if (!s) return '';
+  return s.split(/\r?\n/)
+    .map((l) => l.split('\r').pop())  // collapse \r-overwritten progress updates to the final segment
+    .filter((l) => l && l.trim()
+      && !/Total\s+%|Dload|Upload|Average Speed|--:--:--|Xferd/.test(l)
+      && !/^\s*\d+\s+[\d.]+[KMGT]?\s/.test(l))
+    .join('\n').trim();
+}
+
 const clusterSettingsFile = join(dataDir, 'cluster-settings.json');
 function loadClusterHfToken() {
   try {
@@ -5870,9 +5883,26 @@ WantedBy=multi-user.target
         }
       }
 
+      const mkEntry = (f, targetDir, fileName, hfFilter) => ({
+        id: Math.random().toString(16).slice(2, 10),
+        repo, revision, fileName, hfPath: f.path, hfFilter,
+        size: f.size || 0, targetDir, node: node || '_local', token: effectiveToken,
+        concurrent: req.body.concurrent || null, maxActive: req.body.maxActive || null,
+        excludeExtras: !req.body.includeExtras, status: 'queued', progress: 0,
+        pid: null, startedAt: null, completedAt: null, error: null,
+      });
+
+      // Distinct quant/model subfolders that actually receive a model file — the README gets
+      // copied into EACH of these (not the parent GGUF/EXL2/AWQ folder) so every quant folder is
+      // self-contained.
+      const modelDirs = new Set();
+
       // Create individual queue entries per file
       for (const f of files) {
         const fileName = f.path.split('/').pop();
+
+        // README is handled separately below (copied into every quant subfolder), not placed at base.
+        if (category === 'llm' && !preserveStructure && fileName.toLowerCase() === 'readme.md') continue;
 
         // Build filter for this specific file
         let hfFilter = fileName;
@@ -5883,19 +5913,11 @@ WantedBy=multi-user.target
 
         // Determine target directory based on category and file type
         let targetDir;
-        let skipFile = false;
         if (preserveStructure) {
           const hfDir = f.path.includes('/') ? f.path.substring(0, f.path.lastIndexOf('/')) : '';
           targetDir = hfDir ? `${base}/${hfDir}` : base;
         } else if (category === 'llm') {
-          // README.md goes in the base (variant) folder, not quant subfolder
-          if (fileName.toLowerCase() === 'readme.md') {
-            targetDir = base;
-            // Skip if already exists and replaceReadme not set
-            if (!req.body.replaceReadme && existsSync(join(base, 'README.md'))) {
-              skipFile = true;
-            }
-          } else if (fileName.toLowerCase().endsWith('.gguf')) {
+          if (fileName.toLowerCase().endsWith('.gguf')) {
             // GGUF: each quant level is its own subfolder (resolved per-file)
             targetDir = resolveLlmSubfolder(base, fileName, repo);
           } else if (llmWeightDir) {
@@ -5908,32 +5930,34 @@ WantedBy=multi-user.target
           targetDir = base;
         }
 
-        if (skipFile) continue;
-
-        const id = Math.random().toString(16).slice(2, 10);
-        const entry = {
-          id,
-          repo,
-          revision,
-          fileName,
-          hfPath: f.path,
-          hfFilter,
-          size: f.size || 0,
-          targetDir,
-          node: node || '_local',
-          token: effectiveToken,
-          concurrent: req.body.concurrent || null,
-          maxActive: req.body.maxActive || null,
-          excludeExtras: !req.body.includeExtras,
-          status: 'queued',
-          progress: 0,
-          pid: null,
-          startedAt: null,
-          completedAt: null,
-          error: null,
-        };
+        if (category === 'llm' && !preserveStructure) modelDirs.add(targetDir);
+        const entry = mkEntry(f, targetDir, fileName, hfFilter);
         manifest.downloads.push(entry);
         queued.push(entry);
+      }
+
+      // ALWAYS copy the repo README into EVERY quant / model subfolder (Q8_0, Q6_K_XL, 4-bit,
+      // 4.00bpw, mmproj, ...) so each downloaded folder is self-contained — overwriting any existing
+      // copy so README updates are captured. The README is never in hfSelectedFiles (the picker only
+      // sends model files), so backfill it from the repo tree.
+      if (category === 'llm' && !preserveStructure && modelDirs.size) {
+        let readme = (files || []).find(f => (f.path || '').split('/').pop().toLowerCase() === 'readme.md');
+        if (!readme) {
+          try {
+            const tree = await walkHfTree(repo, revision, effectiveToken);
+            const t = tree.find(x => (x.path || '').toLowerCase() === 'readme.md');
+            if (t) readme = { path: t.path, size: t.size || 0 };
+          } catch (e) {
+            console.warn(`[hf-download] README backfill skipped for ${repo}: ${e.message}`);
+          }
+        }
+        if (readme) {
+          for (const dir of modelDirs) {
+            const entry = mkEntry(readme, dir, 'README.md', 'README.md');
+            manifest.downloads.push(entry);
+            queued.push(entry);
+          }
+        }
       }
 
       saveHfDownloads(manifest);
@@ -6000,7 +6024,7 @@ WantedBy=multi-user.target
 
             let logContent = '';
             try {
-              logContent = readFileSync(`/tmp/hfdl-${dl.id}.log`, 'utf8').trim().slice(-500);
+              logContent = cleanCurlLog(readFileSync(`/tmp/hfdl-${dl.id}.log`, 'utf8'));
             } catch {}
 
             if (isComplete) {
@@ -6022,11 +6046,11 @@ WantedBy=multi-user.target
               dl.error = null;
             } else if (logContent.includes('error') || logContent.includes('Error') || logContent.includes('failed') || currentSize === 0) {
               dl.status = 'failed';
-              dl.error = logContent.slice(-300) || 'Download failed — no output';
+              dl.error = logContent || 'Download failed — no output';
             } else {
               dl.status = 'failed';
               const exp = expectedSize ? `${expectedSize}` : 'unknown';
-              dl.error = `Download incomplete: got ${finalSize || currentSize} of ${exp} bytes${logContent ? ` — ${logContent.slice(-200)}` : ''}`;
+              dl.error = `Download incomplete: got ${finalSize || currentSize} of ${exp} bytes${logContent ? ` — ${logContent}` : ''}`;
             }
             dl.checkFailures = 0;
             saveHfDownloads(manifest);
