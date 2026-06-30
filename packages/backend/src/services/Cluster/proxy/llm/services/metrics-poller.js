@@ -147,13 +147,18 @@ export class LlmMetricsPoller {
         const slots = JSON.parse(slotsText)
         if (Array.isArray(slots)) {
           const map = (this._slotState ||= {})
-          const st = map[svc.id] || (map[svc.id] = { last: {}, cacheTok: 0, totalTok: 0 })
+          const st = map[svc.id] || (map[svc.id] = { cur: {}, cacheTok: 0, totalTok: 0 })
+          const commit = (c) => { if (c && c.total > 0) { st.cacheTok += (c.cached || 0); st.totalTok += c.total } }
           for (const sl of slots) {
-            const task = sl?.id_task, total = sl?.n_prompt_tokens, cached = sl?.n_prompt_tokens_cache
-            if (typeof task === 'number' && task >= 0 && typeof total === 'number' && total > 0 && st.last[sl.id] !== task) {
-              st.cacheTok += (typeof cached === 'number' ? cached : 0)
-              st.totalTok += total
-              st.last[sl.id] = task
+            const id = sl?.id, task = sl?.id_task, total = sl?.n_prompt_tokens, cached = sl?.n_prompt_tokens_cache
+            const prev = st.cur[id]
+            if (typeof task === 'number' && task >= 0 && typeof total === 'number' && total > 0) {
+              // record the PREVIOUS request's final values when a new one takes the slot, then keep tracking
+              // the current request's latest reading (n_prompt_tokens_cache is only final after prefill).
+              if (prev && prev.task !== task) commit(prev)
+              st.cur[id] = { task, total, cached: (typeof cached === 'number' ? cached : 0) }
+            } else if (prev) {
+              commit(prev); delete st.cur[id] // slot went idle → flush its last request
             }
           }
           r.cacheHits = st.cacheTok
