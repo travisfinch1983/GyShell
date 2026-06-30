@@ -2092,41 +2092,27 @@ if out: print(json.dumps(out))
       }
     }
 
-    // Every llama.cpp launch gets a persistent Optane KV slot (port-independent, survives reassignment).
-    // The slot NAME follows a priority tier so it stays stable across restarts/ports:
-    //   1. an explicit non-ephemeral --slot-save-path the user set            (honored as-is)
-    //   2. the model-name override (--alias / --served-model-name)            -> slug(override)
-    //   3. the model-file name + a CONTENT fingerprint                        -> slug(model)-<fp>
-    // The content fingerprint hashes only what changes the KV bytes (model file + ctx + cache dtypes),
-    // NOT the name override and NOT the GPUs/node — so the same model+settings reuses one slot regardless
-    // of cosmetic name or which GPUs it lands on. (Distinct from the metrics-row fingerprint, which DOES
-    // key on hardware because it identifies a performance run, not cache content.)
+    // Every llama.cpp / ik_llama.cpp launch gets a persistent Optane KV slot, ALWAYS named from a content
+    // fingerprint: slug(model-file)-<fp>, where fp hashes only what changes the KV bytes (model file +
+    // ctx + cache dtypes) — never the name override and never the GPUs/node. So the same model+settings
+    // deterministically maps to one slot regardless of port, GPUs, or cosmetic alias. No tiering / no
+    // honoring of a hand-set path (the launcher field is hidden); any existing --slot-save-path is replaced.
+    // (Distinct from the metrics-row fingerprint, which DOES key on hardware — it identifies a perf run.)
     const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 96);
     if (/^llama-server/.test(providerId)) {
-      const cur = (finalCommand.match(/--slot-save-path[ =]"?([^"\s\\]+)"?/) || [])[1] || '';
-      const explicit = cur && !cur.startsWith('/tmp/') && !cur.startsWith('/dev/shm/');
-      if (!explicit) {
-        const override = (finalCommand.match(/--(?:alias|served-model-name)[ =]+'?"?([^\s"'\\]+)/) || [])[1] || '';
-        const mp = (finalCommand.match(/--model[ =]+"?([^"\s\\]+)"?/) || [])[1] || '';
-        const modelName = mp.split('/').filter(Boolean).pop() || '';
-        let name;
-        if (override) {
-          name = slug(override);                                   // tier 2: model-name override
-        } else {
-          const ctx = (finalCommand.match(/--ctx-size[ =]+(\d+)/) || [])[1] || '';
-          const ck = (finalCommand.match(/--cache-type-k[ =]+(\S+)/) || [])[1] || '';
-          const cv = (finalCommand.match(/--cache-type-v[ =]+(\S+)/) || [])[1] || '';
-          const fp = createHash('sha1').update([modelName, ctx, ck, cv].join('|')).digest('hex').slice(0, 8);
-          name = `${slug(modelName)}-${fp}`;                       // tier 3: model name + content fingerprint
-        }
-        const optanePath = `/optane-sock0/kvcache/${name || `svc-${port || 'x'}`}`;
-        if (cur) {
-          finalCommand = finalCommand.replace(/--slot-save-path[ =]"?[^"\s\\]+"?/, `--slot-save-path ${optanePath}`);
-        } else {
-          finalCommand = finalCommand.replace(/\s+$/, '') + ` --slot-save-path ${optanePath}`;
-        }
-        console.log(`[svc-launch] Optane KV slot-save -> ${optanePath} (${override ? 'override' : 'model+fp'}, port-independent)`);
+      const mp = (finalCommand.match(/--model[ =]+"?([^"\s\\]+)"?/) || [])[1] || '';
+      const modelName = mp.split('/').filter(Boolean).pop() || '';
+      const ctx = (finalCommand.match(/--ctx-size[ =]+(\d+)/) || [])[1] || '';
+      const ck = (finalCommand.match(/--cache-type-k[ =]+(\S+)/) || [])[1] || '';
+      const cv = (finalCommand.match(/--cache-type-v[ =]+(\S+)/) || [])[1] || '';
+      const fp = createHash('sha1').update([modelName, ctx, ck, cv].join('|')).digest('hex').slice(0, 8);
+      const optanePath = `/optane-sock0/kvcache/${slug(modelName) ? `${slug(modelName)}-${fp}` : `svc-${port || 'x'}-${fp}`}`;
+      if (/--slot-save-path[ =]/.test(finalCommand)) {
+        finalCommand = finalCommand.replace(/--slot-save-path[ =]"?[^"\s\\]+"?/, `--slot-save-path ${optanePath}`);
+      } else {
+        finalCommand = finalCommand.replace(/\s+$/, '') + ` --slot-save-path ${optanePath}`;
       }
+      console.log(`[svc-launch] Optane KV slot-save -> ${optanePath} (content fingerprint, always)`);
     }
 
     // Build the launch script content
