@@ -5501,6 +5501,20 @@ WantedBy=multi-user.target
     };
     const typeMeta = TYPE_LABELS[repoType] || TYPE_LABELS['unknown'];
 
+    // Model artifacts for non-GGUF / non-diffusers repos (plain safetensors, full/quant LLM,
+    // transformers repos with custom .py code, e.g. deepseek-ai/DeepSeek-OCR-2). Their weights +
+    // custom code live in NO other returned list (ggufQuants is GGUF-only, components is diffusers-
+    // only, essentials is just config/tokenizer sidecars, extras is README/images) — so the picker
+    // showed "0 files available to download". Surface every real artifact (weights + code + essential
+    // sidecars), excluding only the truly-optional extras and GGUF (handled by ggufQuants).
+    const extraSet = new Set(extras.map(e => e.path));
+    const weightFiles = (!hasGguf && !hasModelIndex)
+      ? files
+          .filter(f => !extraSet.has(f.path) && !f.path.endsWith('.gguf'))
+          .map(f => ({ path: f.path, name: f.path.split('/').pop(), size: f.size || 0 }))
+          .sort((a, b) => (b.size || 0) - (a.size || 0))
+      : [];
+
     return {
       repoType,
       suggestedFolder,
@@ -5508,6 +5522,7 @@ WantedBy=multi-user.target
       analysisLabel: typeMeta.label,
       analysisHint: typeMeta.hint,
       ggufQuants,
+      weightFiles,
       components,
       essentials: essentials.map(f => ({ path: f.path, size: f.size })),
       extras: extras.map(f => ({ path: f.path, size: f.size })),
@@ -5584,7 +5599,11 @@ WantedBy=multi-user.target
           }
         }
       }
-      const args = ['-L', '-o', partFile, '--retry', '3', '--retry-delay', '5', '-C', '-'];
+      // -f (--fail): on HTTP >= 400 (expired signed CDN URL, 416 from a stale-range resume, 5xx,
+      // gated/404) curl exits non-zero instead of writing the error body to the output file. Without
+      // it, curl saved e.g. a tiny error page as the .part, exited 0, the `&& mv` promoted it to the
+      // final path, and the monitor reported a bogus "Download process exited unexpectedly".
+      const args = ['-fL', '-o', partFile, '--retry', '3', '--retry-delay', '5', '-C', '-'];
       if (token) args.push('-H', `Authorization: Bearer ${token}`);
       args.push(url);
 
@@ -5992,7 +6011,8 @@ WantedBy=multi-user.target
               dl.error = logContent.slice(-300) || 'Download failed — no output';
             } else {
               dl.status = 'failed';
-              dl.error = 'Download process exited unexpectedly';
+              const exp = expectedSize ? `${expectedSize}` : 'unknown';
+              dl.error = `Download incomplete: got ${finalSize || currentSize} of ${exp} bytes${logContent ? ` — ${logContent.slice(-200)}` : ''}`;
             }
             dl.checkFailures = 0;
             saveHfDownloads(manifest);
