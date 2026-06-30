@@ -37,6 +37,15 @@ const CACHE_INJECT = process.env.ANTHROPIC_CACHE_INJECT !== '0';
 const STATIC_TOKEN_ENV = (process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.ANTHROPIC_OAUTH_TOKEN || '').trim();
 const TOKEN_FILE = process.env.CLAUDE_MAX_TOKEN_FILE || join(process.env.HOME || '/root', '.claude', 'max-oauth-token');
 
+// Upstream retry-with-jitter for transient throttles (429) / overload (503/529).
+// The MAX subscription is a shared quota across every cluster Claude + this proxy,
+// so collisions are expected; retrying with backoff turns a hard failure into a
+// brief stall. Honors Retry-After when sane, else exponential backoff, capped.
+const RETRY_MAX = parseInt(process.env.ANTHROPIC_RETRY_MAX || '4', 10);
+const RETRY_BASE_MS = parseInt(process.env.ANTHROPIC_RETRY_BASE_MS || '600', 10);
+const RETRY_CAP_MS = parseInt(process.env.ANTHROPIC_RETRY_CAP_MS || '8000', 10);
+const RETRYABLE = new Set([429, 503, 529]);
+
 let cachedToken = null;
 let cachedExpiry = 0;
 
@@ -317,12 +326,22 @@ function buildUpstreamHeaders(token, extraBeta) {
 
 async function callAnthropicMessages(body, token, betaHeader, signal) {
   const headers = buildUpstreamHeaders(token, betaHeader);
-  return fetch(`${ANTHROPIC_API_URL}/v1/messages`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-    signal,
-  });
+  const payload = JSON.stringify(body);
+  let attempt = 0;
+  while (true) {
+    const res = await fetch(`${ANTHROPIC_API_URL}/v1/messages`, { method: 'POST', headers, body: payload, signal });
+    if (!RETRYABLE.has(res.status) || attempt >= RETRY_MAX || signal?.aborted) return res;
+    // compute wait: honor a sane Retry-After (seconds), else exponential backoff, both capped + jittered
+    const ra = parseFloat(res.headers.get('retry-after'));
+    const backoff = Math.min(RETRY_BASE_MS * 2 ** attempt, RETRY_CAP_MS);
+    const base = Number.isFinite(ra) && ra > 0 ? Math.min(ra * 1000, RETRY_CAP_MS) : backoff;
+    const waitMs = base + Math.floor(Math.random() * 250);
+    try { await res.text(); } catch { /* drain body to free the socket */ }
+    console.log(`[anthropic-proxy] upstream ${res.status}, retry ${attempt + 1}/${RETRY_MAX} in ${waitMs}ms`);
+    await new Promise((r) => setTimeout(r, waitMs));
+    if (signal?.aborted) return res;
+    attempt++;
+  }
 }
 
 // ---------------------------------------------------------------------------
