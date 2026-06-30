@@ -1,6 +1,9 @@
 server:
   port: 8082
   baseURL: "/files"
+  database: "/opt/filebrowser/index.db"
+  cacheDir: "/opt/filebrowser/cache"
+  cacheDirCleanup: true
   sources:
     - path: "/nas"
       name: "NAS"
