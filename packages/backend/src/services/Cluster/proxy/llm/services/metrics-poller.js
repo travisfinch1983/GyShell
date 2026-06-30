@@ -39,6 +39,12 @@ export class LlmMetricsPoller {
     this.store = this._load()
     this._timer = null
     this._saveTimer = null
+    // llama.cpp prompt-cache hit/miss is only visible per-request in /slots (no cumulative counter), so a
+    // 20s metrics poll misses most agent requests. Sample /slots on a fast, independent cadence instead.
+    this._slotTimer = null
+    this._slotInterval = 2000
+    this._slotTargets = [] // [{id, base}] of running llama.cpp services, refreshed each main poll
+    this._slotState = {}   // per-svc { cur:{slotId:{task,total,cached}}, cacheTok, totalTok } cumulative
   }
 
   _load() {
@@ -58,8 +64,44 @@ export class LlmMetricsPoller {
     this.poll().catch(() => {})
     this._timer = setInterval(() => this.poll().catch(() => {}), this.interval)
     if (this._timer.unref) this._timer.unref()
+    // Fast, lightweight /slots sampler (cache hit/miss) — independent of the heavy metrics poll.
+    this._slotTimer = setInterval(() => this._sampleSlots().catch(() => {}), this._slotInterval)
+    if (this._slotTimer.unref) this._slotTimer.unref()
   }
-  stop() { if (this._timer) clearInterval(this._timer) }
+  stop() { if (this._timer) clearInterval(this._timer); if (this._slotTimer) clearInterval(this._slotTimer) }
+
+  /** Fast loop: poll each running llama.cpp service's /slots and fold per-request prompt-cache reuse into
+   *  the cumulative per-svc counters. Cheap (tiny JSON), runs every ~2s so it catches most agent requests
+   *  that the 20s metrics poll would skip between. Targets are refreshed by the main poll(). */
+  async _sampleSlots() {
+    const targets = this._slotTargets || []
+    await Promise.all(targets.map(async (t) => {
+      const txt = await this._get(`${t.base}/slots`, 1500)
+      if (!txt) return
+      try { const slots = JSON.parse(txt); if (Array.isArray(slots)) this._accumulateSlots(t.id, slots) } catch {}
+    }))
+  }
+
+  /** Fold a /slots snapshot into per-svc cumulative cache-token counters. Each request (id_task) is
+   *  committed once — using its LAST observed values — when a new task takes the slot or it goes idle,
+   *  because n_prompt_tokens_processed is only final after prefill. Cached = total - processed (the
+   *  n_prompt_tokens_cache field reads 0 in our build). Counters are monotonic per svc.id. */
+  _accumulateSlots(svcId, slots) {
+    const st = this._slotState[svcId] || (this._slotState[svcId] = { cur: {}, cacheTok: 0, totalTok: 0 })
+    const commit = (c) => { if (c && c.total > 0) { st.cacheTok += (c.cached || 0); st.totalTok += c.total } }
+    for (const sl of slots) {
+      const id = sl?.id, task = sl?.id_task, total = sl?.n_prompt_tokens
+      const processed = sl?.n_prompt_tokens_processed
+      const cached = (typeof total === 'number' && typeof processed === 'number') ? Math.max(0, total - processed) : 0
+      const prev = st.cur[id]
+      if (typeof task === 'number' && task >= 0 && typeof total === 'number' && total > 0) {
+        if (prev && prev.task !== task) commit(prev)
+        st.cur[id] = { task, total, cached }
+      } else if (prev) {
+        commit(prev); delete st.cur[id]
+      }
+    }
+  }
 
   /** Heuristic reasoning mode from the model/alias name (the user encodes it there). */
   _reasoningMode(svc) {
@@ -142,37 +184,11 @@ export class LlmMetricsPoller {
         prefillTps: promSum(text, 'llamacpp:prompt_tokens_seconds'),
         cacheHits: null, cacheQueries: null, optaneHits: null, optaneQueries: null,
       }
-      // llama.cpp exposes NO prefix-cache counter in /metrics, but /slots reports per-request
-      // n_prompt_tokens (total prompt) vs n_prompt_tokens_cache (served from the in-VRAM prompt cache).
-      // Accumulate each distinct request (id_task) once per slot into monotonic token totals so _accum
-      // treats them like any other counter — this is the "regular" KV / prompt-cache hit rate.
-      const slotsText = await this._get(`${base}/slots`, 2000)
-      if (slotsText) { try {
-        const slots = JSON.parse(slotsText)
-        if (Array.isArray(slots)) {
-          const map = (this._slotState ||= {})
-          const st = map[svc.id] || (map[svc.id] = { cur: {}, cacheTok: 0, totalTok: 0 })
-          const commit = (c) => { if (c && c.total > 0) { st.cacheTok += (c.cached || 0); st.totalTok += c.total } }
-          for (const sl of slots) {
-            const id = sl?.id, task = sl?.id_task, total = sl?.n_prompt_tokens
-            // NB: n_prompt_tokens_cache reads 0 in our llama.cpp build even when reuse is large; the real
-            // cache-hit count is (total prompt tokens − tokens actually prefilled) = n_prompt_tokens_processed.
-            const processed = sl?.n_prompt_tokens_processed
-            const cached = (typeof total === 'number' && typeof processed === 'number') ? Math.max(0, total - processed) : 0
-            const prev = st.cur[id]
-            if (typeof task === 'number' && task >= 0 && typeof total === 'number' && total > 0) {
-              // record the PREVIOUS request's final values when a new one takes the slot, then keep tracking
-              // the current request's latest reading (n_prompt_tokens_cache is only final after prefill).
-              if (prev && prev.task !== task) commit(prev)
-              st.cur[id] = { task, total, cached: (typeof cached === 'number' ? cached : 0) }
-            } else if (prev) {
-              commit(prev); delete st.cur[id] // slot went idle → flush its last request
-            }
-          }
-          r.cacheHits = st.cacheTok
-          r.cacheQueries = st.totalTok
-        }
-      } catch {} }
+      // "Regular" KV / prompt-cache hit rate is sampled from /slots by the fast _sampleSlots loop every
+      // ~2s (llama.cpp has no cumulative cache counter in /metrics, and a 20s poll would miss most
+      // requests). Here we just read the accumulated monotonic token totals.
+      const st = this._slotState[svc.id]
+      if (st) { r.cacheHits = st.cacheTok; r.cacheQueries = st.totalTok }
       // llama.cpp's Optane KV cache lives in the kvcache shim (servicePort + 1000), when one fronts it.
       const shim = await this._get(`http://${svc.containerIp}:${svc.port + 1000}/shim/stats`, 2000)
       if (shim) { try {
@@ -221,6 +237,11 @@ export class LlmMetricsPoller {
       !IMAGE.has((s.providerId || '').toLowerCase()) &&
       !/embed|rerank/i.test(`${s.model || ''} ${s.aliasOverride || ''} ${s.providerId || ''}`), // generative LLMs only
     )
+    // Refresh the fast /slots sampler's target list (llama.cpp services only — others have no /slots).
+    this._slotTargets = llm
+      .filter((s) => /^llama-server/.test((s.providerId || '').toLowerCase()))
+      .map((s) => ({ id: s.id, base: `http://${s.containerIp}:${s.port}` }))
+
     const now = Date.now()
     const seen = new Set()
 
