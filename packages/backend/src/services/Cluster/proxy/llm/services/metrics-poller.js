@@ -150,7 +150,11 @@ export class LlmMetricsPoller {
           const st = map[svc.id] || (map[svc.id] = { cur: {}, cacheTok: 0, totalTok: 0 })
           const commit = (c) => { if (c && c.total > 0) { st.cacheTok += (c.cached || 0); st.totalTok += c.total } }
           for (const sl of slots) {
-            const id = sl?.id, task = sl?.id_task, total = sl?.n_prompt_tokens, cached = sl?.n_prompt_tokens_cache
+            const id = sl?.id, task = sl?.id_task, total = sl?.n_prompt_tokens
+            // NB: n_prompt_tokens_cache reads 0 in our llama.cpp build even when reuse is large; the real
+            // cache-hit count is (total prompt tokens − tokens actually prefilled) = n_prompt_tokens_processed.
+            const processed = sl?.n_prompt_tokens_processed
+            const cached = (typeof total === 'number' && typeof processed === 'number') ? Math.max(0, total - processed) : 0
             const prev = st.cur[id]
             if (typeof task === 'number' && task >= 0 && typeof total === 'number' && total > 0) {
               // record the PREVIOUS request's final values when a new one takes the slot, then keep tracking
