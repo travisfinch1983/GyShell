@@ -26,6 +26,7 @@ import {
   Server,
   KeyRound,
   SlidersHorizontal,
+  Activity,
 } from "lucide-react";
 import { observer } from "mobx-react-lite";
 import type { AppStore } from "../../stores/AppStore";
@@ -38,6 +39,7 @@ import { ConfirmDialog } from "../Common/ConfirmDialog";
 import { NumericInput } from "../Common/NumericInput";
 import { InfoTooltip } from "../Common/InfoTooltip";
 import { ProxlabServicesPanel } from "./ProxlabServicesPanel";
+import { ProxySettingsPanel } from "./ProxySettingsPanel";
 import { AgentsPanel } from "./AgentsPanel";
 import { TtsSettingsPanel } from "./TtsSettingsPanel";
 import "./TtsSettingsPanel.scss";
@@ -1123,6 +1125,15 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
           >
             <span className="icon"><Box size={16} strokeWidth={2} /></span>
             <span>Shared Folders</span>
+          </div>
+          <div
+            className={store.settingsSection === "cluster-proxy" ? "settings-nav-item is-active" : "settings-nav-item"}
+            onClick={() => store.setSettingsSection("cluster-proxy")}
+            role="button"
+            tabIndex={0}
+          >
+            <span className="icon"><Activity size={16} strokeWidth={2} /></span>
+            <span>Proxy</span>
           </div>
         </div>
       </div>
@@ -2924,6 +2935,7 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
           {store.settingsSection === "cluster-gpu" ? <GpuPoolsPanel /> : null}
           {store.settingsSection === "cluster-agents" ? <AiAgentsPanel /> : null}
           {store.settingsSection === "cluster-storage" ? <SharedFoldersPanel /> : null}
+          {store.settingsSection === "cluster-proxy" ? <ProxySettingsPanel /> : null}
         </div>
       </div>
     </div>

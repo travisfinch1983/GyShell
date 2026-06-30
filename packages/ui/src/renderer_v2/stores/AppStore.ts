@@ -102,7 +102,8 @@ export type SettingsSection =
   | 'cluster-servicenames'
   | 'cluster-gpu'
   | 'cluster-agents'
-  | 'cluster-storage';
+  | 'cluster-storage'
+  | 'cluster-proxy';
 
 export interface AgentDefinition {
   id: string;

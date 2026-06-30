@@ -91,7 +91,7 @@ export function createAnthropicProxyRouter() {
     res.json(anthropicCapture.setEnabled(req.body?.enabled, req.body?.max));
   });
   router.get('/debug/captures', (req, res) => {
-    res.json(anthropicCapture.list());
+    res.json(anthropicCapture.list(req.query.full === '1' || req.query.full === 'true'));
   });
   router.get('/debug/diff', (req, res) => {
     const a = req.query.a != null ? parseInt(req.query.a, 10) : undefined;

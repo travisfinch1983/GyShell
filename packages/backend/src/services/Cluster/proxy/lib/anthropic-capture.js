@@ -76,10 +76,13 @@ class AnthropicCapture {
 
   state() { return { enabled: this.enabled, max: this.max, captured: this.ring.length }; }
 
-  list() {
+  list(full = false) {
     return {
       ...this.state(),
-      captures: this.ring.map((c, i) => ({ index: i, t: c.t, endpoint: c.endpoint, model: c.model, prefixLen: c.len, blocks: c.blocks })),
+      captures: this.ring.map((c, i) => ({
+        index: i, t: c.t, endpoint: c.endpoint, model: c.model, prefixLen: c.len, blocks: c.blocks,
+        ...(full ? { prefix: c.prefix } : {}),
+      })),
     };
   }
 
