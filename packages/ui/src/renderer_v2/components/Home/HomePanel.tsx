@@ -81,8 +81,8 @@ export const HomePanel: React.FC = () => {
       </div>
 
       {editing && (
-        <div onClick={() => setEditing(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(900px, 94%)', height: '88%', background: 'var(--app-bg)', border: '1px solid var(--border)', borderRadius: 10, display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 12px 40px rgba(0,0,0,0.5)' }}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: 'min(900px, 94%)', height: '88%', background: 'var(--app-bg)', border: '1px solid var(--border)', borderRadius: 10, display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 12px 40px rgba(0,0,0,0.5)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
               <strong>Dynacat config — dynacat.yml</strong>
               <span style={{ fontSize: 11, color: manual ? 'var(--accent)' : 'var(--fg-faint)' }}>{manual ? 'manual mode (auto-regen paused)' : 'auto-generated (saving switches to manual mode)'}</span>

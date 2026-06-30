@@ -19,7 +19,10 @@ export function createDynacatRouter() {
   const router = Router();
   router.use(express.json({ limit: '2mb' }));
 
-  const restart = () => { try { execFileSync('systemctl', ['restart', 'dynacat'], { timeout: 15000 }); } catch {} };
+  // dynacat watches dynacat.yml via fsnotify and HOT-RELOADS on write — gracefully, keeping its warm widget
+  // cache. A full `systemctl restart` was unnecessary and caused a ~5-min black screen (the fresh process
+  // re-probed all 7 monitor widgets / ~180 sites before rendering). Writing the config file is enough.
+  const restart = () => {};
 
   // GET /api/dynacat/config — current YAML + whether manual-override (auto-regen paused) is active.
   router.get('/config', (_req, res) => {
