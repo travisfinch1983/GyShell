@@ -126,6 +126,13 @@ export class TrainingImagesStore {
     const body: any = { path: this.cwd }; if (files && files.length) body.files = files
     return ig('/strip-tags', { method: 'POST', body })
   }
+  /** Wipe all ratings + comments (the whole _ratings.json) for this folder/set, or just the named files. */
+  async wipeRatings(files?: string[]): Promise<any> {
+    const body: any = { path: this.cwd }; if (files && files.length) body.files = files
+    return ig('/wipe-ratings', { method: 'POST', body })
+  }
+  /** Count of images in the current view that carry a rating/comment. */
+  get ratedCount(): number { return this.images.filter((im) => im.score != null || (im.comment || '').trim()).length }
   async listTrainingSets(): Promise<any> { return ig('/training-sets') }
   async merge(name: string, sources: string[]): Promise<any> { return ig('/merge', { method: 'POST', body: { name, sources } }) }
   async browseRaw(p: string): Promise<any> { return ig(`/browse?path=${encodeURIComponent(p)}`) }

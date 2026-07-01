@@ -912,6 +912,29 @@ export function createImagegenRouter(config) {
     res.json({ ok: true, set, cleared, errors });
   });
 
+  // ---- wipe ALL ratings + comments for a folder / training set (both live in _ratings.json).
+  // body: { path:<folder>, files?:[names] }  — omit files to clear the whole folder. ----
+  router.post('/wipe-ratings', express.json(), (req, res) => {
+    const b = req.body || {};
+    let dir;
+    try { dir = safeResolve(b.path); } catch { return res.status(400).json({ error: 'bad path' }); }
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'not a directory' });
+    const ratings = loadRatings(dir);
+    const before = Object.keys(ratings).length;
+    let cleared = 0;
+    if (Array.isArray(b.files) && b.files.length) {
+      for (const raw of b.files) {
+        const file = resolveImageName(dir, String(raw || ''));
+        if (file && file in ratings) { delete ratings[file]; cleared++; }
+      }
+      saveRatings(dir, ratings);
+    } else {
+      cleared = before;
+      saveRatings(dir, {});   // empty map -> unlinks _ratings.json
+    }
+    res.json({ ok: true, cleared, before });
+  });
+
   // ---- batch write captions for many images (ext: txt | caption).
   // body: { path:<folder>, captions: { "<file>": "<text>", ... }, ext } ----
   router.post('/captions-batch', express.json(), (req, res) => {

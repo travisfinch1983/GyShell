@@ -179,6 +179,13 @@ export const TrainingImagesPanel: React.FC = observer(() => {
     try { const r = await store.stripTags(files); store.msg = `Stripped ${r.removed} tag file(s).`; void store.browse(store.cwd) }
     catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
   }
+  const doWipe = async (files?: string[]) => {
+    const scope = files?.length ? `${files.length} selected image(s)` : `all ${store.ratedCount} rated image(s) in this ${store.inTrainingSet ? 'training set' : 'folder'}`
+    if (!(await confirmStore.confirm({ title: 'Wipe ratings & comments', message: `Clear ratings and comments for ${scope}? This removes scores + notes only — images, tags, and captions are untouched. Cannot be undone.`, confirmText: 'Wipe' }))) return
+    store.msg = 'Wiping ratings…'
+    try { const r = await store.wipeRatings(files); store.msg = `Wiped ${r.cleared} rating(s).`; void store.browse(store.cwd) }
+    catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
+  }
   const doRename = async (path: string, name: string) => {
     const cur = name === 'training_set' ? '' : name.replace(/^training_set_/, '')
     const suffix = await promptStore.prompt({ title: 'Rename training set', placeholder: 'suffix (blank = plain training_set)', defaultValue: cur, confirmText: 'Rename' })
@@ -197,6 +204,11 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           </select>
         </label>
         <button className={styles.btn} title="Toggle asc/desc" onClick={() => store.toggleDir()}>{store.sortDir === 'desc' ? <ChevronDown size={14} /> : <ChevronUp size={14} />}</button>
+        {store.ratedCount > 0 && (
+          <button className={styles.btn} title="Clear all ratings + comments in this folder/set (images, tags & captions untouched)" onClick={() => void doWipe()}>
+            <Star size={14} /> Wipe ratings ({store.ratedCount})
+          </button>
+        )}
         <span className={styles.spacer} />
         <button className={styles.btn} onClick={() => void store.browse(store.cwd)}><RefreshCw size={14} className={store.loading ? styles.spin : ''} /></button>
       </div>
@@ -226,6 +238,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           <button className={styles.btn} onClick={() => setPicker('move')}>Move…</button>
           <button className={styles.btn} onClick={() => setPicker('copy')}>Copy…</button>
           {store.inTrainingSet && <button className={styles.btnDanger} onClick={() => void doDelete()}>Delete</button>}
+          <button className={styles.btn} title="Clear ratings + comments for the selected images" onClick={() => void doWipe([...store.selected])}>Wipe ratings</button>
           <span className={styles.msg}>{store.msg}</span>
         </div>
       )}
