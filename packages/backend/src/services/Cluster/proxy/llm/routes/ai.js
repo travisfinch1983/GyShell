@@ -45,6 +45,7 @@ const dataDir = process.env.AILAB_PROXY_DATA_DIR || join(__dirname, '..', '..', 
 const aiConfigFile = join(dataDir, 'ai-config.json');
 const gpuAssignFile = join(dataDir, 'gpu-assignments.json');
 const activeServicesFile = join(dataDir, 'active-services.json');
+const watchdogStateFile = join(dataDir, 'watchdog-state.json');
 const cacheManifestFile = join(dataDir, 'model-cache.json');
 const modelIndexFile = join(dataDir, 'model-index.json');
 const launchTemplatesFile = join(dataDir, 'launch-templates.json');
@@ -3491,6 +3492,9 @@ WantedBy=multi-user.target
       '`;
       await sshService.exec(svc.pveHostIp, cmd, { timeout: 60000 });
       svc.suspended = true;
+      // Clear any in-flight watchdog failure count so a resume later starts clean and the
+      // watchdog can't act on stale fails accumulated just before suspend.
+      delete watchdogFailCounts[req.params.id];
       saveActiveServices(state);
       broadcast({ type: 'service-updated', service: svc });
       res.json({ ok: true });
@@ -3902,12 +3906,14 @@ WantedBy=multi-user.target
       } catch {}
     }
 
-    // Auto-correct stale suspended flag: if systemd says active but flag says suspended, clear it
-    if (svc.suspended && result.systemdState === 'active') {
-      delete svc.suspended;
-      saveActiveServices(state);
+    // If the operator suspended this service, that intent is authoritative — do NOT silently
+    // clear it just because systemd reports active (that let out-of-band/racy starts quietly
+    // un-suspend a service the operator wanted parked). Instead keep the flag and surface a
+    // conflict so the UI can show "suspended but running" and offer an explicit re-suspend/start.
+    if (svc.suspended) {
+      result.suspended = true;
+      if (result.systemdState === 'active') result.suspendConflict = true;
     }
-    if (svc.suspended) result.suspended = true;
 
     try {
       const controller = new AbortController();
@@ -6453,7 +6459,21 @@ WantedBy=multi-user.target
   const watchdogFailCounts = {};  // { serviceId: consecutiveFailures }
   const WATCHDOG_INTERVAL = 30000;
   const WATCHDOG_MAX_FAILS_DEFAULT = 5;  // ~2.5 min default (5 x 30s)
-  let watchdogEnabled = true;
+  // watchdogEnabled persists across backend restarts so an operator's "off" intent sticks
+  // (previously it reset to true every boot — part of what made suspend feel unreliable).
+  function loadWatchdogEnabled() {
+    try {
+      if (existsSync(watchdogStateFile)) {
+        const s = JSON.parse(readFileSync(watchdogStateFile, 'utf-8'));
+        if (typeof s.enabled === 'boolean') return s.enabled;
+      }
+    } catch {}
+    return true;
+  }
+  let watchdogEnabled = loadWatchdogEnabled();
+  function saveWatchdogEnabled() {
+    try { writeFileSync(watchdogStateFile, JSON.stringify({ enabled: watchdogEnabled }, null, 2)); } catch {}
+  }
   let watchdogTimer = null;
 
   // Per-provider startup grace periods (seconds) — how long to skip health checks after start/restart
@@ -6719,6 +6739,16 @@ WantedBy=multi-user.target
         console.warn(`[watchdog] ${svc.providerId}:${svc.port} failed (${fails}/${maxFails}): ${e.message}`);
 
         if (fails >= maxFails) {
+          // Re-check intent right before acting: the fetch loop is async, so a suspend (or a
+          // global watchdog-disable) could have landed while this service's checks were in flight.
+          // Reloading state prevents the watchdog from resurrecting a just-suspended service —
+          // the exact "fired them back up" bug from ProxLab.
+          const fresh = loadActiveServices().services?.[id];
+          if (!watchdogEnabled || !fresh || fresh.suspended) {
+            console.log(`[watchdog] Skipping restart of ${svc.providerId}:${svc.port} (suspended/disabled/removed mid-cycle)`);
+            delete watchdogFailCounts[id];
+            continue;
+          }
           console.warn(`[watchdog] Auto-restarting ${svc.providerId}:${svc.port} after ${fails} consecutive failures`);
           try {
             const cmd = `pct exec ${svc.vmid} -- bash -c 'systemctl reset-failed ${svc.systemdUnit} 2>/dev/null; systemctl restart ${svc.systemdUnit}'`;
@@ -6738,6 +6768,7 @@ WantedBy=multi-user.target
 
   function startWatchdog() {
     if (watchdogTimer) return;
+    if (!watchdogEnabled) { console.log('[watchdog] disabled (persisted) — not starting'); return; }
     // Delay first check 60s to let services finish starting
     setTimeout(() => {
       watchdogCheck();
@@ -6759,6 +6790,7 @@ WantedBy=multi-user.target
   router.put('/watchdog/status', (req, res) => {
     if (req.body.enabled !== undefined) {
       watchdogEnabled = req.body.enabled;
+      saveWatchdogEnabled();
       if (!watchdogEnabled) stopWatchdog();
       else startWatchdog();
     }

@@ -151,8 +151,6 @@ export class UniversalProxyService {
     const llmPve = new PveApi(llmConfig)
     const llmGpuMon = new GpuMonitor(llmConfig, llmSsh, llmPve, { interval: 5000 })
     const llmHook = new HookscriptDeploy(llmSsh, llmPve, llmGpuMon, llmConfig)
-    // Deliberately NOT calling startWatchdog()/startScanTimer() — ProxLab still runs those; dueling
-    // watchdogs would double-restart services. Re-enable once ProxLab is decommissioned.
     const aiModule = createAiRouter(llmConfig, llmGpuMon, llmPve, llmSsh, llmHook)
 
     // Start live polling so /agent-gpus + /estimate placements populate (PVE guests + GPU metrics).
@@ -164,6 +162,12 @@ export class UniversalProxyService {
     }
     llmPve.startRefresh?.(10000)
     Promise.resolve(llmGpuMon.start?.()).catch(() => undefined)
+
+    // #263: AI-Lab now owns service health recovery (ProxLab is decommissioned, so no dueling
+    // watchdogs). The watchdog honors the persisted enable flag and always skips suspended
+    // services, and re-checks suspend/disable intent immediately before any restart — so a
+    // suspended service is never auto-resurrected.
+    aiModule.startWatchdog?.()
 
     // #266 auto model-cacher: on boot, reconcile the tmpfs cache against the model-cache.json
     // manifest (the explicit "keep cached" set) — re-copy anything a host reboot cleared. Deferred

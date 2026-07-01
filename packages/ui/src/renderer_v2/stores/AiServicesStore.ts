@@ -89,7 +89,7 @@ export class AiServicesStore {
     | { port?: number; basePath?: string; lanIp?: string; lastRefresh?: number; types?: Record<string, any[]>; services?: any; vector?: any[] | null }
     | null = null
   gpuIndex: Record<string, { name: string; index: number; util: number; memUsed: number; memTotal: number; node: string }> = {}
-  statsById: Record<string, { alive?: boolean; tps?: number; systemdState?: string; modelIdentifier?: string }> = {}
+  statsById: Record<string, { alive?: boolean; tps?: number; systemdState?: string; modelIdentifier?: string; suspended?: boolean; suspendConflict?: boolean }> = {}
   utilHistory: Record<string, number[]> = {} // pciId → last N gpuUtil samples (%)
   vramHistory: Record<string, number[]> = {} // pciId → last N memUsed samples (MB)
   typeProbeCache: Record<string, string> = {} // endpoint → capability-detected type (llm/embed/rerank)
@@ -218,9 +218,17 @@ export class AiServicesStore {
   statusOf(id: string): 'running' | 'suspended' | 'down' | 'unknown' {
     const st = this.statsById[id]
     if (!st) return 'unknown'
+    // Operator suspend intent is authoritative — the backend keeps svc.suspended set even if the
+    // unit momentarily reports active (#263), so show Suspended regardless of a transient alive state.
+    if (st.suspended) return 'suspended'
     if (st.alive) return 'running'
     if (st.systemdState === 'inactive') return 'suspended'
     return 'down'
+  }
+
+  /** True when the service is suspended by the operator yet the unit is somehow running (#263). */
+  hasSuspendConflict(id: string): boolean {
+    return !!this.statsById[id]?.suspendConflict
   }
 
   async setAlias(id: string, identifier: string): Promise<void> {
