@@ -43,7 +43,7 @@ const GpuCard: React.FC<{ gpu: FleetGpu }> = ({ gpu }) => {
         </span>
       </div>
       <Bar label="GPU" pct={gpu.gpuUtil} text={gpu.gpuUtil == null ? '—' : `${Math.round(gpu.gpuUtil)}%`} />
-      <Bar label="VRAM" pct={memPct} text={`${fmtGB(gpu.memUsedBytes)}/${fmtGB(gpu.memTotalBytes)} GB`} />
+      <Bar label="VRAM" pct={memPct} text={`${fmtGB(gpu.memUsedBytes)}/${fmtGB(gpu.memTotalBytes)}G`} />
       <div className={styles.statRow}>
         <span className={styles.stat}>{gpu.tempC == null ? '—' : `${Math.round(gpu.tempC)}°C`}</span>
         <span className={styles.stat}>

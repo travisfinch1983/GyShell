@@ -169,11 +169,11 @@
 }
 
 .barLabel {
-  width: 30px;
+  width: 26px;
   color: var(--fg-faint);
   font-size: 9px;
   text-transform: uppercase;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.2px;
 }
 
 .barTrack {
@@ -204,11 +204,12 @@
 }
 
 .barText {
-  width: 78px;
+  width: 48px;
   text-align: right;
   color: var(--fg-muted);
   font-size: 9px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .statRow {
