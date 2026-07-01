@@ -2074,8 +2074,27 @@ if out: print(json.dumps(out))
     // Rewrite model paths to use cache when available
     // For kcpps configs, replace /models/ paths with /model-cache/ if the file exists in cache
     let finalCommand = command;
+    let mcHelper = '';
     if (isCacheEnabled(node)) {
       const cachePath = getCachePath(node);
+      // ── Dynamic model-path resolution (#265) ──
+      // Wrap every /models/<rel> or <cachePath>/<rel> token in the command with a shell
+      // resolver `mc`, so the generated script re-picks cache-if-present-else-NAS on EVERY
+      // start/restart/boot — never frozen at creation. Handles either baked form (a legacy
+      // script with a /model-cache path resolves back to /models when the cache is absent).
+      // (kcpps base64 + tts/imagegen dir swaps below are untouched: those paths aren't literal
+      //  /models tokens, so the regex skips them.)
+      const escCache = cachePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const modelPathRe = new RegExp('((?:/models|' + escCache + ')/[^\\s"\'\\\\]+)', 'g');
+      if (modelPathRe.test(finalCommand)) {
+        finalCommand = finalCommand.replace(modelPathRe, (m) => "$(mc '" + m + "')");
+        mcHelper =
+          'mc(){ p="$1"; case "$p" in\n' +
+          '  ' + cachePath + '/*) c="$p"; n="/models/${p#' + cachePath + '/}";;\n' +
+          '  /models/*) n="$p"; c="' + cachePath + '/${p#/models/}";;\n' +
+          '  *) printf "%s" "$p"; return ;; esac\n' +
+          '  if [ -e "$c" ]; then printf "%s" "$c"; else printf "%s" "$n"; fi; }\n';
+      }
       const b64Cfg = command.match(/echo '([A-Za-z0-9+/=]+)' \| base64 -d/);
       if (b64Cfg) {
         try {
@@ -2168,7 +2187,7 @@ if out: print(json.dumps(out))
     const scriptContent = `#!/bin/bash
 # ProxLab managed service — ${providerId} on port ${port || 'auto'}
 # Generated: ${new Date().toISOString()}
-${tmpdirLine}${mkdirBlock}${finalCommand}
+${mcHelper}${tmpdirLine}${mkdirBlock}${finalCommand}
 `;
     const b64Script = Buffer.from(scriptContent).toString('base64');
 

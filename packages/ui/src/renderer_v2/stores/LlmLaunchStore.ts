@@ -615,7 +615,10 @@ export class LlmLaunchStore {
     if (!template) return ''
     const rawModelPath = this.getSelectedModelPath()
     if (!rawModelPath) return ''
-    const modelPath = this.getCachedModelPath(rawModelPath, this.selectedNode) as string
+    // Send the canonical (NAS/source) path — the backend wraps model paths so the launch
+    // script re-resolves cache-vs-source at RUNTIME on every start/restart (not frozen at
+    // creation). Pre-swapping here would bake in whatever the cache state was at launch time.
+    const modelPath = rawModelPath
 
     const cudaIdx = this.cudaIndices()
     const envLines: string[] = ['export CUDA_DEVICE_ORDER=PCI_BUS_ID']
