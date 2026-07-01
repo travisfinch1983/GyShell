@@ -19,11 +19,13 @@
 .fbadgeTs { color: var(--accent); border-color: var(--accent); }
 
 .grid { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 12px; align-content: start; }
-// min-width:0 is REQUIRED: a grid item's default min-width:auto resolves to the contained
-// <img>'s intrinsic width, so tiles refuse to shrink below the photo's natural size, blow out
-// the 1fr tracks, and overlap once there are many/large images. The img is absolutely filled so
-// it can never drive the tile's size — the square comes purely from aspect-ratio.
-.tile { position: relative; min-width: 0; border: 2px solid transparent; border-radius: 8px; overflow: hidden; background: var(--panel-bg-2, #111); cursor: pointer; aspect-ratio: 1; user-select: none;
+// Square tiles via the intrinsic padding-ratio trick (::before padding-top:100%) rather than
+// aspect-ratio. min-width:0 stops the contained <img>'s intrinsic width from blowing out the
+// 1fr tracks; the ::before forces height == width so the tile can NEVER collapse to ~0 height and
+// stack/overlap (which is what aspect-ratio alone was doing here — it wasn't resolving a height
+// for a grid item whose only children are absolutely-positioned). The img fills absolutely.
+.tile { position: relative; min-width: 0; border: 2px solid transparent; border-radius: 8px; overflow: hidden; background: var(--panel-bg-2, #111); cursor: pointer; user-select: none;
+  &::before { content: ''; display: block; padding-top: 100%; }
   img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; } }
 .tileSel { border-color: var(--accent); }
 .tileName { position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 6px; font-size: 10px; background: linear-gradient(transparent, rgba(0,0,0,0.75)); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
