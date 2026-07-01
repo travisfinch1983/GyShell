@@ -25,6 +25,7 @@ import { HomePanel } from './components/Home/HomePanel'
 import { FilesPanel } from './components/FileManager/FilesPanel'
 import { AiServicesPanel } from './components/AiServices/AiServicesPanel'
 import { ServicesDrawer } from './components/AiServices/ServicesDrawer'
+import { GpuFleetPanel } from './components/GpuFleet/GpuFleetPanel'
 import { ModelDownloadsPanel } from './components/ModelDownloads/ModelDownloadsPanel'
 import { LogsPanel } from './components/Logs/LogsPanel'
 import { AiLlmPanel, AiImagePanel, AiTtsSttPanel, AiToolsPanel } from './components/AiModality/AiModalityPanels'
@@ -398,6 +399,8 @@ export const App: React.FC = observer(() => {
         {/* Global running-services drawer — floats on the right over any tab while open. */}
         <ServicesDrawer visible={servicesDrawerOpen} onClose={() => setServicesDrawerOpen(false)} />
       </div>
+      {/* Global GPU fleet monitor — bottom-docked, collapsible; live metrics from Prometheus. */}
+      <GpuFleetPanel />
       <ContextMenuOverlay />
     </div>
     </MinionProvider>
