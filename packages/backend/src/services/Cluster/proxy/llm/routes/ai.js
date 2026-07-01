@@ -6774,7 +6774,7 @@ WantedBy=multi-user.target
       watchdogCheck();
       watchdogTimer = setInterval(watchdogCheck, WATCHDOG_INTERVAL);
     }, 60000);
-    console.log(`[watchdog] Service health monitoring started (every ${WATCHDOG_INTERVAL / 1000}s, ${WATCHDOG_MAX_FAILS} fails to restart)`);
+    console.log(`[watchdog] Service health monitoring started (every ${WATCHDOG_INTERVAL / 1000}s, ${WATCHDOG_MAX_FAILS_DEFAULT} fails default to restart)`);
   }
 
   function stopWatchdog() {
