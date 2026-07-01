@@ -165,6 +165,17 @@ export class UniversalProxyService {
     llmPve.startRefresh?.(10000)
     Promise.resolve(llmGpuMon.start?.()).catch(() => undefined)
 
+    // #266 auto model-cacher: on boot, reconcile the tmpfs cache against the model-cache.json
+    // manifest (the explicit "keep cached" set) — re-copy anything a host reboot cleared. Deferred
+    // so the PVE nodeMap (needed to resolve host IPs) has populated from the poll above.
+    setTimeout(() => {
+      Promise.resolve(aiModule.runCacheReconcile?.('boot'))
+        .then((s: any) => s && console.log('[universal-proxy] cache reconcile (boot):', JSON.stringify({
+          totalEntries: s.totalEntries, present: s.present, missing: s.missing, requeued: s.requeued, skippedNodes: s.skippedNodes,
+        })))
+        .catch((e: any) => console.warn('[universal-proxy] boot cache reconcile failed:', e?.message))
+    }, 30000)
+
     const app = express()
     app.use('/api/proxy/vector', createVectorProxyRouter())
     // Claude MAX-subscription proxy (direct api.anthropic.com via OAuth). Mounted at the

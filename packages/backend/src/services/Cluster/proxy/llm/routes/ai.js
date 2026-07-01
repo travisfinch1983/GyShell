@@ -5223,6 +5223,32 @@ WantedBy=multi-user.target
     res.json({ entry, status: 'caching' });
   });
 
+  /** POST /models/cache/reconcile — Manual kickstart of the auto model-cacher (#266).
+   * Re-runs the same reconcile that fires on boot: repopulate any manifest entry whose tmpfs
+   * copy is missing/truncated (via the sequential per-node copy queue) and clean orphans.
+   * Returns a summary + current per-node queue depth. */
+  router.post('/models/cache/reconcile', async (req, res) => {
+    try {
+      const summary = await runCacheReconcile('manual');
+      const queues = {};
+      for (const [node, q] of Object.entries(copyQueues)) {
+        queues[node] = { active: q.active, pending: q.pending.length, current: q.currentCacheDir };
+      }
+      res.json({ ...summary, queues });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /** GET /models/cache/reconcile — Report the last reconcile summary + live queue depth. */
+  router.get('/models/cache/reconcile', (req, res) => {
+    const queues = {};
+    for (const [node, q] of Object.entries(copyQueues)) {
+      queues[node] = { active: q.active, pending: q.pending.length, current: q.currentCacheDir };
+    }
+    res.json({ running: cacheReconcileRunning, last: lastCacheReconcile, queues });
+  });
+
   /** DELETE /models/cache — Remove a cached model.
    *
    * Two identification modes:
@@ -6256,13 +6282,24 @@ WantedBy=multi-user.target
     res.json(h);
   });
 
-  /** Startup validation: detect missing/truncated cache entries, auto-restore, clean orphans */
+  /** Startup validation / auto model-cacher (#266): detect missing/truncated cache entries,
+   * auto-restore them via the sequential copy queue, and clean orphans. Runs on boot (wired in
+   * UniversalProxyService.start) and on manual kickstart (POST /models/cache/reconcile). The cache
+   * manifest (model-cache.json) IS the explicit "keep cached" set — this reconciles the on-disk
+   * tmpfs cache (cleared by host reboots) back to that set. Returns a summary object. */
   async function validateAndRestoreCache() {
+    const summary = {
+      startedAt: new Date().toISOString(),
+      totalEntries: 0, present: 0, missing: 0, truncated: 0, requeued: 0, orphansRemoved: 0,
+      skippedNodes: [], byNode: {},
+    };
     const manifest = loadCacheManifest();
     const entries = manifest.entries || [];
+    summary.totalEntries = entries.length;
     if (entries.length === 0) {
       console.log('[cache-validate] No cache entries, skipping validation');
-      return;
+      summary.note = 'manifest-empty';
+      return summary;
     }
 
     const cfg = loadAiConfig();
@@ -6278,9 +6315,16 @@ WantedBy=multi-user.target
 
     for (const [node, nodeEntries] of Object.entries(byNode)) {
       const agent = cfg.agents?.[node];
-      if (!agent?.vmid || !isCacheEnabled(node)) continue;
+      if (!agent?.vmid || !isCacheEnabled(node)) {
+        summary.skippedNodes.push(`${node} (${!agent?.vmid ? 'no-vmid' : 'cache-disabled'})`);
+        continue;
+      }
       const hostIp = nodeMap[node]?.ip;
-      if (!hostIp) continue;
+      if (!hostIp) {
+        summary.skippedNodes.push(`${node} (no-host-ip; PVE not ready?)`);
+        continue;
+      }
+      const ns = summary.byNode[node] = { entries: nodeEntries.length, present: 0, missing: 0, truncated: 0, requeued: 0, orphansRemoved: 0 };
 
       const cachePath = getCachePath(node);
       const cacheConfig = cfg.agents?.[node]?.cache;
@@ -6325,11 +6369,13 @@ WantedBy=multi-user.target
                 await sshService.exec(hostIp, rmCmd, { timeout: 15000 }).catch(() => {});
                 entry.cachedAt = null;
                 manifestChanged = true;
-              }
-            }
+                summary.truncated++; ns.truncated++;
+              } else { summary.present++; ns.present++; }
+            } else { summary.present++; ns.present++; }
           } else if (line.startsWith('MISS:')) {
             const dir = line.substring(5);
             const entry = nodeEntries.find(e => e.cacheDir === dir);
+            summary.missing++; ns.missing++;
             if (entry && entry.cachedAt) {
               console.log(`[cache-validate] ${node}: ${dir} missing from cache, will re-cache`);
               entry.cachedAt = null;
@@ -6350,6 +6396,7 @@ WantedBy=multi-user.target
             console.log(`[cache-validate] ${node}: orphan directory ${dir}, removing`);
             // dir is already in the right path space (host or container) depending on useHostPaths
             await sshService.exec(hostIp, `rm -rf "${dir}"`, { timeout: 15000 }).catch(() => {});
+            summary.orphansRemoved++; ns.orphansRemoved++;
           }
         }
 
@@ -6364,16 +6411,35 @@ WantedBy=multi-user.target
               hostIp, vmid: agent.vmid, sourceDir: entry.sourceDir,
               cacheDir: entry.cacheDir, hostSrc: hSrc, hostDst: hDst,
             });
+            summary.requeued++; ns.requeued++;
           }
         }
         startNextCopy(node, sshService, hookscriptDeploy);
       } catch (err) {
         console.error(`[cache-validate] ${node}: SSH error during validation:`, err.message);
+        ns.error = err.message;
       }
     }
 
     if (manifestChanged) saveCacheManifest(manifest);
-    console.log('[cache-validate] Startup validation complete');
+    summary.finishedAt = new Date().toISOString();
+    console.log(`[cache-validate] complete — ${summary.present} present, ${summary.missing} missing, ${summary.truncated} truncated, ${summary.requeued} requeued, ${summary.orphansRemoved} orphans removed`);
+    return summary;
+  }
+  // Track the last reconcile summary so the manual endpoint / UI can report it.
+  let lastCacheReconcile = null;
+  let cacheReconcileRunning = false;
+  async function runCacheReconcile(trigger) {
+    if (cacheReconcileRunning) return { skipped: 'already-running', lastCacheReconcile };
+    cacheReconcileRunning = true;
+    try {
+      const s = await validateAndRestoreCache();
+      s.trigger = trigger;
+      lastCacheReconcile = s;
+      return s;
+    } finally {
+      cacheReconcileRunning = false;
+    }
   }
 
   // ─── WebSocket Broadcast ──────────────────────────────────────────────
@@ -6876,6 +6942,7 @@ WantedBy=multi-user.target
     startWatchdog,
     stopWatchdog,
     validateAndRestoreCache,
+    runCacheReconcile,
     ensureAgentSshKeys,
     setBroadcast: (fn) => { broadcastFn = fn; },
   };

@@ -71,24 +71,20 @@ export class GpuMonitor {
   }
 
   async start() {
-    if (this.timer) return;
+    if (this.discoveryTimer) return;
 
-    // Run initial GPU discovery
+    // Run initial GPU discovery (PVE-API inventory + UUID/PCI map — needed for placement & the GPU-pool UI)
     await this.discoverGpus();
-
-    // Deploy proxlab-nvtop to hosts that have GPUs
-    await this.deployNvtop();
 
     const totalGpus = Object.values(this.gpuInventory)
       .reduce((sum, h) => sum + h.allGpus.length, 0);
-    const nvtopHosts = Object.values(this.nvtopAvailable).filter(Boolean).length;
     const totalHosts = Object.keys(this.gpuInventory).length;
 
-    console.log(`GPU Monitor: ${totalGpus} GPUs across ${totalHosts} nodes, proxlab-nvtop on ${nvtopHosts}/${totalHosts}, polling every ${this.interval / 1000}s`);
-
-    // Start polling
-    this.poll();
-    this.timer = setInterval(() => this.poll(), this.interval);
+    // NOTE: the live-stats poller (proxlab-nvtop / nvidia-smi SSH loop) and proxlab-nvtop deployment
+    // are intentionally DISABLED — live GPU metrics now come from Prometheus/DCGM, not this SSH poller.
+    // The constant nvidia-smi polling also held /dev/nvidia* open and fought driver swaps. We keep only
+    // the periodic inventory discovery below (getEnrichedInventory / getConfig stay populated).
+    console.log(`GPU Monitor: ${totalGpus} GPUs across ${totalHosts} nodes (inventory-only; live metrics via Prometheus)`);
 
     // Re-discover GPUs every 5 minutes (in case hardware changes or nodes come online)
     this.discoveryTimer = setInterval(() => this.discoverGpus(true), 300000);
