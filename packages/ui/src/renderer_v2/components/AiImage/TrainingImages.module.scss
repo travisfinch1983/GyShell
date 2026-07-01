@@ -18,9 +18,13 @@
 .fbadge { font-size: 9.5px; text-transform: uppercase; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--fg-muted); }
 .fbadgeTs { color: var(--accent); border-color: var(--accent); }
 
-.grid { flex: 1; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 12px; align-content: start; }
-.tile { position: relative; border: 2px solid transparent; border-radius: 8px; overflow: hidden; background: var(--panel-bg-2, #111); cursor: pointer; aspect-ratio: 1; user-select: none;
-  img { width: 100%; height: 100%; object-fit: cover; display: block; } }
+.grid { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 12px; align-content: start; }
+// min-width:0 is REQUIRED: a grid item's default min-width:auto resolves to the contained
+// <img>'s intrinsic width, so tiles refuse to shrink below the photo's natural size, blow out
+// the 1fr tracks, and overlap once there are many/large images. The img is absolutely filled so
+// it can never drive the tile's size — the square comes purely from aspect-ratio.
+.tile { position: relative; min-width: 0; border: 2px solid transparent; border-radius: 8px; overflow: hidden; background: var(--panel-bg-2, #111); cursor: pointer; aspect-ratio: 1; user-select: none;
+  img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; } }
 .tileSel { border-color: var(--accent); }
 .tileName { position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 6px; font-size: 10px; background: linear-gradient(transparent, rgba(0,0,0,0.75)); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pick { position: absolute; top: 5px; left: 5px; width: 18px; height: 18px; border-radius: 50%; border: 2px solid #fff; background: rgba(0,0,0,0.35); z-index: 2; opacity: 0; transition: opacity .1s; }
