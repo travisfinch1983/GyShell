@@ -3,8 +3,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  height: 46vh;
-  max-height: 520px;
+  height: 46vh; // default; overridden by inline px height once the user resizes (persisted)
   z-index: 58;
   display: flex;
   flex-direction: column;
@@ -18,6 +17,35 @@
 
 .panelOpen {
   transform: translateY(0);
+}
+
+// Drag grip at the very top edge of the panel to resize its height (open only).
+.resizer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: ns-resize;
+  z-index: 2;
+  background: transparent;
+
+  &::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 40px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--border-strong);
+    transition: background 0.15s ease;
+  }
+
+  &:hover::after {
+    background: var(--accent);
+  }
 }
 
 .handle {

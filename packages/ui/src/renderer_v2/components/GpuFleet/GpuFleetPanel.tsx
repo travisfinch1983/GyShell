@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useRef } from 'react'
 import { observer } from 'mobx-react-lite'
 import { gpuFleetStore, type FleetGpu } from '../../stores/GpuFleetStore'
 import styles from './GpuFleet.module.scss'
@@ -63,6 +63,7 @@ const GpuCard: React.FC<{ gpu: FleetGpu }> = ({ gpu }) => {
 export const GpuFleetPanel = observer(() => {
   const s = gpuFleetStore
   const open = s.open
+  const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (open) s.startPolling(3000)
@@ -70,8 +71,42 @@ export const GpuFleetPanel = observer(() => {
     return () => s.stopPolling()
   }, [open, s])
 
+  const onResizeDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const startY = e.clientY
+    const startH = panelRef.current?.offsetHeight ?? s.heightPx ?? 400
+    const onMove = (ev: MouseEvent) => {
+      // Panel is anchored to the bottom, so dragging the top edge UP makes it taller.
+      s.setHeight(startH + (startY - ev.clientY))
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'ns-resize'
+  }
+
   return (
-    <div className={`${styles.panel} ${open ? styles.panelOpen : ''}`}>
+    <div
+      ref={panelRef}
+      className={`${styles.panel} ${open ? styles.panelOpen : ''}`}
+      style={s.heightPx ? { height: `${s.heightPx}px` } : undefined}
+    >
+      {open && (
+        <div
+          className={styles.resizer}
+          onMouseDown={onResizeDown}
+          title="Drag to resize"
+          role="separator"
+          aria-orientation="horizontal"
+        />
+      )}
       <button className={styles.handle} onClick={() => s.toggle()} title="Toggle GPU fleet monitor">
         <span className={styles.chevron}>{open ? '▼' : '▲'}</span>
         <span className={styles.handleTitle}>GPU Fleet</span>

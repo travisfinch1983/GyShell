@@ -32,6 +32,8 @@ export interface FleetNode {
 }
 
 const OPEN_KEY = 'ai-lab-gpu-fleet-open'
+const HEIGHT_KEY = 'ai-lab-gpu-fleet-height'
+const MIN_HEIGHT = 120
 
 // Single instant query returning gpu_info (metadata) + all live gauges for the `gpu` scrape job.
 const FLEET_QUERY =
@@ -51,6 +53,8 @@ function lastPoint(points: Array<{ t: number; v: number | null }> | undefined): 
 
 class GpuFleetStore {
   open = false
+  // Panel height in px (persisted). null → fall back to the CSS default (46vh).
+  heightPx: number | null = null
   nodes: FleetNode[] = []
   error: string | null = null
   loading = false
@@ -62,8 +66,22 @@ class GpuFleetStore {
     makeAutoObservable(this, {}, { autoBind: true })
     try {
       this.open = localStorage.getItem(OPEN_KEY) === '1'
+      const h = parseInt(localStorage.getItem(HEIGHT_KEY) || '', 10)
+      if (Number.isFinite(h) && h >= MIN_HEIGHT) this.heightPx = h
     } catch {
       /* localStorage may be unavailable */
+    }
+  }
+
+  /** Set the drawer height (px), clamped to [MIN_HEIGHT, 90vh], and persist it. */
+  setHeight(px: number): void {
+    const vh = typeof window !== 'undefined' ? window.innerHeight : 1000
+    const clamped = Math.round(Math.max(MIN_HEIGHT, Math.min(px, vh * 0.9)))
+    this.heightPx = clamped
+    try {
+      localStorage.setItem(HEIGHT_KEY, String(clamped))
+    } catch {
+      /* ignore */
     }
   }
 
