@@ -2,7 +2,7 @@
  * Instance-manager adapter — Claude fleet consolidation Phase 3.
  *
  * CONTRACT: FROZEN (ratified with claude1). The AI-Lab backend (CT152)
- * exposes /api/claude/instances* and proxies/SSHes to CT161 to manage the
+ * exposes /api/claude/instances* and proxies to the instance-manager (CLAUDE_INSTANCE_MANAGER_URL) to manage the
  * per-user instances. If the contract ever changes, update THIS FILE ONLY —
  * the store and UI consume the adapter interface.
  *
@@ -26,12 +26,27 @@ export interface ClaudeInstance {
   status: InstanceStatus
   primaryVmid?: number | null
   allowed: 'all' | number[]
-  createdAt: string
+  createdAt?: string
   /** ttyd proxy path for this instance's dtach session. */
   termPath: string
+  /** Unix user on the instance container. */
+  user?: string
+  ttydPort?: number
 }
 
-export type ControlAction = 'exit' | 'resume-continue' | 'resume-pick' | 'restart'
+/**
+ * UI-level actions; the adapter maps them to the manager's wire enum
+ * ('exit' | 'continue' | 'resume'). 'continue' restarts the session if needed
+ * and resumes the latest conversation (claude -c); 'resume' opens the picker
+ * (claude -r).
+ */
+export type ControlAction = 'exit' | 'resume-continue' | 'resume-pick'
+
+const WIRE_ACTION: Record<ControlAction, string> = {
+  exit: 'exit',
+  'resume-continue': 'continue',
+  'resume-pick': 'resume',
+}
 
 export interface InstanceManagerApi {
   /** Distinguishes the real backend from the mock so the UI can banner it. */
@@ -67,7 +82,7 @@ class RealInstanceManagerApi implements InstanceManagerApi {
     await bridge().request('DELETE', `/api/claude/instances/${encodeURIComponent(id)}`)
   }
   async control(id: string, action: ControlAction): Promise<{ ok: boolean; status?: InstanceStatus; error?: string }> {
-    const r = await bridge().request('POST', `/api/claude/instances/${encodeURIComponent(id)}/control`, { action })
+    const r = await bridge().request('POST', `/api/claude/instances/${encodeURIComponent(id)}/control`, { action: WIRE_ACTION[action] })
     return { ok: r?.ok !== false, status: r?.status, error: r?.error }
   }
   async setPermissions(id: string, permissions: ClusterPermissions): Promise<ClaudeInstance> {
@@ -84,19 +99,21 @@ class MockInstanceManagerApi implements InstanceManagerApi {
       id: 'claude1',
       name: 'claude1',
       status: 'running',
-      primaryVmid: 161,
+      primaryVmid: 180,
       allowed: 'all',
       createdAt: '2026-07-02T00:00:00Z',
       termPath: 'about:blank',
+      user: 'root',
     },
     {
       id: 'fable-builder',
       name: 'fable-builder',
       status: 'running',
-      primaryVmid: 161,
-      allowed: [152, 161],
+      primaryVmid: 180,
+      allowed: [152, 180],
       createdAt: '2026-07-02T01:00:00Z',
       termPath: 'about:blank',
+      user: 'fable',
     },
   ]
   private clone(i: ClaudeInstance): ClaudeInstance {
@@ -116,6 +133,7 @@ class MockInstanceManagerApi implements InstanceManagerApi {
       allowed: [],
       createdAt: new Date().toISOString(),
       termPath: 'about:blank',
+      user: id,
     }
     this.instances.push(instance)
     return this.clone(instance)

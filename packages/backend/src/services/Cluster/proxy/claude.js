@@ -121,6 +121,37 @@ export function createClaudeRouter({ exec }) {
   const nodeIpOf = (conn) => conn.nodeIp || loadHostMap()[conn.node] || conn.node
   const pct = (conn, inner, opts = {}) => exec(nodeIpOf(conn), `pct exec ${conn.vmid} -- ${inner}`, { timeout: 20000, ...opts })
 
+  // ── consolidated instances (fleet-consolidation Phase 3) ──
+  // Thin HTTP proxy to the instance-manager on CT180 — it owns the per-user
+  // runtime (users/dtach/ttyd) and returns the frozen Instance contract shape.
+  // All methods + subpaths forward verbatim; body is piped raw (no re-parse).
+  const IM_URL = (process.env.CLAUDE_INSTANCE_MANAGER_URL || 'http://10.0.0.161:7700').replace(/\/+$/, '')
+  router.use('/instances', (req, res) => {
+    const target = `${IM_URL}/instances${req.url === '/' ? '' : req.url}`
+    const chunks = []
+    req.on('data', (c) => chunks.push(c))
+    req.on('end', async () => {
+      try {
+        const body = chunks.length ? Buffer.concat(chunks) : undefined
+        // Spawn provisions a user + units — allow it time; reads stay snappy.
+        const timeout = req.method === 'GET' ? 15000 : 120000
+        const r = await fetch(target, {
+          method: req.method,
+          headers: {
+            accept: 'application/json',
+            ...(body ? { 'content-type': req.headers['content-type'] || 'application/json' } : {}),
+          },
+          body,
+          signal: AbortSignal.timeout(timeout),
+        })
+        const text = await r.text()
+        res.status(r.status).type(r.headers.get('content-type') || 'application/json').send(text)
+      } catch (e) {
+        res.status(502).json({ error: `instance-manager unreachable: ${e?.cause?.message || e.message}` })
+      }
+    })
+  })
+
   // ── connections CRUD ──
   router.get('/connections', (_req, res) => res.json(load()))
   router.post('/connections', json, (req, res) => {

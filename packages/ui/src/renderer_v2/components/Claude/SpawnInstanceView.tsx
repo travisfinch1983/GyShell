@@ -5,7 +5,7 @@ import { claudeInstancesStore as store } from '../../stores/ClaudeInstancesStore
 import styles from './Claude.module.scss'
 
 /**
- * Spawn a new consolidated instance on CT161 (fleet-consolidation req 1):
+ * Spawn a new consolidated Claude instance (fleet-consolidation req 1):
  * name it → instance-manager creates the Unix user + session + ttyd →
  * the new sub-tab opens showing the /login flow.
  */
@@ -37,7 +37,7 @@ export const SpawnInstanceView: React.FC<{ onSpawned: (id: string) => void }> = 
     <div className={styles.addForm}>
       <h4 className={styles.h4}>Spawn Claude Instance</h4>
       <p className={styles.dim}>
-        Creates a fresh Claude Code instance on CT161: its own Unix user, config dir, dtach session, and
+        Creates a fresh Claude Code instance on the consolidated Claude container: its own Unix user, config dir, dtach session, and
         ttyd terminal — preset with bypass-permissions. The new sub-tab drops straight into the{' '}
         <code>/login</code> flow to authenticate it.
       </p>

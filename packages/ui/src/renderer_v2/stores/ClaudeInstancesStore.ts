@@ -8,7 +8,7 @@ import {
 } from './instanceManager'
 
 /**
- * Consolidated Claude instances on CT161 (fleet-consolidation Phase 3).
+ * Consolidated Claude instances (fleet-consolidation Phase 3).
  * All calls go through the InstanceManagerApi adapter; whether it's the real
  * backend or the pre-contract mock is surfaced via `mocked`.
  */

@@ -221,12 +221,12 @@ export const ClaudePanel: React.FC = observer(() => {
   return (
     <div className={styles.panel}>
       <div className={styles.subNav}>
-        {/* Consolidated CT161 instances (fleet-consolidation Phase 3) */}
+        {/* Consolidated Claude instances (fleet-consolidation Phase 3) */}
         {instancesStore.instances.map((i) => (
           <button
             key={INSTANCE_PREFIX + i.id}
             className={`${styles.navTab} ${active === INSTANCE_PREFIX + i.id ? styles.navTabActive : ''}`}
-            title={`CT161 · user ${i.id} · ${i.status}`}
+            title={`${i.primaryVmid ? `CT${i.primaryVmid} · ` : ''}user ${i.user ?? i.id} · ${i.status}`}
             onClick={() => setActive(INSTANCE_PREFIX + i.id)}
           >
             <span className={`${styles.instDot} ${styles[INSTANCE_DOT[i.status]] ?? ''}`} />
@@ -235,7 +235,7 @@ export const ClaudePanel: React.FC = observer(() => {
         ))}
         <button className={`${styles.navTab} ${styles.addTab} ${active === SPAWN ? styles.navTabActive : ''}`} onClick={() => setActive(SPAWN)}><Plus size={13} /> Spawn</button>
         <span className={styles.navDivider} />
-        {/* Legacy per-container connections (retired as instances migrate to CT161) */}
+        {/* Legacy per-container connections (retired as instances migrate to the consolidated container) */}
         {store.connections.map((c) => (
           <button key={c.id} className={`${styles.navTab} ${active === c.id ? styles.navTabActive : ''}`} onClick={() => setActive(c.id)}>{c.name}</button>
         ))}
@@ -247,7 +247,7 @@ export const ClaudePanel: React.FC = observer(() => {
         {instancesStore.err && <div className={styles.error}>{instancesStore.err}</div>}
         {instancesStore.mocked && instancesStore.loaded && (
           <div className={styles.mockBanner}>
-            Instance-manager API not deployed yet — consolidated-instance tabs show MOCK data (UI preview; spawn/controls don't touch CT161).
+            Instance-manager API not deployed yet — consolidated-instance tabs show MOCK data (UI preview; spawn/controls don't touch the cluster).
           </div>
         )}
         {active === DIRECTIVES && <DirectivesView />}

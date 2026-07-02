@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { LogOut, Play, ListRestart, RotateCcw, Terminal as TermIcon, Trash2 } from 'lucide-react'
+import { LogOut, Play, ListRestart, Terminal as TermIcon, Trash2 } from 'lucide-react'
 import { claudeInstancesStore as store } from '../../stores/ClaudeInstancesStore'
 import { confirmStore } from '../../stores/confirmStore'
 import { uiPrefsStore } from '../../stores/uiPrefsStore'
@@ -33,7 +33,7 @@ const STATUS_LABEL: Record<string, string> = {
 }
 
 /**
- * One consolidated CT161 instance: status, control buttons (exit / claude -c /
+ * One consolidated Claude instance: status, control buttons (exit / claude -c /
  * claude -r / restart), the ttyd terminal, and the soft-permissions editor.
  */
 export const InstanceView: React.FC<{ instance: ClaudeInstance }> = observer(({ instance }) => {
@@ -56,7 +56,7 @@ export const InstanceView: React.FC<{ instance: ClaudeInstance }> = observer(({ 
   const remove = async () => {
     const ok = await confirmStore.confirm({
       title: 'Delete instance',
-      message: `Delete the “${instance.name}” instance from CT161? This removes its Unix user, session, and config — its auth token and history are gone. This does NOT touch any other container.`,
+      message: `Delete the “${instance.name}” instance from the consolidated Claude container? This removes its Unix user, session, and config — its auth token and history are gone. This does NOT touch any other container.`,
       confirmText: 'Delete',
     })
     if (ok) void store.remove(instance.id)
@@ -69,7 +69,9 @@ export const InstanceView: React.FC<{ instance: ClaudeInstance }> = observer(({ 
         <span className={`${styles.instStatus} ${styles[`inst_${instance.status.replace(/-/g, '_')}`] ?? ''}`}>
           {STATUS_LABEL[instance.status] ?? instance.status}
         </span>
-        <span className={styles.dim}>CT161 · user {instance.id}</span>
+        <span className={styles.dim}>
+          {instance.primaryVmid ? `CT${instance.primaryVmid} · ` : ''}user {instance.user ?? instance.id}
+        </span>
         <span className={styles.spacer} />
         <button
           className={styles.btn}
@@ -84,24 +86,11 @@ export const InstanceView: React.FC<{ instance: ClaudeInstance }> = observer(({ 
         >
           <LogOut size={13} /> Exit
         </button>
-        <button className={styles.btn} disabled={busy} title="claude -c — resume the most recent conversation" onClick={() => void run('resume-continue', 'Resume -c')}>
+        <button className={styles.btn} disabled={busy} title="claude -c — restart the session if needed and resume the most recent conversation" onClick={() => void run('resume-continue', 'Resume -c')}>
           <Play size={13} /> Resume -c
         </button>
         <button className={styles.btn} disabled={busy} title="claude -r — open the conversation picker" onClick={() => void run('resume-pick', 'Resume -r')}>
           <ListRestart size={13} /> Resume -r
-        </button>
-        <button
-          className={styles.btn}
-          disabled={busy}
-          title="Kill and restart the whole session (dtach + claude)"
-          onClick={() =>
-            void run('restart', 'Restart', {
-              title: 'Restart session',
-              message: `Restart “${instance.name}”'s whole session (dtach + Claude Code)? In-flight work is interrupted.`,
-            })
-          }
-        >
-          <RotateCcw size={13} /> Restart
         </button>
         <button className={styles.btnDanger} disabled={busy} onClick={() => void remove()}>
           <Trash2 size={13} /> Delete
