@@ -33,7 +33,11 @@ export interface AgentInvoker {
   runTurn(
     agent: AgentRegistryEntry,
     batch: BusEnvelope[],
-  ): Promise<{ sessionMessageIds?: Record<number, string> } | void>
+  ): Promise<{
+    sessionMessageIds?: Record<number, string>
+    /** The agent's reply text, if the turn produced one — the bus sends it back as a reply envelope. */
+    replyBody?: string
+  } | void>
 }
 
 export interface SendOptions {
@@ -268,6 +272,20 @@ export class ConversationBus extends EventEmitter {
           targetAgentId: agentId,
           sessionMessageId: result?.sessionMessageIds?.[m.envelope.busSeq],
         })
+      }
+      // Reply path: the agent's answer goes back onto the bus as a reply to the
+      // most recent envelope in the batch, addressed to its sender. Autonomy is
+      // inherited — a reply to a purely human-triggered batch stays budget-exempt,
+      // while replies in agent↔agent chains stay autonomous (and hop-limited).
+      const replyBody = result && 'replyBody' in (result as object) ? (result as { replyBody?: string }).replyBody : undefined
+      if (replyBody && replyBody.trim().length > 0) {
+        const last = batch[batch.length - 1].envelope
+        this.send(
+          'agent',
+          agentId,
+          { id: `reply-${agentId}-${last.busSeq}`, from: agentId, to: last.from, kind: 'dm', body: replyBody },
+          { parentSeq: last.busSeq, triggeredByHuman: batch.every((m) => !m.envelope.autonomous) },
+        )
       }
     } catch (e) {
       const reason = `invoker_error: ${e instanceof Error ? e.message : String(e)}`
