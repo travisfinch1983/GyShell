@@ -193,7 +193,9 @@ export class AgentService_v2 {
   private helpers: AgentHelpers
   private checkpointer: MemorySaver
   private builtInToolEnabled: Record<string, boolean> = {}
-  private lastAbortedMessage: BaseMessage | null = null
+  // Per-session so concurrent multi-agent runs on this singleton can't cross-contaminate
+  // each other's aborted-partial capture (Phase-0 fleet hardening).
+  private lastAbortedMessages: Map<string, BaseMessage> = new Map()
   private sessionModelBindings: Map<string, SessionModelBinding> = new Map()
   private selfCorrectionRuntimeManager = new SelfCorrectionRuntimeManager()
   private waitForFeedback: ((messageId: string, timeoutMs?: number) => Promise<any | null>) | null = null
@@ -744,11 +746,11 @@ export class AgentService_v2 {
           } catch (err) {
             finishReasoningBanner()
             if (partialText.trim()) {
-              this.lastAbortedMessage = new AIMessage({
+              this.lastAbortedMessages.set(sessionId, new AIMessage({
                 content: partialText,
                 additional_kwargs: { _gyshellMessageId: messageId, _gyshellAborted: true }
-              })
-              console.log('[AgentService_v2] Captured partial message from error/abort in instance variable.')
+              }))
+              console.log(`[AgentService_v2] Captured partial message from error/abort (sessionId=${sessionId}).`)
             }
             throw err
           }
@@ -2239,8 +2241,8 @@ export class AgentService_v2 {
   async run(context: any, input: StartTaskInput, signal: AbortSignal, startMode: 'normal' | 'inserted' = 'normal'): Promise<void> {
     if (!this.graph) throw new Error('Graph not initialized')
 
-    this.lastAbortedMessage = null
     const { sessionId } = context
+    this.lastAbortedMessages.delete(sessionId)
     const lockedProfileId = String(context.lockedProfileId || '')
     if (!lockedProfileId) {
       throw new Error(`Missing locked profile for session ${sessionId}`)
@@ -2348,10 +2350,11 @@ export class AgentService_v2 {
       if (!messages || messages.length === 0) return
       
       // Check if there's an aborted message captured in the instance variable
-      if (this.lastAbortedMessage) {
-        console.log('[AgentService_v2] Appending aborted message from instance variable to history.')
-        messages = [...messages, this.lastAbortedMessage]
-        this.lastAbortedMessage = null // Clear after use
+      const abortedMessage = this.lastAbortedMessages.get(sessionId)
+      if (abortedMessage) {
+        console.log(`[AgentService_v2] Appending aborted message to history (sessionId=${sessionId}).`)
+        messages = [...messages, abortedMessage]
+        this.lastAbortedMessages.delete(sessionId) // Clear after use
       }
       
       const session = this.chatHistoryService.loadSession(sessionId) || {
