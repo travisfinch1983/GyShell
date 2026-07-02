@@ -36,6 +36,7 @@ import { ImageAttachmentService } from '../../services/ImageAttachmentService'
 import { TerminalStateStore } from '../../services/terminal/TerminalStateStore'
 import { ConversationBus, JsonlBusStore, AgentRegistry } from '../../services/ConversationBus'
 import { createFleetBridge } from '../../services/ConversationBus/fleetBridge'
+import { createBusAgentInvoker } from '../../services/ConversationBus/BusAgentInvoker'
 import { createAutoTerminalConfig } from '../../services/terminal/terminalConnectionSupport'
 import { TerminalCommandDraftService } from '../../services/TerminalCommandDraftService'
 
@@ -129,15 +130,39 @@ export async function startGyBackend(): Promise<void> {
   const terminalCommandDraftService = new TerminalCommandDraftService(terminalService, settingsService)
 
   // ConversationBus (fleet vertical): broker + append-only log under <dataDir>/fleet/.
-  // No AgentInvoker wired yet — delivery-triggered inference additionally requires
-  // autonomousRoutingEnabled (default false), so deliveries queue safely until the
-  // GatewayService.dispatchFromBus seam lands and the guards are reviewed.
+  // Delivery-triggered inference goes through GatewayService.dispatchFromBus and
+  // remains gated behind autonomousRoutingEnabled (default false) until the guards
+  // are reviewed — the invoker being wired does not by itself spend GPU.
   const fleetDir = path.join(dataDir, 'fleet')
   const conversationBus = new ConversationBus(
     new JsonlBusStore(path.join(fleetDir, 'bus.jsonl')),
     new AgentRegistry(path.join(fleetDir, 'registry.json')),
     path.join(fleetDir, 'config.json'),
     null,
+  )
+  conversationBus.setInvoker(
+    createBusAgentInvoker({
+      gateway: gatewayService,
+      registry: conversationBus.registry,
+      loadLastAssistantText: (sessionId) => {
+        const session = chatHistoryService.loadSession(sessionId)
+        if (!session) return null
+        const messages = Array.from(session.messages.values())
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const m = messages[i] as { type?: string; data?: { content?: unknown } }
+          if (m.type !== 'ai') continue
+          const content = m.data?.content
+          if (typeof content === 'string' && content.trim()) return content
+          if (Array.isArray(content)) {
+            const text = content
+              .map((part) => (typeof part === 'object' && part && 'text' in part ? String((part as { text: unknown }).text) : ''))
+              .join('')
+            if (text.trim()) return text
+          }
+        }
+        return null
+      },
+    }),
   )
   const fleetBridge = createFleetBridge(conversationBus)
   conversationBus.on('record', (record) => {
