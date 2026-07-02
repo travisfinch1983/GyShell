@@ -80,6 +80,7 @@ import { runSkillTool } from './AgentHelper/tools/skill_tools'
 import { TokenManager } from './AgentHelper/TokenManager'
 import { InputParseHelper } from './AgentHelper/InputParseHelper'
 import { ImageAttachmentService } from './ImageAttachmentService'
+import { RunMarkerService, type RunMarker } from './RunMarkerService'
 
 const Ann: any = Annotation
 type StartupInputState = StartTaskInput | undefined
@@ -198,6 +199,9 @@ export class AgentService_v2 {
   private lastAbortedMessages: Map<string, BaseMessage> = new Map()
   private sessionModelBindings: Map<string, SessionModelBinding> = new Map()
   private selfCorrectionRuntimeManager = new SelfCorrectionRuntimeManager()
+  // Persistent "run in flight" markers for boot-time recovery of turns
+  // interrupted by a backend restart (Phase-0 fleet hardening).
+  private runMarkers = new RunMarkerService()
   private waitForFeedback: ((messageId: string, timeoutMs?: number) => Promise<any | null>) | null = null
   private imageAttachmentService: ImageAttachmentService | null = null
 
@@ -2243,6 +2247,8 @@ export class AgentService_v2 {
 
     const { sessionId } = context
     this.lastAbortedMessages.delete(sessionId)
+    // Mark this run in-flight so a backend restart mid-turn is recoverable on boot.
+    this.runMarkers.set({ sessionId, startedAt: Date.now(), startMode })
     const lockedProfileId = String(context.lockedProfileId || '')
     if (!lockedProfileId) {
       throw new Error(`Missing locked profile for session ${sessionId}`)
@@ -2329,8 +2335,54 @@ export class AgentService_v2 {
       throw err // Throw to Gateway for UI notification
     } finally {
       this.selfCorrectionRuntimeManager.clearSession(sessionId)
+      this.runMarkers.clear(sessionId)
       await this.clearCheckpoint(sessionId)
     }
+  }
+
+  /**
+   * Boot-time recovery: any run marker still present means the backend was
+   * restarted/crashed mid-turn. Surface a visible warning in each affected
+   * session's transcript (so the user sees the turn was cut off rather than a
+   * silent gap) and clear the marker. Annotate-only by design — we do NOT
+   * auto-re-run on boot (a crash could leave several markers → a thundering
+   * herd of unattended GPU work); re-send is the user's explicit choice.
+   * Returns the sessionIds that were annotated. Safe to call once at startup.
+   */
+  recoverInterruptedRuns(): { recovered: string[] } {
+    const recovered: string[] = []
+    let markers: RunMarker[] = []
+    try {
+      markers = this.runMarkers.getAll()
+    } catch (e) {
+      console.warn('[AgentService_v2] Could not read run markers for recovery:', e)
+      return { recovered }
+    }
+    for (const marker of markers) {
+      try {
+        const { sessionId, startedAt } = marker
+        // Only annotate sessions that still exist on disk.
+        if (this.chatHistoryService.loadSession(sessionId)) {
+          const when = new Date(startedAt).toLocaleString()
+          this.uiHistoryService.recordEvent(sessionId, {
+            type: 'alert',
+            level: 'warning',
+            message: `⚠ The previous turn (started ${when}) was interrupted by a backend restart and did not finish. Re-send your message to continue.`,
+            messageId: `run-recovery-${sessionId}-${startedAt}`
+          } as any)
+          this.uiHistoryService.flush(sessionId)
+          recovered.push(sessionId)
+        }
+      } catch (e) {
+        console.warn(`[AgentService_v2] Recovery annotation failed for ${marker.sessionId}:`, e)
+      } finally {
+        this.runMarkers.clear(marker.sessionId)
+      }
+    }
+    if (recovered.length > 0) {
+      console.log(`[AgentService_v2] Recovered ${recovered.length} interrupted run(s): ${recovered.join(', ')}`)
+    }
+    return { recovered }
   }
 
   private async clearCheckpoint(sessionId: string): Promise<void> {

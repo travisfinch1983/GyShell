@@ -145,6 +145,12 @@ export async function startGyBackend(): Promise<void> {
   }
 
   agentService.updateSettings(settingsService.getSettings())
+  // Recover any turns interrupted by a prior backend restart (annotate the affected sessions).
+  try {
+    agentService.recoverInterruptedRuns?.()
+  } catch (e) {
+    console.warn('[gybackend] interrupted-run recovery failed:', e)
+  }
   await skillService.reload()
   await mcpToolService.reloadAll()
 

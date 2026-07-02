@@ -296,13 +296,19 @@ export async function startElectronMain(): Promise<void> {
     imageAttachmentService
   )
   const gatewayService = new GatewayService(
-    terminalService, 
-    agentService, 
-    uiHistoryService, 
-    commandPolicyService, 
+    terminalService,
+    agentService,
+    uiHistoryService,
+    commandPolicyService,
     settingsService,
     mcpToolService
   )
+  // Recover any turns interrupted by a prior backend restart (annotate the affected sessions).
+  try {
+    agentService.recoverInterruptedRuns?.()
+  } catch (e) {
+    console.warn('[Main] interrupted-run recovery failed:', e)
+  }
   const terminalRestoreResult = await terminalService.restorePersistedTerminals()
   if (terminalRestoreResult.restored.length > 0 || terminalRestoreResult.failed.length > 0) {
     console.log(
