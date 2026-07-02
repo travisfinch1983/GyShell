@@ -192,8 +192,8 @@ const AddView: React.FC<{ onAdded: (id: string) => void }> = observer(({ onAdded
 const INSTANCE_DOT: Record<string, string> = {
   running: 'instDotRunning',
   stopped: 'instDotStopped',
-  'auth-needed': 'instDotAuth',
-  unknown: '',
+  'needs-login': 'instDotAuth',
+  starting: 'instDotStarting',
 }
 
 export const ClaudePanel: React.FC = observer(() => {
@@ -226,7 +226,7 @@ export const ClaudePanel: React.FC = observer(() => {
           <button
             key={INSTANCE_PREFIX + i.id}
             className={`${styles.navTab} ${active === INSTANCE_PREFIX + i.id ? styles.navTabActive : ''}`}
-            title={`CT161 · user ${i.user} · ${i.status}`}
+            title={`CT161 · user ${i.id} · ${i.status}`}
             onClick={() => setActive(INSTANCE_PREFIX + i.id)}
           >
             <span className={`${styles.instDot} ${styles[INSTANCE_DOT[i.status]] ?? ''}`} />

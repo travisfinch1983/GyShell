@@ -13,15 +13,15 @@ import styles from './Claude.module.scss'
  * real enforcement stays at the SSH-key/credential level.
  */
 export const PermissionsPicker: React.FC<{ instance: ClaudeInstance }> = observer(({ instance }) => {
-  const [primary, setPrimary] = useState<number | null>(instance.permissions.primaryVmid)
-  const [allowed, setAllowed] = useState<'all' | number[]>(instance.permissions.allowed)
+  const [primary, setPrimary] = useState<number | null>(instance.primaryVmid ?? null)
+  const [allowed, setAllowed] = useState<'all' | number[]>(instance.allowed)
   const [status, setStatus] = useState('')
 
   // Re-sync local edits when the backend copy changes (e.g. after reload).
   useEffect(() => {
-    setPrimary(instance.permissions.primaryVmid)
-    setAllowed(instance.permissions.allowed)
-  }, [instance.id, instance.permissions.primaryVmid, JSON.stringify(instance.permissions.allowed)])
+    setPrimary(instance.primaryVmid ?? null)
+    setAllowed(instance.allowed)
+  }, [instance.id, instance.primaryVmid, JSON.stringify(instance.allowed)])
 
   const lxc = claudeStore.lxc.slice().sort((a, b) => Number(a.vmid) - Number(b.vmid))
   const isAllowed = (vmid: number) => allowed === 'all' || allowed.includes(vmid)
@@ -36,8 +36,8 @@ export const PermissionsPicker: React.FC<{ instance: ClaudeInstance }> = observe
   }
 
   const dirty =
-    primary !== instance.permissions.primaryVmid ||
-    JSON.stringify(allowed) !== JSON.stringify(instance.permissions.allowed)
+    primary !== (instance.primaryVmid ?? null) ||
+    JSON.stringify(allowed) !== JSON.stringify(instance.allowed)
 
   const save = async () => {
     setStatus('Saving…')

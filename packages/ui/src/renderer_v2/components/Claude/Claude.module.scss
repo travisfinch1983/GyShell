@@ -55,3 +55,6 @@
 .permBadge { font-size: 11.5px; font-family: var(--font-mono); padding: 4px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--control-bg); color: var(--fg-faint); cursor: pointer; &:hover { color: var(--fg); } }
 .permBadgeOn { border-color: var(--accent); color: var(--fg); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .permBadgePrimary { border-width: 2px; border-color: var(--accent); font-weight: 600; }
+.instDotStarting { background: var(--accent); animation: instPulse 1.2s ease-in-out infinite; }
+.inst_starting { color: var(--accent); border-color: var(--accent); }
+@keyframes instPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }

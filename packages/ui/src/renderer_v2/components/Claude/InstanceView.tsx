@@ -28,8 +28,8 @@ function usePersistedHeight(key: string, def: number) {
 const STATUS_LABEL: Record<string, string> = {
   running: 'running',
   stopped: 'stopped',
-  'auth-needed': 'needs /login',
-  unknown: 'unknown',
+  'needs-login': 'needs /login',
+  starting: 'starting…',
 }
 
 /**
@@ -66,10 +66,10 @@ export const InstanceView: React.FC<{ instance: ClaudeInstance }> = observer(({ 
     <div className={styles.connView}>
       <div className={styles.connHead}>
         <strong>{instance.name}</strong>
-        <span className={`${styles.instStatus} ${styles[`inst_${instance.status.replace('-', '_')}`] ?? ''}`}>
+        <span className={`${styles.instStatus} ${styles[`inst_${instance.status.replace(/-/g, '_')}`] ?? ''}`}>
           {STATUS_LABEL[instance.status] ?? instance.status}
         </span>
-        <span className={styles.dim}>CT161 · user {instance.user}</span>
+        <span className={styles.dim}>CT161 · user {instance.id}</span>
         <span className={styles.spacer} />
         <button
           className={styles.btn}
@@ -108,7 +108,7 @@ export const InstanceView: React.FC<{ instance: ClaudeInstance }> = observer(({ 
         </button>
       </div>
       {msg && <div className={styles.dim}>{msg}</div>}
-      {instance.needsLogin && (
+      {instance.status === 'needs-login' && (
         <div className={styles.loginHint}>
           Fresh instance — complete the <code>/login</code> flow in the terminal below to authenticate it.
         </div>
@@ -123,7 +123,7 @@ export const InstanceView: React.FC<{ instance: ClaudeInstance }> = observer(({ 
           <iframe
             key={reloadKey}
             className={styles.term}
-            src={`${store.termUrl(instance.id)}?cb=${reloadKey}`}
+            src={`${instance.termPath}?cb=${reloadKey}`}
             title={`${instance.name} terminal`}
             sandbox="allow-scripts allow-same-origin allow-forms"
           />

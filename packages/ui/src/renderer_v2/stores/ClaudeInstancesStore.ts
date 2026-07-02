@@ -50,10 +50,6 @@ class ClaudeInstancesStore {
     }
   }
 
-  termUrl(id: string): string {
-    return this.api?.termUrl(id) ?? 'about:blank'
-  }
-
   private async withBusy<T>(id: string, fn: () => Promise<T>): Promise<T> {
     runInAction(() => this.busyIds.add(id))
     try {
@@ -73,6 +69,12 @@ class ClaudeInstancesStore {
   async remove(id: string): Promise<void> {
     if (!this.api) return
     await this.withBusy(id, () => this.api!.remove(id))
+    await this.reload()
+  }
+
+  async rename(id: string, name: string): Promise<void> {
+    if (!this.api) return
+    await this.withBusy(id, () => this.api!.rename(id, name))
     await this.reload()
   }
 
