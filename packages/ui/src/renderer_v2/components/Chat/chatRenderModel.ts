@@ -97,6 +97,9 @@ const getRowDisplayKind = (
   const candidate = session.messagesById.get(messageId)
   if (!candidate) return 'hidden'
   if (candidate.type === 'tokens_count') return 'hidden'
+  // req 6: messages collapsed into a compaction summary block are hidden so the
+  // visible transcript matches what the model sees post-compaction.
+  if (candidate.metadata?.compactedAway) return 'hidden'
   if (candidate.role === 'user') return 'user'
   if (isCompletedWhitespaceAssistantText(candidate)) return 'hidden'
 
@@ -111,7 +114,11 @@ const getRowDisplayKind = (
   // also hid older reasoning was the culprit behind reasoning appearing
   // to "vanish" the moment the model emitted a follow-up tool call.)
   if (candidate.type === 'compaction' && !isLastInSession) {
-    return 'hidden'
+    // req 6: a summary block (carries the superseded range) IS the collapsed
+    // history — always keep it visible. Only transient compaction banners hide.
+    if (!candidate.metadata?.supersededMessageIds?.length) {
+      return 'hidden'
+    }
   }
   if (SPECIAL_ASSISTANT_TYPES.has(candidate.type)) return 'assistant'
   return candidate.role === 'assistant' ? 'assistant' : 'hidden'

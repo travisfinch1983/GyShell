@@ -493,6 +493,7 @@ export type AgentEventType =
   | 'debug_history'
   | 'user_input'
   | 'tokens_count'
+  | 'compaction_summary'
 
 export interface AgentEvent {
   type: AgentEventType
@@ -522,6 +523,8 @@ export interface AgentEvent {
   modelName?: string
   totalTokens?: number
   maxTokens?: number
+  /** compaction_summary: backendMessageIds now represented by the summary block (req 6). */
+  supersededMessageIds?: string[]
 }
 
 // ============ Resource Monitor Types ============

@@ -42,6 +42,11 @@ export interface ChatMessage {
     details?: string
     inputKind?: 'normal' | 'inserted'
     inputImages?: InputImageAttachment[]
+    // req 6 compaction UI: on a 'compaction' summary block, the backendMessageIds
+    // it replaced (so the UI can offer "show originals"). On a superseded message,
+    // compactedAway marks it hidden/collapsed under its summary block.
+    supersededMessageIds?: string[]
+    compactedAway?: boolean
   }
   timestamp: number
   streaming?: boolean
@@ -64,3 +69,7 @@ export type UIUpdateAction =
   | { type: 'SESSION_PROFILE_LOCKED'; sessionId: string; lockedProfileId: string | null }
   | { type: 'SESSION_READY'; sessionId: string }
   | { type: 'ROLLBACK'; sessionId: string; messageId: string }
+  // req 6: compaction collapsed the range `supersededMessageIds` into `message`
+  // (a 'compaction' summary block). Frontend hides the superseded messages under
+  // it so the visible transcript matches what the model now sees.
+  | { type: 'COMPACTION_SUMMARY'; sessionId: string; message: ChatMessage; supersededMessageIds: string[] }

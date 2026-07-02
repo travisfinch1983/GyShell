@@ -1804,6 +1804,21 @@ export class AgentService_v2 {
       messageId: compactionMessageId,
       type: 'sub_tool_finished'
     })
+
+    // req 6: tell the UI which prior messages are now represented by the summary
+    // so it can collapse them under a summary block (visible transcript == what
+    // the model now sees). The messages before the insertion index are the ones
+    // dropped from the model request by buildDynamicRequestHistory going forward.
+    const supersededMessageIds = historyBeforeProtectedRounds
+      .map((m) => (m as any)?.additional_kwargs?._gyshellMessageId)
+      .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
+    this.helpers.sendEvent(sessionId, {
+      type: 'compaction_summary',
+      messageId: `compaction-summary-${compactionMessageId}`,
+      summary: summaryText,
+      supersededMessageIds
+    })
+
     return { changed: true, messages: compactedMessages }
   }
 

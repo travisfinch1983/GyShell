@@ -539,6 +539,33 @@ export class ChatStore {
           this.bumpSessionRenderListVersion(session)
           break
         }
+        case 'COMPACTION_SUMMARY': {
+          // req 6: collapse the superseded range under a summary block so the
+          // visible transcript matches what the model sees post-compaction.
+          const msg = update.message
+          if (!msg || typeof msg.id !== 'string' || msg.id.length === 0) break
+          const supSet = new Set<string>(
+            Array.isArray(update.supersededMessageIds) ? update.supersededMessageIds : [],
+          )
+          // Superseded ids are backend message ids — match on backendMessageId.
+          for (const id of session.messageIds) {
+            const m = session.messagesById.get(id)
+            if (m && m.backendMessageId && supSet.has(m.backendMessageId)) {
+              m.metadata = { ...(m.metadata || {}), compactedAway: true }
+            }
+          }
+          if (!session.messagesById.has(msg.id)) {
+            session.messagesById.set(msg.id, msg)
+            let insertIdx = session.messageIds.findIndex((id) => {
+              const m = session.messagesById.get(id)
+              return m && m.backendMessageId && supSet.has(m.backendMessageId)
+            })
+            if (insertIdx < 0) insertIdx = session.messageIds.length
+            session.messageIds.splice(insertIdx, 0, msg.id)
+          }
+          this.bumpSessionRenderListVersion(session)
+          break
+        }
         case 'APPEND_CONTENT': {
           const msg = session.messagesById.get(update.messageId)
           if (msg) {

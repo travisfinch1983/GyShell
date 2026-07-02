@@ -492,6 +492,31 @@ export class UIHistoryService {
         // Notify frontend UI to execute corresponding rollback Action
         actions.push({ type: 'ROLLBACK' as any, sessionId, messageId: mid } as any);
       }
+    } else if (type === 'compaction_summary') {
+      // req 6: collapse the superseded range into a single summary block so the
+      // visible transcript matches what the model now sees post-compaction.
+      const superseded = new Set(
+        (event.supersededMessageIds || []).filter((x): x is string => typeof x === 'string' && x.length > 0)
+      )
+      for (const m of session.messages) {
+        if (m.backendMessageId && superseded.has(m.backendMessageId)) {
+          m.metadata = { ...(m.metadata || {}), compactedAway: true }
+        }
+      }
+      const message = this.createMessage({
+        role: 'system',
+        type: 'compaction',
+        content: event.summary || '',
+        metadata: { supersededMessageIds: Array.from(superseded) },
+        backendMessageId: event.messageId
+      }, sessionId)
+      // Place the summary block just before the first superseded message so it
+      // reads in-position at the top of the collapsed range; else append.
+      let insertAt = session.messages.findIndex((m) => m.backendMessageId && superseded.has(m.backendMessageId))
+      if (insertAt < 0) insertAt = session.messages.length
+      session.messages.splice(insertAt, 0, message)
+      this.dirtySessions.add(sessionId)
+      actions.push({ type: 'COMPACTION_SUMMARY', sessionId, message, supersededMessageIds: Array.from(superseded) })
     }
     return actions
   }
