@@ -301,16 +301,22 @@ export class ConversationBus extends EventEmitter {
 
   // ─── Inbound relay bridge (R1.6) ──────────────────────────────────────────
 
-  /** Accepts a claude-relay-style POST body; returns the appended envelope. */
+  /**
+   * Accepts a claude-relay-style POST body; returns the appended envelope.
+   * recipient "broadcast" fans out to every enabled agent (relay replacement:
+   * this + cursor reads is the whole claude-relay surface).
+   */
   handleRelayInbound(payload: unknown): BusEnvelope {
     const msg = relayInboundMessageSchema.parse(payload)
     const sender = this.registry.ensureRelayAgent(msg.sender)
-    // Recipient: an existing agentId, the user, or auto-registered relay name.
-    const recipient =
-      this.registry.get(msg.recipient) ??
-      (msg.recipient.toLowerCase() === USER_AGENT_ID
-        ? this.registry.get(USER_AGENT_ID)!
-        : this.registry.ensureRelayAgent(msg.recipient))
+    const wantsBroadcast = msg.recipient.toLowerCase() === BROADCAST_ADDRESS
+    // Recipient: broadcast, an existing agentId, the user, or auto-registered relay name.
+    const recipient = wantsBroadcast
+      ? null
+      : (this.registry.get(msg.recipient) ??
+        (msg.recipient.toLowerCase() === USER_AGENT_ID
+          ? this.registry.get(USER_AGENT_ID)!
+          : this.registry.ensureRelayAgent(msg.recipient)))
 
     // Backpressure (R1.6): cap queued local deliveries per external sender.
     const queuedFromSender = [...this.inboxes.values()]
@@ -323,8 +329,8 @@ export class ConversationBus extends EventEmitter {
     return this.send('relay', sender.agentId, {
       id: `relay-${msg.sender}-${this.store.nextSeq()}`,
       from: sender.agentId,
-      to: recipient.agentId,
-      kind: 'dm',
+      to: wantsBroadcast ? BROADCAST_ADDRESS : recipient!.agentId,
+      kind: wantsBroadcast ? 'broadcast' : 'dm',
       body: msg.message,
     })
   }

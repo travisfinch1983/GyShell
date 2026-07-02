@@ -37,6 +37,7 @@ import { TerminalStateStore } from '../../services/terminal/TerminalStateStore'
 import { ConversationBus, JsonlBusStore, AgentRegistry } from '../../services/ConversationBus'
 import { createFleetBridge } from '../../services/ConversationBus/fleetBridge'
 import { createBusAgentInvoker } from '../../services/ConversationBus/BusAgentInvoker'
+import { createFleetRouter } from '../../services/ConversationBus/fleetHttp'
 import { createAutoTerminalConfig } from '../../services/terminal/terminalConnectionSupport'
 import { TerminalCommandDraftService } from '../../services/TerminalCommandDraftService'
 
@@ -174,7 +175,7 @@ export async function startGyBackend(): Promise<void> {
   })
   // AI-Lab Universal API Proxy — dedicated HTTP listener fronting running services by slot.
   void universalProxyService
-    .start({ dataDir, fleetInbound: (payload) => conversationBus.handleRelayInbound(payload) })
+    .start({ dataDir, fleetRouter: createFleetRouter(conversationBus) })
     .catch((e) => console.warn('[gybackend] universal proxy failed to start:', e))
 
   const terminalRestoreResult = await terminalService.restorePersistedTerminals()
