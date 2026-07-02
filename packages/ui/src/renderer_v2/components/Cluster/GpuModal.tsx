@@ -27,6 +27,12 @@ export const GpuModal: React.FC<{ guest: ClusterGuest; onClose: () => void }> = 
       setSelected(base.includes(pciId) ? base.filter((x) => x !== pciId) : [...base, pciId])
     }
 
+    // Assigned PCI ids that are NOT among this node's currently-detected GPUs (e.g. a card that was
+    // removed/moved). Without rendering these, they have no checkbox to clear — so they stay stuck in
+    // the assignment forever, inflate the badge count, and break container launch (hookscript tries to
+    // mount a device that no longer exists). Render them checked so they can be unchecked/removed.
+    const staleAssigned: string[] = sel.filter((id) => !gpus.some((g) => g.pciId === id))
+
     const save = async () => {
       await clusterStore.setGpuAssignment(guest.vmid, { mountStyle, gpus: sel })
       if (!clusterStore.actionError) onClose()
@@ -55,7 +61,7 @@ export const GpuModal: React.FC<{ guest: ClusterGuest; onClose: () => void }> = 
           </div>
           <div className={styles.gpuList}>
             {!clusterStore.gpuInventory && <div className={styles.dim}>Loading GPUs…</div>}
-            {clusterStore.gpuInventory && gpus.length === 0 && (
+            {clusterStore.gpuInventory && gpus.length === 0 && staleAssigned.length === 0 && (
               <div className={styles.dim}>No GPUs detected on {guest.node}.</div>
             )}
             {gpus.map((gpu) => (
@@ -63,6 +69,13 @@ export const GpuModal: React.FC<{ guest: ClusterGuest; onClose: () => void }> = 
                 <input type="checkbox" checked={sel.includes(gpu.pciId)} onChange={() => toggle(gpu.pciId)} />
                 <span className={styles.mono}>{gpu.pciId}</span>
                 <span>{gpu.friendlyName || gpu.productName || gpu.vendor}</span>
+              </label>
+            ))}
+            {staleAssigned.map((pciId) => (
+              <label key={pciId} className={styles.gpuItem}>
+                <input type="checkbox" checked onChange={() => toggle(pciId)} />
+                <span className={styles.mono}>{pciId}</span>
+                <span className={styles.modalErr}>⚠ not present on {guest.node} — uncheck to remove</span>
               </label>
             ))}
           </div>
