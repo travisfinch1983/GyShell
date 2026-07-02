@@ -36,6 +36,10 @@ export interface ChatMessage {
     filePath?: string
     action?: 'created' | 'edited' | 'error'
     collapsed?: boolean
+    // req 6 compaction: summary block carries the ids it replaced; a superseded
+    // message is flagged compactedAway so the render model hides it.
+    supersededMessageIds?: string[]
+    compactedAway?: boolean
     isNowait?: boolean
     toolName?: string
     subToolTitle?: string

@@ -176,7 +176,7 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
         <div
           className={`message-row-container role-assistant${mergeWithPreviousAssistant ? " is-group-continuation" : ""}${isSearchMatch ? " is-search-match" : ""}${isActiveSearchMatch ? " is-search-active" : ""}`}
         >
-          <div className="message-role-label assistant">{msg.metadata?.modelName ? msg.metadata.modelName.toUpperCase() : 'ASSISTANT'}{msg.timestamp ? <span className="message-timestamp">{formatMessageTimestamp(msg.timestamp)}</span> : null}</div>
+          <div className="message-role-label assistant">{msg?.metadata?.modelName ? msg.metadata.modelName.toUpperCase() : 'ASSISTANT'}{msg?.timestamp ? <span className="message-timestamp">{formatMessageTimestamp(msg.timestamp)}</span> : null}</div>
           <SeamlessToolGroupBanner
             messages={groupMessages}
             expanded={bannerUiState?.expanded}
