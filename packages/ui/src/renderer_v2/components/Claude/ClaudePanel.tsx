@@ -236,7 +236,7 @@ export const ClaudePanel: React.FC = observer(() => {
         <button className={`${styles.navTab} ${styles.addTab} ${active === SPAWN ? styles.navTabActive : ''}`} onClick={() => setActive(SPAWN)}><Plus size={13} /> Spawn</button>
         <span className={styles.navDivider} />
         {/* Legacy per-container connections (retired as instances migrate to the consolidated container) */}
-        {store.connections.map((c) => (
+        {store.connections.filter((c) => !instancesStore.instances.some((i) => (i.termPath || '').endsWith('/' + c.id))).map((c) => (
           <button key={c.id} className={`${styles.navTab} ${active === c.id ? styles.navTabActive : ''}`} onClick={() => setActive(c.id)}>{c.name}</button>
         ))}
         <button className={`${styles.navTab} ${active === DIRECTIVES ? styles.navTabActive : ''}`} onClick={() => setActive(DIRECTIVES)}>Central Directives</button>
