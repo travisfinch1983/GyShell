@@ -9,6 +9,10 @@
   min-height: 0;
   position: relative;
   display: flex;
+  // Reserve room for the always-present collapsed GPU Fleet panel handle
+  // (position:fixed, bottom:0, ~34px) so bottom controls (settings button,
+  // panel footers) aren't hidden behind it.
+  padding-bottom: 40px;
 }
 
 .gyshell-minion-sidebar {

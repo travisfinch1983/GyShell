@@ -32,7 +32,7 @@ import { observer } from "mobx-react-lite";
 import type { AppStore } from "../../stores/AppStore";
 import type { ModelDefinition } from "../../lib/ipcTypes";
 import { BUILTIN_THEMES } from "../../theme/themes";
-import { ProxmoxSettingsPanel, ClusterTokensPanel, ClusterUiPanel, ExternalServicesPanel, ServiceNamesPanel, GpuPoolsPanel, AiAgentsPanel, SharedFoldersPanel } from "./ClusterSettingsPanels";
+import { ProxmoxSettingsPanel, ClusterTokensPanel, ClusterUiPanel, ExternalServicesPanel, ServiceNamesPanel, GpuPoolsPanel, SharedFoldersPanel } from "./ClusterSettingsPanels";
 import type { AppTheme } from "../../theme/themes";
 import "./settings.scss";
 import { ConfirmDialog } from "../Common/ConfirmDialog";
@@ -1122,15 +1122,6 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
           >
             <span className="icon"><Cpu size={16} strokeWidth={2} /></span>
             <span>GPU &amp; Pools</span>
-          </div>
-          <div
-            className={store.settingsSection === "cluster-agents" ? "settings-nav-item is-active" : "settings-nav-item"}
-            onClick={() => store.setSettingsSection("cluster-agents")}
-            role="button"
-            tabIndex={0}
-          >
-            <span className="icon"><Users size={16} strokeWidth={2} /></span>
-            <span>AI Agents</span>
           </div>
           <div
             className={store.settingsSection === "cluster-storage" ? "settings-nav-item is-active" : "settings-nav-item"}
@@ -2976,7 +2967,6 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
           {store.settingsSection === "cluster-services" ? <ExternalServicesPanel /> : null}
           {store.settingsSection === "cluster-servicenames" ? <ServiceNamesPanel /> : null}
           {store.settingsSection === "cluster-gpu" ? <GpuPoolsPanel /> : null}
-          {store.settingsSection === "cluster-agents" ? <AiAgentsPanel /> : null}
           {store.settingsSection === "cluster-storage" ? <SharedFoldersPanel /> : null}
           {store.settingsSection === "cluster-proxy" ? <ProxySettingsPanel /> : null}
         </div>

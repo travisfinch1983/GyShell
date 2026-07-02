@@ -103,7 +103,6 @@ export type SettingsSection =
   | 'cluster-services'
   | 'cluster-servicenames'
   | 'cluster-gpu'
-  | 'cluster-agents'
   | 'cluster-storage'
   | 'cluster-proxy';
 
