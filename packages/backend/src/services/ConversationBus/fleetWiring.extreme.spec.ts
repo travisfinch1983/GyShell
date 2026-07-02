@@ -2,6 +2,7 @@
 import { mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+// @ts-expect-error — express ships untyped in this repo (same pre-existing gap as UniversalProxyService)
 import express from 'express'
 import { ConversationBus, JsonlBusStore, AgentRegistry } from './index'
 import { createFleetBridge } from './fleetBridge'
