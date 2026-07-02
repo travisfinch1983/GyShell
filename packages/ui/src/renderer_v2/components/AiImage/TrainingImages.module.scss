@@ -18,14 +18,15 @@
 .fbadge { font-size: 9.5px; text-transform: uppercase; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--fg-muted); }
 .fbadgeTs { color: var(--accent); border-color: var(--accent); }
 
-.grid { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 12px; align-content: start; }
-// Square tiles via the intrinsic padding-ratio trick (::before padding-top:100%) rather than
-// aspect-ratio. min-width:0 stops the contained <img>'s intrinsic width from blowing out the
-// 1fr tracks; the ::before forces height == width so the tile can NEVER collapse to ~0 height and
-// stack/overlap (which is what aspect-ratio alone was doing here — it wasn't resolving a height
-// for a grid item whose only children are absolutely-positioned). The img fills absolutely.
+// FIXED-SIZE cells on BOTH axes — do not reintroduce intrinsic sizing here. With auto rows +
+// tiles whose contents are absolutely positioned, the rows contributed ~0 intrinsic height and
+// got squashed to equally divide the container (measured live: 107 tiles → 11 rows × 59px in a
+// 757px non-scrolling grid; ::before resolved 153px but align-items:stretch clamped tiles to the
+// 59px row) → thumbnails piled onto each other. aspect-ratio and padding-top:100% both lost the
+// same way. Explicit 150px rows make row height unconditional; overflow:auto then really scrolls.
+// (ProxLab avoided this class of bug by never using intrinsic grid rows — fixed/flex-wrap cells.)
+.grid { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, 150px); grid-auto-rows: 150px; gap: 8px; padding: 12px; align-content: start; justify-content: space-between; }
 .tile { position: relative; min-width: 0; border: 2px solid transparent; border-radius: 8px; overflow: hidden; background: var(--panel-bg-2, #111); cursor: pointer; user-select: none;
-  &::before { content: ''; display: block; padding-top: 100%; }
   img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; } }
 .tileSel { border-color: var(--accent); }
 .tileName { position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 6px; font-size: 10px; background: linear-gradient(transparent, rgba(0,0,0,0.75)); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
