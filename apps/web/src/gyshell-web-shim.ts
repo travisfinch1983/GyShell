@@ -149,6 +149,15 @@ const gyshellApi = {
     testPve: () => rpc('clusterSettings:testPve'),
   },
 
+  fleet: {
+    // ConversationBus (fleet vertical): feed replay/live-tail, sends, guard config.
+    send: (request: any) => rpc('fleet:send', request),
+    replay: (afterSeq: number, limit?: number) => rpc('fleet:replay', { afterSeq, limit }),
+    status: () => rpc('fleet:status'),
+    setGuardConfig: (patch: any) => rpc('fleet:setGuardConfig', patch),
+    onRecord: (cb: (record: any) => void): CleanupFn => onRaw('fleet:record', cb),
+  },
+
   windowing: {
     openDetached: noop,
     onMainWindowClosing: noopCleanup,

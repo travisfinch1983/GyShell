@@ -17,6 +17,7 @@ import { TerminalWorkspace } from './components/Terminal/TerminalWorkspace'
 import { MinionSidebar } from './components/Minions/MinionSidebar'
 import { PrimarySidebar, type PrimaryTab } from './components/PrimarySidebar/PrimarySidebar'
 import { GlobalChat } from './components/Chat/GlobalChat'
+import { FleetPanel } from './components/Fleet/FleetPanel'
 import { ContextMenuOverlay } from './components/Common/ContextMenuOverlay'
 import { ClusterPanel } from './components/Cluster/ClusterPanel'
 import { ServicesPanel } from './components/Services/ServicesPanel'
@@ -364,6 +365,8 @@ export const App: React.FC = observer(() => {
           {primaryTab === 'model-downloads' && <ModelDownloadsPanel />}
 
           {primaryTab === 'logs' && <LogsPanel />}
+
+          {primaryTab === 'fleet' && <FleetPanel />}
 
           {primaryTab === 'flowchart' && (
             <PlaceholderPanel
