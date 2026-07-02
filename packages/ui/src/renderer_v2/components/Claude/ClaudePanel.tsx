@@ -2,12 +2,17 @@ import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { Plus, Trash2, RefreshCw, Save, RotateCcw, Terminal as TermIcon } from 'lucide-react'
 import { claudeStore as store, CLAUDE_FILES } from '../../stores/ClaudeStore'
+import { claudeInstancesStore as instancesStore } from '../../stores/ClaudeInstancesStore'
 import { confirmStore } from '../../stores/confirmStore'
 import { uiPrefsStore } from '../../stores/uiPrefsStore'
+import { InstanceView } from './InstanceView'
+import { SpawnInstanceView } from './SpawnInstanceView'
 import styles from './Claude.module.scss'
 
 const DIRECTIVES = '__directives__'
 const ADD = '__add__'
+const SPAWN = '__spawn__'
+const INSTANCE_PREFIX = 'inst:'
 
 /** Resizable element whose height persists to the backend (uiPrefsStore), keyed per consumer. */
 function usePersistedHeight(key: string, def: number) {
@@ -184,23 +189,53 @@ const AddView: React.FC<{ onAdded: (id: string) => void }> = observer(({ onAdded
   )
 })
 
+const INSTANCE_DOT: Record<string, string> = {
+  running: 'instDotRunning',
+  stopped: 'instDotStopped',
+  'auth-needed': 'instDotAuth',
+  unknown: '',
+}
+
 export const ClaudePanel: React.FC = observer(() => {
-  useEffect(() => { if (!store.loaded) void store.load(); void uiPrefsStore.ensureLoaded() }, [])
+  useEffect(() => {
+    if (!store.loaded) void store.load()
+    void instancesStore.ensureLoaded()
+    void uiPrefsStore.ensureLoaded()
+  }, [])
   const [active, setActiveState] = useState<string>(DIRECTIVES)
   const restored = useRef(false)
   // Restore the last-viewed sub-tab once prefs + connections have loaded (fall back if it's a stale connection).
   useEffect(() => {
-    if (restored.current || !uiPrefsStore.loaded || !store.loaded) return
+    if (restored.current || !uiPrefsStore.loaded || !store.loaded || !instancesStore.loaded) return
     restored.current = true
     const saved = uiPrefsStore.get('claudeActiveTab', DIRECTIVES) as string
-    if (saved === DIRECTIVES || saved === ADD || store.connections.some((c) => c.id === saved)) setActiveState(saved)
-  }, [uiPrefsStore.loaded, store.loaded])
+    const isInstance = saved.startsWith(INSTANCE_PREFIX) && instancesStore.instances.some((i) => INSTANCE_PREFIX + i.id === saved)
+    if (saved === DIRECTIVES || saved === ADD || saved === SPAWN || isInstance || store.connections.some((c) => c.id === saved)) setActiveState(saved)
+  }, [uiPrefsStore.loaded, store.loaded, instancesStore.loaded])
   const setActive = (id: string) => { setActiveState(id); uiPrefsStore.set('claudeActiveTab', id) }
   const conn = store.connections.find((c) => c.id === active)
+  const instance = active.startsWith(INSTANCE_PREFIX)
+    ? instancesStore.instances.find((i) => INSTANCE_PREFIX + i.id === active)
+    : undefined
 
   return (
     <div className={styles.panel}>
       <div className={styles.subNav}>
+        {/* Consolidated CT161 instances (fleet-consolidation Phase 3) */}
+        {instancesStore.instances.map((i) => (
+          <button
+            key={INSTANCE_PREFIX + i.id}
+            className={`${styles.navTab} ${active === INSTANCE_PREFIX + i.id ? styles.navTabActive : ''}`}
+            title={`CT161 · user ${i.user} · ${i.status}`}
+            onClick={() => setActive(INSTANCE_PREFIX + i.id)}
+          >
+            <span className={`${styles.instDot} ${styles[INSTANCE_DOT[i.status]] ?? ''}`} />
+            {i.name}
+          </button>
+        ))}
+        <button className={`${styles.navTab} ${styles.addTab} ${active === SPAWN ? styles.navTabActive : ''}`} onClick={() => setActive(SPAWN)}><Plus size={13} /> Spawn</button>
+        <span className={styles.navDivider} />
+        {/* Legacy per-container connections (retired as instances migrate to CT161) */}
         {store.connections.map((c) => (
           <button key={c.id} className={`${styles.navTab} ${active === c.id ? styles.navTabActive : ''}`} onClick={() => setActive(c.id)}>{c.name}</button>
         ))}
@@ -209,10 +244,18 @@ export const ClaudePanel: React.FC = observer(() => {
       </div>
       <div className={styles.body}>
         {store.err && <div className={styles.error}>{store.err}</div>}
+        {instancesStore.err && <div className={styles.error}>{instancesStore.err}</div>}
+        {instancesStore.mocked && instancesStore.loaded && (
+          <div className={styles.mockBanner}>
+            Instance-manager API not deployed yet — consolidated-instance tabs show MOCK data (UI preview; spawn/controls don't touch CT161).
+          </div>
+        )}
         {active === DIRECTIVES && <DirectivesView />}
         {active === ADD && <AddView onAdded={(id) => setActive(id || DIRECTIVES)} />}
+        {active === SPAWN && <SpawnInstanceView onSpawned={(id) => setActive(INSTANCE_PREFIX + id)} />}
+        {instance && <InstanceView instance={instance} />}
         {conn && <ConnectionView conn={conn} />}
-        {active !== DIRECTIVES && active !== ADD && !conn && <div className={styles.dim}>Select a connection.</div>}
+        {active !== DIRECTIVES && active !== ADD && active !== SPAWN && !conn && !instance && <div className={styles.dim}>Select a connection.</div>}
       </div>
     </div>
   )
