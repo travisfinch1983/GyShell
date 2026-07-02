@@ -183,6 +183,21 @@ export class GatewayService extends EventEmitter implements IGatewayRuntime {
     }
   }
 
+  /**
+   * ConversationBus seam (fleet vertical): run an agent's turn from delivered
+   * inter-agent messages, reusing the full normal-dispatch lifecycle (profile
+   * lock, abort wiring, DONE/SESSION_READY, transcript persistence). Resolves
+   * when the turn completes so the bus can mark deliveries done in order.
+   *
+   * Single-flight is enforced UPSTREAM by the bus's per-agent inbox (one
+   * in-flight run per sessionId), and delivery-triggered inference only reaches
+   * here when the bus's kill switch (autonomousRoutingEnabled) is on and the
+   * guards pass — so this is a thin, safe delegation, not a new code path.
+   */
+  async dispatchFromBus(sessionId: string, input: StartTaskInput): Promise<void> {
+    return this.dispatchTask(sessionId, input, { startMode: 'normal' });
+  }
+
   async stopTask(
     sessionId: string,
     options?: { waitForCompletion?: boolean; preserveProfileLock?: boolean }
