@@ -1,6 +1,7 @@
 import type { AgentEvent, UserInputPayload } from '../../types';
 import type { ExperimentalFlags } from '../../types';
 import type { ChatMessage } from '../../types/ui-chat';
+import type { ViewSnapshot } from '@gyshell/shared';
 
 /**
  * Core event definitions, all frontend-backend communication happens through these events
@@ -60,6 +61,13 @@ export type StartTaskInput = string | UserInputPayload;
 
 export interface StartTaskOptions {
   startMode?: StartTaskMode;
+  /**
+   * Snapshot of what the user was looking at when they sent this turn
+   * (req 3 view-context awareness). Captured at send time in the renderer and
+   * attached to the message (doc R2.1); the backend injects a cheap summary
+   * into the turn so the agent can resolve context-dependent asks.
+   */
+  viewSnapshot?: ViewSnapshot;
 }
 
 export interface GatewaySessionSummary {

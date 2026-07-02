@@ -154,6 +154,11 @@ const StateAnnotation = Ann.Root({
   writeStdinActionModelEnabled: Ann({
     reducer: (x: boolean, y?: boolean) => (typeof y === 'boolean' ? y : x),
     default: () => true
+  }),
+  // req 3 view-context: the sender's current-view snapshot for this run (or null).
+  view_snapshot: Ann({
+    reducer: (x: any, y?: any) => (y !== undefined ? y : x),
+    default: () => null
   })
 })
 
@@ -202,6 +207,9 @@ export class AgentService_v2 {
   // Persistent "run in flight" markers for boot-time recovery of turns
   // interrupted by a backend restart (Phase-0 fleet hardening).
   private runMarkers = new RunMarkerService()
+  // req 3 view-context: last-injected ViewSnapshot hash per session, so an
+  // unchanged view injects a one-liner instead of the full block (R2.3 dedup).
+  private lastInjectedViewHash: Map<string, string> = new Map()
   private waitForFeedback: ((messageId: string, timeoutMs?: number) => Promise<any | null>) | null = null
   private imageAttachmentService: ImageAttachmentService | null = null
 
@@ -537,6 +545,15 @@ export class AgentService_v2 {
       if (startupMode === 'normal') {
         const tabs = this.terminalService.getAllTerminals()
         injectedUserContent = prependSystemInfoToUserInput(enrichedContent, tabs, sessionId)
+      }
+
+      // req 3 view-context: prepend a summary of what the user is looking at so
+      // the agent can resolve context-dependent asks. Model-only — it rides
+      // injectedUserContent (what the model sees), never displayContent (what's
+      // shown/persisted), so it doesn't pollute the transcript. Hash-deduped.
+      const viewInjection = this.buildViewContextInjection((state as any).view_snapshot, sessionId)
+      if (viewInjection) {
+        injectedUserContent = `${viewInjection}\n\n${injectedUserContent}`
       }
 
       const humanMessageContent =
@@ -2286,7 +2303,8 @@ export class AgentService_v2 {
       taskFinishGuardEnabled: runExperimentalFlags.taskFinishGuardEnabled,
       firstTurnThinkingModelEnabled: runExperimentalFlags.firstTurnThinkingModelEnabled,
       execCommandActionModelEnabled: runExperimentalFlags.execCommandActionModelEnabled,
-      writeStdinActionModelEnabled: runExperimentalFlags.writeStdinActionModelEnabled
+      writeStdinActionModelEnabled: runExperimentalFlags.writeStdinActionModelEnabled,
+      view_snapshot: (context as any)?.metadata?.viewSnapshot ?? null
     }
 
     try {
@@ -2349,6 +2367,33 @@ export class AgentService_v2 {
    * herd of unattended GPU work); re-send is the user's explicit choice.
    * Returns the sessionIds that were annotated. Safe to call once at startup.
    */
+  /**
+   * req 3 view-context: format the injected block from a ViewSnapshot. Returns
+   * null when there's no usable snapshot. Hash-dedup (R2.3): if the view is
+   * unchanged since the last injected turn in this session, emit a terse
+   * one-liner instead of the full block to keep turns cheap. Adapter fallback
+   * (R2.4) already happened in the renderer (summary always present).
+   */
+  private buildViewContextInjection(snapshot: any, sessionId: string): string | null {
+    if (!snapshot || typeof snapshot !== 'object') return null
+    const summary = String(snapshot.summary || '').trim()
+    if (!summary) return null
+    const kind = String(snapshot.activePanelKind || 'unknown')
+    const tab = snapshot.activeTabTitle ? ` — "${String(snapshot.activeTabTitle)}"` : ''
+    const hash = typeof snapshot.hash === 'string' ? snapshot.hash : ''
+    const unchanged = !!hash && this.lastInjectedViewHash.get(sessionId) === hash
+    if (hash) this.lastInjectedViewHash.set(sessionId, hash)
+    if (unchanged) {
+      return `[USER'S CURRENT VIEW — unchanged since last message: ${kind}${tab}]`
+    }
+    return [
+      `[USER'S CURRENT VIEW]`,
+      `The user is looking at the AI-Lab "${kind}"${tab} panel.`,
+      summary,
+      `If their message plausibly refers to what they're viewing, use this context to answer; if it's genuinely ambiguous, ask them to clarify rather than guessing.`
+    ].join('\n')
+  }
+
   recoverInterruptedRuns(): { recovered: string[] } {
     const recovered: string[] = []
     let markers: RunMarker[] = []

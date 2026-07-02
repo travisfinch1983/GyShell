@@ -143,6 +143,9 @@ export class GatewayService extends EventEmitter implements IGatewayRuntime {
     context.status = 'running';
     context.metadata.runCompletion = runCompletion;
     context.metadata.runId = runId;
+    // View-context (req 3): stash the sender's current-view snapshot for this run
+    // so AgentService can inject a cheap summary into the turn. Cleared each run.
+    context.metadata.viewSnapshot = options?.viewSnapshot;
 
     try {
       // AgentService has been refactored as stateless run

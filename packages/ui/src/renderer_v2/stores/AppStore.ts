@@ -51,6 +51,7 @@ import {
   type WindowingTerminalTabSnapshot,
 } from '../lib/windowing'
 import type { FileEditorSnapshot } from '../lib/fileEditorSnapshot'
+import { buildViewSnapshot } from '../lib/viewContext'
 import {
   resolveTerminalConnectionCapabilities,
   type TerminalConnectionRef,
@@ -3069,9 +3070,13 @@ export class AppStore {
     }
 
     const startMode = wasBusy && mode === 'normal' ? 'inserted' : 'normal'
+    // req 3 view-context: capture what the user is looking at, at send time, and
+    // attach it so the agent can resolve context-dependent asks. Never blocks send.
+    const viewSnapshot = buildViewSnapshot(this as any)
     window.gyshell.agent.startTask(targetSessionId, resolvedContent, {
       startMode,
-    })
+      ...(viewSnapshot ? { viewSnapshot } : {}),
+    } as any)
     return true
   }
 
