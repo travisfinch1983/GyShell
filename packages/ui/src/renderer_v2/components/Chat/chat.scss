@@ -471,12 +471,12 @@ body.chat-drag-selection-suppressed * {
     color: var(--fg);
     opacity: 0.7;
   }
-  &.assistant.minion-role {
+  &.assistant.legacy-role {
     opacity: 1;
   }
 }
 
-.message-row-container.minion-message {
+.message-row-container.legacy-message {
   border-left: 3px solid;
   border-radius: 4px;
   margin: 4px 0;
@@ -497,8 +497,8 @@ body.chat-drag-selection-suppressed * {
   display: none;
 }
 
-/* Minion Edit & Resend */
-.minion-edit-resend {
+/* Legacy Edit & Resend */
+.legacy-edit-resend {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -506,7 +506,7 @@ body.chat-drag-selection-suppressed * {
   margin-top: 4px;
 }
 
-.minion-edit-textarea {
+.legacy-edit-textarea {
   width: 100%;
   min-height: 48px;
   max-height: 200px;
@@ -521,19 +521,19 @@ body.chat-drag-selection-suppressed * {
   resize: vertical;
 }
 
-.minion-edit-textarea:focus {
+.legacy-edit-textarea:focus {
   outline: none;
   box-shadow: 0 0 0 1px var(--accent, #3b82f6);
 }
 
-.minion-edit-actions {
+.legacy-edit-actions {
   display: flex;
   justify-content: flex-end;
   gap: 4px;
 }
 
-.minion-edit-send,
-.minion-edit-cancel {
+.legacy-edit-send,
+.legacy-edit-cancel {
   border: none;
   border-radius: 3px;
   padding: 3px 8px;
@@ -544,28 +544,28 @@ body.chat-drag-selection-suppressed * {
   gap: 3px;
 }
 
-.minion-edit-send {
+.legacy-edit-send {
   background: var(--accent, #3b82f6);
   color: #fff;
 }
 
-.minion-edit-cancel {
+.legacy-edit-cancel {
   background: transparent;
   color: var(--ink-soft, #6b7280);
   border: 1px solid var(--border, #2a2f3a);
 }
 
-.minion-edit-send:hover {
+.legacy-edit-send:hover {
   opacity: 0.9;
 }
 
-.minion-edit-cancel:hover {
+.legacy-edit-cancel:hover {
   background: var(--surface-soft, #1e2235);
 }
 
-/* ─── Minion Parsed Message — Thinking / Summary / Detail ───── */
+/* ─── Legacy Parsed Message — Thinking / Summary / Detail ───── */
 
-.minion-thinking-toggle {
+.legacy-thinking-toggle {
   border: none;
   background: transparent;
   cursor: pointer;
@@ -579,17 +579,17 @@ body.chat-drag-selection-suppressed * {
   vertical-align: middle;
 }
 
-.minion-thinking-toggle:hover {
+.legacy-thinking-toggle:hover {
   opacity: 1;
   background: color-mix(in srgb, currentColor 10%, transparent);
 }
 
-.minion-thinking-toggle.active {
+.legacy-thinking-toggle.active {
   opacity: 1;
   background: color-mix(in srgb, currentColor 12%, transparent);
 }
 
-.minion-thinking-block {
+.legacy-thinking-block {
   margin: 4px 0 6px;
   padding: 6px 10px;
   border-radius: 4px;
@@ -600,7 +600,7 @@ body.chat-drag-selection-suppressed * {
   overflow-y: auto;
 }
 
-.minion-thinking-header {
+.legacy-thinking-header {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -613,31 +613,31 @@ body.chat-drag-selection-suppressed * {
   opacity: 0.8;
 }
 
-.minion-thinking-content {
+.legacy-thinking-content {
   color: var(--fg-muted);
   font-size: 12px;
   line-height: 1.5;
 }
 
-.minion-thinking-content .markdown-body {
+.legacy-thinking-content .markdown-body {
   font-size: 12px;
 }
 
-.minion-summary-line {
+.legacy-summary-line {
   padding: 4px 0 2px;
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-.minion-summary-text {
+.legacy-summary-text {
   font-size: 12px;
   color: var(--fg-muted);
   flex: 1;
   line-height: 1.4;
 }
 
-.minion-detail-toggle {
+.legacy-detail-toggle {
   border: none;
   background: transparent;
   cursor: pointer;
@@ -653,16 +653,16 @@ body.chat-drag-selection-suppressed * {
   transition: background 0.15s, color 0.15s;
 }
 
-.minion-detail-toggle:hover {
+.legacy-detail-toggle:hover {
   background: color-mix(in srgb, var(--fg) 8%, transparent);
   color: var(--fg);
 }
 
-.minion-collapse-toggle {
+.legacy-collapse-toggle {
   margin-top: 4px;
 }
 
-.minion-summary-badge {
+.legacy-summary-badge {
   font-size: 10px;
   color: var(--fg-faint);
   opacity: 0.5;
@@ -1152,9 +1152,9 @@ body.chat-drag-selection-suppressed * {
   50% { opacity: 0.4; }
 }
 
-/* ─── Minion Code Blocks ─────────────────────────────── */
+/* ─── Legacy Code Blocks ─────────────────────────────── */
 
-.minion-code-blocks {
+.legacy-code-blocks {
   margin: 4px 0 6px;
   padding: 6px 10px;
   border-radius: 4px;
@@ -1165,11 +1165,11 @@ body.chat-drag-selection-suppressed * {
   overflow-y: auto;
 }
 
-.minion-code-block {
+.legacy-code-block {
   margin-top: 6px;
 }
 
-.minion-code-block pre {
+.legacy-code-block pre {
   margin: 0;
   font-size: 12px;
   line-height: 1.4;

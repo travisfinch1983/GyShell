@@ -15,7 +15,7 @@
   padding-bottom: 40px;
 }
 
-.gyshell-minion-sidebar {
+.gyshell-agent-rail {
   width: 220px;
   min-width: 180px;
   max-width: 300px;
@@ -28,7 +28,7 @@
   transition: width 0.2s ease, min-width 0.2s ease, max-width 0.2s ease;
 }
 
-.gyshell-minion-sidebar.is-collapsed {
+.gyshell-agent-rail.is-collapsed {
   width: 40px;
   min-width: 40px;
   max-width: 40px;

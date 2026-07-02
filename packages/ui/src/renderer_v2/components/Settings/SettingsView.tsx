@@ -3054,8 +3054,8 @@ const ProfileVoiceButton: React.FC<{
 
 const PROMPT_ROLES = ['chat', 'coder'] as const;
 
-// Import the real default prompts from MinionRouter
-import { DEFAULT_ROLE_PROMPTS as CODE_DEFAULT_PROMPTS } from '../../services/MinionRouter';
+// Default role prompts (relocated out of the retired legacy services).
+import { DEFAULT_ROLE_PROMPTS as CODE_DEFAULT_PROMPTS } from '../../lib/defaultRolePrompts';
 
 // Resolve effective defaults: saved defaults from settings > code defaults
 function getEffectiveDefaults(store: any): Record<string, string> {

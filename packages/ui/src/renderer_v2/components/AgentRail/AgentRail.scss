@@ -1,6 +1,6 @@
-/* MinionSidebar — Resizable cards + feed layout */
+/* AgentRail — collapsed left icon strip: chat toggle + configured agents */
 
-.minion-sidebar {
+.agent-rail {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -38,14 +38,14 @@
 
 /* ─── Expanded layout sections ───────────────────────────────────── */
 
-.minion-sidebar-cards {
+.agent-rail-cards {
   overflow: hidden;
   display: flex;
   flex-direction: column;
 }
 
 /* Draggable divider between cards and feed */
-.minion-sidebar-divider {
+.agent-rail-divider {
   flex-shrink: 0;
   height: 5px;
   cursor: ns-resize;
@@ -58,25 +58,25 @@
   transition: background-color 0.1s ease;
 }
 
-.minion-sidebar-divider:hover,
-.minion-sidebar-divider.active {
+.agent-rail-divider:hover,
+.agent-rail-divider.active {
   background: color-mix(in srgb, var(--accent) 15%, var(--app-bg));
 }
 
-.minion-divider-grip {
+.agent-divider-grip {
   width: 24px;
   height: 2px;
   border-radius: 1px;
   background: var(--border-strong);
 }
 
-.minion-sidebar-divider:hover .minion-divider-grip,
-.minion-sidebar-divider.active .minion-divider-grip {
+.agent-rail-divider:hover .agent-divider-grip,
+.agent-rail-divider.active .agent-divider-grip {
   background: var(--accent);
 }
 
 /* Feed panel */
-.minion-sidebar-feed {
+.agent-rail-feed {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -84,12 +84,12 @@
   background: var(--app-bg);
 }
 
-.minion-sidebar-feed.collapsed {
+.agent-rail-feed.collapsed {
   height: auto !important;
   min-height: 0 !important;
 }
 
-.minion-sidebar-feed-content {
+.agent-rail-feed-content {
   flex: 1;
   overflow: hidden;
   display: flex;
@@ -97,7 +97,7 @@
 }
 
 /* Feed toggle header */
-.minion-feed-toggle {
+.agent-feed-toggle {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -110,24 +110,24 @@
   flex-shrink: 0;
 }
 
-.minion-feed-toggle:hover {
+.agent-feed-toggle:hover {
   background: var(--panel-bg-2);
 }
 
-.minion-feed-toggle-chevron {
+.agent-feed-toggle-chevron {
   font-size: 9px;
   color: var(--fg-faint);
   width: 10px;
 }
 
-.minion-feed-toggle-label {
+.agent-feed-toggle-label {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--fg-muted);
 }
 
-.minion-feed-toggle-count {
+.agent-feed-toggle-count {
   margin-left: auto;
   font-size: 9px;
   font-weight: 600;
@@ -138,7 +138,7 @@
   min-width: 0;
 }
 
-.minion-feed-toggle-count:empty {
+.agent-feed-toggle-count:empty {
   display: none;
 }
 
@@ -192,7 +192,7 @@
 }
 
 /* Vision toggle in collapsed sidebar */
-.collapsed-vision-toggle {
+.agent-rail-toggle {
   border: none;
   background: transparent;
   color: var(--fg-faint);
@@ -207,12 +207,12 @@
   transition: all 0.15s ease;
 }
 
-.collapsed-vision-toggle:hover {
+.agent-rail-toggle:hover {
   background: var(--panel-bg-2);
   color: var(--fg);
 }
 
-.collapsed-vision-toggle.active {
+.agent-rail-toggle.active {
   background: rgba(59, 130, 246, 0.15);
   color: #60a5fa;
 }
@@ -234,7 +234,7 @@
 }
 
 /* Individual collapsed icon */
-.collapsed-minion-icon {
+.agent-rail-icon {
   position: relative;
   width: 28px;
   height: 28px;
@@ -246,15 +246,15 @@
   transition: background 0.15s ease;
 }
 
-.collapsed-minion-icon.selectable {
+.agent-rail-icon.selectable {
   cursor: pointer;
 }
 
-.collapsed-minion-icon.selectable:hover {
+.agent-rail-icon.selectable:hover {
   background: var(--panel-bg-2);
 }
 
-.collapsed-minion-icon.selected {
+.agent-rail-icon.selected {
   background: rgba(34, 197, 94, 0.12);
   outline: 1.5px solid #22c55e;
 }
@@ -271,10 +271,10 @@
 }
 
 .collapsed-status-dot.animated {
-  animation: minion-pulse 1.5s ease-in-out infinite;
+  animation: agent-rail-pulse 1.5s ease-in-out infinite;
 }
 
-@keyframes minion-pulse {
+@keyframes agent-rail-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }

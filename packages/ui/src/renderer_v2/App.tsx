@@ -2,9 +2,6 @@ import React, { useState, useCallback } from 'react'
 import { reaction } from 'mobx'
 import { observer } from 'mobx-react-lite'
 import { AppStore } from './stores/AppStore'
-import { MinionStore } from './stores/MinionStore'
-import { MinionProvider } from './stores/MinionContext'
-import { MinionRouter, rehydrateMinionMessages } from './services/MinionRouter'
 import { startDiscovery } from './services/ProxlabDiscovery'
 import { TranscriptService } from './services/TranscriptService'
 import { TopBar } from './components/TopBar/TopBar'
@@ -14,7 +11,7 @@ import { ConfirmDialog } from './components/Common/ConfirmDialog'
 import { ConfirmHost } from './components/Common/ConfirmHost'
 import { PromptHost } from './components/Common/PromptHost'
 import { TerminalWorkspace } from './components/Terminal/TerminalWorkspace'
-import { MinionSidebar } from './components/Minions/MinionSidebar'
+import { AgentRail } from './components/AgentRail/AgentRail'
 import { PrimarySidebar, type PrimaryTab } from './components/PrimarySidebar/PrimarySidebar'
 import { GlobalChat } from './components/Chat/GlobalChat'
 import { FleetPanel } from './components/Fleet/FleetPanel'
@@ -35,16 +32,11 @@ import { liveConsoleStore } from './stores/LiveConsoleStore'
 import './styles/app.scss'
 
 const store = new AppStore()
-const minionStore = new MinionStore()
-
-const minionRouter = new MinionRouter(minionStore)
 const transcriptService = new TranscriptService()
 transcriptService.runRetentionCleanup()
 
 // Expose globally for debugging and external access
 ;(window as any).__appStore = store
-;(window as any).__minionStore = minionStore
-;(window as any).__minionRouter = minionRouter
 ;(window as any).__transcriptService = transcriptService
 
 export const App: React.FC = observer(() => {
@@ -88,18 +80,9 @@ export const App: React.FC = observer(() => {
 
   React.useEffect(() => {
     store.bootstrap().then(() => {
-      // Initialize minion cards from active profile
-      initMinionsFromProfile()
-      // Hook into UI updates to drive minion status
-      setupMinionStatusListener()
       // Start ProxLab model discovery (auto-registers models from LLM proxy)
       startDiscovery()
-      // Re-init minion cards after discovery completes (models may have been synced)
-      setTimeout(() => initMinionsFromProfile(), 5000)
-      // Re-inject persisted minion messages after a short delay
-      // (ChatStore needs time to hydrate sessions first)
       setTimeout(() => {
-        rehydrateMinionMessages()
         // Clear any lingering busy/thinking state from previous sessions
         // This prevents the red stop button from appearing on page load
         if (store.chat?.sessions) {
@@ -111,120 +94,6 @@ export const App: React.FC = observer(() => {
       }, 2000)
     })
   }, [])
-
-  function setupMinionStatusListener() {
-    // Listen for agent UI updates to track model activity
-    window.gyshell.agent.onUiUpdate((action: any) => {
-      if (!action) return
-      const { type } = action
-
-      // Get the orchestrator minion (global model drives the main session)
-      const orchestrator = minionStore.getMinionByRole('orchestrator')
-      if (!orchestrator) return
-
-      if (type === 'ADD_MESSAGE') {
-        const msg = action.message
-        if (!msg) return
-
-        // Map message types to minion status
-        if (msg.role === 'assistant') {
-          switch (msg.type) {
-            case 'reasoning':
-              minionStore.updateMinionStatus(orchestrator.id, 'thinking')
-              break
-            case 'command': {
-              const cmd = msg.metadata?.command || msg.content?.substring(0, 40)
-              minionStore.updateMinionStatus(orchestrator.id, 'running-command', cmd)
-              break
-            }
-            case 'tool_call': {
-              const toolName = msg.metadata?.toolName || 'tool'
-              const { status, detail } = MinionStore.toolToStatus(toolName)
-              minionStore.updateMinionStatus(orchestrator.id, status, detail)
-              break
-            }
-            case 'file_edit': {
-              const action = msg.metadata?.action
-              const file = msg.metadata?.filePath || ''
-              if (action === 'created') {
-                minionStore.updateMinionStatus(orchestrator.id, 'writing-file', file)
-              } else {
-                minionStore.updateMinionStatus(orchestrator.id, 'editing-file', file)
-              }
-              break
-            }
-            case 'sub_tool': {
-              const hint = msg.metadata?.subToolHint || msg.metadata?.subToolTitle || ''
-              minionStore.updateMinionStatus(orchestrator.id, 'using-tool', hint)
-              break
-            }
-            case 'compaction':
-              minionStore.updateMinionStatus(orchestrator.id, 'compacting')
-              break
-            case 'text':
-              minionStore.updateMinionStatus(orchestrator.id, 'generating')
-              break
-            case 'error':
-              minionStore.updateMinionStatus(orchestrator.id, 'error', msg.content?.substring(0, 50))
-              break
-          }
-        } else if (msg.role === 'user') {
-          // User sent a message — model will start thinking
-          minionStore.updateMinionStatus(orchestrator.id, 'thinking')
-        }
-      } else if (type === 'DONE') {
-        minionStore.updateMinionStatus(orchestrator.id, 'idle')
-      } else if (type === 'APPEND_CONTENT' || type === 'APPEND_OUTPUT') {
-        // Model is actively generating
-        if (orchestrator.status === 'thinking') {
-          minionStore.updateMinionStatus(orchestrator.id, 'generating')
-        }
-      }
-    })
-  }
-
-  function initMinionsFromProfile() {
-    const settings = store.settings
-    if (!settings?.models) return
-    const profile = settings.models.profiles.find(
-      (p: any) => p.id === settings.models.activeProfileId
-    )
-    if (!profile) return
-    const items = settings.models.items
-
-    // Order matches sidebar: selectable roles first, then internal
-    const roleMap: Array<{ roleKey: string; role: any; label: string }> = [
-      { roleKey: 'chatModelId', role: 'chat', label: 'Chat' },
-      { roleKey: 'coderModelId', role: 'coder', label: 'Coder' },
-      { roleKey: 'creativeModelId', role: 'creative', label: 'Creative' },
-      { roleKey: 'architectModelId', role: 'architect', label: 'Architect' },
-      { roleKey: 'scoutModelId', role: 'scout', label: 'Scout' },
-      { roleKey: 'globalModelId', role: 'orchestrator', label: 'Orchestrator' },
-      { roleKey: 'actionModelId', role: 'action', label: 'Action' },
-      { roleKey: 'thinkingModelId', role: 'thinking', label: 'Thinking' },
-      { roleKey: 'compactionModelId', role: 'compaction', label: 'Compaction' },
-    ]
-
-    const seen = new Set<string>()
-    for (const { roleKey, role, label } of roleMap) {
-      const modelId = (profile as any)[roleKey]
-      if (!modelId || seen.has(modelId + role)) continue
-      seen.add(modelId + role)
-      const item = items.find((m: any) => m.id === modelId)
-      if (!item) continue
-      // ProxLab auto-discovered models are available by definition
-      const isProxlab = item._proxlabAutoDiscovered === true
-      const isActive = isProxlab || item.profile?.ok === true
-      minionStore.registerMinion({
-        id: `${modelId}-${role}`,
-        role,
-        friendlyName: label,
-        modelName: item.name || item.model || modelId,
-        status: isActive ? 'idle' : 'disconnected',
-        connected: isActive,
-      })
-    }
-  }
 
   React.useEffect(() => {
     const canHandleNativeFileDrop = (target: EventTarget | null): boolean => {
@@ -286,7 +155,6 @@ export const App: React.FC = observer(() => {
       : 'platform-darwin'
 
   return (
-    <MinionProvider value={minionStore}>
     <div className={`gyshell ${platformClass}`}>
       <ConfirmHost />
       <PromptHost />
@@ -320,9 +188,8 @@ export const App: React.FC = observer(() => {
             than the auto-collapsing PrimarySidebar) so clicking it doesn't
             cause the cascading expand/collapse jitter the auto-pinned
             sidebar produces on mouseover. */}
-        <div className="gyshell-minion-sidebar is-collapsed">
-          <MinionSidebar
-            store={minionStore}
+        <div className="gyshell-agent-rail is-collapsed">
+          <AgentRail
             appStore={store}
             chatOpen={chatOpen}
             onChatToggle={toggleChat}
@@ -406,7 +273,6 @@ export const App: React.FC = observer(() => {
       <GpuFleetPanel />
       <ContextMenuOverlay />
     </div>
-    </MinionProvider>
   )
 })
 

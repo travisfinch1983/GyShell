@@ -49,7 +49,7 @@ import {
   CHAT_PANEL_SESSION_TITLE_CHAR_LIMIT,
   formatChatPanelSessionTitle,
 } from "../../lib/sessionTitleDisplay";
-// MinionChatOverlay removed — specialist messages now injected into ChatStore directly
+// Legacy specialist chat-overlay removed; messages inject into ChatStore directly
 import type { ComposerDraft, InputImageAttachment } from "../../lib/userInput";
 import {
   cycleSearchIndex,
@@ -1071,11 +1071,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
                 onClick={() => {
                   setShowExportMenu(false)
                   if (!activeSessionId) return
-                  // Clear minion messages from localStorage
-                  localStorage.removeItem('gyshell-minion-chat-messages')
-                  // Clear the MinionStore messages (activity feed)
-                  const ms = (window as any).__minionStore
-                  if (ms) ms.messages.length = 0
                   // Delete all sessions (persisted) and create a fresh one.
                   // closeSession only removes in-memory state, so the next
                   // page reload's rehydrate would resurrect everything.
@@ -1085,8 +1080,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
                       console.warn('[ChatPanel] deleteChatSession failed during clear:', sid, err)
                     })
                   }
-                  // Clear minion conversation history so models start fresh
-                  try { (window as any).__roleConversations?.clear() } catch {}
                   // Clear transcript
                   const ts = (window as any).__transcriptService
                   if (ts) ts.clearChatTranscript?.()
@@ -1445,5 +1438,5 @@ const HandsFreeButton: React.FC<{ store: any }> = ({ store }) => {
   )
 }
 
-// Wrapper to use MinionStore hook inside the ChatPanel
-// MinionChatOverlay removed — specialist messages injected into ChatStore
+// (legacy wrapper removed)
+// Legacy specialist chat-overlay removed; messages inject into ChatStore

@@ -79,7 +79,7 @@ export class AgentRegistry {
 
   /**
    * Auto-register an unknown relay sender (R1.6: inbound bridge should make
-   * claude1/fable/minion traffic appear without manual config). Slugifies the
+   * claude1/fable/etc. traffic appear without manual config). Slugifies the
    * relay name into an agentId.
    */
   ensureRelayAgent(relayName: string): AgentRegistryEntry {

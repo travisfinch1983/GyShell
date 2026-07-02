@@ -1,3 +1,4 @@
+// ⚠ DORMANT / LEGACY — the minion system is retired (unwired from live code 2026-07-02). Kept for reference only; not imported anywhere.
 /**
  * MinionChatOverlay — Renders minion messages inline in the chat area.
  *

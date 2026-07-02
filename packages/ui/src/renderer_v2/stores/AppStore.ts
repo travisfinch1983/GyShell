@@ -3042,10 +3042,10 @@ export class AppStore {
     options?: { mode?: 'normal' | 'queue' },
   ): Promise<boolean> {
     // Note: previously every chat message was intercepted here and routed
-    // through the legacy MinionRouter (the XML <route> specialist system).
+    // through a legacy specialist router (removed).
     // That intercept was hijacking the modern agent.startTask flow — the
     // user's message was never appended to the chat session and the
-    // response landed in MinionFeed instead of the chat panel. The minion
+    // response landed elsewhere instead of the chat panel. The legacy
     // multi-role routing has been retired in favor of the agent system,
     // so messages now flow normally to AgentService_v2.
 

@@ -29,19 +29,6 @@ function formatMessageTimestamp(ts: number): string {
   return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`
 }
 
-/** Map minion role/model names to muted colors for chat message tinting */
-function getMinionRoleColor(name: string): string {
-  const lower = (name || '').toLowerCase()
-  if (lower.includes('coder') || lower.includes('kat-dev')) return '#5b9bd5'
-  if (lower.includes('creative') || lower.includes('darkidol') || lower.includes('ballad')) return '#d67ec4'
-  if (lower.includes('architect') || lower.includes('27b')) return '#e0a832'
-  if (lower.includes('scout') || lower.includes('4b')) return '#c084fc'
-  if (lower.includes('orchestrator')) return '#a78bdb'
-  if (lower.includes('chat') || lower.includes('122b')) return '#34d399'
-  if (lower.includes('thinking')) return '#c084fc'
-  if (lower.includes('minion')) return '#7b9ec4'
-  return '#8892a4'
-}
 import type { AppStore } from "../../stores/AppStore";
 import type { ChatMessage } from "../../stores/ChatStore";
 import { renderMentionContent } from "../../lib/MentionParser";
@@ -189,7 +176,7 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
         <div
           className={`message-row-container role-assistant${mergeWithPreviousAssistant ? " is-group-continuation" : ""}${isSearchMatch ? " is-search-match" : ""}${isActiveSearchMatch ? " is-search-active" : ""}`}
         >
-          <div className={`message-role-label assistant ${msg.metadata?.modelName ? 'minion-role' : ''}`} style={msg.metadata?.modelName ? { color: getMinionRoleColor(msg.metadata.modelName) } : undefined}>{msg.metadata?.modelName ? msg.metadata.modelName.toUpperCase() : 'ASSISTANT'}{msg.timestamp ? <span className="message-timestamp">{formatMessageTimestamp(msg.timestamp)}</span> : null}</div>
+          <div className="message-role-label assistant">{msg.metadata?.modelName ? msg.metadata.modelName.toUpperCase() : 'ASSISTANT'}{msg.timestamp ? <span className="message-timestamp">{formatMessageTimestamp(msg.timestamp)}</span> : null}</div>
           <SeamlessToolGroupBanner
             messages={groupMessages}
             expanded={bannerUiState?.expanded}
@@ -231,15 +218,9 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
     }
     const canRollback =
       isUser && !!msg.backendMessageId && !msg.streaming && !isThinking;
-    const isMinionMessage = isUser && msg.id?.startsWith('minion-');
-    const canEditResend = isMinionMessage && !msg.streaming;
-
-    const minionColor = msg.metadata?.modelName ? getMinionRoleColor(msg.metadata.modelName) : null
-    const minionBg = minionColor ? hexToRgba(minionColor, 0.12) : undefined
     const renderAssistantRow = (children: React.ReactNode) => (
       <div
-        className={`message-row-container role-assistant${mergeWithPreviousAssistant ? " is-group-continuation" : ""}${isSearchMatch ? " is-search-match" : ""}${isActiveSearchMatch ? " is-search-active" : ""}${minionColor ? " minion-message" : ""}`}
-        style={minionColor ? { borderLeftColor: minionColor, backgroundColor: minionBg } : undefined}
+        className={`message-row-container role-assistant${mergeWithPreviousAssistant ? " is-group-continuation" : ""}${isSearchMatch ? " is-search-match" : ""}${isActiveSearchMatch ? " is-search-active" : ""}`}
       >
         {children}
         {shouldShowGroupCopy && (
@@ -265,11 +246,6 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
 
     if (isUser) {
       const inputImages = msg.metadata?.inputImages || [];
-      if (canEditResend) {
-        return (
-          <MinionEditableMessage msg={msg} isSearchMatch={isSearchMatch} isActiveSearchMatch={isActiveSearchMatch} />
-        );
-      }
       return (
         <div
           className={`message-row-container role-user${isSearchMatch ? " is-search-match" : ""}${isActiveSearchMatch ? " is-search-active" : ""}`}
@@ -390,33 +366,9 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
       );
     }
 
-    // Check for structured minion message metadata
-    const isMinionParsed = msg.metadata?.minionParsed === true
-    const minionThinking = msg.metadata?.minionThinking as string | null
-    const minionSummary = msg.metadata?.minionSummary as string | undefined
-    const minionTo = msg.metadata?.minionTo as string | undefined
-    const minionCodeBlocks = msg.metadata?.minionCodeBlocks as string[] | undefined
-    const isToUser = !minionTo || minionTo === 'user'
-
-    // For minion messages: render with summary/detail/thinking structure
-    if (isMinionParsed) {
-      return renderAssistantRow(
-        <MinionParsedMessage
-          msg={msg}
-          thinking={minionThinking}
-          summary={minionSummary || ''}
-          codeBlocks={minionCodeBlocks || []}
-          isToUser={isToUser}
-          copiedKey={copiedKey}
-          copyCodeBlock={copyCodeBlock}
-          markCopied={markCopied}
-        />
-      )
-    }
-
     return renderAssistantRow(
       <>
-        <div className={`message-role-label assistant ${msg.metadata?.modelName ? 'minion-role' : ''}`} style={msg.metadata?.modelName ? { color: getMinionRoleColor(msg.metadata.modelName) } : undefined}>{msg.metadata?.modelName ? msg.metadata.modelName.toUpperCase() : 'ASSISTANT'}{msg.timestamp ? <span className="message-timestamp">{formatMessageTimestamp(msg.timestamp)}</span> : null}</div>
+        <div className="message-role-label assistant">{msg.metadata?.modelName ? msg.metadata.modelName.toUpperCase() : 'ASSISTANT'}{msg.timestamp ? <span className="message-timestamp">{formatMessageTimestamp(msg.timestamp)}</span> : null}</div>
         <div className={`message-text ${msg.role}`}>
           <div
             className={
@@ -470,281 +422,3 @@ export const MessageRow: React.FC<MessageRowProps> = observer(
   },
 );
 
-// ─── Editable minion message — shows full message with edit/resend capability ──
-
-// Pencil, Send, X imported at top of file
-
-const MinionEditableMessage: React.FC<{
-  msg: ChatMessage;
-  isSearchMatch?: boolean;
-  isActiveSearchMatch?: boolean;
-}> = ({ msg, isSearchMatch, isActiveSearchMatch }) => {
-  const [editing, setEditing] = React.useState(false);
-  const [editText, setEditText] = React.useState('');
-
-  const getOriginalText = () => {
-    let text = msg.content || '';
-    text = text.replace(/^\*\*\[.*?\]\*\*\s*\n*/, '').trim();
-    return text;
-  };
-
-  const startEdit = () => {
-    setEditText(getOriginalText());
-    setEditing(true);
-  };
-
-  const cancelEdit = () => {
-    setEditing(false);
-  };
-
-  const resend = () => {
-    if (!editText.trim()) return;
-    const minionStore = (window as any).__minionStore;
-    const minionRouter = (window as any).__minionRouter;
-    if (!minionStore || !minionRouter) return;
-
-    const headerMatch = msg.content?.match(/\[Sent to (\w+)\]/);
-    const targetRole = headerMatch ? headerMatch[1].toLowerCase() : null;
-
-    if (targetRole && minionStore.getMinionByRole(targetRole)) {
-      minionRouter.sendToSpecialist(targetRole, editText.trim());
-    } else if (minionStore.selectedTarget) {
-      minionRouter.sendToSpecialist(minionStore.selectedTarget, editText.trim());
-    } else {
-      minionRouter.routeViaOrchestrator(editText.trim());
-    }
-    setEditing(false);
-  };
-
-  return (
-    <div
-      className={`message-row-container role-user${isSearchMatch ? " is-search-match" : ""}${isActiveSearchMatch ? " is-search-active" : ""}`}
-    >
-      <div className="message-role-label user">USER{msg.timestamp ? <span className="message-timestamp">{formatMessageTimestamp(msg.timestamp)}</span> : null}</div>
-      <div className="message-user-row">
-        {editing ? (
-          <div className="minion-edit-resend" onClick={(e) => e.stopPropagation()}>
-            <textarea
-              className="minion-edit-textarea"
-              value={editText}
-              onChange={(e) => setEditText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); resend(); }
-                if (e.key === 'Escape') cancelEdit();
-              }}
-              autoFocus
-            />
-            <div className="minion-edit-actions">
-              <button className="minion-edit-send" onClick={resend} title="Resend (Enter)">
-                <Send size={12} /> Resend
-              </button>
-              <button className="minion-edit-cancel" onClick={cancelEdit} title="Cancel (Esc)">
-                <X size={12} /> Cancel
-              </button>
-            </div>
-          </div>
-        ) : (
-          <>
-            <div className={`message-text ${msg.role}`}>
-              <div className="plain-text">
-                {renderMentionContent(msg.content)}
-              </div>
-            </div>
-            <button
-              className="message-rollback-btn"
-              title="Edit and resend"
-              onClick={startEdit}
-            >
-              <Pencil size={14} />
-            </button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-};
-
-// ─── Parsed minion message — structured summary/detail/thinking rendering ──
-
-const MinionMarkdownContent: React.FC<{
-  content: string;
-  copiedKey: string | null;
-  copyCodeBlock: (code: string) => void;
-  markCopied: (key: string) => void;
-}> = ({ content, copiedKey, copyCodeBlock }) => (
-  <ReactMarkdown
-    remarkPlugins={[remarkGfm]}
-    components={{
-      pre: ({ children, ...props }) => {
-        const codeText = extractNodeText(children);
-        const feedbackKey = `code:${codeText.length}:${codeText.slice(0, 32)}`;
-        return (
-          <div className="markdown-pre-wrap">
-            <pre {...props}>{children}</pre>
-            <button
-              className="message-copy-btn markdown-pre-copy-btn"
-              title="Copy code"
-              aria-label="Copy code"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                void copyCodeBlock(codeText);
-              }}
-            >
-              {copiedKey === feedbackKey ? <Check size={12} /> : <Copy size={12} />}
-            </button>
-          </div>
-        );
-      },
-      a: ({ node, ...props }) => (
-        <a {...props} target="_blank" rel="noopener noreferrer" />
-      ),
-    }}
-  >
-    {content}
-  </ReactMarkdown>
-);
-
-const MinionParsedMessage: React.FC<{
-  msg: ChatMessage;
-  thinking: string | null;
-  summary: string;
-  codeBlocks: string[];
-  isToUser: boolean;
-  copiedKey: string | null;
-  copyCodeBlock: (code: string) => void;
-  markCopied: (key: string) => void;
-}> = ({ msg, thinking, summary, codeBlocks, isToUser, copiedKey, copyCodeBlock, markCopied }) => {
-  // Messages to user: detail expanded by default. Messages to models: collapsed.
-  const [detailExpanded, setDetailExpanded] = React.useState(isToUser);
-  const [thinkingExpanded, setThinkingExpanded] = React.useState(false);
-  const [codeExpanded, setCodeExpanded] = React.useState(false);
-
-  const modelName = msg.metadata?.modelName || 'Assistant';
-  const roleColor = getMinionRoleColor(modelName);
-
-  // Extract the body content (strip the header line we prepend)
-  const bodyContent = (msg.content || '').replace(/^\*\*\[.*?\]\*\*\s*\n*/, '').trim();
-
-  return (
-    <>
-      {/* Role label + timestamp */}
-      <div
-        className="message-role-label assistant minion-role"
-        style={{ color: roleColor }}
-      >
-        {modelName.toUpperCase()}
-        {thinking && (
-          <button
-            className={`minion-thinking-toggle ${thinkingExpanded ? 'active' : ''}`}
-            style={{ color: roleColor }}
-            onClick={(e) => { e.stopPropagation(); setThinkingExpanded(!thinkingExpanded); }}
-            title={thinkingExpanded ? 'Hide thinking' : 'Show thinking'}
-          >
-            <Brain size={12} />
-          </button>
-        )}
-        {codeBlocks.length > 0 && (
-          <button
-            className={`minion-thinking-toggle ${codeExpanded ? 'active' : ''}`}
-            style={{ color: roleColor }}
-            onClick={(e) => { e.stopPropagation(); setCodeExpanded(!codeExpanded); }}
-            title={codeExpanded ? 'Hide code' : `Show code (${codeBlocks.length} block${codeBlocks.length > 1 ? 's' : ''})`}
-          >
-            <Code size={12} />
-          </button>
-        )}
-        {msg.timestamp ? <span className="message-timestamp">{formatMessageTimestamp(msg.timestamp)}</span> : null}
-      </div>
-
-      {/* Thinking block — expands upward from the message */}
-      {thinking && thinkingExpanded && (
-        <div className="minion-thinking-block">
-          <div className="minion-thinking-header">
-            <Brain size={11} />
-            <span>Thinking</span>
-          </div>
-          <div className="minion-thinking-content markdown-body">
-            <MinionMarkdownContent
-              content={thinking}
-              copiedKey={copiedKey}
-              copyCodeBlock={copyCodeBlock}
-              markCopied={markCopied}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Code blocks — expandable, not read by TTS */}
-      {codeBlocks.length > 0 && codeExpanded && (
-        <div className="minion-code-blocks">
-          <div className="minion-thinking-header" style={{ color: roleColor }}>
-            <Code size={11} />
-            <span>Code ({codeBlocks.length} block{codeBlocks.length > 1 ? 's' : ''})</span>
-          </div>
-          {codeBlocks.map((code, i) => (
-            <div key={i} className="minion-code-block">
-              <div className="markdown-pre-wrap">
-                <pre><code>{code}</code></pre>
-                <button
-                  className="message-copy-btn markdown-pre-copy-btn"
-                  title="Copy code"
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); copyCodeBlock(code); }}
-                >
-                  {copiedKey === `code:${code.length}:${code.slice(0, 32)}` ? <Check size={12} /> : <Copy size={12} />}
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Summary line (always present, visible when detail is collapsed for model-to-model, hidden label for user messages) */}
-      {!isToUser && !detailExpanded && (
-        <div className="minion-summary-line">
-          <span className="minion-summary-text">{summary}</span>
-          <button
-            className="minion-detail-toggle"
-            onClick={() => setDetailExpanded(true)}
-            title="Show full message"
-          >
-            <ChevronDown size={12} />
-            <span>Show detail</span>
-          </button>
-        </div>
-      )}
-
-      {/* Detail body */}
-      {detailExpanded && (
-        <div className={`message-text ${msg.role}`}>
-          <div className="markdown-body">
-            <MinionMarkdownContent
-              content={bodyContent}
-              copiedKey={copiedKey}
-              copyCodeBlock={copyCodeBlock}
-              markCopied={markCopied}
-            />
-            {msg.streaming && <span className="cursor-blink" />}
-          </div>
-          {!isToUser && (
-            <button
-              className="minion-detail-toggle minion-collapse-toggle"
-              onClick={() => setDetailExpanded(false)}
-              title="Collapse to summary"
-            >
-              <ChevronUp size={12} />
-              <span>Collapse</span>
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* For messages to user: show a small summary badge below (for chat model context, not visually prominent) */}
-      {isToUser && detailExpanded && summary && (
-        <div className="minion-summary-badge" title="Summary used for chat model context">
-          {summary}
-        </div>
-      )}
-    </>
-  );
-};
