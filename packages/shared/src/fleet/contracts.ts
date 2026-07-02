@@ -134,6 +134,13 @@ export const busDeliveryStateSchema = z.enum([
 export type BusDeliveryState = z.infer<typeof busDeliveryStateSchema>
 
 export const busDeliveryUpdateSchema = z.object({
+  /**
+   * Broker-assigned position of this update itself, from the SAME monotonic
+   * counter as envelope busSeq — so cursor replay (afterSeq) has a total
+   * order over ALL records. Without this, a late update for an old envelope
+   * would be invisible to a caught-up client (refSeq alone points backwards).
+   */
+  seq: z.number().int().nonnegative(),
   /** busSeq of the envelope this update describes. */
   refSeq: z.number().int().nonnegative(),
   /**
@@ -192,7 +199,7 @@ export type AutonomyBudgetStatus = z.infer<typeof autonomyBudgetStatusSchema>
 // ─── Replay (R1.4 — cursor-based, never full-log) ────────────────────────────
 
 export const busReplayRequestSchema = z.object({
-  /** Return records with busSeq/refSeq strictly greater than this. -1 = from the very start (explicit opt-in). */
+  /** Return records whose seq (envelope busSeq / delivery seq) is strictly greater than this. -1 = from the very start (explicit opt-in). */
   afterSeq: z.number().int().min(-1),
   limit: z.number().int().positive().max(500).default(200),
 })
