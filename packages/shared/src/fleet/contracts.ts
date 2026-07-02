@@ -136,6 +136,12 @@ export type BusDeliveryState = z.infer<typeof busDeliveryStateSchema>
 export const busDeliveryUpdateSchema = z.object({
   /** busSeq of the envelope this update describes. */
   refSeq: z.number().int().nonnegative(),
+  /**
+   * Which recipient this update belongs to. Omitted for DMs (unambiguous);
+   * REQUIRED in practice for broadcast envelopes, where N agents each get
+   * their own delivery lifecycle for the same refSeq.
+   */
+  targetAgentId: z.string().optional(),
   state: busDeliveryStateSchema,
   /** For dropped: 'hop_ttl' | 'pair_rate_limit' | 'autonomy_budget' | 'queue_full' | 'kill_switch' | 'unknown_agent' | free text. */
   reason: z.string().optional(),
