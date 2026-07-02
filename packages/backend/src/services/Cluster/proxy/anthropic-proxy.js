@@ -23,8 +23,12 @@ import { anthropicMetrics } from './lib/anthropic-metrics.js';
 import { anthropicCapture } from './lib/anthropic-capture.js';
 
 // Latest version of each Anthropic model family available on the MAX subscription.
-// The shortName drives the per-model shortcut routes (/opus, /sonnet, /haiku).
+// The shortName drives the per-model shortcut routes (/fable, /opus, /sonnet, /haiku).
+// Fable 5 is the most capable model and (per the subscription) only transiently available —
+// it's premium, so it needs the Claude Code identity handshake, which prepareBody() applies
+// to every request unconditionally, so no per-model handling is required here.
 const CLAUDE_MODELS = [
+  { id: 'claude-fable-5', shortName: 'fable', label: 'Fable 5' },
   { id: 'claude-opus-4-8', shortName: 'opus', label: 'Opus 4.8' },
   { id: 'claude-sonnet-5', shortName: 'sonnet', label: 'Sonnet 5' },
   { id: 'claude-haiku-4-5', shortName: 'haiku', label: 'Haiku 4.5' },
