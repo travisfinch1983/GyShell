@@ -86,6 +86,7 @@ const resolveSuppressionKinds = (kind: PanelKind): WindowScopedTabKind[] =>
 export type AppView = 'main' | 'settings' | 'connections';
 export type SettingsSection =
   | 'general'
+  | 'chat'
   | 'theme'
   | 'models'
   | 'security'
@@ -1487,6 +1488,20 @@ export class AppStore {
       }
     })
     await window.gyshell.settings.set({ commandPolicyMode: mode })
+  }
+
+  /** req 5: toggle automatic history compaction (Settings → Chat). */
+  async setAutoCompactionEnabled(enabled: boolean): Promise<void> {
+    const nextChat = {
+      ...(this.settings?.chat || {}),
+      autoCompaction: { ...(this.settings?.chat?.autoCompaction || {}), enabled },
+    }
+    runInAction(() => {
+      if (this.settings) {
+        this.settings = { ...this.settings, chat: nextChat }
+      }
+    })
+    await window.gyshell.settings.set({ chat: nextChat } as any)
   }
 
   async openCommandPolicyFile(): Promise<void> {

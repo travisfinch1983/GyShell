@@ -239,6 +239,14 @@ export interface BackendSettings {
     activeProfileId: string
   }
 
+  /** Chat behavior (req 5). Optional — absent means defaults (auto-compaction on). */
+  chat?: {
+    autoCompaction?: {
+      /** Master switch for automatic history compaction on context overflow. Default: true. */
+      enabled?: boolean
+    }
+  }
+
   /** Saved connections (local is implicit, ssh is persisted) */
   connections: {
     ssh: SSHConnectionEntry[]

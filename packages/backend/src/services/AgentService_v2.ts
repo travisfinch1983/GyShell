@@ -1722,6 +1722,13 @@ export class AgentService_v2 {
       return { changed: false, messages }
     }
 
+    // req 5: auto-compaction is on by default; a user can disable it in the
+    // Settings "Chat" sub-tab (then history grows until the model's own limit).
+    if (this.settings?.chat?.autoCompaction?.enabled === false) {
+      console.log(`[TokenManager] Auto-compaction disabled in settings — skipping (sessionId=${sessionId}).`)
+      return { changed: false, messages }
+    }
+
     const insertionIndex = this.findCompactionInsertionIndex(messages)
     if (insertionIndex < 0) {
       console.log(

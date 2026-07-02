@@ -904,6 +904,21 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
           </div>
           <div
               className={
+                store.settingsSection === "chat"
+                  ? "settings-nav-item is-active"
+                  : "settings-nav-item"
+              }
+              onClick={() => store.setSettingsSection("chat")}
+            role="button"
+            tabIndex={0}
+          >
+            <span className="icon">
+              <Settings size={16} strokeWidth={2} />
+            </span>
+            <span>Chat</span>
+          </div>
+          <div
+              className={
                 store.settingsSection === "theme"
                   ? "settings-nav-item is-active"
                   : "settings-nav-item"
@@ -1139,6 +1154,34 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
       </div>
       <div className="settings-content">
         <div className="settings-section">
+            {store.settingsSection === "chat" ? (
+            <>
+              <div className="settings-section-header">
+                <div className="settings-section-title">Chat</div>
+                <div className="settings-section-subtitle">
+                  How the agent manages long conversations.
+                </div>
+              </div>
+              <div className="settings-row">
+                <div className="settings-row-label-with-info">
+                  <label>Automatic context compaction</label>
+                </div>
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={store.settings?.chat?.autoCompaction?.enabled !== false}
+                    onChange={(e) => void store.setAutoCompactionEnabled(e.target.checked)}
+                  />
+                  <span>
+                    When the conversation approaches the model's context limit, a
+                    second model summarizes older messages and the chat collapses
+                    them into a summary block — so what you see matches what the
+                    model sees. Turn off to let history grow until the hard limit.
+                  </span>
+                </label>
+              </div>
+            </>
+          ) : null}
             {store.settingsSection === "general" ? (
             <>
               <div className="settings-section-header">
