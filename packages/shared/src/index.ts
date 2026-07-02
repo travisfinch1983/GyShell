@@ -19,6 +19,7 @@ export interface GyBackendConnectionConfig {
 
 export * from './terminalConnections'
 export * from './panelTabs'
+export * from './fleet'
 export * from './theme/terminalColorSchemes'
 export * from './theme/builtInSchemes'
 export * from './theme/themes'
