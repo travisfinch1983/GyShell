@@ -34,6 +34,8 @@ import {
 } from '../../services/Gateway/toolingSummary'
 import { ImageAttachmentService } from '../../services/ImageAttachmentService'
 import { TerminalStateStore } from '../../services/terminal/TerminalStateStore'
+import { ConversationBus, JsonlBusStore, AgentRegistry } from '../../services/ConversationBus'
+import { createFleetBridge } from '../../services/ConversationBus/fleetBridge'
 import { createAutoTerminalConfig } from '../../services/terminal/terminalConnectionSupport'
 import { TerminalCommandDraftService } from '../../services/TerminalCommandDraftService'
 
@@ -125,12 +127,30 @@ export async function startGyBackend(): Promise<void> {
     mcpToolService
   )
   const terminalCommandDraftService = new TerminalCommandDraftService(terminalService, settingsService)
+
+  // ConversationBus (fleet vertical): broker + append-only log under <dataDir>/fleet/.
+  // No AgentInvoker wired yet — delivery-triggered inference additionally requires
+  // autonomousRoutingEnabled (default false), so deliveries queue safely until the
+  // GatewayService.dispatchFromBus seam lands and the guards are reviewed.
+  const fleetDir = path.join(dataDir, 'fleet')
+  const conversationBus = new ConversationBus(
+    new JsonlBusStore(path.join(fleetDir, 'bus.jsonl')),
+    new AgentRegistry(path.join(fleetDir, 'registry.json')),
+    path.join(fleetDir, 'config.json'),
+    null,
+  )
+  const fleetBridge = createFleetBridge(conversationBus)
+  conversationBus.on('record', (record) => {
+    gatewayService.broadcastRaw('fleet:record', record)
+  })
   const catalogInstallService = new CatalogInstallService({
     publish: (channel, data) => gatewayService.broadcastRaw(channel, data),
     keyPath: process.env.AILAB_SSH_KEY || path.join(dataDir, 'ssh', 'id_ed25519')
   })
   // AI-Lab Universal API Proxy — dedicated HTTP listener fronting running services by slot.
-  void universalProxyService.start({ dataDir }).catch((e) => console.warn('[gybackend] universal proxy failed to start:', e))
+  void universalProxyService
+    .start({ dataDir, fleetInbound: (payload) => conversationBus.handleRelayInbound(payload) })
+    .catch((e) => console.warn('[gybackend] universal proxy failed to start:', e))
 
   const terminalRestoreResult = await terminalService.restorePersistedTerminals()
   if (terminalRestoreResult.restored.length > 0 || terminalRestoreResult.failed.length > 0) {
@@ -194,6 +214,7 @@ export async function startGyBackend(): Promise<void> {
         proxyBridge: {
           getState: () => universalProxyService.getState()
         },
+        fleetBridge,
         aiProbeBridge: {
           detectTypes: (items) => detectServiceTypes(items)
         },

@@ -141,6 +141,12 @@ export interface WebSocketGatewayAdapterOptions {
   proxyBridge?: {
     getState: () => unknown;
   };
+  fleetBridge?: {
+    send: (request: unknown) => unknown;
+    replay: (request: unknown) => unknown;
+    status: () => unknown;
+    setGuardConfig: (patch: unknown) => unknown;
+  };
   aiProbeBridge?: {
     detectTypes: (items: Array<{ id: string; endpoint?: string }>) => Promise<Record<string, string>>;
   };
@@ -703,6 +709,22 @@ export class WebSocketGatewayAdapter {
       case 'proxy:state': {
         if (!this.options.proxyBridge) throw new WebSocketRpcError('METHOD_NOT_FOUND', 'proxy:state is not available.');
         return this.options.proxyBridge.getState();
+      }
+      case 'fleet:send': {
+        if (!this.options.fleetBridge) throw new WebSocketRpcError('METHOD_NOT_FOUND', 'fleet:send is not available.');
+        return this.options.fleetBridge.send(params);
+      }
+      case 'fleet:replay': {
+        if (!this.options.fleetBridge) throw new WebSocketRpcError('METHOD_NOT_FOUND', 'fleet:replay is not available.');
+        return this.options.fleetBridge.replay(params);
+      }
+      case 'fleet:status': {
+        if (!this.options.fleetBridge) throw new WebSocketRpcError('METHOD_NOT_FOUND', 'fleet:status is not available.');
+        return this.options.fleetBridge.status();
+      }
+      case 'fleet:setGuardConfig': {
+        if (!this.options.fleetBridge) throw new WebSocketRpcError('METHOD_NOT_FOUND', 'fleet:setGuardConfig is not available.');
+        return this.options.fleetBridge.setGuardConfig(params);
       }
       case 'ai:probeTypes': {
         if (!this.options.aiProbeBridge) throw new WebSocketRpcError('METHOD_NOT_FOUND', 'ai:probeTypes is not available.');
