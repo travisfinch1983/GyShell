@@ -33,8 +33,8 @@ export class UniversalProxyService {
   private lanIp = '127.0.0.1'
   private fullServices: unknown = null
   private vectorList: unknown = null
-  /** ConversationBus inbound-relay hook (fleet vertical) — set via start opts. */
-  private fleetInbound: ((payload: unknown) => unknown) | null = null
+  /** ConversationBus HTTP surface (fleet vertical, createFleetRouter) — set via start opts. */
+  private fleetRouter: unknown = null
 
   private detectLanIp(): string {
     const ifaces = os.networkInterfaces()
@@ -97,8 +97,8 @@ export class UniversalProxyService {
       conn.connect({ host, port: 22, username: 'root', privateKey: key, readyTimeout: opts.timeout || 12000, hostVerifier: () => true })
     })
 
-  async start(opts: { dataDir?: string; host?: string; port?: number; fleetInbound?: (payload: unknown) => unknown } = {}): Promise<void> {
-    this.fleetInbound = opts.fleetInbound ?? this.fleetInbound
+  async start(opts: { dataDir?: string; host?: string; port?: number; fleetRouter?: unknown } = {}): Promise<void> {
+    this.fleetRouter = opts.fleetRouter ?? this.fleetRouter
     this.dataDir = opts.dataDir || this.dataDir
     this.host = opts.host || this.host
     this.port = opts.port || this.port
@@ -227,17 +227,11 @@ export class UniversalProxyService {
     // @ts-expect-error — JS router: native community-scripts catalog (replaces ProxLab-bridged /api/script-catalog)
     const { createScriptCatalogRouter } = await import('./proxy/script-catalog.js')
     app.use('/api/script-catalog', express.json({ limit: '10mb' }), createScriptCatalogRouter({ pveApi: llmPve, sshExec: this.sshExec, dataDir: this.dataDir }))
-    // ConversationBus inbound relay bridge (fleet vertical, R1.6): claude-relay-style
-    // POSTs land on the bus; envelopes appear in the Fleet Feed. Inbound-only in Phase 1.
-    if (this.fleetInbound) {
-      const fleetInbound = this.fleetInbound
-      app.post('/api/fleet/relay-inbound', express.json({ limit: '1mb' }), (req: { body: unknown }, res: { json: (v: unknown) => void; status: (code: number) => { json: (v: unknown) => void } }) => {
-        try {
-          res.json({ ok: true, envelope: fleetInbound(req.body) })
-        } catch (e) {
-          res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) })
-        }
-      })
+    // ConversationBus HTTP surface (fleet vertical): send/feed/agents/status/register
+    // for external agents — the claude-relay replacement the ailab-fleet MCP wraps.
+    // Routes declare absolute /api/fleet/* paths; see ConversationBus/fleetHttp.ts.
+    if (this.fleetRouter) {
+      app.use(this.fleetRouter)
     }
     // @ts-expect-error — JS router: native Proxmox cluster/guest/GPU management (replaces ProxLab-bridged
     // /api/pve, /api/guests, /api/gpu, /api/storages). Mounted at /api (declares its real public paths);
