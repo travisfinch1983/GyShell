@@ -1,0 +1,304 @@
+.panel {
+  display: flex;
+  height: 100%;
+  background: var(--app-bg);
+  color: var(--fg);
+}
+
+// ── agent list (left) ────────────────────────────────────────────────────────
+.list {
+  width: 200px;
+  flex: 0 0 auto;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 8px;
+}
+
+.listHead {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0 6px 4px;
+}
+
+.listItem {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+
+  &:hover { color: var(--fg); background: var(--control-bg); }
+}
+
+.listItemActive {
+  color: var(--fg);
+  background: var(--control-bg);
+  border-color: var(--border);
+}
+
+.listFoot {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-faint);
+  padding: 6px;
+}
+
+.emptyConv {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+// ── conversation (right) ─────────────────────────────────────────────────────
+.conv {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.convHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+}
+
+.dotOn { background: var(--success); }
+
+.dim {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.spacer { flex: 1; }
+
+.usage {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono, monospace);
+}
+
+.usageBar {
+  width: 70px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  display: inline-block;
+}
+
+.usageFill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.log {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+}
+
+.msgYou,
+.msgAgent,
+.msgError {
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  max-width: 78%;
+  overflow-wrap: anywhere;
+}
+
+.msgYou {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.msgAgent {
+  align-self: flex-start;
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+}
+
+.msgError {
+  align-self: flex-start;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.cursor {
+  animation: blink 1s step-end infinite;
+  color: var(--accent);
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+.sysRow {
+  align-self: center;
+  font-size: 11px;
+  color: var(--fg-faint);
+  font-family: var(--font-mono, monospace);
+}
+
+.thought {
+  align-self: flex-start;
+  max-width: 78%;
+}
+
+.thoughtHead {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  color: var(--fg-faint);
+  font-size: 11px;
+  cursor: pointer;
+  font-style: italic;
+
+  &:hover { color: var(--fg-muted); }
+}
+
+.thoughtBody {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--border);
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.toolCard {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--control-bg);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.toolTitle { font-family: var(--font-mono, monospace); color: var(--fg); }
+
+.toolStatus {
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+}
+
+.toolDone { color: var(--success); }
+
+// ── composer + slash menu ────────────────────────────────────────────────────
+.composerWrap {
+  position: relative;
+  border-top: 1px solid var(--border);
+  padding: 10px 14px;
+}
+
+.slashMenu {
+  position: absolute;
+  bottom: 100%;
+  left: 14px;
+  right: 14px;
+  margin-bottom: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--app-bg);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  z-index: 5;
+}
+
+.slashItem {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 12px;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+
+  code { font-family: var(--font-mono, monospace); color: var(--accent); }
+
+  &:hover { background: var(--control-bg); }
+}
+
+.slashHint {
+  font-size: 11px;
+  color: var(--fg-faint);
+  font-style: italic;
+}
+
+.composer {
+  display: flex;
+  gap: 8px;
+}
+
+.input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.btnPrimary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+
+  &:disabled { opacity: 0.5; cursor: default; }
+}
