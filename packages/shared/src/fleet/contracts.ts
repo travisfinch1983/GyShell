@@ -29,6 +29,64 @@ const agentIdSchema = z
 
 // ─── AgentRegistry ───────────────────────────────────────────────────────────
 
+// ─── Agent context pack + governance (reqs 9-11) ─────────────────────────────
+
+/**
+ * Per-agent "context pack" (req 9): OpenClaw-style persona/context docs assembled
+ * deterministically into the agent's system prompt. Bodies are stored as per-agent
+ * markdown files by ContextPackStore (agent-context-packs/<agentId>/<slot>.md), NOT
+ * inline here — the registry carries only the slot INDEX (`contextPackSlots`).
+ * Assembly order is the CONTEXT_PACK_SLOTS order below.
+ */
+export const CONTEXT_PACK_SLOTS = [
+  'bootstrap', // top-of-prompt preamble / operating frame
+  'identity', // who this agent is (supersedes the legacy `persona` string)
+  'soul', // values + operating rules / voice
+  'user', // who the human is (mirrors memory user_* notes)
+  'tools', // tool-usage guidance
+  'agents', // fleet roster + when/how to delegate
+  'heartbeat', // periodic self-check behaviour (ties to scheduled messages)
+  'memory', // per-agent long-term memory supplement (appended AFTER global memory.md)
+] as const
+export const contextPackSlotSchema = z.enum(CONTEXT_PACK_SLOTS)
+export type ContextPackSlot = (typeof CONTEXT_PACK_SLOTS)[number]
+
+/** Slot -> markdown body. Partial: only authored slots are present. */
+export const contextPackSchema = z.record(contextPackSlotSchema, z.string())
+export type ContextPack = z.infer<typeof contextPackSchema>
+
+/** How a per-agent allow/deny list narrows an available set (req 10). */
+export const permissionListSchema = z.object({
+  /** all = every available item; allow = only `list`; deny = everything except `list`. */
+  mode: z.enum(['all', 'allow', 'deny']).default('all'),
+  list: z.array(z.string()).default([]),
+})
+export type PermissionList = z.infer<typeof permissionListSchema>
+
+/** Per-agent skill + MCP-tool gating (req 10). Enforced when assembling a run's toolset. */
+export const agentToolPolicySchema = z.object({
+  skills: permissionListSchema.optional(),
+  mcpTools: permissionListSchema.optional(),
+})
+export type AgentToolPolicy = z.infer<typeof agentToolPolicySchema>
+
+/** Governance for sub-agents this agent may spawn via delegate_agent (req 11). */
+export const subAgentPolicySchema = z.object({
+  /** Hard cap on concurrently-live sub-agents. 0 = may not spawn any. */
+  maxConcurrent: z.number().int().nonnegative().default(0),
+  /** Allowlist of spawnable sub-agent kinds, each with an optional model + per-kind cap. */
+  allowedKinds: z
+    .array(
+      z.object({
+        kind: z.string().min(1),
+        model: z.string().optional(),
+        max: z.number().int().positive().optional(),
+      }),
+    )
+    .default([]),
+})
+export type SubAgentPolicy = z.infer<typeof subAgentPolicySchema>
+
 /**
  * Declarative registry entry (R1.5): agents are DECLARED, not inferred from
  * sessions. UI scratch sessions are not fleet agents unless promoted.
@@ -59,6 +117,16 @@ export const agentRegistryEntrySchema = z.object({
     })
     .partial()
     .optional(),
+  /**
+   * local only: which context-pack slots have authored docs (the INDEX; bodies
+   * live in ContextPackStore, not here). Assembled per-run into the system
+   * prompt. When absent/empty, the legacy `persona` string is used as `identity`.
+   */
+  contextPackSlots: z.array(contextPackSlotSchema).optional(),
+  /** local only: per-agent skill + MCP-tool gating (req 10). */
+  toolPolicy: agentToolPolicySchema.optional(),
+  /** local only: sub-agent spawn governance (req 11). */
+  subAgentPolicy: subAgentPolicySchema.optional(),
   enabled: z.boolean().default(true),
 })
 export type AgentRegistryEntry = z.infer<typeof agentRegistryEntrySchema>

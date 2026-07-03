@@ -34,7 +34,7 @@ import {
 } from '../../services/Gateway/toolingSummary'
 import { ImageAttachmentService } from '../../services/ImageAttachmentService'
 import { TerminalStateStore } from '../../services/terminal/TerminalStateStore'
-import { ConversationBus, JsonlBusStore, AgentRegistry } from '../../services/ConversationBus'
+import { ConversationBus, JsonlBusStore, AgentRegistry, ContextPackStore } from '../../services/ConversationBus'
 import { createFleetBridge } from '../../services/ConversationBus/fleetBridge'
 import { createBusAgentInvoker } from '../../services/ConversationBus/BusAgentInvoker'
 import { createFleetRouter } from '../../services/ConversationBus/fleetHttp'
@@ -141,6 +141,14 @@ export async function startGyBackend(): Promise<void> {
     path.join(fleetDir, 'config.json'),
     null,
   )
+  // reqs 9-11 (Phase 6): per-agent context packs. Docs live under
+  // <fleetDir>/agent-context-packs/<agentId>/<slot>.md; assembled into the
+  // system prompt for any run whose session maps to a declared local agent.
+  const contextPackStore = new ContextPackStore(path.join(fleetDir, 'agent-context-packs'))
+  agentService.setContextPackProvider((sessionId) => {
+    const entry = conversationBus.registry.getBySessionId(sessionId)
+    return entry ? contextPackStore.assemble(entry) : undefined
+  })
   conversationBus.setInvoker(
     createBusAgentInvoker({
       gateway: gatewayService,

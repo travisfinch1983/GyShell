@@ -52,6 +52,19 @@ export class AgentRegistry {
     return this.agents.get(agentId)
   }
 
+  /**
+   * Reverse lookup used by the context-pack assembly (reqs 9-11): map a running
+   * session back to its declared agent so the agent's pack can be injected into
+   * the system prompt. Undefined for plain UI scratch sessions (not fleet agents).
+   */
+  getBySessionId(sessionId: string): AgentRegistryEntry | undefined {
+    if (!sessionId) return undefined
+    for (const entry of this.agents.values()) {
+      if (entry.kind === 'local' && entry.sessionId === sessionId) return entry
+    }
+    return undefined
+  }
+
   list(): AgentRegistryEntry[] {
     return [...this.agents.values()]
   }

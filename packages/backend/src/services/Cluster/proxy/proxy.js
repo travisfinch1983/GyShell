@@ -309,6 +309,60 @@ function saveExternalServices(svcs) {
 
 export { loadExternalServices, saveExternalServices };
 
+// ─── External Model Sources ───────────────────────────────────────────────────
+// API model providers (Claude/DeepSeek/OpenRouter/…) fronted by this one proxy so
+// every model — local + external — shows up in /v1/models tagged, and metrics flow
+// through one place. See /claude/plans/ailab-hermes-integration.md + the shared
+// ExternalModelSource contract. Records:
+//   { id, tag, displayName, transport, baseUrl, apiKeyRef?, discovery, models[], enabled }
+const externalModelSourcesFile = join(PROXY_DATA_DIR, 'external-model-sources.json');
+
+function loadExternalModelSources() {
+  try {
+    if (existsSync(externalModelSourcesFile)) return JSON.parse(readFileSync(externalModelSourcesFile, 'utf-8'));
+  } catch {}
+  return [];
+}
+
+function saveExternalModelSources(sources) {
+  writeFileSync(externalModelSourcesFile, JSON.stringify(sources, null, 2));
+}
+
+export { loadExternalModelSources, saveExternalModelSources };
+
+// Resolve a source's API key. MVP: env var <ID>_API_KEY (upper-cased). apiKeyRef →
+// credential-vault resolution is a TODO for the management-adapter increment (we do
+// NOT persist raw keys in the sources file).
+function resolveExternalSourceKey(source) {
+  const envName = `${String(source.id || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`;
+  return process.env[envName] || '';
+}
+
+// Model ids a source exposes: discovery 'list' => source.models; 'auto' => GET {baseUrl}/models
+// (optionally allow-filtered by source.models). Best-effort — unreachable sources yield [].
+async function fetchExternalSourceModels(source) {
+  if (source.discovery === 'list') return Array.isArray(source.models) ? source.models : [];
+  try {
+    const key = resolveExternalSourceKey(source);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    const headers = key ? { Authorization: `Bearer ${key}` } : {};
+    const url = String(source.baseUrl).replace(/\/+$/, '') + '/models';
+    const resp = await fetch(url, { signal: ctrl.signal, headers });
+    clearTimeout(timer);
+    if (!resp.ok) return [];
+    const json = await resp.json();
+    let ids = (json.data || json.models || []).map((m) => (typeof m === 'string' ? m : m && m.id)).filter(Boolean);
+    if (Array.isArray(source.models) && source.models.length) {
+      const allow = new Set(source.models);
+      ids = ids.filter((id) => allow.has(id));
+    }
+    return ids;
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Load active services from disk, backfilling proxySlot if missing.
  * @returns {{ services: Object }}
@@ -609,7 +663,33 @@ async function refreshModelCache() {
     }
   }
 
-  modelCache = { models: allModels, byModel, updatedAt: Date.now() };
+  // Append external API sources (tagged). Routing markers live in a SEPARATE map so
+  // local model routing is completely untouched until the forwarding branch consumes
+  // externalByModel — a tagged model in the catalog is display/discovery-only for now.
+  const externalByModel = new Map();
+  try {
+    const sources = loadExternalModelSources().filter((s) => s && s.enabled !== false);
+    const perSource = await Promise.all(
+      sources.map(async (source) => ({ source, ids: await fetchExternalSourceModels(source) })),
+    );
+    for (const { source, ids } of perSource) {
+      for (const upstreamModel of ids) {
+        const taggedId = `[${source.tag}] ${upstreamModel}`;
+        allModels.push({
+          id: taggedId,
+          object: 'model',
+          owned_by: source.id,
+          _external_source: source.id,
+          _external_tag: source.tag,
+          _upstream_model: upstreamModel,
+          _proxlab_provider: 'external',
+        });
+        externalByModel.set(taggedId, { source, upstreamModel });
+      }
+    }
+  } catch { /* external sources are best-effort; never break the local catalog */ }
+
+  modelCache = { models: allModels, byModel, externalByModel, updatedAt: Date.now() };
   return modelCache;
 }
 
@@ -1300,6 +1380,38 @@ export function createProxyRouter(sshService) {
     const external = loadExternalServices().filter(e => e.name !== req.params.name);
     saveExternalServices(external);
     res.json({ ok: true, count: external.length });
+  });
+
+  // ─── External Model Sources CRUD (API providers behind the one proxy) ──────
+  // Their models appear in /llm/v1/models tag-prefixed ([DS]/[MAX]/[OC]/…). Routing
+  // (forwarding a tagged request to the upstream w/ key + metrics) is the next
+  // increment; these routes + the tagged catalog are additive and safe today.
+  router.get('/external-sources', (req, res) => res.json(loadExternalModelSources()));
+
+  router.post('/external-sources', (req, res) => {
+    const body = [];
+    req.on('data', c => body.push(c));
+    req.on('end', () => {
+      try {
+        const src = JSON.parse(Buffer.concat(body).toString());
+        if (!src.id || !src.tag || !src.baseUrl || !src.transport) {
+          return res.status(400).json({ error: 'id, tag, transport, and baseUrl are required' });
+        }
+        const sources = loadExternalModelSources();
+        const idx = sources.findIndex(s => s.id === src.id);
+        if (idx >= 0) sources[idx] = src; else sources.push(src);
+        saveExternalModelSources(sources);
+        invalidateModelCache();
+        res.json({ ok: true, count: sources.length });
+      } catch (e) { res.status(400).json({ error: e.message }); }
+    });
+  });
+
+  router.delete('/external-sources/:id', (req, res) => {
+    const sources = loadExternalModelSources().filter(s => s.id !== req.params.id);
+    saveExternalModelSources(sources);
+    invalidateModelCache();
+    res.json({ ok: true, count: sources.length });
   });
 
   // ─── Named Image Gen Proxies ─────────────────────────────────────────
