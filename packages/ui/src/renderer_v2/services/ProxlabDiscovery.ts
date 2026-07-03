@@ -1,6 +1,9 @@
 import { runInAction } from 'mobx'
 /**
- * ProxlabDiscovery — Auto-discover models and services from ProxLab proxy.
+ * ProxlabDiscovery — Auto-discover models and services from the AI-Lab proxy.
+ * (Named for the ProxLab proxy it originally targeted; ProxLab @ 10.0.0.140:7777
+ * is decommissioned and the Vite `/proxlab-api` route now rewrites to AI-Lab's
+ * own universal proxy, which serves the same /api/proxy/* discovery shapes.)
  *
  * Discovers:
  * - LLM models (chat/completions) via /llm/v1/models
@@ -8,11 +11,10 @@ import { runInAction } from 'mobx'
  * - Reranker models via /rerank/v1/models
  * - Service inventory via /services
  *
- * The ProxLab URL is hardcoded and accessed via Vite proxy (/proxlab-api/*).
- * Auto-registers discovered LLM models in GyShell settings.
+ * Auto-registers discovered LLM models in settings.
  */
 
-// Browser-safe prefix — Vite proxy rewrites to http://10.0.0.140:7777
+// Browser-safe prefix — Vite proxy rewrites to the AI-Lab proxy (127.0.0.1:17890)
 const API_PREFIX = '/proxlab-api'
 
 const DISCOVERY_INTERVAL_MS = 60_000 // 60s
@@ -487,8 +489,9 @@ function syncModelsToSettings(models: DiscoveredModel[]) {
         cur._proxlabSlots = m.slots
         cur._proxlabNode = m.node
         cur._proxlabDisconnected = false
-        // Refresh baseUrl in case the user repointed proxlab.
-        cur.baseUrl = `http://10.0.0.140:7777/api/proxy/llm/${m.slot}/v1`
+        // Refresh baseUrl — the backend (CT152) reaches its own proxy on localhost.
+        // (Was the dead ProxLab host 10.0.0.140:7777 until 2026-07-03.)
+        cur.baseUrl = `http://127.0.0.1:17890/api/proxy/llm/${m.slot}/v1`
         continue
       }
       // Don't shadow a user's manual entry pointing at the same model.
@@ -505,7 +508,7 @@ function syncModelsToSettings(models: DiscoveredModel[]) {
         name: friendlyName,
         model: m.id,
         apiKey: 'not-needed',
-        baseUrl: `http://10.0.0.140:7777/api/proxy/llm/${m.slot}/v1`,
+        baseUrl: `http://127.0.0.1:17890/api/proxy/llm/${m.slot}/v1`,
         maxTokens: 200000,
         structuredOutputMode: 'auto',
         supportsStructuredOutput: true,
