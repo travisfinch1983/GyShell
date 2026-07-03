@@ -38,6 +38,8 @@ import { ConversationBus, JsonlBusStore, AgentRegistry, ContextPackStore } from 
 import { createFleetBridge } from '../../services/ConversationBus/fleetBridge'
 import { createBusAgentInvoker } from '../../services/ConversationBus/BusAgentInvoker'
 import { createFleetRouter } from '../../services/ConversationBus/fleetHttp'
+import { HermesService } from '../../services/Hermes/HermesService'
+import { createHermesRouter } from '../../services/Hermes/hermesHttp'
 import { createAutoTerminalConfig } from '../../services/terminal/terminalConnectionSupport'
 import { TerminalCommandDraftService } from '../../services/TerminalCommandDraftService'
 
@@ -181,9 +183,19 @@ export async function startGyBackend(): Promise<void> {
     publish: (channel, data) => gatewayService.broadcastRaw(channel, data),
     keyPath: process.env.AILAB_SSH_KEY || path.join(dataDir, 'ssh', 'id_ed25519')
   })
+  // AI-Lab x Hermes control plane — create/configure/drive Hermes agents on CT158.
+  // Backend-owned + headless: sessions run server-side regardless of any UI (see plan INVARIANT).
+  const hermesService = new HermesService({
+    host: process.env.HERMES_HOST || '10.0.0.236',
+    sshKeyPath: process.env.AILAB_SSH_KEY || path.join(dataDir, 'ssh', 'id_ed25519'),
+  })
   // AI-Lab Universal API Proxy — dedicated HTTP listener fronting running services by slot.
   void universalProxyService
-    .start({ dataDir, fleetRouter: createFleetRouter(conversationBus) })
+    .start({
+      dataDir,
+      fleetRouter: createFleetRouter(conversationBus),
+      hermesRouter: createHermesRouter(hermesService),
+    })
     .catch((e) => console.warn('[gybackend] universal proxy failed to start:', e))
 
   const terminalRestoreResult = await terminalService.restorePersistedTerminals()

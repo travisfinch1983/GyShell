@@ -35,6 +35,8 @@ export class UniversalProxyService {
   private vectorList: unknown = null
   /** ConversationBus HTTP surface (fleet vertical, createFleetRouter) — set via start opts. */
   private fleetRouter: unknown = null
+  /** AI-Lab x Hermes control-plane HTTP surface (createHermesRouter) — set via start opts. */
+  private hermesRouter: unknown = null
 
   private detectLanIp(): string {
     const ifaces = os.networkInterfaces()
@@ -97,8 +99,9 @@ export class UniversalProxyService {
       conn.connect({ host, port: 22, username: 'root', privateKey: key, readyTimeout: opts.timeout || 12000, hostVerifier: () => true })
     })
 
-  async start(opts: { dataDir?: string; host?: string; port?: number; fleetRouter?: unknown } = {}): Promise<void> {
+  async start(opts: { dataDir?: string; host?: string; port?: number; fleetRouter?: unknown; hermesRouter?: unknown } = {}): Promise<void> {
     this.fleetRouter = opts.fleetRouter ?? this.fleetRouter
+    this.hermesRouter = opts.hermesRouter ?? this.hermesRouter
     this.dataDir = opts.dataDir || this.dataDir
     this.host = opts.host || this.host
     this.port = opts.port || this.port
@@ -232,6 +235,10 @@ export class UniversalProxyService {
     // Routes declare absolute /api/fleet/* paths; see ConversationBus/fleetHttp.ts.
     if (this.fleetRouter) {
       app.use(this.fleetRouter)
+    }
+    // AI-Lab x Hermes control plane (createHermesRouter): /api/hermes/* — before the broad /api cluster router.
+    if (this.hermesRouter) {
+      app.use(this.hermesRouter)
     }
     // @ts-expect-error — JS router: native Proxmox cluster/guest/GPU management (replaces ProxLab-bridged
     // /api/pve, /api/guests, /api/gpu, /api/storages). Mounted at /api (declares its real public paths);
