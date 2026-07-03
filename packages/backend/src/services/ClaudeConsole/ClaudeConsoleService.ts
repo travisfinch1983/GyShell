@@ -1,0 +1,204 @@
+import { spawn as ptySpawn, type IPty } from 'node-pty'
+import { WebSocketServer, type WebSocket } from 'ws'
+import type { Server } from 'http'
+
+/**
+ * Native console bridge for the consolidated Claude instances — replaces the
+ * per-instance ttyd terminals (see /claude/plans/ailab-native-console.md).
+ *
+ * WS `/api/claude/console/:id` → node-pty running the dtach attach over SSH to
+ * the instance container (sockets live there, mode srwx------, so user
+ * instances attach via a `su - <user>` drop).
+ *
+ * The two properties that fix the spontaneous /clear:
+ *  - SINGLE-WRITER: one live attach per instance, enforced here. A new WS for
+ *    an instance CLOSES the old session first (last-writer-wins — a wifi
+ *    reconnect takes over cleanly; two attaches never coexist).
+ *  - CLEAN RECONNECT: every connect is a fresh `dtach -a` (dtach redraws the
+ *    current screen). No input buffering, no replay — a dropped connection's
+ *    unsent keystrokes are simply gone.
+ *
+ * Wire protocol (browser ↔ here):
+ *  - binary frames: raw terminal bytes, both directions.
+ *  - text frames: JSON control. client→server {t:'resize',cols,rows} |
+ *    {t:'input',data} (fallback for clients that can't send binary);
+ *    server→client {t:'status',state:'attached'|'exit'|'takeover'|'error',detail?}.
+ * Closing the WS kills the pty — dtach detaches; the persistent session
+ * survives in its `dtach -N` host on the container.
+ */
+
+export interface ClaudeConsoleConfig {
+  /** instance-manager base, e.g. http://10.0.0.161:7700 */
+  managerUrl: string
+  /** ssh key authorized as root on the instance container (AILAB_SSH_KEY convention) */
+  sshKeyPath: string
+  /** container ssh target, e.g. root@10.0.0.161 */
+  sshTarget: string
+}
+
+interface ManagedInstance {
+  id: string
+  user?: string
+  /** explicit socket from the manager registry (its instances.json `sock` field —
+   *  not exposed over GET /instances yet; claude1 asked to add it) */
+  consoleSocket?: string
+  sock?: string
+}
+
+interface ConsoleSession {
+  id: string
+  seq: number
+  ws: WebSocket
+  pty: IPty
+}
+
+/**
+ * Socket names are ad-hoc history (claude.sock, claude-fable.sock, claude-dhb.sock)
+ * — no clean derivation rule exists, so the current fleet is mapped explicitly.
+ * The manager's registry `sock` field is authoritative when the API exposes it.
+ */
+const KNOWN_SOCKETS: Record<string, string> = {
+  claude1: '/tmp/claude.sock',
+  'fable-builder': '/tmp/claude-fable.sock',
+  claude2: '/tmp/claude-claude2.sock',
+  'claude-dhb': '/tmp/claude-dhb.sock',
+}
+
+export function socketForInstance(inst: ManagedInstance): string {
+  return inst.sock ?? inst.consoleSocket ?? KNOWN_SOCKETS[inst.id] ?? `/tmp/claude-${inst.user ?? inst.id}.sock`
+}
+
+/** The remote attach command; user-owned sockets require attaching AS the owner. */
+export function attachCommandFor(inst: ManagedInstance): string {
+  const socket = socketForInstance(inst)
+  const user = inst.user ?? 'root'
+  if (user === 'root') return `exec dtach -a ${socket}`
+  // Quote for the su -c layer; socket paths are slugs but stay defensive.
+  return `exec su - ${user} -c 'exec dtach -a ${socket.replace(/'/g, `'\\''`)}'`
+}
+
+export class ClaudeConsoleService {
+  private sessions = new Map<string, ConsoleSession>()
+  private seq = 0
+
+  constructor(private cfg: ClaudeConsoleConfig) {}
+
+  /** Mount the WS upgrade listener next to the existing ttyd proxy (separate path). */
+  attachUpgrade(server: Server): void {
+    const wss = new WebSocketServer({ noServer: true })
+    server.on('upgrade', (req, socket, head) => {
+      const m = (req.url || '').match(/^\/api\/claude\/console\/([^/?]+)/)
+      if (!m) return // other listeners (ttyd proxy, gateway) own their paths
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        void this.attach(decodeURIComponent(m[1]), ws)
+      })
+    })
+  }
+
+  /** How many live consoles (for status surfaces). */
+  liveSessions(): string[] {
+    return [...this.sessions.keys()]
+  }
+
+  private async resolveInstance(id: string): Promise<ManagedInstance | null> {
+    try {
+      const r = await fetch(`${this.cfg.managerUrl}/instances`, { signal: AbortSignal.timeout(8000) })
+      const body = (await r.json()) as { instances?: ManagedInstance[] }
+      return body.instances?.find((i) => i.id === id) ?? null
+    } catch {
+      return null
+    }
+  }
+
+  private async attach(id: string, ws: WebSocket): Promise<void> {
+    const inst = await this.resolveInstance(id)
+    if (!inst) {
+      this.sendStatus(ws, 'error', `unknown instance "${id}" (instance-manager unreachable or id not registered)`)
+      ws.close(4404, 'unknown instance')
+      return
+    }
+
+    // SINGLE-WRITER: displace any existing attach before spawning ours.
+    const old = this.sessions.get(id)
+    if (old) {
+      this.sendStatus(old.ws, 'takeover', 'another client attached — this console was displaced')
+      try { old.pty.kill() } catch { /* already dead */ }
+      try { old.ws.close(4001, 'takeover') } catch { /* already closed */ }
+      this.sessions.delete(id)
+    }
+
+    const seq = ++this.seq
+    let pty: IPty
+    try {
+      pty = ptySpawn(
+        'ssh',
+        [
+          '-tt',
+          '-i', this.cfg.sshKeyPath,
+          '-o', 'BatchMode=yes',
+          '-o', 'ConnectTimeout=8',
+          '-o', 'StrictHostKeyChecking=accept-new',
+          '-o', 'ServerAliveInterval=15',
+          this.cfg.sshTarget,
+          attachCommandFor(inst),
+        ],
+        { name: 'xterm-256color', cols: 80, rows: 24 },
+      )
+    } catch (e) {
+      this.sendStatus(ws, 'error', `pty spawn failed: ${String((e as Error).message)}`)
+      ws.close(4500, 'pty spawn failed')
+      return
+    }
+
+    const session: ConsoleSession = { id, seq, ws, pty }
+    this.sessions.set(id, session)
+    this.sendStatus(ws, 'attached', socketForInstance(inst))
+
+    // pty → browser (raw bytes as binary frames)
+    pty.onData((data) => {
+      if (ws.readyState === ws.OPEN) ws.send(Buffer.from(data, 'utf8'), { binary: true })
+    })
+    pty.onExit(({ exitCode }) => {
+      if (this.sessions.get(id)?.seq !== seq) return // a takeover already replaced us
+      this.sessions.delete(id)
+      this.sendStatus(ws, 'exit', `attach process exited (${exitCode})`)
+      try { ws.close(4002, 'pty exit') } catch { /* already closed */ }
+    })
+
+    // browser → pty. Binary = raw input bytes; text = JSON control.
+    ws.on('message', (data: Buffer, isBinary: boolean) => {
+      if (this.sessions.get(id)?.seq !== seq) return
+      if (isBinary) {
+        pty.write(data.toString('utf8'))
+        return
+      }
+      try {
+        const msg = JSON.parse(data.toString('utf8')) as { t?: string; cols?: number; rows?: number; data?: string }
+        if (msg.t === 'resize' && Number.isInteger(msg.cols) && Number.isInteger(msg.rows)) {
+          pty.resize(Math.max(2, Math.min(500, msg.cols!)), Math.max(2, Math.min(300, msg.rows!)))
+        } else if (msg.t === 'input' && typeof msg.data === 'string') {
+          pty.write(msg.data)
+        }
+      } catch { /* ignore malformed control frames — never guess at input */ }
+    })
+
+    // CLEAN RECONNECT: closing kills the pty (dtach detaches). Nothing is
+    // buffered or replayed — the next connect gets a fresh dtach redraw.
+    ws.on('close', () => {
+      if (this.sessions.get(id)?.seq !== seq) return
+      this.sessions.delete(id)
+      try { pty.kill() } catch { /* already dead */ }
+    })
+    ws.on('error', () => {
+      if (this.sessions.get(id)?.seq !== seq) return
+      this.sessions.delete(id)
+      try { pty.kill() } catch { /* already dead */ }
+    })
+  }
+
+  private sendStatus(ws: WebSocket, state: 'attached' | 'exit' | 'takeover' | 'error', detail?: string): void {
+    if (ws.readyState === ws.OPEN) {
+      try { ws.send(JSON.stringify({ t: 'status', state, detail })) } catch { /* racing close */ }
+    }
+  }
+}

@@ -250,7 +250,15 @@ export class UniversalProxyService {
     }))
 
     this.server = http.createServer(app)
-    attachClaudeTermUpgrade(this.server) // ttyd WebSocket reverse-proxy for the Claude tab terminals
+    attachClaudeTermUpgrade(this.server) // ttyd WebSocket reverse-proxy for the Claude tab terminals (kept during the native-console transition)
+    // Native xterm.js console bridge (/api/claude/console/:id) — single-writer dtach attach
+    // over SSH; replaces the ttyd terminals once verified (ailab-native-console.md).
+    const { ClaudeConsoleService } = await import('../ClaudeConsole/ClaudeConsoleService')
+    new ClaudeConsoleService({
+      managerUrl: (process.env.CLAUDE_INSTANCE_MANAGER_URL || 'http://10.0.0.161:7700').replace(/\/+$/, ''),
+      sshKeyPath: this.keyPath,
+      sshTarget: process.env.CLAUDE_CONSOLE_SSH_TARGET || 'root@10.0.0.161',
+    }).attachUpgrade(this.server)
     this.server.on('error', (e) => console.warn('[universal-proxy] server error:', e))
     await new Promise<void>((resolve) => this.server!.listen(this.port, this.host, resolve))
     console.log(`[universal-proxy] listening on http://${this.host}:${this.port}/api/proxy`)
