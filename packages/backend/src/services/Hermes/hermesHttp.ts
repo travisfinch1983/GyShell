@@ -1,3 +1,4 @@
+// @ts-expect-error — express ships untyped in this repo (same pre-existing gap as UniversalProxyService)
 import express from 'express'
 import { hermesAgentSpecSchema } from '@gyshell/shared'
 import type { HermesService } from './HermesService'
