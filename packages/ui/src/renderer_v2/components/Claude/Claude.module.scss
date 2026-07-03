@@ -9,6 +9,51 @@
 .connHead { display: flex; align-items: center; gap: 10px; }
 .termPlaceholder { display: flex; align-items: center; gap: 8px; padding: 14px; border: 1px dashed var(--border); border-radius: 8px; color: var(--fg-faint); font-size: 12px; }
 
+// ── native console (xterm.js — replaces the ttyd iframe) ────────────────────
+.nativeConsoleWrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--app-bg);
+  resize: vertical;
+  min-height: 200px;
+}
+
+.nativeConsoleHost {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 2px 2px 6px;
+
+  :global(.xterm) { height: 100%; }
+}
+
+.consoleStatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  color: var(--fg-muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--control-bg);
+}
+
+.ttydToggle {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  color: var(--fg-faint);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 2px 0;
+
+  &:hover { color: var(--fg-muted); text-decoration: underline; }
+}
+
 .fileTabs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .fileTab { font-size: 11px; font-family: var(--font-mono); padding: 3px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--control-bg); color: var(--fg-muted); cursor: pointer; }
 .fileTabActive { border-color: var(--accent); color: var(--accent); }
