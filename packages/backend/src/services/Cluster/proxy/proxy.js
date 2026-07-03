@@ -436,6 +436,50 @@ async function fetchExternalSourceModelsRaw(source) {
   }
 }
 
+// Query an external source's account credit/balance where the provider exposes it. Normalized:
+//   { supported, currency, balance, totalCredits, totalUsage, usage:{...}, available, reason, checkedAt }
+// OpenRouter: /api/v1/credits (+ /api/v1/key for daily/weekly/monthly usage). DeepSeek: /user/balance.
+// Anthropic: no balance on a standard key (admin key required) → supported:false. Used for the
+// AI-Lab credit tracker (current balance + historical snapshots → cost-over-time).
+async function fetchExternalSourceBalance(source) {
+  const key = resolveExternalSourceKey(source);
+  const host = String(source.baseUrl || '').replace(/\/v1\/?$/, '').replace(/\/$/, '');
+  const out = { supported: false, currency: 'USD', checkedAt: Date.now() };
+  const h = key ? { Authorization: `Bearer ${key}` } : {};
+  const j = async (url, headers) => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    try { const r = await fetch(url, { signal: ctrl.signal, headers }); clearTimeout(t); return r.ok ? await r.json() : null; }
+    catch { clearTimeout(t); return null; }
+  };
+  if (/openrouter\.ai/.test(host)) {
+    const c = await j('https://openrouter.ai/api/v1/credits', h);
+    const k = await j('https://openrouter.ai/api/v1/key', h);
+    if (c && c.data) {
+      const tc = Number(c.data.total_credits), tu = Number(c.data.total_usage);
+      out.supported = true; out.totalCredits = tc; out.totalUsage = tu;
+      out.balance = (Number.isFinite(tc) && Number.isFinite(tu)) ? tc - tu : null;
+      if (k && k.data) out.usage = { total: k.data.usage, daily: k.data.usage_daily, weekly: k.data.usage_weekly, monthly: k.data.usage_monthly };
+    } else { out.reason = 'openrouter credits unavailable (key/network)'; }
+    return out;
+  }
+  if (/deepseek\.com/.test(host)) {
+    const b = await j(host + '/user/balance', { ...h, Accept: 'application/json' });
+    const info = b && Array.isArray(b.balance_infos) && b.balance_infos[0];
+    if (info) {
+      out.supported = true; out.currency = info.currency || 'USD';
+      out.balance = Number(info.total_balance);
+      out.granted = Number(info.granted_balance); out.toppedUp = Number(info.topped_up_balance);
+      out.available = !!b.is_available;
+    } else { out.reason = 'deepseek balance unavailable (key/network)'; }
+    return out;
+  }
+  out.reason = source.transport === 'anthropic'
+    ? 'Anthropic exposes no balance on a standard API key (admin key required)'
+    : 'no balance API for this provider';
+  return out;
+}
+
 // Forward a chat/completions request to an external model source's upstream API. The
 // [TAG] is already stripped by the caller (upstreamModel is the real id). Injects the
 // vaulted/env key, rewrites body.model, and streams the response straight back (SSE-safe).
@@ -1588,6 +1632,26 @@ export function createProxyRouter(sshService) {
       const models = (await fetchExternalSourceModelsRaw(source))
         .map(m => ({ ...m, enabled: allowAll || allowSet.has(m.id) }));
       res.json({ sourceId: source.id, tag: source.tag, allowAll, count: models.length, models });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Live account credit/balance for one source (OpenRouter/DeepSeek supported; Anthropic not).
+  router.get('/external-sources/:id/balance', async (req, res) => {
+    try {
+      const source = loadExternalModelSources().find(s => s.id === req.params.id);
+      if (!source) return res.status(404).json({ error: 'source not found' });
+      res.json({ sourceId: source.id, tag: source.tag, displayName: source.displayName, ...(await fetchExternalSourceBalance(source)) });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Balances for ALL sources at once (powers the credit-tracker UI + the history snapshotter).
+  router.get('/external-sources-balances', async (_req, res) => {
+    try {
+      const sources = loadExternalModelSources();
+      const balances = await Promise.all(sources.map(async (s) => ({
+        sourceId: s.id, tag: s.tag, displayName: s.displayName, ...(await fetchExternalSourceBalance(s)),
+      })));
+      res.json({ balances, checkedAt: Date.now() });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
