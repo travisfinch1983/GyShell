@@ -229,6 +229,45 @@
 
 .toolDone { color: var(--success); }
 
+.planCard {
+  align-self: flex-start;
+  max-width: 78%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--control-bg);
+  font-size: 12px;
+}
+
+.planHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono, monospace);
+  margin-bottom: 5px;
+}
+
+.planEntry {
+  display: flex;
+  gap: 7px;
+  padding: 1px 0;
+  color: var(--fg);
+}
+
+.planDone {
+  color: var(--fg-muted);
+  text-decoration: line-through;
+}
+
+.planMark {
+  font-family: var(--font-mono, monospace);
+  color: var(--accent);
+  width: 10px;
+  flex: 0 0 auto;
+}
+
 // ── composer + slash menu ────────────────────────────────────────────────────
 .composerWrap {
   position: relative;

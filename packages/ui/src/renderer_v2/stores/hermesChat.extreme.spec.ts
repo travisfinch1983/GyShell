@@ -105,14 +105,27 @@ const kinds = (id: string) => hermesChatStore.state(id).items.map((i: ChatItem) 
   assertEqual(s.busy, false, 'case6: busy cleared on error')
 }
 
-// ── case 7: passthrough variants (plan/mode/session-info) are inert ─────────
+// ── case 7: mode/session-info passthroughs are inert; plans render + upsert ──
 {
   const id = 'case7'
-  feed(id, { t: 'agentPlanUpdate', raw: { steps: [] } })
   feed(id, { t: 'currentModeUpdate', raw: {} })
   feed(id, { t: 'sessionInfoUpdate', raw: {} })
-  feed(id, { t: 'plan', raw: {} })
-  assertEqual(hermesChatStore.state(id).items.length, 0, 'case7: passthroughs render nothing (yet)')
+  feed(id, { t: 'agentPlanUpdate', raw: { entries: [] } }) // empty plan → nothing
+  assertEqual(hermesChatStore.state(id).items.length, 0, 'case7: passthroughs render nothing')
+  feed(id, { t: 'agentPlanUpdate', raw: { entries: [{ content: 'step 1', status: 'in_progress' }, { content: 'step 2' }] } })
+  feed(id, { t: 'plan', raw: { entries: [{ content: 'step 1', status: 'completed' }, { content: 'step 2', status: 'in_progress' }] } })
+  const s7 = hermesChatStore.state(id)
+  assertEqual(s7.items.length, 1, 'case7: plan updates upsert ONE card')
+  assertEqual(s7.items[0].plan?.map((e) => e.status), ['completed', 'in_progress'], 'case7: latest plan wins')
+}
+
+// ── case 7b: stream events mark busy (turns started by OTHER clients) ───────
+{
+  const id = 'case7b'
+  feed(id, { t: 'message', text: 'someone else prompted' })
+  assertEqual(hermesChatStore.state(id).busy, true, 'case7b: message chunk sets busy')
+  feed(id, { t: 'turn_done', stop_reason: 'end_turn' })
+  assertEqual(hermesChatStore.state(id).busy, false, 'case7b: turn_done clears busy')
 }
 
 // ── case 8: permission_auto_allow renders a system notice ───────────────────
