@@ -1,5 +1,5 @@
 import { HermesManagementService } from './HermesManagementService'
-import { HermesAcpBridge, type AcpEvent } from './HermesAcpBridge'
+import { HermesAcpBridge, type AcpEvent, type AcpHistory } from './HermesAcpBridge'
 import type { HermesAgentSpec } from '@gyshell/shared'
 
 export interface HermesServiceConfig {
@@ -54,6 +54,15 @@ export class HermesService {
   /** Subscribe to a session's normalized event stream (for SSE/WS observers). */
   onEvent(agentId: string, cb: (ev: AcpEvent) => void): () => void {
     return this.bridge.onEvent(agentId, cb)
+  }
+
+  /**
+   * Buffered transcript for a live session (read-back on reload). `since` returns only the
+   * events after that seq. undefined if the backend-owned session isn't running (nothing
+   * buffered — the transcript's lifetime is the session's, per the headless invariant).
+   */
+  getHistory(agentId: string, since = 0): AcpHistory | undefined {
+    return this.bridge.getHistory(agentId, since)
   }
 
   /**

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Eye, EyeOff, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { KNOWN_SOURCE_TAGS, externalModelSourceSchema, type CatalogModel } from '@gyshell/shared'
-import { modelSourcesApi, type ExternalModelSourceWire } from '../../stores/modelSourcesApi'
+import { modelSourcesApi, type ExternalModelSourceWire, type AvailableModel } from '../../stores/modelSourcesApi'
 import { hermesApi } from '../../stores/hermesApi'
 import { confirmStore } from '../../stores/confirmStore'
 
@@ -211,6 +211,78 @@ const delBtn: React.CSSProperties = { ...btn, padding: 6, color: 'var(--danger)'
 const addBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 8, fontSize: 12, padding: '6px 12px', borderRadius: 6, border: '1px dashed var(--border-strong)', background: 'transparent', color: 'var(--fg-muted)', cursor: 'pointer' }
 const sectionTitle: React.CSSProperties = { fontSize: 12, fontWeight: 600, color: 'var(--fg-muted)', margin: '16px 0 8px' }
 
+// ─── Per-model curation (checkboxes + cost columns) ─────────────────────────────
+const thc: React.CSSProperties = { padding: '5px 8px', fontWeight: 600, fontSize: 11, textAlign: 'center', whiteSpace: 'nowrap' }
+const tdc: React.CSSProperties = { padding: '4px 8px', textAlign: 'center', whiteSpace: 'nowrap' }
+const fmtCtx = (n?: number | null) => (n == null ? '—' : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
+const fmtCost = (v?: number | null) =>
+  v == null ? '—' : v === 0 ? 'free' : v < 1 ? `$${v.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}` : `$${v.toFixed(2)}`
+
+/** Expandable list of a source's upstream models with enable checkboxes + cost/context columns.
+ *  Curate which models are proxied / shown (all checked ⇒ empty allow-list = allow-all). */
+const ModelCuration: React.FC<{ sourceId: string; busy: boolean; onApply: (models: string[]) => void }> = ({ sourceId, busy, onApply }) => {
+  const [models, setModels] = useState<AvailableModel[]>([])
+  const [checked, setChecked] = useState<Set<string>>(new Set())
+  const [loading, setLoading] = useState(true)
+  const [q, setQ] = useState('')
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    setLoading(true); setErr(null)
+    modelSourcesApi.available(sourceId).then((r) => {
+      if (!alive) return
+      setModels(r.models)
+      setChecked(new Set(r.models.filter((m) => m.enabled).map((m) => m.id)))
+      setLoading(false)
+    }).catch((e) => { if (alive) { setErr(String(e?.message ?? e)); setLoading(false) } })
+    return () => { alive = false }
+  }, [sourceId])
+
+  const filtered = q ? models.filter((m) => (m.id + ' ' + (m.name || '')).toLowerCase().includes(q.toLowerCase())) : models
+  const toggle = (id: string) => setChecked((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+  const setAllVisible = (on: boolean) => setChecked((s) => { const n = new Set(s); filtered.forEach((m) => on ? n.add(m.id) : n.delete(m.id)); return n })
+  const apply = () => onApply(checked.size === models.length ? [] : [...checked]) // all ⇒ [] = allow-all
+
+  if (loading) return <div style={{ ...sub, padding: '6px 0' }}>Loading models…</div>
+  if (err) return <div style={{ fontSize: 12, color: 'var(--danger)', padding: '4px 0' }}>Couldn’t load models: {err}</div>
+  if (!models.length) return <div style={{ ...sub, padding: '4px 0' }}>No models discovered (check the base URL / key).</div>
+
+  return (
+    <div style={{ marginTop: 6 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' }}>
+        <input style={{ ...smallInp, flex: 1, minWidth: 150 }} placeholder={`Filter ${models.length} models…`} value={q} onChange={(e) => setQ(e.target.value)} />
+        <button style={{ ...btn, padding: '4px 10px', fontSize: 12 }} onClick={() => setAllVisible(true)}>Select all{q ? ' shown' : ''}</button>
+        <button style={{ ...btn, padding: '4px 10px', fontSize: 12 }} onClick={() => setAllVisible(false)}>Deselect all{q ? ' shown' : ''}</button>
+        <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{checked.size}/{models.length} enabled</span>
+        <button style={{ ...btn, padding: '4px 12px', fontSize: 12 }} disabled={busy} onClick={apply}>Save selection</button>
+      </div>
+      <div style={{ maxHeight: 300, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ position: 'sticky', top: 0, background: 'var(--bg-elev, var(--bg))', color: 'var(--fg-muted)' }}>
+              <th style={thc}></th><th style={{ ...thc, textAlign: 'left' }}>Model</th>
+              <th style={thc}>Ctx</th><th style={thc}>In $/M</th><th style={thc}>Out $/M</th><th style={thc}>Cache $/M</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((m) => (
+              <tr key={m.id} style={{ borderTop: '1px solid var(--border)', cursor: 'pointer' }} onClick={() => toggle(m.id)}>
+                <td style={tdc}><input type="checkbox" checked={checked.has(m.id)} readOnly /></td>
+                <td style={{ ...tdc, textAlign: 'left', fontFamily: 'var(--font-mono)' }} title={m.name}>{m.id}</td>
+                <td style={tdc}>{fmtCtx(m.contextLength)}</td>
+                <td style={tdc}>{fmtCost(m.pricing?.inputPerM)}</td>
+                <td style={tdc}>{fmtCost(m.pricing?.outputPerM)}</td>
+                <td style={tdc}>{fmtCost(m.pricing?.cacheReadPerM)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 // ─── Model API sources (external-sources registry) ──────────────────────────────
 /** Draft row state over the wire source; blank/masked apiKey ⇒ server keeps the key. */
 type SourceDraft = ExternalModelSourceWire & { _isNew?: boolean; _dirty?: boolean; _msg?: string | null }
@@ -221,6 +293,7 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
   const [rows, setRows] = useState<SourceDraft[]>([])
   const [loaded, setLoaded] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<string | null>(null)
 
   const load = async () => {
     try {
@@ -236,8 +309,9 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
 
   const discoveredCount = (sourceId: string) => catalog.filter((m) => m.sourceId === sourceId).length
 
-  const saveRow = async (i: number) => {
+  const saveRow = async (i: number, overrides: Partial<{ models: string[] }> = {}) => {
     const d = rows[i]
+    if (overrides.models) up(i, { models: overrides.models }) // reflect the curated selection in the row
     const candidate = {
       id: d.id || slugify(d.displayName || ''),
       tag: (d.tag || '').toUpperCase(),
@@ -247,7 +321,7 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
       // Blank or still-masked ⇒ omit so the server preserves the stored key.
       apiKey: d.apiKey && !d.apiKey.startsWith('***') ? d.apiKey : undefined,
       discovery: d.discovery ?? 'auto',
-      models: d.models ?? [],
+      models: overrides.models ?? d.models ?? [],
       enabled: d.enabled !== false,
     }
     const parsed = externalModelSourceSchema.safeParse(candidate)
@@ -339,6 +413,19 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
               value={(d.models ?? []).join(', ')}
               onChange={(ev) => up(i, { models: ev.target.value.split(',').map((m) => m.trim()).filter(Boolean) })}
             />
+          )}
+          {!d._isNew && d.discovery !== 'list' && (
+            <div style={{ marginBottom: 6 }}>
+              <button
+                style={{ ...btn, padding: '4px 10px', fontSize: 12 }}
+                onClick={() => setExpanded((e) => (e === d.id ? null : d.id))}
+              >
+                {expanded === d.id ? '▾' : '▸'} Curate models {d.models && d.models.length ? `(${d.models.length} selected)` : '(all enabled)'}
+              </button>
+              {expanded === d.id && (
+                <ModelCuration sourceId={d.id} busy={busyId !== null} onApply={(models) => void saveRow(i, { models })} />
+              )}
+            </div>
           )}
           {d._msg && <div style={{ fontSize: 12, color: 'var(--danger)', marginBottom: 6 }}>{d._msg}</div>}
           <div style={{ display: 'flex', gap: 6 }}>

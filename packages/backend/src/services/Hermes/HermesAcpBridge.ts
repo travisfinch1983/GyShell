@@ -26,12 +26,26 @@ export interface HermesAcpConfig {
   bridgePath?: string // default /opt/acp-bridge/acp-bridge.py
   pythonBin?: string // default the hermes venv python (has the `acp` lib)
   readyTimeoutMs?: number // default 30000
+  historyCap?: number // max events buffered per session (ring); default 5000
 }
 
 /** A normalized event from acp-bridge (t = ready|message|thought|tool_start|tool_progress|commands|usage|turn_done|error|update). */
 export interface AcpEvent {
   t: string
+  /** Monotonic per-session sequence, stamped by the bridge on ingest. Present on every
+   *  event the bridge emits (live + buffered), so replay and live tail are byte-identical
+   *  and a UI can reconnect with a `since` cursor. */
+  seq?: number
   [k: string]: unknown
+}
+
+/** Transcript read-back for a live session (see getHistory). */
+export interface AcpHistory {
+  events: AcpEvent[]
+  firstSeq: number // seq of the oldest event still buffered (0 if none)
+  lastSeq: number // seq of the newest buffered event (0 if none)
+  truncated: boolean // true once the ring has dropped older events past the cap
+  startedAt: number
 }
 
 interface AcpSession {
@@ -44,6 +58,9 @@ interface AcpSession {
   startedAt: number
   lastActivity: number
   lastReady?: AcpEvent
+  history: AcpEvent[] // ring buffer of emitted events (for transcript read-back)
+  seq: number // monotonic event counter (last assigned seq)
+  truncated: boolean // set once the ring has dropped events past the cap
 }
 
 export class HermesAcpBridge extends EventEmitter {
@@ -83,6 +100,7 @@ export class HermesAcpBridge extends EventEmitter {
     const session: AcpSession = {
       agentId, proc, emitter, ready, readyResolved: false,
       stdoutBuf: '', startedAt: Date.now(), lastActivity: Date.now(),
+      history: [], seq: 0, truncated: false,
     }
 
     proc.stdout.on('data', (chunk: Buffer) => {
@@ -95,6 +113,16 @@ export class HermesAcpBridge extends EventEmitter {
         let ev: AcpEvent
         try { ev = JSON.parse(line) as AcpEvent } catch { continue }
         session.lastActivity = Date.now()
+        // Stamp a monotonic seq and buffer into the ring BEFORE emitting, so live observers
+        // and later read-back/replay see identical events. The seq lets a reconnecting UI
+        // ask for only the gap it missed (/stream?since=<seq>).
+        ev.seq = ++session.seq
+        session.history.push(ev)
+        const cap = this.cfg.historyCap ?? 5000
+        if (session.history.length > cap) {
+          session.history.splice(0, session.history.length - cap)
+          session.truncated = true
+        }
         if (ev.t === 'ready' && !session.readyResolved) {
           session.readyResolved = true
           session.lastReady = ev
@@ -149,6 +177,24 @@ export class HermesAcpBridge extends EventEmitter {
     if (!session) throw new Error(`no acp session for ${agentId}`)
     session.emitter.on('event', cb)
     return () => session.emitter.off('event', cb)
+  }
+
+  /**
+   * Buffered transcript for a live session, for read-back on (re)attach. `since` returns
+   * only events with seq > since (the gap a reconnecting observer missed); since=0 returns
+   * the whole buffer. undefined if no session exists for the agent.
+   */
+  getHistory(agentId: string, since = 0): AcpHistory | undefined {
+    const s = this.sessions.get(agentId)
+    if (!s) return undefined
+    const events = since > 0 ? s.history.filter((e) => (e.seq ?? 0) > since) : s.history.slice()
+    return {
+      events,
+      firstSeq: s.history[0]?.seq ?? 0,
+      lastSeq: s.history[s.history.length - 1]?.seq ?? 0,
+      truncated: s.truncated,
+      startedAt: s.startedAt,
+    }
   }
 
   /** Gracefully close a session (asks the bridge to exit, then hard-kills as a backstop). */

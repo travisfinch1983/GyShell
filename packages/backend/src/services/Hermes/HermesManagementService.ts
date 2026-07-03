@@ -129,7 +129,8 @@ export class HermesManagementService {
     let created = false
     if (!exists) {
       const createArgs = ['profile', 'create', id, '--clone']
-      if (spec.displayName) createArgs.push('--description', spec.displayName)
+      const desc = spec.description ?? spec.displayName
+      if (desc) createArgs.push('--description', desc)
       await this.hermes(createArgs)
       created = true
     }

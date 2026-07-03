@@ -2,6 +2,7 @@
 import express from 'express'
 import { hermesAgentSpecSchema } from '@gyshell/shared'
 import type { HermesService } from './HermesService'
+import type { AcpEvent } from './HermesAcpBridge'
 
 type Req = express.Request
 type Res = express.Response
@@ -69,25 +70,73 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     }
   })
 
+  // Transcript read-back — buffered normalized events for a live session, so a reloaded UI
+  // can restore the conversation view before it re-attaches the live stream. The response
+  // carries `lastSeq`; the UI then opens /stream?since=lastSeq to resume with no gap or dup.
+  // 404 if no live session (backend-owned session isn't running → nothing buffered).
+  router.get('/api/hermes/agents/:id/history', async (req: Req, res: Res) => {
+    try {
+      const since = Number((req.query as { since?: unknown }).since ?? 0) || 0
+      const h = hermes.getHistory(req.params.id, since)
+      if (!h) return res.status(404).json({ error: 'no live session for agent' })
+      res.json(h)
+    } catch (e) {
+      res.status(500).json({ error: String((e as Error).message) })
+    }
+  })
+
   // SSE observer — attaches to the session's live normalized event stream.
+  //   - No cursor: emit the current `ready` snapshot (model/mode/commands) then live events
+  //     — byte-identical to the original fresh-attach contract.
+  //   - ?since=<seq> (reconnect after /history): DON'T re-send ready; instead replay only the
+  //     events buffered after `since`, then go live — closing the race where an event lands
+  //     between the /history fetch and this attach. Live events are queued during the replay
+  //     and flushed with seq-dedup so nothing is lost or doubled.
   router.get('/api/hermes/agents/:id/stream', async (req: Req, res: Res) => {
     const id = req.params.id
+    const since = Number((req.query as { since?: unknown }).since ?? 0) || 0
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
     ;(res as unknown as { flushHeaders?: () => void }).flushHeaders?.()
+
+    let ready: AcpEvent
     try {
-      const ready = await hermes.ensureReady(id)
-      res.write(`data: ${JSON.stringify(ready)}\n\n`)
+      ready = await hermes.ensureReady(id)
     } catch (e) {
       res.write(`data: ${JSON.stringify({ t: 'error', message: String((e as Error).message) })}\n\n`)
       return res.end()
     }
+
+    // Attach the live listener FIRST, buffering into a queue, so no event emitted during the
+    // replay below is dropped. Flip to direct-write once the replay is flushed.
+    let queue: AcpEvent[] | null = []
     const off = hermes.onEvent(id, (ev) => {
+      if (queue) { queue.push(ev); return }
       try { res.write(`data: ${JSON.stringify(ev)}\n\n`) } catch { /* client gone */ }
     })
     // Detach ONLY the observer on disconnect — the backend-owned session keeps running.
     req.on('close', () => off())
+
+    let lastWritten = 0
+    if (since > 0) {
+      for (const ev of hermes.getHistory(id, since)?.events ?? []) {
+        res.write(`data: ${JSON.stringify(ev)}\n\n`)
+        lastWritten = ev.seq ?? lastWritten
+      }
+      if (!lastWritten) lastWritten = since
+    } else {
+      res.write(`data: ${JSON.stringify(ready)}\n\n`)
+      lastWritten = ready.seq ?? 0
+    }
+
+    // Flush anything that arrived during replay, deduped against what we just wrote, then
+    // hand the listener the live channel.
+    const pending = queue
+    queue = null
+    for (const ev of pending) {
+      if ((ev.seq ?? 0) > lastWritten) res.write(`data: ${JSON.stringify(ev)}\n\n`)
+    }
   })
 
   return router
