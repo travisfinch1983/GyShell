@@ -395,6 +395,47 @@ async function fetchExternalSourceModels(source) {
   }
 }
 
+// Discover the FULL upstream model list for a source WITH metadata (name/context/pricing),
+// IGNORING the source's `models` allow-filter. Used by the Settings UI to render the per-model
+// enable checkboxes + cost columns so a user can curate (e.g. 20 of OpenRouter's ~340). Pricing
+// from OpenAI-compat/OpenRouter `/models` is per-TOKEN; we surface per-1M-tokens for readability.
+async function fetchExternalSourceModelsRaw(source) {
+  if (source.discovery === 'list') {
+    return (Array.isArray(source.models) ? source.models : []).map((id) => ({ id, name: id }));
+  }
+  try {
+    const key = resolveExternalSourceKey(source);
+    const ep = externalTransportEndpoints(source);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    const resp = await fetch(ep.modelsUrl, { signal: ctrl.signal, headers: ep.modelsHeaders(key) });
+    clearTimeout(timer);
+    if (!resp.ok) return [];
+    const json = await resp.json();
+    const raw = json.data || json.models || [];
+    const num = (v) => (v == null || v === '' ? null : Number(v));
+    const perM = (v) => { const n = num(v); return n == null || Number.isNaN(n) ? null : n * 1e6; };
+    return raw.map((m) => {
+      if (typeof m === 'string') return { id: m, name: m };
+      const p = m.pricing || {};
+      return {
+        id: m.id,
+        name: m.name || m.id,
+        contextLength: m.context_length ?? m.context_window ?? m.top_provider?.context_length ?? null,
+        pricing: {
+          inputPerM: perM(p.prompt ?? p.input),
+          outputPerM: perM(p.completion ?? p.output),
+          cacheReadPerM: perM(p.input_cache_read ?? p.cache_read),
+          cacheWritePerM: perM(p.input_cache_write ?? p.cache_write),
+          currency: 'USD',
+        },
+      };
+    }).filter((m) => m.id);
+  } catch {
+    return [];
+  }
+}
+
 // Forward a chat/completions request to an external model source's upstream API. The
 // [TAG] is already stripped by the caller (upstreamModel is the real id). Injects the
 // vaulted/env key, rewrites body.model, and streams the response straight back (SSE-safe).
@@ -1532,6 +1573,22 @@ export function createProxyRouter(sshService) {
     saveExternalModelSources(sources);
     invalidateModelCache();
     res.json({ ok: true, count: sources.length });
+  });
+
+  // Full upstream model list for a source WITH metadata + per-model enabled flag — powers the
+  // Settings per-model checkboxes (curate which models are proxied / shown). `enabled` reflects
+  // the source's `models` allow-filter (empty allow-list ⇒ allowAll ⇒ every model enabled).
+  router.get('/external-sources/:id/available', async (req, res) => {
+    try {
+      const source = loadExternalModelSources().find(s => s.id === req.params.id);
+      if (!source) return res.status(404).json({ error: 'source not found' });
+      const allow = Array.isArray(source.models) ? source.models : [];
+      const allowAll = allow.length === 0;
+      const allowSet = new Set(allow);
+      const models = (await fetchExternalSourceModelsRaw(source))
+        .map(m => ({ ...m, enabled: allowAll || allowSet.has(m.id) }));
+      res.json({ sourceId: source.id, tag: source.tag, allowAll, count: models.length, models });
+    } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   // ─── Named Image Gen Proxies ─────────────────────────────────────────
