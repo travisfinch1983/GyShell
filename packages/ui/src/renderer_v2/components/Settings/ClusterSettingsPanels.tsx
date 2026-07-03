@@ -44,6 +44,9 @@ function useClusterSettings() {
 }
 
 const wrap: React.CSSProperties = { padding: '4px 2px', maxWidth: 620 }
+// Full-width variant for panels with wide content (External Services: model sources + the
+// per-model curation table with cost columns). No artificial 620px cap.
+const wrapWide: React.CSSProperties = { padding: '4px 2px', width: '100%' }
 const h: React.CSSProperties = { fontSize: 15, fontWeight: 600, marginBottom: 4 }
 const sub: React.CSSProperties = { fontSize: 12, color: 'var(--fg-muted)', marginBottom: 16 }
 const row: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }
@@ -497,7 +500,7 @@ export const ExternalServicesPanel: React.FC = () => {
   if (!s) return <div style={sub}>Loading…</div>
   const up = (arr: any[], set: any, i: number, patch: any) => set(arr.map((x, j) => (j === i ? { ...x, ...patch } : x)))
   return (
-    <div style={wrap}>
+    <div style={wrapWide}>
       <div style={h}>External Services</div>
       <div style={sub}>Model API sources (the proxy&apos;s external-model registry) + vector DBs. Stored on CT 152.</div>
 
