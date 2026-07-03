@@ -1,5 +1,9 @@
 import React, { useEffect, useState } from 'react'
-import { Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
+import { Eye, EyeOff, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { KNOWN_SOURCE_TAGS, externalModelSourceSchema, type CatalogModel } from '@gyshell/shared'
+import { modelSourcesApi, type ExternalModelSourceWire } from '../../stores/modelSourcesApi'
+import { hermesApi } from '../../stores/hermesApi'
+import { confirmStore } from '../../stores/confirmStore'
 
 /**
  * Settings panels for the ProxLab-replacement domain — stored NATIVELY on CT 152 via
@@ -200,41 +204,219 @@ export const ClusterUiPanel: React.FC = () => {
   )
 }
 
-// ─── External Services (LLM/embed/rerank/TTS/STT) + Vector DBs ──────────────────
-const SVC_TYPES = ['llm', 'embeddings', 'reranker', 'tts', 'stt']
+// ─── External Services (model API sources + catalog + vector DBs) ───────────────
 const VDB_TYPES = ['milvus', 'weaviate', 'chromadb', 'qdrant', 'hippocampai']
 const smallInp: React.CSSProperties = { ...inp, flex: 'unset', padding: '5px 8px', fontSize: 12 }
 const delBtn: React.CSSProperties = { ...btn, padding: 6, color: 'var(--danger)', borderColor: 'color-mix(in srgb, var(--danger) 40%, transparent)' }
 const addBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 8, fontSize: 12, padding: '6px 12px', borderRadius: 6, border: '1px dashed var(--border-strong)', background: 'transparent', color: 'var(--fg-muted)', cursor: 'pointer' }
 const sectionTitle: React.CSSProperties = { fontSize: 12, fontWeight: 600, color: 'var(--fg-muted)', margin: '16px 0 8px' }
 
+// ─── Model API sources (external-sources registry) ──────────────────────────────
+/** Draft row state over the wire source; blank/masked apiKey ⇒ server keeps the key. */
+type SourceDraft = ExternalModelSourceWire & { _isNew?: boolean; _dirty?: boolean; _msg?: string | null }
+
+const slugify = (v: string) => v.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[-_]+/, '')
+
+const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => void }> = ({ catalog, onChanged }) => {
+  const [rows, setRows] = useState<SourceDraft[]>([])
+  const [loaded, setLoaded] = useState(false)
+  const [busyId, setBusyId] = useState<string | null>(null)
+
+  const load = async () => {
+    try {
+      const sources = await modelSourcesApi.list()
+      setRows(sources.map((s) => ({ ...s })))
+    } catch { /* registry unreachable — rows stay empty; the add button still works */ }
+    setLoaded(true)
+  }
+  useEffect(() => { void load() }, [])
+
+  const up = (i: number, patch: Partial<SourceDraft>) =>
+    setRows((r) => r.map((x, j) => (j === i ? { ...x, ...patch, _dirty: true, _msg: null } : x)))
+
+  const discoveredCount = (sourceId: string) => catalog.filter((m) => m.sourceId === sourceId).length
+
+  const saveRow = async (i: number) => {
+    const d = rows[i]
+    const candidate = {
+      id: d.id || slugify(d.displayName || ''),
+      tag: (d.tag || '').toUpperCase(),
+      displayName: d.displayName,
+      transport: d.transport ?? 'openai_chat',
+      baseUrl: d.baseUrl,
+      // Blank or still-masked ⇒ omit so the server preserves the stored key.
+      apiKey: d.apiKey && !d.apiKey.startsWith('***') ? d.apiKey : undefined,
+      discovery: d.discovery ?? 'auto',
+      models: d.models ?? [],
+      enabled: d.enabled !== false,
+    }
+    const parsed = externalModelSourceSchema.safeParse(candidate)
+    if (!parsed.success) {
+      up(i, { _msg: parsed.error.issues.map((iss) => `${iss.path.join('.') || 'source'}: ${iss.message}`).join(' · ') })
+      return
+    }
+    setBusyId(candidate.id)
+    const r = await modelSourcesApi.save(parsed.data)
+    setBusyId(null)
+    if (!r.ok) { up(i, { _msg: r.error || 'save failed' }); return }
+    await load()
+    onChanged() // refresh the catalog so the discovered-count reflects the new source
+  }
+
+  const removeRow = async (i: number) => {
+    const d = rows[i]
+    if (d._isNew) { setRows((r) => r.filter((_, j) => j !== i)); return }
+    const ok = await confirmStore.confirm({
+      title: 'Remove model source',
+      message: `Remove “${d.displayName || d.id}” from the registry? Its models drop out of the unified catalog and its stored API key is deleted.`,
+      confirmText: 'Remove',
+    })
+    if (!ok) return
+    setBusyId(d.id)
+    const r = await modelSourcesApi.remove(d.id)
+    setBusyId(null)
+    if (!r.ok) { up(i, { _msg: r.error || 'delete failed' }); return }
+    await load()
+    onChanged()
+  }
+
+  return (
+    <>
+      <div style={sectionTitle}>Model API sources</div>
+      <div style={{ ...sub, marginBottom: 8 }}>
+        API model providers behind the AI-Lab proxy (source of truth: endpoint + key ⇒ all its models join the
+        tagged catalog below and route through <code>/api/proxy</code>). Keys are stored server-side and never
+        shown again — a masked field left untouched keeps the existing key.
+      </div>
+      {loaded && rows.length === 0 && <div style={{ ...sub, marginBottom: 8 }}>No sources registered yet.</div>}
+      {rows.map((d, i) => (
+        <div key={d._isNew ? `new-${i}` : d.id} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input style={{ ...smallInp, width: 150 }} placeholder="display name" value={d.displayName ?? ''} onChange={(ev) => up(i, { displayName: ev.target.value, ...(d._isNew && !d.id ? {} : {}) })} />
+            <input
+              style={{ ...smallInp, width: 90, fontFamily: 'var(--font-mono)' }}
+              placeholder="TAG"
+              title="Catalog tag, e.g. MAX / AN / DS / OC"
+              list="known-source-tags"
+              value={d.tag ?? ''}
+              onChange={(ev) => up(i, { tag: ev.target.value.toUpperCase() })}
+            />
+            <datalist id="known-source-tags">
+              {KNOWN_SOURCE_TAGS.filter((t) => t !== 'AI-LAB').map((t) => <option key={t} value={t} />)}
+            </datalist>
+            <select style={{ ...smallInp, width: 120 }} value={d.transport ?? 'openai_chat'} onChange={(ev) => up(i, { transport: ev.target.value as 'openai_chat' | 'anthropic' })}>
+              <option value="openai_chat">openai_chat</option>
+              <option value="anthropic">anthropic</option>
+            </select>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--fg-muted)' }}>
+              <input type="checkbox" checked={d.enabled !== false} onChange={(ev) => up(i, { enabled: ev.target.checked })} /> enabled
+            </label>
+            <span style={{ flex: 1 }} />
+            {!d._isNew && (
+              <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+                {discoveredCount(d.id)} model{discoveredCount(d.id) === 1 ? '' : 's'} in catalog
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input style={{ ...smallInp, flex: 2, minWidth: 220 }} placeholder="base URL, e.g. https://api.deepseek.com/v1" value={d.baseUrl ?? ''} onChange={(ev) => up(i, { baseUrl: ev.target.value })} />
+            <input
+              style={{ ...smallInp, flex: 1, minWidth: 150 }}
+              type="password"
+              placeholder={d.hasKey ? `key set (${d.apiKey ?? '***'}) — blank keeps it` : 'API key (optional)'}
+              value={d.apiKey && !d.apiKey.startsWith('***') ? d.apiKey : ''}
+              onChange={(ev) => up(i, { apiKey: ev.target.value })}
+            />
+            <select style={{ ...smallInp, width: 100 }} title="auto = discover via {baseUrl}/models; list = explicit ids" value={d.discovery ?? 'auto'} onChange={(ev) => up(i, { discovery: ev.target.value as 'auto' | 'list' })}>
+              <option value="auto">auto</option>
+              <option value="list">list</option>
+            </select>
+          </div>
+          {d.discovery === 'list' && (
+            <input
+              style={{ ...smallInp, width: '100%', marginBottom: 6, fontFamily: 'var(--font-mono)' }}
+              placeholder="model ids, comma-separated"
+              value={(d.models ?? []).join(', ')}
+              onChange={(ev) => up(i, { models: ev.target.value.split(',').map((m) => m.trim()).filter(Boolean) })}
+            />
+          )}
+          {d._msg && <div style={{ fontSize: 12, color: 'var(--danger)', marginBottom: 6 }}>{d._msg}</div>}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button style={{ ...btn, padding: '5px 12px', fontSize: 12 }} disabled={busyId !== null || (!d._dirty && !d._isNew)} onClick={() => void saveRow(i)}>
+              {d._isNew ? 'Register source' : 'Save changes'}
+            </button>
+            <button style={delBtn} title="Remove source" disabled={busyId !== null} onClick={() => void removeRow(i)}><Trash2 size={13} /></button>
+          </div>
+        </div>
+      ))}
+      <button
+        style={addBtn}
+        onClick={() => setRows((r) => [...r, { id: '', tag: '', displayName: '', transport: 'openai_chat', baseUrl: '', discovery: 'auto', models: [], enabled: true, _isNew: true, _dirty: true } as SourceDraft])}
+      >
+        <Plus size={13} /> Add model source
+      </button>
+    </>
+  )
+}
+
+/** Read-only view of the unified catalog, grouped by source tag. */
+const CatalogBrowser: React.FC<{ catalog: CatalogModel[]; loaded: boolean; onRefresh: () => void }> = ({ catalog, loaded, onRefresh }) => {
+  const byTag = new Map<string, CatalogModel[]>()
+  for (const m of catalog) {
+    const list = byTag.get(m.tag) ?? []
+    list.push(m)
+    byTag.set(m.tag, list)
+  }
+  return (
+    <>
+      <div style={{ ...sectionTitle, display: 'flex', alignItems: 'center', gap: 8 }}>
+        Unified model catalog
+        <button style={{ ...btn, padding: 4 }} title="Refresh catalog" onClick={onRefresh}><RefreshCw size={12} /></button>
+        <span style={{ fontWeight: 400, color: 'var(--fg-faint)' }}>{loaded ? `${catalog.length} models` : 'loading…'}</span>
+      </div>
+      {[...byTag.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([tag, models]) => (
+        <details key={tag} style={{ marginBottom: 6 }}>
+          <summary style={{ fontSize: 12, cursor: 'pointer', color: 'var(--fg)' }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>[{tag}]</span>{' '}
+            <span style={{ color: 'var(--fg-muted)' }}>{models.length} model{models.length === 1 ? '' : 's'}</span>
+          </summary>
+          <div style={{ padding: '4px 0 4px 18px' }}>
+            {models.map((m) => (
+              <div key={m.id} style={{ fontSize: 12, padding: '2px 0', color: 'var(--fg-muted)' }} title={m.id}>
+                {m.displayName}
+                <span style={{ color: 'var(--fg-faint)' }}> · {m.kind === 'local' ? m.upstreamModel !== m.displayName ? m.upstreamModel : 'local' : m.sourceId}</span>
+              </div>
+            ))}
+          </div>
+        </details>
+      ))}
+    </>
+  )
+}
+
 export const ExternalServicesPanel: React.FC = () => {
   const { s, busy, msg, save } = useClusterSettings()
-  const [svc, setSvc] = useState<any[]>([])
   const [vdb, setVdb] = useState<any[]>([])
+  const [catalog, setCatalog] = useState<CatalogModel[]>([])
+  const [catalogLoaded, setCatalogLoaded] = useState(false)
   useEffect(() => {
-    if (s) { setSvc(s.externalServices ?? []); setVdb(s.vectorDbs ?? []) }
+    if (s) setVdb(s.vectorDbs ?? [])
   }, [s])
+  const refreshCatalog = async () => {
+    try { setCatalog(await hermesApi.listCatalog()) } catch { /* proxy unreachable */ }
+    setCatalogLoaded(true)
+  }
+  useEffect(() => { void refreshCatalog() }, [])
   if (!s) return <div style={sub}>Loading…</div>
   const up = (arr: any[], set: any, i: number, patch: any) => set(arr.map((x, j) => (j === i ? { ...x, ...patch } : x)))
   return (
     <div style={wrap}>
       <div style={h}>External Services</div>
-      <div style={sub}>LLM / embeddings / reranker / TTS / STT endpoints + vector DBs. Stored on CT 152.</div>
+      <div style={sub}>Model API sources (the proxy&apos;s external-model registry) + vector DBs. Stored on CT 152.</div>
 
-      <div style={sectionTitle}>AI service endpoints</div>
-      {svc.map((e, i) => (
-        <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-          <input style={{ ...smallInp, width: 110 }} placeholder="name" value={e.name ?? ''} onChange={(ev) => up(svc, setSvc, i, { name: ev.target.value })} />
-          <select style={{ ...smallInp, width: 110 }} value={e.type ?? 'llm'} onChange={(ev) => up(svc, setSvc, i, { type: ev.target.value })}>
-            {SVC_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-          </select>
-          <input style={{ ...smallInp, flex: 1, minWidth: 160 }} placeholder="http://host:port" value={e.url ?? ''} onChange={(ev) => up(svc, setSvc, i, { url: ev.target.value })} />
-          <input style={{ ...smallInp, width: 120 }} placeholder="model (opt)" value={e.model ?? ''} onChange={(ev) => up(svc, setSvc, i, { model: ev.target.value })} />
-          <button style={delBtn} title="Remove" onClick={() => setSvc(svc.filter((_, j) => j !== i))}><Trash2 size={13} /></button>
-        </div>
-      ))}
-      <button style={addBtn} onClick={() => setSvc([...svc, { name: '', type: 'llm', url: '', model: '' }])}><Plus size={13} /> Add service</button>
+      <ModelSourcesSection catalog={catalog} onChanged={() => void refreshCatalog()} />
+
+      <CatalogBrowser catalog={catalog} loaded={catalogLoaded} onRefresh={() => void refreshCatalog()} />
 
       <div style={sectionTitle}>Vector databases</div>
       {vdb.map((e, i) => (
@@ -251,7 +433,7 @@ export const ExternalServicesPanel: React.FC = () => {
       <button style={addBtn} onClick={() => setVdb([...vdb, { name: '', type: 'qdrant', host: '', port: 6333 }])}><Plus size={13} /> Add vector DB</button>
 
       <div style={{ ...row, marginTop: 20 }}>
-        <button style={primaryBtn} disabled={busy} onClick={() => void save({ externalServices: svc, vectorDbs: vdb })}>Save</button>
+        <button style={primaryBtn} disabled={busy} onClick={() => void save({ vectorDbs: vdb })}>Save vector DBs</button>
         {msg && <span style={{ fontSize: 12, color: 'var(--success)' }}>{msg}</span>}
       </div>
     </div>

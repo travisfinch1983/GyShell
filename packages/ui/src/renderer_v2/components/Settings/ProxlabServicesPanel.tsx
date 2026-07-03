@@ -74,8 +74,8 @@ export const ProxlabServicesPanel: React.FC = () => {
     <div className="proxlab-services-panel">
       <div className="proxlab-header">
         <Server size={14} />
-        <span className="proxlab-title">ProxLab Services</span>
-        <span className="proxlab-subtitle">Auto-discovered from local proxy</span>
+        <span className="proxlab-title">AI-Lab Proxy Services</span>
+        <span className="proxlab-subtitle">Auto-discovered from the local universal proxy</span>
         <button
           className={`proxlab-refresh ${refreshing ? 'spinning' : ''}`}
           onClick={handleRefresh}

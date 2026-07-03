@@ -96,7 +96,7 @@ export const hermesApi = {
   async listCatalog(): Promise<CatalogModel[]> {
     try {
       const r = await bridge().request('GET', '/api/proxy/llm/catalog')
-      const models = (Array.isArray(r) ? r : r?.models ?? r?.catalog) as CatalogModel[] | undefined
+      const models = (Array.isArray(r) ? r : r?.data ?? r?.models ?? r?.catalog) as CatalogModel[] | undefined
       if (Array.isArray(models) && models.length) return models
     } catch {
       /* catalog route not landed yet — fall through */

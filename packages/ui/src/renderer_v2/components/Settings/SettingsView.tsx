@@ -30,7 +30,6 @@ import {
 } from "lucide-react";
 import { observer } from "mobx-react-lite";
 import type { AppStore } from "../../stores/AppStore";
-import type { ModelDefinition } from "../../lib/ipcTypes";
 import { BUILTIN_THEMES } from "../../theme/themes";
 import { ProxmoxSettingsPanel, ClusterTokensPanel, ClusterUiPanel, ExternalServicesPanel, ServiceNamesPanel, GpuPoolsPanel, SharedFoldersPanel } from "./ClusterSettingsPanels";
 import type { AppTheme } from "../../theme/themes";
@@ -41,6 +40,7 @@ import { InfoTooltip } from "../Common/InfoTooltip";
 import { ProxlabServicesPanel } from "./ProxlabServicesPanel";
 import { ProxySettingsPanel } from "./ProxySettingsPanel";
 import { AgentsPanel } from "./AgentsPanel";
+import { AgentsSettings } from "../Agents/AgentsSettings";
 import { TtsSettingsPanel } from "./TtsSettingsPanel";
 import "./TtsSettingsPanel.scss";
 import { Select } from "../../platform/Select";
@@ -143,340 +143,6 @@ function RuleChipList(props: {
     </div>
   );
 }
-
-const ModelEditor = observer(
-  ({
-    store,
-    modelId,
-    onClose,
-  }: {
-    store: AppStore;
-    modelId?: string;
-    onClose: () => void;
-  }) => {
-    const t = store.i18n.t;
-    const existing = store.settings?.models.items.find((m) => m.id === modelId);
-    
-    const [draft, setDraft] = useState<ModelDefinition>(() => {
-        if (existing) {
-            return {
-                ...existing,
-                structuredOutputMode:
-            existing.structuredOutputMode === "on" ||
-            existing.structuredOutputMode === "off"
-                    ? existing.structuredOutputMode
-              : "auto",
-          maxTokens:
-            typeof existing.maxTokens === "number"
-              ? existing.maxTokens
-              : 200000,
-        };
-        }
-        return {
-            id: `model-${Date.now()}`,
-        name: "",
-        model: "",
-        baseUrl: "",
-        apiKey: "",
-            maxTokens: 200000,
-        structuredOutputMode: "auto",
-            supportsStructuredOutput: false,
-        supportsObjectToolChoice: false,
-      };
-    });
-    const [isSaving, setIsSaving] = useState(false);
-
-    const save = async () => {
-      setIsSaving(true);
-        try {
-        await store.saveModel(draft);
-        onClose();
-        } finally {
-        setIsSaving(false);
-    }
-    };
-
-    return (
-        <div className="model-editor-overlay">
-            <div className="model-editor-card">
-                <div className="editor-header">
-                    <h3>{modelId ? t.settings.editModel : t.settings.addModel}</h3>
-            <button
-              className="icon-btn-sm"
-              onClick={onClose}
-              disabled={isSaving}
-            >
-              <X size={16} />
-            </button>
-                </div>
-                <div className="editor-body">
-                    {/* SSH-style compact rows: icon + input (no separate label) */}
-                    <div className="editor-row">
-                      <span className="editor-icon">
-                        <Tag size={16} strokeWidth={2} />
-                      </span>
-                      <input
-                        className="editor-input"
-                        placeholder={t.common.name}
-                        value={draft.name}
-                        onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                        disabled={isSaving}
-                      />
-                    </div>
-                    <div className="editor-row">
-                      <span className="editor-icon">
-                        <Box size={16} strokeWidth={2} />
-                      </span>
-                      <input
-                        className="editor-input"
-                        placeholder={t.settings.providerModel}
-                        value={draft.model}
-                        onChange={(e) => setDraft({ ...draft, model: e.target.value })}
-                        disabled={isSaving}
-                      />
-                    </div>
-                    <div className="editor-row">
-                      <span className="editor-icon">
-                        <Globe size={16} strokeWidth={2} />
-                      </span>
-                      <input
-                        className="editor-input"
-                        placeholder={`${t.settings.baseUrl} (${t.common.edit})`}
-                value={draft.baseUrl || ""}
-                onChange={(e) =>
-                  setDraft({ ...draft, baseUrl: e.target.value })
-                }
-                        disabled={isSaving}
-                      />
-                    </div>
-                    <div className="editor-row">
-                      <span className="editor-icon">
-                        <Key size={16} strokeWidth={2} />
-                      </span>
-                      <input
-                        type="password"
-                        className="editor-input"
-                        placeholder={`${t.settings.apiKey} (${t.common.edit})`}
-                value={draft.apiKey || ""}
-                        onChange={(e) => setDraft({ ...draft, apiKey: e.target.value })}
-                        disabled={isSaving}
-                      />
-                    </div>
-                    <div className="editor-row">
-                      <span className="editor-icon">
-                        <Loader2 size={16} strokeWidth={2} />
-                      </span>
-                      <NumericInput
-                        className="editor-input"
-                        placeholder={t.settings.maxTokensPlaceholder}
-                        value={draft.maxTokens}
-                        onChange={(val) => setDraft({ ...draft, maxTokens: val })}
-                        disabled={isSaving}
-                        min={0}
-                      />
-                    </div>
-                    <div className="editor-row editor-row-toggle">
-                      <span className="editor-icon">
-                        <Shield size={16} strokeWidth={2} />
-                      </span>
-              <span className="editor-toggle-label">
-                {t.settings.supportStructuredOutput}
-              </span>
-              <div
-                className="tri-switch"
-                role="group"
-                aria-label={t.settings.supportStructuredOutput}
-              >
-                {(["auto", "on", "off"] as const).map((mode) => {
-                  const active =
-                    (draft.structuredOutputMode || "auto") === mode;
-                  const label =
-                    mode === "auto" ? "Auto" : mode === "on" ? "On" : "Off";
-                          return (
-                            <button
-                              key={mode}
-                              type="button"
-                      className={
-                        active ? "tri-switch-btn is-active" : "tri-switch-btn"
-                      }
-                      onClick={() =>
-                        setDraft({ ...draft, structuredOutputMode: mode })
-                      }
-                              disabled={isSaving}
-                            >
-                              {label}
-                            </button>
-                  );
-                        })}
-                      </div>
-                    </div>
-                </div>
-                <div className="editor-footer">
-            <button
-              className="btn-secondary"
-              onClick={onClose}
-              disabled={isSaving}
-            >
-              {t.common.cancel}
-            </button>
-            <button
-              className="btn-primary"
-              onClick={save}
-              disabled={!draft.name || !draft.model || isSaving}
-            >
-              {isSaving ? (
-                <Loader2 size={16} className="spin" />
-              ) : (
-                t.common.save
-              )}
-                    </button>
-                </div>
-            </div>
-        </div>
-    );
-  },
-);
-
-/**
- * Add models from an API connection: enter URL + token, fetch /v1/models, pick which to
- * add and set each one's context size (prefilled from the API when it exposes it). No
- * per-model capability probe here — fast, no hang; capabilities fill in when a model is opened.
- */
-const ConnectionImporter = observer(({ store, onClose }: { store: AppStore; onClose: () => void }) => {
-  const t = store.i18n.t;
-  const [baseUrl, setBaseUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [prefix, setPrefix] = useState("");
-  const [defaultCtx, setDefaultCtx] = useState(32768);
-  const [loading, setLoading] = useState(false);
-  const [adding, setAdding] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [rows, setRows] = useState<Array<{ id: string; ctx: number; sel: boolean }> | null>(null);
-  const [filter, setFilter] = useState("");
-
-  const fetchModels = async () => {
-    setLoading(true);
-    setErr(null);
-    setRows(null);
-    const r = await store.listRemoteModels(baseUrl.trim(), apiKey.trim());
-    setLoading(false);
-    if (!r.ok) {
-      setErr(r.error || "Failed to list models");
-      return;
-    }
-    // Big catalogs (e.g. OpenRouter) start unselected so you filter + pick; small
-    // local endpoints start fully selected.
-    const preselect = r.models.length <= 20;
-    setRows(
-      r.models.map((m) => ({
-        id: m.id,
-        ctx: typeof m.contextLength === "number" && m.contextLength > 0 ? m.contextLength : defaultCtx,
-        sel: preselect,
-      })),
-    );
-  };
-
-  const add = async () => {
-    if (!rows) return;
-    setAdding(true);
-    setErr(null);
-    const chosen = rows.filter((r) => r.sel).map((r) => ({ id: r.id, contextLength: r.ctx }));
-    try {
-      const n = await store.addRemoteModels({ namePrefix: prefix.trim(), baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), defaultContext: defaultCtx, models: chosen });
-      console.log(`[ConnectionImporter] added ${n} models`);
-      onClose();
-    } catch (e) {
-      setErr(`Add failed: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setAdding(false);
-    }
-  };
-
-  const selCount = rows?.filter((r) => r.sel).length ?? 0;
-  const fq = filter.trim().toLowerCase();
-  const visible = rows ? rows.filter((r) => !fq || r.id.toLowerCase().includes(fq)) : [];
-  const updateRow = (id: string, patch: Partial<{ ctx: number; sel: boolean }>) =>
-    setRows((rs) => (rs ? rs.map((x) => (x.id === id ? { ...x, ...patch } : x)) : rs));
-  const setSelVisible = (val: boolean) => {
-    const vis = new Set(visible.map((r) => r.id));
-    setRows((rs) => (rs ? rs.map((x) => (vis.has(x.id) ? { ...x, sel: val } : x)) : rs));
-  };
-
-  return (
-    <div className="model-editor-overlay">
-      <div className="model-editor-card">
-        <div className="editor-header">
-          <h3>Add models from API</h3>
-          <button className="icon-btn-sm" onClick={onClose} disabled={adding}><X size={16} /></button>
-        </div>
-        <div className="editor-body">
-          <div className="editor-row">
-            <span className="editor-icon"><Globe size={16} strokeWidth={2} /></span>
-            <input className="editor-input" placeholder="API URL (e.g. http://10.0.0.232:5005/v1)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} disabled={loading || adding} />
-          </div>
-          <div className="editor-row">
-            <span className="editor-icon"><Key size={16} strokeWidth={2} /></span>
-            <input type="password" className="editor-input" placeholder="API token (optional)" value={apiKey} onChange={(e) => setApiKey(e.target.value)} disabled={loading || adding} />
-          </div>
-          <div className="editor-row">
-            <span className="editor-icon"><Tag size={16} strokeWidth={2} /></span>
-            <input className="editor-input" placeholder="Name prefix (optional)" value={prefix} onChange={(e) => setPrefix(e.target.value)} disabled={loading || adding} />
-          </div>
-          <div className="editor-row">
-            <span className="editor-icon"><Loader2 size={16} strokeWidth={2} /></span>
-            <NumericInput className="editor-input" placeholder="Default context size" value={defaultCtx} onChange={(v) => setDefaultCtx(v)} min={0} disabled={loading || adding} />
-          </div>
-          <div style={{ display: "flex", gap: 8, margin: "4px 0 12px" }}>
-            <button className="btn-secondary" onClick={fetchModels} disabled={loading || adding || !baseUrl.trim()}>
-              {loading ? <Loader2 size={16} className="spin" /> : "Fetch models"}
-            </button>
-            {err && <span style={{ fontSize: 12, color: "var(--danger)", alignSelf: "center" }}>{err}</span>}
-            {rows && <span style={{ fontSize: 12, color: "var(--fg-muted)", alignSelf: "center" }}>{rows.length} models · {selCount} selected</span>}
-          </div>
-          {rows && rows.length > 0 && (
-            <>
-              <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
-                <input
-                  className="editor-input"
-                  style={{ flex: 1 }}
-                  placeholder="Filter models…"
-                  value={filter}
-                  onChange={(e) => setFilter(e.target.value)}
-                  disabled={adding}
-                />
-                <button className="btn-secondary" onClick={() => setSelVisible(true)} disabled={adding} title={fq ? "Select all matching" : "Select all"}>
-                  Select all{fq ? " shown" : ""}
-                </button>
-                <button className="btn-secondary" onClick={() => setSelVisible(false)} disabled={adding} title={fq ? "Deselect all matching" : "Deselect all"}>
-                  Deselect{fq ? " shown" : ""}
-                </button>
-              </div>
-              <div style={{ maxHeight: 300, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6, padding: 6 }}>
-                {visible.length === 0 && <div style={{ fontSize: 12, color: "var(--fg-faint)", padding: 6 }}>No models match “{filter}”.</div>}
-                {visible.map((r) => (
-                  <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 6px" }}>
-                    <input type="checkbox" checked={r.sel} onChange={(e) => updateRow(r.id, { sel: e.target.checked })} />
-                    <span style={{ flex: 1, fontSize: 12, fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.id}</span>
-                    <span style={{ fontSize: 11, color: "var(--fg-faint)" }}>ctx</span>
-                    <NumericInput className="editor-input" style={{ width: 100 }} value={r.ctx} onChange={(v) => updateRow(r.id, { ctx: v })} min={0} />
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-          {rows && rows.length === 0 && <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>No models returned by this API.</div>}
-        </div>
-        <div className="editor-footer">
-          <button className="btn-secondary" onClick={onClose} disabled={adding}>{t.common.cancel}</button>
-          <button className="btn-primary" onClick={add} disabled={adding || !rows || selCount === 0}>
-            {adding ? <Loader2 size={16} className="spin" /> : `Add ${selCount} model${selCount === 1 ? "" : "s"}`}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-});
-
 function AccessTokenRevealDialog(props: {
   open: boolean;
   title: string;
@@ -541,9 +207,6 @@ function AccessTokenRevealDialog(props: {
 export const SettingsView: React.FC<{ store: AppStore }> = observer(
   ({ store }) => {
     const t = store.i18n.t;
-    const [editingModelId, setEditingModelId] = useState<string | null>(null);
-    const [showModelEditor, setShowModelEditor] = useState(false);
-    const [showConnectionImporter, setShowConnectionImporter] = useState(false);
 
     // Live reachability: refresh whenever the Models section is shown (coding std #5).
     React.useEffect(() => {
@@ -695,11 +358,6 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
     versionInfo?.checkedAt && versionInfo.checkedAt > 0
       ? new Date(versionInfo.checkedAt).toLocaleString()
         : "-";
-
-  const openModelEditor = (id?: string) => {
-      setEditingModelId(id || null);
-      setShowModelEditor(true);
-    };
 
     const [deleteConfirm, setDeleteConfirm] = useState<null | {
       kind: "model" | "profile";
@@ -864,18 +522,6 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
           onConfirm={() => setShowMobileWebGatewayWarning(false)}
           onCancel={() => setShowMobileWebGatewayWarning(false)}
         />
-
-      {showModelEditor && (
-          <ModelEditor
-            store={store}
-            modelId={editingModelId || undefined}
-            onClose={() => setShowModelEditor(false)}
-          />
-      )}
-
-      {showConnectionImporter && (
-          <ConnectionImporter store={store} onClose={() => setShowConnectionImporter(false)} />
-      )}
 
       <div className="settings-sidebar">
           <button
@@ -1654,7 +1300,7 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
               <div className="settings-section-header">
                   <div className="settings-section-title">
                     External Model Connections
-                    <InfoTooltip content="Add all models from an API (Fetch), or a single endpoint manually (+)." />
+                    <InfoTooltip content="DEPRECATED — display-only. Register model API sources under Settings › Cluster › External Services (keys stay server-side there). Existing entries keep working as models; to change a key, re-add the endpoint in the registry." />
                   </div>
                   <div style={{ display: "flex", gap: 6 }}>
                   <button
@@ -1665,29 +1311,24 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                   >
                       <RefreshCw size={16} strokeWidth={2} className={store.modelHealthChecking ? "spin" : ""} />
                   </button>
-                  <button
-                    className="icon-btn-sm"
-                    title="Add all models from an API"
-                    onClick={() => setShowConnectionImporter(true)}
-                  >
-                      <Globe size={16} strokeWidth={2} />
-                  </button>
-                  <button
-                    className="icon-btn-sm"
-                    title={t.common.add}
-                    onClick={() => openModelEditor()}
-                  >
-                      <Plus size={16} strokeWidth={2} />
-                  </button>
                   </div>
               </div>
-              
+              <div style={{ fontSize: 12, color: "var(--fg-muted)", margin: "2px 0 10px" }}>
+                Deprecated &amp; display-only: this path stored API keys in local settings, so editing
+                is retired. New model endpoints belong in <b>Settings › Cluster › External Services →
+                Model API sources</b> (server-side registry, masked keys, models join the tagged catalog
+                automatically). Existing entries below keep working as models; delete stays for cleanup.
+              </div>
+
               <div className="models-list" style={modelMetaColumnVars}>
+                {/* Display-only (deprecated path): no click-to-edit — the editor wrote unmasked
+                    keys into local settings. Entries keep working as models; key changes go
+                    through the External Sources registry. Delete stays for cleanup. */}
                 {store.settings?.models.items.filter((item: any) => !item._proxlabAutoDiscovered).map((item) => (
                     <div
                       key={item.id}
                       className="model-item"
-                      onClick={() => openModelEditor(item.id)}
+                      style={{ cursor: "default" }}
                     >
                     {/** Reachability tag is LIVE (coding std #5): from store.modelHealth, a /v1/models check. */}
                     {(() => {
@@ -2405,7 +2046,21 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
           ) : null}
 
             {store.settingsSection === "agents" ? (
+            <>
+              {/* Hermes fleet agents — the new builder (relocated from the primary sidebar). */}
+              <AgentsSettings />
+
+              {/* Legacy AgentDefinition roster — still LIVE: feeds the primary chat's
+                  delegate_agent sub-agent tool (audit Q1). Kept as a sibling section
+                  until its model multi-select moves to the tagged catalog. */}
+              <div className="settings-section-header" style={{ marginTop: 36 }}>
+                <div className="settings-section-title">
+                  Chat sub-agents (delegate_agent roster)
+                  <InfoTooltip content="Sub-agents the primary chat can delegate to via the delegate_agent tool — a separate system from the Hermes fleet agents above." />
+                </div>
+              </div>
               <AgentsPanel store={store} />
+            </>
             ) : null}
 
             {store.settingsSection === "memory" ? (

@@ -12,7 +12,6 @@ import {
   Radio,
   BrainCircuit,
   Bot,
-  BotMessageSquare,
   Image as ImageIcon,
   AudioLines,
   Download,
@@ -29,7 +28,7 @@ import {
 import { uiPrefsStore } from '../../stores/uiPrefsStore'
 import styles from './PrimarySidebar.module.scss'
 
-export type PrimaryTab = 'home' | 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'monitor' | 'fleet' | 'agents'
+export type PrimaryTab = 'home' | 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'monitor' | 'fleet'
 
 interface TabDef {
   id: PrimaryTab
@@ -42,7 +41,6 @@ const TABS: TabDef[] = [
   { id: 'terminal',  label: 'Terminal',  Icon: Terminal },
   { id: 'claude',    label: 'Claude',    Icon: Sparkles },
   { id: 'fleet',     label: 'Fleet Feed', Icon: Radio },
-  { id: 'agents',    label: 'Agents',    Icon: BotMessageSquare },
   { id: 'cluster',   label: 'Cluster',   Icon: Server },
   { id: 'services',  label: 'Services',  Icon: Radar },
   { id: 'ai-services', label: 'AI Services', Icon: BrainCircuit },
