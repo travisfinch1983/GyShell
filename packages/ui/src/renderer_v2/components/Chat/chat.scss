@@ -1206,3 +1206,17 @@ body.chat-drag-selection-suppressed * {
   0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
   40% { opacity: 1; transform: translateY(-2px); }
 }
+
+// Transient result line for slash commands (click to dismiss; auto-clears).
+.slash-notice {
+  padding: 5px 12px;
+  margin-bottom: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--control-bg);
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  white-space: pre-wrap;
+  cursor: pointer;
+}

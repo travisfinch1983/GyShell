@@ -45,6 +45,7 @@ import {
   type SttState,
 } from "../../services/SttCapture";
 import { resolveSeamlessOverlayMessages } from "./chatRenderModel";
+import { runSlashCommand } from "./slashCommands";
 import {
   CHAT_PANEL_SESSION_TITLE_CHAR_LIMIT,
   formatChatPanelSessionTitle,
@@ -253,6 +254,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
     const richInputRef = useRef<RichInputHandle>(null);
     const profileSelectRef = useRef<SelectHandle>(null);
     const [inputEmpty, setInputEmpty] = useState(true);
+    const [slashNotice, setSlashNotice] = useState<string | null>(null);
+    useEffect(() => {
+      if (!slashNotice) return;
+      const t = setTimeout(() => setSlashNotice(null), 6000);
+      return () => clearTimeout(t);
+    }, [slashNotice]);
 
     const checkInputEmpty = useCallback((draft?: ComposerDraft) => {
       const current = draft ||
@@ -389,6 +396,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
     const handleSendNormal = async (draft: ComposerDraft) => {
       if (!draft.text.trim() && draft.images.length === 0) return;
       if (!activeSessionId) return;
+      // Slash commands intercept the send (unknown /words fall through to chat).
+      if (draft.images.length === 0 && draft.text.trimStart().startsWith("/")) {
+        const r = await runSlashCommand(draft.text, { store, sessionId: activeSessionId });
+        if (r) {
+          richInputRef.current?.clear();
+          setInputEmpty(true);
+          setSlashNotice(r.notice);
+          return;
+        }
+      }
       const sent = await store.sendChatMessage(
         activeSessionId,
         {
@@ -1214,6 +1231,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
             </div>
           )}
           <div className="input-container">
+            {slashNotice && (
+              <div className="slash-notice" onClick={() => setSlashNotice(null)}>
+                {slashNotice}
+              </div>
+            )}
             <RichInput
               ref={richInputRef}
               store={store}

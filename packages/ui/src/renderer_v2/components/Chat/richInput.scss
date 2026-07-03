@@ -194,3 +194,23 @@
     }
   }
 }
+
+// ── slash-command palette (task #5) — same chrome as mention-suggestions ────
+.slash-palette {
+  min-width: 340px;
+
+  .slash-name {
+    font-family: var(--font-mono, monospace);
+    color: var(--accent);
+    margin-right: 10px;
+    white-space: nowrap;
+  }
+
+  .slash-desc {
+    font-size: 11px;
+    color: var(--fg-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

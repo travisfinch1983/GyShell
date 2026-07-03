@@ -16,6 +16,7 @@ import {
   getFileMentionDisplayName,
   parseFileSystemPanelDragPayload
 } from '../../lib/filesystemDragDrop';
+import { matchSlashCommands, type SlashCommand } from './slashCommands';
 import './richInput.scss';
 
 type DraftInputImageAttachment = InputImageAttachment & {
@@ -53,6 +54,9 @@ export const RichInput = observer(forwardRef<RichInputHandle, RichInputProps>(({
   const [suggestions, setSuggestions] = useState<{ type: 'skill' | 'terminal' | 'file' | 'paste'; name: string; id?: string; preview?: string }[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [suggestionPos, setSuggestionPos] = useState({ top: 0, left: 0 });
+  // Slash-command palette (task #5) — mirrors the mention dropdown, plain text.
+  const [slashCmds, setSlashCmds] = useState<SlashCommand[]>([]);
+  const [slashIndex, setSlashIndex] = useState(0);
   const [imageAttachments, setImageAttachments] = useState<ComposerImageAttachment[]>([]);
   const imageAttachmentsRef = useRef<ComposerImageAttachment[]>([]);
   const pendingMentionDeleteRef = useRef<HTMLElement | null>(null);
@@ -530,6 +534,19 @@ export const RichInput = observer(forwardRef<RichInputHandle, RichInputProps>(({
     document.execCommand('delete');
   };
 
+  const completeSlash = (cmd?: SlashCommand) => {
+    if (!cmd || !editorRef.current) return;
+    const el = editorRef.current;
+    el.textContent = `/${cmd.name} `;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    setSelectionRange(range);
+    setSlashCmds(cmd.argHint ? [] : matchSlashCommands(`/${cmd.name}`));
+    setSlashIndex(0);
+    onInput?.(buildDraft());
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Backspace') {
       const info = getMentionInfo() as any;
@@ -547,6 +564,23 @@ export const RichInput = observer(forwardRef<RichInputHandle, RichInputProps>(({
         return;
       }
       pendingMentionDeleteRef.current = null;
+    }
+
+    if (slashCmds.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIndex(i => (i + 1) % slashCmds.length); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setSlashIndex(i => (i - 1 + slashCmds.length) % slashCmds.length); return; }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        const cmd = slashCmds[slashIndex];
+        // Enter on an EXACT no-arg command falls through to send; otherwise complete.
+        const exact = cmd && buildDraft().text.trim() === `/${cmd.name}`;
+        if (!(e.key === 'Enter' && exact && !cmd.argHint)) {
+          e.preventDefault();
+          completeSlash(cmd);
+          return;
+        }
+        setSlashCmds([]);
+      }
+      if (e.key === 'Escape') { e.preventDefault(); setSlashCmds([]); return; }
     }
 
     if (showSuggestions) {
@@ -585,13 +619,17 @@ export const RichInput = observer(forwardRef<RichInputHandle, RichInputProps>(({
   const handleInput = () => {
     pendingMentionDeleteRef.current = null;
     updateSuggestions();
-    onInput?.(buildDraft());
+    const draft = buildDraft();
+    setSlashCmds(matchSlashCommands(draft.text));
+    setSlashIndex(0);
+    onInput?.(draft);
   };
 
   // Close suggestions when disabled or when overlay opens
   React.useEffect(() => {
     if (disabled || store.view !== 'main') {
       setShowSuggestions(false);
+      setSlashCmds([]);
     }
   }, [disabled, store.view]);
 
@@ -783,6 +821,33 @@ export const RichInput = observer(forwardRef<RichInputHandle, RichInputProps>(({
         data-placeholder={placeholder}
       />
       
+      {slashCmds.length > 0 && createPortal(
+        <div
+          className="mention-suggestions slash-palette"
+          style={{
+            position: 'fixed',
+            top: (editorRef.current?.getBoundingClientRect().top ?? 0) - 6,
+            left: (editorRef.current?.getBoundingClientRect().left ?? 0) + 8,
+            transform: 'translateY(-100%)',
+            zIndex: 10000
+          }}
+        >
+          {slashCmds.map((cmd, i) => (
+            <div
+              key={cmd.name}
+              className={`suggestion-item ${i === slashIndex ? 'active' : ''}`}
+              onMouseDown={(e) => { e.preventDefault(); completeSlash(cmd); }}
+            >
+              <div className="item-content">
+                <span className="item-name slash-name">/{cmd.name}{cmd.argHint ? ` <${cmd.argHint}>` : ''}</span>
+                <span className="slash-desc">{cmd.description}</span>
+              </div>
+            </div>
+          ))}
+        </div>,
+        document.body
+      )}
+
       {showSuggestions && createPortal(
         <div 
           className="mention-suggestions"
