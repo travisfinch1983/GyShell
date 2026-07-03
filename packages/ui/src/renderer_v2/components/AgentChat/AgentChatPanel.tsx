@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Bot, ChevronDown, ChevronRight, SendHorizonal, Settings2, Wrench } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { Bot, ChevronDown, ChevronRight, ListChecks, SendHorizonal, Settings2, Wrench } from 'lucide-react'
 import type { HermesSlashCommand } from '@gyshell/shared'
 import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
 import { hermesChatStore as chat, type ChatItem } from '../../stores/HermesChatStore'
@@ -28,12 +30,31 @@ const ToolCard: React.FC<{ item: ChatItem }> = ({ item }) => (
   </div>
 )
 
+const PlanCard: React.FC<{ item: ChatItem }> = ({ item }) => (
+  <div className={styles.planCard}>
+    <div className={styles.planHead}><ListChecks size={12} /> plan</div>
+    {(item.plan ?? []).map((e, i) => (
+      <div key={i} className={`${styles.planEntry} ${e.status === 'completed' ? styles.planDone : ''}`}>
+        <span className={styles.planMark}>{e.status === 'completed' ? '✓' : e.status === 'in_progress' ? '›' : '·'}</span>
+        {e.content}
+      </div>
+    ))}
+  </div>
+)
+
 const Row: React.FC<{ item: ChatItem }> = ({ item }) => {
   switch (item.kind) {
     case 'user': return <div className={styles.msgYou}>{item.text}</div>
-    case 'assistant': return <div className={styles.msgAgent}>{item.text}{item.streaming ? <span className={styles.cursor}>▍</span> : null}</div>
+    case 'assistant':
+      return (
+        <div className={`${styles.msgAgent} markdown-body`}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.text}</ReactMarkdown>
+          {item.streaming ? <span className={styles.cursor}>▍</span> : null}
+        </div>
+      )
     case 'thought': return <ThoughtRow item={item} />
     case 'tool': return <ToolCard item={item} />
+    case 'plan': return <PlanCard item={item} />
     case 'error': return <div className={styles.msgError}>{item.text}</div>
     default: return <div className={styles.sysRow}>{item.text}</div>
   }
