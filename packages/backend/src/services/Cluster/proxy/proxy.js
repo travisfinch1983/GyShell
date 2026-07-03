@@ -330,10 +330,12 @@ function saveExternalModelSources(sources) {
 
 export { loadExternalModelSources, saveExternalModelSources };
 
-// Resolve a source's API key. MVP: env var <ID>_API_KEY (upper-cased). apiKeyRef →
-// credential-vault resolution is a TODO for the management-adapter increment (we do
-// NOT persist raw keys in the sources file).
+// Resolve a source's API key. Primary: the inline `apiKey` from the dedicated model-endpoints
+// vault section (external-model-sources.json — kept separate from general credentials so the
+// backend never parses keys out of mixed creds). Fallback: env var <ID>_API_KEY. (apiKeyRef →
+// general-vault resolution is a future add.)
 function resolveExternalSourceKey(source) {
+  if (source.apiKey && String(source.apiKey).trim()) return String(source.apiKey);
   const envName = `${String(source.id || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`;
   return process.env[envName] || '';
 }
@@ -1428,7 +1430,16 @@ export function createProxyRouter(sshService) {
   // Their models appear in /llm/v1/models tag-prefixed ([DS]/[MAX]/[OC]/…). Routing
   // (forwarding a tagged request to the upstream w/ key + metrics) is the next
   // increment; these routes + the tagged catalog are additive and safe today.
-  router.get('/external-sources', (req, res) => res.json(loadExternalModelSources()));
+  // List model endpoints. The raw apiKey is NEVER returned — masked to ***<last4> + hasKey flag
+  // (the full key is used only server-side by the forwarder). The UI edits without re-seeing it.
+  router.get('/external-sources', (req, res) => {
+    const redacted = loadExternalModelSources().map((s) => ({
+      ...s,
+      apiKey: s.apiKey ? `***${String(s.apiKey).slice(-4)}` : undefined,
+      hasKey: !!s.apiKey,
+    }));
+    res.json(redacted);
+  });
 
   router.post('/external-sources', (req, res) => {
     const body = [];
@@ -1441,6 +1452,11 @@ export function createProxyRouter(sshService) {
         }
         const sources = loadExternalModelSources();
         const idx = sources.findIndex(s => s.id === src.id);
+        // Edit-without-re-entering-key: if the incoming apiKey is blank or a mask (***xxxx),
+        // preserve the stored key rather than overwriting it.
+        if (idx >= 0 && (!src.apiKey || String(src.apiKey).startsWith('***'))) {
+          src.apiKey = sources[idx].apiKey;
+        }
         if (idx >= 0) sources[idx] = src; else sources.push(src);
         saveExternalModelSources(sources);
         invalidateModelCache();

@@ -3,9 +3,12 @@
  * /claude/plans/ailab-hermes-integration.md.
  *
  * Three things the control plane + UI both need typed:
- *  - ExternalModelSource: API model providers registered behind the ONE AI-Lab
- *    universal proxy (extends the existing proxy `/external` services concept with
- *    keys + a source tag + model discovery).
+ *  - ExternalModelSource: a "model endpoint" — API model provider registered behind the
+ *    ONE AI-Lab universal proxy. These live in a DEDICATED store (the model-API section of
+ *    the credential vault, separate from general credentials so the backend never has to
+ *    parse them out) and are the SOURCE OF TRUTH for the proxy: endpoint + key present ⇒
+ *    all its models are auto-discovered and added to the catalog (tagged). Primary UI is
+ *    Settings › Models; also surfaced by the credentials MCP.
  *  - CatalogModel: a `/v1/models` entry with its `[TAG]` so duplicate models across
  *    providers (OpenRouter vs direct vs local) stay distinct + route deterministically.
  *  - HermesAgentSpec: the agent definition mirrored between the AI-Lab registry and a
@@ -47,7 +50,13 @@ export const externalModelSourceSchema = z.object({
   transport: z.enum(['openai_chat', 'anthropic']),
   /** upstream base URL, e.g. https://api.deepseek.com/v1 or an OAuth-backed proxy base. */
   baseUrl: z.string().url(),
-  /** credential-vault reference (credential id) — NEVER the raw key; resolved per request. */
+  /**
+   * API key for this endpoint. Stored in the dedicated model-endpoints vault section
+   * (not the general credential vault), so it's a first-class field here rather than a
+   * parsed-out reference. Optional (some upstreams — incl. LAN-open proxies — need none).
+   */
+  apiKey: z.string().optional(),
+  /** Optional alternative: reference a general-vault credential id instead of an inline key. */
   apiKeyRef: z.string().optional(),
   /** 'auto' = discover via `{baseUrl}/models`; 'list' = use `models` verbatim. */
   discovery: z.enum(['auto', 'list']).default('auto'),
