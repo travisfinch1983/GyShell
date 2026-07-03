@@ -60,6 +60,10 @@ export const externalModelSourceSchema = z.object({
   apiKey: z.string().optional(),
   /** Optional alternative: reference a general-vault credential id instead of an inline key. */
   apiKeyRef: z.string().optional(),
+  /** Optional SEPARATE admin/usage key for providers whose balance/usage reporting needs a
+   *  different credential than the chat key (e.g. Anthropic's Admin API key `sk-ant-admin…`
+   *  for org cost/usage reports). Masked like apiKey; used only for the credit/usage tracker. */
+  adminApiKey: z.string().optional(),
   /** 'auto' = discover via `{baseUrl}/models`; 'list' = use `models` verbatim. */
   discovery: z.enum(['auto', 'list']).default('auto'),
   /** explicit model ids (discovery:'list') or an allow-filter over discovered ids (discovery:'auto'). */

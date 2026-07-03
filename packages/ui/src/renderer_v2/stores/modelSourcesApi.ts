@@ -10,8 +10,8 @@
  */
 import type { ExternalModelSource } from '@gyshell/shared'
 
-/** GET shape: contract fields with the key masked + a hasKey flag. */
-export type ExternalModelSourceWire = ExternalModelSource & { hasKey?: boolean }
+/** GET shape: contract fields with the key(s) masked + presence flags. */
+export type ExternalModelSourceWire = ExternalModelSource & { hasKey?: boolean; hasAdminKey?: boolean }
 
 /** One upstream model with metadata + its per-source enabled flag (from GET .../available). */
 export interface AvailableModel {
@@ -42,8 +42,12 @@ export interface SourceBalance {
   tag?: string
   displayName?: string
   supported: boolean
+  /** 'balance' = credit remaining (OpenRouter/DeepSeek); 'spend' = period cost (Anthropic). */
+  kind?: 'balance' | 'spend'
   currency?: string
   balance?: number | null
+  /** current-month spend (Anthropic cost report). */
+  spendMonth?: number | null
   totalCredits?: number
   totalUsage?: number
   granted?: number

@@ -457,7 +457,7 @@ async function fetchExternalSourceBalance(source) {
     const k = await j('https://openrouter.ai/api/v1/key', h);
     if (c && c.data) {
       const tc = Number(c.data.total_credits), tu = Number(c.data.total_usage);
-      out.supported = true; out.totalCredits = tc; out.totalUsage = tu;
+      out.supported = true; out.kind = 'balance'; out.totalCredits = tc; out.totalUsage = tu;
       out.balance = (Number.isFinite(tc) && Number.isFinite(tu)) ? tc - tu : null;
       if (k && k.data) out.usage = { total: k.data.usage, daily: k.data.usage_daily, weekly: k.data.usage_weekly, monthly: k.data.usage_monthly };
     } else { out.reason = 'openrouter credits unavailable (key/network)'; }
@@ -467,16 +467,34 @@ async function fetchExternalSourceBalance(source) {
     const b = await j(host + '/user/balance', { ...h, Accept: 'application/json' });
     const info = b && Array.isArray(b.balance_infos) && b.balance_infos[0];
     if (info) {
-      out.supported = true; out.currency = info.currency || 'USD';
+      out.supported = true; out.kind = 'balance'; out.currency = info.currency || 'USD';
       out.balance = Number(info.total_balance);
       out.granted = Number(info.granted_balance); out.toppedUp = Number(info.topped_up_balance);
       out.available = !!b.is_available;
     } else { out.reason = 'deepseek balance unavailable (key/network)'; }
     return out;
   }
-  out.reason = source.transport === 'anthropic'
-    ? 'Anthropic exposes no balance on a standard API key (admin key required)'
-    : 'no balance API for this provider';
+  if (source.transport === 'anthropic') {
+    const admin = source.adminApiKey;
+    if (!admin) { out.reason = 'add an Anthropic Admin API key (sk-ant-admin…) below to see usage/cost'; return out; }
+    // Anthropic has no "balance" concept — report SPEND (cost report) for the current calendar month.
+    const now = new Date(out.checkedAt);
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+    const url = `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${encodeURIComponent(monthStart)}`;
+    const cr = await j(url, { 'x-api-key': admin, 'anthropic-version': '2023-06-01' });
+    if (cr) {
+      let spend = 0, found = false;
+      for (const bucket of (cr.data || [])) {
+        for (const r of (bucket.results || bucket.result || [])) {
+          const amt = Number(r.amount ?? r.cost ?? r.cost_usd);
+          if (!Number.isNaN(amt)) { spend += amt; found = true; if (r.currency) out.currency = r.currency; }
+        }
+      }
+      out.supported = true; out.kind = 'spend'; out.spendMonth = found ? spend : null;
+    } else { out.reason = 'Anthropic cost report unavailable — check the admin key (needs sk-ant-admin…)'; }
+    return out;
+  }
+  out.reason = 'no balance API for this provider';
   return out;
 }
 
@@ -1584,6 +1602,8 @@ export function createProxyRouter(sshService) {
       ...s,
       apiKey: s.apiKey ? `***${String(s.apiKey).slice(-4)}` : undefined,
       hasKey: !!s.apiKey,
+      adminApiKey: s.adminApiKey ? `***${String(s.adminApiKey).slice(-4)}` : undefined,
+      hasAdminKey: !!s.adminApiKey,
     }));
     res.json(redacted);
   });
@@ -1603,6 +1623,10 @@ export function createProxyRouter(sshService) {
         // preserve the stored key rather than overwriting it.
         if (idx >= 0 && (!src.apiKey || String(src.apiKey).startsWith('***'))) {
           src.apiKey = sources[idx].apiKey;
+        }
+        // Same masked-edit preservation for the separate admin/usage key.
+        if (idx >= 0 && (!src.adminApiKey || String(src.adminApiKey).startsWith('***'))) {
+          src.adminApiKey = sources[idx].adminApiKey;
         }
         if (idx >= 0) sources[idx] = src; else sources.push(src);
         saveExternalModelSources(sources);

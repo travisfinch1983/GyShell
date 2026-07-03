@@ -1,0 +1,25 @@
+{
+  "name": "@gyshell/mcp-cluster",
+  "version": "0.1.0",
+  "description": "AI-Lab cluster MCP \u2014 cluster inventory + credential vault (proxlab-cluster replacement, points at AI-Lab)",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "ailab-cluster-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.2.1",
+    "zod": "^3.25.32"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "4.20.6",
+    "typescript": "^5.3.3"
+  }
+}
