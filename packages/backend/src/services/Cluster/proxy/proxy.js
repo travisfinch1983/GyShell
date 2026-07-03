@@ -363,6 +363,42 @@ async function fetchExternalSourceModels(source) {
   }
 }
 
+// Forward a chat/completions request to an external model source's upstream API. The
+// [TAG] is already stripped by the caller (upstreamModel is the real id). Injects the
+// vaulted/env key, rewrites body.model, and streams the response straight back (SSE-safe).
+async function forwardToExternalSource(res, source, upstreamModel, parsed) {
+  const key = resolveExternalSourceKey(source);
+  const base = String(source.baseUrl).replace(/\/+$/, '');
+  const url = `${base}/chat/completions`;
+  const headers = { 'content-type': 'application/json' };
+  if (key) headers['authorization'] = `Bearer ${key}`;
+  const outBody = JSON.stringify({ ...parsed, model: upstreamModel });
+
+  let upstream;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 300000);
+    upstream = await fetch(url, { method: 'POST', headers, body: outBody, signal: ctrl.signal });
+    upstream._timer = timer;
+  } catch (e) {
+    return res.status(502).json({ error: `external source '${source.id}' unreachable: ${e.message}` });
+  }
+  res.status(upstream.status);
+  const ct = upstream.headers.get('content-type');
+  if (ct) res.setHeader('content-type', ct);
+  if (!upstream.body) { if (upstream._timer) clearTimeout(upstream._timer); return res.end(); }
+  try {
+    const { Readable } = await import('node:stream');
+    const node = Readable.fromWeb(upstream.body);
+    node.on('end', () => { if (upstream._timer) clearTimeout(upstream._timer); });
+    node.on('error', () => { try { res.end(); } catch {} });
+    node.pipe(res);
+  } catch (e) {
+    if (upstream._timer) clearTimeout(upstream._timer);
+    try { res.status(502).json({ error: `external stream error: ${e.message}` }); } catch {}
+  }
+}
+
 /**
  * Load active services from disk, backfilling proxySlot if missing.
  * @returns {{ services: Object }}
@@ -932,6 +968,12 @@ async function handleChatWithTools(req, res) {
   let svc = null;
   if (parsed.model) {
     const cache = await refreshModelCache();
+    // External model source (tag-prefixed, e.g. "[DS] deepseek-v4-pro"): forward to its
+    // upstream API with the tag stripped + key injected. Local routing untouched below.
+    const ext = cache.externalByModel && cache.externalByModel.get(parsed.model);
+    if (ext) {
+      return forwardToExternalSource(res, ext.source, ext.upstreamModel, parsed);
+    }
     svc = cache.byModel.get(parsed.model) || null;
     if (svc && parsed.model.includes("@")) {
       parsed.model = parsed.model.replace(/@\d+$/, "");
