@@ -104,6 +104,8 @@ export type HermesPersona = z.infer<typeof hermesPersonaSchema>
 export const hermesAgentSpecSchema = z.object({
   agentId: slugSchema,
   displayName: z.string().min(1),
+  /** One-liner shown in lists + mapped to `hermes profile create --description`. */
+  description: z.string().optional(),
   /** catalog model id (tag-prefixed) this agent runs on — routed through the proxy. */
   model: z.string().min(1),
   persona: hermesPersonaSchema.optional(),

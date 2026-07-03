@@ -30,7 +30,6 @@ import {
 } from "lucide-react";
 import { observer } from "mobx-react-lite";
 import type { AppStore } from "../../stores/AppStore";
-import type { ModelDefinition } from "../../lib/ipcTypes";
 import { BUILTIN_THEMES } from "../../theme/themes";
 import { ProxmoxSettingsPanel, ClusterTokensPanel, ClusterUiPanel, ExternalServicesPanel, ServiceNamesPanel, GpuPoolsPanel, SharedFoldersPanel } from "./ClusterSettingsPanels";
 import type { AppTheme } from "../../theme/themes";
@@ -41,6 +40,7 @@ import { InfoTooltip } from "../Common/InfoTooltip";
 import { ProxlabServicesPanel } from "./ProxlabServicesPanel";
 import { ProxySettingsPanel } from "./ProxySettingsPanel";
 import { AgentsPanel } from "./AgentsPanel";
+import { AgentsSettings } from "../Agents/AgentsSettings";
 import { TtsSettingsPanel } from "./TtsSettingsPanel";
 import "./TtsSettingsPanel.scss";
 import { Select } from "../../platform/Select";
@@ -143,200 +143,6 @@ function RuleChipList(props: {
     </div>
   );
 }
-
-const ModelEditor = observer(
-  ({
-    store,
-    modelId,
-    onClose,
-  }: {
-    store: AppStore;
-    modelId?: string;
-    onClose: () => void;
-  }) => {
-    const t = store.i18n.t;
-    const existing = store.settings?.models.items.find((m) => m.id === modelId);
-    
-    const [draft, setDraft] = useState<ModelDefinition>(() => {
-        if (existing) {
-            return {
-                ...existing,
-                structuredOutputMode:
-            existing.structuredOutputMode === "on" ||
-            existing.structuredOutputMode === "off"
-                    ? existing.structuredOutputMode
-              : "auto",
-          maxTokens:
-            typeof existing.maxTokens === "number"
-              ? existing.maxTokens
-              : 200000,
-        };
-        }
-        return {
-            id: `model-${Date.now()}`,
-        name: "",
-        model: "",
-        baseUrl: "",
-        apiKey: "",
-            maxTokens: 200000,
-        structuredOutputMode: "auto",
-            supportsStructuredOutput: false,
-        supportsObjectToolChoice: false,
-      };
-    });
-    const [isSaving, setIsSaving] = useState(false);
-
-    const save = async () => {
-      setIsSaving(true);
-        try {
-        await store.saveModel(draft);
-        onClose();
-        } finally {
-        setIsSaving(false);
-    }
-    };
-
-    return (
-        <div className="model-editor-overlay">
-            <div className="model-editor-card">
-                <div className="editor-header">
-                    <h3>{modelId ? t.settings.editModel : t.settings.addModel}</h3>
-            <button
-              className="icon-btn-sm"
-              onClick={onClose}
-              disabled={isSaving}
-            >
-              <X size={16} />
-            </button>
-                </div>
-                <div className="editor-body">
-                    {/* SSH-style compact rows: icon + input (no separate label) */}
-                    <div className="editor-row">
-                      <span className="editor-icon">
-                        <Tag size={16} strokeWidth={2} />
-                      </span>
-                      <input
-                        className="editor-input"
-                        placeholder={t.common.name}
-                        value={draft.name}
-                        onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                        disabled={isSaving}
-                      />
-                    </div>
-                    <div className="editor-row">
-                      <span className="editor-icon">
-                        <Box size={16} strokeWidth={2} />
-                      </span>
-                      <input
-                        className="editor-input"
-                        placeholder={t.settings.providerModel}
-                        value={draft.model}
-                        onChange={(e) => setDraft({ ...draft, model: e.target.value })}
-                        disabled={isSaving}
-                      />
-                    </div>
-                    <div className="editor-row">
-                      <span className="editor-icon">
-                        <Globe size={16} strokeWidth={2} />
-                      </span>
-                      <input
-                        className="editor-input"
-                        placeholder={`${t.settings.baseUrl} (${t.common.edit})`}
-                value={draft.baseUrl || ""}
-                onChange={(e) =>
-                  setDraft({ ...draft, baseUrl: e.target.value })
-                }
-                        disabled={isSaving}
-                      />
-                    </div>
-                    <div className="editor-row">
-                      <span className="editor-icon">
-                        <Key size={16} strokeWidth={2} />
-                      </span>
-                      <input
-                        type="password"
-                        className="editor-input"
-                        placeholder={`${t.settings.apiKey} (${t.common.edit})`}
-                value={draft.apiKey || ""}
-                        onChange={(e) => setDraft({ ...draft, apiKey: e.target.value })}
-                        disabled={isSaving}
-                      />
-                    </div>
-                    <div className="editor-row">
-                      <span className="editor-icon">
-                        <Loader2 size={16} strokeWidth={2} />
-                      </span>
-                      <NumericInput
-                        className="editor-input"
-                        placeholder={t.settings.maxTokensPlaceholder}
-                        value={draft.maxTokens}
-                        onChange={(val) => setDraft({ ...draft, maxTokens: val })}
-                        disabled={isSaving}
-                        min={0}
-                      />
-                    </div>
-                    <div className="editor-row editor-row-toggle">
-                      <span className="editor-icon">
-                        <Shield size={16} strokeWidth={2} />
-                      </span>
-              <span className="editor-toggle-label">
-                {t.settings.supportStructuredOutput}
-              </span>
-              <div
-                className="tri-switch"
-                role="group"
-                aria-label={t.settings.supportStructuredOutput}
-              >
-                {(["auto", "on", "off"] as const).map((mode) => {
-                  const active =
-                    (draft.structuredOutputMode || "auto") === mode;
-                  const label =
-                    mode === "auto" ? "Auto" : mode === "on" ? "On" : "Off";
-                          return (
-                            <button
-                              key={mode}
-                              type="button"
-                      className={
-                        active ? "tri-switch-btn is-active" : "tri-switch-btn"
-                      }
-                      onClick={() =>
-                        setDraft({ ...draft, structuredOutputMode: mode })
-                      }
-                              disabled={isSaving}
-                            >
-                              {label}
-                            </button>
-                  );
-                        })}
-                      </div>
-                    </div>
-                </div>
-                <div className="editor-footer">
-            <button
-              className="btn-secondary"
-              onClick={onClose}
-              disabled={isSaving}
-            >
-              {t.common.cancel}
-            </button>
-            <button
-              className="btn-primary"
-              onClick={save}
-              disabled={!draft.name || !draft.model || isSaving}
-            >
-              {isSaving ? (
-                <Loader2 size={16} className="spin" />
-              ) : (
-                t.common.save
-              )}
-                    </button>
-                </div>
-            </div>
-        </div>
-    );
-  },
-);
-
 function AccessTokenRevealDialog(props: {
   open: boolean;
   title: string;
@@ -401,8 +207,6 @@ function AccessTokenRevealDialog(props: {
 export const SettingsView: React.FC<{ store: AppStore }> = observer(
   ({ store }) => {
     const t = store.i18n.t;
-    const [editingModelId, setEditingModelId] = useState<string | null>(null);
-    const [showModelEditor, setShowModelEditor] = useState(false);
 
     // Live reachability: refresh whenever the Models section is shown (coding std #5).
     React.useEffect(() => {
@@ -554,11 +358,6 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
     versionInfo?.checkedAt && versionInfo.checkedAt > 0
       ? new Date(versionInfo.checkedAt).toLocaleString()
         : "-";
-
-  const openModelEditor = (id?: string) => {
-      setEditingModelId(id || null);
-      setShowModelEditor(true);
-    };
 
     const [deleteConfirm, setDeleteConfirm] = useState<null | {
       kind: "model" | "profile";
@@ -723,14 +522,6 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
           onConfirm={() => setShowMobileWebGatewayWarning(false)}
           onCancel={() => setShowMobileWebGatewayWarning(false)}
         />
-
-      {showModelEditor && (
-          <ModelEditor
-            store={store}
-            modelId={editingModelId || undefined}
-            onClose={() => setShowModelEditor(false)}
-          />
-      )}
 
       <div className="settings-sidebar">
           <button
@@ -1509,7 +1300,7 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
               <div className="settings-section-header">
                   <div className="settings-section-title">
                     External Model Connections
-                    <InfoTooltip content="DEPRECATED for new endpoints — register model API sources under Settings › Cluster › External Services instead (keys stay server-side there). Existing connections remain editable until chat profiles move to the unified catalog." />
+                    <InfoTooltip content="DEPRECATED — display-only. Register model API sources under Settings › Cluster › External Services (keys stay server-side there). Existing entries keep working as models; to change a key, re-add the endpoint in the registry." />
                   </div>
                   <div style={{ display: "flex", gap: 6 }}>
                   <button
@@ -1523,18 +1314,21 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                   </div>
               </div>
               <div style={{ fontSize: 12, color: "var(--fg-muted)", margin: "2px 0 10px" }}>
-                Deprecated: adding new API connections here stored keys in local settings. New model
-                endpoints belong in <b>Settings › Cluster › External Services → Model API sources</b>
-                (server-side registry, masked keys, models join the tagged catalog automatically).
-                Existing entries below keep working and stay editable.
+                Deprecated &amp; display-only: this path stored API keys in local settings, so editing
+                is retired. New model endpoints belong in <b>Settings › Cluster › External Services →
+                Model API sources</b> (server-side registry, masked keys, models join the tagged catalog
+                automatically). Existing entries below keep working as models; delete stays for cleanup.
               </div>
 
               <div className="models-list" style={modelMetaColumnVars}>
+                {/* Display-only (deprecated path): no click-to-edit — the editor wrote unmasked
+                    keys into local settings. Entries keep working as models; key changes go
+                    through the External Sources registry. Delete stays for cleanup. */}
                 {store.settings?.models.items.filter((item: any) => !item._proxlabAutoDiscovered).map((item) => (
                     <div
                       key={item.id}
                       className="model-item"
-                      onClick={() => openModelEditor(item.id)}
+                      style={{ cursor: "default" }}
                     >
                     {/** Reachability tag is LIVE (coding std #5): from store.modelHealth, a /v1/models check. */}
                     {(() => {
@@ -2252,7 +2046,21 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
           ) : null}
 
             {store.settingsSection === "agents" ? (
+            <>
+              {/* Hermes fleet agents — the new builder (relocated from the primary sidebar). */}
+              <AgentsSettings />
+
+              {/* Legacy AgentDefinition roster — still LIVE: feeds the primary chat's
+                  delegate_agent sub-agent tool (audit Q1). Kept as a sibling section
+                  until its model multi-select moves to the tagged catalog. */}
+              <div className="settings-section-header" style={{ marginTop: 36 }}>
+                <div className="settings-section-title">
+                  Chat sub-agents (delegate_agent roster)
+                  <InfoTooltip content="Sub-agents the primary chat can delegate to via the delegate_agent tool — a separate system from the Hermes fleet agents above." />
+                </div>
+              </div>
               <AgentsPanel store={store} />
+            </>
             ) : null}
 
             {store.settingsSection === "memory" ? (
