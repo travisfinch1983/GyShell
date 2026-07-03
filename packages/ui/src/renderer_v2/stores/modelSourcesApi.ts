@@ -36,6 +36,24 @@ export interface AvailableModelsResult {
   models: AvailableModel[]
 }
 
+/** Normalized account credit/balance for a source (GET .../balance | .../-balances). */
+export interface SourceBalance {
+  sourceId: string
+  tag?: string
+  displayName?: string
+  supported: boolean
+  currency?: string
+  balance?: number | null
+  totalCredits?: number
+  totalUsage?: number
+  granted?: number
+  toppedUp?: number
+  available?: boolean
+  usage?: { total?: number; daily?: number; weekly?: number; monthly?: number }
+  reason?: string
+  checkedAt?: number
+}
+
 function bridge(): any {
   return (window as any).gyshell?.cluster
 }
@@ -71,5 +89,11 @@ export const modelSourcesApi = {
   async available(id: string): Promise<AvailableModelsResult> {
     const r = await bridge().request('GET', `/api/proxy/external-sources/${encodeURIComponent(id)}/available`)
     return (r ?? { sourceId: id, tag: '', allowAll: true, count: 0, models: [] }) as AvailableModelsResult
+  },
+
+  /** Live account credit/balance for all sources (OpenRouter/DeepSeek supported). */
+  async balances(): Promise<SourceBalance[]> {
+    const r = await bridge().request('GET', '/api/proxy/external-sources-balances')
+    return (r?.balances ?? []) as SourceBalance[]
   },
 }

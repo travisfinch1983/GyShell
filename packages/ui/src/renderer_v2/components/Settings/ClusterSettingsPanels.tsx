@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Eye, EyeOff, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { KNOWN_SOURCE_TAGS, externalModelSourceSchema, type CatalogModel } from '@gyshell/shared'
-import { modelSourcesApi, type ExternalModelSourceWire, type AvailableModel } from '../../stores/modelSourcesApi'
+import { modelSourcesApi, type ExternalModelSourceWire, type AvailableModel, type SourceBalance } from '../../stores/modelSourcesApi'
 import { hermesApi } from '../../stores/hermesApi'
 import { confirmStore } from '../../stores/confirmStore'
 
@@ -297,6 +297,14 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
   const [loaded, setLoaded] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [balances, setBalances] = useState<Record<string, SourceBalance>>({})
+
+  const loadBalances = () => {
+    modelSourcesApi.balances()
+      .then((bs) => setBalances(Object.fromEntries(bs.map((b) => [b.sourceId, b]))))
+      .catch(() => { /* balances are best-effort */ })
+  }
+  useEffect(() => { loadBalances() }, [])
 
   const load = async () => {
     try {
@@ -392,6 +400,14 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
             {!d._isNew && (
               <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
                 {discoveredCount(d.id)} model{discoveredCount(d.id) === 1 ? '' : 's'} in catalog
+              </span>
+            )}
+            {!d._isNew && balances[d.id]?.supported && typeof balances[d.id].balance === 'number' && (
+              <span
+                title={`Credit remaining. Used $${Number(balances[d.id].totalUsage ?? balances[d.id].usage?.total ?? 0).toFixed(2)}${balances[d.id].usage?.monthly != null ? ` · $${Number(balances[d.id].usage!.monthly).toFixed(2)} this month` : ''}`}
+                style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--success)', background: 'color-mix(in srgb, var(--success) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--success) 30%, transparent)', borderRadius: 5, padding: '2px 7px' }}
+              >
+                💳 ${Number(balances[d.id].balance).toFixed(2)} {balances[d.id].currency || ''}
               </span>
             )}
           </div>
