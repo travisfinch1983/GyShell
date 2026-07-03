@@ -40,6 +40,7 @@ import { createBusAgentInvoker } from '../../services/ConversationBus/BusAgentIn
 import { createFleetRouter } from '../../services/ConversationBus/fleetHttp'
 import { HermesService } from '../../services/Hermes/HermesService'
 import { createHermesRouter } from '../../services/Hermes/hermesHttp'
+import { HermesBusSubscriber } from '../../services/Hermes/HermesBusSubscriber'
 import { createAutoTerminalConfig } from '../../services/terminal/terminalConnectionSupport'
 import { TerminalCommandDraftService } from '../../services/TerminalCommandDraftService'
 
@@ -189,6 +190,9 @@ export async function startGyBackend(): Promise<void> {
     host: process.env.HERMES_HOST || '10.0.0.236',
     sshKeyPath: process.env.AILAB_SSH_KEY || path.join(dataDir, 'ssh', 'id_ed25519'),
   })
+  // Autonomous, headless inter-agent path: Hermes agents as first-class bus participants.
+  // Gated by the `autonomousRoutingEnabled` kill switch (default OFF) — inert until enabled.
+  new HermesBusSubscriber(hermesService, conversationBus).start()
   // AI-Lab Universal API Proxy — dedicated HTTP listener fronting running services by slot.
   void universalProxyService
     .start({
