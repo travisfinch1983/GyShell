@@ -340,17 +340,47 @@ function resolveExternalSourceKey(source) {
   return process.env[envName] || '';
 }
 
-// Model ids a source exposes: discovery 'list' => source.models; 'auto' => GET {baseUrl}/models
-// (optionally allow-filtered by source.models). Best-effort — unreachable sources yield [].
+// Transport-specific endpoints + auth headers. Different upstreams disagree on both the
+// URL shape and the auth scheme:
+//   - openai_chat (DeepSeek, OpenRouter, vLLM, …): {baseUrl}/models + /chat/completions,
+//     Bearer auth. baseUrl already carries any /v1 the provider needs.
+//   - anthropic (Anthropic direct API): the NATIVE /v1/models endpoint requires
+//     `x-api-key` + `anthropic-version` (Bearer is rejected there), while chat rides
+//     Anthropic's OpenAI-compat /v1/chat/completions surface which DOES accept Bearer.
+//     baseUrl is the bare host (https://api.anthropic.com); we add /v1 ourselves.
+// (Verified empirically 2026-07-03: native models 200 w/ x-api-key, 401 w/ Bearer; compat
+//  chat/completions accepts Bearer.)
+function externalTransportEndpoints(source) {
+  const base = String(source.baseUrl).replace(/\/+$/, '');
+  const transport = source.transport || 'openai_chat';
+  if (transport === 'anthropic') {
+    const host = base.replace(/\/v1$/, '');
+    return {
+      modelsUrl: `${host}/v1/models`,
+      modelsHeaders: (key) => (key ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' } : {}),
+      chatUrl: `${host}/v1/chat/completions`,
+      chatHeaders: (key) => (key ? { authorization: `Bearer ${key}` } : {}),
+    };
+  }
+  return {
+    modelsUrl: `${base}/models`,
+    modelsHeaders: (key) => (key ? { Authorization: `Bearer ${key}` } : {}),
+    chatUrl: `${base}/chat/completions`,
+    chatHeaders: (key) => (key ? { authorization: `Bearer ${key}` } : {}),
+  };
+}
+
+// Model ids a source exposes: discovery 'list' => source.models; 'auto' => GET the
+// transport's models endpoint (optionally allow-filtered by source.models). Best-effort —
+// unreachable/unauthorized sources yield [].
 async function fetchExternalSourceModels(source) {
   if (source.discovery === 'list') return Array.isArray(source.models) ? source.models : [];
   try {
     const key = resolveExternalSourceKey(source);
+    const ep = externalTransportEndpoints(source);
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 6000);
-    const headers = key ? { Authorization: `Bearer ${key}` } : {};
-    const url = String(source.baseUrl).replace(/\/+$/, '') + '/models';
-    const resp = await fetch(url, { signal: ctrl.signal, headers });
+    const resp = await fetch(ep.modelsUrl, { signal: ctrl.signal, headers: ep.modelsHeaders(key) });
     clearTimeout(timer);
     if (!resp.ok) return [];
     const json = await resp.json();
@@ -370,10 +400,9 @@ async function fetchExternalSourceModels(source) {
 // vaulted/env key, rewrites body.model, and streams the response straight back (SSE-safe).
 async function forwardToExternalSource(res, source, upstreamModel, parsed) {
   const key = resolveExternalSourceKey(source);
-  const base = String(source.baseUrl).replace(/\/+$/, '');
-  const url = `${base}/chat/completions`;
-  const headers = { 'content-type': 'application/json' };
-  if (key) headers['authorization'] = `Bearer ${key}`;
+  const ep = externalTransportEndpoints(source);
+  const url = ep.chatUrl;
+  const headers = { 'content-type': 'application/json', ...ep.chatHeaders(key) };
   const outBody = JSON.stringify({ ...parsed, model: upstreamModel });
 
   let upstream;
