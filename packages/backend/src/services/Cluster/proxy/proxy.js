@@ -1154,6 +1154,39 @@ export function createProxyRouter(sshService) {
     }
   });
 
+  // GET /llm/catalog → CatalogModel[] (UI-shaped): the same aggregate as /v1/models but with
+  // {id, tag, sourceId, upstreamModel, displayName, kind} per entry, so the builder's model
+  // picker doesn't have to regex [TAG] out of ids. LOCAL ids stay untagged (tag carried in
+  // metadata) so existing OpenAI consumers are unaffected; EXTERNAL ids are already [TAG]-prefixed.
+  router.get('/llm/catalog', async (req, res) => {
+    try {
+      const cache = await refreshModelCache();
+      const data = (cache.models || []).map((m) => {
+        if (m._external_source) {
+          return {
+            id: m.id,
+            tag: m._external_tag,
+            sourceId: m._external_source,
+            upstreamModel: m._upstream_model,
+            displayName: m._upstream_model || m.id,
+            kind: 'external',
+          };
+        }
+        return {
+          id: m.id,
+          tag: 'AI-LAB',
+          sourceId: 'ai-lab',
+          upstreamModel: String(m.id || '').replace(/@\d+$/, ''),
+          displayName: m.id,
+          kind: 'local',
+        };
+      });
+      res.json({ object: 'list', data });
+    } catch (err) {
+      res.status(500).json({ error: `Failed to build catalog: ${err.message}` });
+    }
+  });
+
   router.post('/llm/v1/chat/completions', (req, res) => {
     handleChatWithTools(req, res);
   });

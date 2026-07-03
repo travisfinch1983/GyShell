@@ -5,6 +5,8 @@ import type { HermesAgentSpec } from '@gyshell/shared'
 export interface HermesServiceConfig {
   host: string // CT158
   sshKeyPath: string // AI-Lab key authorized on CT158
+  /** JSON file where applied specs are persisted (for read-back / edit). */
+  specsFile?: string
 }
 
 /**
@@ -22,12 +24,17 @@ export class HermesService {
   readonly bridge: HermesAcpBridge
 
   constructor(cfg: HermesServiceConfig) {
-    this.mgmt = new HermesManagementService({ host: cfg.host, sshKeyPath: cfg.sshKeyPath })
+    this.mgmt = new HermesManagementService({ host: cfg.host, sshKeyPath: cfg.sshKeyPath, specsFile: cfg.specsFile })
     this.bridge = new HermesAcpBridge({ host: cfg.host, sshKeyPath: cfg.sshKeyPath })
   }
 
   listAgents(): Promise<string[]> {
     return this.mgmt.listAgents()
+  }
+
+  /** The persisted spec for an agent, or undefined (never applied through AI-Lab). */
+  getSpec(agentId: string): HermesAgentSpec | undefined {
+    return this.mgmt.getSpec(agentId)
   }
 
   applySpec(spec: HermesAgentSpec): Promise<{ created: boolean; home: string }> {

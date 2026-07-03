@@ -35,6 +35,18 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     }
   })
 
+  // Read back the persisted spec for one agent (for the UI edit flow). 404 if the agent
+  // exists as a profile but was never applied through AI-Lab (no stored spec).
+  router.get('/api/hermes/agents/:id', async (req: Req, res: Res) => {
+    try {
+      const spec = hermes.getSpec(req.params.id)
+      if (!spec) return res.status(404).json({ error: 'no stored spec for agent' })
+      res.json({ spec })
+    } catch (e) {
+      res.status(500).json({ error: String((e as Error).message) })
+    }
+  })
+
   router.delete('/api/hermes/agents/:id', async (req: Req, res: Res) => {
     try {
       await hermes.deleteAgent(req.params.id)

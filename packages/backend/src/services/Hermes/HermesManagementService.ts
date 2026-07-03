@@ -1,5 +1,7 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { dirname } from 'path'
 import type { HermesAgentSpec } from '@gyshell/shared'
 
 const execFileAsync = promisify(execFile)
@@ -26,6 +28,9 @@ export interface HermesManagementConfig {
   hermesBin?: string // default /usr/local/bin/hermes
   profileHomeBase?: string // default /root/.hermes/profiles
   connectTimeoutSec?: number // default 8
+  /** JSON file (on the AI-Lab backend) where applied HermesAgentSpecs are persisted for
+   *  read-back / edit (reconstructing a spec from Hermes profile YAML is lossy). */
+  specsFile?: string
 }
 
 /** Single-quote a string for safe embedding in a remote shell command. */
@@ -42,6 +47,27 @@ export class HermesManagementService {
     this.user = cfg.user ?? 'root'
     this.hermesBin = cfg.hermesBin ?? '/usr/local/bin/hermes'
     this.profileHomeBase = cfg.profileHomeBase ?? '/root/.hermes/profiles'
+  }
+
+  // ── Persisted spec store (read-back / edit) ──────────────────────────────
+  private loadSpecs(): Record<string, HermesAgentSpec> {
+    if (!this.cfg.specsFile || !existsSync(this.cfg.specsFile)) return {}
+    try {
+      return JSON.parse(readFileSync(this.cfg.specsFile, 'utf8')) as Record<string, HermesAgentSpec>
+    } catch {
+      return {}
+    }
+  }
+
+  private saveSpecs(specs: Record<string, HermesAgentSpec>): void {
+    if (!this.cfg.specsFile) return
+    mkdirSync(dirname(this.cfg.specsFile), { recursive: true })
+    writeFileSync(this.cfg.specsFile, JSON.stringify(specs, null, 2))
+  }
+
+  /** The persisted HermesAgentSpec for an agent, or undefined (never applied via AI-Lab). */
+  getSpec(agentId: string): HermesAgentSpec | undefined {
+    return this.loadSpecs()[agentId]
   }
 
   /** Run a single remote command string over SSH (async execFile has no stdin — see writeRemoteFile). */
@@ -122,12 +148,26 @@ export class HermesManagementService {
       await this.hermes(['-p', id, 'config', 'set', 'agent.personality', spec.persona.personality])
     }
 
+    // Persist the applied spec (source of truth for read-back / edit; Hermes YAML is lossy).
+    if (this.cfg.specsFile) {
+      const specs = this.loadSpecs()
+      specs[id] = spec
+      this.saveSpecs(specs)
+    }
+
     return { created, home }
   }
 
   /** Delete an agent profile (and its per-profile state). */
   async deleteAgent(agentId: string): Promise<void> {
     await this.hermes(['profile', 'delete', agentId, '--yes'])
+    if (this.cfg.specsFile) {
+      const specs = this.loadSpecs()
+      if (agentId in specs) {
+        delete specs[agentId]
+        this.saveSpecs(specs)
+      }
+    }
   }
 
   /** Raw `hermes -p <id> config show` for inspection. */
