@@ -13,6 +13,29 @@ import type { ExternalModelSource } from '@gyshell/shared'
 /** GET shape: contract fields with the key masked + a hasKey flag. */
 export type ExternalModelSourceWire = ExternalModelSource & { hasKey?: boolean }
 
+/** One upstream model with metadata + its per-source enabled flag (from GET .../available). */
+export interface AvailableModel {
+  id: string
+  name?: string
+  contextLength?: number | null
+  pricing?: {
+    inputPerM?: number | null
+    outputPerM?: number | null
+    cacheReadPerM?: number | null
+    cacheWritePerM?: number | null
+    currency?: string
+  }
+  enabled: boolean
+}
+export interface AvailableModelsResult {
+  sourceId: string
+  tag: string
+  /** true ⇒ the source's allow-list is empty, so every model is enabled. */
+  allowAll: boolean
+  count: number
+  models: AvailableModel[]
+}
+
 function bridge(): any {
   return (window as any).gyshell?.cluster
 }
@@ -42,5 +65,11 @@ export const modelSourcesApi = {
     } catch (e) {
       return { ok: false, error: String((e as Error)?.message ?? e) }
     }
+  },
+
+  /** Full upstream model list for a source (metadata + per-model enabled) for the curation UI. */
+  async available(id: string): Promise<AvailableModelsResult> {
+    const r = await bridge().request('GET', `/api/proxy/external-sources/${encodeURIComponent(id)}/available`)
+    return (r ?? { sourceId: id, tag: '', allowAll: true, count: 0, models: [] }) as AvailableModelsResult
   },
 }
