@@ -14,11 +14,13 @@
  *  - HermesAgentSpec: the agent definition mirrored between the AI-Lab registry and a
  *    Hermes profile (`hermes -p <agentId>`). This is what the builder UI edits and the
  *    Hermes management adapter writes.
+ *  - HermesStreamEvent: the normalized ACP event union the acp-bridge emits and the SSE
+ *    route fans out — what the chat surface renders.
  *
- * STATUS: v0.1 DRAFT — proposed by claude1 2026-07-03, pending fable's architecture
- * review before freezing. Shapes fit the existing proxy.js seams (external-services
- * list + aliasOverride catalog rename) and the captured ACP contract
- * (/claude/plans/hermes-artifacts/).
+ * STATUS: v0.1 DRAFT — proposed by claude1 2026-07-03, amended by fable 2026-07-03
+ * (stream-event union added, verified against the deployed acp-bridge). Shapes fit the
+ * existing proxy.js seams (external-services list + aliasOverride catalog rename) and
+ * the captured ACP contract (/claude/plans/hermes-artifacts/).
  */
 import { z } from 'zod'
 
@@ -119,3 +121,57 @@ export const hermesAgentSpecSchema = z.object({
   enabled: z.boolean().default(true),
 })
 export type HermesAgentSpec = z.infer<typeof hermesAgentSpecSchema>
+
+// ─── Normalized ACP stream events ────────────────────────────────────────────
+/**
+ * The event union emitted by the acp-bridge (CT158 /opt/acp-bridge/acp-bridge.py)
+ * and fanned out verbatim by `GET /api/hermes/agents/:id/stream` (SSE `data:` lines).
+ * Drafted by fable 2026-07-03 against the DEPLOYED bridge — every variant verified
+ * from the emit() call sites, not the header comment (which says `usage`; the code
+ * actually emits camelCase `usageUpdate` etc. via its ACP-variant fallback).
+ *
+ * `raw` fields carry the model-dumped ACP payload untouched — typed as unknown here;
+ * consumers narrow what they need and stay forward-compatible with Hermes upgrades.
+ */
+export const hermesSlashCommandSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  /** ACP: { hint } for commands that take an argument. */
+  input: z.object({ hint: z.string().optional() }).passthrough().optional(),
+})
+export type HermesSlashCommand = z.infer<typeof hermesSlashCommandSchema>
+
+export const hermesStreamEventSchema = z.discriminatedUnion('t', [
+  /** First event of a session (and re-sent to each SSE attacher). */
+  z.object({
+    t: z.literal('ready'),
+    session_id: z.string().nullish(),
+    /** ACP available_models: [{ model_id, name, description }]. */
+    models: z.array(z.object({ model_id: z.string(), name: z.string().optional(), description: z.string().nullish() }).passthrough()).nullish(),
+    current_model: z.string().nullish(),
+    /** ACP available_modes (default / accept_edits …). */
+    modes: z.array(z.unknown()).nullish(),
+  }),
+  /** Assistant text chunk — append to the current bubble. */
+  z.object({ t: z.literal('message'), text: z.string() }),
+  /** Reasoning chunk — append to the collapsible thought block. */
+  z.object({ t: z.literal('thought'), text: z.string() }),
+  z.object({ t: z.literal('tool_start'), id: z.string().nullish(), title: z.string().nullish(), kind: z.string().nullish(), raw: z.unknown() }),
+  z.object({ t: z.literal('tool_progress'), id: z.string().nullish(), status: z.string().nullish(), raw: z.unknown() }),
+  /** Slash-command catalog for this session. */
+  z.object({ t: z.literal('commands'), commands: z.array(hermesSlashCommandSchema) }),
+  // ACP variants passed through with their model-dumped payload (camelCase = the
+  // bridge's `name[0].lower()+name[1:]` fallback over known ACP update classes):
+  z.object({ t: z.literal('usageUpdate'), raw: z.unknown() }),
+  z.object({ t: z.literal('agentPlanUpdate'), raw: z.unknown() }),
+  z.object({ t: z.literal('plan'), raw: z.unknown() }),
+  z.object({ t: z.literal('currentModeUpdate'), raw: z.unknown() }),
+  z.object({ t: z.literal('sessionInfoUpdate'), raw: z.unknown() }),
+  /** Catch-all for ACP update classes the bridge doesn't know; kind = class name. */
+  z.object({ t: z.literal('update'), kind: z.string(), raw: z.unknown() }),
+  /** Bridge auto-approved a permission request (mode-driven). */
+  z.object({ t: z.literal('permission_auto_allow'), option_id: z.string().nullish() }),
+  z.object({ t: z.literal('turn_done'), stop_reason: z.string().nullish() }),
+  z.object({ t: z.literal('error'), where: z.string().optional(), message: z.string(), tb: z.string().optional() }),
+])
+export type HermesStreamEvent = z.infer<typeof hermesStreamEventSchema>

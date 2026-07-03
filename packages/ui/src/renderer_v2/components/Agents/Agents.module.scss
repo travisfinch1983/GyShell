@@ -1,0 +1,225 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--app-bg);
+  color: var(--fg);
+}
+
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--control-bg);
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+
+  &:hover { color: var(--fg); }
+}
+
+.tabActive {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 16px;
+}
+
+.errorBar {
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--danger);
+  border-bottom: 1px solid var(--border);
+}
+
+// ── builder ──────────────────────────────────────────────────────────────────
+.builder {
+  max-width: 720px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.builderHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.label {
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-align: right;
+}
+
+.input {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font-size: 12px;
+  width: 100%;
+}
+
+.check { justify-self: start; }
+
+.modelRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.soul {
+  @extend .input;
+  min-height: 140px;
+  resize: vertical;
+  font-family: var(--mono-font, monospace);
+}
+
+.formMsg {
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.builderActions {
+  display: flex;
+  gap: 8px;
+}
+
+.tagBadge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.tagLocal { background: color-mix(in srgb, var(--success) 22%, transparent); color: var(--success); }
+.tagExternal { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+
+// ── agent view ───────────────────────────────────────────────────────────────
+.agentView {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  max-width: 900px;
+}
+
+.agentHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.spacer { flex: 1; }
+
+.dim {
+  font-size: 12px;
+  color: var(--fg-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.soulPreview {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--control-bg);
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.promptLog {
+  flex: 1;
+  min-height: 120px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.msgYou,
+.msgAgent,
+.msgError {
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  max-width: 85%;
+}
+
+.msgYou {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.msgAgent {
+  align-self: flex-start;
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+}
+
+.msgError {
+  align-self: flex-start;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.promptRow {
+  display: flex;
+  gap: 8px;
+}
+
+.btn,
+.btnPrimary,
+.btnDanger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+
+  &:disabled { opacity: 0.5; cursor: default; }
+}
+
+.btnPrimary { border-color: var(--accent); color: var(--accent); }
+.btnDanger { border-color: var(--danger); color: var(--danger); }
