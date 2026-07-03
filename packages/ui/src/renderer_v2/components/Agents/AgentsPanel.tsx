@@ -60,7 +60,7 @@ const AgentView: React.FC<{ id: string }> = observer(({ id }) => {
             <TagBadge tag={store.catalog.find((m) => m.id === spec.model)?.tag ?? 'AI-LAB'} /> {spec.model}
           </span>
         )}
-        {spec === null && <span className={styles.dim}>spec read-back pending backend route</span>}
+        {spec === null && <span className={styles.dim}>no stored spec — created outside AI-Lab; Edit + Apply adopts it</span>}
         <span className={styles.spacer} />
         <button className={styles.btn} disabled={busy} onClick={() => setEditing(true)}>
           <Pencil size={13} /> Edit
