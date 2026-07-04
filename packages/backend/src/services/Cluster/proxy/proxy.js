@@ -1652,6 +1652,8 @@ export function createProxyRouter(sshService) {
     const sources = loadExternalModelSources().filter(s => s.id !== req.params.id);
     saveExternalModelSources(sources);
     invalidateModelCache();
+    // Prune the source's balance-history rows so a reused id can't inherit its dead series.
+    try { balanceHistory.prune(req.params.id); } catch { /* history prune is best-effort */ }
     res.json({ ok: true, count: sources.length });
   });
 

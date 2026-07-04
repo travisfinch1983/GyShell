@@ -1,6 +1,6 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs'
 import { dirname } from 'path'
 import type { HermesAgentSpec, ProviderService } from '@gyshell/shared'
 import { PROVIDER_SERVICE_CAPS } from '@gyshell/shared'
@@ -42,6 +42,15 @@ function shq(s: string): string {
   return `'${String(s).replace(/'/g, `'\\''`)}'`
 }
 
+/** Write JSON atomically: tmp file + rename, so a crash mid-write can't truncate the store and
+ *  concurrent readers never see a partial file (M5). Same-filesystem rename is atomic. */
+function atomicWriteJson(path: string, data: unknown): void {
+  mkdirSync(dirname(path), { recursive: true })
+  const tmp = `${path}.tmp`
+  writeFileSync(tmp, JSON.stringify(data, null, 2))
+  renameSync(tmp, path)
+}
+
 export class HermesManagementService {
   private readonly user: string
   private readonly hermesBin: string
@@ -65,8 +74,7 @@ export class HermesManagementService {
 
   private saveSpecs(specs: Record<string, HermesAgentSpec>): void {
     if (!this.cfg.specsFile) return
-    mkdirSync(dirname(this.cfg.specsFile), { recursive: true })
-    writeFileSync(this.cfg.specsFile, JSON.stringify(specs, null, 2))
+    atomicWriteJson(this.cfg.specsFile, specs)
   }
 
   /** The persisted HermesAgentSpec for an agent, or undefined (never applied via AI-Lab). */
@@ -87,8 +95,18 @@ export class HermesManagementService {
 
   private saveProviderServicesFile(list: ProviderService[]): void {
     if (!this.cfg.providerServicesFile) return
-    mkdirSync(dirname(this.cfg.providerServicesFile), { recursive: true })
-    writeFileSync(this.cfg.providerServicesFile, JSON.stringify(list, null, 2))
+    atomicWriteJson(this.cfg.providerServicesFile, list)
+  }
+
+  /** The effective secret for an envVar across the whole registry: the key of the first ENABLED
+   *  entry (with a key) whose provider maps to that envVar, or '' to clear. Because the .env var
+   *  is provider-keyed but entries are id-keyed, deleting/disabling one entry must NOT wipe an
+   *  envVar another enabled entry still supplies (M2). */
+  private effectiveSecretFor(list: ProviderService[], envVar: string): string {
+    const hit = list.find(
+      (e) => e.enabled !== false && e.apiKey && PROVIDER_SERVICE_CAPS[e.provider]?.envVar === envVar,
+    )
+    return hit?.apiKey ?? ''
   }
 
   /** All stored Provider Services entries, RAW (keys included). Caller masks for the wire. */
@@ -104,24 +122,34 @@ export class HermesManagementService {
    */
   async upsertProviderService(entry: ProviderService): Promise<void> {
     const list = this.loadProviderServices()
+    const prev = list.find((e) => e.id === entry.id)
     const idx = list.findIndex((e) => e.id === entry.id)
-    if (idx >= 0) list[idx] = entry
-    else list.push(entry)
-    this.saveProviderServicesFile(list)
-    const caps = PROVIDER_SERVICE_CAPS[entry.provider]
-    if (caps) {
-      const value = entry.enabled !== false && entry.apiKey ? entry.apiKey : ''
-      await this.setProviderSecret(caps.envVar, value)
+    const next = idx >= 0 ? list.map((e, i) => (i === idx ? entry : e)) : [...list, entry]
+    // Reconcile every envVar this change could touch — the new entry's, plus the previous entry's
+    // if the provider changed (which would otherwise orphan the old var). Effective value accounts
+    // for OTHER entries sharing the same var (M2).
+    const envVars = new Set<string>()
+    const capNew = PROVIDER_SERVICE_CAPS[entry.provider]
+    if (capNew) envVars.add(capNew.envVar)
+    if (prev) {
+      const capOld = PROVIDER_SERVICE_CAPS[prev.provider]
+      if (capOld) envVars.add(capOld.envVar)
     }
+    // Push to Hermes .env FIRST; only persist the JSON if that succeeds, so a failed push can't
+    // leave the registry claiming hasKey:true while .env lacks the secret (M4).
+    for (const ev of envVars) await this.setProviderSecret(ev, this.effectiveSecretFor(next, ev))
+    this.saveProviderServicesFile(next)
   }
 
-  /** Delete a Provider Services entry and clear its secret from Hermes .env. */
+  /** Delete a Provider Services entry. Its envVar is cleared ONLY if no other enabled entry still
+   *  supplies it (M2); otherwise the surviving entry's key is re-pushed. .env before JSON (M4). */
   async deleteProviderService(id: string): Promise<void> {
     const list = this.loadProviderServices()
     const entry = list.find((e) => e.id === id)
-    this.saveProviderServicesFile(list.filter((e) => e.id !== id))
+    const next = list.filter((e) => e.id !== id)
     const caps = entry && PROVIDER_SERVICE_CAPS[entry.provider]
-    if (caps) await this.setProviderSecret(caps.envVar, '')
+    if (caps) await this.setProviderSecret(caps.envVar, this.effectiveSecretFor(next, caps.envVar))
+    this.saveProviderServicesFile(next)
   }
 
   /** Run a single remote command string over SSH (async execFile has no stdin — see writeRemoteFile). */
@@ -134,11 +162,22 @@ export class HermesManagementService {
       `${this.user}@${this.cfg.host}`,
       remoteCmd,
     ]
-    const { stdout } = await execFileAsync('ssh', args, {
-      timeout: 90_000,
-      maxBuffer: 8 * 1024 * 1024,
-    })
-    return stdout
+    try {
+      const { stdout } = await execFileAsync('ssh', args, {
+        timeout: 90_000,
+        maxBuffer: 8 * 1024 * 1024,
+      })
+      return stdout
+    } catch (e) {
+      // SECURITY: execFile's error message embeds the full argv, which for a secret-carrying
+      // remote command (e.g. setProviderSecret's base64'd API key) would leak the decodable
+      // secret to any caller that surfaces the error (hermesHttp returns e.message in the body).
+      // Surface ONLY the remote stderr + exit code, never the command line.
+      const err = e as { stderr?: string; stdout?: string; code?: unknown; signal?: unknown }
+      const stderr = String(err?.stderr ?? '').trim()
+      const code = err?.code ?? err?.signal ?? '?'
+      throw new Error(`ssh command failed (exit ${code})${stderr ? `: ${stderr.slice(0, 400)}` : ''}`)
+    }
   }
 
   /** hermes <args...> as a properly-quoted remote command. */
@@ -228,6 +267,44 @@ export class HermesManagementService {
     await this.ssh(`printf %s ${shq(scriptB64)} | base64 -d | python3 - ${shq(cfgPath)} ${shq(chainB64)}`)
   }
 
+  /** Reconcile per-agent TTS. Present → set provider + voice/model + enable the tts toolset;
+   *  absent → reset tts.provider so a previously-configured voice stops (idempotent removal).
+   *  `config set` handles these scalar dot-keys directly (verified type coercion). */
+  private async applyTts(agentId: string, tts?: { provider: string; voiceId?: string; modelId?: string }): Promise<void> {
+    if (tts?.provider) {
+      const p = tts.provider
+      await this.hermes(['-p', agentId, 'config', 'set', 'tts.provider', p])
+      if (tts.voiceId) await this.hermes(['-p', agentId, 'config', 'set', `tts.${p}.voice_id`, tts.voiceId])
+      if (tts.modelId) await this.hermes(['-p', agentId, 'config', 'set', `tts.${p}.model_id`, tts.modelId])
+      await this.hermes(['-p', agentId, 'tools', 'enable', 'tts'])
+    } else {
+      await this.hermes(['-p', agentId, 'config', 'set', 'tts.provider', ''])
+    }
+  }
+
+  /** Reconcile sub-agent delegation (native delegation.* config). Sub-agents run the SAME profile;
+   *  `model` overrides only their model (via the ailab proxy) so they can be cheaper/faster.
+   *  Absent (or no model) → clear the override so sub-agents inherit the parent again. */
+  private async applyDelegation(
+    agentId: string,
+    sa?: { model?: string; reasoningEffort?: string; maxConcurrent?: number; maxSpawnDepth?: number; autoApproveDangerous?: boolean },
+  ): Promise<void> {
+    if (sa?.model) {
+      await this.hermes(['-p', agentId, 'config', 'set', 'delegation.provider', 'ailab'])
+      await this.hermes(['-p', agentId, 'config', 'set', 'delegation.model', sa.model])
+    } else {
+      await this.hermes(['-p', agentId, 'config', 'set', 'delegation.model', ''])
+      await this.hermes(['-p', agentId, 'config', 'set', 'delegation.provider', ''])
+    }
+    if (sa) {
+      if (sa.reasoningEffort) await this.hermes(['-p', agentId, 'config', 'set', 'delegation.reasoning_effort', sa.reasoningEffort])
+      if (sa.maxConcurrent) await this.hermes(['-p', agentId, 'config', 'set', 'delegation.max_concurrent_children', String(sa.maxConcurrent)])
+      if (sa.maxSpawnDepth) await this.hermes(['-p', agentId, 'config', 'set', 'delegation.max_spawn_depth', String(sa.maxSpawnDepth)])
+      if (sa.autoApproveDangerous != null) await this.hermes(['-p', agentId, 'config', 'set', 'delegation.subagent_auto_approve', String(sa.autoApproveDangerous)])
+      await this.hermes(['-p', agentId, 'tools', 'enable', 'delegation'])
+    }
+  }
+
   /** List existing agent profiles (directory names under the profile home base). */
   async listAgents(): Promise<string[]> {
     try {
@@ -278,32 +355,15 @@ export class HermesManagementService {
       await this.hermes(['-p', id, 'config', 'set', 'agent.personality', spec.persona.personality])
     }
 
-    // Per-agent TTS voice. `config set` handles these scalar dot-keys directly (unlike the
-    // fallback list). The provider's API key is set once globally under Provider Services
-    // (Hermes .env), not here. Enable the `tts` toolset so the agent actually speaks.
-    if (spec.tts?.provider) {
-      const p = spec.tts.provider
-      await this.hermes(['-p', id, 'config', 'set', 'tts.provider', p])
-      if (spec.tts.voiceId) await this.hermes(['-p', id, 'config', 'set', `tts.${p}.voice_id`, spec.tts.voiceId])
-      if (spec.tts.modelId) await this.hermes(['-p', id, 'config', 'set', `tts.${p}.model_id`, spec.tts.modelId])
-      await this.hermes(['-p', id, 'tools', 'enable', 'tts'])
-    }
+    // Per-agent TTS + sub-agent delegation — ALWAYS reconciled (like fallback), so removing a
+    // block from the spec and re-applying resets it rather than leaving stale config behind.
+    await this.applyTts(id, spec.tts)
+    await this.applyDelegation(id, spec.subAgents)
 
-    // Sub-agent delegation (native delegation.* config; scalar keys — config set coerces number/
-    // bool types correctly). Sub-agents run the SAME profile; `model` overrides only their model,
-    // routed through the ailab proxy like the primary, so they can be cheaper/faster. Enable the
-    // `delegation` toolset when configured (it's default-on, but be explicit).
-    if (spec.subAgents) {
-      const sa = spec.subAgents
-      if (sa.model) {
-        await this.hermes(['-p', id, 'config', 'set', 'delegation.provider', 'ailab'])
-        await this.hermes(['-p', id, 'config', 'set', 'delegation.model', sa.model])
-      }
-      if (sa.reasoningEffort) await this.hermes(['-p', id, 'config', 'set', 'delegation.reasoning_effort', sa.reasoningEffort])
-      if (sa.maxConcurrent) await this.hermes(['-p', id, 'config', 'set', 'delegation.max_concurrent_children', String(sa.maxConcurrent)])
-      if (sa.maxSpawnDepth) await this.hermes(['-p', id, 'config', 'set', 'delegation.max_spawn_depth', String(sa.maxSpawnDepth)])
-      if (sa.autoApproveDangerous != null) await this.hermes(['-p', id, 'config', 'set', 'delegation.subagent_auto_approve', String(sa.autoApproveDangerous)])
-      await this.hermes(['-p', id, 'tools', 'enable', 'delegation'])
+    // Enabled toolsets — additive: enable what the spec requests. (Does not disable others; a
+    // full enable/disable sync would risk stripping Hermes defaults the profile relies on.)
+    if (spec.toolsets?.length) {
+      await this.hermes(['-p', id, 'tools', 'enable', ...spec.toolsets])
     }
 
     // Persist the applied spec (source of truth for read-back / edit; Hermes YAML is lossy).

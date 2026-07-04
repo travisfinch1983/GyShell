@@ -149,7 +149,8 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     try {
       const services = hermes.mgmt.getProviderServices().map((s) => ({
         ...s,
-        apiKey: s.apiKey ? `***${s.apiKey.slice(-4)}` : undefined,
+        // Don't reveal a short key by showing its whole tail — only last-4 when there's more to hide.
+        apiKey: s.apiKey ? (s.apiKey.length > 4 ? `***${s.apiKey.slice(-4)}` : '***') : undefined,
         hasKey: !!s.apiKey,
       }))
       res.json({ services })

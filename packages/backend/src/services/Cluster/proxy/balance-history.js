@@ -1,4 +1,4 @@
-import { readFileSync, appendFileSync, mkdirSync } from 'fs';
+import { readFileSync, appendFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 
 /**
@@ -68,6 +68,16 @@ export function createBalanceHistory({ historyFile, loadSources, fetchBalance, i
     return { sourceId, series, ...computeBurn(series) };
   }
 
+  /** Drop all rows for a source (call on source delete) so a reused id can't inherit a dead series.
+   *  Atomic rewrite (tmp + rename). No-op if the source has no rows. */
+  function prune(sourceId) {
+    const kept = readAll().filter((r) => r.sourceId !== sourceId);
+    mkdirSync(dirname(historyFile), { recursive: true });
+    const tmp = `${historyFile}.tmp`;
+    writeFileSync(tmp, kept.length ? kept.map((r) => JSON.stringify(r)).join('\n') + '\n' : '');
+    renameSync(tmp, historyFile);
+  }
+
   function start() {
     if (timer) return;
     // First snapshot shortly after boot (let sources settle), then every interval. unref so the
@@ -78,7 +88,11 @@ export function createBalanceHistory({ historyFile, loadSources, fetchBalance, i
     if (timer.unref) timer.unref();
   }
 
-  return { snapshot, historyFor, readAll, start };
+  function stop() {
+    if (timer) { clearInterval(timer); timer = null; }
+  }
+
+  return { snapshot, historyFor, readAll, start, stop, prune };
 }
 
 function numOrNull(v) {
@@ -109,13 +123,24 @@ export function computeBurn(series) {
   if (isNum(first.totalUsage) && isNum(last.totalUsage) && last.totalUsage >= first.totalUsage) {
     out.burnPerDay = (last.totalUsage - first.totalUsage) / windowDays;
     out.method = 'usage-delta';
-  } else if (last.kind === 'spend' && isNum(first.spendMonth) && isNum(last.spendMonth)) {
-    const spend = last.spendMonth >= first.spendMonth ? last.spendMonth - first.spendMonth : last.spendMonth;
-    out.burnPerDay = spend / windowDays;
+  } else if (last.kind === 'spend' && isNum(last.spendMonth)) {
     out.method = 'spend-delta';
+    if (isNum(first.spendMonth) && last.spendMonth >= first.spendMonth) {
+      // Same month: spend delta over the window.
+      out.burnPerDay = (last.spendMonth - first.spendMonth) / windowDays;
+    } else {
+      // Month rolled over (spendMonth reset to a smaller value): dividing the new month's partial
+      // spend by the FULL window under-reports. Estimate from this month's spend over the days
+      // elapsed in the current month instead.
+      const dayOfMonth = new Date(last.ts).getUTCDate();
+      out.burnPerDay = last.spendMonth / Math.max(1, dayOfMonth);
+    }
   } else if (isNum(first.balance) && isNum(last.balance)) {
-    out.burnPerDay = (first.balance - last.balance) / windowDays;
     out.method = 'balance-delta';
+    const drop = first.balance - last.balance;
+    // A negative drop means the balance ROSE (a top-up landed in the window) — spend rate is
+    // unknowable from endpoints alone, so report null rather than a misleading negative burn.
+    out.burnPerDay = drop >= 0 ? drop / windowDays : null;
   }
 
   if (isNum(last.balance) && out.burnPerDay && out.burnPerDay > 0) {
