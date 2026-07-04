@@ -27,6 +27,7 @@ import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 import { isAuthenticated, getAuthStatus, CLAUDE_MODELS } from './anthropic-proxy.js';
 import { extractToolCalls, recordToolUsage } from './tool-call-metrics.js';
+import { createBalanceHistory } from './balance-history.js';
 
 // ─── kvcache-proxy companion detection ──────────────────────────────────
 // Convention: each LLM service that has a kvcache-proxy companion listens
@@ -329,6 +330,14 @@ function saveExternalModelSources(sources) {
 }
 
 export { loadExternalModelSources, saveExternalModelSources };
+
+// Credit-tracker phase 2 — periodic balance snapshots (append-only JSONL) → burn-rate / runway.
+// Singleton so a single snapshotter runs regardless of how many times the router is created.
+const balanceHistory = createBalanceHistory({
+  historyFile: join(PROXY_DATA_DIR, 'balance-history.jsonl'),
+  loadSources: () => loadExternalModelSources().filter((s) => s && s.enabled !== false),
+  fetchBalance: (s) => fetchExternalSourceBalance(s),
+});
 
 // Resolve a source's API key. Primary: the inline `apiKey` from the dedicated model-endpoints
 // vault section (external-model-sources.json — kept separate from general credentials so the
@@ -1207,6 +1216,9 @@ function buildProviderInfo(svc, caps, healthy) {
 export function createProxyRouter(sshService) {
   const router = Router();
 
+  // Start the credit-tracker snapshotter (idempotent — guarded internally).
+  balanceHistory.start();
+
   // GET /services — Return current routing targets for diagnostics
   router.get('/services', async (req, res) => {
     const anthropicAuth = await isAuthenticated().catch(() => false);
@@ -1676,6 +1688,24 @@ export function createProxyRouter(sshService) {
         sourceId: s.id, tag: s.tag, displayName: s.displayName, ...(await fetchExternalSourceBalance(s)),
       })));
       res.json({ balances, checkedAt: Date.now() });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Credit-tracker phase 2 — historical balance series + derived burn-rate/runway for one source.
+  // ?days=N windows the series (default 30, 1..365). burnPerDay method: usage-delta (top-up-robust)
+  // > spend-delta (Anthropic) > balance-delta (fallback). runwayDays = balance / burnPerDay.
+  router.get('/external-sources/:id/balance-history', (req, res) => {
+    try {
+      const days = Math.max(1, Math.min(365, Number(req.query.days) || 30));
+      res.json(balanceHistory.historyFor(req.params.id, Date.now() - days * 86400000));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Take a balance snapshot now (on-demand; the snapshotter also runs on its own interval).
+  router.post('/external-sources-balances/snapshot', async (_req, res) => {
+    try {
+      const rows = await balanceHistory.snapshot(Date.now());
+      res.json({ ok: true, snapshotted: rows.length, checkedAt: Date.now() });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
