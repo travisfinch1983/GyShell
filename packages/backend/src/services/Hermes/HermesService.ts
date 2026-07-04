@@ -72,7 +72,7 @@ export class HermesService {
    * prompts, collects `message` chunks until `turn_done`. Used by the HTTP prompt route
    * and the (deferred) bus subscriber.
    */
-  async runTurn(agentId: string, text: string, opts: { timeoutMs?: number } = {}): Promise<{ reply: string; stopReason?: string }> {
+  async runTurn(agentId: string, text: string, opts: { timeoutMs?: number; context?: string; screenshot?: string } = {}): Promise<{ reply: string; stopReason?: string }> {
     await this.bridge.ensureReady(agentId)
     const parts: string[] = []
     return new Promise<{ reply: string; stopReason?: string }>((resolve, reject) => {
@@ -89,7 +89,7 @@ export class HermesService {
         }
       })
       try {
-        this.bridge.prompt(agentId, text)
+        this.bridge.prompt(agentId, text, { context: opts.context, screenshot: opts.screenshot })
       } catch (e) {
         clearTimeout(timer); off(); reject(e as Error)
       }

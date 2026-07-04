@@ -164,11 +164,17 @@ export class HermesAcpBridge extends EventEmitter {
     }
   }
 
-  /** Send a prompt into a running session (UI- or bus-originated). Session must exist. */
-  prompt(agentId: string, text: string): void {
+  /** Send a prompt into a running session (UI- or bus-originated). Session must exist.
+   *  Feature A (page-aware): optional structured view `context` and a `screenshot`
+   *  (data URL / base64 PNG) ride along; acp-bridge.py injects them into the turn
+   *  (screenshot saved to a file the agent reads with its own vision/read tool). */
+  prompt(agentId: string, text: string, extra?: { context?: string; screenshot?: string }): void {
     const session = this.sessions.get(agentId)
     if (!session || session.proc.exitCode !== null) throw new Error(`no live acp session for ${agentId}`)
-    session.proc.stdin.write(JSON.stringify({ type: 'prompt', text }) + '\n')
+    const payload: Record<string, unknown> = { type: 'prompt', text }
+    if (extra?.context) payload.context = extra.context
+    if (extra?.screenshot) payload.screenshot = extra.screenshot
+    session.proc.stdin.write(JSON.stringify(payload) + '\n')
   }
 
   /** Subscribe to a session's normalized events. Returns an unsubscribe fn (safe to call any time). */

@@ -7,6 +7,14 @@ import type { AcpEvent } from './HermesAcpBridge'
 type Req = express.Request
 type Res = express.Response
 
+/** Best-effort vision-capability heuristic on a model id (Feature A page-aware chat).
+ *  v1 name-match; replace with a real capability query against the model catalog when
+ *  the proxy exposes it. When true, the UI attaches a screenshot to prompts. */
+function isVisionModel(model?: string): boolean {
+  if (!model) return false
+  return /\b(vl|vision|multimodal|omni)\b|qwen[\w.-]*vl|internvl|llava|pixtral|molmo|minicpm-?v|gpt-4o|gpt-4\.1|claude-(3|opus|sonnet|haiku|4)|gemini|llama[\w.-]*vision/i.test(model)
+}
+
 /**
  * HTTP surface for the AI-Lab × Hermes control plane. Mounted on the universal proxy app
  * (same place as the fleet router). All operations are server-side; the SSE stream is a
@@ -15,12 +23,20 @@ type Res = express.Response
  */
 export function createHermesRouter(hermes: HermesService): express.Router {
   const router = express.Router()
-  const json = express.json({ limit: '2mb' })
+  // 12mb: prompt bodies can carry a base64 screenshot (Feature A page-aware chat).
+  const json = express.json({ limit: '12mb' })
 
-  // List agent profiles.
+  // List agent profiles + per-agent capabilities (Feature A: the UI attaches a
+  // screenshot only when the bound agent's model is vision-capable).
   router.get('/api/hermes/agents', async (_req: Req, res: Res) => {
     try {
-      res.json({ agents: await hermes.listAgents() })
+      const agents = await hermes.listAgents()
+      const capabilities: Record<string, { model?: string; visionCapable: boolean }> = {}
+      for (const id of agents) {
+        const model = hermes.getSpec(id)?.model
+        capabilities[id] = { model, visionCapable: isVisionModel(model) }
+      }
+      res.json({ agents, capabilities })
     } catch (e) {
       res.status(500).json({ error: String((e as Error).message) })
     }
@@ -60,10 +76,15 @@ export function createHermesRouter(hermes: HermesService): express.Router {
 
   // Fire one turn and return the assembled reply (also streams to any /stream observers).
   router.post('/api/hermes/agents/:id/prompt', json, async (req: Req, res: Res) => {
-    const text = String((req.body as { text?: unknown })?.text ?? '')
+    const body = (req.body ?? {}) as { text?: unknown; context?: unknown; screenshot?: unknown }
+    const text = String(body.text ?? '')
     if (!text.trim()) return res.status(400).json({ error: 'text required' })
     try {
-      const r = await hermes.runTurn(req.params.id, text)
+      // Feature A (page-aware): optional structured view context + screenshot data URL.
+      const r = await hermes.runTurn(req.params.id, text, {
+        context: typeof body.context === 'string' ? body.context : undefined,
+        screenshot: typeof body.screenshot === 'string' ? body.screenshot : undefined,
+      })
       res.json({ ok: true, ...r })
     } catch (e) {
       res.status(500).json({ error: String((e as Error).message) })
