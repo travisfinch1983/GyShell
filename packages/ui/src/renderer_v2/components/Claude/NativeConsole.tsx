@@ -42,8 +42,13 @@ export const NativeConsole: React.FC<{ instanceId: string; height: number }> = (
         cursor: cssVar('--accent', '#58a6ff'),
         selectionBackground: cssVar('--accent', '#58a6ff') + '55',
       },
-      fontSize: 13,
-      fontFamily: 'var(--font-mono, monospace)',
+      // Match the Proxmox console exactly: it passes fontFamily:'monospace' so the browser
+      // picks its default monospace (DejaVu Sans Mono on Linux). We must pass a CONCRETE
+      // string here — xterm.js measures glyphs on a canvas and CANNOT resolve a CSS var(),
+      // so the old `var(--font-mono)` silently fell back to xterm's Courier default, which
+      // is why the font looked wildly different and cell spacing was off.
+      fontSize: 14,
+      fontFamily: 'monospace',
       scrollback: 8000,
       allowProposedApi: true,
     })
@@ -74,6 +79,23 @@ export const NativeConsole: React.FC<{ instanceId: string; height: number }> = (
     const sendResize = () => {
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'resize', cols: term.cols, rows: term.rows }))
     }
+
+    // Force the remote TUI to repaint. Coming back to an already-attached tab shows a
+    // blank screen (the -r winch only fires on a FRESH attach, and dtach keeps no screen
+    // buffer), so we nudge a real size change — rows-1 then back — which sends a genuine
+    // SIGWINCH through ssh→dtach→claude and makes the full-screen TUI redraw. Same effect
+    // as the old manual Proxmox attach, without a second dtach client.
+    const forceRepaint = () => {
+      if (ws?.readyState !== WebSocket.OPEN) return
+      try { fit.fit() } catch { /* host hidden */ }
+      const { cols, rows } = term
+      try {
+        ws.send(JSON.stringify({ t: 'resize', cols, rows: Math.max(2, rows - 1) }))
+        setTimeout(() => { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'resize', cols, rows })) }, 60)
+      } catch { /* racing close */ }
+    }
+    const onVisible = () => { if (!document.hidden) forceRepaint() }
+    document.addEventListener('visibilitychange', onVisible)
 
     const connect = () => {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws'
@@ -154,6 +176,7 @@ export const NativeConsole: React.FC<{ instanceId: string; height: number }> = (
       closedByUs = true
       if (retryTimer) clearTimeout(retryTimer)
       if (hbTimer) clearInterval(hbTimer)
+      document.removeEventListener('visibilitychange', onVisible)
       onInput.dispose()
       ro.disconnect()
       try { ws?.close() } catch { /* already closed */ }
