@@ -208,11 +208,21 @@ export const ClaudePanel: React.FC = observer(() => {
   useEffect(() => {
     if (restored.current || !uiPrefsStore.loaded || !store.loaded || !instancesStore.loaded) return
     restored.current = true
-    const saved = uiPrefsStore.get('claudeActiveTab', DIRECTIVES) as string
+    // Per-browser-tab position first (sessionStorage) so multiple AI-Lab tabs
+    // don't stomp each other's selected instance on refresh (the native console
+    // is single-writer — a global restore made every browser tab steal the
+    // same console). The backend pref stays as the new-tab / first-load fallback.
+    let perTab: string | null = null
+    try { perTab = sessionStorage.getItem('claudeActiveTab') } catch { /* private mode */ }
+    const saved = perTab ?? (uiPrefsStore.get('claudeActiveTab', DIRECTIVES) as string)
     const isInstance = saved.startsWith(INSTANCE_PREFIX) && instancesStore.instances.some((i) => INSTANCE_PREFIX + i.id === saved)
     if (saved === DIRECTIVES || saved === ADD || saved === SPAWN || isInstance || store.connections.some((c) => c.id === saved)) setActiveState(saved)
   }, [uiPrefsStore.loaded, store.loaded, instancesStore.loaded])
-  const setActive = (id: string) => { setActiveState(id); uiPrefsStore.set('claudeActiveTab', id) }
+  const setActive = (id: string) => {
+    setActiveState(id)
+    try { sessionStorage.setItem('claudeActiveTab', id) } catch { /* private mode */ }
+    uiPrefsStore.set('claudeActiveTab', id) // write-through: seeds NEW browser tabs only
+  }
   const conn = store.connections.find((c) => c.id === active)
   const instance = active.startsWith(INSTANCE_PREFIX)
     ? instancesStore.instances.find((i) => INSTANCE_PREFIX + i.id === active)

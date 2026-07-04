@@ -65,11 +65,20 @@ export const App: React.FC = observer(() => {
     })
   }, [])
 
+  // CURRENT POSITION is per-browser-tab (sessionStorage, same mechanism as
+  // windowing.ts) so multiple AI-Lab browser tabs each refresh back to their
+  // OWN place. localStorage stays as the write-through fallback: it seeds
+  // brand-new tabs (and first load after this deploy) with the last position,
+  // but a refresh never snaps existing tabs to it.
   const [primaryTab, setPrimaryTab] = useState<PrimaryTab>(
-    () => (localStorage.getItem('ai-lab-primary-tab') as PrimaryTab) || 'terminal'
+    () =>
+      (sessionStorage.getItem('ai-lab-primary-tab') as PrimaryTab) ||
+      (localStorage.getItem('ai-lab-primary-tab') as PrimaryTab) ||
+      'terminal'
   )
   const handlePrimaryTabChange = useCallback((id: PrimaryTab) => {
     setPrimaryTab(id)
+    try { sessionStorage.setItem('ai-lab-primary-tab', id) } catch { /* private mode */ }
     localStorage.setItem('ai-lab-primary-tab', id)
   }, [])
 
