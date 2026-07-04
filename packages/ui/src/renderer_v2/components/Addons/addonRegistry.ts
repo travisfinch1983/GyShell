@@ -1,20 +1,27 @@
 import { ImageUpscale, type LucideIcon } from 'lucide-react'
 
 /**
- * Addon registry — external webUIs folded into AI-Lab as Addons-tab sub-tabs.
+ * Addon registry — SELF-CONTAINED addon modules folded into AI-Lab as
+ * Addons-tab sub-tabs (Travis architecture 2026-07-04).
  *
- * ADDING AN ADDON IS A ONE-ENTRY OPERATION here, plus its proxy route in
- * apps/web/vite.config.ts (rule #1: backend-proxied, never browser→LAN —
- * follow the '/addon/upscaler' entry: target env-overridable, strip prefix).
- * Convention: `path` = '/addon/<id>' same-origin, iframed by AddonsPanel.
+ * An addon lives in /opt/ai-lab/addons/<id>/ { app/, .venv/, data/, addon.json }
+ * on CT152; the AI-Lab backend supervises its local server and proxies its UI
+ * SAME-ORIGIN at `/addons/<id>/` (no LAN hosts, no cross-host iframes). The UI
+ * only ever consumes that path.
+ *
+ * ADDING AN ADDON = one entry here (claude2: zero framework edits — the panel
+ * renders whatever this array holds). This static registry is the interim
+ * source of truth; it swaps to the backend's addon.json manifest list when
+ * claude1's manifest endpoint lands (same shape by design).
  *
  * `subtabs`: for addon UIs that are themselves tabbed/multi-page — each inner
- * sub-tab is just a different path under the same proxy. Omit for single-page.
+ * sub-tab is a different path under the same `/addons/<id>/` root. Omit for
+ * single-page addons.
  */
 export interface AddonSubtab {
   id: string
   label: string
-  /** same-origin path for this inner view (usually `${addon.path}/<page>`). */
+  /** same-origin path for this inner view (usually `${addon.path}<page>`). */
   path: string
 }
 
@@ -22,7 +29,7 @@ export interface AddonDef {
   id: string
   label: string
   Icon?: LucideIcon
-  /** same-origin proxied root path of the addon UI. */
+  /** same-origin proxied root of the addon UI: `/addons/<id>/`. */
   path: string
   subtabs?: AddonSubtab[]
 }
@@ -32,8 +39,8 @@ export const ADDONS: AddonDef[] = [
     id: 'upscaler',
     label: 'Upscaler',
     Icon: ImageUpscale,
-    // CT161 (10.0.0.231:7700) via the '/addon/upscaler' proxy — target is the
-    // ADDON_UPSCALER_URL env on ai-lab-web, adjustable without a code change.
-    path: '/addon/upscaler',
+    // Module at /opt/ai-lab/addons/upscaler/ (FastAPI/uvicorn, local port),
+    // supervised + proxied by the backend — claude1's half, in flight.
+    path: '/addons/upscaler/',
   },
 ]
