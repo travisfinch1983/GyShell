@@ -68,13 +68,24 @@ export function socketForInstance(inst: ManagedInstance): string {
   return inst.sock ?? inst.consoleSocket ?? KNOWN_SOCKETS[inst.id] ?? `/tmp/claude-${inst.user ?? inst.id}.sock`
 }
 
-/** The remote attach command; user-owned sockets require attaching AS the owner. */
+/**
+ * The remote attach command; user-owned sockets require attaching AS the owner.
+ *
+ * `-r winch`: on attach, make dtach send a SIGWINCH to the program instead of its
+ * default Ctrl-L. dtach keeps no screen buffer — it only nudges the app to repaint,
+ * and Claude Code's full-screen (Ink) TUI ignores Ctrl-L, so a fresh attach showed a
+ * blank screen (just a cursor) until an external winch arrived (which is why a manual
+ * Proxmox `dtach -a` was needed to "wake" it — and that 2nd attach is the /clear
+ * multi-attach vector). SIGWINCH reliably forces the TUI to re-render on attach.
+ */
 export function attachCommandFor(inst: ManagedInstance): string {
   const socket = socketForInstance(inst)
   const user = inst.user ?? 'root'
-  if (user === 'root') return `exec dtach -a ${socket}`
+  // dtach usage is `-a <socket> <options>` — the socket MUST precede -r or dtach 0.9
+  // rejects it with "Invalid number of arguments" (only once a tty exists, i.e. under ssh -tt).
+  if (user === 'root') return `exec dtach -a ${socket} -r winch`
   // Quote for the su -c layer; socket paths are slugs but stay defensive.
-  return `exec su - ${user} -c 'exec dtach -a ${socket.replace(/'/g, `'\\''`)}'`
+  return `exec su - ${user} -c 'exec dtach -a ${socket.replace(/'/g, `'\\''`)} -r winch'`
 }
 
 export class ClaudeConsoleService {
