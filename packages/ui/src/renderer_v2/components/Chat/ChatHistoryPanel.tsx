@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { observer } from 'mobx-react-lite'
-import { Clock, Trash2, X, History, CheckSquare, Square, Edit2, Check, X as Close, Search } from 'lucide-react'
+import { Clock, Trash2, X, History, CheckSquare, Square, Edit2, Check, X as Close, Search, Star, Download } from 'lucide-react'
+import { uiPrefsStore } from '../../stores/uiPrefsStore'
 import type { AppStore } from '../../stores/AppStore'
 import { ConfirmDialog } from '../Common/ConfirmDialog'
 import { formatChatHistorySessionTitle, normalizeSessionTitleText } from '../../lib/sessionTitleDisplay'
@@ -45,10 +46,24 @@ export const ChatHistoryPanel: React.FC<ChatHistoryPanelProps> = observer(({ sto
     loadHistory()
   }, [])
 
+  // Starred sessions (req 7): a client-side pref — the backend session store has
+  // no star field, so this is honest UI state, persisted via uiPrefsStore.
+  const starred: string[] = uiPrefsStore.get('chatStarredSessions', []) as string[]
+  const toggleStar = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation()
+    uiPrefsStore.set('chatStarredSessions', starred.includes(id) ? starred.filter((s) => s !== id) : [...starred, id])
+  }
+  const exportSession = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation()
+    void (window as any).gyshell?.agent?.exportHistory?.(id)
+  }
+
   const normalizedSearchQuery = searchQuery.trim().toLowerCase()
-  const filteredHistory = normalizedSearchQuery
+  const searched = normalizedSearchQuery
     ? history.filter((session) => normalizeSessionTitleText(session.title).toLowerCase().includes(normalizedSearchQuery))
     : history
+  // Starred float to the top, both groups keep their recency order.
+  const filteredHistory = [...searched.filter((s) => starred.includes(s.id)), ...searched.filter((s) => !starred.includes(s.id))]
 
   const loadHistory = async (showLoading = true) => {
     if (showLoading) setLoading(true)
@@ -288,13 +303,30 @@ export const ChatHistoryPanel: React.FC<ChatHistoryPanelProps> = observer(({ sto
               <Trash2 size={14} />
             </button>
             {!isSelectionMode && editingId !== session.id && (
-              <button
-                className="chat-history-item-rename"
-                onClick={(e) => handleStartRename(e, session)}
-                title={t.chat.history.renameSession}
-              >
-                <Edit2 size={14} />
-              </button>
+              <>
+                <button
+                  className="chat-history-item-rename"
+                  onClick={(e) => handleStartRename(e, session)}
+                  title={t.chat.history.renameSession}
+                >
+                  <Edit2 size={14} />
+                </button>
+                <button
+                  className="chat-history-item-rename"
+                  onClick={(e) => exportSession(e, session.id)}
+                  title="Export as markdown"
+                >
+                  <Download size={14} />
+                </button>
+                <button
+                  className="chat-history-item-rename"
+                  onClick={(e) => toggleStar(e, session.id)}
+                  title={starred.includes(session.id) ? 'Unstar' : 'Star — pins to the top'}
+                  style={starred.includes(session.id) ? { color: 'var(--accent)', opacity: 1 } : undefined}
+                >
+                  <Star size={14} fill={starred.includes(session.id) ? 'currentColor' : 'none'} />
+                </button>
+              </>
             )}
           </div>
         ))}
