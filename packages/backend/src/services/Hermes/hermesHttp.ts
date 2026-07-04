@@ -1,19 +1,13 @@
 // @ts-expect-error — express ships untyped in this repo (same pre-existing gap as UniversalProxyService)
 import express from 'express'
 import { hermesAgentSpecSchema, providerServiceSchema } from '@gyshell/shared'
+// @ts-expect-error — proxy capability resolver ships as untyped JS (same pattern as the other proxy/*.js imports)
+import { resolveModelCapabilities } from '../Cluster/proxy/model-capabilities.js'
 import type { HermesService } from './HermesService'
 import type { AcpEvent } from './HermesAcpBridge'
 
 type Req = express.Request
 type Res = express.Response
-
-/** Best-effort vision-capability heuristic on a model id (Feature A page-aware chat).
- *  v1 name-match; replace with a real capability query against the model catalog when
- *  the proxy exposes it. When true, the UI attaches a screenshot to prompts. */
-function isVisionModel(model?: string): boolean {
-  if (!model) return false
-  return /\b(vl|vision|multimodal|omni)\b|qwen[\w.-]*vl|internvl|llava|pixtral|molmo|minicpm-?v|gpt-4o|gpt-4\.1|claude-(3|opus|sonnet|haiku|4)|gemini|llama[\w.-]*vision/i.test(model)
-}
 
 /**
  * HTTP surface for the AI-Lab × Hermes control plane. Mounted on the universal proxy app
@@ -31,10 +25,11 @@ export function createHermesRouter(hermes: HermesService): express.Router {
   router.get('/api/hermes/agents', async (_req: Req, res: Res) => {
     try {
       const agents = await hermes.listAgents()
-      const capabilities: Record<string, { model?: string; visionCapable: boolean }> = {}
+      const capabilities: Record<string, { model?: string; visionCapable: boolean; capabilities?: { text: boolean; vision: boolean; audio: boolean } }> = {}
       for (const id of agents) {
         const model = hermes.getSpec(id)?.model
-        capabilities[id] = { model, visionCapable: isVisionModel(model) }
+        const caps = resolveModelCapabilities(model)
+        capabilities[id] = { model, visionCapable: caps.vision, capabilities: caps }
       }
       res.json({ agents, capabilities })
     } catch (e) {

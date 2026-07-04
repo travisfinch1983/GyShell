@@ -28,6 +28,7 @@ import { spawn } from 'child_process';
 import { isAuthenticated, getAuthStatus, CLAUDE_MODELS } from './anthropic-proxy.js';
 import { extractToolCalls, recordToolUsage } from './tool-call-metrics.js';
 import { createBalanceHistory } from './balance-history.js';
+import { resolveModelCapabilities } from './model-capabilities.js';
 
 // ─── kvcache-proxy companion detection ──────────────────────────────────
 // Convention: each LLM service that has a kvcache-proxy companion listens
@@ -819,6 +820,7 @@ async function refreshModelCache() {
       _proxlab_provider: svc.providerId,
       _proxlab_slots: Number.isFinite(svc.slots) && svc.slots > 0 ? svc.slots : 1,
       _proxlab_service_id: svc.id,
+      capabilities: resolveModelCapabilities(baseId),
     };
 
     if (count === 1) {
@@ -862,6 +864,7 @@ async function refreshModelCache() {
           _external_tag: source.tag,
           _upstream_model: upstreamModel,
           _proxlab_provider: 'external',
+          capabilities: resolveModelCapabilities(upstreamModel),
         });
         externalByModel.set(taggedId, { source, upstreamModel });
       }
