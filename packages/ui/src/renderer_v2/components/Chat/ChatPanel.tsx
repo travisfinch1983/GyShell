@@ -238,6 +238,9 @@ interface ChatPanelProps {
   onSelectSession: (sessionId: string) => void;
   onRequestCloseTabs?: (tabIds: string[]) => void;
   onLayoutHeaderContextMenu?: (event: React.MouseEvent<HTMLElement>) => void;
+  /** Overlay mode (GlobalChat): the unified tab strip lives OUTSIDE — skip the
+   *  internal header row (tabs + add/history/export actions) entirely. */
+  hideTabBar?: boolean;
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = observer(
@@ -249,6 +252,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
     onSelectSession,
     onRequestCloseTabs,
     onLayoutHeaderContextMenu,
+    hideTabBar,
   }) => {
     const panelRef = useRef<HTMLDivElement>(null);
     const richInputRef = useRef<RichInputHandle>(null);
@@ -898,6 +902,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
         onMouseDownCapture={handlePanelMouseDownCapture}
         onFocusCapture={handlePanelFocusCapture}
       >
+        {!hideTabBar && (
         <div
           className="panel-header-minimal is-draggable"
           draggable
@@ -1030,6 +1035,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
             </button>
           </div>
         </div>
+        )}
 
         {showExportMenu &&
           createPortal(

@@ -29,46 +29,121 @@
   }
 }
 
-// ── mode switch (Chat = AgentService_v2 · Agents = Hermes ACP streaming) ──
-.ai-lab-global-chat .glc-mode-row {
+// ── unified tab strip: every tab = one conversation bound to an agent ──
+.ai-lab-global-chat .glc-strip {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 10px 6px;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--border);
 }
 
-.ai-lab-global-chat .glc-mode {
+.ai-lab-global-chat .glc-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  min-width: 0;
+  flex: 1;
+  scrollbar-width: thin;
+}
+
+.ai-lab-global-chat .glc-tab {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 12px;
+  gap: 5px;
+  padding: 3px 6px 3px 9px;
   border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
+  border-radius: 6px;
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: 11.5px;
   cursor: pointer;
+  white-space: nowrap;
+  flex: 0 0 auto;
 
   &:hover { color: var(--fg); }
+  &.active { color: var(--fg); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  &.hermes.active { border-color: var(--success); background: color-mix(in srgb, var(--success) 8%, transparent); }
 
-  &.active {
-    color: var(--accent);
-    border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  .glc-tab-title { max-width: 14ch; overflow: hidden; text-overflow: ellipsis; }
+
+  .glc-tab-close {
+    display: inline-flex;
+    border: none;
+    background: none;
+    color: var(--fg-faint);
+    cursor: pointer;
+    padding: 1px;
+
+    &:hover { color: var(--danger); }
   }
 }
 
-.ai-lab-global-chat .glc-agent-pick {
-  margin-left: auto;
-  max-width: 55%;
-  padding: 3px 8px;
-  border: 1px solid var(--border);
+.ai-lab-global-chat .glc-actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.ai-lab-global-chat .glc-act {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 6px;
+  border: 1px solid transparent;
   border-radius: 6px;
-  background: var(--control-bg);
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+
+  &:hover { color: var(--fg); border-color: var(--border); }
+}
+
+.ai-lab-global-chat .glc-picker {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 240px;
+  z-index: 40;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  padding: 4px 0;
+}
+
+.ai-lab-global-chat .glc-picker-head {
+  padding: 4px 12px 6px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-faint);
+}
+
+.ai-lab-global-chat .glc-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  background: none;
   color: var(--fg);
-  font-size: 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+
+  &:hover { background: var(--control-bg); }
+}
+
+.ai-lab-global-chat .glc-picker-sub {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--fg-faint);
 }
 
 .ai-lab-global-chat .glc-agents-body {
@@ -84,15 +159,4 @@
   [class*='convHead'] { flex-wrap: wrap; }
   [class*='log'] { padding: 10px; }
   [class*='composerWrap'] { padding: 8px 10px; }
-}
-
-.ai-lab-global-chat .glc-empty {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--fg-muted);
-  font-size: 12.5px;
-  padding: 16px;
-  text-align: center;
 }
