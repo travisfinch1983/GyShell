@@ -27,6 +27,7 @@ import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 import { isAuthenticated, getAuthStatus, CLAUDE_MODELS } from './anthropic-proxy.js';
 import { extractToolCalls, recordToolUsage } from './tool-call-metrics.js';
+import { createBalanceHistory } from './balance-history.js';
 
 // ─── kvcache-proxy companion detection ──────────────────────────────────
 // Convention: each LLM service that has a kvcache-proxy companion listens
@@ -330,6 +331,14 @@ function saveExternalModelSources(sources) {
 
 export { loadExternalModelSources, saveExternalModelSources };
 
+// Credit-tracker phase 2 — periodic balance snapshots (append-only JSONL) → burn-rate / runway.
+// Singleton so a single snapshotter runs regardless of how many times the router is created.
+const balanceHistory = createBalanceHistory({
+  historyFile: join(PROXY_DATA_DIR, 'balance-history.jsonl'),
+  loadSources: () => loadExternalModelSources().filter((s) => s && s.enabled !== false),
+  fetchBalance: (s) => fetchExternalSourceBalance(s),
+});
+
 // Resolve a source's API key. Primary: the inline `apiKey` from the dedicated model-endpoints
 // vault section (external-model-sources.json — kept separate from general credentials so the
 // backend never parses keys out of mixed creds). Fallback: env var <ID>_API_KEY. (apiKeyRef →
@@ -434,6 +443,68 @@ async function fetchExternalSourceModelsRaw(source) {
   } catch {
     return [];
   }
+}
+
+// Query an external source's account credit/balance where the provider exposes it. Normalized:
+//   { supported, currency, balance, totalCredits, totalUsage, usage:{...}, available, reason, checkedAt }
+// OpenRouter: /api/v1/credits (+ /api/v1/key for daily/weekly/monthly usage). DeepSeek: /user/balance.
+// Anthropic: no balance on a standard key (admin key required) → supported:false. Used for the
+// AI-Lab credit tracker (current balance + historical snapshots → cost-over-time).
+async function fetchExternalSourceBalance(source) {
+  const key = resolveExternalSourceKey(source);
+  const host = String(source.baseUrl || '').replace(/\/v1\/?$/, '').replace(/\/$/, '');
+  const out = { supported: false, currency: 'USD', checkedAt: Date.now() };
+  const h = key ? { Authorization: `Bearer ${key}` } : {};
+  const j = async (url, headers) => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    try { const r = await fetch(url, { signal: ctrl.signal, headers }); clearTimeout(t); return r.ok ? await r.json() : null; }
+    catch { clearTimeout(t); return null; }
+  };
+  if (/openrouter\.ai/.test(host)) {
+    const c = await j('https://openrouter.ai/api/v1/credits', h);
+    const k = await j('https://openrouter.ai/api/v1/key', h);
+    if (c && c.data) {
+      const tc = Number(c.data.total_credits), tu = Number(c.data.total_usage);
+      out.supported = true; out.kind = 'balance'; out.totalCredits = tc; out.totalUsage = tu;
+      out.balance = (Number.isFinite(tc) && Number.isFinite(tu)) ? tc - tu : null;
+      if (k && k.data) out.usage = { total: k.data.usage, daily: k.data.usage_daily, weekly: k.data.usage_weekly, monthly: k.data.usage_monthly };
+    } else { out.reason = 'openrouter credits unavailable (key/network)'; }
+    return out;
+  }
+  if (/deepseek\.com/.test(host)) {
+    const b = await j(host + '/user/balance', { ...h, Accept: 'application/json' });
+    const info = b && Array.isArray(b.balance_infos) && b.balance_infos[0];
+    if (info) {
+      out.supported = true; out.kind = 'balance'; out.currency = info.currency || 'USD';
+      out.balance = Number(info.total_balance);
+      out.granted = Number(info.granted_balance); out.toppedUp = Number(info.topped_up_balance);
+      out.available = !!b.is_available;
+    } else { out.reason = 'deepseek balance unavailable (key/network)'; }
+    return out;
+  }
+  if (source.transport === 'anthropic') {
+    const admin = source.adminApiKey;
+    if (!admin) { out.reason = 'add an Anthropic Admin API key (sk-ant-admin…) below to see usage/cost'; return out; }
+    // Anthropic has no "balance" concept — report SPEND (cost report) for the current calendar month.
+    const now = new Date(out.checkedAt);
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+    const url = `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${encodeURIComponent(monthStart)}`;
+    const cr = await j(url, { 'x-api-key': admin, 'anthropic-version': '2023-06-01' });
+    if (cr) {
+      let spend = 0, found = false;
+      for (const bucket of (cr.data || [])) {
+        for (const r of (bucket.results || bucket.result || [])) {
+          const amt = Number(r.amount ?? r.cost ?? r.cost_usd);
+          if (!Number.isNaN(amt)) { spend += amt; found = true; if (r.currency) out.currency = r.currency; }
+        }
+      }
+      out.supported = true; out.kind = 'spend'; out.spendMonth = found ? spend : null;
+    } else { out.reason = 'Anthropic cost report unavailable — check the admin key (needs sk-ant-admin…)'; }
+    return out;
+  }
+  out.reason = 'no balance API for this provider';
+  return out;
 }
 
 // Forward a chat/completions request to an external model source's upstream API. The
@@ -1145,6 +1216,9 @@ function buildProviderInfo(svc, caps, healthy) {
 export function createProxyRouter(sshService) {
   const router = Router();
 
+  // Start the credit-tracker snapshotter (idempotent — guarded internally).
+  balanceHistory.start();
+
   // GET /services — Return current routing targets for diagnostics
   router.get('/services', async (req, res) => {
     const anthropicAuth = await isAuthenticated().catch(() => false);
@@ -1540,6 +1614,8 @@ export function createProxyRouter(sshService) {
       ...s,
       apiKey: s.apiKey ? `***${String(s.apiKey).slice(-4)}` : undefined,
       hasKey: !!s.apiKey,
+      adminApiKey: s.adminApiKey ? `***${String(s.adminApiKey).slice(-4)}` : undefined,
+      hasAdminKey: !!s.adminApiKey,
     }));
     res.json(redacted);
   });
@@ -1559,6 +1635,10 @@ export function createProxyRouter(sshService) {
         // preserve the stored key rather than overwriting it.
         if (idx >= 0 && (!src.apiKey || String(src.apiKey).startsWith('***'))) {
           src.apiKey = sources[idx].apiKey;
+        }
+        // Same masked-edit preservation for the separate admin/usage key.
+        if (idx >= 0 && (!src.adminApiKey || String(src.adminApiKey).startsWith('***'))) {
+          src.adminApiKey = sources[idx].adminApiKey;
         }
         if (idx >= 0) sources[idx] = src; else sources.push(src);
         saveExternalModelSources(sources);
@@ -1588,6 +1668,44 @@ export function createProxyRouter(sshService) {
       const models = (await fetchExternalSourceModelsRaw(source))
         .map(m => ({ ...m, enabled: allowAll || allowSet.has(m.id) }));
       res.json({ sourceId: source.id, tag: source.tag, allowAll, count: models.length, models });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Live account credit/balance for one source (OpenRouter/DeepSeek supported; Anthropic not).
+  router.get('/external-sources/:id/balance', async (req, res) => {
+    try {
+      const source = loadExternalModelSources().find(s => s.id === req.params.id);
+      if (!source) return res.status(404).json({ error: 'source not found' });
+      res.json({ sourceId: source.id, tag: source.tag, displayName: source.displayName, ...(await fetchExternalSourceBalance(source)) });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Balances for ALL sources at once (powers the credit-tracker UI + the history snapshotter).
+  router.get('/external-sources-balances', async (_req, res) => {
+    try {
+      const sources = loadExternalModelSources();
+      const balances = await Promise.all(sources.map(async (s) => ({
+        sourceId: s.id, tag: s.tag, displayName: s.displayName, ...(await fetchExternalSourceBalance(s)),
+      })));
+      res.json({ balances, checkedAt: Date.now() });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Credit-tracker phase 2 — historical balance series + derived burn-rate/runway for one source.
+  // ?days=N windows the series (default 30, 1..365). burnPerDay method: usage-delta (top-up-robust)
+  // > spend-delta (Anthropic) > balance-delta (fallback). runwayDays = balance / burnPerDay.
+  router.get('/external-sources/:id/balance-history', (req, res) => {
+    try {
+      const days = Math.max(1, Math.min(365, Number(req.query.days) || 30));
+      res.json(balanceHistory.historyFor(req.params.id, Date.now() - days * 86400000));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Take a balance snapshot now (on-demand; the snapshotter also runs on its own interval).
+  router.post('/external-sources-balances/snapshot', async (_req, res) => {
+    try {
+      const rows = await balanceHistory.snapshot(Date.now());
+      res.json({ ok: true, snapshotted: rows.length, checkedAt: Date.now() });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 

@@ -10,8 +10,8 @@
  */
 import type { ExternalModelSource } from '@gyshell/shared'
 
-/** GET shape: contract fields with the key masked + a hasKey flag. */
-export type ExternalModelSourceWire = ExternalModelSource & { hasKey?: boolean }
+/** GET shape: contract fields with the key(s) masked + presence flags. */
+export type ExternalModelSourceWire = ExternalModelSource & { hasKey?: boolean; hasAdminKey?: boolean }
 
 /** One upstream model with metadata + its per-source enabled flag (from GET .../available). */
 export interface AvailableModel {
@@ -34,6 +34,28 @@ export interface AvailableModelsResult {
   allowAll: boolean
   count: number
   models: AvailableModel[]
+}
+
+/** Normalized account credit/balance for a source (GET .../balance | .../-balances). */
+export interface SourceBalance {
+  sourceId: string
+  tag?: string
+  displayName?: string
+  supported: boolean
+  /** 'balance' = credit remaining (OpenRouter/DeepSeek); 'spend' = period cost (Anthropic). */
+  kind?: 'balance' | 'spend'
+  currency?: string
+  balance?: number | null
+  /** current-month spend (Anthropic cost report). */
+  spendMonth?: number | null
+  totalCredits?: number
+  totalUsage?: number
+  granted?: number
+  toppedUp?: number
+  available?: boolean
+  usage?: { total?: number; daily?: number; weekly?: number; monthly?: number }
+  reason?: string
+  checkedAt?: number
 }
 
 function bridge(): any {
@@ -71,5 +93,11 @@ export const modelSourcesApi = {
   async available(id: string): Promise<AvailableModelsResult> {
     const r = await bridge().request('GET', `/api/proxy/external-sources/${encodeURIComponent(id)}/available`)
     return (r ?? { sourceId: id, tag: '', allowAll: true, count: 0, models: [] }) as AvailableModelsResult
+  },
+
+  /** Live account credit/balance for all sources (OpenRouter/DeepSeek supported). */
+  async balances(): Promise<SourceBalance[]> {
+    const r = await bridge().request('GET', '/api/proxy/external-sources-balances')
+    return (r?.balances ?? []) as SourceBalance[]
   },
 }

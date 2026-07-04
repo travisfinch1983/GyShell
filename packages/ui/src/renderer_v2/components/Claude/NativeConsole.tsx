@@ -42,8 +42,13 @@ export const NativeConsole: React.FC<{ instanceId: string; height: number }> = (
         cursor: cssVar('--accent', '#58a6ff'),
         selectionBackground: cssVar('--accent', '#58a6ff') + '55',
       },
-      fontSize: 13,
-      fontFamily: 'var(--font-mono, monospace)',
+      // Match the Proxmox console exactly: it passes fontFamily:'monospace' so the browser
+      // picks its default monospace (DejaVu Sans Mono on Linux). We must pass a CONCRETE
+      // string here — xterm.js measures glyphs on a canvas and CANNOT resolve a CSS var(),
+      // so the old `var(--font-mono)` silently fell back to xterm's Courier default, which
+      // is why the font looked wildly different and cell spacing was off.
+      fontSize: 14,
+      fontFamily: 'monospace',
       scrollback: 8000,
       allowProposedApi: true,
     })
@@ -58,21 +63,54 @@ export const NativeConsole: React.FC<{ instanceId: string; height: number }> = (
     let retryMs = 500
     let retryTimer: ReturnType<typeof setTimeout> | null = null
 
+    // Heartbeat / half-open detection. A dropped TCP connection often leaves the
+    // browser WebSocket stuck in OPEN with no onclose ever firing (wifi blip,
+    // laptop sleep, an idle intermediary reaping the socket) — the terminal just
+    // freezes. Claude is idle-heavy, so "no output" ≠ dead; instead we send an
+    // app-level ping and expect a pong. Any frame (output OR pong) refreshes
+    // lastActivity; if nothing arrives for STALE_MS we force-close, which fires
+    // onclose → the existing reconnect path (a fresh dtach redraw, no replay).
+    let lastActivity = Date.now()
+    let lastPingAt = 0
+    let hbTimer: ReturnType<typeof setInterval> | null = null
+    const HB_SEND_MS = 10000 // app-ping cadence
+    const STALE_MS = 30000 // no traffic (incl. pong) this long ⇒ connection is dead
+
     const sendResize = () => {
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'resize', cols: term.cols, rows: term.rows }))
     }
+
+    // Force the remote TUI to repaint. Coming back to an already-attached tab shows a
+    // blank screen (the -r winch only fires on a FRESH attach, and dtach keeps no screen
+    // buffer), so we nudge a real size change — rows-1 then back — which sends a genuine
+    // SIGWINCH through ssh→dtach→claude and makes the full-screen TUI redraw. Same effect
+    // as the old manual Proxmox attach, without a second dtach client.
+    const forceRepaint = () => {
+      if (ws?.readyState !== WebSocket.OPEN) return
+      try { fit.fit() } catch { /* host hidden */ }
+      const { cols, rows } = term
+      try {
+        ws.send(JSON.stringify({ t: 'resize', cols, rows: Math.max(2, rows - 1) }))
+        setTimeout(() => { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'resize', cols, rows })) }, 60)
+      } catch { /* racing close */ }
+    }
+    const onVisible = () => { if (!document.hidden) forceRepaint() }
+    document.addEventListener('visibilitychange', onVisible)
 
     const connect = () => {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws'
       ws = new WebSocket(`${proto}://${location.host}/api/claude/console/${encodeURIComponent(instanceId)}`)
       ws.binaryType = 'arraybuffer'
+      lastActivity = Date.now()
       setState((s) => (s === 'connecting' ? 'connecting' : 'reconnecting'))
 
       ws.onopen = () => {
         retryMs = 500
+        lastActivity = Date.now()
         sendResize()
       }
       ws.onmessage = (ev) => {
+        lastActivity = Date.now()
         if (typeof ev.data === 'string') {
           try {
             const msg = JSON.parse(ev.data) as { t?: string; state?: string; detail?: string }
@@ -114,11 +152,31 @@ export const NativeConsole: React.FC<{ instanceId: string; height: number }> = (
     connect()
     term.focus()
 
+    hbTimer = setInterval(() => {
+      const now = Date.now()
+      if (!ws) return
+      if (ws.readyState === WebSocket.OPEN && now - lastPingAt >= HB_SEND_MS) {
+        lastPingAt = now
+        try { ws.send(JSON.stringify({ t: 'ping' })) } catch { /* racing close */ }
+      }
+      // Half-open: an OPEN/CONNECTING socket silent past STALE_MS is dead. Force a
+      // close (unless we were deliberately displaced) to trigger the reconnect.
+      if (
+        !displaced &&
+        (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) &&
+        now - lastActivity > STALE_MS
+      ) {
+        try { ws.close() } catch { /* already closing */ }
+      }
+    }, 5000)
+
     return () => {
       // Observer-only teardown: closing the WS detaches (backend kills its pty;
       // the dtach session itself lives on).
       closedByUs = true
       if (retryTimer) clearTimeout(retryTimer)
+      if (hbTimer) clearInterval(hbTimer)
+      document.removeEventListener('visibilitychange', onVisible)
       onInput.dispose()
       ro.disconnect()
       try { ws?.close() } catch { /* already closed */ }

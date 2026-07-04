@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Eye, EyeOff, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { KNOWN_SOURCE_TAGS, externalModelSourceSchema, type CatalogModel } from '@gyshell/shared'
-import { modelSourcesApi, type ExternalModelSourceWire, type AvailableModel } from '../../stores/modelSourcesApi'
+import { modelSourcesApi, type ExternalModelSourceWire, type AvailableModel, type SourceBalance } from '../../stores/modelSourcesApi'
 import { hermesApi } from '../../stores/hermesApi'
 import { confirmStore } from '../../stores/confirmStore'
 
@@ -44,6 +44,9 @@ function useClusterSettings() {
 }
 
 const wrap: React.CSSProperties = { padding: '4px 2px', maxWidth: 620 }
+// Full-width variant for panels with wide content (External Services: model sources + the
+// per-model curation table with cost columns). No artificial 620px cap.
+const wrapWide: React.CSSProperties = { padding: '4px 2px', width: '100%' }
 const h: React.CSSProperties = { fontSize: 15, fontWeight: 600, marginBottom: 4 }
 const sub: React.CSSProperties = { fontSize: 12, color: 'var(--fg-muted)', marginBottom: 16 }
 const row: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }
@@ -220,7 +223,7 @@ const fmtCost = (v?: number | null) =>
 
 /** Expandable list of a source's upstream models with enable checkboxes + cost/context columns.
  *  Curate which models are proxied / shown (all checked ⇒ empty allow-list = allow-all). */
-const ModelCuration: React.FC<{ sourceId: string; busy: boolean; onApply: (models: string[]) => void }> = ({ sourceId, busy, onApply }) => {
+const ModelCuration: React.FC<{ sourceId: string; onSelection: (models: string[]) => void }> = ({ sourceId, onSelection }) => {
   const [models, setModels] = useState<AvailableModel[]>([])
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
@@ -242,7 +245,11 @@ const ModelCuration: React.FC<{ sourceId: string; busy: boolean; onApply: (model
   const filtered = q ? models.filter((m) => (m.id + ' ' + (m.name || '')).toLowerCase().includes(q.toLowerCase())) : models
   const toggle = (id: string) => setChecked((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
   const setAllVisible = (on: boolean) => setChecked((s) => { const n = new Set(s); filtered.forEach((m) => on ? n.add(m.id) : n.delete(m.id)); return n })
-  const apply = () => onApply(checked.size === models.length ? [] : [...checked]) // all ⇒ [] = allow-all
+  // Report the current allow-list up to the parent (which owns the Save button, next to the
+  // Curate-models toggle). all checked ⇒ [] = allow-all.
+  useEffect(() => {
+    if (!loading && models.length) onSelection(checked.size === models.length ? [] : [...checked])
+  }, [checked, loading, models.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) return <div style={{ ...sub, padding: '6px 0' }}>Loading models…</div>
   if (err) return <div style={{ fontSize: 12, color: 'var(--danger)', padding: '4px 0' }}>Couldn’t load models: {err}</div>
@@ -255,7 +262,6 @@ const ModelCuration: React.FC<{ sourceId: string; busy: boolean; onApply: (model
         <button style={{ ...btn, padding: '4px 10px', fontSize: 12 }} onClick={() => setAllVisible(true)}>Select all{q ? ' shown' : ''}</button>
         <button style={{ ...btn, padding: '4px 10px', fontSize: 12 }} onClick={() => setAllVisible(false)}>Deselect all{q ? ' shown' : ''}</button>
         <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{checked.size}/{models.length} enabled</span>
-        <button style={{ ...btn, padding: '4px 12px', fontSize: 12 }} disabled={busy} onClick={apply}>Save selection</button>
       </div>
       <div style={{ maxHeight: 300, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -289,11 +295,48 @@ type SourceDraft = ExternalModelSourceWire & { _isNew?: boolean; _dirty?: boolea
 
 const slugify = (v: string) => v.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[-_]+/, '')
 
+/**
+ * Per-transport capability descriptor — keyed on the API *dialect* (`transport`), NOT the
+ * display name, so detection is reliable and adding a future provider-type that needs a
+ * separate usage/cost credential is a one-line entry here. No hardcoded provider list and
+ * `baseUrl` stays free-form; any provider speaking a listed dialect inherits its caps.
+ *   adminKey     — this dialect's balance/usage reporting needs a SEPARATE credential from
+ *                  the chat key (e.g. Anthropic's `sk-ant-admin…` org cost report).
+ *   balanceKind  — how the proxy reports spend for this dialect ('spend' = org cost report
+ *                  via the admin key; 'balance' = remaining credit via the chat key).
+ * Unlisted transports simply get no aux field (the lookup returns undefined).
+ */
+const TRANSPORT_CAPS: Record<
+  string,
+  { adminKey?: boolean; adminKeyLabel?: string; adminKeyTitle?: string; balanceKind?: 'balance' | 'spend' }
+> = {
+  anthropic: {
+    adminKey: true,
+    adminKeyLabel: 'Admin key (sk-ant-admin…) — usage/cost',
+    adminKeyTitle:
+      'Anthropic Admin API key (sk-ant-admin…) — enables org usage/cost tracking. Separate from the chat key.',
+    balanceKind: 'spend',
+  },
+  openai_chat: {
+    balanceKind: 'balance',
+  },
+}
+const capsFor = (transport?: string) => TRANSPORT_CAPS[transport ?? 'openai_chat']
+
 const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => void }> = ({ catalog, onChanged }) => {
   const [rows, setRows] = useState<SourceDraft[]>([])
   const [loaded, setLoaded] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [balances, setBalances] = useState<Record<string, SourceBalance>>({})
+  const [pendingSel, setPendingSel] = useState<Record<string, string[]>>({}) // curation selection per source (for the Save button)
+
+  const loadBalances = () => {
+    modelSourcesApi.balances()
+      .then((bs) => setBalances(Object.fromEntries(bs.map((b) => [b.sourceId, b]))))
+      .catch(() => { /* balances are best-effort */ })
+  }
+  useEffect(() => { loadBalances() }, [])
 
   const load = async () => {
     try {
@@ -320,6 +363,7 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
       baseUrl: d.baseUrl,
       // Blank or still-masked ⇒ omit so the server preserves the stored key.
       apiKey: d.apiKey && !d.apiKey.startsWith('***') ? d.apiKey : undefined,
+      adminApiKey: d.adminApiKey && !d.adminApiKey.startsWith('***') ? d.adminApiKey : undefined,
       discovery: d.discovery ?? 'auto',
       models: overrides.models ?? d.models ?? [],
       enabled: d.enabled !== false,
@@ -391,6 +435,22 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
                 {discoveredCount(d.id)} model{discoveredCount(d.id) === 1 ? '' : 's'} in catalog
               </span>
             )}
+            {!d._isNew && balances[d.id]?.supported && balances[d.id].kind !== 'spend' && typeof balances[d.id].balance === 'number' && (
+              <span
+                title={`Credit remaining. Used $${Number(balances[d.id].totalUsage ?? balances[d.id].usage?.total ?? 0).toFixed(2)}${balances[d.id].usage?.monthly != null ? ` · $${Number(balances[d.id].usage!.monthly).toFixed(2)} this month` : ''}`}
+                style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--success)', background: 'color-mix(in srgb, var(--success) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--success) 30%, transparent)', borderRadius: 5, padding: '2px 7px' }}
+              >
+                💳 ${Number(balances[d.id].balance).toFixed(2)} {balances[d.id].currency || ''}
+              </span>
+            )}
+            {!d._isNew && balances[d.id]?.supported && balances[d.id].kind === 'spend' && typeof balances[d.id].spendMonth === 'number' && (
+              <span
+                title="Org spend this calendar month (Anthropic admin cost report)"
+                style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--accent)', background: 'color-mix(in srgb, var(--accent) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent) 30%, transparent)', borderRadius: 5, padding: '2px 7px' }}
+              >
+                📊 ${Number(balances[d.id].spendMonth).toFixed(2)}/mo
+              </span>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center', flexWrap: 'wrap' }}>
             <input style={{ ...smallInp, flex: 2, minWidth: 220 }} placeholder="base URL, e.g. https://api.deepseek.com/v1" value={d.baseUrl ?? ''} onChange={(ev) => up(i, { baseUrl: ev.target.value })} />
@@ -401,6 +461,16 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
               value={d.apiKey && !d.apiKey.startsWith('***') ? d.apiKey : ''}
               onChange={(ev) => up(i, { apiKey: ev.target.value })}
             />
+            {capsFor(d.transport)?.adminKey && (
+              <input
+                style={{ ...smallInp, flex: 1, minWidth: 180 }}
+                type="password"
+                title={capsFor(d.transport)?.adminKeyTitle}
+                placeholder={d.hasAdminKey ? `admin key set (${d.adminApiKey ?? '***'}) — blank keeps it` : (capsFor(d.transport)?.adminKeyLabel ?? 'Admin key — usage/cost')}
+                value={d.adminApiKey && !d.adminApiKey.startsWith('***') ? d.adminApiKey : ''}
+                onChange={(ev) => up(i, { adminApiKey: ev.target.value })}
+              />
+            )}
             <select style={{ ...smallInp, width: 100 }} title="auto = discover via {baseUrl}/models; list = explicit ids" value={d.discovery ?? 'auto'} onChange={(ev) => up(i, { discovery: ev.target.value as 'auto' | 'list' })}>
               <option value="auto">auto</option>
               <option value="list">list</option>
@@ -416,14 +486,25 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
           )}
           {!d._isNew && d.discovery !== 'list' && (
             <div style={{ marginBottom: 6 }}>
-              <button
-                style={{ ...btn, padding: '4px 10px', fontSize: 12 }}
-                onClick={() => setExpanded((e) => (e === d.id ? null : d.id))}
-              >
-                {expanded === d.id ? '▾' : '▸'} Curate models {d.models && d.models.length ? `(${d.models.length} selected)` : '(all enabled)'}
-              </button>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <button
+                  style={{ ...btn, padding: '4px 10px', fontSize: 12 }}
+                  onClick={() => setExpanded((e) => (e === d.id ? null : d.id))}
+                >
+                  {expanded === d.id ? '▾' : '▸'} Curate models {d.models && d.models.length ? `(${d.models.length} selected)` : '(all enabled)'}
+                </button>
+                {expanded === d.id && (
+                  <button
+                    style={{ ...btn, padding: '4px 12px', fontSize: 12, fontWeight: 600, borderColor: 'var(--accent)', color: 'var(--accent)' }}
+                    disabled={busyId !== null}
+                    onClick={() => void saveRow(i, { models: pendingSel[d.id] ?? d.models ?? [] })}
+                  >
+                    Save selection
+                  </button>
+                )}
+              </div>
               {expanded === d.id && (
-                <ModelCuration sourceId={d.id} busy={busyId !== null} onApply={(models) => void saveRow(i, { models })} />
+                <ModelCuration sourceId={d.id} onSelection={(models) => setPendingSel((p) => ({ ...p, [d.id]: models }))} />
               )}
             </div>
           )}
@@ -497,7 +578,7 @@ export const ExternalServicesPanel: React.FC = () => {
   if (!s) return <div style={sub}>Loading…</div>
   const up = (arr: any[], set: any, i: number, patch: any) => set(arr.map((x, j) => (j === i ? { ...x, ...patch } : x)))
   return (
-    <div style={wrap}>
+    <div style={wrapWide}>
       <div style={h}>External Services</div>
       <div style={sub}>Model API sources (the proxy&apos;s external-model registry) + vector DBs. Stored on CT 152.</div>
 

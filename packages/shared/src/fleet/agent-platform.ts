@@ -60,6 +60,10 @@ export const externalModelSourceSchema = z.object({
   apiKey: z.string().optional(),
   /** Optional alternative: reference a general-vault credential id instead of an inline key. */
   apiKeyRef: z.string().optional(),
+  /** Optional SEPARATE admin/usage key for providers whose balance/usage reporting needs a
+   *  different credential than the chat key (e.g. Anthropic's Admin API key `sk-ant-admin…`
+   *  for org cost/usage reports). Masked like apiKey; used only for the credit/usage tracker. */
+  adminApiKey: z.string().optional(),
   /** 'auto' = discover via `{baseUrl}/models`; 'list' = use `models` verbatim. */
   discovery: z.enum(['auto', 'list']).default('auto'),
   /** explicit model ids (discovery:'list') or an allow-filter over discovered ids (discovery:'auto'). */
@@ -108,21 +112,81 @@ export const hermesAgentSpecSchema = z.object({
   description: z.string().optional(),
   /** catalog model id (tag-prefixed) this agent runs on — routed through the proxy. */
   model: z.string().min(1),
+  /** Ordered fallback model chain — catalog ids tried, in order, when the primary model fails
+   *  with rate-limit/overload/connection errors (Hermes-native failover via `hermes fallback`,
+   *  NOT quality switching). Each routes through the `ailab` proxy, same as `model`; persisted to
+   *  Hermes's `fallback_providers`. Empty = no fallback. */
+  fallback: z.array(z.string()).default([]),
   persona: hermesPersonaSchema.optional(),
   /** enabled Hermes toolsets. */
   toolsets: z.array(z.string()).default([]),
   /** ACP permission mode: 'default' asks before edits; 'accept_edits' auto-allows workspace/tmp. */
   mode: z.enum(['default', 'accept_edits']).default('default'),
-  /** sub-agent governance (req 11 equivalent, now enforced by Hermes). */
+  /** Sub-agent delegation. The parent's native `delegation` toolset spawns child agents of the
+   *  SAME profile (spawning distinct sub-agent PROFILES is shelved — not natively supported
+   *  without ACP-transport plumbing). Maps to Hermes-native `delegation.*`. The key lever is
+   *  `model`: run sub-agents on a different (cheaper/faster) catalog model via the `ailab` proxy
+   *  while the parent keeps its own; empty = inherit the parent's model. */
   subAgents: z
     .object({
-      maxConcurrent: z.number().int().nonnegative().default(0),
-      allowedKinds: z.array(z.string()).default([]),
+      /** sub-agent model override — a catalog id (routed via the ailab proxy); empty = inherit parent. */
+      model: z.string().optional(),
+      /** sub-agent reasoning effort; omitted = inherit parent. */
+      reasoningEffort: z.enum(['xhigh', 'high', 'medium', 'low', 'minimal', 'none']).optional(),
+      /** max parallel children per batch (delegation.max_concurrent_children). 0/omitted = Hermes default. */
+      maxConcurrent: z.number().int().nonnegative().optional(),
+      /** spawn depth: 1 = flat, 2 = orchestrator→leaf, 3+ deeper (delegation.max_spawn_depth). */
+      maxSpawnDepth: z.number().int().nonnegative().optional(),
+      /** auto-approve dangerous commands in sub-agent threads (delegation.subagent_auto_approve; default deny). */
+      autoApproveDangerous: z.boolean().optional(),
+    })
+    .optional(),
+  /** Optional per-agent TTS voice. `provider` is a native Hermes TTS provider (elevenlabs,
+   *  edge, openai, minimax, gemini, mistral); voiceId/modelId are provider-specific (ElevenLabs
+   *  uses tts.<provider>.voice_id / .model_id). Applied via `config set tts.*` + enabling the
+   *  `tts` toolset. The provider's API key is configured ONCE under Provider Services (→ Hermes
+   *  .env), never per agent — the "one entry drives both" split. */
+  tts: z
+    .object({
+      provider: z.string().min(1),
+      voiceId: z.string().optional(),
+      modelId: z.string().optional(),
     })
     .optional(),
   enabled: z.boolean().default(true),
 })
 export type HermesAgentSpec = z.infer<typeof hermesAgentSpecSchema>
+
+// ─── Provider Services (keyed non-model provider registry: TTS etc.) ─────────
+/**
+ * Per-provider descriptor for the Provider Services registry. `envVar` = the Hermes .env key
+ * the API key is written to (so agents using the provider pick it up); `kind` groups it. This
+ * is the extensible map — add one entry per provider; keyed by the provider slug used in both
+ * ProviderService.provider and HermesAgentSpec.tts.provider. (Same pattern as TRANSPORT_CAPS.)
+ */
+export const PROVIDER_SERVICE_CAPS: Record<string, { label: string; envVar: string; kind: 'tts' | 'other' }> = {
+  elevenlabs: { label: 'ElevenLabs', envVar: 'ELEVENLABS_API_KEY', kind: 'tts' },
+}
+
+/**
+ * A configured external provider service (e.g. ElevenLabs TTS). One entry holds the account API
+ * key ONCE; the backend pushes it into Hermes .env (per PROVIDER_SERVICE_CAPS) and it's then
+ * available for AI-Lab's own use — the "one entry drives both" split. Distinct from
+ * ExternalModelSource (chat/completions models behind the proxy); these are non-model creds.
+ */
+export const providerServiceSchema = z.object({
+  id: slugSchema,
+  /** provider slug — a key in PROVIDER_SERVICE_CAPS (e.g. 'elevenlabs'). */
+  provider: z.string().min(1),
+  displayName: z.string().min(1),
+  /** API key. Masked end-to-end like model sources: GET returns `***<last4>` + hasKey; a blank
+   *  or still-masked value on save preserves the stored key. */
+  apiKey: z.string().optional(),
+  enabled: z.boolean().default(true),
+})
+export type ProviderService = z.infer<typeof providerServiceSchema>
+/** GET shape: contract fields with the key masked + a hasKey flag. */
+export type ProviderServiceWire = ProviderService & { hasKey?: boolean }
 
 // ─── Normalized ACP stream events ────────────────────────────────────────────
 /**
