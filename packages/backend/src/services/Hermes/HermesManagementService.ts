@@ -193,6 +193,17 @@ export class HermesManagementService {
       await this.hermes(['-p', id, 'config', 'set', 'agent.personality', spec.persona.personality])
     }
 
+    // Per-agent TTS voice. `config set` handles these scalar dot-keys directly (unlike the
+    // fallback list). The provider's API key is set once globally under Provider Services
+    // (Hermes .env), not here. Enable the `tts` toolset so the agent actually speaks.
+    if (spec.tts?.provider) {
+      const p = spec.tts.provider
+      await this.hermes(['-p', id, 'config', 'set', 'tts.provider', p])
+      if (spec.tts.voiceId) await this.hermes(['-p', id, 'config', 'set', `tts.${p}.voice_id`, spec.tts.voiceId])
+      if (spec.tts.modelId) await this.hermes(['-p', id, 'config', 'set', `tts.${p}.model_id`, spec.tts.modelId])
+      await this.hermes(['-p', id, 'tools', 'enable', 'tts'])
+    }
+
     // Persist the applied spec (source of truth for read-back / edit; Hermes YAML is lossy).
     if (this.cfg.specsFile) {
       const specs = this.loadSpecs()

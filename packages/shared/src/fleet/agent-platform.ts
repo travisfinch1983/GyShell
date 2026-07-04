@@ -129,6 +129,18 @@ export const hermesAgentSpecSchema = z.object({
       allowedKinds: z.array(z.string()).default([]),
     })
     .optional(),
+  /** Optional per-agent TTS voice. `provider` is a native Hermes TTS provider (elevenlabs,
+   *  edge, openai, minimax, gemini, mistral); voiceId/modelId are provider-specific (ElevenLabs
+   *  uses tts.<provider>.voice_id / .model_id). Applied via `config set tts.*` + enabling the
+   *  `tts` toolset. The provider's API key is configured ONCE under Provider Services (→ Hermes
+   *  .env), never per agent — the "one entry drives both" split. */
+  tts: z
+    .object({
+      provider: z.string().min(1),
+      voiceId: z.string().optional(),
+      modelId: z.string().optional(),
+    })
+    .optional(),
   enabled: z.boolean().default(true),
 })
 export type HermesAgentSpec = z.infer<typeof hermesAgentSpecSchema>
