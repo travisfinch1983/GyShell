@@ -58,6 +58,19 @@ export const NativeConsole: React.FC<{ instanceId: string; height: number }> = (
     let retryMs = 500
     let retryTimer: ReturnType<typeof setTimeout> | null = null
 
+    // Heartbeat / half-open detection. A dropped TCP connection often leaves the
+    // browser WebSocket stuck in OPEN with no onclose ever firing (wifi blip,
+    // laptop sleep, an idle intermediary reaping the socket) — the terminal just
+    // freezes. Claude is idle-heavy, so "no output" ≠ dead; instead we send an
+    // app-level ping and expect a pong. Any frame (output OR pong) refreshes
+    // lastActivity; if nothing arrives for STALE_MS we force-close, which fires
+    // onclose → the existing reconnect path (a fresh dtach redraw, no replay).
+    let lastActivity = Date.now()
+    let lastPingAt = 0
+    let hbTimer: ReturnType<typeof setInterval> | null = null
+    const HB_SEND_MS = 10000 // app-ping cadence
+    const STALE_MS = 30000 // no traffic (incl. pong) this long ⇒ connection is dead
+
     const sendResize = () => {
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'resize', cols: term.cols, rows: term.rows }))
     }
@@ -66,13 +79,16 @@ export const NativeConsole: React.FC<{ instanceId: string; height: number }> = (
       const proto = location.protocol === 'https:' ? 'wss' : 'ws'
       ws = new WebSocket(`${proto}://${location.host}/api/claude/console/${encodeURIComponent(instanceId)}`)
       ws.binaryType = 'arraybuffer'
+      lastActivity = Date.now()
       setState((s) => (s === 'connecting' ? 'connecting' : 'reconnecting'))
 
       ws.onopen = () => {
         retryMs = 500
+        lastActivity = Date.now()
         sendResize()
       }
       ws.onmessage = (ev) => {
+        lastActivity = Date.now()
         if (typeof ev.data === 'string') {
           try {
             const msg = JSON.parse(ev.data) as { t?: string; state?: string; detail?: string }
@@ -114,11 +130,30 @@ export const NativeConsole: React.FC<{ instanceId: string; height: number }> = (
     connect()
     term.focus()
 
+    hbTimer = setInterval(() => {
+      const now = Date.now()
+      if (!ws) return
+      if (ws.readyState === WebSocket.OPEN && now - lastPingAt >= HB_SEND_MS) {
+        lastPingAt = now
+        try { ws.send(JSON.stringify({ t: 'ping' })) } catch { /* racing close */ }
+      }
+      // Half-open: an OPEN/CONNECTING socket silent past STALE_MS is dead. Force a
+      // close (unless we were deliberately displaced) to trigger the reconnect.
+      if (
+        !displaced &&
+        (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) &&
+        now - lastActivity > STALE_MS
+      ) {
+        try { ws.close() } catch { /* already closing */ }
+      }
+    }, 5000)
+
     return () => {
       // Observer-only teardown: closing the WS detaches (backend kills its pty;
       // the dtach session itself lives on).
       closedByUs = true
       if (retryTimer) clearTimeout(retryTimer)
+      if (hbTimer) clearInterval(hbTimer)
       onInput.dispose()
       ro.disconnect()
       try { ws?.close() } catch { /* already closed */ }

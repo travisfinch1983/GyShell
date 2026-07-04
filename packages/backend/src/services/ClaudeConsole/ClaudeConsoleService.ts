@@ -154,6 +154,11 @@ export class ClaudeConsoleService {
     this.sessions.set(id, session)
     this.sendStatus(ws, 'attached', socketForInstance(inst))
 
+    // Liveness is handled without a native WS ping (that would need ws.ping/terminate,
+    // which the type-only `ws` import can't see): the client drives an app-level
+    // ping/pong (below) for its own half-open detection, and a genuinely dead attach
+    // is reaped server-side by SSH ServerAliveInterval (~45s) → pty exit → cleanup.
+
     // pty → browser (raw bytes as binary frames)
     pty.onData((data) => {
       if (ws.readyState === ws.OPEN) ws.send(Buffer.from(data, 'utf8'), { binary: true })
@@ -178,6 +183,10 @@ export class ClaudeConsoleService {
           pty.resize(Math.max(2, Math.min(500, msg.cols!)), Math.max(2, Math.min(300, msg.rows!)))
         } else if (msg.t === 'input' && typeof msg.data === 'string') {
           pty.write(msg.data)
+        } else if (msg.t === 'ping') {
+          // App-level liveness: give the client a frame it can see (browser auto-pong
+          // is invisible to JS), so an idle-but-healthy console isn't mistaken for dead.
+          if (ws.readyState === ws.OPEN) { try { ws.send(JSON.stringify({ t: 'pong' })) } catch { /* racing close */ } }
         }
       } catch { /* ignore malformed control frames — never guess at input */ }
     })
