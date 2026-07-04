@@ -84,6 +84,16 @@ export default defineConfig({
         ws: true,
         rewrite: (path) => path.replace(/^\/dash/, '') || '/',
       },
+      // Addon modules (Addons tab) — self-contained backends bundled under
+      // /opt/ai-lab/addons/<id>/, supervised by systemd, served on localhost.
+      // Same-origin /addons/<id> → the addon's local port (rule #1). Upscaler:
+      // ailab-addon-upscaler.service @ 127.0.0.1:8090, prefix-stripped.
+      '/addons/upscaler': {
+        target: process.env.ADDON_UPSCALER_URL || 'http://127.0.0.1:8090',
+        changeOrigin: true,
+        ws: true,
+        rewrite: (path) => path.replace(/^\/addons\/upscaler/, '') || '/',
+      },
       // FileBrowser Quantum (File Manager tab) — sidecar on :8082 in this container, browsing the mounted
       // NAS pools (/nas). Configured with baseURL=/files so it SERVES under /files (no rewrite — keep the
       // prefix). Same-origin iframe, so X-Frame-Options:SAMEORIGIN (if any) permits it. ws for live updates.
