@@ -6,8 +6,8 @@
  * Module singleton, same pattern as ClaudeInstancesStore.
  */
 import { makeAutoObservable, runInAction } from 'mobx'
-import type { CatalogModel, HermesAgentSpec } from '@gyshell/shared'
-import { hermesApi } from './hermesApi'
+import type { HermesAgentSpec } from '@gyshell/shared'
+import { hermesApi, type CatalogModelWithCaps } from './hermesApi'
 
 class HermesAgentsStore {
   agents: string[] = []
@@ -15,7 +15,7 @@ class HermesAgentsStore {
   capabilities: Record<string, { model?: string; visionCapable?: boolean }> = {}
   /** id → spec from read-back; null = route answered nothing (spec unknown). */
   specs = new Map<string, HermesAgentSpec | null>()
-  catalog: CatalogModel[] = []
+  catalog: CatalogModelWithCaps[] = []
   loaded = false
   catalogLoaded = false
   busyIds = new Set<string>()

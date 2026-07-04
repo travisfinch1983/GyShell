@@ -436,3 +436,13 @@
   font-size: 12px;
   color: var(--success);
 }
+
+.capBadge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  line-height: 1;
+  margin-left: 2px;
+  cursor: default;
+  filter: saturate(0.85);
+}

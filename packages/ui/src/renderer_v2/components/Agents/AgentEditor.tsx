@@ -13,7 +13,8 @@ import {
   Wrench,
   type LucideIcon,
 } from 'lucide-react'
-import { hermesAgentSpecSchema, type CatalogModel, type HermesAgentSpec } from '@gyshell/shared'
+import { hermesAgentSpecSchema, type HermesAgentSpec } from '@gyshell/shared'
+import type { CatalogModelWithCaps, ModelCapabilities } from '../../stores/hermesApi'
 import { hermesAgentsStore as store } from '../../stores/HermesAgentsStore'
 import { hermesApi } from '../../stores/hermesApi'
 import { confirmStore } from '../../stores/confirmStore'
@@ -24,6 +25,20 @@ import styles from './Agents.module.scss'
 export const TagBadge: React.FC<{ tag: string }> = ({ tag }) => (
   <span className={`${styles.tagBadge} ${tag === 'AI-LAB' ? styles.tagLocal : styles.tagExternal}`}>{tag}</span>
 )
+
+/** Compact option-label suffix: 👁 vision · 🔊 audio (text is the implied default). */
+export const capGlyphs = (c?: ModelCapabilities): string => `${c?.vision ? ' 👁' : ''}${c?.audio ? ' 🔊' : ''}`
+
+/** Proper badges (with tooltips) for real DOM contexts — next to pickers/rows. */
+export const CapBadges: React.FC<{ caps?: ModelCapabilities }> = ({ caps }) => {
+  if (!caps?.vision && !caps?.audio) return null
+  return (
+    <>
+      {caps.vision && <span className={styles.capBadge} title="Vision — can see images/screenshots (enables page-aware screenshots in chat)">👁</span>}
+      {caps.audio && <span className={styles.capBadge} title="Audio — can hear/process audio input">🔊</span>}
+    </>
+  )
+}
 
 type SectionKey = 'identity' | 'model' | 'persona' | 'tools' | 'channels' | 'schedules'
 
@@ -94,7 +109,7 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, editId, onS
   const touch = () => { setDirty(true); setMsg(null) }
 
   // Keep a stale model selectable when the catalog no longer lists it (edit flow).
-  const models = useMemo<CatalogModel[]>(() => {
+  const models = useMemo<CatalogModelWithCaps[]>(() => {
     if (model && !store.catalog.some((m) => m.id === model)) {
       return [{ id: model, tag: 'AI-LAB', sourceId: 'ai-lab', upstreamModel: model, displayName: `${model} (not in catalog)`, kind: 'local' }, ...store.catalog]
     }
@@ -293,11 +308,12 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, editId, onS
                     </option>
                     {models.map((m) => (
                       <option key={m.id} value={m.id}>
-                        [{m.tag}] {m.displayName}
+                        [{m.tag}] {m.displayName}{capGlyphs(m.capabilities)}
                       </option>
                     ))}
                   </select>
                   {model && <TagBadge tag={models.find((m) => m.id === model)?.tag ?? 'AI-LAB'} />}
+                  {model && <CapBadges caps={models.find((m) => m.id === model)?.capabilities} />}
                 </div>
               </div>
               <div className={styles.fieldCol}>
@@ -327,6 +343,7 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, editId, onS
                 <div key={fid} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0', fontSize: 12 }}>
                   <span className={styles.mono} style={{ color: 'var(--fg-muted)', width: 16 }}>{i + 1}.</span>
                   <span className={styles.mono} style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{fid}</span>
+                  <CapBadges caps={models.find((m) => m.id === fid)?.capabilities} />
                   <button className={styles.btn} disabled={i === 0} title="Move up" onClick={() => { const f = [...fallback]; f.splice(i - 1, 0, f.splice(i, 1)[0]); setFallback(f); touch() }}>↑</button>
                   <button className={styles.btn} disabled={i === fallback.length - 1} title="Move down" onClick={() => { const f = [...fallback]; f.splice(i + 1, 0, f.splice(i, 1)[0]); setFallback(f); touch() }}>↓</button>
                   <button className={styles.btnDanger} title="Remove" onClick={() => { setFallback(fallback.filter((x) => x !== fid)); touch() }}>×</button>
@@ -353,7 +370,7 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, editId, onS
                       : 'no more catalog models to add'}
                   </option>
                   {models.filter((m) => m.id !== model && !fallback.includes(m.id)).map((m) => (
-                    <option key={m.id} value={m.id}>[{m.tag}] {m.displayName}</option>
+                    <option key={m.id} value={m.id}>[{m.tag}] {m.displayName}{capGlyphs(m.capabilities)}</option>
                   ))}
                 </select>
               </div>
@@ -368,7 +385,7 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, editId, onS
                 <label className={styles.label}>Sub-agent model</label>
                 <select className={`${styles.input} ${styles.mono}`} value={sub.model} onChange={(e) => { setSub({ ...sub, model: e.target.value }); touch() }}>
                   <option value="">inherit parent</option>
-                  {models.map((m) => <option key={m.id} value={m.id}>[{m.tag}] {m.displayName}</option>)}
+                  {models.map((m) => <option key={m.id} value={m.id}>[{m.tag}] {m.displayName}{capGlyphs(m.capabilities)}</option>)}
                 </select>
               </div>
               <div className={styles.fieldCol}>

@@ -13,6 +13,10 @@
  */
 import type { CatalogModel, HermesAgentSpec } from '@gyshell/shared'
 
+export interface ModelCapabilities { text?: boolean; vision?: boolean; audio?: boolean }
+/** Catalog entry + the per-model capability enrichment (rides on /llm/v1/models). */
+export type CatalogModelWithCaps = CatalogModel & { capabilities?: ModelCapabilities }
+
 function bridge(): any {
   return (window as any).gyshell?.cluster
 }
@@ -99,18 +103,27 @@ export const hermesApi = {
    * falls back to mapping the raw OpenAI models list to untagged local entries
    * (local canonical ids stay untagged by design — metadata carries the tag).
    */
-  async listCatalog(): Promise<CatalogModel[]> {
+  async listCatalog(): Promise<CatalogModelWithCaps[]> {
+    // Capabilities ride on /llm/v1/models (same canonical ids as the catalog) —
+    // fetch both and join, so pickers can badge vision/audio per model.
+    let caps = new Map<string, ModelCapabilities>()
+    let rawData: Array<{ id?: string; capabilities?: ModelCapabilities }> = []
+    try {
+      const raw = await bridge().request('GET', '/api/proxy/llm/v1/models')
+      rawData = raw?.data ?? []
+      caps = new Map(rawData.filter((m) => m.id && m.capabilities).map((m) => [m.id as string, m.capabilities as ModelCapabilities]))
+    } catch { /* capabilities are enrichment — never block the picker */ }
     try {
       const r = await bridge().request('GET', '/api/proxy/llm/catalog')
-      const models = (Array.isArray(r) ? r : r?.data ?? r?.models ?? r?.catalog) as CatalogModel[] | undefined
-      if (Array.isArray(models) && models.length) return models
+      const models = (Array.isArray(r) ? r : r?.data ?? r?.models ?? r?.catalog) as CatalogModelWithCaps[] | undefined
+      if (Array.isArray(models) && models.length) {
+        return models.map((m) => ({ ...m, capabilities: m.capabilities ?? caps.get(m.id) ?? caps.get(m.upstreamModel) }))
+      }
     } catch {
-      /* catalog route not landed yet — fall through */
+      /* catalog route unreachable — fall through to the raw list */
     }
-    const raw = await bridge().request('GET', '/api/proxy/llm/v1/models')
-    const data: Array<{ id?: string }> = raw?.data ?? []
-    return data
-      .filter((m): m is { id: string } => typeof m.id === 'string' && m.id.length > 0)
+    return rawData
+      .filter((m): m is { id: string; capabilities?: ModelCapabilities } => typeof m.id === 'string' && m.id.length > 0)
       .map((m) => ({
         id: m.id,
         tag: 'AI-LAB',
@@ -118,6 +131,7 @@ export const hermesApi = {
         upstreamModel: m.id,
         displayName: m.id,
         kind: 'local' as const,
+        capabilities: m.capabilities,
       }))
   },
 }
