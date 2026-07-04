@@ -1,5 +1,6 @@
 import type React from 'react'
 import { Blocks, ImageUpscale, type LucideIcon } from 'lucide-react'
+import { DashboardView } from './upscaler/DashboardView'
 
 /**
  * Addon registry — SELF-CONTAINED addon modules as Addons-tab sub-tabs.
@@ -43,9 +44,7 @@ export const ADDON_ICONS: Record<string, LucideIcon> = {
 
 /** Native view components, keyed `${addonId}.${viewId}`. One line per view. */
 export const NATIVE_VIEWS: Record<string, React.ComponentType> = {
-  // Upscaler's 5 native views (dashboard/browse/history/sync + compare detail)
-  // register here once built against claude1's JSON contract — HELD until the
-  // contract lands (missing ids render an honest pending note, not a blank).
+  'upscaler.dashboard': DashboardView,
 }
 
 export const ADDONS: AddonManifest[] = [

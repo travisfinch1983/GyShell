@@ -1,0 +1,177 @@
+/* Shared styles for the upscaler addon's native views (AI-Lab tokens only). */
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px;
+  font-size: 13px;
+  color: var(--fg);
+  max-width: 1100px;
+}
+
+.headRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  background: var(--control-bg);
+  color: var(--fg-muted);
+}
+
+.badgeOk { color: var(--success); border-color: color-mix(in srgb, var(--success) 40%, transparent); }
+.badgeErr { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.badgeKind { text-transform: uppercase; font-size: 10px; letter-spacing: 0.04em; }
+
+.spacer { flex: 1; }
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--control-bg);
+  padding: 12px 14px;
+}
+
+.cardTitle {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.cardSub {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  margin-bottom: 10px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+
+  th {
+    text-align: left;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--fg-faint);
+    padding: 3px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  td {
+    padding: 5px 8px;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+    vertical-align: middle;
+  }
+
+  tr:last-child td { border-bottom: none; }
+}
+
+.mono { font-family: var(--font-mono, monospace); }
+.dim { color: var(--fg-muted); font-size: 12px; }
+.faint { color: var(--fg-faint); font-size: 11px; }
+.ok { color: var(--success); }
+.err { color: var(--danger); }
+
+.btn,
+.btnPrimary,
+.btnDanger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--app-bg);
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+
+  &:disabled { opacity: 0.5; cursor: default; }
+  &:hover:not(:disabled) { border-color: var(--fg-faint); }
+}
+
+.btnPrimary { border-color: var(--accent); color: var(--accent); }
+.btnDanger { border-color: color-mix(in srgb, var(--danger) 45%, transparent); color: var(--danger); }
+
+.input,
+.select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--app-bg);
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px 14px;
+  margin-bottom: 10px;
+}
+
+.fieldCol {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+
+  > span { font-size: 11px; color: var(--fg-muted); }
+}
+
+.gpuGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
+  margin: 6px 0 10px;
+}
+
+.gpuCard {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--app-bg);
+  cursor: pointer;
+  font-size: 12px;
+
+  &.on { border-color: var(--accent); }
+}
+
+.addRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.msg { font-size: 12px; color: var(--fg-muted); }
+.msgErr { font-size: 12px; color: var(--danger); }
+
+.statRow {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  min-width: 90px;
+
+  b { font-size: 17px; font-family: var(--font-mono, monospace); }
+  span { font-size: 10.5px; color: var(--fg-faint); text-transform: uppercase; letter-spacing: 0.05em; }
+}
