@@ -11,7 +11,9 @@ import styles from './Addons.module.scss'
  */
 const AddonView: React.FC<{ addon: AddonDef; visible: boolean }> = ({ addon, visible }) => {
   const [inner, setInner] = useState(addon.subtabs?.[0]?.id ?? null)
-  const src = addon.subtabs?.find((s) => s.id === inner)?.path ?? addon.path
+  const view = addon.subtabs?.find((s) => s.id === inner)
+  const Component = view?.component ?? (view?.path ? undefined : addon.component)
+  const src = view?.path ?? (view?.component ? undefined : addon.path)
   return (
     <div className={styles.addonView} style={{ display: visible ? 'flex' : 'none' }}>
       {addon.subtabs && addon.subtabs.length > 0 && (
@@ -23,7 +25,13 @@ const AddonView: React.FC<{ addon: AddonDef; visible: boolean }> = ({ addon, vis
           ))}
         </div>
       )}
-      <iframe key={src} className={styles.frame} src={src} title={addon.label} />
+      {Component ? (
+        <div className={styles.native}><Component /></div>
+      ) : src ? (
+        <iframe key={src} className={styles.frame} src={src} title={addon.label} />
+      ) : (
+        <div className={styles.dim} style={{ padding: 16 }}>addon "{addon.id}": no component or path configured</div>
+      )}
     </div>
   )
 }

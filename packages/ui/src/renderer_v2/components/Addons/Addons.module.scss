@@ -65,3 +65,9 @@
   border: none;
   background: var(--app-bg);
 }
+
+.native {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}

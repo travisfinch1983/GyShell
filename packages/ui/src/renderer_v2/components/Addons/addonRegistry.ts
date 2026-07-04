@@ -1,3 +1,4 @@
+import type React from 'react'
 import { ImageUpscale, type LucideIcon } from 'lucide-react'
 
 /**
@@ -21,16 +22,21 @@ import { ImageUpscale, type LucideIcon } from 'lucide-react'
 export interface AddonSubtab {
   id: string
   label: string
-  /** same-origin path for this inner view (usually `${addon.path}<page>`). */
-  path: string
+  /** iframe mode: same-origin path for this inner view (usually `${addon.path}<page>`). */
+  path?: string
+  /** native mode: a React component rendered directly (blends with AI-Lab styling). */
+  component?: React.ComponentType
 }
 
 export interface AddonDef {
   id: string
   label: string
   Icon?: LucideIcon
-  /** same-origin proxied root of the addon UI: `/addons/<id>/`. */
-  path: string
+  /** iframe mode: same-origin proxied root of the addon UI: `/addons/<id>/`. */
+  path?: string
+  /** native mode: React component for the addon's root view. An addon provides
+   *  `component` (native), `path` (iframe), or subtabs mixing both per view. */
+  component?: React.ComponentType
   subtabs?: AddonSubtab[]
 }
 
