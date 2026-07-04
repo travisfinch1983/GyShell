@@ -1,37 +1,56 @@
 import React, { useState } from 'react'
-import { Blocks } from 'lucide-react'
-import { ADDONS, type AddonDef } from './addonRegistry'
+import { ADDONS, ADDON_ICONS, NATIVE_VIEWS, type AddonManifest } from './addonRegistry'
 import styles from './Addons.module.scss'
 
 /**
- * Addons primary tab — hosts external webUIs as sub-tabs (registry-driven; see
- * addonRegistry.ts for how to add one). Addons tab → addon sub-tab → optional
- * inner sub-tabs when the addon UI is itself multi-page. Iframes stay mounted
- * once visited (display:none swap) so addon state survives tab switches.
+ * Addons primary tab — manifest-driven (see addonRegistry.ts for the ratified
+ * schema). Addons tab → addon sub-tab → inner view tabs; each view is either a
+ * native React component (NATIVE_VIEWS lookup) or a same-origin embed. Views
+ * stay mounted once visited (display swap) so addon state survives switches.
  */
-const AddonView: React.FC<{ addon: AddonDef; visible: boolean }> = ({ addon, visible }) => {
-  const [inner, setInner] = useState(addon.subtabs?.[0]?.id ?? null)
-  const view = addon.subtabs?.find((s) => s.id === inner)
-  const Component = view?.component ?? (view?.path ? undefined : addon.component)
-  const src = view?.path ?? (view?.component ? undefined : addon.path)
+const AddonView: React.FC<{ addon: AddonManifest; visible: boolean }> = ({ addon, visible }) => {
+  const [inner, setInner] = useState(addon.views[0]?.id ?? '')
+  const [visitedViews, setVisitedViews] = useState<Set<string>>(new Set(inner ? [inner] : []))
+  const pickView = (id: string) => {
+    setInner(id)
+    setVisitedViews((v) => (v.has(id) ? v : new Set(v).add(id)))
+  }
+
+  const renderView = (viewId: string) => {
+    const view = addon.views.find((v) => v.id === viewId)
+    if (!view) return null
+    if (view.kind === 'native') {
+      const Component = NATIVE_VIEWS[`${addon.id}.${view.id}`]
+      return Component ? (
+        <div className={styles.native}><Component /></div>
+      ) : (
+        <div className={styles.dim} style={{ padding: 16 }}>
+          {addon.label} · {view.label}: native view pending (component not registered yet).
+        </div>
+      )
+    }
+    const src = view.path?.startsWith('/') ? view.path : `${addon.basePath}/${view.path ?? ''}`
+    return <iframe className={styles.frame} src={src} title={`${addon.label} ${view.label}`} />
+  }
+
   return (
     <div className={styles.addonView} style={{ display: visible ? 'flex' : 'none' }}>
-      {addon.subtabs && addon.subtabs.length > 0 && (
+      {addon.views.length > 1 && (
         <div className={styles.innerTabs}>
-          {addon.subtabs.map((s) => (
-            <button key={s.id} className={`${styles.tab} ${inner === s.id ? styles.tabActive : ''}`} onClick={() => setInner(s.id)}>
-              {s.label}
+          {addon.views.map((v) => (
+            <button key={v.id} className={`${styles.tab} ${inner === v.id ? styles.tabActive : ''}`} onClick={() => pickView(v.id)}>
+              {v.label}
             </button>
           ))}
         </div>
       )}
-      {Component ? (
-        <div className={styles.native}><Component /></div>
-      ) : src ? (
-        <iframe key={src} className={styles.frame} src={src} title={addon.label} />
-      ) : (
-        <div className={styles.dim} style={{ padding: 16 }}>addon "{addon.id}": no component or path configured</div>
-      )}
+      <div className={styles.body}>
+        {addon.views.filter((v) => visitedViews.has(v.id)).map((v) => (
+          <div key={v.id} className={styles.addonView} style={{ display: inner === v.id ? 'flex' : 'none' }}>
+            {renderView(v.id)}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -49,7 +68,7 @@ export const AddonsPanel: React.FC = () => {
     <div className={styles.panel}>
       <div className={styles.tabs}>
         {ADDONS.map((a) => {
-          const Icon = a.Icon ?? Blocks
+          const Icon = ADDON_ICONS[a.icon ?? 'default'] ?? ADDON_ICONS.default
           return (
             <button key={a.id} className={`${styles.tab} ${active === a.id ? styles.tabActive : ''}`} onClick={() => pick(a.id)}>
               <Icon size={13} /> {a.label}

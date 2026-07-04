@@ -1,52 +1,67 @@
 import type React from 'react'
-import { ImageUpscale, type LucideIcon } from 'lucide-react'
+import { Blocks, ImageUpscale, type LucideIcon } from 'lucide-react'
 
 /**
- * Addon registry — SELF-CONTAINED addon modules folded into AI-Lab as
- * Addons-tab sub-tabs (Travis architecture 2026-07-04).
+ * Addon registry — SELF-CONTAINED addon modules as Addons-tab sub-tabs.
+ * Schema ratified with claude1 (2026-07-04):
  *
- * An addon lives in /opt/ai-lab/addons/<id>/ { app/, .venv/, data/, addon.json }
- * on CT152; the AI-Lab backend supervises its local server and proxies its UI
- * SAME-ORIGIN at `/addons/<id>/` (no LAN hosts, no cross-host iframes). The UI
- * only ever consumes that path.
+ *  - MANIFEST (data-serializable — mirrors the module's addon.json at
+ *    /opt/ai-lab/addons/<id>/): { id, label, icon?, basePath, views:
+ *    [{id, label, kind: 'native'|'embed', path?}] }. The backend supervises
+ *    the addon's local server and proxies it SAME-ORIGIN under basePath.
+ *  - NATIVE_VIEWS: client-side lookup `${addonId}.${viewId}` → React
+ *    component (a manifest can't carry code). Embed addons are pure data;
+ *    native addons = one manifest + ONE lookup line per view.
  *
- * ADDING AN ADDON = one entry here (claude2: zero framework edits — the panel
- * renders whatever this array holds). This static registry is the interim
- * source of truth; it swaps to the backend's addon.json manifest list when
- * claude1's manifest endpoint lands (same shape by design).
- *
- * `subtabs`: for addon UIs that are themselves tabbed/multi-page — each inner
- * sub-tab is a different path under the same `/addons/<id>/` root. Omit for
- * single-page addons.
+ * claude2: adding an embed addon = one manifest entry here (zero framework
+ * edits). Adding a native addon = manifest entry + one NATIVE_VIEWS line per
+ * view. This static list swaps to the backend's addon.json endpoint when it
+ * lands — same shape by design.
  */
-export interface AddonSubtab {
+export interface AddonViewDef {
   id: string
   label: string
-  /** iframe mode: same-origin path for this inner view (usually `${addon.path}<page>`). */
+  kind: 'native' | 'embed'
+  /** embed views: same-origin path (absolute, or relative to basePath). */
   path?: string
-  /** native mode: a React component rendered directly (blends with AI-Lab styling). */
-  component?: React.ComponentType
 }
 
-export interface AddonDef {
+export interface AddonManifest {
   id: string
   label: string
-  Icon?: LucideIcon
-  /** iframe mode: same-origin proxied root of the addon UI: `/addons/<id>/`. */
-  path?: string
-  /** native mode: React component for the addon's root view. An addon provides
-   *  `component` (native), `path` (iframe), or subtabs mixing both per view. */
-  component?: React.ComponentType
-  subtabs?: AddonSubtab[]
+  /** icon slug (data-serializable) — mapped to lucide via ADDON_ICONS. */
+  icon?: string
+  /** same-origin proxied root of the addon module: `/addons/<id>`. */
+  basePath: string
+  views: AddonViewDef[]
 }
 
-export const ADDONS: AddonDef[] = [
+export const ADDON_ICONS: Record<string, LucideIcon> = {
+  upscale: ImageUpscale,
+  default: Blocks,
+}
+
+/** Native view components, keyed `${addonId}.${viewId}`. One line per view. */
+export const NATIVE_VIEWS: Record<string, React.ComponentType> = {
+  // Upscaler's 5 native views (dashboard/browse/history/sync + compare detail)
+  // register here once built against claude1's JSON contract — HELD until the
+  // contract lands (missing ids render an honest pending note, not a blank).
+}
+
+export const ADDONS: AddonManifest[] = [
   {
     id: 'upscaler',
     label: 'Upscaler',
-    Icon: ImageUpscale,
-    // Module at /opt/ai-lab/addons/upscaler/ (FastAPI/uvicorn, local port),
-    // supervised + proxied by the backend — claude1's half, in flight.
-    path: '/addons/upscaler/',
+    icon: 'upscale',
+    // Bundled module at /opt/ai-lab/addons/upscaler (FastAPI, backend-supervised);
+    // JSON API under /addons/upscaler/api/* — claude1's half, in flight.
+    basePath: '/addons/upscaler',
+    views: [
+      { id: 'dashboard', label: 'Dashboard', kind: 'native' },
+      { id: 'browse', label: 'Browse', kind: 'native' },
+      { id: 'history', label: 'History', kind: 'native' },
+      { id: 'sync', label: 'Sync', kind: 'native' },
+      // 'compare' is a detail view reached from history/browse (overlay), not a tab.
+    ],
   },
 ]
