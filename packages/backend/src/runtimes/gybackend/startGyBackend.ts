@@ -190,6 +190,7 @@ export async function startGyBackend(): Promise<void> {
     host: process.env.HERMES_HOST || '10.0.0.236',
     sshKeyPath: process.env.AILAB_SSH_KEY || path.join(dataDir, 'ssh', 'id_ed25519'),
     specsFile: path.join(dataDir, 'hermes-agent-specs.json'),
+    providerServicesFile: path.join(dataDir, 'hermes-provider-services.json'),
   })
   // Autonomous, headless inter-agent path: Hermes agents as first-class bus participants.
   // Gated by the `autonomousRoutingEnabled` kill switch (default OFF) — inert until enabled.

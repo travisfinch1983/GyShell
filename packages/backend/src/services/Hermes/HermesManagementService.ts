@@ -2,7 +2,8 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname } from 'path'
-import type { HermesAgentSpec } from '@gyshell/shared'
+import type { HermesAgentSpec, ProviderService } from '@gyshell/shared'
+import { PROVIDER_SERVICE_CAPS } from '@gyshell/shared'
 
 const execFileAsync = promisify(execFile)
 
@@ -31,6 +32,9 @@ export interface HermesManagementConfig {
   /** JSON file (on the AI-Lab backend) where applied HermesAgentSpecs are persisted for
    *  read-back / edit (reconstructing a spec from Hermes profile YAML is lossy). */
   specsFile?: string
+  /** JSON file where Provider Services entries (ElevenLabs etc. — keyed non-model providers)
+   *  are persisted. Keys are stored here; the effective secret is pushed to Hermes .env. */
+  providerServicesFile?: string
 }
 
 /** Single-quote a string for safe embedding in a remote shell command. */
@@ -68,6 +72,56 @@ export class HermesManagementService {
   /** The persisted HermesAgentSpec for an agent, or undefined (never applied via AI-Lab). */
   getSpec(agentId: string): HermesAgentSpec | undefined {
     return this.loadSpecs()[agentId]
+  }
+
+  // ── Provider Services registry (keyed non-model providers → Hermes .env) ──────
+  private loadProviderServices(): ProviderService[] {
+    if (!this.cfg.providerServicesFile) return []
+    try {
+      const arr = JSON.parse(readFileSync(this.cfg.providerServicesFile, 'utf8'))
+      return Array.isArray(arr) ? (arr as ProviderService[]) : []
+    } catch {
+      return []
+    }
+  }
+
+  private saveProviderServicesFile(list: ProviderService[]): void {
+    if (!this.cfg.providerServicesFile) return
+    mkdirSync(dirname(this.cfg.providerServicesFile), { recursive: true })
+    writeFileSync(this.cfg.providerServicesFile, JSON.stringify(list, null, 2))
+  }
+
+  /** All stored Provider Services entries, RAW (keys included). Caller masks for the wire. */
+  getProviderServices(): ProviderService[] {
+    return this.loadProviderServices()
+  }
+
+  /**
+   * Upsert a Provider Services entry (by id) and reconcile its secret in Hermes .env per
+   * PROVIDER_SERVICE_CAPS: push the key when enabled + present, else clear it (disable removes
+   * the secret; re-enable re-pushes from the stored key). Providers not in the caps map are
+   * stored but have no .env side-effect.
+   */
+  async upsertProviderService(entry: ProviderService): Promise<void> {
+    const list = this.loadProviderServices()
+    const idx = list.findIndex((e) => e.id === entry.id)
+    if (idx >= 0) list[idx] = entry
+    else list.push(entry)
+    this.saveProviderServicesFile(list)
+    const caps = PROVIDER_SERVICE_CAPS[entry.provider]
+    if (caps) {
+      const value = entry.enabled !== false && entry.apiKey ? entry.apiKey : ''
+      await this.setProviderSecret(caps.envVar, value)
+    }
+  }
+
+  /** Delete a Provider Services entry and clear its secret from Hermes .env. */
+  async deleteProviderService(id: string): Promise<void> {
+    const list = this.loadProviderServices()
+    const entry = list.find((e) => e.id === id)
+    this.saveProviderServicesFile(list.filter((e) => e.id !== id))
+    const caps = entry && PROVIDER_SERVICE_CAPS[entry.provider]
+    if (caps) await this.setProviderSecret(caps.envVar, '')
   }
 
   /** Run a single remote command string over SSH (async execFile has no stdin — see writeRemoteFile). */

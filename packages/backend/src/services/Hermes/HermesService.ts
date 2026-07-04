@@ -7,6 +7,8 @@ export interface HermesServiceConfig {
   sshKeyPath: string // AI-Lab key authorized on CT158
   /** JSON file where applied specs are persisted (for read-back / edit). */
   specsFile?: string
+  /** JSON file where Provider Services entries (keyed non-model providers) are persisted. */
+  providerServicesFile?: string
 }
 
 /**
@@ -24,7 +26,7 @@ export class HermesService {
   readonly bridge: HermesAcpBridge
 
   constructor(cfg: HermesServiceConfig) {
-    this.mgmt = new HermesManagementService({ host: cfg.host, sshKeyPath: cfg.sshKeyPath, specsFile: cfg.specsFile })
+    this.mgmt = new HermesManagementService({ host: cfg.host, sshKeyPath: cfg.sshKeyPath, specsFile: cfg.specsFile, providerServicesFile: cfg.providerServicesFile })
     this.bridge = new HermesAcpBridge({ host: cfg.host, sshKeyPath: cfg.sshKeyPath })
   }
 

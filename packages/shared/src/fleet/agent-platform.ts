@@ -145,6 +145,37 @@ export const hermesAgentSpecSchema = z.object({
 })
 export type HermesAgentSpec = z.infer<typeof hermesAgentSpecSchema>
 
+// ─── Provider Services (keyed non-model provider registry: TTS etc.) ─────────
+/**
+ * Per-provider descriptor for the Provider Services registry. `envVar` = the Hermes .env key
+ * the API key is written to (so agents using the provider pick it up); `kind` groups it. This
+ * is the extensible map — add one entry per provider; keyed by the provider slug used in both
+ * ProviderService.provider and HermesAgentSpec.tts.provider. (Same pattern as TRANSPORT_CAPS.)
+ */
+export const PROVIDER_SERVICE_CAPS: Record<string, { label: string; envVar: string; kind: 'tts' | 'other' }> = {
+  elevenlabs: { label: 'ElevenLabs', envVar: 'ELEVENLABS_API_KEY', kind: 'tts' },
+}
+
+/**
+ * A configured external provider service (e.g. ElevenLabs TTS). One entry holds the account API
+ * key ONCE; the backend pushes it into Hermes .env (per PROVIDER_SERVICE_CAPS) and it's then
+ * available for AI-Lab's own use — the "one entry drives both" split. Distinct from
+ * ExternalModelSource (chat/completions models behind the proxy); these are non-model creds.
+ */
+export const providerServiceSchema = z.object({
+  id: slugSchema,
+  /** provider slug — a key in PROVIDER_SERVICE_CAPS (e.g. 'elevenlabs'). */
+  provider: z.string().min(1),
+  displayName: z.string().min(1),
+  /** API key. Masked end-to-end like model sources: GET returns `***<last4>` + hasKey; a blank
+   *  or still-masked value on save preserves the stored key. */
+  apiKey: z.string().optional(),
+  enabled: z.boolean().default(true),
+})
+export type ProviderService = z.infer<typeof providerServiceSchema>
+/** GET shape: contract fields with the key masked + a hasKey flag. */
+export type ProviderServiceWire = ProviderService & { hasKey?: boolean }
+
 // ─── Normalized ACP stream events ────────────────────────────────────────────
 /**
  * The event union emitted by the acp-bridge (CT158 /opt/acp-bridge/acp-bridge.py)

@@ -1,6 +1,6 @@
 // @ts-expect-error — express ships untyped in this repo (same pre-existing gap as UniversalProxyService)
 import express from 'express'
-import { hermesAgentSpecSchema } from '@gyshell/shared'
+import { hermesAgentSpecSchema, providerServiceSchema } from '@gyshell/shared'
 import type { HermesService } from './HermesService'
 import type { AcpEvent } from './HermesAcpBridge'
 
@@ -136,6 +136,48 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     queue = null
     for (const ev of pending) {
       if ((ev.seq ?? 0) > lastWritten) res.write(`data: ${JSON.stringify(ev)}\n\n`)
+    }
+  })
+
+  // ── Provider Services registry (keyed non-model providers: ElevenLabs TTS etc.) ──
+  // One entry holds an account API key ONCE; the backend pushes it into Hermes .env (per
+  // PROVIDER_SERVICE_CAPS) so agents with tts.provider=<x> pick it up. Keys are masked
+  // end-to-end, mirroring the Model API sources registry.
+
+  // List — key never returned raw; masked to ***<last4> + hasKey.
+  router.get('/api/hermes/provider-services', (_req: Req, res: Res) => {
+    try {
+      const services = hermes.mgmt.getProviderServices().map((s) => ({
+        ...s,
+        apiKey: s.apiKey ? `***${s.apiKey.slice(-4)}` : undefined,
+        hasKey: !!s.apiKey,
+      }))
+      res.json({ services })
+    } catch (e) {
+      res.status(500).json({ error: String((e as Error).message) })
+    }
+  })
+
+  // Create/update (upsert by id). A blank or still-masked apiKey preserves the stored key.
+  router.post('/api/hermes/provider-services', json, async (req: Req, res: Res) => {
+    try {
+      const parsed = providerServiceSchema.parse(req.body)
+      const stored = hermes.mgmt.getProviderServices().find((e) => e.id === parsed.id)
+      const apiKey = !parsed.apiKey || parsed.apiKey.startsWith('***') ? stored?.apiKey : parsed.apiKey
+      await hermes.mgmt.upsertProviderService({ ...parsed, apiKey })
+      res.json({ ok: true })
+    } catch (e) {
+      res.status(400).json({ error: String((e as Error).message) })
+    }
+  })
+
+  // Delete + clear the provider's secret from Hermes .env.
+  router.delete('/api/hermes/provider-services/:id', async (req: Req, res: Res) => {
+    try {
+      await hermes.mgmt.deleteProviderService(req.params.id)
+      res.json({ ok: true })
+    } catch (e) {
+      res.status(500).json({ error: String((e as Error).message) })
     }
   })
 
