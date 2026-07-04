@@ -11,6 +11,8 @@ import { hermesApi } from './hermesApi'
 
 class HermesAgentsStore {
   agents: string[] = []
+  /** id → { model?, visionCapable? } (backend heuristic off the stored spec's model). */
+  capabilities: Record<string, { model?: string; visionCapable?: boolean }> = {}
   /** id → spec from read-back; null = route answered nothing (spec unknown). */
   specs = new Map<string, HermesAgentSpec | null>()
   catalog: CatalogModel[] = []
@@ -25,9 +27,10 @@ class HermesAgentsStore {
 
   async refresh(): Promise<void> {
     try {
-      const agents = await hermesApi.listAgents()
+      const { agents, capabilities } = await hermesApi.listAgents()
       runInAction(() => {
         this.agents = agents
+        this.capabilities = capabilities
         this.loaded = true
         this.error = null
       })

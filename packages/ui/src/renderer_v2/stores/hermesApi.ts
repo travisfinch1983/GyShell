@@ -31,10 +31,10 @@ export interface HermesPromptResult {
 }
 
 export const hermesApi = {
-  /** GET /api/hermes/agents → profile ids. */
-  async listAgents(): Promise<string[]> {
+  /** GET /api/hermes/agents → profile ids + per-agent capabilities (model, visionCapable). */
+  async listAgents(): Promise<{ agents: string[]; capabilities: Record<string, { model?: string; visionCapable?: boolean }> }> {
     const r = await bridge().request('GET', '/api/hermes/agents')
-    return (r?.agents ?? []) as string[]
+    return { agents: (r?.agents ?? []) as string[], capabilities: (r?.capabilities ?? {}) as Record<string, { model?: string; visionCapable?: boolean }> }
   },
 
   /**
@@ -72,10 +72,16 @@ export const hermesApi = {
     }
   },
 
-  /** POST /api/hermes/agents/:id/prompt — one full turn, resolves with the reply. */
-  async prompt(id: string, text: string): Promise<HermesPromptResult> {
+  /**
+   * POST /api/hermes/agents/:id/prompt — one full turn, resolves with the reply.
+   * Feature A extras: `context` (structured page snapshot — backend injects it as a
+   * "[Current view context]" block) and `screenshot` (data URL / base64 PNG — backend
+   * writes it to the agent's cwd and tells the agent to read it with its vision tool).
+   * Both augment only the agent's turn, never the displayed user message.
+   */
+  async prompt(id: string, text: string, extra?: { context?: string; screenshot?: string }): Promise<HermesPromptResult> {
     try {
-      const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/prompt`, { text })
+      const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/prompt`, { text, ...(extra?.context ? { context: extra.context } : {}), ...(extra?.screenshot ? { screenshot: extra.screenshot } : {}) })
       if (r?.error) return { ok: false, error: String(r.error) }
       return { ok: r?.ok !== false, reply: r?.reply, stopReason: r?.stopReason }
     } catch (e) {
