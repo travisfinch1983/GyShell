@@ -65,7 +65,7 @@ const Row: React.FC<{ item: ChatItem }> = ({ item }) => {
  * session: mounting attaches the SSE stream, unmounting only detaches — the
  * session (and any in-flight turn) keeps running headless on the backend.
  */
-const AgentConversation: React.FC<{ agentId: string }> = observer(({ agentId }) => {
+export const AgentConversation: React.FC<{ agentId: string }> = observer(({ agentId }) => {
   const s = chat.state(agentId)
   const [text, setText] = useState('')
   const [slashOpen, setSlashOpen] = useState(false)
@@ -163,8 +163,9 @@ const AgentConversation: React.FC<{ agentId: string }> = observer(({ agentId }) 
   )
 })
 
-/** Agents primary tab — agent list left, live conversation right. Building/config
- *  lives in Settings › Agents; this surface is for talking to the fleet. */
+/** Full-page Hermes chat surface (agent list left, conversation right). Currently
+ *  UNMOUNTED — kept for the planned full-page Chat primary tab (feature B); the
+ *  live home of agent chat is GlobalChat's Agents mode (side panel). */
 export const AgentChatPanel: React.FC = observer(() => {
   const [active, setActive] = useState<string | null>(null)
 

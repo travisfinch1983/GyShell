@@ -28,3 +28,71 @@
     min-height: 0;
   }
 }
+
+// ── mode switch (Chat = AgentService_v2 · Agents = Hermes ACP streaming) ──
+.ai-lab-global-chat .glc-mode-row {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ai-lab-global-chat .glc-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+
+  &:hover { color: var(--fg); }
+
+  &.active {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+}
+
+.ai-lab-global-chat .glc-agent-pick {
+  margin-left: auto;
+  max-width: 55%;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--control-bg);
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.ai-lab-global-chat .glc-agents-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+
+  // Narrow-panel pass: let bubbles use more of the 480px width.
+  [class*='msgYou'],
+  [class*='msgAgent'],
+  [class*='thought'] { max-width: 92%; }
+  [class*='convHead'] { flex-wrap: wrap; }
+  [class*='log'] { padding: 10px; }
+  [class*='composerWrap'] { padding: 8px 10px; }
+}
+
+.ai-lab-global-chat .glc-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  padding: 16px;
+  text-align: center;
+}

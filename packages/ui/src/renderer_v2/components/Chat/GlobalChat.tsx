@@ -1,7 +1,10 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import type { AppStore } from '../../stores/AppStore'
 import { ChatPanel } from '../Chat/ChatPanel'
+import { Bot, MessagesSquare } from 'lucide-react'
+import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
+import { AgentConversation } from '../AgentChat/AgentChatPanel'
 import './globalChat.scss'
 
 interface Props {
@@ -24,6 +27,23 @@ interface Props {
  * ChatStore.activeSessionId.
  */
 export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
+  // Chat = AgentService_v2 (main chat, unchanged). Agents = Hermes fleet agents
+  // over ACP streaming (AgentConversation) — tab-independent, per Travis.
+  const [mode, setMode] = useState<'chat' | 'agents'>(
+    () => (localStorage.getItem('ai-lab-chat-mode') as 'chat' | 'agents') || 'chat',
+  )
+  const [agentId, setAgentId] = useState<string | null>(null)
+  const pickMode = (m: 'chat' | 'agents') => {
+    setMode(m)
+    localStorage.setItem('ai-lab-chat-mode', m)
+  }
+  useEffect(() => {
+    if (!visible || mode !== 'agents') return
+    void hermesAgentsStore.refresh().then(() => {
+      setAgentId((a) => a ?? hermesAgentsStore.agents[0] ?? null)
+    })
+  }, [visible, mode])
+
   // Computed inline (no useMemo) on purpose: useMemo's dep array uses plain
   // JS equality, which doesn't reliably re-fire on MobX mutations. The
   // observer wrapper handles re-renders for us.
@@ -62,6 +82,35 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
 
   return (
     <div className="ai-lab-global-chat">
+      <div className="glc-mode-row">
+        <button className={`glc-mode ${mode === 'chat' ? 'active' : ''}`} onClick={() => pickMode('chat')} title="Main chat (AgentService_v2)">
+          <MessagesSquare size={13} /> Chat
+        </button>
+        <button className={`glc-mode ${mode === 'agents' ? 'active' : ''}`} onClick={() => pickMode('agents')} title="Hermes fleet agents (live ACP stream)">
+          <Bot size={13} /> Agents
+        </button>
+        {mode === 'agents' && (
+          <select
+            className="glc-agent-pick"
+            value={agentId ?? ''}
+            onChange={(e) => setAgentId(e.target.value || null)}
+          >
+            {hermesAgentsStore.agents.length === 0 && <option value="">no agents</option>}
+            {hermesAgentsStore.agents.map((id) => (
+              <option key={id} value={id}>{hermesAgentsStore.specs.get(id)?.displayName ?? id}</option>
+            ))}
+          </select>
+        )}
+      </div>
+      {mode === 'agents' ? (
+        <div className="glc-agents-body">
+          {agentId ? (
+            <AgentConversation key={agentId} agentId={agentId} />
+          ) : (
+            <div className="glc-empty">{hermesAgentsStore.loaded ? 'No Hermes agents yet — create one in Settings › Agents.' : 'Loading agents…'}</div>
+          )}
+        </div>
+      ) : (
       <ChatPanel
         store={store}
         panelId="global-chat"
@@ -84,6 +133,7 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
         }}
         onLayoutHeaderContextMenu={undefined}
       />
+      )}
     </div>
   )
 })
