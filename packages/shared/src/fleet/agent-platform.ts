@@ -122,11 +122,23 @@ export const hermesAgentSpecSchema = z.object({
   toolsets: z.array(z.string()).default([]),
   /** ACP permission mode: 'default' asks before edits; 'accept_edits' auto-allows workspace/tmp. */
   mode: z.enum(['default', 'accept_edits']).default('default'),
-  /** sub-agent governance (req 11 equivalent, now enforced by Hermes). */
+  /** Sub-agent delegation. The parent's native `delegation` toolset spawns child agents of the
+   *  SAME profile (spawning distinct sub-agent PROFILES is shelved — not natively supported
+   *  without ACP-transport plumbing). Maps to Hermes-native `delegation.*`. The key lever is
+   *  `model`: run sub-agents on a different (cheaper/faster) catalog model via the `ailab` proxy
+   *  while the parent keeps its own; empty = inherit the parent's model. */
   subAgents: z
     .object({
-      maxConcurrent: z.number().int().nonnegative().default(0),
-      allowedKinds: z.array(z.string()).default([]),
+      /** sub-agent model override — a catalog id (routed via the ailab proxy); empty = inherit parent. */
+      model: z.string().optional(),
+      /** sub-agent reasoning effort; omitted = inherit parent. */
+      reasoningEffort: z.enum(['xhigh', 'high', 'medium', 'low', 'minimal', 'none']).optional(),
+      /** max parallel children per batch (delegation.max_concurrent_children). 0/omitted = Hermes default. */
+      maxConcurrent: z.number().int().nonnegative().optional(),
+      /** spawn depth: 1 = flat, 2 = orchestrator→leaf, 3+ deeper (delegation.max_spawn_depth). */
+      maxSpawnDepth: z.number().int().nonnegative().optional(),
+      /** auto-approve dangerous commands in sub-agent threads (delegation.subagent_auto_approve; default deny). */
+      autoApproveDangerous: z.boolean().optional(),
     })
     .optional(),
   /** Optional per-agent TTS voice. `provider` is a native Hermes TTS provider (elevenlabs,

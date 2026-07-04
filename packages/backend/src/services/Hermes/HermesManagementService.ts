@@ -289,6 +289,23 @@ export class HermesManagementService {
       await this.hermes(['-p', id, 'tools', 'enable', 'tts'])
     }
 
+    // Sub-agent delegation (native delegation.* config; scalar keys — config set coerces number/
+    // bool types correctly). Sub-agents run the SAME profile; `model` overrides only their model,
+    // routed through the ailab proxy like the primary, so they can be cheaper/faster. Enable the
+    // `delegation` toolset when configured (it's default-on, but be explicit).
+    if (spec.subAgents) {
+      const sa = spec.subAgents
+      if (sa.model) {
+        await this.hermes(['-p', id, 'config', 'set', 'delegation.provider', 'ailab'])
+        await this.hermes(['-p', id, 'config', 'set', 'delegation.model', sa.model])
+      }
+      if (sa.reasoningEffort) await this.hermes(['-p', id, 'config', 'set', 'delegation.reasoning_effort', sa.reasoningEffort])
+      if (sa.maxConcurrent) await this.hermes(['-p', id, 'config', 'set', 'delegation.max_concurrent_children', String(sa.maxConcurrent)])
+      if (sa.maxSpawnDepth) await this.hermes(['-p', id, 'config', 'set', 'delegation.max_spawn_depth', String(sa.maxSpawnDepth)])
+      if (sa.autoApproveDangerous != null) await this.hermes(['-p', id, 'config', 'set', 'delegation.subagent_auto_approve', String(sa.autoApproveDangerous)])
+      await this.hermes(['-p', id, 'tools', 'enable', 'delegation'])
+    }
+
     // Persist the applied spec (source of truth for read-back / edit; Hermes YAML is lossy).
     if (this.cfg.specsFile) {
       const specs = this.loadSpecs()
