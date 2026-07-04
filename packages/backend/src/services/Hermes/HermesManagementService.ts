@@ -104,6 +104,37 @@ export class HermesManagementService {
   }
 
   /**
+   * Upsert (or clear) a secret in Hermes's GLOBAL .env — the account-wide secret store every
+   * profile inherits (e.g. `ELEVENLABS_API_KEY` for the ElevenLabs TTS provider). This is the
+   * backend of the "Provider Services" section: a provider key is configured ONCE here, not per
+   * agent. Idempotent — replaces an existing `KEY=` line, appends if absent; an empty value
+   * removes the line. Env-path resolved via `hermes config env-path` (authoritative, global — no
+   * `-p`). A native secret-store write, exactly what `hermes` writes there itself — not a source
+   * patch. File is re-chmod'd 600. Value is base64'd through the command so no quoting can break.
+   */
+  async setProviderSecret(envVar: string, value: string): Promise<void> {
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(envVar)) throw new Error(`invalid env var name: ${envVar}`)
+    const envPath = (await this.hermes(['config', 'env-path'])).trim()
+    if (!envPath) throw new Error('could not resolve Hermes global .env path')
+    const valB64 = Buffer.from(value ?? '', 'utf8').toString('base64')
+    const script = [
+      'import sys, base64, os',
+      'path, key = sys.argv[1], sys.argv[2]',
+      'val = base64.b64decode(sys.argv[3]).decode()',
+      'lines = open(path).read().splitlines() if os.path.exists(path) else []',
+      "out = [l for l in lines if l.split('=', 1)[0].strip() != key]",
+      "if val != '':",
+      "    out.append(key + '=' + val)",
+      "data = ('\\n'.join(out) + '\\n') if out else ''",
+      "with open(path, 'w') as f:",
+      '    f.write(data)',
+      'os.chmod(path, 0o600)',
+    ].join('\n')
+    const scriptB64 = Buffer.from(script, 'utf8').toString('base64')
+    await this.ssh(`printf %s ${shq(scriptB64)} | base64 -d | python3 - ${shq(envPath)} ${shq(envVar)} ${shq(valB64)}`)
+  }
+
+  /**
    * Write the ordered fallback chain into the profile's config.yaml as Hermes's native
    * `fallback_providers` list (tried in order when the primary model fails with rate-limit/
    * overload/connection errors). Every AI-Lab agent routes through the `ailab` proxy provider,
