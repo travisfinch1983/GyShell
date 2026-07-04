@@ -295,6 +295,34 @@ type SourceDraft = ExternalModelSourceWire & { _isNew?: boolean; _dirty?: boolea
 
 const slugify = (v: string) => v.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[-_]+/, '')
 
+/**
+ * Per-transport capability descriptor — keyed on the API *dialect* (`transport`), NOT the
+ * display name, so detection is reliable and adding a future provider-type that needs a
+ * separate usage/cost credential is a one-line entry here. No hardcoded provider list and
+ * `baseUrl` stays free-form; any provider speaking a listed dialect inherits its caps.
+ *   adminKey     — this dialect's balance/usage reporting needs a SEPARATE credential from
+ *                  the chat key (e.g. Anthropic's `sk-ant-admin…` org cost report).
+ *   balanceKind  — how the proxy reports spend for this dialect ('spend' = org cost report
+ *                  via the admin key; 'balance' = remaining credit via the chat key).
+ * Unlisted transports simply get no aux field (the lookup returns undefined).
+ */
+const TRANSPORT_CAPS: Record<
+  string,
+  { adminKey?: boolean; adminKeyLabel?: string; adminKeyTitle?: string; balanceKind?: 'balance' | 'spend' }
+> = {
+  anthropic: {
+    adminKey: true,
+    adminKeyLabel: 'Admin key (sk-ant-admin…) — usage/cost',
+    adminKeyTitle:
+      'Anthropic Admin API key (sk-ant-admin…) — enables org usage/cost tracking. Separate from the chat key.',
+    balanceKind: 'spend',
+  },
+  openai_chat: {
+    balanceKind: 'balance',
+  },
+}
+const capsFor = (transport?: string) => TRANSPORT_CAPS[transport ?? 'openai_chat']
+
 const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => void }> = ({ catalog, onChanged }) => {
   const [rows, setRows] = useState<SourceDraft[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -433,12 +461,12 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
               value={d.apiKey && !d.apiKey.startsWith('***') ? d.apiKey : ''}
               onChange={(ev) => up(i, { apiKey: ev.target.value })}
             />
-            {d.transport === 'anthropic' && (
+            {capsFor(d.transport)?.adminKey && (
               <input
                 style={{ ...smallInp, flex: 1, minWidth: 180 }}
                 type="password"
-                title="Anthropic Admin API key (sk-ant-admin…) — enables org usage/cost tracking. Separate from the chat key."
-                placeholder={d.hasAdminKey ? `admin key set (${d.adminApiKey ?? '***'}) — blank keeps it` : 'Admin key (sk-ant-admin…) — usage/cost'}
+                title={capsFor(d.transport)?.adminKeyTitle}
+                placeholder={d.hasAdminKey ? `admin key set (${d.adminApiKey ?? '***'}) — blank keeps it` : (capsFor(d.transport)?.adminKeyLabel ?? 'Admin key — usage/cost')}
                 value={d.adminApiKey && !d.adminApiKey.startsWith('***') ? d.adminApiKey : ''}
                 onChange={(ev) => up(i, { adminApiKey: ev.target.value })}
               />
