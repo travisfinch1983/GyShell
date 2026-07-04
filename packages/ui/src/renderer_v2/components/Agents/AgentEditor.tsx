@@ -78,7 +78,6 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, editId, onS
     modelId: initialSpec?.tts?.modelId ?? '',
   })
   const [fallback, setFallback] = useState<string[]>(initialSpec?.fallback ?? [])
-  const [fallbackDraft, setFallbackDraft] = useState('')
   const [enabled, setEnabled] = useState(initialSpec?.enabled ?? true)
   const [dirty, setDirty] = useState(!editing)
   const [msg, setMsg] = useState<string | null>(null)
@@ -334,23 +333,29 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, editId, onS
                 </div>
               ))}
               {fallback.length === 0 && <div className={styles.dim}>no fallback — primary only</div>}
+              {/* Multi-ADD picker: selecting a model APPENDS to the chain and the
+                  select snaps back to the placeholder for the next add. (The old
+                  <datalist> input kept the picked value, so reopening it filtered
+                  the popup to the already-selected model — single-select feel,
+                  capped the chain at one.) Primary + already-chained excluded. */}
               <div className={styles.promptRow} style={{ marginTop: 8 }}>
-                <input
+                <select
                   className={`${styles.input} ${styles.mono}`}
-                  list="fallback-models"
-                  placeholder="add catalog model…"
-                  value={fallbackDraft}
-                  onChange={(e) => setFallbackDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && fallbackDraft.trim()) {
-                      if (!fallback.includes(fallbackDraft.trim()) && fallbackDraft.trim() !== model) { setFallback([...fallback, fallbackDraft.trim()]); touch() }
-                      setFallbackDraft('')
-                    }
+                  value=""
+                  onChange={(e) => {
+                    const id = e.target.value
+                    if (id && !fallback.includes(id) && id !== model) { setFallback([...fallback, id]); touch() }
                   }}
-                />
-                <datalist id="fallback-models">
-                  {models.filter((m) => m.id !== model && !fallback.includes(m.id)).map((m) => <option key={m.id} value={m.id}>[{m.tag}] {m.displayName}</option>)}
-                </datalist>
+                >
+                  <option value="" disabled>
+                    {models.filter((m) => m.id !== model && !fallback.includes(m.id)).length
+                      ? `add fallback #${fallback.length + 1}…`
+                      : 'no more catalog models to add'}
+                  </option>
+                  {models.filter((m) => m.id !== model && !fallback.includes(m.id)).map((m) => (
+                    <option key={m.id} value={m.id}>[{m.tag}] {m.displayName}</option>
+                  ))}
+                </select>
               </div>
             </>,
           )}
