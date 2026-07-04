@@ -97,7 +97,9 @@
 .settings-content {
   min-height: 0;
   overflow: auto;
-  padding: 18px 20px;
+  // Footer spacer: the last section's controls shouldn't sit flush against the
+  // scroll edge (piece #4 of the 2026-07-04 handoff).
+  padding: 18px 20px 64px;
   position: relative;
   z-index: 1;
 

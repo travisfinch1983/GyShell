@@ -65,7 +65,20 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, editId, onS
   const [toolsets, setToolsets] = useState<string[]>(initialSpec?.toolsets ?? [])
   const [toolDraft, setToolDraft] = useState('')
   const [mode, setMode] = useState<'default' | 'accept_edits'>(initialSpec?.mode ?? 'default')
-  const [maxSubAgents, setMaxSubAgents] = useState(initialSpec?.subAgents?.maxConcurrent ?? 0)
+  const [sub, setSub] = useState({
+    model: initialSpec?.subAgents?.model ?? '',
+    reasoningEffort: initialSpec?.subAgents?.reasoningEffort ?? '',
+    maxConcurrent: initialSpec?.subAgents?.maxConcurrent ?? 0,
+    maxSpawnDepth: initialSpec?.subAgents?.maxSpawnDepth ?? 0,
+    autoApproveDangerous: initialSpec?.subAgents?.autoApproveDangerous ?? false,
+  })
+  const [tts, setTts] = useState({
+    provider: initialSpec?.tts?.provider ?? '',
+    voiceId: initialSpec?.tts?.voiceId ?? '',
+    modelId: initialSpec?.tts?.modelId ?? '',
+  })
+  const [fallback, setFallback] = useState<string[]>(initialSpec?.fallback ?? [])
+  const [fallbackDraft, setFallbackDraft] = useState('')
   const [enabled, setEnabled] = useState(initialSpec?.enabled ?? true)
   const [dirty, setDirty] = useState(!editing)
   const [msg, setMsg] = useState<string | null>(null)
@@ -102,7 +115,15 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, editId, onS
     setPersonality(initialSpec?.persona?.personality ?? '')
     setToolsets(initialSpec?.toolsets ?? [])
     setMode(initialSpec?.mode ?? 'default')
-    setMaxSubAgents(initialSpec?.subAgents?.maxConcurrent ?? 0)
+    setSub({
+      model: initialSpec?.subAgents?.model ?? '',
+      reasoningEffort: initialSpec?.subAgents?.reasoningEffort ?? '',
+      maxConcurrent: initialSpec?.subAgents?.maxConcurrent ?? 0,
+      maxSpawnDepth: initialSpec?.subAgents?.maxSpawnDepth ?? 0,
+      autoApproveDangerous: initialSpec?.subAgents?.autoApproveDangerous ?? false,
+    })
+    setTts({ provider: initialSpec?.tts?.provider ?? '', voiceId: initialSpec?.tts?.voiceId ?? '', modelId: initialSpec?.tts?.modelId ?? '' })
+    setFallback(initialSpec?.fallback ?? [])
     setEnabled(initialSpec?.enabled ?? true)
     setDirty(false)
     setMsg(null)
@@ -117,7 +138,18 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, editId, onS
       persona: soul || personality ? { soul: soul || undefined, personality: personality || undefined } : undefined,
       toolsets,
       mode,
-      subAgents: maxSubAgents > 0 ? { maxConcurrent: maxSubAgents, allowedKinds: [] } : undefined,
+      fallback,
+      subAgents:
+        sub.model || sub.reasoningEffort || sub.maxConcurrent > 0 || sub.maxSpawnDepth > 0 || sub.autoApproveDangerous
+          ? {
+              model: sub.model || undefined,
+              reasoningEffort: (sub.reasoningEffort || undefined) as 'xhigh' | 'high' | 'medium' | 'low' | 'minimal' | 'none' | undefined,
+              maxConcurrent: sub.maxConcurrent > 0 ? sub.maxConcurrent : undefined,
+              maxSpawnDepth: sub.maxSpawnDepth > 0 ? sub.maxSpawnDepth : undefined,
+              autoApproveDangerous: sub.autoApproveDangerous || undefined,
+            }
+          : undefined,
+      tts: tts.provider ? { provider: tts.provider, voiceId: tts.voiceId || undefined, modelId: tts.modelId || undefined } : undefined,
       enabled,
     }
     const parsed = hermesAgentSpecSchema.safeParse(candidate)
@@ -285,15 +317,104 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, editId, onS
                   <option value="accept_edits">accept_edits — auto-allow workspace/tmp</option>
                 </select>
               </div>
-              <div className={styles.fieldCol}>
-                <label className={styles.label}>Max sub-agents</label>
+            </div>,
+          )}
+
+          <div className={styles.sectionTitle} style={{ marginTop: 14 }}>Fallback chain</div>
+          <div className={styles.sectionSub}>Ordered catalog models tried when the primary fails (rate-limit/overload/connection) — failover, not quality switching.</div>
+          {card(
+            <>
+              {fallback.map((fid, i) => (
+                <div key={fid} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0', fontSize: 12 }}>
+                  <span className={styles.mono} style={{ color: 'var(--fg-muted)', width: 16 }}>{i + 1}.</span>
+                  <span className={styles.mono} style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{fid}</span>
+                  <button className={styles.btn} disabled={i === 0} title="Move up" onClick={() => { const f = [...fallback]; f.splice(i - 1, 0, f.splice(i, 1)[0]); setFallback(f); touch() }}>↑</button>
+                  <button className={styles.btn} disabled={i === fallback.length - 1} title="Move down" onClick={() => { const f = [...fallback]; f.splice(i + 1, 0, f.splice(i, 1)[0]); setFallback(f); touch() }}>↓</button>
+                  <button className={styles.btnDanger} title="Remove" onClick={() => { setFallback(fallback.filter((x) => x !== fid)); touch() }}>×</button>
+                </div>
+              ))}
+              {fallback.length === 0 && <div className={styles.dim}>no fallback — primary only</div>}
+              <div className={styles.promptRow} style={{ marginTop: 8 }}>
                 <input
                   className={`${styles.input} ${styles.mono}`}
-                  type="number"
-                  min={0}
-                  value={maxSubAgents}
-                  onChange={(e) => { setMaxSubAgents(Math.max(0, Number(e.target.value) || 0)); touch() }}
+                  list="fallback-models"
+                  placeholder="add catalog model…"
+                  value={fallbackDraft}
+                  onChange={(e) => setFallbackDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && fallbackDraft.trim()) {
+                      if (!fallback.includes(fallbackDraft.trim()) && fallbackDraft.trim() !== model) { setFallback([...fallback, fallbackDraft.trim()]); touch() }
+                      setFallbackDraft('')
+                    }
+                  }}
                 />
+                <datalist id="fallback-models">
+                  {models.filter((m) => m.id !== model && !fallback.includes(m.id)).map((m) => <option key={m.id} value={m.id}>[{m.tag}] {m.displayName}</option>)}
+                </datalist>
+              </div>
+            </>,
+          )}
+
+          <div className={styles.sectionTitle} style={{ marginTop: 14 }}>Sub-agents</div>
+          <div className={styles.sectionSub}>Delegation children (same profile). Key lever: a cheaper/faster model override; empty = inherit the parent&apos;s.</div>
+          {card(
+            <div className={styles.twoCol}>
+              <div className={styles.fieldCol}>
+                <label className={styles.label}>Sub-agent model</label>
+                <select className={`${styles.input} ${styles.mono}`} value={sub.model} onChange={(e) => { setSub({ ...sub, model: e.target.value }); touch() }}>
+                  <option value="">inherit parent</option>
+                  {models.map((m) => <option key={m.id} value={m.id}>[{m.tag}] {m.displayName}</option>)}
+                </select>
+              </div>
+              <div className={styles.fieldCol}>
+                <label className={styles.label}>Reasoning effort</label>
+                <select className={styles.input} value={sub.reasoningEffort} onChange={(e) => { setSub({ ...sub, reasoningEffort: e.target.value }); touch() }}>
+                  <option value="">inherit parent</option>
+                  {['xhigh', 'high', 'medium', 'low', 'minimal', 'none'].map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </div>
+              <div className={styles.fieldCol}>
+                <label className={styles.label}>Max concurrent</label>
+                <input className={`${styles.input} ${styles.mono}`} type="number" min={0} title="0 = Hermes default" value={sub.maxConcurrent} onChange={(e) => { setSub({ ...sub, maxConcurrent: Math.max(0, Number(e.target.value) || 0) }); touch() }} />
+              </div>
+              <div className={styles.fieldCol}>
+                <label className={styles.label}>Max spawn depth</label>
+                <input className={`${styles.input} ${styles.mono}`} type="number" min={0} title="1 = flat, 2 = orchestrator→leaf; 0 = Hermes default" value={sub.maxSpawnDepth} onChange={(e) => { setSub({ ...sub, maxSpawnDepth: Math.max(0, Number(e.target.value) || 0) }); touch() }} />
+              </div>
+              <div className={`${styles.fieldCol} ${styles.fieldWide}`}>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--fg-muted)' }}>
+                  <input type="checkbox" checked={sub.autoApproveDangerous} onChange={(e) => { setSub({ ...sub, autoApproveDangerous: e.target.checked }); touch() }} />
+                  auto-approve dangerous commands in sub-agent threads (default deny)
+                </label>
+              </div>
+            </div>,
+          )}
+
+          <div className={styles.sectionTitle} style={{ marginTop: 14 }}>Voice (TTS)</div>
+          <div className={styles.sectionSub}>Per-agent voice. The provider&apos;s API key lives ONCE in Settings › Cluster › External Services › Provider services.</div>
+          {card(
+            <div className={styles.twoCol}>
+              <div className={styles.fieldCol}>
+                <label className={styles.label}>Provider</label>
+                <select className={styles.input} value={tts.provider} onChange={(e) => { setTts({ ...tts, provider: e.target.value, modelId: '' }); touch() }}>
+                  <option value="">none</option>
+                  {['elevenlabs', 'edge', 'openai', 'minimax', 'gemini', 'mistral'].map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </div>
+              <div className={styles.fieldCol}>
+                <label className={styles.label}>Voice id</label>
+                <input className={`${styles.input} ${styles.mono}`} placeholder={tts.provider === 'elevenlabs' ? 'pNInz6obpgDQGcFmaJgB (Adam)' : 'provider default'} value={tts.voiceId} disabled={!tts.provider} onChange={(e) => { setTts({ ...tts, voiceId: e.target.value }); touch() }} />
+              </div>
+              <div className={styles.fieldCol}>
+                <label className={styles.label}>Model</label>
+                {tts.provider === 'elevenlabs' ? (
+                  <select className={`${styles.input} ${styles.mono}`} value={tts.modelId} onChange={(e) => { setTts({ ...tts, modelId: e.target.value }); touch() }}>
+                    <option value="">provider default</option>
+                    {['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5'].map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                ) : (
+                  <input className={`${styles.input} ${styles.mono}`} placeholder="provider default" value={tts.modelId} disabled={!tts.provider} onChange={(e) => { setTts({ ...tts, modelId: e.target.value }); touch() }} />
+                )}
               </div>
             </div>,
           )}

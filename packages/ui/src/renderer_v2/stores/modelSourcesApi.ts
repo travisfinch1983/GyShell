@@ -101,3 +101,33 @@ export const modelSourcesApi = {
     return (r?.balances ?? []) as SourceBalance[]
   },
 }
+
+/** Balance/cost-over-time for one source (backend snapshotter, 6h cadence). */
+export interface BalanceHistoryPoint {
+  ts: string | number
+  balance?: number | null
+  usage?: number | null
+  spend?: number | null
+}
+export interface BalanceHistoryResult {
+  series: BalanceHistoryPoint[]
+  burnPerDay: number | null
+  runwayDays: number | null
+  method: 'usage-delta' | 'spend-delta' | 'balance-delta' | string
+  windowDays: number
+  samples: number
+}
+
+export const balanceHistoryApi = {
+  async history(id: string, days = 30): Promise<BalanceHistoryResult | null> {
+    try {
+      const r = await bridge().request('GET', `/api/proxy/external-sources/${encodeURIComponent(id)}/balance-history?days=${days}`)
+      return (r ?? null) as BalanceHistoryResult | null
+    } catch {
+      return null
+    }
+  },
+  async snapshot(): Promise<void> {
+    try { await bridge().request('POST', '/api/proxy/external-sources-balances/snapshot') } catch { /* surfaced by re-fetch */ }
+  },
+}

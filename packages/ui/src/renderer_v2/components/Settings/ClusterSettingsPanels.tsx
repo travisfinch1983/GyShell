@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react'
 import { Eye, EyeOff, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { KNOWN_SOURCE_TAGS, externalModelSourceSchema, type CatalogModel } from '@gyshell/shared'
-import { modelSourcesApi, type ExternalModelSourceWire, type AvailableModel, type SourceBalance } from '../../stores/modelSourcesApi'
+import { modelSourcesApi, balanceHistoryApi, type ExternalModelSourceWire, type AvailableModel, type SourceBalance, type BalanceHistoryResult } from '../../stores/modelSourcesApi'
+import { providerServicesApi } from '../../stores/providerServicesApi'
+import { PROVIDER_SERVICE_CAPS, type ProviderServiceWire } from '@gyshell/shared'
 import { hermesApi } from '../../stores/hermesApi'
 import { confirmStore } from '../../stores/confirmStore'
 
@@ -323,6 +325,114 @@ const TRANSPORT_CAPS: Record<
 }
 const capsFor = (transport?: string) => TRANSPORT_CAPS[transport ?? 'openai_chat']
 
+/** Credit cost-over-time for one source: inline SVG line chart + burn/runway readout. */
+const BalanceChart: React.FC<{ sourceId: string }> = ({ sourceId }) => {
+  const [days, setDays] = useState(30)
+  const [h, setH] = useState<BalanceHistoryResult | null>(null)
+  const [busy, setBusy] = useState(false)
+  const load = async (d = days) => { setBusy(true); setH(await balanceHistoryApi.history(sourceId, d)); setBusy(false) }
+  useEffect(() => { void load() }, [sourceId, days])
+  const vals = (h?.series ?? []).map((pt) => (typeof pt.balance === 'number' ? pt.balance : typeof pt.spend === 'number' ? pt.spend : typeof pt.usage === 'number' ? pt.usage : null)).filter((v): v is number => v !== null)
+  const W = 420, H = 80
+  const min = Math.min(...vals), max = Math.max(...vals)
+  const span = max - min || 1
+  const pts = vals.map((v, i) => `${(i / Math.max(1, vals.length - 1)) * W},${H - ((v - min) / span) * (H - 6) - 3}`).join(' ')
+  return (
+    <div style={{ margin: '4px 0 8px', padding: 10, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--app-bg)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, fontSize: 11, color: 'var(--fg-muted)', fontFamily: 'var(--font-mono)' }}>
+        <span>cost over time · {h?.method ?? '…'}</span>
+        <select style={{ ...smallInp, width: 80, padding: '2px 6px' }} value={days} onChange={(e) => setDays(Number(e.target.value))}>
+          {[7, 30, 90].map((d) => <option key={d} value={d}>{d}d</option>)}
+        </select>
+        <button style={{ ...btn, padding: '2px 8px', fontSize: 11 }} disabled={busy} title="Snapshot balances now (6h auto)" onClick={async () => { await balanceHistoryApi.snapshot(); await load() }}>
+          <RefreshCw size={11} />
+        </button>
+        <span style={{ flex: 1 }} />
+        {h?.burnPerDay != null && <span>burn ${Number(h.burnPerDay).toFixed(2)}/day</span>}
+        {h?.runwayDays != null && <span style={{ color: h.runwayDays < 7 ? 'var(--danger)' : 'var(--success)' }}>runway {Math.round(h.runwayDays)}d</span>}
+      </div>
+      {vals.length >= 2 ? (
+        <svg width="100%" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block', height: H }}>
+          <polyline points={pts} fill="none" stroke="var(--accent)" strokeWidth="1.5" />
+        </svg>
+      ) : (
+        <div style={{ fontSize: 11, color: 'var(--fg-faint)' }}>{busy ? 'loading…' : `not enough snapshots yet (${h?.samples ?? 0}) — the 6h snapshotter fills this in`}</div>
+      )}
+    </div>
+  )
+}
+
+/** Keyed non-model providers (ElevenLabs TTS…): account key ONCE → Hermes .env. */
+const ProviderServicesSection: React.FC = () => {
+  type Draft = ProviderServiceWire & { _isNew?: boolean; _dirty?: boolean; _msg?: string | null }
+  const [rows, setRows] = useState<Draft[]>([])
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const load = async () => { try { setRows((await providerServicesApi.list()).map((s) => ({ ...s }))) } catch { /* unreachable */ } }
+  useEffect(() => { void load() }, [])
+  const up = (i: number, patch: Partial<Draft>) => setRows((r) => r.map((x, j) => (j === i ? { ...x, ...patch, _dirty: true, _msg: null } : x)))
+  const saveRow = async (i: number) => {
+    const d = rows[i]
+    const id = d.id || slugify(d.displayName || d.provider || '')
+    if (!id || !d.provider) { up(i, { _msg: 'provider + name required' }); return }
+    setBusyId(id)
+    const r = await providerServicesApi.save({
+      id, provider: d.provider, displayName: d.displayName || PROVIDER_SERVICE_CAPS[d.provider]?.label || d.provider,
+      apiKey: d.apiKey && !d.apiKey.startsWith('***') ? d.apiKey : undefined, enabled: d.enabled !== false,
+    })
+    setBusyId(null)
+    if (!r.ok) { up(i, { _msg: r.error || 'save failed' }); return }
+    await load()
+  }
+  const removeRow = async (i: number) => {
+    const d = rows[i]
+    if (d._isNew) { setRows((r) => r.filter((_, j) => j !== i)); return }
+    const ok = await confirmStore.confirm({ title: 'Remove provider service', message: `Remove "${d.displayName || d.id}"? Its key is deleted from the registry (and Hermes .env on next sync).`, confirmText: 'Remove' })
+    if (!ok) return
+    setBusyId(d.id)
+    const r = await providerServicesApi.remove(d.id)
+    setBusyId(null)
+    if (!r.ok) { up(i, { _msg: r.error || 'delete failed' }); return }
+    await load()
+  }
+  return (
+    <>
+      <div style={sectionTitle}>Provider services</div>
+      <div style={{ ...sub, marginBottom: 8 }}>
+        Non-model provider accounts (TTS etc.). The key is stored ONCE here — the backend pushes it into
+        Hermes <code>.env</code> so any agent using the provider picks it up. Masked like model sources.
+      </div>
+      {rows.map((d, i) => (
+        <div key={d._isNew ? `new-${i}` : d.id} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <select style={{ ...smallInp, width: 130 }} value={d.provider ?? ''} disabled={!d._isNew} onChange={(ev) => up(i, { provider: ev.target.value })}>
+            <option value="" disabled>provider…</option>
+            {Object.entries(PROVIDER_SERVICE_CAPS).map(([slug, cap]) => <option key={slug} value={slug}>{cap.label} ({cap.kind})</option>)}
+          </select>
+          <input style={{ ...smallInp, width: 140 }} placeholder="display name" value={d.displayName ?? ''} onChange={(ev) => up(i, { displayName: ev.target.value })} />
+          <input
+            style={{ ...smallInp, flex: 1, minWidth: 160 }}
+            type="password"
+            placeholder={d.hasKey ? `key set (${d.apiKey ?? '***'}) — blank keeps it` : 'API key'}
+            value={d.apiKey && !d.apiKey.startsWith('***') ? d.apiKey : ''}
+            onChange={(ev) => up(i, { apiKey: ev.target.value })}
+          />
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--fg-muted)' }}>
+            <input type="checkbox" checked={d.enabled !== false} onChange={(ev) => up(i, { enabled: ev.target.checked })} /> enabled
+          </label>
+          {d.provider && PROVIDER_SERVICE_CAPS[d.provider] && (
+            <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--fg-faint)' }}>{PROVIDER_SERVICE_CAPS[d.provider].envVar}</span>
+          )}
+          <button style={{ ...btn, padding: '4px 10px', fontSize: 12 }} disabled={busyId !== null || (!d._dirty && !d._isNew)} onClick={() => void saveRow(i)}>{d._isNew ? 'Register' : 'Save'}</button>
+          <button style={delBtn} disabled={busyId !== null} onClick={() => void removeRow(i)}><Trash2 size={13} /></button>
+          {d._msg && <span style={{ fontSize: 11, color: 'var(--danger)' }}>{d._msg}</span>}
+        </div>
+      ))}
+      <button style={addBtn} onClick={() => setRows((r) => [...r, { id: '', provider: '', displayName: '', enabled: true, _isNew: true, _dirty: true } as Draft])}>
+        <Plus size={13} /> Add provider service
+      </button>
+    </>
+  )
+}
+
 const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => void }> = ({ catalog, onChanged }) => {
   const [rows, setRows] = useState<SourceDraft[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -331,6 +441,7 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
   const [balances, setBalances] = useState<Record<string, SourceBalance>>({})
   const [pendingSel, setPendingSel] = useState<Record<string, string[]>>({}) // curation selection per source (for the Save button)
 
+  const [chartId, setChartId] = useState<string | null>(null)
   const loadBalances = () => {
     modelSourcesApi.balances()
       .then((bs) => setBalances(Object.fromEntries(bs.map((b) => [b.sourceId, b]))))
@@ -451,7 +562,13 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
                 📊 ${Number(balances[d.id].spendMonth).toFixed(2)}/mo
               </span>
             )}
+            {!d._isNew && (
+              <button style={{ ...btn, padding: '2px 7px', fontSize: 11 }} title="Credit cost over time" onClick={() => setChartId((c) => (c === d.id ? null : d.id))}>
+                📈
+              </button>
+            )}
           </div>
+          {chartId === d.id && !d._isNew && <BalanceChart sourceId={d.id} />}
           <div style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center', flexWrap: 'wrap' }}>
             <input style={{ ...smallInp, flex: 2, minWidth: 220 }} placeholder="base URL, e.g. https://api.deepseek.com/v1" value={d.baseUrl ?? ''} onChange={(ev) => up(i, { baseUrl: ev.target.value })} />
             <input
@@ -583,6 +700,8 @@ export const ExternalServicesPanel: React.FC = () => {
       <div style={sub}>Model API sources (the proxy&apos;s external-model registry) + vector DBs. Stored on CT 152.</div>
 
       <ModelSourcesSection catalog={catalog} onChanged={() => void refreshCatalog()} />
+
+      <ProviderServicesSection />
 
       <CatalogBrowser catalog={catalog} loaded={catalogLoaded} onRefresh={() => void refreshCatalog()} />
 
