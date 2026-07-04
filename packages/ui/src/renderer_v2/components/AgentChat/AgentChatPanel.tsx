@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Bot, ChevronDown, ChevronRight, ListChecks, SendHorizonal, Settings2, Wrench } from 'lucide-react'
+import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, ScanEye, SendHorizonal, Settings2, Wrench } from 'lucide-react'
 import type { HermesSlashCommand } from '@gyshell/shared'
 import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
 import { hermesChatStore as chat, type ChatItem } from '../../stores/HermesChatStore'
@@ -44,7 +44,21 @@ const PlanCard: React.FC<{ item: ChatItem }> = ({ item }) => (
 
 const Row: React.FC<{ item: ChatItem }> = ({ item }) => {
   switch (item.kind) {
-    case 'user': return <div className={styles.msgYou}>{item.text}</div>
+    case 'user':
+      return (
+        <div className={styles.msgYou}>
+          {item.text}
+          {item.ctxAttached && (
+            <span
+              className={styles.ctxChip}
+              title={item.ctxAttached === 'vision' ? 'view context + screenshot sent to the agent' : 'view context sent to the agent'}
+            >
+              {item.ctxAttached === 'vision' ? <Camera size={10} /> : <ScanEye size={10} />}
+              {item.ctxAttached === 'vision' ? 'screen' : 'view'}
+            </span>
+          )}
+        </div>
+      )
     case 'assistant':
       return (
         <div className={`${styles.msgAgent} markdown-body`}>

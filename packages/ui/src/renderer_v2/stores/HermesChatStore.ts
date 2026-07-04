@@ -16,6 +16,9 @@
 import { makeAutoObservable, runInAction } from 'mobx'
 import { hermesStreamEventSchema, type HermesSlashCommand, type HermesStreamEvent } from '@gyshell/shared'
 import { hermesApi } from './hermesApi'
+import { hermesAgentsStore } from './HermesAgentsStore'
+import { buildViewSnapshot } from '../lib/viewContext'
+import { captureUI } from '../services/ScreenshotService'
 
 export interface ChatItem {
   id: number
@@ -29,6 +32,8 @@ export interface ChatItem {
   plan?: Array<{ content: string; status?: string; priority?: string }>
   /** assistant/thought: still receiving chunks */
   streaming?: boolean
+  /** user turns: what page context rode along ('text' = viewContext, 'vision' = +screenshot). */
+  ctxAttached?: 'text' | 'vision'
   ts: number
 }
 
@@ -219,15 +224,39 @@ class HermesChatStore {
     this.schedulePersist(agentId)
   }
 
-  /** Send one turn. The reply renders via the stream; the POST is for error surfacing. */
+  /**
+   * Send one turn. The reply renders via the stream; the POST is for error surfacing.
+   * Feature A (page-aware agents): viewContext rides along on EVERY turn; a
+   * captureUI screenshot is attached ONLY when the bound agent's model is
+   * vision-capable (backend heuristic via GET /agents capabilities). Context
+   * augments the agent's turn server-side — the displayed message stays clean;
+   * the transcript marks carrying turns with a chip (ctxAttached).
+   */
   async send(agentId: string, text: string): Promise<void> {
     const s = this.state(agentId)
     const t = text.trim()
     if (!t || s.busy) return
-    s.items.push({ id: this.nextId++, kind: 'user', text: t, ts: Date.now() })
+
+    const extra: { context?: string; screenshot?: string } = {}
+    try {
+      const snapshot = buildViewSnapshot((window as any).__appStore)
+      if (snapshot) extra.context = JSON.stringify(snapshot, null, 1)
+    } catch { /* context is best-effort — never block the send */ }
+    if (hermesAgentsStore.capabilities[agentId]?.visionCapable) {
+      try {
+        // Exclude the chat overlay itself — the agent should see the page, not the panel.
+        const shot = await captureUI({ exclude: ['.ai-lab-global-chat'] })
+        if (shot) extra.screenshot = shot
+      } catch { /* screenshot is best-effort */ }
+    }
+
+    s.items.push({
+      id: this.nextId++, kind: 'user', text: t, ts: Date.now(),
+      ctxAttached: extra.screenshot ? 'vision' : extra.context ? 'text' : undefined,
+    })
     s.busy = true
     this.schedulePersist(agentId)
-    const r = await hermesApi.prompt(agentId, t)
+    const r = await hermesApi.prompt(agentId, t, extra)
     runInAction(() => {
       if (!r.ok) {
         s.busy = false
