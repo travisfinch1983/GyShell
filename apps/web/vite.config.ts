@@ -84,6 +84,15 @@ export default defineConfig({
         ws: true,
         rewrite: (path) => path.replace(/^\/dash/, '') || '/',
       },
+      // Addons (Addons tab) — each registered addon (packages/ui .../Addons/addonRegistry.ts)
+      // gets ONE proxy entry here: same-origin /addon/<id> → its container, target env-overridable
+      // (rule #1: backend-proxied, never browser→LAN). Upscaler = CT161.
+      '/addon/upscaler': {
+        target: process.env.ADDON_UPSCALER_URL || 'http://10.0.0.231:7700',
+        changeOrigin: true,
+        ws: true,
+        rewrite: (path) => path.replace(/^\/addon\/upscaler/, '') || '/',
+      },
       // FileBrowser Quantum (File Manager tab) — sidecar on :8082 in this container, browsing the mounted
       // NAS pools (/nas). Configured with baseURL=/files so it SERVES under /files (no rewrite — keep the
       // prefix). Same-origin iframe, so X-Frame-Options:SAMEORIGIN (if any) permits it. ws for live updates.

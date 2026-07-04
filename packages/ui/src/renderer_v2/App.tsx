@@ -16,6 +16,7 @@ import { PrimarySidebar, type PrimaryTab } from './components/PrimarySidebar/Pri
 import { GlobalChat } from './components/Chat/GlobalChat'
 import { FleetPanel } from './components/Fleet/FleetPanel'
 import { AgentChatPanel } from './components/AgentChat/AgentChatPanel'
+import { AddonsPanel } from './components/Addons/AddonsPanel'
 import { ContextMenuOverlay } from './components/Common/ContextMenuOverlay'
 import { ClusterPanel } from './components/Cluster/ClusterPanel'
 import { ServicesPanel } from './components/Services/ServicesPanel'
@@ -237,6 +238,8 @@ export const App: React.FC = observer(() => {
           {primaryTab === 'fleet' && <FleetPanel />}
 
           {primaryTab === 'agents' && <AgentChatPanel />}
+
+          {primaryTab === 'addons' && <AddonsPanel />}
 
           {primaryTab === 'flowchart' && (
             <PlaceholderPanel
