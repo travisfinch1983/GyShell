@@ -175,3 +175,55 @@
   b { font-size: 17px; font-family: var(--font-mono, monospace); }
   span { font-size: 10.5px; color: var(--fg-faint); text-transform: uppercase; letter-spacing: 0.05em; }
 }
+
+/* ── compare overlay (detail view) ── */
+.compareOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  background: var(--app-bg);
+}
+
+.compareGrid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+}
+
+.comparePane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-top: 1px solid var(--border);
+
+  &:first-child { border-right: 1px solid var(--border); }
+}
+
+.paneLabel {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--fg-faint);
+  padding: 4px 10px;
+  font-family: var(--font-mono, monospace);
+}
+
+.panWrap {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+  touch-action: none;
+  cursor: grab;
+
+  img {
+    transform-origin: 0 0;
+    user-select: none;
+    max-width: none;
+  }
+
+  &:active { cursor: grabbing; }
+}

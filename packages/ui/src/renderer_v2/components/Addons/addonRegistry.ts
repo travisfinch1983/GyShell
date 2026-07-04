@@ -2,6 +2,7 @@ import type React from 'react'
 import { Blocks, ImageUpscale, type LucideIcon } from 'lucide-react'
 import { DashboardView } from './upscaler/DashboardView'
 import { BrowseView } from './upscaler/BrowseView'
+import { HistoryView } from './upscaler/HistoryView'
 
 /**
  * Addon registry — SELF-CONTAINED addon modules as Addons-tab sub-tabs.
@@ -47,6 +48,7 @@ export const ADDON_ICONS: Record<string, LucideIcon> = {
 export const NATIVE_VIEWS: Record<string, React.ComponentType> = {
   'upscaler.dashboard': DashboardView,
   'upscaler.browse': BrowseView,
+  'upscaler.history': HistoryView,
 }
 
 export const ADDONS: AddonManifest[] = [
