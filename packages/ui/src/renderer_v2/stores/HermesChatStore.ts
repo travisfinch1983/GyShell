@@ -17,9 +17,7 @@
 import { makeAutoObservable, runInAction } from 'mobx'
 import { hermesStreamEventSchema, type HermesSlashCommand, type HermesStreamEvent } from '@gyshell/shared'
 import { hermesApi } from './hermesApi'
-import { hermesAgentsStore } from './HermesAgentsStore'
 import { buildViewSnapshot } from '../lib/viewContext'
-import { captureUI } from '../services/ScreenshotService'
 
 export interface ChatItem {
   id: number
@@ -263,18 +261,14 @@ class HermesChatStore {
       const snapshot = buildViewSnapshot((window as any).__appStore)
       if (snapshot) extra.context = JSON.stringify(snapshot, null, 1)
     } catch { /* context is best-effort — never block the send */ }
-    if (hermesAgentsStore.capabilities[agentId]?.visionCapable) {
-      try {
-        // HIDE the chat panel (display:none + reflow) — the agent must see the
-        // full underlying view, exactly what Travis sees minus the panel.
-        const shot = await captureUI({ hide: ['.ai-lab-global-chat'] })
-        if (shot) extra.screenshot = shot
-      } catch { /* screenshot is best-effort */ }
-    }
+    // Screenshots are NOT auto-attached anymore (Travis: the every-send
+    // panel-hide was jarring, and the agent should look when IT decides to).
+    // On-demand capture arrives via claude1's capture-on-signal tool contract;
+    // captureUI({hide:['.ai-lab-global-chat']}) is the ready-made mechanism.
 
     s.items.push({
       id: this.nextId++, kind: 'user', text: t, ts: Date.now(),
-      ctxAttached: extra.screenshot ? 'vision' : extra.context ? 'text' : undefined,
+      ctxAttached: extra.context ? 'text' : undefined,
     })
     s.busy = true
     const r = await hermesApi.prompt(agentId, t, extra)

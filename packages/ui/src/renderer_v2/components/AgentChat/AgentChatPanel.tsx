@@ -92,9 +92,12 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
     return () => chat.detach(conversationId)
   }, [agentId, conversationId])
 
+  // Stick to the bottom on new content ONLY when the user is already there —
+  // scrolling up to read must not get yanked back down by streaming chunks.
+  const nearBottomRef = useRef(true)
   useEffect(() => {
     const el = logRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (el && nearBottomRef.current) el.scrollTop = el.scrollHeight
   }, [s.items.length, s.items[s.items.length - 1]?.text.length])
 
   const slashMatches = useMemo<HermesSlashCommand[]>(() => {
@@ -130,7 +133,14 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
         )}
       </div>
 
-      <div ref={logRef} className={styles.log}>
+      <div
+        ref={logRef}
+        className={styles.log}
+        onScroll={(e) => {
+          const el = e.currentTarget
+          nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+        }}
+      >
         {s.items.length === 0 && (
           <div className={styles.dim}>
             Attached to the live session. The transcript shows events from attach onward — the session itself
