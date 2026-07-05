@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto'
 import { HermesManagementService } from './HermesManagementService'
 import { HermesAcpBridge, type AcpEvent, type AcpHistory } from './HermesAcpBridge'
 import type { HermesAgentSpec } from '@gyshell/shared'
@@ -24,6 +25,8 @@ export interface HermesServiceConfig {
 export class HermesService {
   readonly mgmt: HermesManagementService
   readonly bridge: HermesAcpBridge
+  /** In-flight on-demand screen captures: requestId → resolver(base64 image). */
+  private readonly pendingCaptures = new Map<string, (image: string) => void>()
 
   constructor(cfg: HermesServiceConfig) {
     this.mgmt = new HermesManagementService({ host: cfg.host, sshKeyPath: cfg.sshKeyPath, specsFile: cfg.specsFile, providerServicesFile: cfg.providerServicesFile })
@@ -64,6 +67,33 @@ export class HermesService {
    *  chat tab is closed so a same-agent reopen starts a brand-new conversation. */
   stopSession(sessionKey: string): void {
     this.bridge.stopSession(sessionKey)
+  }
+
+  /** On-demand screen capture for the page-aware `view_screen` MCP tool. Emits a
+   *  `capture_request` to the most-recent conversation's stream, waits for the frontend to
+   *  POST the image, writes it to the agent's workspace on CT158, and returns the LOCAL path
+   *  its `vision_analyze` tool can read (an internal URL would be SSRF-blocked; a file is not). */
+  async captureScreen(opts: { timeoutMs?: number } = {}): Promise<{ path: string }> {
+    const target = this.bridge.mostRecentSession()
+    if (!target) throw new Error('no active conversation to capture the screen for')
+    const requestId = randomUUID()
+    const image = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => { this.pendingCaptures.delete(requestId); reject(new Error('screen capture timed out — is the chat open?')) }, opts.timeoutMs ?? 20_000)
+      this.pendingCaptures.set(requestId, (img) => { clearTimeout(timer); resolve(img) })
+      if (!this.bridge.emitToSession(target.sessionKey, { t: 'capture_request', requestId })) {
+        clearTimeout(timer); this.pendingCaptures.delete(requestId); reject(new Error('no live session to request a capture'))
+      }
+    })
+    return { path: await this.mgmt.writeAgentScreenshot(target.agentId, image) }
+  }
+
+  /** Frontend calls this (via POST) once it has captured the screen, keyed by requestId. */
+  resolveCapture(requestId: string, image: string): boolean {
+    const r = this.pendingCaptures.get(requestId)
+    if (!r) return false
+    this.pendingCaptures.delete(requestId)
+    r(image)
+    return true
   }
 
   /** Fire a prompt WITHOUT waiting for the turn to finish — the reply arrives over the

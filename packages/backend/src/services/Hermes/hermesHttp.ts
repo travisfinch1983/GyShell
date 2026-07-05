@@ -126,6 +126,27 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     }
   })
 
+  // Page-aware vision: the `view_screen` MCP tool POSTs here. We ask the active chat frontend
+  // to capture its screen (a capture_request on the conversation stream), write the returned
+  // image into the agent's workspace on CT158, and return the local path for `vision_analyze`.
+  router.post('/api/hermes/capture-screen', json, async (_req: Req, res: Res) => {
+    try {
+      const r = await hermes.captureScreen()
+      res.json({ ok: true, ...r })
+    } catch (e) {
+      res.status(503).json({ error: String((e as Error).message) })
+    }
+  })
+
+  // The frontend POSTs the captured screenshot back here, keyed by the capture_request's requestId.
+  router.post('/api/hermes/screen-capture', json, (req: Req, res: Res) => {
+    const body = (req.body ?? {}) as { requestId?: unknown; image?: unknown }
+    const requestId = typeof body.requestId === 'string' ? body.requestId : ''
+    const image = typeof body.image === 'string' ? body.image : ''
+    if (!requestId || !image) return res.status(400).json({ error: 'requestId + image required' })
+    res.json({ ok: hermes.resolveCapture(requestId, image) })
+  })
+
   // SSE observer — attaches to the session's live normalized event stream.
   //   - No cursor: emit the current `ready` snapshot (model/mode/commands) then live events
   //     — byte-identical to the original fresh-attach contract.

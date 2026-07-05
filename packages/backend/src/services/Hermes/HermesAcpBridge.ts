@@ -205,6 +205,27 @@ export class HermesAcpBridge extends EventEmitter {
     }
   }
 
+  /** The most-recently-active live session (highest lastActivity) — used to route an
+   *  on-demand screen capture to the conversation the user is currently in. */
+  mostRecentSession(): { sessionKey: string; agentId: string } | null {
+    let best: { sessionKey: string; agentId: string; at: number } | null = null
+    for (const [sessionKey, s] of this.sessions) {
+      if (s.proc.exitCode !== null) continue
+      if (!best || s.lastActivity > best.at) best = { sessionKey, agentId: s.agentId, at: s.lastActivity }
+    }
+    return best ? { sessionKey: best.sessionKey, agentId: best.agentId } : null
+  }
+
+  /** Inject a synthetic event into a session's stream (e.g. a `capture_request` for the
+   *  page-aware chat) so /stream observers (the frontend) receive it. Not persisted to the
+   *  transcript ring — it's a live control signal, not a transcript event. */
+  emitToSession(sessionKey: string, event: Record<string, unknown>): boolean {
+    const s = this.sessions.get(sessionKey)
+    if (!s) return false
+    s.emitter.emit('event', event as unknown as AcpEvent)
+    return true
+  }
+
   /** Gracefully close a session (asks the bridge to exit, then hard-kills as a backstop).
    *  Removes it from the map immediately so a same-key reopen starts a FRESH session —
    *  this is what makes "close tab wipes the conversation" true. */

@@ -192,6 +192,17 @@ export class HermesManagementService {
     return this.ssh(`printf %s ${shq(b64)} | base64 -d > ${shq(path)}`)
   }
 
+  /** Write an on-demand screenshot (base64 from the browser; data URL or bare) into the agent's
+   *  workspace on CT158, where its `vision_analyze` tool can read the local file — an internal
+   *  URL would be SSRF-blocked, a local path is not. Returns the absolute path the agent reads. */
+  async writeAgentScreenshot(agentId: string, image: string): Promise<string> {
+    const b64 = image.includes(',') ? image.slice(image.indexOf(',') + 1) : image
+    const ext = /^data:image\/png/i.test(image) ? 'png' : 'jpg'
+    const path = `${this.profileHome(agentId)}/workspace/.screen.${ext}`
+    await this.ssh(`printf %s ${shq(b64)} | base64 -d > ${shq(path)}`)
+    return path
+  }
+
   private profileHome(agentId: string): string {
     return `${this.profileHomeBase}/${agentId}`
   }
