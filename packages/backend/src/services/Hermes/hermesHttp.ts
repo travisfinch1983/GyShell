@@ -71,14 +71,16 @@ export function createHermesRouter(hermes: HermesService): express.Router {
 
   // Fire one turn and return the assembled reply (also streams to any /stream observers).
   router.post('/api/hermes/agents/:id/prompt', json, async (req: Req, res: Res) => {
-    const body = (req.body ?? {}) as { text?: unknown; context?: unknown; screenshot?: unknown }
+    const body = (req.body ?? {}) as { text?: unknown; context?: unknown; screenshot?: unknown; conversationId?: unknown }
     const text = String(body.text ?? '')
     if (!text.trim()) return res.status(400).json({ error: 'text required' })
     try {
       // Feature A (page-aware): optional structured view context + screenshot data URL.
+      // conversationId (per chat tab) scopes an independent session; omit → one-per-agent.
       const r = await hermes.runTurn(req.params.id, text, {
         context: typeof body.context === 'string' ? body.context : undefined,
         screenshot: typeof body.screenshot === 'string' ? body.screenshot : undefined,
+        sessionKey: typeof body.conversationId === 'string' ? body.conversationId : undefined,
       })
       res.json({ ok: true, ...r })
     } catch (e) {
@@ -92,10 +94,25 @@ export function createHermesRouter(hermes: HermesService): express.Router {
   // 404 if no live session (backend-owned session isn't running → nothing buffered).
   router.get('/api/hermes/agents/:id/history', async (req: Req, res: Res) => {
     try {
-      const since = Number((req.query as { since?: unknown }).since ?? 0) || 0
-      const h = hermes.getHistory(req.params.id, since)
-      if (!h) return res.status(404).json({ error: 'no live session for agent' })
+      const q = req.query as { since?: unknown; conversationId?: unknown }
+      const since = Number(q.since ?? 0) || 0
+      const key = typeof q.conversationId === 'string' ? q.conversationId : req.params.id
+      const h = hermes.getHistory(key, since)
+      if (!h) return res.status(404).json({ error: 'no live session for conversation' })
       res.json(h)
+    } catch (e) {
+      res.status(500).json({ error: String((e as Error).message) })
+    }
+  })
+
+  // End + WIPE a conversation's session (called when a chat tab is closed) so a same-agent
+  // reopen starts brand new. Idempotent — no-op if nothing's running for that key.
+  router.delete('/api/hermes/agents/:id/session', (req: Req, res: Res) => {
+    try {
+      const q = req.query as { conversationId?: unknown }
+      const key = typeof q.conversationId === 'string' ? q.conversationId : req.params.id
+      hermes.stopSession(key)
+      res.json({ ok: true })
     } catch (e) {
       res.status(500).json({ error: String((e as Error).message) })
     }
@@ -110,7 +127,9 @@ export function createHermesRouter(hermes: HermesService): express.Router {
   //     and flushed with seq-dedup so nothing is lost or doubled.
   router.get('/api/hermes/agents/:id/stream', async (req: Req, res: Res) => {
     const id = req.params.id
-    const since = Number((req.query as { since?: unknown }).since ?? 0) || 0
+    const q = req.query as { since?: unknown; conversationId?: unknown }
+    const since = Number(q.since ?? 0) || 0
+    const key = typeof q.conversationId === 'string' ? q.conversationId : id
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
@@ -118,7 +137,7 @@ export function createHermesRouter(hermes: HermesService): express.Router {
 
     let ready: AcpEvent
     try {
-      ready = await hermes.ensureReady(id)
+      ready = await hermes.ensureReady(id, key)
     } catch (e) {
       res.write(`data: ${JSON.stringify({ t: 'error', message: String((e as Error).message) })}\n\n`)
       return res.end()
@@ -127,7 +146,7 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     // Attach the live listener FIRST, buffering into a queue, so no event emitted during the
     // replay below is dropped. Flip to direct-write once the replay is flushed.
     let queue: AcpEvent[] | null = []
-    const off = hermes.onEvent(id, (ev) => {
+    const off = hermes.onEvent(key, (ev) => {
       if (queue) { queue.push(ev); return }
       try { res.write(`data: ${JSON.stringify(ev)}\n\n`) } catch { /* client gone */ }
     })
@@ -136,7 +155,7 @@ export function createHermesRouter(hermes: HermesService): express.Router {
 
     let lastWritten = 0
     if (since > 0) {
-      for (const ev of hermes.getHistory(id, since)?.events ?? []) {
+      for (const ev of hermes.getHistory(key, since)?.events ?? []) {
         res.write(`data: ${JSON.stringify(ev)}\n\n`)
         lastWritten = ev.seq ?? lastWritten
       }

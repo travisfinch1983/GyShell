@@ -48,14 +48,22 @@ export class HermesService {
     await this.mgmt.deleteAgent(agentId)
   }
 
-  /** Ensure a live session and return its `ready` event (models/modes/commands). */
-  ensureReady(agentId: string): Promise<AcpEvent> {
-    return this.bridge.ensureReady(agentId)
+  /** Ensure a live session and return its `ready` event (models/modes/commands).
+   *  `sessionKey` scopes the session (a per-conversation id for chat tabs); defaults to
+   *  the agentId (one-session-per-agent, e.g. the bus subscriber). */
+  ensureReady(agentId: string, sessionKey: string = agentId): Promise<AcpEvent> {
+    return this.bridge.ensureReady(sessionKey, agentId)
   }
 
   /** Subscribe to a session's normalized event stream (for SSE/WS observers). */
-  onEvent(agentId: string, cb: (ev: AcpEvent) => void): () => void {
-    return this.bridge.onEvent(agentId, cb)
+  onEvent(sessionKey: string, cb: (ev: AcpEvent) => void): () => void {
+    return this.bridge.onEvent(sessionKey, cb)
+  }
+
+  /** End + WIPE a session (kill the backend process, drop its transcript). Used when a
+   *  chat tab is closed so a same-agent reopen starts a brand-new conversation. */
+  stopSession(sessionKey: string): void {
+    this.bridge.stopSession(sessionKey)
   }
 
   /**
@@ -63,8 +71,8 @@ export class HermesService {
    * events after that seq. undefined if the backend-owned session isn't running (nothing
    * buffered — the transcript's lifetime is the session's, per the headless invariant).
    */
-  getHistory(agentId: string, since = 0): AcpHistory | undefined {
-    return this.bridge.getHistory(agentId, since)
+  getHistory(sessionKey: string, since = 0): AcpHistory | undefined {
+    return this.bridge.getHistory(sessionKey, since)
   }
 
   /**
@@ -72,12 +80,13 @@ export class HermesService {
    * prompts, collects `message` chunks until `turn_done`. Used by the HTTP prompt route
    * and the (deferred) bus subscriber.
    */
-  async runTurn(agentId: string, text: string, opts: { timeoutMs?: number; context?: string; screenshot?: string } = {}): Promise<{ reply: string; stopReason?: string }> {
-    await this.bridge.ensureReady(agentId)
+  async runTurn(agentId: string, text: string, opts: { timeoutMs?: number; context?: string; screenshot?: string; sessionKey?: string } = {}): Promise<{ reply: string; stopReason?: string }> {
+    const key = opts.sessionKey ?? agentId
+    await this.bridge.ensureReady(key, agentId)
     const parts: string[] = []
     return new Promise<{ reply: string; stopReason?: string }>((resolve, reject) => {
       const timer = setTimeout(() => { off(); reject(new Error(`hermes runTurn timeout for ${agentId}`)) }, opts.timeoutMs ?? 240_000)
-      const off = this.bridge.onEvent(agentId, (ev) => {
+      const off = this.bridge.onEvent(key, (ev) => {
         if (ev.t === 'message') {
           parts.push(String((ev as { text?: unknown }).text ?? ''))
         } else if (ev.t === 'turn_done') {
@@ -89,7 +98,7 @@ export class HermesService {
         }
       })
       try {
-        this.bridge.prompt(agentId, text, { context: opts.context, screenshot: opts.screenshot })
+        this.bridge.prompt(key, text, { context: opts.context, screenshot: opts.screenshot })
       } catch (e) {
         clearTimeout(timer); off(); reject(e as Error)
       }

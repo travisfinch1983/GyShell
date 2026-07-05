@@ -84,9 +84,11 @@ export class HermesAcpBridge extends EventEmitter {
     ]
   }
 
-  /** Start (or return the existing) persistent session for an agent. Idempotent. */
-  startSession(agentId: string): AcpSession {
-    const existing = this.sessions.get(agentId)
+  /** Start (or return the existing) persistent session, keyed by an opaque `sessionKey`
+   *  (a per-conversation id for chat tabs, or the agentId for bus/one-per-agent callers).
+   *  `agentId` selects the Hermes profile to spawn. Idempotent per sessionKey. */
+  startSession(sessionKey: string, agentId: string): AcpSession {
+    const existing = this.sessions.get(sessionKey)
     if (existing && existing.proc.exitCode === null) return existing
 
     const proc = spawn('ssh', this.sshArgs(agentId), { stdio: ['pipe', 'pipe', 'pipe'] })
@@ -137,26 +139,26 @@ export class HermesAcpBridge extends EventEmitter {
     proc.stderr.on('data', (d: Buffer) => this.emit('stderr', { agentId, text: d.toString('utf8') }))
 
     proc.on('exit', (code) => {
-      this.sessions.delete(agentId)
+      this.sessions.delete(sessionKey)
       if (!session.readyResolved) { try { rejectReady(new Error(`acp-bridge for ${agentId} exited (code ${code}) before ready`)) } catch { /* noop */ } }
       emitter.emit('exit', code)
-      this.emit('sessionExit', { agentId, code })
+      this.emit('sessionExit', { agentId, sessionKey, code })
     })
     proc.on('error', (err) => {
       if (!session.readyResolved) { try { rejectReady(err instanceof Error ? err : new Error(String(err))) } catch { /* noop */ } }
-      this.emit('sessionError', { agentId, error: String(err) })
+      this.emit('sessionError', { agentId, sessionKey, error: String(err) })
     })
 
-    this.sessions.set(agentId, session)
+    this.sessions.set(sessionKey, session)
     return session
   }
 
   /** Ensure a session exists and has completed its ACP handshake; returns the `ready` event. */
-  async ensureReady(agentId: string): Promise<AcpEvent> {
-    const session = this.startSession(agentId)
+  async ensureReady(sessionKey: string, agentId: string): Promise<AcpEvent> {
+    const session = this.startSession(sessionKey, agentId)
     const timeoutMs = this.cfg.readyTimeoutMs ?? 30_000
     let timer: NodeJS.Timeout
-    const timeout = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error(`acp session ${agentId} ready timeout`)), timeoutMs) })
+    const timeout = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error(`acp session ${sessionKey} ready timeout`)), timeoutMs) })
     try {
       return await Promise.race([session.ready, timeout])
     } finally {
@@ -168,9 +170,9 @@ export class HermesAcpBridge extends EventEmitter {
    *  Feature A (page-aware): optional structured view `context` and a `screenshot`
    *  (data URL / base64 PNG) ride along; acp-bridge.py injects them into the turn
    *  (screenshot saved to a file the agent reads with its own vision/read tool). */
-  prompt(agentId: string, text: string, extra?: { context?: string; screenshot?: string }): void {
-    const session = this.sessions.get(agentId)
-    if (!session || session.proc.exitCode !== null) throw new Error(`no live acp session for ${agentId}`)
+  prompt(sessionKey: string, text: string, extra?: { context?: string; screenshot?: string }): void {
+    const session = this.sessions.get(sessionKey)
+    if (!session || session.proc.exitCode !== null) throw new Error(`no live acp session for ${sessionKey}`)
     const payload: Record<string, unknown> = { type: 'prompt', text }
     if (extra?.context) payload.context = extra.context
     if (extra?.screenshot) payload.screenshot = extra.screenshot
@@ -178,9 +180,9 @@ export class HermesAcpBridge extends EventEmitter {
   }
 
   /** Subscribe to a session's normalized events. Returns an unsubscribe fn (safe to call any time). */
-  onEvent(agentId: string, cb: (ev: AcpEvent) => void): () => void {
-    const session = this.sessions.get(agentId)
-    if (!session) throw new Error(`no acp session for ${agentId}`)
+  onEvent(sessionKey: string, cb: (ev: AcpEvent) => void): () => void {
+    const session = this.sessions.get(sessionKey)
+    if (!session) throw new Error(`no acp session for ${sessionKey}`)
     session.emitter.on('event', cb)
     return () => session.emitter.off('event', cb)
   }
@@ -190,8 +192,8 @@ export class HermesAcpBridge extends EventEmitter {
    * only events with seq > since (the gap a reconnecting observer missed); since=0 returns
    * the whole buffer. undefined if no session exists for the agent.
    */
-  getHistory(agentId: string, since = 0): AcpHistory | undefined {
-    const s = this.sessions.get(agentId)
+  getHistory(sessionKey: string, since = 0): AcpHistory | undefined {
+    const s = this.sessions.get(sessionKey)
     if (!s) return undefined
     const events = since > 0 ? s.history.filter((e) => (e.seq ?? 0) > since) : s.history.slice()
     return {
@@ -203,10 +205,13 @@ export class HermesAcpBridge extends EventEmitter {
     }
   }
 
-  /** Gracefully close a session (asks the bridge to exit, then hard-kills as a backstop). */
-  stopSession(agentId: string): void {
-    const session = this.sessions.get(agentId)
+  /** Gracefully close a session (asks the bridge to exit, then hard-kills as a backstop).
+   *  Removes it from the map immediately so a same-key reopen starts a FRESH session —
+   *  this is what makes "close tab wipes the conversation" true. */
+  stopSession(sessionKey: string): void {
+    const session = this.sessions.get(sessionKey)
     if (!session) return
+    this.sessions.delete(sessionKey)
     try { session.proc.stdin.write(JSON.stringify({ type: 'close' }) + '\n') } catch { /* noop */ }
     setTimeout(() => { try { if (session.proc.exitCode === null) session.proc.kill('SIGTERM') } catch { /* noop */ } }, 2500)
   }
