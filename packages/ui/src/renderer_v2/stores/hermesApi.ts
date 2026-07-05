@@ -93,6 +93,13 @@ export const hermesApi = {
     }
   },
 
+  /** POST /api/hermes/screen-capture — answer a capture_request signal (the
+   *  backend hands the image to the agent's view_screen tool; 20s timeout its
+   *  side, so on capture failure we simply don't POST). */
+  async screenCapture(requestId: string, image: string): Promise<void> {
+    await bridge().request('POST', '/api/hermes/screen-capture', { requestId, image })
+  },
+
   /** SSE observer path (same-origin EventSource; disconnect only detaches).
    *  conversationId scopes to ONE conversation's session (omitted = legacy per-agent key). */
   streamPath(id: string, conversationId?: string): string {

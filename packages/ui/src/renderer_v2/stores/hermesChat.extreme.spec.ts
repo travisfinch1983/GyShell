@@ -128,6 +128,13 @@ const kinds = (id: string) => hermesChatStore.state(id).items.map((i: ChatItem) 
   assertEqual(hermesChatStore.state(id).busy, false, 'case7b: turn_done clears busy')
 }
 
+// ── case 7c: capture_request is a SIGNAL — parses, renders nothing ──────────
+{
+  const id = 'case7c'
+  assertEqual(feed(id, { t: 'capture_request', requestId: 'req-1' }), true, 'case7c: capture_request parses')
+  assertEqual(hermesChatStore.state(id).items.length, 0, 'case7c: no transcript row for the signal')
+}
+
 // ── case 8: permission_auto_allow renders a system notice ───────────────────
 {
   const id = 'case8'

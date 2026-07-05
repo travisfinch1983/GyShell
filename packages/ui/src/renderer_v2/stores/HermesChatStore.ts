@@ -18,6 +18,7 @@ import { makeAutoObservable, runInAction } from 'mobx'
 import { hermesStreamEventSchema, type HermesSlashCommand, type HermesStreamEvent } from '@gyshell/shared'
 import { hermesApi } from './hermesApi'
 import { buildViewSnapshot } from '../lib/viewContext'
+import { captureUI } from '../services/ScreenshotService'
 
 export interface ChatItem {
   id: number
@@ -223,6 +224,11 @@ class HermesChatStore {
         else push({ kind: 'plan', text: '', plan: entries })
         break
       }
+      case 'capture_request':
+        // Signal, not transcript: the agent decided to LOOK. Run the
+        // panel-hidden capture and POST it back; render only the outcome.
+        void this.handleCaptureRequest(conversationId, ev.requestId)
+        break
       case 'permission_auto_allow':
         // The bridge auto-approves (mode-driven) — informational, nothing to ask the user.
         push({ kind: 'system', text: `permission auto-allowed (${ev.option_id ?? 'default option'})` })
@@ -241,6 +247,23 @@ class HermesChatStore {
         // mode/session-info passthroughs — no rendering yet.
         break
     }
+  }
+
+  /** view_screen round-trip: capture with the chat panel removed from layout,
+   *  POST back keyed by requestId. On failure: no POST — the backend times out
+   *  (20s) and tells the agent it couldn't see. Panel restore is captureUI's
+   *  own finally. */
+  private async handleCaptureRequest(conversationId: string, requestId: string): Promise<void> {
+    if (typeof document === 'undefined') return // spec env
+    try {
+      const shot = await captureUI({ hide: ['.ai-lab-global-chat'] })
+      if (!shot) return
+      await hermesApi.screenCapture(requestId, shot)
+      const s = this.state(conversationId)
+      runInAction(() => {
+        s.items.push({ id: this.nextId++, kind: 'system', text: '📸 agent viewed your screen', ts: Date.now() })
+      })
+    } catch { /* no POST — backend timeout informs the agent */ }
   }
 
   /**

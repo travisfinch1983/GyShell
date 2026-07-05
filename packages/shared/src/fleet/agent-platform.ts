@@ -238,6 +238,9 @@ export const hermesStreamEventSchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('sessionInfoUpdate'), raw: z.unknown() }),
   /** Catch-all for ACP update classes the bridge doesn't know; kind = class name. */
   z.object({ t: z.literal('update'), kind: z.string(), raw: z.unknown() }),
+  /** Backend signal (NOT a transcript message): the agent's view_screen tool
+   *  fired — the UI runs a panel-hidden capture and POSTs it back with this id. */
+  z.object({ t: z.literal('capture_request'), requestId: z.string() }),
   /** Bridge auto-approved a permission request (mode-driven). */
   z.object({ t: z.literal('permission_auto_allow'), option_id: z.string().nullish() }),
   z.object({ t: z.literal('turn_done'), stop_reason: z.string().nullish() }),
