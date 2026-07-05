@@ -81,11 +81,19 @@ export function socketForInstance(inst: ManagedInstance): string {
 export function attachCommandFor(inst: ManagedInstance): string {
   const socket = socketForInstance(inst)
   const user = inst.user ?? 'root'
+  // SINGLE-ATTACH ENFORCEMENT: reap any stray `dtach -a` clients on this socket BEFORE we
+  // attach. A second client (the legacy ttyd, another browser) makes dtach flip-flop the
+  // shared pty size on every resize -> garbled lines / blank screen / lost cursor for
+  // fleet instances that also run a ttyd (claude1/root has none, so it was never affected).
+  // It's also the /clear multi-attach vector. We reap ONLY real dtach procs (comm=dtach) so
+  // the ttyd wrapper + the su layer are untouched; runs as root (ssh target) so it can reap
+  // a user-owned client. Our own attach is exec'd AFTER, surviving as the sole client.
+  const reap = `for p in $(pgrep -f 'dtach -a ${socket}' 2>/dev/null); do [ "$(cat /proc/$p/comm 2>/dev/null)" = dtach ] && kill "$p" 2>/dev/null; done`
   // dtach usage is `-a <socket> <options>` — the socket MUST precede -r or dtach 0.9
   // rejects it with "Invalid number of arguments" (only once a tty exists, i.e. under ssh -tt).
-  if (user === 'root') return `exec dtach -a ${socket} -r winch`
+  if (user === 'root') return `${reap}; exec dtach -a ${socket} -r winch`
   // Quote for the su -c layer; socket paths are slugs but stay defensive.
-  return `exec su - ${user} -c 'exec dtach -a ${socket.replace(/'/g, `'\\''`)} -r winch'`
+  return `${reap}; exec su - ${user} -c 'exec dtach -a ${socket.replace(/'/g, `'\\''`)} -r winch'`
 }
 
 export class ClaudeConsoleService {
