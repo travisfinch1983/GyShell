@@ -57,8 +57,8 @@ function emptyState(): AgentChatState {
  *  session-history endpoint exists. The session itself always survives on the
  *  backend — this only preserves what THIS browser tab has already seen. */
 const PERSIST_MAX_ITEMS = 300
-function persistKey(agentId: string): string {
-  return `hermesChat:${agentId}`
+function persistKey(conversationId: string): string {
+  return `hermesChat:${conversationId}`
 }
 
 class HermesChatStore {
@@ -71,22 +71,22 @@ class HermesChatStore {
     makeAutoObservable(this, {}, { autoBind: true })
   }
 
-  state(agentId: string): AgentChatState {
-    let s = this.chats.get(agentId)
+  state(conversationId: string): AgentChatState {
+    let s = this.chats.get(conversationId)
     if (!s) {
       // Read back after set: observable.map deep-converts values on insertion,
       // so the stored proxy — not the plain literal — must be what we mutate.
-      this.chats.set(agentId, emptyState())
-      s = this.chats.get(agentId)!
-      this.hydrate(agentId, s)
+      this.chats.set(conversationId, emptyState())
+      s = this.chats.get(conversationId)!
+      this.hydrate(conversationId, s)
     }
     return s
   }
 
-  private hydrate(agentId: string, s: AgentChatState): void {
+  private hydrate(conversationId: string, s: AgentChatState): void {
     if (typeof sessionStorage === 'undefined') return
     try {
-      const raw = sessionStorage.getItem(persistKey(agentId))
+      const raw = sessionStorage.getItem(persistKey(conversationId))
       if (!raw) return
       const items = JSON.parse(raw) as ChatItem[]
       if (!Array.isArray(items) || !items.length) return
@@ -96,26 +96,31 @@ class HermesChatStore {
     } catch { /* corrupt cache — start fresh */ }
   }
 
-  private schedulePersist(agentId: string): void {
+  private schedulePersist(conversationId: string): void {
     if (typeof sessionStorage === 'undefined') return
-    const prev = this.saveTimers.get(agentId)
+    const prev = this.saveTimers.get(conversationId)
     if (prev) clearTimeout(prev)
-    this.saveTimers.set(agentId, setTimeout(() => {
-      this.saveTimers.delete(agentId)
-      const s = this.chats.get(agentId)
+    this.saveTimers.set(conversationId, setTimeout(() => {
+      this.saveTimers.delete(conversationId)
+      const s = this.chats.get(conversationId)
       if (!s) return
       try {
-        sessionStorage.setItem(persistKey(agentId), JSON.stringify(s.items.slice(-PERSIST_MAX_ITEMS)))
+        sessionStorage.setItem(persistKey(conversationId), JSON.stringify(s.items.slice(-PERSIST_MAX_ITEMS)))
       } catch { /* quota — drop persistence, never the transcript */ }
     }, 400))
   }
 
-  /** Open the observer stream (idempotent). Never affects the backend session. */
-  attach(agentId: string): void {
-    if (this.sources.has(agentId)) return
-    const s = this.state(agentId)
-    const es = new EventSource(hermesApi.streamPath(agentId))
-    this.sources.set(agentId, es)
+  /**
+   * Open the observer stream (idempotent). Never affects the backend session.
+   * Keys are CONVERSATION ids (per-tab isolation — per-agent keying is the
+   * legacy path and exactly why an errored transcript survived tab closes);
+   * agentId routes the HTTP call.
+   */
+  attach(agentId: string, conversationId: string): void {
+    if (this.sources.has(conversationId)) return
+    const s = this.state(conversationId)
+    const es = new EventSource(hermesApi.streamPath(agentId, conversationId))
+    this.sources.set(conversationId, es)
     es.onopen = () => runInAction(() => { s.connected = true; s.error = null })
     es.onerror = () => runInAction(() => { s.connected = false })
     es.onmessage = (ev) => {
@@ -127,21 +132,30 @@ class HermesChatStore {
       } catch {
         return
       }
-      runInAction(() => this.reduce(agentId, parsed))
+      runInAction(() => this.reduce(conversationId, parsed))
     }
   }
 
   /** Close the observer stream. The backend session keeps running (headless invariant). */
-  detach(agentId: string): void {
-    this.sources.get(agentId)?.close()
-    this.sources.delete(agentId)
-    const s = this.chats.get(agentId)
+  detach(conversationId: string): void {
+    this.sources.get(conversationId)?.close()
+    this.sources.delete(conversationId)
+    const s = this.chats.get(conversationId)
     if (s) s.connected = false
   }
 
+  /** END + WIPE (tab close): detach, kill the backend session + its transcript,
+   *  drop the local state — a same-agent reopen starts brand new. */
+  async end(agentId: string, conversationId: string): Promise<void> {
+    this.detach(conversationId)
+    this.chats.delete(conversationId)
+    try { sessionStorage.removeItem(persistKey(conversationId)) } catch { /* private mode */ }
+    await hermesApi.endConversation(agentId, conversationId)
+  }
+
   /** Fold one wire event into the transcript. Exported for the spec. */
-  reduce(agentId: string, ev: HermesStreamEvent): void {
-    const s = this.state(agentId)
+  reduce(conversationId: string, ev: HermesStreamEvent): void {
+    const s = this.state(conversationId)
     const push = (item: Omit<ChatItem, 'id' | 'ts'>) => {
       s.items.push({ ...item, id: this.nextId++, ts: Date.now() })
     }
@@ -221,7 +235,7 @@ class HermesChatStore {
         // mode/session-info passthroughs — no rendering yet.
         break
     }
-    this.schedulePersist(agentId)
+    this.schedulePersist(conversationId)
   }
 
   /**
@@ -232,12 +246,12 @@ class HermesChatStore {
    * augments the agent's turn server-side — the displayed message stays clean;
    * the transcript marks carrying turns with a chip (ctxAttached).
    */
-  async send(agentId: string, text: string): Promise<void> {
-    const s = this.state(agentId)
+  async send(agentId: string, conversationId: string, text: string): Promise<void> {
+    const s = this.state(conversationId)
     const t = text.trim()
     if (!t || s.busy) return
 
-    const extra: { context?: string; screenshot?: string } = {}
+    const extra: { context?: string; screenshot?: string; conversationId?: string } = { conversationId }
     try {
       const snapshot = buildViewSnapshot((window as any).__appStore)
       if (snapshot) extra.context = JSON.stringify(snapshot, null, 1)
@@ -255,7 +269,7 @@ class HermesChatStore {
       ctxAttached: extra.screenshot ? 'vision' : extra.context ? 'text' : undefined,
     })
     s.busy = true
-    this.schedulePersist(agentId)
+    this.schedulePersist(conversationId)
     const r = await hermesApi.prompt(agentId, t, extra)
     runInAction(() => {
       if (!r.ok) {

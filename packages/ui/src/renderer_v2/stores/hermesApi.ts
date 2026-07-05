@@ -83,9 +83,9 @@ export const hermesApi = {
    * writes it to the agent's cwd and tells the agent to read it with its vision tool).
    * Both augment only the agent's turn, never the displayed user message.
    */
-  async prompt(id: string, text: string, extra?: { context?: string; screenshot?: string }): Promise<HermesPromptResult> {
+  async prompt(id: string, text: string, extra?: { context?: string; screenshot?: string; conversationId?: string }): Promise<HermesPromptResult> {
     try {
-      const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/prompt`, { text, ...(extra?.context ? { context: extra.context } : {}), ...(extra?.screenshot ? { screenshot: extra.screenshot } : {}) })
+      const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/prompt`, { text, ...(extra?.context ? { context: extra.context } : {}), ...(extra?.screenshot ? { screenshot: extra.screenshot } : {}), ...(extra?.conversationId ? { conversationId: extra.conversationId } : {}) })
       if (r?.error) return { ok: false, error: String(r.error) }
       return { ok: r?.ok !== false, reply: r?.reply, stopReason: r?.stopReason }
     } catch (e) {
@@ -93,9 +93,24 @@ export const hermesApi = {
     }
   },
 
-  /** SSE observer path (same-origin EventSource; disconnect only detaches). */
-  streamPath(id: string): string {
-    return `/api/hermes/agents/${encodeURIComponent(id)}/stream`
+  /** SSE observer path (same-origin EventSource; disconnect only detaches).
+   *  conversationId scopes to ONE conversation's session (omitted = legacy per-agent key). */
+  streamPath(id: string, conversationId?: string): string {
+    const q = conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : ''
+    return `/api/hermes/agents/${encodeURIComponent(id)}/stream${q}`
+  },
+
+  /** GET /history?conversationId — transcript read-back for a conversation. */
+  async history(id: string, conversationId: string, since?: number): Promise<any> {
+    return bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/history?conversationId=${encodeURIComponent(conversationId)}${since != null ? `&since=${since}` : ''}`)
+  },
+
+  /** DELETE /session?conversationId — END + WIPE: kills the backend session and
+   *  drops its transcript, so a same-agent reopen is brand new. Call on tab close. */
+  async endConversation(id: string, conversationId: string): Promise<void> {
+    try {
+      await bridge().request('DELETE', `/api/hermes/agents/${encodeURIComponent(id)}/session?conversationId=${encodeURIComponent(conversationId)}`)
+    } catch { /* best-effort — a dead backend session just ages out */ }
   },
 
   /**

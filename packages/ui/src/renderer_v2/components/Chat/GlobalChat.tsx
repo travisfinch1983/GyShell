@@ -6,6 +6,7 @@ import { ChatHistoryPanel } from '../Chat/ChatHistoryPanel'
 import { Bot, History, MessagesSquare, Plus, X } from 'lucide-react'
 import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
 import { AgentConversation } from '../AgentChat/AgentChatPanel'
+import { hermesChatStore } from '../../stores/HermesChatStore'
 import './globalChat.scss'
 
 interface Props {
@@ -27,14 +28,24 @@ interface Props {
  */
 
 const HERMES_TABS_KEY = 'ai-lab-hermes-chat-tabs'
-const ACTIVE_TAB_KEY = 'ai-lab-chat-active-tab' // 'session:<id>' | 'hermes:<agentId>'
+const ACTIVE_TAB_KEY = 'ai-lab-chat-active-tab' // 'session:<id>' | 'hermes:<conversationId>'
 
-const loadHermesTabs = (): string[] => {
-  try { return JSON.parse(localStorage.getItem(HERMES_TABS_KEY) ?? '[]') } catch { return [] }
+/** A Hermes chat tab = one CONVERSATION (own backend ACP session + transcript). */
+interface HermesTab { cid: string; agentId: string }
+
+const loadHermesTabs = (): HermesTab[] => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(HERMES_TABS_KEY) ?? '[]') as Array<string | HermesTab>
+    // Migrate the pre-conversation format (plain agentId strings) — each old tab
+    // becomes a fresh conversation (the old shared per-agent session is legacy).
+    return raw
+      .map((t) => (typeof t === 'string' ? { cid: crypto.randomUUID(), agentId: t } : t))
+      .filter((t) => t && typeof t.cid === 'string' && typeof t.agentId === 'string')
+  } catch { return [] }
 }
 
 export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
-  const [hermesTabs, setHermesTabs] = useState<string[]>(loadHermesTabs)
+  const [hermesTabs, setHermesTabs] = useState<HermesTab[]>(loadHermesTabs)
   const [active, setActive] = useState<string>(() => localStorage.getItem(ACTIVE_TAB_KEY) || '')
   const [pickerOpen, setPickerOpen] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
@@ -59,7 +70,7 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
   // Resolve the active tab; fall back to the first main session.
   const sep = active.indexOf(':')
   const [kind, ref] = sep > 0 ? [active.slice(0, sep), active.slice(sep + 1)] : ['session', '']
-  const activeHermes = kind === 'hermes' && hermesTabs.includes(ref) ? ref : null
+  const activeHermes = kind === 'hermes' ? hermesTabs.find((t) => t.cid === ref) ?? null : null
   const activeSessionId = !activeHermes
     ? (kind === 'session' && sessionIds.includes(ref)
         ? ref
@@ -72,7 +83,7 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
     setActive(id)
     localStorage.setItem(ACTIVE_TAB_KEY, id)
   }
-  const saveHermesTabs = (tabs: string[]) => {
+  const saveHermesTabs = (tabs: HermesTab[]) => {
     setHermesTabs(tabs)
     localStorage.setItem(HERMES_TABS_KEY, JSON.stringify(tabs))
   }
@@ -94,13 +105,17 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
   }
   const openHermesTab = (agentId: string) => {
     setPickerOpen(false)
-    if (!hermesTabs.includes(agentId)) saveHermesTabs([...hermesTabs, agentId])
-    pick(`hermes:${agentId}`)
+    // ALWAYS a new conversation (Travis): fresh cid → fresh backend session,
+    // even when other tabs for the same agent exist — each has its own context.
+    const tab: HermesTab = { cid: crypto.randomUUID(), agentId }
+    saveHermesTabs([...hermesTabs, tab])
+    pick(`hermes:${tab.cid}`)
   }
-  const closeHermesTab = (agentId: string) => {
-    // Unmount only detaches the observer stream — the backend session lives on.
-    saveHermesTabs(hermesTabs.filter((a) => a !== agentId))
-    if (activeHermes === agentId) pick(sessionIds[0] ? `session:${sessionIds[0]}` : '')
+  const closeHermesTab = (tab: HermesTab) => {
+    // END + WIPE: kill the backend session + transcript; local state dropped too.
+    void hermesChatStore.end(tab.agentId, tab.cid)
+    saveHermesTabs(hermesTabs.filter((t) => t.cid !== tab.cid))
+    if (activeHermes?.cid === tab.cid) pick(sessionIds[0] ? `session:${sessionIds[0]}` : '')
   }
   const closeSessionTab = (id: string) => {
     // Persistent delete (in-memory close would just rehydrate on reload).
@@ -122,13 +137,18 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
               <button className="glc-tab-close" onClick={(e) => { e.stopPropagation(); closeSessionTab(s.id) }}><X size={11} /></button>
             </div>
           ))}
-          {hermesTabs.map((agentId) => (
-            <div key={agentId} className={`glc-tab hermes ${activeHermes === agentId ? 'active' : ''}`} onClick={() => pick(`hermes:${agentId}`)}>
-              <Bot size={11} />
-              <span className="glc-tab-title">{hermesAgentsStore.specs.get(agentId)?.displayName ?? agentId}</span>
-              <button className="glc-tab-close" onClick={(e) => { e.stopPropagation(); closeHermesTab(agentId) }}><X size={11} /></button>
-            </div>
-          ))}
+          {hermesTabs.map((t, i) => {
+            const dupIndex = hermesTabs.filter((x, j) => x.agentId === t.agentId && j <= i).length
+            const dups = hermesTabs.filter((x) => x.agentId === t.agentId).length
+            const name = hermesAgentsStore.specs.get(t.agentId)?.displayName ?? t.agentId
+            return (
+              <div key={t.cid} className={`glc-tab hermes ${activeHermes?.cid === t.cid ? 'active' : ''}`} onClick={() => pick(`hermes:${t.cid}`)}>
+                <Bot size={11} />
+                <span className="glc-tab-title">{dups > 1 ? `${name} · ${dupIndex}` : name}</span>
+                <button className="glc-tab-close" onClick={(e) => { e.stopPropagation(); closeHermesTab(t) }}><X size={11} /></button>
+              </div>
+            )
+          })}
         </div>
         <div className="glc-actions" ref={pickerRef}>
           <button className="glc-act" title="New chat — pick an agent" onClick={() => { setPickerOpen((o) => !o); if (!pickerOpen) void hermesAgentsStore.refresh() }}>
@@ -147,7 +167,7 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
               {hermesAgentsStore.agents.map((id) => (
                 <button key={id} className="glc-picker-item" onClick={() => openHermesTab(id)}>
                   <Bot size={13} /> {hermesAgentsStore.specs.get(id)?.displayName ?? id}
-                  <span className="glc-picker-sub">{hermesTabs.includes(id) ? 'open tab' : 'Hermes agent'}</span>
+                  <span className="glc-picker-sub">new conversation</span>
                 </button>
               ))}
               {hermesAgentsStore.loaded && hermesAgentsStore.agents.length === 0 && (
@@ -161,7 +181,7 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
       {/* ── body routes to the bound agent's engine ── */}
       {activeHermes ? (
         <div className="glc-agents-body">
-          <AgentConversation key={activeHermes} agentId={activeHermes} />
+          <AgentConversation key={activeHermes.cid} agentId={activeHermes.agentId} conversationId={activeHermes.cid} />
         </div>
       ) : !activeSessionId ? (
         <div className="glc-empty">

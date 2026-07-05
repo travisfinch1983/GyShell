@@ -79,17 +79,18 @@ const Row: React.FC<{ item: ChatItem }> = ({ item }) => {
  * session: mounting attaches the SSE stream, unmounting only detaches — the
  * session (and any in-flight turn) keeps running headless on the backend.
  */
-export const AgentConversation: React.FC<{ agentId: string }> = observer(({ agentId }) => {
-  const s = chat.state(agentId)
+export const AgentConversation: React.FC<{ agentId: string; conversationId: string }> = observer(({ agentId, conversationId }) => {
+  const s = chat.state(conversationId)
   const [text, setText] = useState('')
   const [slashOpen, setSlashOpen] = useState(false)
   const logRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    chat.attach(agentId)
-    // Observer-only detach — never stops the backend session (headless invariant).
-    return () => chat.detach(agentId)
-  }, [agentId])
+    chat.attach(agentId, conversationId)
+    // Observer-only detach — never stops the backend session (headless invariant);
+    // END+WIPE happens only on explicit tab close (HermesChatStore.end).
+    return () => chat.detach(conversationId)
+  }, [agentId, conversationId])
 
   useEffect(() => {
     const el = logRef.current
@@ -108,7 +109,7 @@ export const AgentConversation: React.FC<{ agentId: string }> = observer(({ agen
     setSlashOpen(false)
     const t = text
     setText('')
-    void chat.send(agentId, t)
+    void chat.send(agentId, conversationId, t)
   }
 
   const spec = hermesAgentsStore.specs.get(agentId)
@@ -182,6 +183,13 @@ export const AgentConversation: React.FC<{ agentId: string }> = observer(({ agen
  *  live home of agent chat is GlobalChat's Agents mode (side panel). */
 export const AgentChatPanel: React.FC = observer(() => {
   const [active, setActive] = useState<string | null>(null)
+  // One conversation per agent for this surface's lifetime (feature-B scope).
+  const cids = useRef(new Map<string, string>())
+  const cidFor = (agentId: string) => {
+    let c = cids.current.get(agentId)
+    if (!c) { c = crypto.randomUUID(); cids.current.set(agentId, c) }
+    return c
+  }
 
   useEffect(() => {
     void hermesAgentsStore.refresh().then(() => {
@@ -205,7 +213,7 @@ export const AgentChatPanel: React.FC = observer(() => {
           <Settings2 size={12} /> Build &amp; configure in Settings › Agents
         </div>
       </div>
-      {active ? <AgentConversation key={active} agentId={active} /> : <div className={styles.emptyConv}>Pick an agent.</div>}
+      {active ? <AgentConversation key={active} agentId={active} conversationId={cidFor(active)} /> : <div className={styles.emptyConv}>Pick an agent.</div>}
     </div>
   )
 })
