@@ -9,6 +9,11 @@ export interface CaptureOptions {
   quality?: number
   /** CSS selectors to exclude from capture (elements get hidden temporarily). */
   exclude?: string[]
+  /** CSS selectors to REMOVE from layout during capture (display:none + reflow,
+   *  restored after). Use for overlays/panels that would otherwise cover the
+   *  content the capture is meant to show — `exclude`'s visibility:hidden keeps
+   *  the element's box and (with html2canvas) can still mask what's behind it. */
+  hide?: string[]
 }
 
 const DEFAULT_OPTIONS: Required<CaptureOptions> = {
@@ -16,6 +21,7 @@ const DEFAULT_OPTIONS: Required<CaptureOptions> = {
   maxWidth: 1280,
   quality: 0.85,
   exclude: [],
+  hide: [],
 }
 
 /**
@@ -34,6 +40,20 @@ export async function captureUI(options?: CaptureOptions): Promise<string | null
       hidden.push({ el, prev: el.style.visibility })
       el.style.visibility = 'hidden'
     })
+  }
+  // Remove `hide` targets from layout entirely so content behind/beside them is
+  // captured (overlay → reveals what's underneath; flex/grid sibling → the main
+  // view reclaims the space), then let the browser reflow before snapshotting.
+  const removed: Array<{ el: HTMLElement; prev: string }> = []
+  for (const sel of opts.hide) {
+    document.querySelectorAll<HTMLElement>(sel).forEach(el => {
+      removed.push({ el, prev: el.style.display })
+      el.style.display = 'none'
+    })
+  }
+  if (removed.length) {
+    void document.body.offsetHeight // force synchronous reflow
+    await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r()))) // let paint settle
   }
 
   try {
@@ -62,6 +82,9 @@ export async function captureUI(options?: CaptureOptions): Promise<string | null
     // Restore hidden elements
     for (const { el, prev } of hidden) {
       el.style.visibility = prev
+    }
+    for (const { el, prev } of removed) {
+      el.style.display = prev
     }
   }
 }

@@ -265,8 +265,9 @@ class HermesChatStore {
     } catch { /* context is best-effort — never block the send */ }
     if (hermesAgentsStore.capabilities[agentId]?.visionCapable) {
       try {
-        // Exclude the chat overlay itself — the agent should see the page, not the panel.
-        const shot = await captureUI({ exclude: ['.ai-lab-global-chat'] })
+        // HIDE the chat panel (display:none + reflow) — the agent must see the
+        // full underlying view, exactly what Travis sees minus the panel.
+        const shot = await captureUI({ hide: ['.ai-lab-global-chat'] })
         if (shot) extra.screenshot = shot
       } catch { /* screenshot is best-effort */ }
     }
@@ -282,8 +283,9 @@ class HermesChatStore {
         s.busy = false
         s.items.push({ id: this.nextId++, kind: 'error', text: r.error || 'prompt failed', ts: Date.now() })
       }
-      // On success the stream's turn_done already cleared busy; this is a no-op then.
-      else s.busy = false
+      // /prompt is FIRE-AND-ACK ({ok, fired}) — the reply arrives over the
+      // stream, whose turn_done/error clears busy. Don't clear it here or the
+      // composer re-enables in the gap between the ack and the first chunk.
     })
   }
 }
