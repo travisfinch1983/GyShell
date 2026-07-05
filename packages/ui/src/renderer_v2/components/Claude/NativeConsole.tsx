@@ -115,7 +115,14 @@ export const NativeConsole: React.FC<{ instanceId: string; height: number }> = (
           try {
             const msg = JSON.parse(ev.data) as { t?: string; state?: string; detail?: string }
             if (msg.t !== 'status') return
-            if (msg.state === 'attached') { setState('attached'); setDetail(null); sendResize() }
+            if (msg.state === 'attached') {
+              setState('attached'); setDetail(null)
+              // FORCE a repaint on attach (not just visibilitychange): sendResize alone sends the
+              // CURRENT size, and dtach/the TUI only redraw on a size CHANGE — so a same-size attach
+              // paints nothing (blank until a tab-switch). forceRepaint's rows-1→rows nudge guarantees
+              // a redraw. Doubled to cover the fresh-attach timing race slower drops (runuser/su) hit.
+              forceRepaint(); setTimeout(forceRepaint, 300)
+            }
             else if (msg.state === 'takeover') { displaced = true; setState('displaced'); setDetail('another client attached and took the console') }
             else if (msg.state === 'error' || msg.state === 'exit') setDetail(msg.detail ?? msg.state ?? null)
           } catch { /* not a control frame */ }
