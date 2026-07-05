@@ -40,6 +40,7 @@ const getActiveSessionOrThrow = (store: ChatStore) => {
 
 runCase('ADD_MESSAGE increments renderListVersion for the active session', () => {
   const store = new ChatStore()
+  store.createSession('Spec Chat') // sessions are created explicitly now (no auto default)
   const session = getActiveSessionOrThrow(store)
   const previousVersion = session.renderListVersion
 
@@ -58,6 +59,7 @@ runCase('ADD_MESSAGE increments renderListVersion for the active session', () =>
 
 runCase('APPEND_CONTENT keeps renderListVersion stable during streaming', () => {
   const store = new ChatStore()
+  store.createSession('Spec Chat') // sessions are created explicitly now (no auto default)
   const session = getActiveSessionOrThrow(store)
 
   store.handleUiUpdate({
@@ -85,6 +87,7 @@ runCase('APPEND_CONTENT keeps renderListVersion stable during streaming', () => 
 
 runCase('UPDATE_MESSAGE invalidates renderListVersion when streaming status changes', () => {
   const store = new ChatStore()
+  store.createSession('Spec Chat') // sessions are created explicitly now (no auto default)
   const session = getActiveSessionOrThrow(store)
 
   store.handleUiUpdate({
@@ -110,6 +113,7 @@ runCase('UPDATE_MESSAGE invalidates renderListVersion when streaming status chan
 
 runCase('REMOVE_MESSAGE invalidates renderListVersion after deleting a visible row', () => {
   const store = new ChatStore()
+  store.createSession('Spec Chat') // sessions are created explicitly now (no auto default)
   const session = getActiveSessionOrThrow(store)
 
   store.handleUiUpdate({
@@ -139,6 +143,7 @@ runCase('REMOVE_MESSAGE invalidates renderListVersion after deleting a visible r
 
 runCase('ROLLBACK invalidates renderListVersion after pruning trailing messages', () => {
   const store = new ChatStore()
+  store.createSession('Spec Chat') // sessions are created explicitly now (no auto default)
   const session = getActiveSessionOrThrow(store)
 
   store.handleUiUpdate({

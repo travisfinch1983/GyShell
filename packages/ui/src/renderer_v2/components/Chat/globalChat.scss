@@ -160,3 +160,29 @@
   [class*='log'] { padding: 10px; }
   [class*='composerWrap'] { padding: 8px 10px; }
 }
+
+.ai-lab-global-chat .glc-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  padding: 16px;
+  text-align: center;
+}
+
+.ai-lab-global-chat .glc-empty-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 18px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  font-size: 13px;
+  cursor: pointer;
+}

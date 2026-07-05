@@ -125,8 +125,10 @@ export class ChatStore {
       moveQueueItem: action
     })
 
-    // Create default session
-    this.createSession('New Chat')
+    // NO default session (Travis, 2026-07-05): tabs are created explicitly via
+    // the chat panel's + agent picker — an unbound auto "New Chat" just sat
+    // next to the rehydrated real sessions as a ghost tab. Consumers handle
+    // sessions.length === 0 (GlobalChat shows an empty-state hint).
   }
 
   private createEmptySession(id: string, title: string): ChatSession {
@@ -399,10 +401,6 @@ export class ChatStore {
     })
     this.queue.clearSession(id)
 
-    if (this.sessions.length === 0) {
-      this.createSession()
-      return
-    }
     this.emitSessionsChanged()
   }
 
@@ -741,10 +739,6 @@ export class ChatStore {
         }
       })
       this.queue.clearSession(sessionId)
-      if (this.sessions.length === 0) {
-        this.createSession()
-        return
-      }
       this.emitSessionsChanged()
     } catch (error) {
       console.error('Failed to delete chat session:', error)

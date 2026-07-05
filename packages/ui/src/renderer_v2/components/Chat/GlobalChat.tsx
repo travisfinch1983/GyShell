@@ -43,11 +43,6 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
   // Computed inline (no useMemo) on purpose: observer handles MobX re-renders.
   const sessions = store.chat?.sessions || []
 
-  // Make sure at least one session exists (ChatStore drops events for unknown ids).
-  if (sessions.length === 0 && store.chat && typeof store.chat.createSession === 'function') {
-    try { store.chat.createSession('Chat') } catch (err) { console.warn('[GlobalChat] createSession failed:', err) }
-  }
-
   useEffect(() => {
     if (visible && hermesTabs.length) void hermesAgentsStore.refresh()
   }, [visible, hermesTabs.length])
@@ -167,6 +162,13 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
       {activeHermes ? (
         <div className="glc-agents-body">
           <AgentConversation key={activeHermes} agentId={activeHermes} />
+        </div>
+      ) : !activeSessionId ? (
+        <div className="glc-empty">
+          <button className="glc-empty-add" onClick={() => { setPickerOpen(true); void hermesAgentsStore.refresh() }}>
+            <Plus size={16} /> New chat
+          </button>
+          <span>Pick an agent to start — the AI-Lab assistant or any Hermes agent.</span>
         </div>
       ) : (
         <ChatPanel
