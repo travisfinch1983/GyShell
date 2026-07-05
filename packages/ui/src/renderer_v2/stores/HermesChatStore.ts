@@ -9,9 +9,10 @@
  * otherwise affect the backend-owned session. Closing the view mid-turn just
  * detaches; the agent keeps running and a re-attach resumes the live stream.
  *
- * The transcript is what this observer has seen: it survives tab switches (module
- * singleton) but not a page reload — there is no session-history read-back
- * endpoint yet (flagged to claude1).
+ * Transcripts survive tab switches (module singleton) and reloads: on first
+ * attach a conversation is RESTORED from the server transcript
+ * (GET /history?conversationId — the same normalized event union, replayed
+ * through reduce()), then the live stream resumes from the last seen seq.
  */
 import { makeAutoObservable, runInAction } from 'mobx'
 import { hermesStreamEventSchema, type HermesSlashCommand, type HermesStreamEvent } from '@gyshell/shared'
@@ -53,19 +54,11 @@ function emptyState(): AgentChatState {
   return { items: [], connected: false, busy: false, commands: [], usage: null, currentModel: null, error: null }
 }
 
-/** Interim reload persistence (sessionStorage, bounded) until a backend
- *  session-history endpoint exists. The session itself always survives on the
- *  backend — this only preserves what THIS browser tab has already seen. */
-const PERSIST_MAX_ITEMS = 300
-function persistKey(conversationId: string): string {
-  return `hermesChat:${conversationId}`
-}
-
 class HermesChatStore {
   chats = new Map<string, AgentChatState>()
   private sources = new Map<string, EventSource>()
   private nextId = 1
-  private saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private restored = new Set<string>()
 
   constructor() {
     makeAutoObservable(this, {}, { autoBind: true })
@@ -78,36 +71,8 @@ class HermesChatStore {
       // so the stored proxy — not the plain literal — must be what we mutate.
       this.chats.set(conversationId, emptyState())
       s = this.chats.get(conversationId)!
-      this.hydrate(conversationId, s)
     }
     return s
-  }
-
-  private hydrate(conversationId: string, s: AgentChatState): void {
-    if (typeof sessionStorage === 'undefined') return
-    try {
-      const raw = sessionStorage.getItem(persistKey(conversationId))
-      if (!raw) return
-      const items = JSON.parse(raw) as ChatItem[]
-      if (!Array.isArray(items) || !items.length) return
-      s.items.push(...items.map((i) => ({ ...i, streaming: false })))
-      this.nextId = Math.max(this.nextId, ...items.map((i) => i.id)) + 1
-      s.items.push({ id: this.nextId++, kind: 'system', text: 'transcript restored (this browser session) — live from here', ts: Date.now() })
-    } catch { /* corrupt cache — start fresh */ }
-  }
-
-  private schedulePersist(conversationId: string): void {
-    if (typeof sessionStorage === 'undefined') return
-    const prev = this.saveTimers.get(conversationId)
-    if (prev) clearTimeout(prev)
-    this.saveTimers.set(conversationId, setTimeout(() => {
-      this.saveTimers.delete(conversationId)
-      const s = this.chats.get(conversationId)
-      if (!s) return
-      try {
-        sessionStorage.setItem(persistKey(conversationId), JSON.stringify(s.items.slice(-PERSIST_MAX_ITEMS)))
-      } catch { /* quota — drop persistence, never the transcript */ }
-    }, 400))
   }
 
   /**
@@ -119,7 +84,45 @@ class HermesChatStore {
   attach(agentId: string, conversationId: string): void {
     if (this.sources.has(conversationId)) return
     const s = this.state(conversationId)
-    const es = new EventSource(hermesApi.streamPath(agentId, conversationId))
+    // SERVER-TRUTH RESTORE (once per conversation per page load): replay the
+    // stored transcript through reduce(), then attach the live stream from the
+    // last replayed seq — no duplicates, no gap.
+    if (!this.restored.has(conversationId) && s.items.length === 0) {
+      this.restored.add(conversationId)
+      void this.restoreThenStream(agentId, conversationId)
+      return
+    }
+    this.openStream(agentId, conversationId)
+  }
+
+  private async restoreThenStream(agentId: string, conversationId: string): Promise<void> {
+    let since: number | undefined
+    try {
+      const h = await hermesApi.history(agentId, conversationId)
+      const events: Array<Record<string, unknown>> = h?.events ?? []
+      let replayed = 0
+      for (const raw of events) {
+        const r = hermesStreamEventSchema.safeParse(raw)
+        if (!r.success) continue
+        runInAction(() => this.reduce(conversationId, r.data))
+        replayed++
+        if (typeof raw.seq === 'number') since = raw.seq
+      }
+      if (replayed > 0) {
+        const s = this.state(conversationId)
+        runInAction(() => {
+          s.items.push({ id: this.nextId++, kind: 'system', text: 'transcript restored from server', ts: Date.now() })
+        })
+      }
+    } catch { /* no history yet / route hiccup — stream from live */ }
+    this.openStream(agentId, conversationId, since)
+  }
+
+  private openStream(agentId: string, conversationId: string, since?: number): void {
+    if (this.sources.has(conversationId)) return
+    const s = this.state(conversationId)
+    const base = hermesApi.streamPath(agentId, conversationId)
+    const es = new EventSource(since != null ? `${base}&since=${since}` : base)
     this.sources.set(conversationId, es)
     es.onopen = () => runInAction(() => { s.connected = true; s.error = null })
     es.onerror = () => runInAction(() => { s.connected = false })
@@ -149,7 +152,7 @@ class HermesChatStore {
   async end(agentId: string, conversationId: string): Promise<void> {
     this.detach(conversationId)
     this.chats.delete(conversationId)
-    try { sessionStorage.removeItem(persistKey(conversationId)) } catch { /* private mode */ }
+    this.restored.delete(conversationId)
     await hermesApi.endConversation(agentId, conversationId)
   }
 
@@ -167,6 +170,11 @@ class HermesChatStore {
         push({ kind: 'system', text: `attached — session ${ev.session_id ?? '?'}${ev.current_model ? ` · ${ev.current_model}` : ''}` })
         break
       }
+      case 'user':
+        // History-replay only (the prompt route records user turns; the live
+        // bridge never emits this) — rebuilds the user's own bubbles on restore.
+        push({ kind: 'user', text: ev.text })
+        break
       case 'message': {
         s.busy = true // covers turns initiated by other clients of the shared session
         const l = last()
@@ -235,7 +243,6 @@ class HermesChatStore {
         // mode/session-info passthroughs — no rendering yet.
         break
     }
-    this.schedulePersist(conversationId)
   }
 
   /**
@@ -258,8 +265,9 @@ class HermesChatStore {
     } catch { /* context is best-effort — never block the send */ }
     if (hermesAgentsStore.capabilities[agentId]?.visionCapable) {
       try {
-        // Exclude the chat overlay itself — the agent should see the page, not the panel.
-        const shot = await captureUI({ exclude: ['.ai-lab-global-chat'] })
+        // HIDE the chat panel (display:none + reflow) — the agent must see the
+        // full underlying view, exactly what Travis sees minus the panel.
+        const shot = await captureUI({ hide: ['.ai-lab-global-chat'] })
         if (shot) extra.screenshot = shot
       } catch { /* screenshot is best-effort */ }
     }
@@ -269,15 +277,15 @@ class HermesChatStore {
       ctxAttached: extra.screenshot ? 'vision' : extra.context ? 'text' : undefined,
     })
     s.busy = true
-    this.schedulePersist(conversationId)
     const r = await hermesApi.prompt(agentId, t, extra)
     runInAction(() => {
       if (!r.ok) {
         s.busy = false
         s.items.push({ id: this.nextId++, kind: 'error', text: r.error || 'prompt failed', ts: Date.now() })
       }
-      // On success the stream's turn_done already cleared busy; this is a no-op then.
-      else s.busy = false
+      // /prompt is FIRE-AND-ACK ({ok, fired}) — the reply arrives over the
+      // stream, whose turn_done/error clears busy. Don't clear it here or the
+      // composer re-enables in the gap between the ack and the first chunk.
     })
   }
 }

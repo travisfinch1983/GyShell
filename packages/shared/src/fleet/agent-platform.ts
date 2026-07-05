@@ -218,6 +218,9 @@ export const hermesStreamEventSchema = z.discriminatedUnion('t', [
     /** ACP available_modes (default / accept_edits …). */
     modes: z.array(z.unknown()).nullish(),
   }),
+  /** User turn — emitted into CONVERSATION HISTORY by the prompt route (not by
+   *  the live bridge): lets a /history replay rebuild the user's own bubbles. */
+  z.object({ t: z.literal('user'), text: z.string() }),
   /** Assistant text chunk — append to the current bubble. */
   z.object({ t: z.literal('message'), text: z.string() }),
   /** Reasoning chunk — append to the collapsible thought block. */
