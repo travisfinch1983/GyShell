@@ -66,6 +66,15 @@ export class HermesService {
     this.bridge.stopSession(sessionKey)
   }
 
+  /** Fire a prompt WITHOUT waiting for the turn to finish — the reply arrives over the
+   *  event stream (/stream). Used by the streaming chat so the HTTP call returns fast
+   *  (an LLM turn can take minutes; the cluster-proxy RPC would otherwise time out). */
+  async sendPrompt(agentId: string, text: string, opts: { context?: string; screenshot?: string; sessionKey?: string } = {}): Promise<void> {
+    const key = opts.sessionKey ?? agentId
+    await this.bridge.ensureReady(key, agentId)
+    this.bridge.prompt(key, text, { context: opts.context, screenshot: opts.screenshot })
+  }
+
   /**
    * Buffered transcript for a live session (read-back on reload). `since` returns only the
    * events after that seq. undefined if the backend-owned session isn't running (nothing

@@ -71,18 +71,26 @@ export function createHermesRouter(hermes: HermesService): express.Router {
 
   // Fire one turn and return the assembled reply (also streams to any /stream observers).
   router.post('/api/hermes/agents/:id/prompt', json, async (req: Req, res: Res) => {
-    const body = (req.body ?? {}) as { text?: unknown; context?: unknown; screenshot?: unknown; conversationId?: unknown }
+    const body = (req.body ?? {}) as { text?: unknown; context?: unknown; screenshot?: unknown; conversationId?: unknown; wait?: unknown }
     const text = String(body.text ?? '')
     if (!text.trim()) return res.status(400).json({ error: 'text required' })
+    // Feature A (page-aware): optional structured view context + screenshot data URL.
+    // conversationId (per chat tab) scopes an independent session; omit → one-per-agent.
+    const opts = {
+      context: typeof body.context === 'string' ? body.context : undefined,
+      screenshot: typeof body.screenshot === 'string' ? body.screenshot : undefined,
+      sessionKey: typeof body.conversationId === 'string' ? body.conversationId : undefined,
+    }
     try {
-      // Feature A (page-aware): optional structured view context + screenshot data URL.
-      // conversationId (per chat tab) scopes an independent session; omit → one-per-agent.
-      const r = await hermes.runTurn(req.params.id, text, {
-        context: typeof body.context === 'string' ? body.context : undefined,
-        screenshot: typeof body.screenshot === 'string' ? body.screenshot : undefined,
-        sessionKey: typeof body.conversationId === 'string' ? body.conversationId : undefined,
-      })
-      res.json({ ok: true, ...r })
+      if (body.wait === true) {
+        // Blocking: assemble + return the full reply (non-streaming callers).
+        const r = await hermes.runTurn(req.params.id, text, opts)
+        return res.json({ ok: true, ...r })
+      }
+      // Default: FIRE-AND-ACK — return immediately; the reply arrives over /stream.
+      // An LLM turn can take minutes, so blocking here would trip the cluster-proxy RPC timeout.
+      await hermes.sendPrompt(req.params.id, text, opts)
+      res.json({ ok: true, fired: true })
     } catch (e) {
       res.status(500).json({ error: String((e as Error).message) })
     }
