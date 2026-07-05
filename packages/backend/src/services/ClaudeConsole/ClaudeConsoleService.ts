@@ -92,8 +92,11 @@ export function attachCommandFor(inst: ManagedInstance): string {
   // dtach usage is `-a <socket> <options>` — the socket MUST precede -r or dtach 0.9
   // rejects it with "Invalid number of arguments" (only once a tty exists, i.e. under ssh -tt).
   if (user === 'root') return `${reap}; exec dtach -a ${socket} -r winch`
-  // Quote for the su -c layer; socket paths are slugs but stay defensive.
-  return `${reap}; exec su - ${user} -c 'exec dtach -a ${socket.replace(/'/g, `'\\''`)} -r winch'`
+  // Drop to the socket owner with runuser (NO login shell / PAM session) — `su - <user> -c`
+  // ran a login shell whose profile/terminal setup corrupted the pty stream (blank content,
+  // resize garble) for fleet-user instances; claude1/root attaches directly and was never
+  // affected. runuser -u <user> -- <argv> execs straight through, inheriting the ssh pty clean.
+  return `${reap}; exec runuser -u ${user} -- dtach -a ${socket} -r winch`
 }
 
 export class ClaudeConsoleService {
