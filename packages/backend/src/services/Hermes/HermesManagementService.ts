@@ -491,6 +491,70 @@ export class HermesManagementService {
     return docs
   }
 
+  private static readonly SKILLS_DIR = '/root/.hermes/skills'
+
+  /** Validate a skill ref (relative dir path under the skills lib): N safe segments, no traversal. */
+  private safeSkillRef(ref: unknown): string | null {
+    if (typeof ref !== 'string' || !ref) return null
+    const segs = ref.split('/')
+    if (!segs.length || segs.some((x) => x === '..' || !/^[A-Za-z0-9._-]+$/.test(x))) return null
+    return ref
+  }
+
+  /** List every skill in the Hermes library (any dir containing SKILL.md, at any depth) with its
+   *  frontmatter name/description. ref = dir path relative to the lib; source=local for `custom`. */
+  async listLibrarySkills(): Promise<Array<{ ref: string; name: string; dir: string; category: string; description: string; source: string }>> {
+    const py = [
+      'import os, re, json',
+      `BASE = ${JSON.stringify(HermesManagementService.SKILLS_DIR)}`,
+      'out = []',
+      'for root, dirs, files in os.walk(BASE):',
+      '    if "SKILL.md" not in files: continue',
+      '    ref = os.path.relpath(root, BASE)',
+      '    if ref == ".": continue',
+      '    dirs[:] = []',
+      '    try: t = open(os.path.join(root, "SKILL.md"), errors="replace").read()',
+      '    except Exception: t = ""',
+      '    m = re.match(r"^---\\n(.*?)\\n---", t, re.S)',
+      '    fm = m.group(1) if m else ""',
+      '    nm = re.search(r"^name:\\s*(.+)", fm, re.M)',
+      '    dm = re.search(r"^description:\\s*(.*)", fm, re.M)',
+      '    desc = (dm.group(1).strip() if dm else "")',
+      '    if desc in ("", "|", ">", "|-", ">-"):',
+      '        after = fm[dm.end():] if dm else ""',
+      '        for ln in after.splitlines():',
+      '            if ln.strip(): desc = ln.strip(); break',
+      '    segs = ref.split(os.sep)',
+      '    out.append({"ref": ref.replace(os.sep, "/"), "name": (nm.group(1).strip() if nm else segs[-1]), "dir": segs[-1], "category": segs[0], "description": desc[:280], "source": "local" if segs[0] == "custom" else "builtin"})',
+      'out.sort(key=lambda x: (x["category"], x["name"]))',
+      'print(json.dumps(out))',
+    ].join('\n')
+    const b64 = Buffer.from(py, 'utf8').toString('base64')
+    try {
+      const out = await this.ssh(`printf %s ${shq(b64)} | base64 -d | python3 -`)
+      return JSON.parse(out.trim() || '[]')
+    } catch {
+      return []
+    }
+  }
+
+  async readLibrarySkill(ref: string): Promise<string> {
+    const r = this.safeSkillRef(ref)
+    if (!r) throw new Error('invalid skill ref')
+    const b64 = (await this.ssh(`base64 -w0 ${shq(`${HermesManagementService.SKILLS_DIR}/${r}/SKILL.md`)} 2>/dev/null || true`)).trim()
+    if (!b64) return ''
+    try { return Buffer.from(b64, 'base64').toString('utf8') } catch { return '' }
+  }
+
+  /** Create or edit a skill's SKILL.md in the library (mkdir -p for a new skill). */
+  async writeLibrarySkill(ref: string, content: string): Promise<void> {
+    const r = this.safeSkillRef(ref)
+    if (!r) throw new Error('invalid skill ref')
+    const dir = `${HermesManagementService.SKILLS_DIR}/${r}`
+    await this.ssh(`mkdir -p ${shq(dir)}`)
+    await this.writeRemoteFile(`${dir}/SKILL.md`, content)
+  }
+
   private async applyFallback(agentId: string, fallback: string[]): Promise<void> {
     const chain = fallback.filter((m) => m && m.trim()).map((model) => ({ provider: 'ailab', model }))
     const cfgPath = `${this.profileHome(agentId)}/config.yaml`
