@@ -22,9 +22,11 @@ function bridge(): any { return (window as any).gyshell?.cluster }
 
 const MCP_GATEWAY_URL = 'https://mcp.deeveeyant.com'
 /** Only the webui's own Tools tab (a wide table) overflows; we can't target it
- *  inside the iframe, so scale the whole page — but keep k near 0.9 so the
- *  tabs that already fit don't visibly shrink. */
-const GATEWAY_SCALE = 0.9
+ *  inside the iframe, so scale the whole page. k sets the inner viewport to
+ *  panelWidth/k — 0.9 still left ~60-90px of that table sticking out, so 0.83
+ *  buys the extra width. Zero scrollbar beats size here: this embed is the
+ *  secondary "detailed" view (Quick Toggle is the daily driver). */
+const GATEWAY_SCALE = 0.83
 
 const QuickTogglePanel: React.FC = () => {
   const { servers, setServers, loading, err, setErr, reload } = useMcpTree()
