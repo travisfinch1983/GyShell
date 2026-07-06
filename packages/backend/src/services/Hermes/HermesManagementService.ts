@@ -577,6 +577,8 @@ export class HermesManagementService {
     const dst = `${this.profileHome(agentId)}/skills/${r}`
     const parent = dst.replace(/\/[^/]+$/, '')
     await this.ssh(`test -d ${shq(src)} && mkdir -p ${shq(parent)} && cp -a ${shq(src)} ${shq(parent)}/`)
+    const bonded = await this.bondedDocFor(r)
+    if (bonded) await this.updateAgentToc(agentId, [bonded], [])
   }
 
   /** Unassign a skill from an agent (remove its dir from profile/skills/). */
@@ -584,6 +586,112 @@ export class HermesManagementService {
     const r = this.safeSkillRef(ref)
     if (!r) throw new Error('invalid skill ref')
     await this.ssh(`rm -rf ${shq(`${this.profileHome(agentId)}/skills/${r}`)}`)
+    const bonded = await this.bondedDocFor(r)
+    if (bonded) await this.updateAgentToc(agentId, [], [bonded])
+  }
+
+  private static readonly LIBRARY_DIR = '/root/.hermes/library'
+
+  private safeLibDocName(name: unknown): string | null {
+    if (typeof name !== 'string' || !name) return null
+    return /^[A-Za-z0-9._-]+\.md$/.test(name) ? name : null
+  }
+
+  /** List central library docs. skill = the bonded skill name for `skill-<name>.md`, else null. */
+  async listLibraryDocs(): Promise<Array<{ name: string; title: string; skill: string | null }>> {
+    const py = [
+      'import os, re, json',
+      `D = ${JSON.stringify(HermesManagementService.LIBRARY_DIR)}`,
+      'out = []',
+      'for f in sorted(os.listdir(D)) if os.path.isdir(D) else []:',
+      '    if not f.endswith(".md"): continue',
+      '    title = f',
+      '    try:',
+      '        for ln in open(os.path.join(D, f), errors="replace"):',
+      '            if ln.strip().startswith("# "): title = ln.strip()[2:].strip(); break',
+      '    except Exception: pass',
+      '    skill = f[6:-3] if f.startswith("skill-") else None',
+      '    out.append({"name": f, "title": title, "skill": skill})',
+      'print(json.dumps(out))',
+    ].join('\n')
+    const b64 = Buffer.from(py, 'utf8').toString('base64')
+    try { return JSON.parse((await this.ssh(`printf %s ${shq(b64)} | base64 -d | python3 -`)).trim() || '[]') } catch { return [] }
+  }
+
+  async readLibraryDoc(name: string): Promise<string> {
+    const n = this.safeLibDocName(name)
+    if (!n) throw new Error('invalid library doc name')
+    const b64 = (await this.ssh(`base64 -w0 ${shq(`${HermesManagementService.LIBRARY_DIR}/${n}`)} 2>/dev/null || true`)).trim()
+    return b64 ? Buffer.from(b64, 'base64').toString('utf8') : ''
+  }
+
+  async writeLibraryDoc(name: string, content: string): Promise<void> {
+    const n = this.safeLibDocName(name)
+    if (!n) throw new Error('invalid library doc name')
+    await this.ssh(`mkdir -p ${shq(HermesManagementService.LIBRARY_DIR)}`)
+    await this.writeRemoteFile(`${HermesManagementService.LIBRARY_DIR}/${n}`, content)
+  }
+
+  /** Add/remove LIBRARY-TOC entries in an agent's TOOLS.md (the skill->doc pointer). */
+  private async updateAgentToc(agentId: string, addDocs: string[], removeDocs: string[]): Promise<void> {
+    const toolsPath = `${this.profileHome(agentId)}/workspace/TOOLS.md`
+    const py = [
+      'import sys, os, re, json, base64',
+      'tools_path, libdir = sys.argv[1], sys.argv[2]',
+      'add = json.loads(base64.b64decode(sys.argv[3]))',
+      'rem = json.loads(base64.b64decode(sys.argv[4]))',
+      'def title_of(doc):',
+      '    p = os.path.join(libdir, doc)',
+      '    try:',
+      '        for ln in open(p, errors="replace"):',
+      '            ln = ln.strip()',
+      '            if ln.startswith("# "): return ln[2:].strip()',
+      '    except Exception: pass',
+      '    return doc',
+      'txt = open(tools_path).read() if os.path.exists(tools_path) else ""',
+      'START, END = "<!-- LIBRARY-TOC:START -->", "<!-- LIBRARY-TOC:END -->"',
+      'if START in txt and END in txt:',
+      '    pre, rest = txt.split(START, 1)',
+      '    block, post = rest.split(END, 1)',
+      '    lines = [l for l in block.splitlines() if l.strip().startswith("- `library/")]',
+      'else:',
+      '    pre, post, lines = txt.rstrip() + "\\n\\n## Reference library\\n\\nRead these on demand; each is a `library/<doc>.md` pointer.\\n\\n", "\\n", []',
+      'def doc_of(line):',
+      '    m = re.search(r"`library/([^`]+)`", line)',
+      '    return m.group(1) if m else None',
+      'kept = [l for l in lines if doc_of(l) not in rem and doc_of(l) not in add]',
+      'present = {doc_of(l) for l in lines}',
+      'for doc in add:',
+      '    kept.append(f"- `library/{doc}` — **{title_of(doc)}**")',
+      'seen, out = set(), []',
+      'for l in kept:',
+      '    d = doc_of(l)',
+      '    if d and d not in seen:',
+      '        seen.add(d); out.append(l)',
+      'out.sort()',
+      'newblock = START + "\\n" + ("\\n".join(out) if out else "") + "\\n" + END',
+      'open(tools_path, "w").write(pre + newblock + post)',
+      'print(json.dumps({"count": len(out)}))'
+    ].join('\n')
+    const b64 = Buffer.from(py, 'utf8').toString('base64')
+    const addB64 = Buffer.from(JSON.stringify(addDocs), 'utf8').toString('base64')
+    const remB64 = Buffer.from(JSON.stringify(removeDocs), 'utf8').toString('base64')
+    await this.ssh(`printf %s ${shq(b64)} | base64 -d | python3 - ${shq(toolsPath)} ${shq(HermesManagementService.LIBRARY_DIR)} ${shq(addB64)} ${shq(remB64)}`)
+  }
+
+  /** The bonded library doc for a skill ref (skill-<dirname>.md) if it exists in the library. */
+  private async bondedDocFor(ref: string): Promise<string | null> {
+    const dir = ref.split('/').pop() || ref
+    const doc = `skill-${dir}.md`
+    const found = (await this.ssh(`test -f ${shq(`${HermesManagementService.LIBRARY_DIR}/${doc}`)} && echo y || true`)).trim()
+    return found === 'y' ? doc : null
+  }
+
+  /** Add/remove a library doc pointer on an agent manually (independent of skills). */
+  async setAgentLibraryDoc(agentId: string, name: string, assigned: boolean): Promise<void> {
+    const n = this.safeLibDocName(name)
+    if (!n) throw new Error('invalid library doc name')
+    await this.updateAgentToc(agentId, assigned ? [n] : [], assigned ? [] : [n])
   }
 
   private async applyFallback(agentId: string, fallback: string[]): Promise<void> {

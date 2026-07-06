@@ -133,6 +133,20 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
   })
 
+  // Central library docs (~/.hermes/library) + skill bonding.
+  router.get('/api/hermes/library', async (_req: Req, res: Res) => {
+    try { res.json({ docs: await hermes.listLibraryDocs() }) } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.get('/api/hermes/library/doc', async (req: Req, res: Res) => {
+    try { const name = String(req.query.name || ''); res.json({ name, content: await hermes.readLibraryDoc(name) }) } catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
+  })
+  router.put('/api/hermes/library/doc', json, async (req: Req, res: Res) => {
+    try { await hermes.writeLibraryDoc(String(req.query.name || (req.body as any)?.name || ''), typeof (req.body as any)?.content === 'string' ? (req.body as any).content : ''); res.json({ ok: true }) } catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
+  })
+  router.post('/api/hermes/agents/:id/library-doc', json, async (req: Req, res: Res) => {
+    try { await hermes.setAgentLibraryDoc(req.params.id, String((req.body as any)?.name || ''), (req.body as any)?.assigned !== false); res.json({ ok: true }) } catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
+  })
+
   // Hermes skills LIBRARY (~/.hermes/skills) — the repurposed settings Skills tab manages it.
   router.get('/api/hermes/skills', async (_req: Req, res: Res) => {
     try { res.json({ skills: await hermes.listLibrarySkills() }) }

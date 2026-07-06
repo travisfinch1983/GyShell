@@ -82,6 +82,14 @@ export class HermesService {
     return this.mgmt.resetAgentTools(agentId)
   }
 
+  listLibraryDocs(): Promise<Array<{ name: string; title: string; skill: string | null }>> {
+    return this.mgmt.listLibraryDocs()
+  }
+
+  readLibraryDoc(name: string): Promise<string> { return this.mgmt.readLibraryDoc(name) }
+  writeLibraryDoc(name: string, content: string): Promise<void> { return this.mgmt.writeLibraryDoc(name, content) }
+  setAgentLibraryDoc(agentId: string, name: string, assigned: boolean): Promise<void> { return this.mgmt.setAgentLibraryDoc(agentId, name, assigned) }
+
   listAgentSkills(agentId: string): Promise<Array<{ ref: string; name: string; category: string; description: string; source: string; assigned: boolean }>> {
     return this.mgmt.listAgentSkills(agentId)
   }
