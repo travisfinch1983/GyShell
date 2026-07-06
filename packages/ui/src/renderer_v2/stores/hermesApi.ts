@@ -208,6 +208,40 @@ export const hermesApi = {
     }
   },
 
+  /** GET /api/hermes/agents/:id/skills — the full library with per-agent
+   *  `assigned` flags (9b44da7). Builtins are seeded into every agent and
+   *  re-seed on update (unassign isn't durable); local/custom skills are the
+   *  durably toggleable ones. */
+  async listAgentSkills(id: string): Promise<Array<{ ref: string; name: string; category: string; description: string; source: 'builtin' | 'local'; assigned: boolean }> | null> {
+    try {
+      const r = await bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/skills`)
+      if (r?.error || !Array.isArray(r?.skills)) return null
+      return r.skills
+    } catch {
+      return null
+    }
+  },
+
+  /** POST /api/hermes/agents/:id/skills { ref } — assign (copies the skill in). */
+  async assignSkill(id: string, ref: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/skills`, { ref })
+      return { ok: r?.ok !== false && !r?.error, error: r?.error ? String(r.error) : undefined }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
+  /** DELETE /api/hermes/agents/:id/skills?ref= — unassign. */
+  async unassignSkill(id: string, ref: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('DELETE', `/api/hermes/agents/${encodeURIComponent(id)}/skills?ref=${encodeURIComponent(ref)}`)
+      return { ok: r?.ok !== false && !r?.error, error: r?.error ? String(r.error) : undefined }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
   /** GET /api/hermes/skills — the Hermes skills LIBRARY (2f264d2): all skills
    *  (builtin + Travis's local imports under category "custom"). `ref` is the
    *  lib-relative dir path (can be >2 segments, e.g. mlops/inference/vllm). */

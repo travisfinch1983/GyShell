@@ -10,6 +10,7 @@ import {
   PenLine,
   Save,
   SendHorizonal,
+  Sparkles,
   Trash2,
   Undo2,
   Wrench,
@@ -20,6 +21,7 @@ import type { CatalogModelWithCaps, ModelCapabilities } from '../../stores/herme
 import { hermesAgentsStore as store } from '../../stores/HermesAgentsStore'
 import { hermesApi } from '../../stores/hermesApi'
 import { AgentDocs, InlineDocEditor } from './AgentDocs'
+import { AgentSkills } from './AgentSkills'
 import { HermesToolPicker } from './HermesToolPicker'
 import { confirmStore } from '../../stores/confirmStore'
 import styles from './Agents.module.scss'
@@ -44,7 +46,7 @@ export const CapBadges: React.FC<{ caps?: ModelCapabilities }> = ({ caps }) => {
   )
 }
 
-type SectionKey = 'identity' | 'model' | 'persona' | 'docs' | 'memory' | 'tools' | 'channels' | 'schedules'
+type SectionKey = 'identity' | 'model' | 'persona' | 'docs' | 'memory' | 'skills' | 'tools' | 'channels' | 'schedules'
 
 const SECTIONS: Array<{ key: SectionKey; label: string; Icon: LucideIcon }> = [
   { key: 'identity', label: 'Identity', Icon: Fingerprint },
@@ -52,6 +54,7 @@ const SECTIONS: Array<{ key: SectionKey; label: string; Icon: LucideIcon }> = [
   { key: 'persona', label: 'Persona · SOUL', Icon: PenLine },
   { key: 'docs', label: 'Docs', Icon: FileText },
   { key: 'memory', label: 'Memory', Icon: Database },
+  { key: 'skills', label: 'Skills', Icon: Sparkles },
   { key: 'tools', label: 'Tools', Icon: Wrench },
   { key: 'channels', label: 'Channels', Icon: Hash },
   { key: 'schedules', label: 'Schedules', Icon: CalendarClock },
@@ -542,6 +545,18 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
           ) : (
             <div className={styles.dim}>Save the agent first — docs live on its provisioned Hermes profile.</div>
           )}
+        </section>
+      )}
+
+      {section === 'skills' && (
+        <section>
+          <div className={styles.sectionTitle}>Skills</div>
+          <div className={styles.sectionSub}>
+            Which library skills this agent carries. Custom skills toggle durably; built-ins are seeded by Hermes.
+          </div>
+          {liveDocId
+            ? <AgentSkills agentId={liveDocId} />
+            : <div className={styles.dim}>Save the agent first — skills are assigned to its provisioned Hermes profile.</div>}
         </section>
       )}
 
