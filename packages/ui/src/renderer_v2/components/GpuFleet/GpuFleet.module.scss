@@ -162,25 +162,16 @@
   text-overflow: ellipsis;
 }
 
-.barRow {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+/* sparkline meters — full card width, readout OVERLAID bottom-center (Travis) */
+.sparkWrap {
+  position: relative;
+  width: 100%;
 }
 
-.barLabel {
-  width: 26px;
-  color: var(--fg-faint);
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.2px;
-}
-
-/* sparkline meters (replaced the fill-bar meters; same status color language) */
 .spark {
-  flex: 1;
+  display: block;
+  width: 100%;
   height: 26px;
-  min-width: 0;
   background: var(--control-bg);
   border-radius: 3px;
   color: var(--accent); /* fallback before the first sample classifies */
@@ -190,13 +181,31 @@
 .sparkWarm { color: #f0a020; }
 .sparkHot { color: var(--danger); }
 
-.barText {
-  width: 48px;
-  text-align: right;
-  color: var(--fg-muted);
+.sparkLabel {
+  position: absolute;
+  bottom: 2px;
+  left: 5px;
+  color: var(--fg-faint);
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.2px;
+  pointer-events: none;
+}
+
+.sparkValue {
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--fg);
   font-size: 9px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  pointer-events: none;
+  /* faint theme-correct backing so the figure reads over a busy line */
+  background: color-mix(in srgb, var(--app-bg) 55%, transparent);
+  border-radius: 3px;
+  padding: 0 4px;
 }
 
 .statRow {

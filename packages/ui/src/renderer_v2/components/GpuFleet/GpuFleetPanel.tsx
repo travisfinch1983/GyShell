@@ -160,10 +160,12 @@ function sparkTitle(label: string, series: Array<number | null>): string {
 }
 
 const SparkRow: React.FC<{ label: string; series: Array<number | null>; latest: number | null; text: string }> = ({ label, series, latest, text }) => (
-  <div className={styles.barRow}>
-    <span className={styles.barLabel}>{label}</span>
+  // full-width sparkline; label bottom-left + readout bottom-center OVERLAID
+  // on the line (reclaims the width the side figures used to eat)
+  <div className={styles.sparkWrap} title={sparkTitle(label, series)}>
     <Sparkline series={series} latest={latest} title={sparkTitle(label, series)} />
-    <span className={styles.barText}>{text}</span>
+    <span className={styles.sparkLabel}>{label}</span>
+    <span className={styles.sparkValue}>{text}</span>
   </div>
 )
 
