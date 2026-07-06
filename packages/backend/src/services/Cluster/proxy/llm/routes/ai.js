@@ -3188,11 +3188,25 @@ WantedBy=multi-user.target
   /** GET /active-services — List all active services with computed serviceType */
   router.get('/active-services', (req, res) => {
     const state = loadActiveServices();
-    // Enrich each service with a computed serviceType field
+    // Enrich each service with a computed serviceType field + its assigned-GPU badges.
     const enriched = { ...state };
     if (enriched.services) {
+      // Resolve gpuPciIds -> friendly GPU (assigned AT LAUNCH — authoritative). Best-effort.
+      let pciLookup = {};
+      try {
+        const inventory = gpuMonitor.getEnrichedInventory();
+        const gpuConfig = gpuMonitor.getConfig();
+        const aiConfig = loadAiConfig();
+        const clusterGpus = getClusterGpus(inventory, gpuConfig, aiConfig);
+        pciLookup = Object.fromEntries(clusterGpus.map((g) => [`${g.node}:${g.pciId}`, g]));
+      } catch { /* gpu resolution best-effort */ }
       for (const svc of Object.values(enriched.services)) {
         svc.serviceType = classifyServiceType(svc);
+        const pcis = Array.isArray(svc.gpuPciIds) ? svc.gpuPciIds : [];
+        svc.assignedGpus = pcis.map((pciId) => {
+          const g = pciLookup[`${svc.node}:${pciId}`] || {};
+          return { pci_id: pciId, name: g.friendlyName || 'GPU', arch: g.spec?.arch || null, vram_total_mb: g.vramMB || 0 };
+        });
       }
     }
     res.json(enriched);
@@ -3246,7 +3260,7 @@ WantedBy=multi-user.target
             model, modelFamily, modelVariant, quantFormat, quantSize, contextSize,
             isTts, isImageGen, isStt, isTools, cudaDevices, gpuPciIds: explicitGpuPciIds,
             reservedVramMB: reqReservedVramMB,
-            isSystemService, systemdUnit, slots: reqSlots } = req.body;
+            isSystemService, systemdUnit, slots: reqSlots, aliasOverride } = req.body;
     if (!id || !providerId || !port || !tmuxSession) {
       return res.status(400).json({ error: 'id, providerId, port, and tmuxSession are required' });
     }
@@ -3328,6 +3342,11 @@ WantedBy=multi-user.target
     const defaultReserve = PROVIDER_VRAM_RESERVES[providerId];
     state.services[id].gpuPciIds = gpuPciIds;
     state.services[id].reservedVramMB = reqReservedVramMB ?? defaultReserve;
+
+    // Model-id name override from the launch options / template — applies immediately at launch
+    // (the proxy's /v1/models renames the model to this), so no manual set-identifier step.
+    const trimmedAlias = typeof aliasOverride === 'string' ? aliasOverride.trim() : '';
+    if (trimmedAlias) state.services[id].aliasOverride = trimmedAlias;
 
     // Assign stable proxy slot (lowest unused for this service type)
     assignProxySlot(state, state.services[id]);
