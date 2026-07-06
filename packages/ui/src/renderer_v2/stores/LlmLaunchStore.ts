@@ -206,6 +206,17 @@ export class LlmLaunchStore {
 
   get canSaveChanges(): boolean { return !!this.loadedTemplateId }
   get canSaveAsNew(): boolean { return !!this.selectedProvider }
+
+  /** Travis #2: model-id alias field — llama.cpp / ik_llama launches only.
+   *  Stored in settings.aliasOverride, so it rides templates for free; the
+   *  backend persists it at registration and /v1/models serves the alias. */
+  get supportsAliasOverride(): boolean {
+    return this.selectedProvider === 'llama-server' || this.selectedProvider === 'llama-server-mtp'
+  }
+
+  get aliasOverride(): string {
+    return String(this.settings.aliasOverride ?? '')
+  }
   get loadedTemplateName(): string { return this.savedTemplates.find((t) => t.id === this.loadedTemplateId)?.name || '' }
 
   private templateBody(extra: Record<string, any> = {}): any {
@@ -339,6 +350,9 @@ export class LlmLaunchStore {
     // Auto-wire the vision projector: a model that ships an mmproj/ gets it pre-filled (enables image
     // input); others are cleared. Overrides any persisted value so mmproj always matches the chosen model.
     if (t?.supportsMmproj) s.mmproj = this.detectedMmprojPath() || ''
+    // aliasOverride isn't a provider-schema arg (it's ours, Travis #2) — carry
+    // it across provider switches like any other user-set value.
+    if (prev.aliasOverride !== undefined) s.aliasOverride = prev.aliasOverride
     this.settings = s
     this.selectedSamplerPresetId = ''
     this.presetKeys = []
@@ -770,7 +784,8 @@ export class LlmLaunchStore {
       if (!command) { this.launchErr = 'Select a model, provider and GPU placement first.'; return }
       const port = this.effectivePort
       const tmuxSession = this.getTmuxSession()
-      const data: any = await bridge().request('POST', '/api/ai/launch', { node: this.selectedNode, providerId: this.selectedProvider, command, port, tmuxSession })
+      const alias = this.supportsAliasOverride ? this.aliasOverride.trim() : ''
+      const data: any = await bridge().request('POST', '/api/ai/launch', { node: this.selectedNode, providerId: this.selectedProvider, command, port, tmuxSession, ...(alias ? { aliasOverride: alias } : {}) })
       // Run the returned (tmux-wrapping) command in the Live Console PTY on the target host.
       if (data?.command && data?.pveHostIp) {
         liveConsoleStore.openInstall(`launch:${tmuxSession}`, data.pveHostIp, data.command)
@@ -798,6 +813,8 @@ export class LlmLaunchStore {
         contextSize: parseInt(this.settings.contextSize || this.settings.maxModelLen, 10) || 8192,
         reservedVramMB: this.settings.reservedVramMB, slots: this.deriveSlots(),
       }
+      const alias = this.supportsAliasOverride ? this.aliasOverride.trim() : ''
+      if (alias) body.aliasOverride = alias
       const cuda = this.cudaIndices()
       if (cuda) { body.cudaDevices = cuda; body.gpuPciIds = this.selectedPlacement.gpus.map((g: any) => g.pciId) }
       const r: any = await bridge().request('POST', '/api/ai/launch-service', toJS(body))

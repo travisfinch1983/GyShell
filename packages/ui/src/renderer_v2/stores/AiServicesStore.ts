@@ -31,6 +31,10 @@ export interface AiService {
   systemdUnit?: string
   tmuxSession?: string
   gpuPciIds?: string[]
+  /** Assigned-GPU list from the backend (display-ready name/arch/vram) —
+   *  badges render from THIS; the gpuPciIds×gpuIndex join stays as live-stats
+   *  enrichment only. Empty array = CPU/no-GPU service. */
+  assignedGpus?: Array<{ pci_id: string; name: string; arch: string | null; vram_total_mb: number }>
   reservedVramMB?: number | null
   proxySlot?: string
   startedAt?: number
@@ -92,6 +96,12 @@ export class AiServicesStore {
   statsById: Record<string, { alive?: boolean; tps?: number; systemdState?: string; modelIdentifier?: string; suspended?: boolean; suspendConflict?: boolean }> = {}
   utilHistory: Record<string, number[]> = {} // pciId → last N gpuUtil samples (%)
   vramHistory: Record<string, number[]> = {} // pciId → last N memUsed samples (MB)
+  /** Per-SERVICE usage (Travis #4, GET /api/ai/service-usage): SM% + VRAM
+   *  attributed to the service's OWN pids, buffered client-side like the
+   *  per-GPU histories. null until the endpoint exists/answers — the drawer
+   *  falls back to the whole-GPU series, and this lights up on deploy. */
+  serviceUsage: Record<string, { util: number[]; vram: number[]; vramTotalMB: number; attribution: 'per-process' | 'gpu-total' }> = {}
+  serviceUsageLive = false
   typeProbeCache: Record<string, string> = {} // endpoint → capability-detected type (llm/embed/rerank)
 
   constructor() {
@@ -164,6 +174,8 @@ export class AiServicesStore {
       } catch {
         /* ignore */
       }
+      // per-service GPU usage (best-effort; endpoint may not be deployed yet)
+      void this.pollServiceUsage()
       // per-service status/tps (parallel; best-effort)
       void Promise.all(
         services.map(async (s) => {
@@ -279,6 +291,36 @@ export class AiServicesStore {
       .filter(([k]) => k.startsWith(node + ':'))
       .map(([k, v]) => ({ pci: k.slice(node.length + 1), mode: v?.mode || 'reserved' }))
       .sort((a, b) => a.pci.localeCompare(b.pci))
+  }
+
+  /** Poll GET /api/ai/service-usage and append into the per-service buffers.
+   *  Contract (claude1 #4): { sampledAt, services: { [id]: { gpu_util_pct,
+   *  vram_used_mb, vram_total_mb, attribution, gpus[] } } }. Silent no-op
+   *  until the endpoint deploys (404/error → serviceUsageLive stays false). */
+  private async pollServiceUsage(): Promise<void> {
+    try {
+      const r: any = await this.cluster().request('GET', '/api/ai/service-usage')
+      const svcs = r?.services
+      if (!svcs || typeof svcs !== 'object') return
+      runInAction(() => {
+        this.serviceUsageLive = true
+        for (const [id, u] of Object.entries<any>(svcs)) {
+          const prev = this.serviceUsage[id] ?? { util: [], vram: [], vramTotalMB: 0, attribution: 'per-process' as const }
+          this.serviceUsage[id] = {
+            util: prev.util.concat(Number(u.gpu_util_pct) || 0).slice(-24),
+            vram: prev.vram.concat(Number(u.vram_used_mb) || 0).slice(-24),
+            vramTotalMB: Number(u.vram_total_mb) || prev.vramTotalMB,
+            attribution: u.attribution === 'gpu-total' ? 'gpu-total' : 'per-process',
+          }
+        }
+        // drop buffers for services no longer reported
+        for (const id of Object.keys(this.serviceUsage)) {
+          if (!(id in svcs)) delete this.serviceUsage[id]
+        }
+      })
+    } catch {
+      /* endpoint not deployed yet — the drawer keeps its whole-GPU fallback */
+    }
   }
 
   startPolling(intervalMs = 15000): void {

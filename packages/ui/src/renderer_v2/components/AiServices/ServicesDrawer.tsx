@@ -79,11 +79,21 @@ const ServiceCard: React.FC<{ s: AiService; onKill: (s: AiService) => void }> = 
   const stat = store.statsById[s.id]
   const st = STATUS[status]
   const gpus = (s.gpuPciIds ?? []).map((pci) => ({ pci, info: store.gpuIndex[pci] })).filter((g) => g.info)
+  // Badges render from the backend's display-ready assignedGpus (Travis #1) —
+  // no gpuIndex join needed, so they show even when the GPU inventory is
+  // stale; live util/mem enrich the tooltip when the join DOES have the pci.
+  const badges = (s.assignedGpus ?? []).map((g) => ({ ...g, live: store.gpuIndex[g.pci_id] }))
   const vramUsed = gpus.reduce((n, g) => n + (g.info?.memUsed ?? 0), 0)
   const vramTotal = gpus.reduce((n, g) => n + (g.info?.memTotal ?? 0), 0)
   const pcis = gpus.map((g) => g.pci)
-  const utilSeries = combine(pcis.map((p) => store.utilHistory[p] ?? []), 'avg')
-  const vramSeries = combine(pcis.map((p) => store.vramHistory[p] ?? []), 'sum')
+  // Per-SERVICE usage (Travis #4) when the telemetry endpoint reports this
+  // service: SM%/VRAM attributed to its OWN pids. Falls back to the whole-GPU
+  // series until then. 'gpu-total' attribution = pids unresolvable, whole-GPU
+  // numbers under the service's name — marked so it doesn't overclaim.
+  const usage = store.serviceUsage[s.id]
+  const perService = !!usage && usage.util.length > 0
+  const utilSeries = perService ? usage.util : combine(pcis.map((p) => store.utilHistory[p] ?? []), 'avg')
+  const vramSeries = perService ? usage.vram : combine(pcis.map((p) => store.vramHistory[p] ?? []), 'sum')
   const curUtil = utilSeries.length ? Math.round(utilSeries[utilSeries.length - 1]) : 0
   const alias = stat?.modelIdentifier || s.aliasOverride
 
@@ -136,21 +146,59 @@ const ServiceCard: React.FC<{ s: AiService; onKill: (s: AiService) => void }> = 
       </div>
 
       {/* GPU badges (wrap to as many rows as needed) */}
-      {gpus.length > 0 && (
+      {(badges.length > 0 || gpus.length > 0) && (
         <div className={styles.gpuRow}>
-          {gpus.map((g) => (
-            <span key={g.pci} className={styles.gpuBadge} title={`${g.pci} · ${g.info!.util}% · ${gb(g.info!.memUsed)}/${gb(g.info!.memTotal)} GB`}>
-              <Cpu size={10} /> GPU{g.info!.index} {g.info!.name}
-            </span>
-          ))}
+          {badges.length > 0
+            ? badges.map((g) => (
+                <span
+                  key={g.pci_id}
+                  className={styles.gpuBadge}
+                  title={`${g.pci_id}${g.arch ? ` · ${g.arch}` : ''} · ${gb(g.vram_total_mb)} GB${g.live ? ` · now ${g.live.util}% · ${gb(g.live.memUsed)}/${gb(g.live.memTotal)} GB` : ''}`}
+                >
+                  <Cpu size={10} /> {g.name}
+                </span>
+              ))
+            : gpus.map((g) => (
+                // legacy fallback for backends without assignedGpus yet
+                <span key={g.pci} className={styles.gpuBadge} title={`${g.pci} · ${g.info!.util}% · ${gb(g.info!.memUsed)}/${gb(g.info!.memTotal)} GB`}>
+                  <Cpu size={10} /> GPU{g.info!.index} {g.info!.name}
+                </span>
+              ))}
         </div>
       )}
 
-      {/* Full-width labeled GPU + VRAM usage sparklines */}
-      {gpus.length > 0 && (
+      {/* Full-width labeled GPU + VRAM usage sparklines (per-service when the
+          telemetry endpoint reports; whole-GPU otherwise) */}
+      {(perService || gpus.length > 0) && (
         <div className={styles.metrics}>
-          <SparkRow label="GPU" data={utilSeries} max={100} color={color} value={`${curUtil}%`} />
-          <SparkRow label="VRAM" data={vramSeries} max={vramTotal} color="#8aa0ff" value={`${gb(vramUsed)}/${gb(vramTotal)} GB`} />
+          {perService ? (
+            <>
+              <SparkRow
+                label={usage.attribution === 'gpu-total' ? 'GPU*' : 'GPU'}
+                data={utilSeries}
+                max={100}
+                color={color}
+                value={`${curUtil}%`}
+              />
+              <SparkRow
+                label={usage.attribution === 'gpu-total' ? 'VRAM*' : 'VRAM'}
+                data={vramSeries}
+                max={usage.vramTotalMB || vramTotal}
+                color="#8aa0ff"
+                value={`${gb(usage.vram[usage.vram.length - 1])}/${gb(usage.vramTotalMB || vramTotal)} GB`}
+              />
+              {usage.attribution === 'gpu-total' && (
+                <div className={styles.attrNote} title="This service's processes couldn't be resolved — the numbers are for its whole GPU(s), not just this service.">
+                  * whole-GPU numbers (per-process attribution unavailable)
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <SparkRow label="GPU" data={utilSeries} max={100} color={color} value={`${curUtil}%`} />
+              <SparkRow label="VRAM" data={vramSeries} max={vramTotal} color="#8aa0ff" value={`${gb(vramUsed)}/${gb(vramTotal)} GB`} />
+            </>
+          )}
         </div>
       )}
 

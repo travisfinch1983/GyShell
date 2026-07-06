@@ -331,6 +331,20 @@ export const LlmLaunchPanel: React.FC = observer(() => {
                 )}
               </div>
             )}
+            {store.supportsAliasOverride && (
+              <div className={styles.samplerRow}>
+                <span className={styles.fieldLabel} title="Served as the model id by the proxy's /v1/models — set it once in a template and every launch comes up already named. Empty = the model's own id.">
+                  Model ID override
+                </span>
+                <input
+                  className={styles.input}
+                  style={{ maxWidth: 340 }}
+                  value={store.aliasOverride}
+                  placeholder="e.g. qwen-main (empty = model's own id)"
+                  onChange={(e) => store.setSetting('aliasOverride', e.target.value)}
+                />
+              </div>
+            )}
             <div className={styles.fieldGrid}>
               {Object.entries<any>(t.args || {}).filter(([k, a]) => k !== 'model' && !a?.hidden).map(([k, a]) => <SettingField key={k} k={k} arg={a} />)}
             </div>
