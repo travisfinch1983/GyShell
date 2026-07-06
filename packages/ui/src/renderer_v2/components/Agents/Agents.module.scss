@@ -120,6 +120,14 @@
   letter-spacing: 0.04em;
 }
 
+.tabDivider {
+  width: 1px;
+  align-self: stretch;
+  margin: 4px 6px;
+  background: var(--border);
+  flex: 0 0 auto;
+}
+
 .tagLocal { background: color-mix(in srgb, var(--success) 22%, transparent); color: var(--success); }
 .tagExternal { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
 

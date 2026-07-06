@@ -115,7 +115,13 @@ export const InlineDocEditor: React.FC<{ agentId: string; path: string; hint?: s
   )
 }
 
-export const AgentDocs: React.FC<{ agentId: string }> = ({ agentId }) => {
+export const AgentDocs: React.FC<{
+  agentId: string
+  /** Include SOUL.md in the list — for the Doc Templates panel (agentId
+   *  "default"), where no Persona tab owns it. Per-agent Docs tabs keep it
+   *  filtered (one editor per file). */
+  includeSoul?: boolean
+}> = ({ agentId, includeSoul = false }) => {
   const [docs, setDocs] = useState<DocEntry[] | null>(null)
   const [listErr, setListErr] = useState('')
   const [open, setOpen] = useState<OpenDoc | null>(null)
@@ -126,9 +132,9 @@ export const AgentDocs: React.FC<{ agentId: string }> = ({ agentId }) => {
   useEffect(() => {
     void hermesApi.listDocs(agentId).then((d) => {
       if (d === null) setListErr('Failed to list this agent’s docs — Hermes host unreachable?')
-      else setDocs(d.filter((x) => !isSoul(x.path)))
+      else setDocs(includeSoul ? d : d.filter((x) => !isSoul(x.path)))
     })
-  }, [agentId])
+  }, [agentId, includeSoul])
 
   const groups = useMemo(() => {
     const workspace: DocEntry[] = []
