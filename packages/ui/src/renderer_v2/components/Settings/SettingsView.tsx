@@ -43,6 +43,7 @@ import { AgentsPanel } from "./AgentsPanel";
 import { AgentsSettings } from "../Agents/AgentsSettings";
 import { TtsSettingsPanel } from "./TtsSettingsPanel";
 import "./TtsSettingsPanel.scss";
+import { FtpSettingsPanel } from "./FtpSettingsPanel";
 import { Select } from "../../platform/Select";
 import { ShortcutRecorder } from "./ShortcutRecorder";
 import { getDefaultCommandDraftShortcut } from "../../lib/commandDraftShortcut";
@@ -1229,6 +1230,8 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                   />
                 </div>
               </div>
+
+              <FtpSettingsPanel />
             </>
           ) : null}
 
