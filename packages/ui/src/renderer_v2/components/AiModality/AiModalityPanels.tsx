@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { PackagePlus, BrainCircuit, Image as ImageIcon, AudioLines, Wrench } from 'lucide-react'
 import { ProviderInstall } from './ProviderInstall'
-import { McpServersPanel } from '../AiTools/McpServersPanel'
+import { McpDashboardPanel } from '../AiTools/McpDashboardPanel'
 import { CodebaseRagPanel } from '../AiTools/CodebaseRagPanel'
 import { DocRagPanel } from '../AiTools/DocRagPanel'
 import { ClusterInfoPanel } from '../AiTools/ClusterInfoPanel'
@@ -70,7 +70,7 @@ export const AiTtsSttPanel: React.FC = observer(() => (
 
 export const AiToolsPanel: React.FC = observer(() => (
   <Shell title="AI · Tools" Icon={Wrench} tabs={[
-    { id: 'mcp', label: 'MCP Servers', render: () => <McpServersPanel /> },
+    { id: 'mcp', label: 'MCP Servers', render: () => <McpDashboardPanel /> },
     { id: 'codebase-rag', label: 'Codebase RAG', render: () => <CodebaseRagPanel /> },
     { id: 'doc-rag', label: 'Document RAG', render: () => <DocRagPanel /> },
     { id: 'cluster-info', label: 'Cluster Info', render: () => <ClusterInfoPanel /> },

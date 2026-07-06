@@ -12,6 +12,10 @@
 @keyframes aitspin { to { transform: rotate(360deg); } }
 .muted { color: var(--fg-faint); font-size: 13px; }
 
+/* MCP dashboard embed */
+.dashPanel { height: 100%; box-sizing: border-box; }
+.dashFrame { flex: 1; min-height: 0; width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-bg); }
+
 .serverList { display: flex; flex-direction: column; gap: 8px; }
 .serverCard { border: 1px solid var(--border); border-radius: 8px; background: var(--panel-bg); padding: 10px 12px; }
 .serverHead { display: flex; align-items: center; justify-content: space-between; }
