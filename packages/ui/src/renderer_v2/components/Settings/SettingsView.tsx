@@ -27,7 +27,6 @@ import {
   KeyRound,
   SlidersHorizontal,
   Activity,
-  ExternalLink,
 } from "lucide-react";
 import { observer } from "mobx-react-lite";
 import type { AppStore } from "../../stores/AppStore";
@@ -45,6 +44,7 @@ import { AgentsSettings } from "../Agents/AgentsSettings";
 import { TtsSettingsPanel } from "./TtsSettingsPanel";
 import "./TtsSettingsPanel.scss";
 import { FtpSettingsPanel } from "./FtpSettingsPanel";
+import { ToolsPanel } from "./ToolsPanel";
 import { Select } from "../../platform/Select";
 import { ShortcutRecorder } from "./ShortcutRecorder";
 import { getDefaultCommandDraftShortcut } from "../../lib/commandDraftShortcut";
@@ -205,62 +205,6 @@ function AccessTokenRevealDialog(props: {
     document.body,
   );
 }
-
-/**
- * Settings › Tools — the embedded MCP Gateway webui (config federation Stage 3).
- * The gateway is the single control surface for ALL tools: the agent's built-in
- * tools are surfaced to it as the "ailab-native" server and gate from the
- * gateway's enable/disable state, so the old local sections (MCP-servers
- * listing + built-in-tools toggles) are retired — one surface, no split brain.
- */
-const MCP_GATEWAY_URL = "https://mcp.deeveeyant.com";
-
-const ToolsGatewayEmbed: React.FC = () => {
-  const [frameKey, setFrameKey] = useState(0);
-  return (
-    <>
-      <div className="settings-section-header">
-        <div className="settings-section-title">Tools — MCP Gateway</div>
-        <div className="settings-actions">
-          <button
-            className="btn-icon-reload"
-            onClick={() => setFrameKey((k) => k + 1)}
-            title="Reload the gateway webui"
-          >
-            <RefreshCw size={14} />
-          </button>
-          <a
-            className="btn-secondary"
-            href={MCP_GATEWAY_URL}
-            target="_blank"
-            rel="noreferrer"
-            title="Open the gateway webui in a new tab"
-          >
-            <ExternalLink size={14} />
-          </a>
-        </div>
-      </div>
-      <p style={{ fontSize: 12.5, color: "var(--fg-muted)", margin: "0 0 10px", lineHeight: 1.5 }}>
-        One surface for every tool: MCP servers <em>and</em> the agent's built-in tools
-        (the <code>ailab-native</code> server). Enable/disable here takes effect within ~30s.
-        Proxy injection settings live in Settings › Proxy.
-      </p>
-      <iframe
-        key={frameKey}
-        src={MCP_GATEWAY_URL}
-        title="MCP Gateway"
-        style={{
-          width: "100%",
-          height: "calc(100vh - 260px)",
-          minHeight: 480,
-          border: "1px solid var(--border)",
-          borderRadius: 8,
-          background: "var(--panel-bg)",
-        }}
-      />
-    </>
-  );
-};
 
 export const SettingsView: React.FC<{ store: AppStore }> = observer(
   ({ store }) => {
@@ -1767,7 +1711,7 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
               <TtsSettingsPanel store={store} />
             ) : null}
 
-            {store.settingsSection === "tools" ? <ToolsGatewayEmbed /> : null}
+            {store.settingsSection === "tools" ? <ToolsPanel store={store} /> : null}
 
             {store.settingsSection === "skills" ? (
             <>
