@@ -264,6 +264,54 @@ export class HermesManagementService {
    * remote system python (PyYAML present on CT158), preserving every other config key. This is a
    * native user-config write — exactly what the CLI does internally — not a Hermes-source patch.
    */
+  /** Parse a profile's live config.yaml into JSON via the remote system python (PyYAML present
+   *  on the Hermes host — same tool applyFallback uses). {} if the file is missing/unparseable. */
+  private async readConfigJson(agentId: string): Promise<Record<string, any>> {
+    const cfgPath = `${this.profileHome(agentId)}/config.yaml`
+    const script = [
+      'import sys, yaml, json',
+      'try:',
+      '    with open(sys.argv[1]) as f:',
+      '        cfg = yaml.safe_load(f) or {}',
+      'except Exception:',
+      '    cfg = {}',
+      'print(json.dumps(cfg if isinstance(cfg, dict) else {}))',
+    ].join('\n')
+    const b64 = Buffer.from(script, 'utf8').toString('base64')
+    try {
+      const out = await this.ssh(`printf %s ${shq(b64)} | base64 -d | python3 - ${shq(cfgPath)}`)
+      return JSON.parse(out.trim() || '{}')
+    } catch {
+      return {}
+    }
+  }
+
+  /** Best-effort reconstruction of a HermesAgentSpec from the LIVE profile on the host, for
+   *  agents that have no AI-Lab spec (created directly in OpenClaw/Hermes). Reads the fields we
+   *  can faithfully recover from config.yaml + SOUL.md (model, fallback, tts, delegation, persona)
+   *  so the editor shows real values instead of a blank form. Toolsets are intentionally omitted
+   *  (the gateway-group picker owns those). Returns null if the profile does not exist. */
+  async reconstructSpec(agentId: string): Promise<Record<string, any> | null> {
+    if (!(await this.agentExists(agentId))) return null
+    const cfg = await this.readConfigJson(agentId)
+    const soul = await this.readSoul(agentId)
+    const model = (cfg?.model?.default as string) || ''
+    const fallback = Array.isArray(cfg?.fallback_providers)
+      ? (cfg.fallback_providers as any[]).map((x) => (typeof x === 'string' ? x : x?.model)).filter(Boolean)
+      : []
+    const personality = cfg?.agent?.personality as string | undefined
+    const persona = (soul && soul.trim()) || personality
+      ? { soul: soul || undefined, personality: personality || undefined }
+      : undefined
+    const tts = cfg?.tts?.provider
+      ? { provider: cfg.tts.provider as string, voiceId: cfg.tts.voice_id ?? cfg.tts.voiceId, modelId: cfg.tts.model_id ?? cfg.tts.modelId }
+      : undefined
+    const spec: Record<string, any> = { agentId, displayName: agentId, model, fallback, toolsets: [] }
+    if (persona) spec.persona = persona
+    if (tts) spec.tts = tts
+    return spec
+  }
+
   private async applyFallback(agentId: string, fallback: string[]): Promise<void> {
     const chain = fallback.filter((m) => m && m.trim()).map((model) => ({ provider: 'ailab', model }))
     const cfgPath = `${this.profileHome(agentId)}/config.yaml`

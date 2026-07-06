@@ -42,6 +42,10 @@ export class HermesService {
     return this.mgmt.getSpec(agentId)
   }
 
+  reconstructSpec(agentId: string): Promise<Record<string, any> | null> {
+    return this.mgmt.reconstructSpec(agentId)
+  }
+
   readSoul(agentId: string): Promise<string> {
     return this.mgmt.readSoul(agentId)
   }

@@ -52,9 +52,13 @@ export function createHermesRouter(hermes: HermesService): express.Router {
   // exists as a profile but was never applied through AI-Lab (no stored spec).
   router.get('/api/hermes/agents/:id', async (req: Req, res: Res) => {
     try {
-      const spec = hermes.getSpec(req.params.id)
-      if (!spec) return res.status(404).json({ error: 'no stored spec for agent' })
-      res.json({ spec })
+      const stored = hermes.getSpec(req.params.id)
+      if (stored) return res.json({ spec: stored, source: 'ailab-spec' })
+      // No AI-Lab spec (OpenClaw-imported agent): reconstruct from the live host profile so
+      // the editor shows real values instead of a blank form.
+      const live = await hermes.reconstructSpec(req.params.id)
+      if (live) return res.json({ spec: live, source: 'hermes-live' })
+      return res.status(404).json({ error: 'no stored spec for agent' })
     } catch (e) {
       res.status(500).json({ error: String((e as Error).message) })
     }
