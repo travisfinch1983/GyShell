@@ -185,6 +185,28 @@ export class HermesManagementService {
     return this.ssh([this.hermesBin, ...parts.map(shq)].join(' '))
   }
 
+  /** Like hermes(), but feeds stdin (base64-safe) to answer non-interactive prompts.
+   *  `hermes mcp add` prompts auth? [Y/n] then enable-all? [Y/n/select] — pipe n then Y. */
+  private hermesInput(stdin: string, parts: string[]): Promise<string> {
+    const b64 = Buffer.from(stdin, 'utf8').toString('base64')
+    return this.ssh(`printf %s ${shq(b64)} | base64 -d | ${[this.hermesBin, ...parts.map(shq)].join(' ')}`)
+  }
+
+  /** Repoint the agent's gateway MCP server to `url` in ONE ssh call: remove any server under
+   *  our known names (explicit Y to the [Y/n] confirm), then add pointing at `url` (n = no auth,
+   *  Y = enable all tools). Single connection + explicit stdin per command avoids the
+   *  execFileAsync-stdin hangs the separate calls hit, and the pre-remove avoids the
+   *  "Overwrite? [y/N]" prompt on an existing server. */
+  private async repointGatewayServer(agentId: string, url: string): Promise<void> {
+    const bin = this.hermesBin
+    const p = shq(agentId)
+    const removes = HermesManagementService.GATEWAY_SERVER_ALIASES
+      .map((a) => `printf 'Y\\n' | ${bin} -p ${p} mcp remove ${shq(a)} >/dev/null 2>&1 || true`)
+      .join('; ')
+    const add = `printf 'n\\nY\\n' | ${bin} -p ${p} mcp add ${shq(HermesManagementService.GATEWAY_SERVER)} --url ${shq(url)}`
+    await this.ssh(`${removes}; ${add}`)
+  }
+
   /** Read the live SOUL.md persona file for an agent off the Hermes host. '' if none exists. */
   async readSoul(agentId: string): Promise<string> {
     const path = `${this.profileHome(agentId)}/SOUL.md`
@@ -389,25 +411,21 @@ export class HermesManagementService {
     const gw = this.gatewayBase()
     const group = `agent-${agentId}`
     const payload = { name: group, description: `AI-Lab tool set for ${agentId}`, included_servers: [], included_tools: treeNames, excluded_tools: [] }
+    // POST is create-only (UNIQUE constraint), so delete-then-create = true upsert on re-scope.
+    await fetch(`${gw}/api/v0/tool-groups/${group}`, { method: 'DELETE', signal: AbortSignal.timeout(8000) }).catch(() => undefined)
     const r = await fetch(`${gw}/api/v0/tool-groups`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: AbortSignal.timeout(8000),
     })
     if (!r.ok) throw new Error(`group upsert -> ${r.status}: ${await r.text().catch(() => '')}`)
     const endpoint = `${gw}/v0/groups/${group}/mcp`
-    for (const alias of HermesManagementService.GATEWAY_SERVER_ALIASES) {
-      await this.hermes(['-p', agentId, 'mcp', 'remove', alias]).catch(() => undefined)
-    }
-    await this.hermes(['-p', agentId, 'mcp', 'add', HermesManagementService.GATEWAY_SERVER, '--url', endpoint])
+    await this.repointGatewayServer(agentId, endpoint)
     return { endpoint, toolCount: treeNames.length }
   }
 
   /** Revert an agent to the FULL gateway (remove its group + repoint the MCP server at /mcp). */
   async resetAgentTools(agentId: string): Promise<void> {
     const gw = this.gatewayBase()
-    for (const alias of HermesManagementService.GATEWAY_SERVER_ALIASES) {
-      await this.hermes(['-p', agentId, 'mcp', 'remove', alias]).catch(() => undefined)
-    }
-    await this.hermes(['-p', agentId, 'mcp', 'add', HermesManagementService.GATEWAY_SERVER, '--url', `${gw}/mcp`])
+    await this.repointGatewayServer(agentId, `${gw}/mcp`)
     await fetch(`${gw}/api/v0/tool-groups/agent-${agentId}`, { method: 'DELETE', signal: AbortSignal.timeout(8000) }).catch(() => undefined)
   }
 
