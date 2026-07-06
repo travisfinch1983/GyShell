@@ -274,6 +274,19 @@
   color: var(--fg-muted);
 }
 
+/* spec reconstructed from the live Hermes host — not yet an AI-Lab spec */
+.liveBadge {
+  margin-left: 8px;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--warning, #d8a657) 14%, transparent);
+  color: var(--warning, #d8a657);
+  cursor: default;
+}
+
 .enabledPill {
   display: inline-flex;
   align-items: center;

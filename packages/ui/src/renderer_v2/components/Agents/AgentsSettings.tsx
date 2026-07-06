@@ -45,6 +45,7 @@ export const AgentsSettings: React.FC = observer(() => {
           key={active}
           editId={active}
           initialSpec={store.specs.get(active) ?? undefined}
+          specSource={store.specSources.get(active)}
           onSaved={() => undefined}
           onDeleted={() => setActive(store.agents[0] ?? NEW)}
         />

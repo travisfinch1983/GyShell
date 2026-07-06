@@ -54,6 +54,9 @@ const SECTIONS: Array<{ key: SectionKey; label: string; Icon: LucideIcon }> = [
 interface Props {
   /** Existing agent's stored spec (null = exists but never applied through AI-Lab). */
   initialSpec?: HermesAgentSpec | null
+  /** Where the spec came from (d747af5): 'hermes-live' = reconstructed from
+   *  the live host profile, not yet adopted as an AI-Lab spec. */
+  specSource?: 'ailab-spec' | 'hermes-live'
   /** Locked id when editing; absent = create flow. */
   editId?: string
   onSaved: (agentId: string) => void
@@ -67,7 +70,7 @@ interface Props {
  * (idempotent apply → provisions the profile on CT158). Channels + Schedules have
  * no backend yet and render as planned stubs — nothing there is wired.
  */
-export const AgentEditor: React.FC<Props> = observer(({ initialSpec, editId, onSaved, onDeleted }) => {
+export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource, editId, onSaved, onDeleted }) => {
   const editing = Boolean(initialSpec || editId)
   const [section, setSection] = useState<SectionKey>('identity')
   const [agentId, setAgentId] = useState(initialSpec?.agentId ?? editId ?? '')
@@ -248,7 +251,17 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, editId, onS
         <div className={styles.avatar}>{glyph}</div>
         <div className={styles.headTitle}>
           <strong>{displayName || agentId || 'New agent'}</strong>
-          <span className={styles.breadcrumb}>agents / {agentId || '—'}</span>
+          <span className={styles.breadcrumb}>
+            agents / {agentId || '—'}
+            {specSource === 'hermes-live' && (
+              <span
+                className={styles.liveBadge}
+                title="This spec was reconstructed from the live Hermes host profile — it has no stored AI-Lab spec yet. Save to adopt it (clobber-safe: live toolsets/description untouched)."
+              >
+                synced from Hermes — Save to adopt
+              </span>
+            )}
+          </span>
         </div>
         <button
           className={`${styles.enabledPill} ${enabled ? styles.enabledOn : ''}`}

@@ -15,6 +15,9 @@ class HermesAgentsStore {
   capabilities: Record<string, { model?: string; visionCapable?: boolean }> = {}
   /** id → spec from read-back; null = route answered nothing (spec unknown). */
   specs = new Map<string, HermesAgentSpec | null>()
+  /** id → where the spec came from: 'ailab-spec' (stored) or 'hermes-live'
+   *  (reconstructed from the live host profile — Save adopts it). */
+  specSources = new Map<string, 'ailab-spec' | 'hermes-live' | undefined>()
   catalog: CatalogModelWithCaps[] = []
   loaded = false
   catalogLoaded = false
@@ -37,8 +40,8 @@ class HermesAgentsStore {
       // Best-effort spec read-back per agent (null until claude1's route lands).
       await Promise.all(
         agents.map(async (id) => {
-          const spec = await hermesApi.getSpec(id)
-          runInAction(() => this.specs.set(id, spec))
+          const { spec, source } = await hermesApi.getSpec(id)
+          runInAction(() => { this.specs.set(id, spec); this.specSources.set(id, source) })
         }),
       )
     } catch (e) {
@@ -70,7 +73,8 @@ class HermesAgentsStore {
     try {
       const r = await hermesApi.apply(spec)
       if (r.ok) {
-        runInAction(() => this.specs.set(spec.agentId, spec))
+        // A successful apply persists an AI-Lab spec — the agent is adopted.
+        runInAction(() => { this.specs.set(spec.agentId, spec); this.specSources.set(spec.agentId, 'ailab-spec') })
         await this.refresh()
       }
       return r
@@ -87,6 +91,7 @@ class HermesAgentsStore {
         runInAction(() => {
           this.agents = this.agents.filter((a) => a !== id)
           this.specs.delete(id)
+          this.specSources.delete(id)
         })
       }
       return r

@@ -42,16 +42,21 @@ export const hermesApi = {
   },
 
   /**
-   * GET /api/hermes/agents/:id → the stored HermesAgentSpec (spec read-back,
-   * claude1 landing it). Returns null while the route doesn't exist yet — the
-   * edit flow falls back to a blank form pre-filled with just the id.
+   * GET /api/hermes/agents/:id → { spec, source } (d747af5). source is
+   * 'ailab-spec' (stored AI-Lab spec) or 'hermes-live' (reconstructed from
+   * the live host profile — the formerly spec-less OpenClaw agents no longer
+   * 404; saving adopts them into an AI-Lab spec, clobber-safe). SOUL.md is
+   * NOT part of this — getSoul stays the persona source of truth.
    */
-  async getSpec(id: string): Promise<HermesAgentSpec | null> {
+  async getSpec(id: string): Promise<{ spec: HermesAgentSpec | null; source?: 'ailab-spec' | 'hermes-live' }> {
     try {
       const r = await bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}`)
-      return (r?.spec ?? r?.agent ?? null) as HermesAgentSpec | null
+      return {
+        spec: (r?.spec ?? r?.agent ?? null) as HermesAgentSpec | null,
+        source: r?.source === 'hermes-live' || r?.source === 'ailab-spec' ? r.source : undefined,
+      }
     } catch {
-      return null
+      return { spec: null }
     }
   },
 
