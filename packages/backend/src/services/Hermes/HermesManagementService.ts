@@ -185,6 +185,19 @@ export class HermesManagementService {
     return this.ssh([this.hermesBin, ...parts.map(shq)].join(' '))
   }
 
+  /** Read the live SOUL.md persona file for an agent off the Hermes host. '' if none exists. */
+  async readSoul(agentId: string): Promise<string> {
+    const path = `${this.profileHome(agentId)}/SOUL.md`
+    const b64 = (await this.ssh(`base64 -w0 ${shq(path)} 2>/dev/null || true`)).trim()
+    if (!b64) return ''
+    try { return Buffer.from(b64, 'base64').toString('utf8') } catch { return '' }
+  }
+
+  /** Write the SOUL.md persona file for an agent on the Hermes host. */
+  async writeSoul(agentId: string, content: string): Promise<void> {
+    await this.writeRemoteFile(`${this.profileHome(agentId)}/SOUL.md`, content)
+  }
+
   /** Write a text file on the remote host. Base64-encoded into the command so no stdin
    *  piping is needed (async execFile can't supply stdin) and content can't break quoting. */
   private writeRemoteFile(path: string, content: string): Promise<string> {

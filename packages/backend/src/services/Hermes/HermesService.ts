@@ -42,6 +42,14 @@ export class HermesService {
     return this.mgmt.getSpec(agentId)
   }
 
+  readSoul(agentId: string): Promise<string> {
+    return this.mgmt.readSoul(agentId)
+  }
+
+  writeSoul(agentId: string, content: string): Promise<void> {
+    return this.mgmt.writeSoul(agentId, content)
+  }
+
   applySpec(spec: HermesAgentSpec): Promise<{ created: boolean; home: string }> {
     return this.mgmt.applySpec(spec)
   }
