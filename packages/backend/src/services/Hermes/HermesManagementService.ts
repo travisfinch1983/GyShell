@@ -694,6 +694,20 @@ export class HermesManagementService {
     await this.updateAgentToc(agentId, assigned ? [n] : [], assigned ? [] : [n])
   }
 
+  /** The set of library doc names currently pointed in an agent's TOOLS.md LIBRARY-TOC. */
+  private async pointedLibDocs(agentId: string): Promise<Set<string>> {
+    const tp = `${this.profileHome(agentId)}/workspace/TOOLS.md`
+    let out = ''
+    try { out = await this.ssh(`sed -n '/LIBRARY-TOC:START/,/LIBRARY-TOC:END/p' ${shq(tp)} 2>/dev/null | grep -oE 'library/[A-Za-z0-9._-]+\\.md' | sed 's|library/||' || true`) } catch { return new Set() }
+    return new Set(out.split('\n').map((x) => x.trim()).filter(Boolean))
+  }
+
+  /** Central library docs annotated with whether each is pointed on the given agent (for stateful toggles). */
+  async listAgentLibraryDocs(agentId: string): Promise<Array<{ name: string; title: string; skill: string | null; pointed: boolean }>> {
+    const [docs, pointed] = await Promise.all([this.listLibraryDocs(), this.pointedLibDocs(agentId)])
+    return docs.map((d) => ({ ...d, pointed: pointed.has(d.name) }))
+  }
+
   private async applyFallback(agentId: string, fallback: string[]): Promise<void> {
     const chain = fallback.filter((m) => m && m.trim()).map((model) => ({ provider: 'ailab', model }))
     const cfgPath = `${this.profileHome(agentId)}/config.yaml`

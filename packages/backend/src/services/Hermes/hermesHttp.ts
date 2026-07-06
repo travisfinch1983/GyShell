@@ -133,6 +133,9 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
   })
 
+  router.get('/api/hermes/agents/:id/library-docs', async (req: Req, res: Res) => {
+    try { res.json({ docs: await hermes.listAgentLibraryDocs(req.params.id) }) } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
   // Central library docs (~/.hermes/library) + skill bonding.
   router.get('/api/hermes/library', async (_req: Req, res: Res) => {
     try { res.json({ docs: await hermes.listLibraryDocs() }) } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
