@@ -50,7 +50,7 @@
 
 // ── builder ──────────────────────────────────────────────────────────────────
 .builder {
-  max-width: 720px;
+  max-width: none; // Travis: forms fill the horizontal space
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -96,7 +96,7 @@
 
 .soul {
   @extend .input;
-  min-height: 140px;
+  min-height: 320px; // Travis: ~2× the old 140px — real editing room for the .md docs
   resize: vertical;
   font-family: var(--mono-font, monospace);
 }
@@ -129,7 +129,7 @@
   flex-direction: column;
   gap: 10px;
   height: 100%;
-  max-width: 900px;
+  max-width: none; // Travis: fill the horizontal space
 }
 
 .agentHead {
@@ -235,7 +235,7 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-width: 860px;
+  max-width: none; // Travis: fill the horizontal space
 }
 
 .editorHead {

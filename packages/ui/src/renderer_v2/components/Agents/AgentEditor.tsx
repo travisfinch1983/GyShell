@@ -3,6 +3,7 @@ import { observer } from 'mobx-react-lite'
 import {
   Bot,
   CalendarClock,
+  Database,
   FileText,
   Fingerprint,
   Hash,
@@ -18,7 +19,7 @@ import { hermesAgentSpecSchema, type HermesAgentSpec } from '@gyshell/shared'
 import type { CatalogModelWithCaps, ModelCapabilities } from '../../stores/hermesApi'
 import { hermesAgentsStore as store } from '../../stores/HermesAgentsStore'
 import { hermesApi } from '../../stores/hermesApi'
-import { AgentDocs } from './AgentDocs'
+import { AgentDocs, InlineDocEditor } from './AgentDocs'
 import { confirmStore } from '../../stores/confirmStore'
 import styles from './Agents.module.scss'
 
@@ -42,13 +43,14 @@ export const CapBadges: React.FC<{ caps?: ModelCapabilities }> = ({ caps }) => {
   )
 }
 
-type SectionKey = 'identity' | 'model' | 'persona' | 'docs' | 'tools' | 'channels' | 'schedules'
+type SectionKey = 'identity' | 'model' | 'persona' | 'docs' | 'memory' | 'tools' | 'channels' | 'schedules'
 
 const SECTIONS: Array<{ key: SectionKey; label: string; Icon: LucideIcon }> = [
   { key: 'identity', label: 'Identity', Icon: Fingerprint },
   { key: 'model', label: 'Model & behavior', Icon: Bot },
   { key: 'persona', label: 'Persona · SOUL', Icon: PenLine },
   { key: 'docs', label: 'Docs', Icon: FileText },
+  { key: 'memory', label: 'Memory', Icon: Database },
   { key: 'tools', label: 'Tools', Icon: Wrench },
   { key: 'channels', label: 'Channels', Icon: Hash },
   { key: 'schedules', label: 'Schedules', Icon: CalendarClock },
@@ -247,6 +249,14 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
 
   const card = (children: React.ReactNode) => <div className={styles.card}>{children}</div>
 
+  // Contextual twins of the Docs-tab editors (Travis: place each operating doc
+  // where it's topically relevant; the Docs tab remains the everything-view).
+  const liveDocId = editing ? (initialSpec?.agentId ?? editId ?? agentId) : ''
+  const inlineDoc = (path: string, hint: string) =>
+    liveDocId
+      ? <InlineDocEditor agentId={liveDocId} path={path} hint={hint} />
+      : <div className={styles.dim}>Save the agent first — its docs live on the provisioned Hermes profile.</div>
+
   return (
     <div className={styles.editor}>
       {/* ── header row: avatar · name/breadcrumb · enabled · actions ── */}
@@ -333,6 +343,7 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
               </div>
             </div>,
           )}
+          {inlineDoc('workspace/IDENTITY.md', 'Who the agent is — the identity operating doc on the Hermes host.')}
         </section>
       )}
 
@@ -560,6 +571,8 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
               </div>
             </>,
           )}
+          {inlineDoc('workspace/TOOLS.md', 'What the agent may use and how — its tool operating doc.')}
+          {inlineDoc('workspace/EXECUTION.md', 'How the agent runs work — execution rules and conventions.')}
         </section>
       )}
 
@@ -584,6 +597,15 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
               <CalendarClock size={14} /> Planned — no scheduler backend yet, nothing here is wired.
             </div>,
           )}
+          {inlineDoc('workspace/HEARTBEAT.md', 'The prompt Hermes feeds the agent on each heartbeat tick — until the scheduler above is wired, this file IS the schedule behavior.')}
+        </section>
+      )}
+
+      {section === 'memory' && (
+        <section>
+          <div className={styles.sectionTitle}>Memory</div>
+          <div className={styles.sectionSub}>The agent's memory operating doc — what it remembers and how.</div>
+          {inlineDoc('workspace/MEMORY.md', 'Memory rules and long-lived notes on the Hermes host.')}
         </section>
       )}
 

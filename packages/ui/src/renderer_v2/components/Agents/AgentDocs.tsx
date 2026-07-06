@@ -21,6 +21,100 @@ const fmtBytes = (b: number): string => (b >= 10240 ? `${Math.round(b / 1024)} K
 const baseName = (p: string): string => p.split('/').pop() ?? p
 const isSoul = (p: string): boolean => baseName(p).toUpperCase() === 'SOUL.MD'
 
+/**
+ * InlineDocEditor — one specific doc embedded in a contextual tab (Identity →
+ * IDENTITY.md, Tools → TOOLS.md/EXECUTION.md, …). Collapsed row until opened;
+ * fetch-on-open with the same guard as the Docs list: a thrown GET (host down)
+ * refuses to open, while 200+'' means the file genuinely doesn't exist yet —
+ * that opens an empty editor and Save creates it (the backend PUT writes the
+ * file). The Docs tab still edits everything in one place; these are the
+ * contextually-placed twins.
+ */
+export const InlineDocEditor: React.FC<{ agentId: string; path: string; hint?: string }> = ({ agentId, path, hint }) => {
+  const [open, setOpen] = useState<OpenDoc | null>(null)
+  const [opening, setOpening] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState('')
+  const [missing, setMissing] = useState(false)
+
+  const openDoc = async () => {
+    setOpening(true); setMsg('')
+    const content = await hermesApi.getDoc(agentId, path)
+    setOpening(false)
+    if (content === null) { setMsg(`Couldn't read ${path} — not opening an empty editor over a real file.`); return }
+    setMissing(content === '')
+    setOpen({ path, content, base: content })
+  }
+
+  const save = async () => {
+    if (!open || open.content === open.base) return
+    setSaving(true); setMsg('')
+    const r = await hermesApi.putDoc(agentId, open.path, open.content)
+    setSaving(false)
+    if (!r.ok) { setMsg(`Save failed: ${r.error ?? 'unknown'}`); return }
+    setMissing(false)
+    setOpen({ ...open, base: open.content })
+    setMsg('Saved ✓')
+  }
+
+  if (!open) {
+    return (
+      <div className={styles.card}>
+        <div className={styles.summaryRow}>
+          <FileText size={15} />
+          <div>
+            <strong className={styles.mono}>{baseName(path)}</strong>
+            {hint && <div className={styles.dim}>{hint}</div>}
+          </div>
+          <span className={styles.spacer} />
+          <button className={styles.btn} disabled={opening} onClick={() => void openDoc()}>
+            {opening ? 'Opening…' : 'Open editor →'}
+          </button>
+        </div>
+        {msg && <div className={styles.dim} style={{ marginTop: 6 }}>{msg}</div>}
+      </div>
+    )
+  }
+
+  const dirty = open.content !== open.base
+  return (
+    <div className={styles.card}>
+      <div className={styles.summaryRow}>
+        <FileText size={15} />
+        <div>
+          <strong className={styles.mono}>{open.path}</strong>
+          <div className={styles.dim}>
+            {missing && !dirty ? 'new file — created on save' : `${open.content.split('\n').length} lines · ${open.content.length} chars`}
+            {dirty ? ' · unsaved changes' : ''}
+          </div>
+        </div>
+        <span className={styles.spacer} />
+        <button className={styles.btn} disabled={saving || !dirty} title="Discard changes" onClick={() => setOpen({ ...open, content: open.base })}>
+          <Undo2 size={13} /> Revert
+        </button>
+        <button className={styles.btnPrimary} disabled={saving || !dirty} onClick={() => void save()}>
+          <Save size={13} /> {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button
+          className={styles.btn}
+          title="Close editor"
+          onClick={() => { if (!dirty || window.confirm(`Discard unsaved changes to ${open.path}?`)) { setOpen(null); setMsg('') } }}
+        >
+          <X size={13} />
+        </button>
+      </div>
+      {msg && <div className={styles.dim} style={{ marginTop: 6 }}>{msg}</div>}
+      <textarea
+        className={`${styles.soul} ${styles.mono}`}
+        value={open.content}
+        placeholder={missing ? `# ${baseName(path)}\n(new file — Save will create it on the Hermes host)` : undefined}
+        onChange={(e) => setOpen({ ...open, content: e.target.value })}
+        spellCheck={false}
+      />
+    </div>
+  )
+}
+
 export const AgentDocs: React.FC<{ agentId: string }> = ({ agentId }) => {
   const [docs, setDocs] = useState<DocEntry[] | null>(null)
   const [listErr, setListErr] = useState('')
