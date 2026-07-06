@@ -11,10 +11,11 @@
  *   the ORTHOGONAL axis (how a call is confirmed, not whether the tool
  *   exists), driving settings.tools.builtInPermissions only.
  */
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { RefreshCw, ExternalLink, ChevronRight } from 'lucide-react'
+import { RefreshCw, ExternalLink } from 'lucide-react'
 import type { AppStore } from '../../stores/AppStore'
+import { McpToolTree, useMcpTree } from '../Common/McpToolTree'
 import './ToolsPanel.scss'
 
 function bridge(): any { return (window as any).gyshell?.cluster }
@@ -25,38 +26,8 @@ const MCP_GATEWAY_URL = 'https://mcp.deeveeyant.com'
  *  tabs that already fit don't visibly shrink. */
 const GATEWAY_SCALE = 0.9
 
-interface TreeTool { name: string; shortName: string; enabled: boolean; description: string }
-interface TreeServer {
-  name: string
-  description: string
-  enabled: boolean
-  sessionMode: string
-  transport: string
-  toolCount: number
-  enabledCount: number
-  tools: TreeTool[]
-}
-
 const QuickTogglePanel: React.FC = () => {
-  const [servers, setServers] = useState<TreeServer[]>([])
-  const [loading, setLoading] = useState(false)
-  const [err, setErr] = useState('')
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const r = await bridge().request('GET', '/api/mcp/tree')
-      if (r?.error) throw new Error(String(r.error))
-      setServers(Array.isArray(r?.servers) ? r.servers : [])
-      setErr('')
-    } catch (e: any) {
-      setErr(e?.message || 'Failed to load the gateway tool tree')
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-  useEffect(() => { void load() }, [load])
+  const { servers, setServers, loading, err, setErr, reload } = useMcpTree()
 
   const toggle = async (scope: 'server' | 'tool', name: string, enabled: boolean) => {
     // optimistic flip; the tree refetch on failure restores gateway truth
@@ -71,61 +42,29 @@ const QuickTogglePanel: React.FC = () => {
       if (r?.error) throw new Error(String(r.error))
     } catch (e: any) {
       setErr(`Toggle failed: ${e?.message || e}`)
-      void load()
+      void reload()
     }
   }
 
   return (
     <div className="tools-quick">
       {err && <div className="settings-error" style={{ marginBottom: 8 }}>{err}</div>}
-      {servers.length === 0 && (
-        <div className="tool-empty">{loading ? 'Loading the gateway tool tree…' : 'No servers registered on the gateway.'}</div>
-      )}
-      {servers.map((s) => {
-        const open = expanded.has(s.name)
-        return (
-          <div key={s.name} className={`tools-server ${s.enabled ? '' : 'tools-server-off'}`}>
-            <div className="tools-server-row">
-              <button
-                className={`tools-chevron ${open ? 'tools-chevron-open' : ''}`}
-                title={open ? 'Collapse' : 'Expand tools'}
-                onClick={() => setExpanded((prev) => {
-                  const next = new Set(prev)
-                  if (next.has(s.name)) next.delete(s.name); else next.add(s.name)
-                  return next
-                })}
-              >
-                <ChevronRight size={14} />
-              </button>
-              <div className="tools-server-info">
-                <span className="tools-server-name">{s.name}</span>
-                {s.description && <span className="tools-server-desc" title={s.description}>{s.description}</span>}
-              </div>
-              <span className="tools-count" title={`${s.enabledCount} of ${s.toolCount} tools enabled`}>
-                {s.enabledCount}/{s.toolCount}
-              </span>
-              <label className="switch" title={`${s.enabled ? 'Disable' : 'Enable'} the whole ${s.name} server`}>
-                <input type="checkbox" checked={s.enabled} onChange={(e) => void toggle('server', s.name, e.target.checked)} />
-                <span className="switch-slider" />
-              </label>
-            </div>
-            {open && (
-              <div className="tools-tool-list">
-                {s.tools.map((tool) => (
-                  <div key={tool.name} className={`tools-tool-row ${tool.enabled ? '' : 'tools-tool-off'}`}>
-                    <span className="tools-tool-name" title={tool.description || tool.name}>{tool.shortName}</span>
-                    <label className="switch">
-                      <input type="checkbox" checked={tool.enabled} onChange={(e) => void toggle('tool', tool.name, e.target.checked)} />
-                      <span className="switch-slider" />
-                    </label>
-                  </div>
-                ))}
-                {s.tools.length === 0 && <div className="tool-empty">No tools reported for this server.</div>}
-              </div>
-            )}
-          </div>
-        )
-      })}
+      <McpToolTree
+        servers={servers}
+        emptyLabel={loading ? 'Loading the gateway tool tree…' : 'No servers registered on the gateway.'}
+        serverControl={(s) => (
+          <label className="switch" title={`${s.enabled ? 'Disable' : 'Enable'} the whole ${s.name} server`}>
+            <input type="checkbox" checked={s.enabled} onChange={(e) => void toggle('server', s.name, e.target.checked)} />
+            <span className="switch-slider" />
+          </label>
+        )}
+        toolControl={(tool) => (
+          <label className="switch">
+            <input type="checkbox" checked={tool.enabled} onChange={(e) => void toggle('tool', tool.name, e.target.checked)} />
+            <span className="switch-slider" />
+          </label>
+        )}
+      />
     </div>
   )
 }
