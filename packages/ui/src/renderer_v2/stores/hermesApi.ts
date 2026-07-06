@@ -66,6 +66,31 @@ export const hermesApi = {
     }
   },
 
+  /** GET /api/hermes/agents/:id/soul — the agent's LIVE SOUL.md off the Hermes
+   *  host ('' if none). The stored spec's persona.soul is empty for every
+   *  agent (the real file was never read back), so the editor overrides its
+   *  seed with this. Returns null on failure so callers keep their seed. */
+  async getSoul(id: string): Promise<string | null> {
+    try {
+      const r = await bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/soul`)
+      if (r?.error) return null
+      return typeof r?.soul === 'string' ? r.soul : null
+    } catch {
+      return null
+    }
+  },
+
+  /** PUT /api/hermes/agents/:id/soul — writes the real SOUL.md (works even for
+   *  agents that have no stored spec). */
+  async putSoul(id: string, soul: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('PUT', `/api/hermes/agents/${encodeURIComponent(id)}/soul`, { soul })
+      return { ok: r?.ok !== false && !r?.error, error: r?.error ? String(r.error) : undefined }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
   /** DELETE /api/hermes/agents/:id — removes the Hermes profile. */
   async remove(id: string): Promise<{ ok: boolean; error?: string }> {
     try {

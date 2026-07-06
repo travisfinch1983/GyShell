@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import {
   Bot,
@@ -106,6 +106,22 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, editId, onS
     if (!store.catalogLoaded) void store.loadCatalog()
   }, [])
 
+  // Live SOUL.md truth (backend 3cfbca5): the stored spec's persona.soul is
+  // empty for every agent — the real file lives on the Hermes host. Fetch it
+  // for existing agents and override the seed, unless the user already edited.
+  const liveSoulRef = useRef<string | null>(null)
+  const dirtyRef = useRef(dirty)
+  useEffect(() => { dirtyRef.current = dirty }, [dirty])
+  useEffect(() => {
+    const id = initialSpec?.agentId ?? editId
+    if (!editing || !id) return
+    void hermesApi.getSoul(id).then((live) => {
+      if (live === null) return // fetch failed — keep the seed; save() won't blind-PUT either
+      liveSoulRef.current = live
+      if (!dirtyRef.current) setSoul(live)
+    })
+  }, [])
+
   const touch = () => { setDirty(true); setMsg(null) }
 
   // Keep a stale model selectable when the catalog no longer lists it (edit flow).
@@ -125,7 +141,7 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, editId, onS
     setDisplayName(initialSpec?.displayName ?? '')
     setDescription(initialSpec?.description ?? '')
     setModel(initialSpec?.model ?? '')
-    setSoul(initialSpec?.persona?.soul ?? '')
+    setSoul(liveSoulRef.current ?? initialSpec?.persona?.soul ?? '')
     setPersonality(initialSpec?.persona?.personality ?? '')
     setToolsets(initialSpec?.toolsets ?? [])
     setMode(initialSpec?.mode ?? 'default')
@@ -174,7 +190,18 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, editId, onS
     setMsg('Provisioning profile on CT158…')
     const r = await store.apply(parsed.data)
     if (r.ok) {
-      setMsg('Saved ✓')
+      // SOUL.md goes through its own endpoint (writes the real file on the
+      // Hermes host — works even for spec-less agents). Only when it actually
+      // changed vs the loaded truth: if the GET failed and the user didn't
+      // touch the field, we must never blind-overwrite the live file with ''.
+      let soulNote = ''
+      const soulBase = liveSoulRef.current ?? initialSpec?.persona?.soul ?? ''
+      if (soul !== soulBase) {
+        const sr = await hermesApi.putSoul(parsed.data.agentId, soul)
+        if (sr.ok) liveSoulRef.current = soul
+        else soulNote = ` (SOUL.md write failed: ${sr.error ?? 'unknown'})`
+      }
+      setMsg(`Saved ✓${soulNote}`)
       setDirty(false)
       onSaved(parsed.data.agentId)
     } else {
