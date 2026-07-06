@@ -40,6 +40,7 @@ import { createBusAgentInvoker } from '../../services/ConversationBus/BusAgentIn
 import { createFleetRouter } from '../../services/ConversationBus/fleetHttp'
 import { HermesService } from '../../services/Hermes/HermesService'
 import { createHermesRouter } from '../../services/Hermes/hermesHttp'
+import { createAgentToolsRouter } from '../../services/Agent/agentToolsHttp'
 import { HermesBusSubscriber } from '../../services/Hermes/HermesBusSubscriber'
 import { createAutoTerminalConfig } from '../../services/terminal/terminalConnectionSupport'
 import { TerminalCommandDraftService } from '../../services/TerminalCommandDraftService'
@@ -201,6 +202,7 @@ export async function startGyBackend(): Promise<void> {
       dataDir,
       fleetRouter: createFleetRouter(conversationBus),
       hermesRouter: createHermesRouter(hermesService),
+      agentToolsRouter: createAgentToolsRouter({ settingsService, agentService }),
     })
     .catch((e) => console.warn('[gybackend] universal proxy failed to start:', e))
 

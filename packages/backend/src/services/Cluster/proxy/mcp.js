@@ -15,10 +15,20 @@ async function gwGet(path) {
   if (!r.ok) throw new Error(`gateway ${path} -> ${r.status}`)
   return r.json()
 }
-async function gwPost(path) {
-  const r = await fetch(`${MCPJUNGLE_URL}${path}`, { method: 'POST', signal: AbortSignal.timeout(8000) })
-  if (!r.ok) throw new Error(`gateway ${path} -> ${r.status}`)
+async function gwPost(path, body) {
+  const r = await fetch(`${MCPJUNGLE_URL}${path}`, {
+    method: 'POST',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(8000),
+  })
+  if (!r.ok) throw new Error(`gateway ${path} -> ${r.status}: ${await r.text().catch(() => '')}`)
   return r.json().catch(() => ({}))
+}
+async function gwDelete(path) {
+  const r = await fetch(`${MCPJUNGLE_URL}${path}`, { method: 'DELETE', signal: AbortSignal.timeout(8000) })
+  if (!r.ok && r.status !== 404) throw new Error(`gateway ${path} -> ${r.status}`)
+  return { ok: true }
 }
 
 /** "server__tool" -> "tool" (the gateway namespaces every tool with its server). */
@@ -125,6 +135,34 @@ export function createMcpRouter({ exec }) {
   })
   router.post('/tools/:name/disable', async (req, res) => {
     try { await gwPost(`/api/v0/tools/disable?entity=${encodeURIComponent(req.params.name)}`); res.json({ ok: true }) } catch (e) { res.status(502).json({ error: e.message }) }
+  })
+
+  // --- Tool groups (per-agent curated tool sets exposed at /v0/groups/<name>/mcp) ---
+  // A group is created/synced from an agent's tool selection; the agent then consumes it.
+  router.get('/groups', async (_req, res) => {
+    try { res.json(await gwGet('/api/v0/tool-groups')) } catch (e) { res.status(502).json({ error: e.message }) }
+  })
+  router.get('/groups/:name', async (req, res) => {
+    try { res.json(await gwGet(`/api/v0/tool-groups/${encodeURIComponent(req.params.name)}`)) } catch (e) { res.status(502).json({ error: e.message }) }
+  })
+  // Upsert a group. body: { name, description?, included_servers?, included_tools?, excluded_tools? }
+  // The gateway POST /api/v0/tool-groups is create-or-update keyed by name.
+  router.put('/groups/:name', express.json(), async (req, res) => {
+    const b = req.body || {}
+    const payload = {
+      name: req.params.name,
+      description: b.description || '',
+      included_servers: Array.isArray(b.included_servers) ? b.included_servers : [],
+      included_tools: Array.isArray(b.included_tools) ? b.included_tools : [],
+      excluded_tools: Array.isArray(b.excluded_tools) ? b.excluded_tools : [],
+    }
+    try {
+      await gwPost('/api/v0/tool-groups', payload)
+      res.json({ ok: true, name: payload.name, endpoint: `${MCPJUNGLE_URL}/v0/groups/${payload.name}/mcp` })
+    } catch (e) { res.status(502).json({ error: e.message }) }
+  })
+  router.delete('/groups/:name', async (req, res) => {
+    try { res.json(await gwDelete(`/api/v0/tool-groups/${encodeURIComponent(req.params.name)}`)) } catch (e) { res.status(502).json({ error: e.message }) }
   })
 
   router.get('/settings', (_req, res) => res.json(getSettings()))
