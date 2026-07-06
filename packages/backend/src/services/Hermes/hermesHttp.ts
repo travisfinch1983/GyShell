@@ -94,6 +94,10 @@ export function createHermesRouter(hermes: HermesService): express.Router {
 
   // Agent config docs — list + read/write the workspace/*.md operating docs on the Hermes
   // host (IDENTITY/USER/MEMORY/AGENTS/EXECUTION/TOOLS/… ). Path-validated, skills excluded.
+  router.get('/api/hermes/agents/:id/memory-docs', async (req: Req, res: Res) => {
+    try { res.json({ docs: await hermes.listMemoryDocs(req.params.id) }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
   router.get('/api/hermes/agents/:id/docs', async (req: Req, res: Res) => {
     try { res.json({ docs: await hermes.listDocs(req.params.id) }) }
     catch (e) { res.status(500).json({ error: String((e as Error).message) }) }

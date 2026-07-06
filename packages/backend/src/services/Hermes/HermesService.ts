@@ -58,6 +58,10 @@ export class HermesService {
     return this.mgmt.deleteDoc(agentId, relpath)
   }
 
+  listMemoryDocs(agentId: string): Promise<Array<{ path: string; bytes: number; protected: boolean }>> {
+    return this.mgmt.listMemoryDocs(agentId)
+  }
+
   readDoc(agentId: string, relpath: string): Promise<string> {
     return this.mgmt.readDoc(agentId, relpath)
   }

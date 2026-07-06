@@ -358,7 +358,7 @@ export class HermesManagementService {
    *  bundled skills). Returns rel paths + byte sizes. */
   async listDocs(agentId: string): Promise<Array<{ path: string; bytes: number; protected: boolean }>> {
     const home = this.profileHome(agentId)
-    const cmd = `cd ${shq(home)} 2>/dev/null && find -L . -maxdepth 3 -type f -name '*.md' -not -path '*/skills/*' -printf '%s\t%P\n' 2>/dev/null | sort -t/ -k1`
+    const cmd = `cd ${shq(home)} 2>/dev/null && find -L . -maxdepth 3 -type f -name '*.md' -not -path '*/skills/*' -not -path '*/memory/*' -not -path '*/library/*' -printf '%s\t%P\n' 2>/dev/null | sort -t/ -k1`
     let out = ''
     try { out = await this.ssh(cmd) } catch { return [] }
     const docs: Array<{ path: string; bytes: number; protected: boolean }> = []
@@ -469,6 +469,26 @@ export class HermesManagementService {
     if (!rel) throw new Error('invalid doc path')
     if (this.isProtectedDoc(rel)) throw new Error('cannot delete a default doc')
     await this.ssh(`rm -f ${shq(`${this.profileHome(agentId)}/${rel}`)}`)
+  }
+
+  /** List the agent's memory docs for the Memory tab: workspace/MEMORY.md (the durable
+   *  memory) + the workspace/memory/*.md daily logs. Same rel-path shape as listDocs, so the
+   *  existing GET/PUT/DELETE /doc endpoints edit + delete them (MEMORY.md is protected). */
+  async listMemoryDocs(agentId: string): Promise<Array<{ path: string; bytes: number; protected: boolean }>> {
+    const home = this.profileHome(agentId)
+    const cmd = `cd ${shq(home)} 2>/dev/null && find -L workspace/memory -maxdepth 2 -type f -name '*.md' -printf 'workspace/memory/%f\t%s\n' 2>/dev/null`
+    let out = ''
+    try { out = await this.ssh(cmd) } catch { return [] }
+    const docs: Array<{ path: string; bytes: number; protected: boolean }> = []
+    for (const line of out.split('\n')) {
+      const tab = line.indexOf('\t')
+      if (tab < 0) continue
+      const rel = line.slice(0, tab).trim()
+      const bytes = parseInt(line.slice(tab + 1), 10) || 0
+      if (this.safeDocRel(rel)) docs.push({ path: rel, bytes, protected: this.isProtectedDoc(rel) })
+    }
+    docs.sort((a, b) => a.path.localeCompare(b.path))
+    return docs
   }
 
   private async applyFallback(agentId: string, fallback: string[]): Promise<void> {
