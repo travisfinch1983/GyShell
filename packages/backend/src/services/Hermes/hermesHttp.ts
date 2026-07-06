@@ -119,6 +119,20 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     } catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
   })
 
+  // Per-agent skill assignment (copy/remove skill dirs in the profile).
+  router.get('/api/hermes/agents/:id/skills', async (req: Req, res: Res) => {
+    try { res.json({ skills: await hermes.listAgentSkills(req.params.id) }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.post('/api/hermes/agents/:id/skills', json, async (req: Req, res: Res) => {
+    try { await hermes.assignSkill(req.params.id, String((req.body as any)?.ref || '')); res.json({ ok: true }) }
+    catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
+  })
+  router.delete('/api/hermes/agents/:id/skills', async (req: Req, res: Res) => {
+    try { await hermes.unassignSkill(req.params.id, String(req.query.ref || '')); res.json({ ok: true }) }
+    catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
+  })
+
   // Hermes skills LIBRARY (~/.hermes/skills) — the repurposed settings Skills tab manages it.
   router.get('/api/hermes/skills', async (_req: Req, res: Res) => {
     try { res.json({ skills: await hermes.listLibrarySkills() }) }

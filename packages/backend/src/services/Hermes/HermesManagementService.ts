@@ -555,6 +555,37 @@ export class HermesManagementService {
     await this.writeRemoteFile(`${dir}/SKILL.md`, content)
   }
 
+  /** The set of skill refs currently assigned to an agent (present in its profile/skills/). */
+  private async assignedSkillRefs(agentId: string): Promise<Set<string>> {
+    const skillsRoot = `${this.profileHome(agentId)}/skills`
+    let out = ''
+    try { out = await this.ssh(`cd ${shq(skillsRoot)} 2>/dev/null && find . -name SKILL.md -printf '%h\\n' 2>/dev/null | sed 's|^\\./||'`) } catch { return new Set() }
+    return new Set(out.split('\n').map((x) => x.trim()).filter(Boolean))
+  }
+
+  /** Library skills annotated with whether each is assigned to the agent. */
+  async listAgentSkills(agentId: string): Promise<Array<{ ref: string; name: string; category: string; description: string; source: string; assigned: boolean }>> {
+    const [lib, assigned] = await Promise.all([this.listLibrarySkills(), this.assignedSkillRefs(agentId)])
+    return lib.map((sk) => ({ ref: sk.ref, name: sk.name, category: sk.category, description: sk.description, source: sk.source, assigned: assigned.has(sk.ref) }))
+  }
+
+  /** Assign a library skill to an agent (copy the skill dir into profile/skills/). */
+  async assignSkill(agentId: string, ref: string): Promise<void> {
+    const r = this.safeSkillRef(ref)
+    if (!r) throw new Error('invalid skill ref')
+    const src = `${HermesManagementService.SKILLS_DIR}/${r}`
+    const dst = `${this.profileHome(agentId)}/skills/${r}`
+    const parent = dst.replace(/\/[^/]+$/, '')
+    await this.ssh(`test -d ${shq(src)} && mkdir -p ${shq(parent)} && cp -a ${shq(src)} ${shq(parent)}/`)
+  }
+
+  /** Unassign a skill from an agent (remove its dir from profile/skills/). */
+  async unassignSkill(agentId: string, ref: string): Promise<void> {
+    const r = this.safeSkillRef(ref)
+    if (!r) throw new Error('invalid skill ref')
+    await this.ssh(`rm -rf ${shq(`${this.profileHome(agentId)}/skills/${r}`)}`)
+  }
+
   private async applyFallback(agentId: string, fallback: string[]): Promise<void> {
     const chain = fallback.filter((m) => m && m.trim()).map((model) => ({ provider: 'ailab', model }))
     const cfgPath = `${this.profileHome(agentId)}/config.yaml`
