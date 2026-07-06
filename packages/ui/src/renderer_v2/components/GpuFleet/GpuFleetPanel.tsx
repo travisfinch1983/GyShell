@@ -36,6 +36,57 @@ function utilClass(pct: number | null): string {
 const SPARK_CAP = 40
 const sparkBuffers = new Map<string, { util: Array<number | null>; mem: Array<number | null> }>()
 let lastSampledAt = 0
+let backfillStarted = false
+
+/**
+ * Pre-fill the buffers from Prometheus history on first open (Travis: no more
+ * fill-from-empty). One range query batch over the exporter's own 15s cadence
+ * (window = SPARK_CAP × 15s), PREPENDED under any live samples that raced in.
+ * Resolution reality: the gpu job scrapes every 15s, so history AND live are
+ * genuinely 15s-granular — the seeded points and live appends mix on one
+ * index axis, which is as honest as the data gets until the exporter's
+ * scrape interval changes (separate knob, claude1 flagged it to Travis).
+ */
+async function backfillSparkBuffers(onDone: () => void): Promise<void> {
+  if (backfillStarted) return
+  backfillStarted = true
+  try {
+    const api = (window as any).gyshell?.metrics
+    if (!api?.queryRangeBatch) return
+    const res = await api.queryRangeBatch(
+      [
+        'nvidia_smi_utilization_gpu_ratio{job="gpu"}',
+        'nvidia_smi_memory_used_bytes{job="gpu"}',
+        'nvidia_smi_memory_total_bytes{job="gpu"}',
+      ],
+      SPARK_CAP * 15,
+      15,
+    )
+    type Series = { labels: Record<string, string>; points: Array<{ t: number; v: number | null }> }
+    const byUuid = (arr: Series[]): Map<string, Array<{ t: number; v: number | null }>> => {
+      const m = new Map<string, Array<{ t: number; v: number | null }>>()
+      for (const s of arr) if (s.labels?.uuid) m.set(s.labels.uuid, s.points ?? [])
+      return m
+    }
+    const util = byUuid((res?.results?.[0] ?? []) as Series[])
+    const used = byUuid((res?.results?.[1] ?? []) as Series[])
+    const total = byUuid((res?.results?.[2] ?? []) as Series[])
+    for (const [uuid, uPts] of util) {
+      const histUtil = uPts.slice(-SPARK_CAP).map((p) => (p.v == null ? null : p.v * 100))
+      // used/total share the range query's step grid — align by timestamp
+      const totByT = new Map((total.get(uuid) ?? []).map((p) => [p.t, p.v]))
+      const histMem = (used.get(uuid) ?? []).slice(-SPARK_CAP).map((p) => {
+        const tot = totByT.get(p.t)
+        return p.v != null && tot ? (p.v / tot) * 100 : null
+      })
+      const buf = sparkBuffers.get(uuid) ?? { util: [], mem: [] }
+      buf.util = histUtil.concat(buf.util).slice(-SPARK_CAP)
+      buf.mem = histMem.concat(buf.mem).slice(-SPARK_CAP)
+      sparkBuffers.set(uuid, buf)
+    }
+    onDone()
+  } catch { /* backfill is a nicety — live fill still works */ }
+}
 
 function sampleFleet(updatedAt: number, nodes: Array<{ gpus: FleetGpu[] }>): void {
   if (updatedAt === 0 || updatedAt === lastSampledAt) return
@@ -152,10 +203,14 @@ export const GpuFleetPanel = observer(() => {
   const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => { void uiPrefsStore.ensureLoaded() }, [])
+  const [, forceRepaint] = React.useState(0)
   const pollMs = fleetPollMs()
   useEffect(() => {
-    if (open) s.startPolling(pollMs)
-    else s.stopPolling()
+    if (open) {
+      s.startPolling(pollMs)
+      // seed the sparklines from Prometheus history (once per page load)
+      void backfillSparkBuffers(() => forceRepaint((n) => n + 1))
+    } else s.stopPolling()
     return () => s.stopPolling()
   }, [open, pollMs, s])
 
