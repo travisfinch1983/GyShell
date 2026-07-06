@@ -610,8 +610,11 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
       {section === 'memory' && (
         <section>
           <div className={styles.sectionTitle}>Memory</div>
-          <div className={styles.sectionSub}>The agent's memory operating doc — what it remembers and how.</div>
+          <div className={styles.sectionSub}>
+            The agent's memory operating doc plus its daily logs (workspace/memory/*.md) — view, edit, or clear old logs.
+          </div>
           {inlineDoc('workspace/MEMORY.md', 'Memory rules and long-lived notes on the Hermes host.')}
+          {liveDocId && <AgentDocs agentId={liveDocId} mode="memory" />}
         </section>
       )}
 

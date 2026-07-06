@@ -111,6 +111,20 @@ export const hermesApi = {
     }
   },
 
+  /** GET /api/hermes/agents/:id/memory-docs — the agent's daily-log memory
+   *  files (workspace/memory/*.md; MEMORY.md itself is NOT in this list —
+   *  it's the Memory tab's primary editor). Same read/write/delete as any
+   *  doc via /doc?path=. */
+  async listMemoryDocs(id: string): Promise<Array<{ path: string; bytes: number; protected?: boolean }> | null> {
+    try {
+      const r = await bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/memory-docs`)
+      if (r?.error || !Array.isArray(r?.docs)) return null
+      return r.docs as Array<{ path: string; bytes: number; protected?: boolean }>
+    } catch {
+      return null
+    }
+  },
+
   /** DELETE /api/hermes/agents/:id/doc?path= — removes a NON-protected doc
    *  (backend 400s on default docs / invalid paths). */
   async deleteDoc(id: string, path: string): Promise<{ ok: boolean; error?: string }> {

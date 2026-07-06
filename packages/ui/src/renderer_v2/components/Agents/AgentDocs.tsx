@@ -126,7 +126,11 @@ export const AgentDocs: React.FC<{
    *  "default"), where no Persona tab owns it. Per-agent Docs tabs keep it
    *  filtered (one editor per file). */
   includeSoul?: boolean
-}> = ({ agentId, includeSoul = false }) => {
+  /** 'config' (default) = GET /docs (operating docs, grouped, add-from-
+   *  template). 'memory' = GET /memory-docs (the daily logs, 3352394) —
+   *  flat newest-first list, no templates, delete w/ the memory warning. */
+  mode?: 'config' | 'memory'
+}> = ({ agentId, includeSoul = false, mode = 'config' }) => {
   const [docs, setDocs] = useState<DocEntry[] | null>(null)
   const [listErr, setListErr] = useState('')
   const [open, setOpen] = useState<OpenDoc | null>(null)
@@ -138,21 +142,21 @@ export const AgentDocs: React.FC<{
   const [addingTemplate, setAddingTemplate] = useState(false)
 
   const loadDocs = () =>
-    hermesApi.listDocs(agentId).then((d) => {
-      if (d === null) setListErr('Failed to list this agent’s docs — Hermes host unreachable?')
+    (mode === 'memory' ? hermesApi.listMemoryDocs(agentId) : hermesApi.listDocs(agentId)).then((d) => {
+      if (d === null) setListErr(`Failed to list this agent’s ${mode === 'memory' ? 'memory logs' : 'docs'} — Hermes host unreachable?`)
       else setDocs(includeSoul ? d : d.filter((x) => !isSoul(x.path)))
     })
 
   useEffect(() => {
     void loadDocs()
-    if (agentId !== TEMPLATE_AGENT) {
+    if (mode === 'config' && agentId !== TEMPLATE_AGENT) {
       void hermesApi.listDocs(TEMPLATE_AGENT).then((t) => setTemplates(t ?? []))
     }
-  }, [agentId, includeSoul])
+  }, [agentId, includeSoul, mode])
 
   // Offer only templates the agent doesn't already have (by basename).
   const have = new Set((docs ?? []).map((d) => baseName(d.path).toLowerCase()))
-  const addable = agentId === TEMPLATE_AGENT
+  const addable = agentId === TEMPLATE_AGENT || mode === 'memory'
     ? []
     : templates.filter((t) => !isSoul(t.path) && !have.has(baseName(t.path).toLowerCase()))
 
@@ -168,13 +172,16 @@ export const AgentDocs: React.FC<{
   }
 
   const groups = useMemo(() => {
+    // Memory mode: one flat list, newest first (paths are date-stamped).
+    if (mode === 'memory') {
+      const items = (docs ?? []).slice().sort((a, b) => b.path.localeCompare(a.path))
+      return items.length ? [{ label: 'Daily logs', items }] : []
+    }
     const workspace: DocEntry[] = []
     const library: DocEntry[] = []
-    const memory: DocEntry[] = []
     const other: DocEntry[] = []
     for (const d of docs ?? []) {
       if (d.path.startsWith('workspace/library/')) library.push(d)
-      else if (d.path.startsWith('workspace/memory/')) memory.push(d)
       else if (d.path.startsWith('workspace/')) workspace.push(d)
       else other.push(d)
     }
@@ -182,10 +189,9 @@ export const AgentDocs: React.FC<{
     return [
       { label: 'Workspace docs', items: workspace.sort(byName) },
       { label: 'Library', items: library.sort(byName) },
-      { label: 'Memory logs', items: memory.sort(byName) },
       { label: 'Other', items: other.sort(byName) },
     ].filter((g) => g.items.length > 0)
-  }, [docs])
+  }, [docs, mode])
 
   const deleteDoc = async (d: DocEntry) => {
     const isMemoryLog = d.path.startsWith('workspace/memory/')
@@ -267,7 +273,7 @@ export const AgentDocs: React.FC<{
     <div className={styles.card}>
       {listErr && <div className={styles.dim}>{listErr}</div>}
       {!docs && !listErr && <div className={styles.dim}>Loading docs…</div>}
-      {docs?.length === 0 && <div className={styles.dim}>No config docs found for this agent.</div>}
+      {docs?.length === 0 && <div className={styles.dim}>{mode === 'memory' ? 'No memory logs yet.' : 'No config docs found for this agent.'}</div>}
       {groups.map((g) => (
         <div key={g.label} style={{ marginBottom: 10 }}>
           <div className={styles.dim} style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>{g.label}</div>
