@@ -32,6 +32,8 @@ interface SaveResult {
   disabledSelectedCount?: number
   /** Selected tools the in-process executor can't run yet (fast-follow). */
   unsupportedCount?: number
+  /** Non-null if the gateway group sync hiccuped — the selection itself still saved. */
+  groupError?: string | null
 }
 
 export const AgentToolsSelector: React.FC<{
@@ -61,8 +63,15 @@ export const AgentToolsSelector: React.FC<{
         setSelected(sel)
         setBaseline(new Set(sel))
         setEndpointsLive(true)
-      } catch {
-        setEndpointsLive(false) // backend lane not deployed yet — preview only
+      } catch (e: any) {
+        // The live route 404s {"error":"agent not found"} for unknown ids —
+        // that's an agent-sync gap, not a missing backend lane.
+        if (String(e?.message ?? e).includes('agent not found')) {
+          setEndpointsLive(true)
+          setErr("Backend doesn't know this agent yet — re-save the agent, then reopen this tab.")
+        } else {
+          setEndpointsLive(false) // backend lane not deployed yet — preview only
+        }
       }
     })()
   }, [agentId, persisted])
@@ -99,6 +108,7 @@ export const AgentToolsSelector: React.FC<{
       ]
       if ((r.disabledSelectedCount ?? conflicts.length) > 0) bits.push(`${r.disabledSelectedCount ?? conflicts.length} granted but globally disabled`)
       if ((r.unsupportedCount ?? 0) > 0) bits.push(`${r.unsupportedCount} not yet runnable in-process`)
+      if (r.groupError) bits.push(`group sync warning: ${r.groupError} (selection saved)`)
       setStatus(bits.join(' · '))
       onSaved?.()
     } catch (e: any) {
