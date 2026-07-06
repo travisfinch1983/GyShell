@@ -4377,9 +4377,11 @@ WantedBy=multi-user.target
       const pciTotal = Object.fromEntries(clusterGpus.map((g) => [`${g.node}:${g.pciId}`, g.vramMB || 0]));
 
       // one snapshot per node that hosts a GPU service (TTL-cached in the monitor)
+      // freshness follows the UI poll rate (?maxAge ms) so a faster card cadence gets fresher nvtop; 1s floor
+      const maxAge = Math.max(1000, Math.min(60000, parseInt(req.query.maxAge, 10) || 3000));
       const nodes = [...new Set(services.filter((s) => (s.gpuPciIds || []).length).map((s) => s.node))];
       const snaps = {};
-      await Promise.all(nodes.map(async (n) => { snaps[n] = await gpuMonitor.getNodeSnapshot(n); }));
+      await Promise.all(nodes.map(async (n) => { snaps[n] = await gpuMonitor.getNodeSnapshot(n, maxAge); }));
 
       const out = {};
       for (const s of services) {

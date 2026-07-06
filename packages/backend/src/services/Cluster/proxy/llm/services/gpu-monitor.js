@@ -402,11 +402,12 @@ export class GpuMonitor {
   /** On-demand nvtop snapshot for one node, TTL-cached (~3s) so UI polling can't spam nvtop.
    *  Reuses pollNvtop (per-GPU + per-process pid/cmdline/util/mem). Serves stale on failure, so a
    *  transient SSH hiccup doesn't blank the cards. Only runs when actually called (tab open). */
-  async getNodeSnapshot(nodeName) {
+  async getNodeSnapshot(nodeName, maxAgeMs = 3000) {
     const now = Date.now();
+    const ttl = Math.max(1000, Math.min(60000, Number(maxAgeMs) || 3000));  // caller-driven freshness, 1s floor
     this._snapCache = this._snapCache || {};
     const cached = this._snapCache[nodeName];
-    if (cached && (now - cached.ts) < 3000) return cached.data;
+    if (cached && (now - cached.ts) < ttl) return cached.data;
     const info = this.gpuInventory[nodeName];
     if (!info || !info.ip || !(info.allGpus && info.allGpus.length)) return cached ? cached.data : null;
     try {
