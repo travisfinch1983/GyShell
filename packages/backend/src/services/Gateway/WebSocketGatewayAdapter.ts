@@ -306,6 +306,13 @@ export class WebSocketGatewayAdapter {
   private server: IWebSocketServerLike | null = null;
   private transportIdBySocket: Map<IWebSocketConnectionLike, string> = new Map();
   private isSameMachineBySocket: WeakMap<IWebSocketConnectionLike, boolean> = new WeakMap();
+  /** Per-socket liveness for the ping/pong heartbeat: true after a pong, set false
+   *  when a ping is sent; a socket still false at the next tick is presumed dead. */
+  private aliveBySocket: WeakMap<IWebSocketConnectionLike, boolean> = new WeakMap();
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  /** Ping cadence — must stay comfortably under proxy idle timeouts (the Cloudflare
+   *  tunnel culls idle WebSockets at ~100s). */
+  private static readonly HEARTBEAT_MS = 30_000;
   private readonly serverFactory: WebSocketServerFactory;
   private readonly logger: IWebSocketGatewayAdapterLogger;
 
@@ -324,11 +331,42 @@ export class WebSocketGatewayAdapter {
       this.logger.error('[WebSocketGatewayAdapter] Server error.', error);
     });
     this.server.on('connection', (socket, request) => this.handleConnection(socket, request));
+    this.startHeartbeat();
     this.logger.info(`[WebSocketGatewayAdapter] Listening on ws://${this.options.host}:${this.options.port}`);
+  }
+
+  /**
+   * Protocol-level ping keepalive. The gateway socket carries cluster data, theme,
+   * and tab layout — but it goes IDLE whenever the user is only chatting (chat runs
+   * on a separate SSE stream). Proxies in front of the backend (the Cloudflare
+   * tunnel) then cull the idle socket, which strands a tab in default state until it
+   * reconnects. Pinging every HEARTBEAT_MS keeps the connection warm, and a socket
+   * that misses a pong by the next tick is terminated so dead peers don't linger.
+   * Ping/pong is transparent to client code — browsers and the `ws` lib auto-reply.
+   */
+  private startHeartbeat(): void {
+    if (this.heartbeatTimer) return;
+    this.heartbeatTimer = setInterval(() => {
+      for (const socket of this.transportIdBySocket.keys()) {
+        if (typeof socket.ping !== 'function') continue; // mock/test sockets
+        if (this.aliveBySocket.get(socket) === false) {
+          try { socket.terminate?.(); } catch { /* noop */ }
+          continue;
+        }
+        this.aliveBySocket.set(socket, false);
+        try { socket.ping(); } catch { /* noop */ }
+      }
+    }, WebSocketGatewayAdapter.HEARTBEAT_MS);
+    // Don't let the heartbeat keep the process alive on shutdown.
+    (this.heartbeatTimer as unknown as { unref?: () => void }).unref?.();
   }
 
   async stop(): Promise<void> {
     if (!this.server) return;
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
     const server = this.server;
     this.server = null;
     await new Promise<void>((resolve, reject) => {
@@ -406,6 +444,9 @@ export class WebSocketGatewayAdapter {
     const transport = new WebSocketClientTransport(socket, this.logger);
     this.transportIdBySocket.set(socket, transport.id);
     this.isSameMachineBySocket.set(socket, this.isLoopbackAddress(String(remote)));
+    // Heartbeat liveness: start alive, and refresh on every pong (auto-sent by the peer).
+    this.aliveBySocket.set(socket, true);
+    try { socket.on('pong', () => this.aliveBySocket.set(socket, true)); } catch { /* noop */ }
     this.gateway.registerTransport(transport);
     state.authorized = true;
     this.logger.info(`[WebSocketGatewayAdapter] Client connected: ${remote} (${transport.id})`);

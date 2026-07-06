@@ -2,8 +2,10 @@ import { v4 as uuidv4 } from 'uuid';
 import type { GatewayEvent, IClientTransport } from './types';
 
 export interface IWebSocketConnectionLike {
-  on(event: 'message' | 'close' | 'error', listener: (...args: any[]) => void): void;
+  on(event: 'message' | 'close' | 'error' | 'pong', listener: (...args: any[]) => void): void;
   send(data: string): void;
+  /** Protocol-level ping (real `ws` sockets only; absent on mock/test sockets). */
+  ping?(): void;
   close?(code?: number, reason?: string): void;
   terminate?(): void;
 }
