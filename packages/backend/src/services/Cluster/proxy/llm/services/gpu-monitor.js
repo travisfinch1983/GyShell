@@ -399,6 +399,25 @@ export class GpuMonitor {
     };
   }
 
+  /** On-demand nvtop snapshot for one node, TTL-cached (~3s) so UI polling can't spam nvtop.
+   *  Reuses pollNvtop (per-GPU + per-process pid/cmdline/util/mem). Serves stale on failure, so a
+   *  transient SSH hiccup doesn't blank the cards. Only runs when actually called (tab open). */
+  async getNodeSnapshot(nodeName) {
+    const now = Date.now();
+    this._snapCache = this._snapCache || {};
+    const cached = this._snapCache[nodeName];
+    if (cached && (now - cached.ts) < 3000) return cached.data;
+    const info = this.gpuInventory[nodeName];
+    if (!info || !info.ip || !(info.allGpus && info.allGpus.length)) return cached ? cached.data : null;
+    try {
+      const data = await this.pollNvtop(nodeName, info);
+      this._snapCache[nodeName] = { ts: now, data };
+      return data;
+    } catch {
+      return cached ? cached.data : null;
+    }
+  }
+
   /**
    * Fallback: poll a host using nvidia-smi (NVIDIA GPUs only).
    * Non-NVIDIA GPUs on the same host are added as static entries.

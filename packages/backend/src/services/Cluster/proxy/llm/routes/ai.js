@@ -4362,6 +4362,65 @@ WantedBy=multi-user.target
     }
   });
 
+  /** GET /service-usage — live GPU%/VRAM per service, attributed to the service's OWN GPU processes
+   *  (matched by its port appearing in each GPU process cmdline); falls back to whole-GPU numbers
+   *  (attribution:"gpu-total") when it can't resolve processes. Sampling is on-demand + TTL-cached
+   *  in the GPU monitor, so nvtop only runs while the UI is actually polling this (tab open). */
+  router.get('/service-usage', async (req, res) => {
+    try {
+      const state = loadActiveServices();
+      const services = Object.values(state.services || {});
+      const inventory = gpuMonitor.getEnrichedInventory();
+      const gpuConfig = gpuMonitor.getConfig();
+      const aiConfig = loadAiConfig();
+      const clusterGpus = getClusterGpus(inventory, gpuConfig, aiConfig);
+      const pciTotal = Object.fromEntries(clusterGpus.map((g) => [`${g.node}:${g.pciId}`, g.vramMB || 0]));
+
+      // one snapshot per node that hosts a GPU service (TTL-cached in the monitor)
+      const nodes = [...new Set(services.filter((s) => (s.gpuPciIds || []).length).map((s) => s.node))];
+      const snaps = {};
+      await Promise.all(nodes.map(async (n) => { snaps[n] = await gpuMonitor.getNodeSnapshot(n); }));
+
+      const out = {};
+      for (const s of services) {
+        const pcis = Array.isArray(s.gpuPciIds) ? s.gpuPciIds : [];
+        if (!pcis.length) continue;
+        const vram_total_mb = pcis.reduce((sum, p) => sum + (pciTotal[`${s.node}:${p}`] || 0), 0);
+        const snap = snaps[s.node];
+        const svcGpus = (snap && snap.gpus ? snap.gpus : []).filter((g) => pcis.includes(g.pciId));
+        const portRe = s.port ? new RegExp('--port[ =]?' + s.port + '(?![0-9])') : null;
+
+        let attribution = 'per-process', anyMatch = false;
+        const gpus = [];
+        for (const g of svcGpus) {
+          const procs = (g.processes || []).filter((p) => portRe && portRe.test(p.cmdline || ''));
+          if (procs.length) anyMatch = true;
+          const vram = Math.round(procs.reduce((a, p) => a + (p.memBytes || 0), 0) / 1048576);
+          const util = Math.max(0, g.gpuUtil || 0);  // nvtop per-process GPU% is N/A; use the GPU util
+          gpus.push({ pci_id: g.pciId, util_pct: util, vram_used_mb: vram,
+                      vram_total_mb: g.memTotal || pciTotal[`${s.node}:${g.pciId}`] || 0 });
+        }
+        let vram_used_mb, gpu_util_pct;
+        if (anyMatch) {
+          vram_used_mb = gpus.reduce((a, g) => a + g.vram_used_mb, 0);
+          gpu_util_pct = gpus.length ? Math.round(gpus.reduce((a, g) => a + g.util_pct, 0) / gpus.length) : 0;
+        } else {
+          // fallback: whole-GPU numbers for the service's assigned GPUs
+          attribution = 'gpu-total';
+          gpus.length = 0;
+          for (const g of svcGpus) gpus.push({ pci_id: g.pciId, util_pct: Math.max(0, g.gpuUtil || 0),
+                      vram_used_mb: g.memUsed || 0, vram_total_mb: g.memTotal || 0 });
+          vram_used_mb = gpus.reduce((a, g) => a + g.vram_used_mb, 0);
+          gpu_util_pct = gpus.length ? Math.round(gpus.reduce((a, g) => a + g.util_pct, 0) / gpus.length) : 0;
+        }
+        out[s.id] = { gpu_util_pct, vram_used_mb, vram_total_mb, attribution, gpus };
+      }
+      res.json({ sampledAt: Date.now(), services: out });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   /**
    * POST /estimate — Estimate VRAM and find GPU placements.
    *
