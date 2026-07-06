@@ -66,6 +66,26 @@ const THEME_CSS = `:root{
 html,body{background:var(--app-bg);color:var(--fg);font-family:var(--font-ui);margin:0;}
 `;
 
+// Full-theme fidelity shim (Claude2): addon iframes are SAME-ORIGIN under the proxy, so mirror EVERY
+// live CSS custom property the app sets on the parent <html> (the terminal-scheme-derived tokens:
+// --accent/--accent-2/--danger/--success/--warning/… not just dark/light) into the addon's own :root,
+// and re-sync on any parent theme switch via MutationObserver. Addons include this with one <script>
+// and become fully theme-faithful; theme.css stays as the pre-JS fallback.
+const THEME_JS = `(function(){
+  var root=document.documentElement;
+  function sync(){
+    try{
+      var p=window.parent.document.documentElement, ps=p.style;
+      for(var i=0;i<ps.length;i++){var k=ps[i];if(k.slice(0,2)==='--')root.style.setProperty(k,ps.getPropertyValue(k));}
+      var dt=p.getAttribute('data-theme'); if(dt){root.setAttribute('data-theme',dt);} else {root.removeAttribute('data-theme');}
+    }catch(e){/* cross-origin/no parent: keep theme.css defaults */}
+  }
+  sync();
+  try{new MutationObserver(sync).observe(window.parent.document.documentElement,{attributes:true,attributeFilter:['style','data-theme','class']});}catch(e){}
+  window.addEventListener('pageshow',sync);
+})();
+`;
+
 /** GET /api/addons -> { addons: [...] } (read at request time; adding a manifest needs no restart). */
 export function createAddonsRouter() {
   const router = Router();
@@ -78,6 +98,9 @@ export function createAddonsProxyRouter() {
   const router = Router();
   router.get('/_shared/theme.css', (_req, res) => {
     res.type('text/css').set('Cache-Control', 'no-cache').send(THEME_CSS);
+  });
+  router.get('/_shared/theme.js', (_req, res) => {
+    res.type('application/javascript').set('Cache-Control', 'no-cache').send(THEME_JS);
   });
   // /<id>/<rest...> (+ query) -> <backend>/<rest...>. Streamed (no body buffering) so uploads/downloads pass through.
   router.all(/^\/([a-z0-9][a-z0-9_-]{0,63})(?:\/.*)?$/, (req, res) => {
