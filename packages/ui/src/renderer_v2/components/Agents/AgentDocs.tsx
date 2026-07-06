@@ -115,6 +115,10 @@ export const InlineDocEditor: React.FC<{ agentId: string; path: string; hint?: s
   )
 }
 
+/** The Hermes `default` profile is the template store — its own Docs view
+ *  must not offer "add from template" to itself. */
+const TEMPLATE_AGENT = 'default'
+
 export const AgentDocs: React.FC<{
   agentId: string
   /** Include SOUL.md in the list — for the Doc Templates panel (agentId
@@ -128,13 +132,39 @@ export const AgentDocs: React.FC<{
   const [busyPath, setBusyPath] = useState('')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
+  const [templates, setTemplates] = useState<DocEntry[]>([])
+  const [templatePick, setTemplatePick] = useState('')
+  const [addingTemplate, setAddingTemplate] = useState(false)
 
-  useEffect(() => {
-    void hermesApi.listDocs(agentId).then((d) => {
+  const loadDocs = () =>
+    hermesApi.listDocs(agentId).then((d) => {
       if (d === null) setListErr('Failed to list this agent’s docs — Hermes host unreachable?')
       else setDocs(includeSoul ? d : d.filter((x) => !isSoul(x.path)))
     })
+
+  useEffect(() => {
+    void loadDocs()
+    if (agentId !== TEMPLATE_AGENT) {
+      void hermesApi.listDocs(TEMPLATE_AGENT).then((t) => setTemplates(t ?? []))
+    }
   }, [agentId, includeSoul])
+
+  // Offer only templates the agent doesn't already have (by basename).
+  const have = new Set((docs ?? []).map((d) => baseName(d.path).toLowerCase()))
+  const addable = agentId === TEMPLATE_AGENT
+    ? []
+    : templates.filter((t) => !isSoul(t.path) && !have.has(baseName(t.path).toLowerCase()))
+
+  const addFromTemplate = async () => {
+    if (!templatePick) return
+    setAddingTemplate(true); setMsg('')
+    const r = await hermesApi.addDoc(agentId, templatePick)
+    setAddingTemplate(false)
+    if (!r.ok) { setMsg(`Add from template failed: ${r.error ?? 'unknown'}`); return }
+    setTemplatePick('')
+    setMsg(`Added ${r.path ?? baseName(templatePick)} ✓`)
+    await loadDocs()
+  }
 
   const groups = useMemo(() => {
     const workspace: DocEntry[] = []
@@ -230,6 +260,28 @@ export const AgentDocs: React.FC<{
           ))}
         </div>
       ))}
+      {addable.length > 0 && (
+        <div className={styles.summaryRow} style={{ marginTop: 6, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+          <FileText size={13} />
+          <span className={styles.dim} style={{ fontSize: 12 }}>Add from template</span>
+          <span className={styles.spacer} />
+          <select
+            className={`${styles.input} ${styles.mono}`}
+            style={{ maxWidth: 280 }}
+            value={templatePick}
+            onChange={(e) => setTemplatePick(e.target.value)}
+            disabled={addingTemplate}
+          >
+            <option value="">pick a template…</option>
+            {addable.map((t) => (
+              <option key={t.path} value={t.path}>{baseName(t.path)} ({fmtBytes(t.bytes)})</option>
+            ))}
+          </select>
+          <button className={styles.btn} disabled={!templatePick || addingTemplate} onClick={() => void addFromTemplate()}>
+            {addingTemplate ? 'Adding…' : 'Add'}
+          </button>
+        </div>
+      )}
       {msg && <div className={styles.dim}>{msg}</div>}
     </div>
   )
