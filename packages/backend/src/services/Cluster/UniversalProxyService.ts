@@ -258,6 +258,13 @@ export class UniversalProxyService {
       app.use(createFtpRouter(ftp))
     }
 
+    // AI-Lab native-tools bridge (config federation): /api/agent/native-tools surfaces the
+    // agent built-in tools to the gateway (the ailab-native MCP server mirrors them).
+    {
+      const { createNativeToolsRouter } = await import('../Agent/nativeToolsHttp')
+      app.use(createNativeToolsRouter())
+    }
+
     const { createClusterRouter } = await import('./proxy/cluster.js')
     app.use('/api', express.json({ limit: '10mb' }), createClusterRouter({
       pveApi: llmPve, gpuMonitor: llmGpuMon, hookscriptDeploy: llmHook,

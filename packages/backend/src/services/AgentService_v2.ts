@@ -15,6 +15,7 @@ import type {
 } from './runtimeContracts'
 import type { UIHistoryService } from './UIHistoryService'
 import { v4 as uuidv4 } from 'uuid'
+import { getGatewayNativeToolEnabledMap } from './Agent/nativeToolGating'
 import type { z } from 'zod'
 import type { StartTaskInput } from './Gateway/types'
 import type { StoredChatSession } from './ChatHistoryService'
@@ -199,6 +200,7 @@ export class AgentService_v2 {
   private helpers: AgentHelpers
   private checkpointer: MemorySaver
   private builtInToolEnabled: Record<string, boolean> = {}
+  private builtInGatingTimer: ReturnType<typeof setInterval> | null = null
   // Per-session so concurrent multi-agent runs on this singleton can't cross-contaminate
   // each other's aborted-partial capture (Phase-0 fleet hardening).
   private lastAbortedMessages: Map<string, BaseMessage> = new Map()
@@ -239,12 +241,24 @@ export class AgentService_v2 {
     this.helpers = new AgentHelpers()
     this.checkpointer = new MemorySaver()
     this.initializeGraph()
+    void this.startBuiltInToolGatingRefresh()
   }
 
   updateSettings(settings: BackendSettings): void {
     this.settings = settings
-    this.builtInToolEnabled = settings.tools?.builtIn ?? {}
+    // Built-in tool enable/disable is driven by the MCP Gateway (ailab-native) — see startBuiltInToolGatingRefresh.
     this.initializeGraph()
+  }
+
+  /** Repoint builtInToolEnabled at the gateway ailab-native enable state (config federation).
+   *  All-enabled fallback lives in getGatewayNativeToolEnabledMap. */
+  private async startBuiltInToolGatingRefresh(): Promise<void> {
+    const refresh = async () => { try { this.builtInToolEnabled = await getGatewayNativeToolEnabledMap() } catch { /* keep last-known */ } }
+    await refresh()
+    if (!this.builtInGatingTimer) {
+      this.builtInGatingTimer = setInterval(() => void refresh(), 30_000)
+      ;(this.builtInGatingTimer as unknown as { unref?: () => void }).unref?.()
+    }
   }
 
   setEventPublisher(publisher: (sessionId: string, event: any) => void): void {
