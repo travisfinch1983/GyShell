@@ -208,6 +208,41 @@ export const hermesApi = {
     }
   },
 
+  /** GET /api/hermes/skills — the Hermes skills LIBRARY (2f264d2): all skills
+   *  (builtin + Travis's local imports under category "custom"). `ref` is the
+   *  lib-relative dir path (can be >2 segments, e.g. mlops/inference/vllm). */
+  async listSkills(): Promise<Array<{ ref: string; name: string; dir: string; category: string; description: string; source: 'builtin' | 'local' }> | null> {
+    try {
+      const r = await bridge().request('GET', '/api/hermes/skills')
+      if (r?.error || !Array.isArray(r?.skills)) return null
+      return r.skills
+    } catch {
+      return null
+    }
+  },
+
+  /** GET /api/hermes/skills/item?ref= — a skill's SKILL.md. Null on failure. */
+  async getSkill(ref: string): Promise<string | null> {
+    try {
+      const r = await bridge().request('GET', `/api/hermes/skills/item?ref=${encodeURIComponent(ref)}`)
+      if (r?.error) return null
+      return typeof r?.content === 'string' ? r.content : null
+    } catch {
+      return null
+    }
+  },
+
+  /** PUT /api/hermes/skills/item?ref= { content } — edit OR create (a new ref
+   *  like "custom/my-skill" creates the dir). */
+  async putSkill(ref: string, content: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('PUT', `/api/hermes/skills/item?ref=${encodeURIComponent(ref)}`, { content })
+      return { ok: r?.ok !== false && !r?.error, error: r?.error ? String(r.error) : undefined }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
   /** DELETE /api/hermes/agents/:id — removes the Hermes profile. */
   async remove(id: string): Promise<{ ok: boolean; error?: string }> {
     try {

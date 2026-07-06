@@ -18,7 +18,6 @@ import {
   RefreshCw,
   BookOpenText,
   Users,
-  Pencil,
   Info,
   AlertTriangle,
   Database,
@@ -45,6 +44,7 @@ import { TtsSettingsPanel } from "./TtsSettingsPanel";
 import "./TtsSettingsPanel.scss";
 import { FtpSettingsPanel } from "./FtpSettingsPanel";
 import { ToolsPanel } from "./ToolsPanel";
+import { HermesSkillsPanel } from "./HermesSkillsPanel";
 import { Select } from "../../platform/Select";
 import { ShortcutRecorder } from "./ShortcutRecorder";
 import { getDefaultCommandDraftShortcut } from "../../lib/commandDraftShortcut";
@@ -214,96 +214,6 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
     React.useEffect(() => {
       if (store.settingsSection === "models") void store.refreshModelHealth();
     }, [store.settingsSection, store.settings?.models.items.length]);
-    const skillImportInputRef = React.useRef<HTMLInputElement>(null);
-
-    /**
-     * Parse a skill.md file into {name, description, content}. Honors
-     * YAML-ish frontmatter (---name: ... description: ... ---) when present;
-     * falls back to deriving the name from the immediate parent folder and
-     * the description from the first non-empty body line.
-     */
-    const parseSkillMarkdown = (
-      raw: string,
-      filePath: string,
-    ): { name: string; description: string; content: string } | null => {
-      const text = raw.replace(/^\uFEFF/, "");
-      let body = text;
-      let frontName = "";
-      let frontDesc = "";
-      const fm = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
-      if (fm) {
-        body = text.slice(fm[0].length);
-        const lines = fm[1].split(/\r?\n/);
-        for (const line of lines) {
-          const m = line.match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/);
-          if (!m) continue;
-          const key = m[1].toLowerCase();
-          let val = m[2].trim();
-          // Strip surrounding quotes if present
-          if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-            val = val.slice(1, -1);
-          }
-          if (key === "name") frontName = val;
-          else if (key === "description") frontDesc = val;
-        }
-      }
-      const segments = filePath.split(/[\\/]/).filter(Boolean);
-      // Use the immediate parent folder as the fallback name (skill.md sits inside it)
-      const parentFolder = segments.length >= 2 ? segments[segments.length - 2] : "";
-      const name = frontName || parentFolder || filePath.replace(/\.md$/i, "");
-      let description = frontDesc;
-      if (!description) {
-        const firstLine = body.split(/\r?\n/).find((l) => l.trim().length > 0 && !l.startsWith("#"));
-        description = firstLine ? firstLine.trim().slice(0, 200) : "";
-      }
-      return name ? { name, description, content: body.trimStart() } : null;
-    };
-
-    const handleSkillImport = async (files: FileList) => {
-      // Filter to skill.md files anywhere in the picked tree (case-insensitive).
-      const skillFiles: File[] = [];
-      for (let i = 0; i < files.length; i++) {
-        const f = files[i];
-        // webkitRelativePath gives "<picked-folder>/sub/.../skill.md"
-        const rel = (f as any).webkitRelativePath || f.name;
-        if (/(?:^|[\\/])skill\.md$/i.test(rel)) skillFiles.push(f);
-      }
-      if (skillFiles.length === 0) {
-        alert("No skill.md files found in the selected folder.");
-        return;
-      }
-      const parsed: Array<{ name: string; description: string; content: string }> = [];
-      const skipped: string[] = [];
-      for (const f of skillFiles) {
-        try {
-          const text = await f.text();
-          const rel = (f as any).webkitRelativePath || f.name;
-          const entry = parseSkillMarkdown(text, rel);
-          if (entry) parsed.push(entry);
-          else skipped.push(rel);
-        } catch (err) {
-          skipped.push((f as any).webkitRelativePath || f.name);
-        }
-      }
-      if (parsed.length === 0) {
-        alert(`Found ${skillFiles.length} skill.md file(s) but couldn't parse any.`);
-        return;
-      }
-      const result = await store.importSkills(parsed);
-      const lines = [
-        `Imported ${result.created.length} skill(s):`,
-        ...result.created.map((s: any) => `  ✓ ${s.name}`),
-      ];
-      if (result.failed.length > 0) {
-        lines.push("", `${result.failed.length} failed:`);
-        for (const f of result.failed) lines.push(`  ✗ ${f.name}: ${f.error}`);
-      }
-      if (skipped.length > 0) {
-        lines.push("", `${skipped.length} skipped (parse error):`);
-        for (const s of skipped) lines.push(`  - ${s}`);
-      }
-      alert(lines.join("\n"));
-    };
   const modelMetaColumnVars = useMemo(
     () =>
       ({
@@ -364,9 +274,6 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
     const [deleteConfirm, setDeleteConfirm] = useState<null | {
       kind: "model" | "profile";
       id: string;
-    }>(null);
-    const [deleteSkillConfirm, setDeleteSkillConfirm] = useState<null | {
-      fileName: string;
     }>(null);
     const [memoryDraft, setMemoryDraft] = useState("");
     const [memoryBusy, setMemoryBusy] = useState(false);
@@ -483,20 +390,6 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
               void store.deleteModel(deleteConfirm.id);
             else void store.deleteProfile(deleteConfirm.id);
             setDeleteConfirm(null);
-        }}
-      />
-      <ConfirmDialog
-        open={!!deleteSkillConfirm}
-        title={t.common.confirmDeleteTitle}
-        message={t.common.confirmDeleteConfig}
-        confirmText={t.common.delete}
-        cancelText={t.common.cancel}
-        danger
-        onCancel={() => setDeleteSkillConfirm(null)}
-        onConfirm={() => {
-            if (!deleteSkillConfirm) return;
-            void store.deleteSkill(deleteSkillConfirm.fileName);
-            setDeleteSkillConfirm(null);
         }}
       />
       <ConfirmDialog
@@ -1713,212 +1606,7 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
 
             {store.settingsSection === "tools" ? <ToolsPanel store={store} /> : null}
 
-            {store.settingsSection === "skills" ? (
-            <>
-              <div className="settings-section-header">
-                <div className="settings-section-title">
-                  {t.settings.skills}
-                  <InfoTooltip content={t.settings.tooltips.skills} />
-                </div>
-                <div className="settings-actions">
-                  <InfoTooltip content={t.settings.tooltips.skills}>
-                      <button
-                        className="btn-secondary"
-                        onClick={() => store.openSkillsFolder()}
-                      >
-                      {t.settings.openSkillsFolder}
-                    </button>
-                  </InfoTooltip>
-                    <button
-                      className="btn-secondary"
-                      title="Import skill.md files from a folder (walks subfolders, multi-select)"
-                      onClick={() => skillImportInputRef.current?.click()}
-                    >
-                    Import…
-                  </button>
-                  {/* Hidden file input — webkitdirectory walks the picked folder
-                      and submits every file inside; we filter to skill.md and
-                      auto-derive name + description from frontmatter or the
-                      folder name. */}
-                  <input
-                    ref={skillImportInputRef}
-                    type="file"
-                    multiple
-                    style={{ display: "none" }}
-                    {...({ webkitdirectory: "", directory: "" } as any)}
-                    onChange={(e) => {
-                      const files = e.target.files;
-                      if (files && files.length > 0) {
-                        void handleSkillImport(files);
-                      }
-                      e.target.value = "";
-                    }}
-                  />
-                    <button
-                      className="icon-btn-sm"
-                      title={t.settings.addSkill}
-                      onClick={() => store.createSkill()}
-                    >
-                    <Plus size={16} strokeWidth={2} />
-                  </button>
-                  <button
-                    className="btn-icon-reload"
-                    onClick={() => store.reloadSkills()}
-                    title={t.settings.reloadSkills}
-                  >
-                    <RefreshCw size={14} />
-                  </button>
-                </div>
-              </div>
-
-              {(() => {
-                  const skillsByDir: Record<string, typeof store.skills> = {};
-                store.skills.forEach((s) => {
-                    const dir = s.scanRoot; // Group by the scan root directory
-                    if (!skillsByDir[dir]) skillsByDir[dir] = [];
-                    skillsByDir[dir].push(s);
-                  });
-
-                const sortedDirs = Object.keys(skillsByDir).sort((a, b) => {
-                    const isACustom =
-                      a.includes("GyShell") ||
-                      (a.endsWith("skills") &&
-                        !a.includes(".claude") &&
-                        !a.includes(".agents"));
-                    const isBCustom =
-                      b.includes("GyShell") ||
-                      (b.endsWith("skills") &&
-                        !b.includes(".claude") &&
-                        !b.includes(".agents"));
-                    if (isACustom && !isBCustom) return -1;
-                    if (!isACustom && isBCustom) return 1;
-                    return a.localeCompare(b);
-                  });
-
-                return sortedDirs.map((dir) => {
-                    const dirSkills = skillsByDir[dir];
-                    const isCustom =
-                      dir.includes("GyShell") ||
-                      (dir.endsWith("skills") &&
-                        !dir.includes(".claude") &&
-                        !dir.includes(".agents"));
-                    const sectionTitle = isCustom
-                      ? t.settings.skillSections.custom
-                      : dir;
-                  
-                    const allEnabled = dirSkills.every(
-                      (s) => store.settings?.tools?.skills?.[s.name] !== false,
-                    );
-                    const someEnabled = dirSkills.some(
-                      (s) => store.settings?.tools?.skills?.[s.name] !== false,
-                    );
-
-                  return (
-                    <React.Fragment key={dir}>
-                      <div className="settings-divider settings-divider-spaced">
-                        <span>{sectionTitle}</span>
-                        <i />
-                        {!isCustom && (
-                          <div className="section-global-toggle">
-                            <label className="switch switch-sm">
-                              <input
-                                type="checkbox"
-                                checked={allEnabled}
-                                  ref={(el) => {
-                                    if (el)
-                                      el.indeterminate =
-                                        someEnabled && !allEnabled;
-                                  }}
-                                onChange={async (e) => {
-                                    const enabled = e.target.checked;
-                                  // Update all skills in this directory
-                                  for (const s of dirSkills) {
-                                      await store.setSkillEnabled(
-                                        s.name,
-                                        enabled,
-                                      );
-                                  }
-                                }}
-                              />
-                              <span className="switch-slider" />
-                            </label>
-                          </div>
-                        )}
-                      </div>
-                      <div className="tools-list">
-                        {dirSkills.map((s) => {
-                            const isEnabled =
-                              store.settings?.tools?.skills?.[s.name] !== false;
-                          return (
-                            <div key={s.filePath} className="tool-item">
-                              <div className="tool-info">
-                                <div className="tool-name">
-                                  {s.name}
-                                    {s.isNested && (
-                                      <span className="skill-type-tag">
-                                        Nested
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="tool-meta">
-                                    {s.description}
-                                </div>
-                              </div>
-                              <div className="tool-actions">
-                                  <span
-                                    className={`status-dot ${isEnabled ? "is-ok" : "is-disabled"}`}
-                                  />
-                                <label className="switch">
-                                  <input
-                                    type="checkbox"
-                                    checked={isEnabled}
-                                      onChange={(e) =>
-                                        store.setSkillEnabled(
-                                          s.name,
-                                          e.target.checked,
-                                        )
-                                      }
-                                  />
-                                  <span className="switch-slider" />
-                                </label>
-                                {isCustom && (
-                                  <>
-                                      <button
-                                        className="icon-btn-sm"
-                                        title={t.common.edit}
-                                        onClick={() =>
-                                          store.editSkill(s.fileName)
-                                        }
-                                      >
-                                      <Pencil size={14} />
-                                    </button>
-                                    <button
-                                      className="icon-btn-sm danger"
-                                      title={t.common.delete}
-                                        onClick={() =>
-                                          setDeleteSkillConfirm({
-                                            fileName: s.fileName,
-                                          })
-                                        }
-                                    >
-                                      <Trash2 size={14} />
-                                    </button>
-                                  </>
-                                )}
-                              </div>
-                            </div>
-                            );
-                        })}
-                      </div>
-                    </React.Fragment>
-                    );
-                  });
-              })()}
-                {store.skills.length === 0 ? (
-                  <div className="tool-empty">{t.settings.noSkills}</div>
-                ) : null}
-            </>
-          ) : null}
+            {store.settingsSection === "skills" ? <HermesSkillsPanel /> : null}
 
             {store.settingsSection === "agents" ? (
             <>
