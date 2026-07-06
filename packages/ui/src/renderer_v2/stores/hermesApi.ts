@@ -122,6 +122,18 @@ export const hermesApi = {
     }
   },
 
+  /** POST /api/hermes/agents/:id/add-doc { templatePath } — copies a default
+   *  template into the agent's workspace, returns the new doc's path (aabf3ba). */
+  async addDoc(id: string, templatePath: string): Promise<{ ok: boolean; path?: string; error?: string }> {
+    try {
+      const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/add-doc`, { templatePath })
+      if (r?.error || r?.ok === false) return { ok: false, error: String(r?.error ?? 'add failed') }
+      return { ok: true, path: r?.path }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
   /** PUT /api/hermes/agents/:id/doc { path, content } — writes the real file. */
   async putDoc(id: string, path: string, content: string): Promise<{ ok: boolean; error?: string }> {
     try {
