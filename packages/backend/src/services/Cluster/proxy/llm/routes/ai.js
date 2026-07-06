@@ -2153,20 +2153,28 @@ if out: print(json.dumps(out))
     // honoring of a hand-set path (the launcher field is hidden); any existing --slot-save-path is replaced.
     // (Distinct from the metrics-row fingerprint, which DOES key on hardware — it identifies a perf run.)
     const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 96);
+    let kvShim = null;  // llama.cpp launches: descriptor to auto-provision the Optane kvcache shim (fingerprint-keyed)
     if (/^llama-server/.test(providerId)) {
-      const mp = (finalCommand.match(/--model[ =]+"?([^"\s\\]+)"?/) || [])[1] || '';
-      const modelName = mp.split('/').filter(Boolean).pop() || '';
+      // Extract the real model file name for the content fingerprint. Unwrap the model-cache helper
+      // (--model $(mc '/models/.../file.gguf')) so different models don't collide on the literal "$(mc" token.
+      const mcMatch = finalCommand.match(/--model[ =]+\$\(mc\s+'([^']+)'\)/);
+      const plainMatch = finalCommand.match(/--model[ =]+"?([^"\s\\]+)"?/);
+      const modelPath = mcMatch ? mcMatch[1] : (plainMatch ? plainMatch[1] : '');
+      const modelName = modelPath.split('/').filter(Boolean).pop() || '';
       const ctx = (finalCommand.match(/--ctx-size[ =]+(\d+)/) || [])[1] || '';
       const ck = (finalCommand.match(/--cache-type-k[ =]+(\S+)/) || [])[1] || '';
       const cv = (finalCommand.match(/--cache-type-v[ =]+(\S+)/) || [])[1] || '';
+      const par = (finalCommand.match(/--parallel[ =]+(\d+)/) || [])[1] || '';
       const fp = createHash('sha1').update([modelName, ctx, ck, cv].join('|')).digest('hex').slice(0, 8);
-      const optanePath = `/optane-sock0/kvcache/${slug(modelName) ? `${slug(modelName)}-${fp}` : `svc-${port || 'x'}-${fp}`}`;
+      const slotName = slug(modelName) ? `${slug(modelName)}-${fp}` : `svc-${port || 'x'}-${fp}`;
+      const optanePath = `/optane-sock0/kvcache/${slotName}`;
       if (/--slot-save-path[ =]/.test(finalCommand)) {
         finalCommand = finalCommand.replace(/--slot-save-path[ =]"?[^"\s\\]+"?/, `--slot-save-path ${optanePath}`);
       } else {
         finalCommand = finalCommand.replace(/\s+$/, '') + ` --slot-save-path ${optanePath}`;
       }
       console.log(`[svc-launch] Optane KV slot-save -> ${optanePath} (content fingerprint, always)`);
+      if (port) kvShim = { port: Number(port), shimPort: Number(port) + 1000, cacheDir: optanePath, fingerprint: slotName, slotCount: Number(par) || 0 };
     }
 
     // Build the launch script content
@@ -2238,6 +2246,32 @@ WantedBy=multi-user.target
         return res.status(500).json({
           error: `Failed to create service: ${(result.stderr || result.stdout || '').substring(0, 500)}`,
         });
+      }
+
+      // Auto-provision the Optane kvcache shim for this llama.cpp service. Fingerprint-keyed cache_dir +
+      // model_fingerprint => identical models transparently share Optane storage + prefix index. The shim
+      // listens on servicePort+1000, which the LLM proxy auto-detects and routes through (no user config,
+      // no exposed launcher fields). Guarded on the proxy being installed (Optane rigs only); others skip.
+      // Non-fatal: a shim failure never blocks the model launch.
+      if (kvShim) {
+        try {
+          const shimCfg = {
+            proxy_port: kvShim.shimPort,
+            upstream_url: `http://127.0.0.1:${kvShim.port}`,
+            cache_dir: kvShim.cacheDir,
+            index_db: '/opt/kvcache-proxy/index.db',
+            model_fingerprint: kvShim.fingerprint,
+            slot_count: kvShim.slotCount,
+            chunk_size_tokens: 256,
+            min_match_tokens: 2048,
+          };
+          const b64Cfg = Buffer.from(JSON.stringify(shimCfg, null, 2)).toString('base64');
+          const shimCmd = `pct exec ${agent.vmid} -- bash -c 'if [ -f /opt/kvcache-proxy/proxy.py ]; then mkdir -p /opt/kvcache-proxy/configs "${kvShim.cacheDir}" && echo ${b64Cfg} | base64 -d > /opt/kvcache-proxy/configs/${kvShim.port}.json && systemctl daemon-reload && systemctl enable --now kvcache-proxy@${kvShim.port} 2>&1; else echo skip-no-proxy; fi'`;
+          const shimRes = await sshService.exec(pveHostIp, shimCmd, { timeout: 60000 });
+          console.log(`[svc-launch] kvcache shim @${kvShim.port}->:${kvShim.shimPort} rc=${shimRes.code} ${String(shimRes.stdout || '').trim().slice(0, 140)}`);
+        } catch (e) {
+          console.log(`[svc-launch] kvcache shim provision failed (non-fatal): ${e.message}`);
+        }
       }
     } catch (err) {
       return res.status(500).json({ error: `SSH failed: ${err.message}` });
