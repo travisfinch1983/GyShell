@@ -172,6 +172,24 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     } catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
   })
 
+  // Skill tags (curated, sidecar-backed) + full-text search — powers the library filter/search UI.
+  router.get('/api/hermes/skills/tags', async (_req: Req, res: Res) => {
+    try { res.json({ tags: await hermes.listSkillTags() }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.put('/api/hermes/skills/tags', json, async (req: Req, res: Res) => {
+    try {
+      const ref = String((req.body as any)?.ref || req.query.ref || '')
+      const tags = Array.isArray((req.body as any)?.tags) ? (req.body as any).tags : []
+      await hermes.setSkillTags(ref, tags)
+      res.json({ ok: true })
+    } catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
+  })
+  router.get('/api/hermes/skills/search', async (req: Req, res: Res) => {
+    try { res.json({ skills: await hermes.searchSkills(String(req.query.q || '')) }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
   // Live SOUL.md persona — read/write the actual file on the Hermes host (NOT the AI-Lab spec
   // cache, which is empty for OpenClaw-imported agents). Fixes the blank persona editor.
   router.get('/api/hermes/agents/:id/soul', async (req: Req, res: Res) => {

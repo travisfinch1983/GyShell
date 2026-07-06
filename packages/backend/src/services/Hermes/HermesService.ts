@@ -107,7 +107,7 @@ export class HermesService {
     return this.mgmt.unassignSkill(agentId, ref)
   }
 
-  listLibrarySkills(): Promise<Array<{ ref: string; name: string; dir: string; category: string; description: string; source: string }>> {
+  listLibrarySkills(): Promise<Array<{ ref: string; name: string; dir: string; category: string; description: string; source: string; tags: string[] }>> {
     return this.mgmt.listLibrarySkills()
   }
 
@@ -118,6 +118,9 @@ export class HermesService {
   writeLibrarySkill(ref: string, content: string): Promise<void> {
     return this.mgmt.writeLibrarySkill(ref, content)
   }
+  setSkillTags(ref: string, tags: string[]): Promise<void> { return this.mgmt.setSkillTags(ref, tags) }
+  listSkillTags(): Promise<Array<{ tag: string; count: number }>> { return this.mgmt.listSkillTags() }
+  searchSkills(q: string): Promise<Array<{ ref: string; name: string; dir: string; category: string; description: string; source: string; tags: string[] }>> { return this.mgmt.searchSkills(q) }
 
   readSoul(agentId: string): Promise<string> {
     return this.mgmt.readSoul(agentId)

@@ -492,6 +492,7 @@ export class HermesManagementService {
   }
 
   private static readonly SKILLS_DIR = '/root/.hermes/skills'
+  private static readonly TAGS_FILE = '/root/.hermes/skill-tags.json'
 
   /** Validate a skill ref (relative dir path under the skills lib): N safe segments, no traversal. */
   private safeSkillRef(ref: unknown): string | null {
@@ -503,11 +504,16 @@ export class HermesManagementService {
 
   /** List every skill in the Hermes library (any dir containing SKILL.md, at any depth) with its
    *  frontmatter name/description. ref = dir path relative to the lib; source=local for `custom`. */
-  async listLibrarySkills(): Promise<Array<{ ref: string; name: string; dir: string; category: string; description: string; source: string }>> {
+  async listLibrarySkills(): Promise<Array<{ ref: string; name: string; dir: string; category: string; description: string; source: string; tags: string[] }>> {
     const py = [
       'import os, re, json',
       `BASE = ${JSON.stringify(HermesManagementService.SKILLS_DIR)}`,
       'out = []',
+      'try:',
+      `    _T = json.load(open(${JSON.stringify(HermesManagementService.TAGS_FILE)}))`,
+      '    _T = _T if isinstance(_T, dict) else {}',
+      'except Exception:',
+      '    _T = {}',
       'for root, dirs, files in os.walk(BASE):',
       '    if "SKILL.md" not in files: continue',
       '    ref = os.path.relpath(root, BASE)',
@@ -526,7 +532,10 @@ export class HermesManagementService {
       '        for ln in after.splitlines():',
       '            if ln.strip(): desc = ln.strip(); break',
       '    segs = ref.split(os.sep)',
-      '    out.append({"ref": ref.replace(os.sep, "/"), "name": (nm.group(1).strip() if nm else segs[-1]), "dir": segs[-1], "category": segs[0], "description": desc[:280], "source": "local" if segs[0] == "custom" else "builtin"})',
+      '    rref = ref.replace(os.sep, "/")',
+      '    _tg = _T.get(rref, [])',
+      '    _tg = _tg if isinstance(_tg, list) else []',
+      '    out.append({"ref": rref, "name": (nm.group(1).strip() if nm else segs[-1]), "dir": segs[-1], "category": segs[0], "description": desc[:280], "source": "local" if segs[0] == "custom" else "builtin", "tags": _tg})',
       'out.sort(key=lambda x: (x["category"], x["name"]))',
       'print(json.dumps(out))',
     ].join('\n')
@@ -554,6 +563,59 @@ export class HermesManagementService {
     const dir = `${HermesManagementService.SKILLS_DIR}/${r}`
     await this.ssh(`mkdir -p ${shq(dir)}`)
     await this.writeRemoteFile(`${dir}/SKILL.md`, content)
+  }
+
+  /** Set (replace) the curated tag list for a skill; empty array clears it. Sidecar JSON. */
+  async setSkillTags(ref: string, tags: string[]): Promise<void> {
+    const r = this.safeSkillRef(ref)
+    if (!r) throw new Error('invalid skill ref')
+    const clean = Array.from(new Set((Array.isArray(tags) ? tags : []).map((t) => String(t).trim().toLowerCase()).filter(Boolean))).slice(0, 32)
+    const py = [
+      'import json',
+      `F = ${JSON.stringify(HermesManagementService.TAGS_FILE)}`,
+      `ref = ${JSON.stringify(r)}`,
+      `tags = json.loads(${JSON.stringify(JSON.stringify(clean))})`,
+      'try:',
+      '    d = json.load(open(F))',
+      '    d = d if isinstance(d, dict) else {}',
+      'except Exception:',
+      '    d = {}',
+      'if tags: d[ref] = tags',
+      'else: d.pop(ref, None)',
+      'json.dump(d, open(F, "w"))',
+      'print("ok")',
+    ].join('\n')
+    const b64 = Buffer.from(py, 'utf8').toString('base64')
+    await this.ssh(`printf %s ${shq(b64)} | base64 -d | python3 -`)
+  }
+
+  /** Distinct tags across the library with usage counts (for filter badges). */
+  async listSkillTags(): Promise<Array<{ tag: string; count: number }>> {
+    const skills = await this.listLibrarySkills()
+    const c = new Map<string, number>()
+    for (const s of skills) for (const t of (s.tags || [])) c.set(t, (c.get(t) || 0) + 1)
+    return Array.from(c, ([tag, count]) => ({ tag, count })).sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
+  }
+
+  /** Search skills by metadata (name/description/ref/tags) + SKILL.md body (content grep). */
+  async searchSkills(q: string): Promise<Array<{ ref: string; name: string; dir: string; category: string; description: string; source: string; tags: string[] }>> {
+    const skills = await this.listLibrarySkills()
+    const ql = String(q || '').toLowerCase().trim()
+    if (!ql) return skills
+    let contentRefs = new Set<string>()
+    try {
+      const prefix = HermesManagementService.SKILLS_DIR + '/'
+      const grep = await this.ssh(`grep -rilF ${shq(ql)} ${shq(HermesManagementService.SKILLS_DIR)} --include=SKILL.md 2>/dev/null || true`)
+      contentRefs = new Set(grep.split('\n').map((x) => x.trim()).filter(Boolean)
+        .map((p) => (p.startsWith(prefix) ? p.slice(prefix.length).replace(/\/SKILL\.md$/, '') : ''))
+        .filter(Boolean))
+    } catch { /* grep best-effort */ }
+    return skills.filter((s) =>
+      s.name.toLowerCase().includes(ql) ||
+      s.description.toLowerCase().includes(ql) ||
+      s.ref.toLowerCase().includes(ql) ||
+      (s.tags || []).some((t) => t.includes(ql)) ||
+      contentRefs.has(s.ref))
   }
 
   /** The set of skill refs currently assigned to an agent (present in its profile/skills/). */
