@@ -20,6 +20,7 @@ import type { CatalogModelWithCaps, ModelCapabilities } from '../../stores/herme
 import { hermesAgentsStore as store } from '../../stores/HermesAgentsStore'
 import { hermesApi } from '../../stores/hermesApi'
 import { AgentDocs, InlineDocEditor } from './AgentDocs'
+import { HermesToolPicker } from './HermesToolPicker'
 import { confirmStore } from '../../stores/confirmStore'
 import styles from './Agents.module.scss'
 
@@ -547,7 +548,12 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
       {section === 'tools' && (
         <section>
           <div className={styles.sectionTitle}>Tools & integrations</div>
-          <div className={styles.sectionSub}>Hermes toolsets enabled for this profile (empty = profile defaults).</div>
+          <div className={styles.sectionSub}>
+            Which MCP gateway tools the agent sees (scoping creates its own gateway group), plus Hermes toolsets.
+          </div>
+          {liveDocId
+            ? <HermesToolPicker agentId={liveDocId} />
+            : <div className={styles.dim}>Save the agent first — tool scoping targets its provisioned Hermes profile.</div>}
           {card(
             <>
               <div className={styles.chipRow}>

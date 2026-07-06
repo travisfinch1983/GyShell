@@ -132,6 +132,43 @@ export const hermesApi = {
     }
   },
 
+  /** GET /api/hermes/agents/:id/tools — the agent's gateway tool scoping
+   *  (047cc8b). scoped:false = the agent points at the FULL gateway. Null on
+   *  failure so the picker can render an error instead of a fake empty scope. */
+  async getTools(id: string): Promise<{ selected: string[]; scoped: boolean; endpoint: string | null } | null> {
+    try {
+      const r = await bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/tools`)
+      if (r?.error || !Array.isArray(r?.selected)) return null
+      return { selected: r.selected as string[], scoped: !!r.scoped, endpoint: (r.endpoint ?? null) as string | null }
+    } catch {
+      return null
+    }
+  },
+
+  /** PUT /api/hermes/agents/:id/tools { selected } — upserts the agent-<id>
+   *  gateway group and repoints the agent's MCP server at it (idempotent;
+   *  synchronous, ~1-3s — no client timeout, the picker shows a Syncing state). */
+  async putTools(id: string, selected: string[]): Promise<{ ok: boolean; endpoint?: string; toolCount?: number; error?: string }> {
+    try {
+      const r = await bridge().request('PUT', `/api/hermes/agents/${encodeURIComponent(id)}/tools`, { selected })
+      if (r?.error || r?.ok === false) return { ok: false, error: String(r?.error ?? 'scope failed') }
+      return { ok: true, endpoint: r?.endpoint, toolCount: r?.toolCount }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
+  /** DELETE /api/hermes/agents/:id/tools — reverts to the full gateway AND
+   *  deletes the agent-<id> group (no orphaned/stale external endpoints). */
+  async deleteTools(id: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('DELETE', `/api/hermes/agents/${encodeURIComponent(id)}/tools`)
+      return { ok: r?.ok !== false && !r?.error, error: r?.error ? String(r.error) : undefined }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
   /** DELETE /api/hermes/agents/:id — removes the Hermes profile. */
   async remove(id: string): Promise<{ ok: boolean; error?: string }> {
     try {
