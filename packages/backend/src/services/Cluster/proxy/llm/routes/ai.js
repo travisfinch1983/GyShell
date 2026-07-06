@@ -2025,7 +2025,7 @@ if out: print(json.dumps(out))
             model, modelFamily, modelVariant, quantFormat, quantSize, contextSize,
             cudaDevices, gpuPciIds: explicitGpuPciIds,
             reservedVramMB: reqReservedVramMB, isTts, isTools, isImageGen, isStt,
-            slots: reqSlots } = req.body;
+            slots: reqSlots, aliasOverride } = req.body;
     let command = req.body.command;
 
     // Cache-proof guard: older launcher JS baked literal single quotes into the
@@ -2354,6 +2354,10 @@ WantedBy=multi-user.target
     const defaultReserve = PROVIDER_VRAM_RESERVES[providerId];
     state.services[serviceId].gpuPciIds = gpuPciIds;
     state.services[serviceId].reservedVramMB = reqReservedVramMB ?? defaultReserve;
+
+    // Model-id name override from launch options / template — applies at launch (proxy /v1/models renames).
+    const trimmedAlias2 = typeof aliasOverride === 'string' ? aliasOverride.trim() : '';
+    if (trimmedAlias2) state.services[serviceId].aliasOverride = trimmedAlias2;
 
     // Assign stable proxy slot
     assignProxySlot(state, state.services[serviceId]);
