@@ -242,6 +242,54 @@ export const hermesApi = {
     }
   },
 
+  /** GET /api/hermes/library — the CENTRAL library docs (fbd9cc3). `skill` =
+   *  the bonded skill name (skill-<name>.md) or null (general reference doc).
+   *  Central = shared by all agents; agents carry TOOLS.md pointers only. */
+  async listLibrary(): Promise<Array<{ name: string; title: string; skill: string | null }> | null> {
+    try {
+      const r = await bridge().request('GET', '/api/hermes/library')
+      if (r?.error || !Array.isArray(r?.docs)) return null
+      return r.docs
+    } catch {
+      return null
+    }
+  },
+
+  /** GET /api/hermes/library/doc?name= — one central doc's content. */
+  async getLibraryDoc(name: string): Promise<string | null> {
+    try {
+      const r = await bridge().request('GET', `/api/hermes/library/doc?name=${encodeURIComponent(name)}`)
+      if (r?.error) return null
+      return typeof r?.content === 'string' ? r.content : null
+    } catch {
+      return null
+    }
+  },
+
+  /** PUT /api/hermes/library/doc?name= { content } — edit the CENTRAL doc
+   *  (one edit, every agent sees it — they only hold pointers). */
+  async putLibraryDoc(name: string, content: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('PUT', `/api/hermes/library/doc?name=${encodeURIComponent(name)}`, { content })
+      return { ok: r?.ok !== false && !r?.error, error: r?.error ? String(r.error) : undefined }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
+  /** POST /api/hermes/agents/:id/library-doc { name, assigned } — manually
+   *  add/remove one doc's TOOLS.md pointer for one agent (the override path;
+   *  skill assignment auto-injects bonded docs' pointers). NO read-back
+   *  exists, so the UI offers explicit actions rather than stateful toggles. */
+  async setAgentLibraryDoc(id: string, name: string, assigned: boolean): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/library-doc`, { name, assigned })
+      return { ok: r?.ok !== false && !r?.error, error: r?.error ? String(r.error) : undefined }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
   /** GET /api/hermes/skills — the Hermes skills LIBRARY (2f264d2): all skills
    *  (builtin + Travis's local imports under category "custom"). `ref` is the
    *  lib-relative dir path (can be >2 segments, e.g. mlops/inference/vllm). */

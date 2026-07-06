@@ -1,7 +1,8 @@
 /**
  * AgentSkills — the "Skills" sub-tab of the Hermes agent editor: assign
- * library skills to this agent (9b44da7). The library itself is curated in
- * Settings › Skills; this is per-agent membership.
+ * library skills to this agent (9b44da7) + the library-doc↔skill bonding view
+ * (fbd9cc3). The library itself is curated in Settings › Skills; this is
+ * per-agent membership.
  *
  * Source semantics matter here: `local` (custom) skills are the durably
  * toggleable ones — assign copies the skill into the agent, unassign removes
@@ -9,26 +10,57 @@
  * update, so unassigning one isn't durable — their checkboxes render at the
  * reported state but LOCKED (a toggle that silently reverts is a lie), with
  * the re-seed hint. Custom group first. Optimistic toggles, refetch on error.
+ *
+ * Library docs are CENTRAL (agents hold TOOLS.md pointers, never copies).
+ * Bonded docs (doc.skill === skill.name) nest under their skill — assigning
+ * the skill auto-injects the pointer, so the child rows are informational
+ * plus: Edit (the central doc — one edit, every agent sees it) and explicit
+ * "+ pointer"/"− pointer" per-agent override actions. General docs
+ * (skill:null) sit in their own "library reference" group. The override
+ * actions are stateless buttons by design: the backend has no pointer
+ * read-back, and a toggle that guesses state would lie.
  */
 import React, { useEffect, useMemo, useState } from 'react'
-import { Search } from 'lucide-react'
+import { FileText, Minus, Plus, Save, Search, Undo2, X } from 'lucide-react'
 import { hermesApi } from '../../stores/hermesApi'
 import styles from './Agents.module.scss'
 
 interface SkillRow { ref: string; name: string; category: string; description: string; source: 'builtin' | 'local'; assigned: boolean }
+interface LibDoc { name: string; title: string; skill: string | null }
+interface OpenLibDoc { name: string; content: string; base: string }
 
 export const AgentSkills: React.FC<{ agentId: string }> = ({ agentId }) => {
   const [skills, setSkills] = useState<SkillRow[] | null>(null)
+  const [library, setLibrary] = useState<LibDoc[]>([])
   const [err, setErr] = useState('')
   const [filter, setFilter] = useState('')
   const [busyRef, setBusyRef] = useState('')
+  const [openDoc, setOpenDoc] = useState<OpenLibDoc | null>(null)
+  const [docBusy, setDocBusy] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState('')
 
   const load = () =>
     hermesApi.listAgentSkills(agentId).then((s) => {
       if (s === null) setErr('Failed to list skills — Hermes host unreachable?')
       else { setSkills(s); setErr('') }
     })
-  useEffect(() => { void load() }, [agentId])
+  useEffect(() => {
+    void load()
+    void hermesApi.listLibrary().then((d) => setLibrary(d ?? []))
+  }, [agentId])
+
+  const docsBySkill = useMemo(() => {
+    const m = new Map<string, LibDoc[]>()
+    for (const d of library) {
+      if (!d.skill) continue
+      const list = m.get(d.skill) ?? []
+      list.push(d)
+      m.set(d.skill, list)
+    }
+    return m
+  }, [library])
+  const referenceDocs = useMemo(() => library.filter((d) => !d.skill), [library])
 
   const groups = useMemo(() => {
     const q = filter.trim().toLowerCase()
@@ -60,13 +92,90 @@ export const AgentSkills: React.FC<{ agentId: string }> = ({ agentId }) => {
     }
   }
 
+  const openLibDoc = async (name: string) => {
+    setDocBusy(name); setMsg('')
+    const content = await hermesApi.getLibraryDoc(name)
+    setDocBusy('')
+    if (content === null) { setMsg(`Couldn't read ${name} — not opening an empty editor over the central doc.`); return }
+    setOpenDoc({ name, content, base: content })
+  }
+
+  const saveLibDoc = async () => {
+    if (!openDoc || openDoc.content === openDoc.base) return
+    setSaving(true); setMsg('')
+    const r = await hermesApi.putLibraryDoc(openDoc.name, openDoc.content)
+    setSaving(false)
+    if (!r.ok) { setMsg(`Save failed: ${r.error ?? 'unknown'}`); return }
+    setOpenDoc({ ...openDoc, base: openDoc.content })
+    setMsg('Saved ✓ — central doc, all agents see the change')
+  }
+
+  const pointer = async (name: string, assigned: boolean) => {
+    setDocBusy(name); setMsg('')
+    const r = await hermesApi.setAgentLibraryDoc(agentId, name, assigned)
+    setDocBusy('')
+    setMsg(r.ok
+      ? `${assigned ? 'Added' : 'Removed'} the ${name} pointer ${assigned ? 'to' : 'from'} ${agentId}'s TOOLS.md ✓`
+      : `Pointer update failed: ${r.error ?? 'unknown'}`)
+  }
+
+  const docRow = (d: LibDoc, indent: boolean) => (
+    <div key={d.name} className={styles.summaryRow} style={{ padding: '2px 0', marginLeft: indent ? 26 : 0 }}>
+      <FileText size={12} />
+      <span className={styles.dim} style={{ fontSize: 11.5 }} title={d.name}>{d.title}</span>
+      <span className={styles.spacer} />
+      <button className={styles.btn} style={{ fontSize: 11 }} disabled={docBusy === d.name} onClick={() => void openLibDoc(d.name)}>
+        {docBusy === d.name ? '…' : 'Edit'}
+      </button>
+      <button className={styles.btn} style={{ fontSize: 11 }} title={`Add the ${d.name} pointer to this agent's TOOLS.md (manual override)`} disabled={docBusy === d.name} onClick={() => void pointer(d.name, true)}>
+        <Plus size={11} /> pointer
+      </button>
+      <button className={styles.btn} style={{ fontSize: 11 }} title={`Remove the ${d.name} pointer from this agent's TOOLS.md`} disabled={docBusy === d.name} onClick={() => void pointer(d.name, false)}>
+        <Minus size={11} /> pointer
+      </button>
+    </div>
+  )
+
+  if (openDoc) {
+    const dirty = openDoc.content !== openDoc.base
+    return (
+      <div className={styles.card}>
+        <div className={styles.summaryRow}>
+          <FileText size={15} />
+          <div>
+            <strong className={styles.mono}>library/{openDoc.name}</strong>
+            <div className={styles.dim}>CENTRAL doc — one edit, every agent sees it{dirty ? ' · unsaved changes' : ''}</div>
+          </div>
+          <span className={styles.spacer} />
+          <button className={styles.btn} disabled={saving || !dirty} title="Discard changes" onClick={() => setOpenDoc({ ...openDoc, content: openDoc.base })}>
+            <Undo2 size={13} /> Revert
+          </button>
+          <button className={styles.btnPrimary} disabled={saving || !dirty} onClick={() => void saveLibDoc()}>
+            <Save size={13} /> {saving ? 'Saving…' : 'Save'}
+          </button>
+          <button className={styles.btn} title="Close" onClick={() => { if (!dirty || window.confirm(`Discard unsaved changes to ${openDoc.name}?`)) { setOpenDoc(null); setMsg('') } }}>
+            <X size={13} />
+          </button>
+        </div>
+        {msg && <div className={styles.dim} style={{ marginTop: 6 }}>{msg}</div>}
+        <textarea
+          className={`${styles.soul} ${styles.mono}`}
+          value={openDoc.content}
+          onChange={(e) => setOpenDoc({ ...openDoc, content: e.target.value })}
+          spellCheck={false}
+        />
+      </div>
+    )
+  }
+
   return (
     <div className={styles.card}>
       <div className={styles.summaryRow}>
         <div>
           <strong>Skill assignment</strong>
           <div className={styles.dim}>
-            {assignedCustom} custom skill{assignedCustom === 1 ? '' : 's'} assigned · built-ins are seeded into every agent
+            {assignedCustom} custom skill{assignedCustom === 1 ? '' : 's'} assigned · built-ins are seeded into every agent ·
+            assigning a skill auto-links its library doc
           </div>
         </div>
         <span className={styles.spacer} />
@@ -82,6 +191,7 @@ export const AgentSkills: React.FC<{ agentId: string }> = ({ agentId }) => {
         </span>
       </div>
       {err && <div className={styles.formMsg} style={{ color: 'var(--danger, #f87171)' }}>{err}</div>}
+      {msg && <div className={styles.dim} style={{ fontSize: 12 }}>{msg}</div>}
       {!skills && !err && <div className={styles.dim}>Loading skills…</div>}
       {groups.map((g) => (
         <div key={g.category} style={{ marginTop: 8 }}>
@@ -89,33 +199,44 @@ export const AgentSkills: React.FC<{ agentId: string }> = ({ agentId }) => {
             {g.category}{g.category === 'custom' ? ' — toggleable' : ''}
           </div>
           {g.items.map((s) => (
-            <label
-              key={s.ref}
-              className={styles.summaryRow}
-              style={{ padding: '3px 0', cursor: s.source === 'local' ? 'pointer' : 'default', opacity: s.source === 'builtin' ? 0.75 : 1 }}
-              title={
-                s.source === 'builtin'
-                  ? 'Built-in — Hermes seeds it into every agent and re-seeds it on update; not durably toggleable'
-                  : s.description.replace(/^"|"$/g, '')
-              }
-            >
-              <input
-                type="checkbox"
-                checked={s.assigned}
-                disabled={s.source === 'builtin' || busyRef === s.ref}
-                onChange={() => void toggle(s)}
-              />
-              <span className={styles.mono} style={{ fontSize: 12 }}>{s.name}</span>
-              {s.source === 'local'
-                ? <span className={styles.dim} style={{ fontSize: 11 }}>{s.ref}</span>
-                : <span className={styles.dim} style={{ fontSize: 10 }}>built-in · always seeded</span>}
-            </label>
+            <React.Fragment key={s.ref}>
+              <label
+                className={styles.summaryRow}
+                style={{ padding: '3px 0', cursor: s.source === 'local' ? 'pointer' : 'default', opacity: s.source === 'builtin' ? 0.75 : 1 }}
+                title={
+                  s.source === 'builtin'
+                    ? 'Built-in — Hermes seeds it into every agent and re-seeds it on update; not durably toggleable'
+                    : s.description.replace(/^"|"$/g, '')
+                }
+              >
+                <input
+                  type="checkbox"
+                  checked={s.assigned}
+                  disabled={s.source === 'builtin' || busyRef === s.ref}
+                  onChange={() => void toggle(s)}
+                />
+                <span className={styles.mono} style={{ fontSize: 12 }}>{s.name}</span>
+                {s.source === 'local'
+                  ? <span className={styles.dim} style={{ fontSize: 11 }}>{s.ref}</span>
+                  : <span className={styles.dim} style={{ fontSize: 10 }}>built-in · always seeded</span>}
+              </label>
+              {(docsBySkill.get(s.name) ?? []).map((d) => docRow(d, true))}
+            </React.Fragment>
           ))}
+          {g.category === 'custom' && referenceDocs.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <div className={styles.dim} style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
+                library reference — not bonded to a skill
+              </div>
+              {referenceDocs.map((d) => docRow(d, false))}
+            </div>
+          )}
         </div>
       ))}
       {skills && groups.length === 0 && <div className={styles.dim}>No skills match “{filter}”.</div>}
       <div className={styles.dim} style={{ marginTop: 8, fontSize: 11 }}>
-        Assigning copies the skill into the agent's profile; the shared library is curated in Settings › Skills.
+        Library docs are central — agents carry TOOLS.md pointers, never copies. Assigning a skill injects its
+        bonded doc's pointer automatically; the +/− pointer buttons are per-agent manual overrides.
       </div>
     </div>
   )
