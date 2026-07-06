@@ -10,11 +10,12 @@
  * can never turn into a blank PUT that wipes a real doc.
  */
 import React, { useEffect, useMemo, useState } from 'react'
-import { FileText, Save, Undo2, X } from 'lucide-react'
+import { FileText, Save, Trash2, Undo2, X } from 'lucide-react'
 import { hermesApi } from '../../stores/hermesApi'
+import { confirmStore } from '../../stores/confirmStore'
 import styles from './Agents.module.scss'
 
-interface DocEntry { path: string; bytes: number }
+interface DocEntry { path: string; bytes: number; protected?: boolean }
 interface OpenDoc { path: string; content: string; base: string }
 
 const fmtBytes = (b: number): string => (b >= 10240 ? `${Math.round(b / 1024)} KB` : b >= 1024 ? `${Math.round((b / 1024) * 10) / 10} KB` : `${b} B`)
@@ -169,9 +170,11 @@ export const AgentDocs: React.FC<{
   const groups = useMemo(() => {
     const workspace: DocEntry[] = []
     const library: DocEntry[] = []
+    const memory: DocEntry[] = []
     const other: DocEntry[] = []
     for (const d of docs ?? []) {
       if (d.path.startsWith('workspace/library/')) library.push(d)
+      else if (d.path.startsWith('workspace/memory/')) memory.push(d)
       else if (d.path.startsWith('workspace/')) workspace.push(d)
       else other.push(d)
     }
@@ -179,9 +182,30 @@ export const AgentDocs: React.FC<{
     return [
       { label: 'Workspace docs', items: workspace.sort(byName) },
       { label: 'Library', items: library.sort(byName) },
+      { label: 'Memory logs', items: memory.sort(byName) },
       { label: 'Other', items: other.sort(byName) },
     ].filter((g) => g.items.length > 0)
   }, [docs])
+
+  const deleteDoc = async (d: DocEntry) => {
+    const isMemoryLog = d.path.startsWith('workspace/memory/')
+    const sure = await confirmStore.confirm({
+      title: 'Delete doc',
+      message: isMemoryLog
+        ? `Delete ${d.path}? This is part of the agent's daily-log MEMORY — not just a session summary. Deleting it loses that memory permanently.`
+        : `Delete ${d.path} from the agent's workspace? This can't be undone.`,
+      confirmText: 'Delete',
+    })
+    if (!sure) return
+    setMsg('')
+    const r = await hermesApi.deleteDoc(agentId, d.path)
+    if (!r.ok) { setMsg(`Delete failed: ${r.error ?? 'unknown'}`); return }
+    setMsg(`Deleted ${baseName(d.path)} ✓`)
+    await loadDocs()
+  }
+
+  // Templates are never deletable from the panel, whatever the flag says.
+  const canDelete = (d: DocEntry) => agentId !== TEMPLATE_AGENT && d.protected === false
 
   const openDoc = async (path: string) => {
     setBusyPath(path); setMsg('')
@@ -256,6 +280,11 @@ export const AgentDocs: React.FC<{
               <button className={styles.btn} disabled={busyPath === d.path} onClick={() => void openDoc(d.path)}>
                 {busyPath === d.path ? 'Opening…' : 'Open →'}
               </button>
+              {canDelete(d) && (
+                <button className={styles.btnDanger} title={`Delete ${baseName(d.path)}`} onClick={() => void deleteDoc(d)}>
+                  <Trash2 size={13} />
+                </button>
+              )}
             </div>
           ))}
         </div>

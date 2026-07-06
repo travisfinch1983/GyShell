@@ -98,14 +98,27 @@ export const hermesApi = {
 
   /** GET /api/hermes/agents/:id/docs — the agent's config .md operating docs
    *  (path-validated server-side: .md only, no traversal, skills excluded).
-   *  Null on failure so the section can show an error instead of an empty list. */
-  async listDocs(id: string): Promise<Array<{ path: string; bytes: number }> | null> {
+   *  `protected` = standard docs (SOUL/IDENTITY/TOOLS/…) that must not be
+   *  deleted (4e80db3). Null on failure so the section can show an error
+   *  instead of an empty list. */
+  async listDocs(id: string): Promise<Array<{ path: string; bytes: number; protected?: boolean }> | null> {
     try {
       const r = await bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/docs`)
       if (r?.error || !Array.isArray(r?.docs)) return null
-      return r.docs as Array<{ path: string; bytes: number }>
+      return r.docs as Array<{ path: string; bytes: number; protected?: boolean }>
     } catch {
       return null
+    }
+  },
+
+  /** DELETE /api/hermes/agents/:id/doc?path= — removes a NON-protected doc
+   *  (backend 400s on default docs / invalid paths). */
+  async deleteDoc(id: string, path: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('DELETE', `/api/hermes/agents/${encodeURIComponent(id)}/doc?path=${encodeURIComponent(path)}`)
+      return { ok: r?.ok !== false && !r?.error, error: r?.error ? String(r.error) : undefined }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
     }
   },
 
