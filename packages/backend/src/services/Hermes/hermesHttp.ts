@@ -60,6 +60,20 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     }
   })
 
+  // Live SOUL.md persona — read/write the actual file on the Hermes host (NOT the AI-Lab spec
+  // cache, which is empty for OpenClaw-imported agents). Fixes the blank persona editor.
+  router.get('/api/hermes/agents/:id/soul', async (req: Req, res: Res) => {
+    try { res.json({ soul: await hermes.readSoul(req.params.id) }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.put('/api/hermes/agents/:id/soul', json, async (req: Req, res: Res) => {
+    try {
+      const soul = typeof (req.body as any)?.soul === 'string' ? (req.body as any).soul : ''
+      await hermes.writeSoul(req.params.id, soul)
+      res.json({ ok: true })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
   router.delete('/api/hermes/agents/:id', async (req: Req, res: Res) => {
     try {
       await hermes.deleteAgent(req.params.id)
