@@ -436,7 +436,7 @@ export class HermesManagementService {
   private async copyTemplateDocs(agentId: string): Promise<void> {
     const src = `${this.profileHomeBase}/default/workspace`
     const dst = `${this.profileHome(agentId)}/workspace`
-    await this.ssh(`mkdir -p ${shq(dst)} && cp -n ${shq(src)}/*.md ${shq(dst)}/ 2>/dev/null || true`)
+    await this.ssh(`mkdir -p ${shq(dst)} && cp -Pn ${shq(src)}/*.md ${shq(dst)}/ 2>/dev/null || true`)
   }
 
   /** Copy a doc from the `default` template store into an agent's workspace (the per-agent
