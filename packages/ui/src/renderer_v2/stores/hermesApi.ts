@@ -242,16 +242,29 @@ export const hermesApi = {
     }
   },
 
-  /** GET /api/hermes/library — the CENTRAL library docs (fbd9cc3). `skill` =
-   *  the bonded skill name (skill-<name>.md) or null (general reference doc).
-   *  Central = shared by all agents; agents carry TOOLS.md pointers only. */
-  async listLibrary(): Promise<Array<{ name: string; title: string; skill: string | null }> | null> {
+  /** GET /api/hermes/library — the CENTRAL library docs. `skills` = the skill
+   *  NAMES this doc is bonded to, 0..N (2597fb2 — explicit many-to-many
+   *  bonds.json; empty = general reference doc). Central = shared by all
+   *  agents; agents carry TOOLS.md pointers only. */
+  async listLibrary(): Promise<Array<{ name: string; title: string; skills: string[] }> | null> {
     try {
       const r = await bridge().request('GET', '/api/hermes/library')
       if (r?.error || !Array.isArray(r?.docs)) return null
       return r.docs
     } catch {
       return null
+    }
+  },
+
+  /** POST /api/hermes/library/bond { doc, skill, bonded } — edit a doc↔skill
+   *  bond (bonding retro-points the doc onto agents that already carry the
+   *  skill). */
+  async bond(doc: string, skill: string, bonded: boolean): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('POST', '/api/hermes/library/bond', { doc, skill, bonded })
+      return { ok: r?.ok !== false && !r?.error, error: r?.error ? String(r.error) : undefined }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
     }
   },
 
@@ -279,8 +292,9 @@ export const hermesApi = {
 
   /** GET /api/hermes/agents/:id/library-docs — the central docs with a
    *  per-agent `pointed` flag: is the doc currently in THIS agent's TOOLS.md
-   *  LIBRARY-TOC (5a8da3d). Powers the stateful pointer toggles. */
-  async listAgentLibraryDocs(id: string): Promise<Array<{ name: string; title: string; skill: string | null; pointed: boolean }> | null> {
+   *  LIBRARY-TOC (5a8da3d; `skills` many-to-many since 2597fb2). Powers the
+   *  stateful pointer toggles. */
+  async listAgentLibraryDocs(id: string): Promise<Array<{ name: string; title: string; skills: string[]; pointed: boolean }> | null> {
     try {
       const r = await bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/library-docs`)
       if (r?.error || !Array.isArray(r?.docs)) return null

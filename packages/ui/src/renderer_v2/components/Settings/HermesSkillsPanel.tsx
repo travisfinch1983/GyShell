@@ -1,22 +1,28 @@
 /**
- * HermesSkillsPanel — Settings › Skills, repointed at the HERMES skills
- * LIBRARY (2f264d2; Travis's option a — the old AI-Lab SkillService view is
- * retired wholesale). Library curation only: browse all skills grouped by
- * category with builtin/local source badges, view/edit each SKILL.md, and
- * create new ones (PUT to a fresh ref like "custom/my-skill" creates the
- * dir). Per-agent skill ASSIGNMENT is a separate coming lane on the agent
- * editor — not here.
+ * HermesSkillsPanel — Settings › Skills, two sub-tabs over the HERMES library
+ * (Travis's split, 2597fb2):
  *
- * Same wipe-guard discipline as the doc editors: the editor only opens when
- * the GET actually returned content; creation is an explicit act via the New
- * skill flow; Save is change-only.
+ * • "Skills Library" — skills-first: browse/edit/create SKILL.md files
+ *   (2f264d2), each skill row badging its bonded library docs.
+ * • "Reference Library" — docs-first, the PRIMARY place to manage bonds:
+ *   every central doc with its bonded skills as removable chips + an
+ *   add-bond picker (POST /library/bond — explicit many-to-many; bonding
+ *   retro-points the doc onto agents that already carry the skill), plus a
+ *   content editor (shared semantics: one edit hits all agents).
+ *
+ * Per-agent assignment lives on each agent's editor (AgentSkills), not here.
+ * Wipe-guard discipline throughout: editors never open on a failed GET;
+ * Save is change-only; creation is an explicit act.
  */
 import React, { useEffect, useMemo, useState } from 'react'
-import { FileText, Plus, RefreshCw, Save, Search, Undo2, X } from 'lucide-react'
+import { FileText, Link2, Plus, RefreshCw, Save, Search, Undo2, X } from 'lucide-react'
 import { hermesApi } from '../../stores/hermesApi'
 
 interface SkillEntry { ref: string; name: string; dir: string; category: string; description: string; source: 'builtin' | 'local' }
-interface OpenSkill { ref: string; content: string; base: string; isNew: boolean }
+interface LibDoc { name: string; title: string; skills: string[] }
+type OpenItem =
+  | { kind: 'skill'; ref: string; content: string; base: string; isNew: boolean }
+  | { kind: 'doc'; name: string; content: string; base: string }
 
 const badgeStyle = (source: string): React.CSSProperties => ({
   fontSize: 10,
@@ -30,22 +36,58 @@ const badgeStyle = (source: string): React.CSSProperties => ({
   color: source === 'local' ? 'var(--accent)' : 'var(--fg-muted)',
 })
 
+const chipStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  fontSize: 11,
+  fontFamily: 'var(--font-mono)',
+  padding: '1px 4px 1px 8px',
+  borderRadius: 9,
+  border: '1px solid var(--border)',
+  background: 'var(--control-bg)',
+}
+
+const inputStyle: React.CSSProperties = {
+  height: 28,
+  padding: '0 8px',
+  border: '1px solid var(--border)',
+  borderRadius: 6,
+  background: 'var(--control-bg)',
+  color: 'var(--fg)',
+  fontSize: 12,
+}
+
 export const HermesSkillsPanel: React.FC = () => {
+  const [tab, setTab] = useState<'skills' | 'reference'>('skills')
   const [skills, setSkills] = useState<SkillEntry[] | null>(null)
+  const [library, setLibrary] = useState<LibDoc[] | null>(null)
   const [err, setErr] = useState('')
   const [filter, setFilter] = useState('')
-  const [open, setOpen] = useState<OpenSkill | null>(null)
-  const [busyRef, setBusyRef] = useState('')
+  const [open, setOpen] = useState<OpenItem | null>(null)
+  const [busyKey, setBusyKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
   const [newRef, setNewRef] = useState('')
 
   const load = () =>
-    hermesApi.listSkills().then((s) => {
-      if (s === null) setErr('Failed to list the Hermes skills library — host unreachable?')
-      else { setSkills(s); setErr('') }
+    Promise.all([hermesApi.listSkills(), hermesApi.listLibrary()]).then(([s, l]) => {
+      if (s === null || l === null) setErr('Failed to list the Hermes library — host unreachable?')
+      else { setSkills(s); setLibrary(l); setErr('') }
     })
   useEffect(() => { void load() }, [])
+
+  const docsBySkill = useMemo(() => {
+    const m = new Map<string, LibDoc[]>()
+    for (const d of library ?? []) {
+      for (const s of d.skills) {
+        const list = m.get(s) ?? []
+        list.push(d)
+        m.set(s, list)
+      }
+    }
+    return m
+  }, [library])
 
   const groups = useMemo(() => {
     const q = filter.trim().toLowerCase()
@@ -62,12 +104,26 @@ export const HermesSkillsPanel: React.FC = () => {
       .map(([category, items]) => ({ category, items: items.sort((a, b) => a.ref.localeCompare(b.ref)) }))
   }, [skills, filter])
 
+  const filteredDocs = useMemo(() => {
+    const q = filter.trim().toLowerCase()
+    return (library ?? []).filter((d) =>
+      !q || d.name.toLowerCase().includes(q) || d.title.toLowerCase().includes(q) || d.skills.some((s) => s.toLowerCase().includes(q)))
+  }, [library, filter])
+
   const openSkill = async (ref: string, isNew = false) => {
-    setBusyRef(ref); setMsg('')
+    setBusyKey(ref); setMsg('')
     const content = isNew ? '' : await hermesApi.getSkill(ref)
-    setBusyRef('')
+    setBusyKey('')
     if (content === null) { setMsg(`Couldn't read ${ref} — not opening an empty editor over a real skill.`); return }
-    setOpen({ ref, content, base: content, isNew })
+    setOpen({ kind: 'skill', ref, content, base: content, isNew })
+  }
+
+  const openDoc = async (name: string) => {
+    setBusyKey(name); setMsg('')
+    const content = await hermesApi.getLibraryDoc(name)
+    setBusyKey('')
+    if (content === null) { setMsg(`Couldn't read ${name} — not opening an empty editor over the central doc.`); return }
+    setOpen({ kind: 'doc', name, content, base: content })
   }
 
   const startNew = () => {
@@ -79,37 +135,56 @@ export const HermesSkillsPanel: React.FC = () => {
   }
 
   const save = async () => {
-    if (!open || (open.content === open.base && !open.isNew)) return
+    if (!open) return
+    const dirty = open.content !== open.base
+    if (!dirty && !(open.kind === 'skill' && open.isNew)) return
     setSaving(true); setMsg('')
-    const r = await hermesApi.putSkill(open.ref, open.content)
+    const r = open.kind === 'skill'
+      ? await hermesApi.putSkill(open.ref, open.content)
+      : await hermesApi.putLibraryDoc(open.name, open.content)
     setSaving(false)
     if (!r.ok) { setMsg(`Save failed: ${r.error ?? 'unknown'}`); return }
-    setOpen({ ...open, base: open.content, isNew: false })
-    setMsg('Saved ✓')
+    setOpen(open.kind === 'skill' ? { ...open, base: open.content, isNew: false } : { ...open, base: open.content })
+    setMsg(open.kind === 'doc' ? 'Saved ✓ — central doc, all agents see the change' : 'Saved ✓')
     await load()
   }
 
+  const setBond = async (doc: string, skill: string, bonded: boolean) => {
+    setBusyKey(doc); setMsg('')
+    // optimistic; reload restores bonds.json truth on failure
+    setLibrary((prev) => prev?.map((d) => (d.name === doc
+      ? { ...d, skills: bonded ? [...d.skills, skill] : d.skills.filter((s) => s !== skill) }
+      : d)) ?? prev)
+    const r = await hermesApi.bond(doc, skill, bonded)
+    setBusyKey('')
+    if (!r.ok) { setErr(`Bond update failed: ${r.error ?? 'unknown'}`); await load() }
+    else if (bonded) setMsg(`Bonded ${doc} ↔ ${skill} ✓ — retro-pointed onto agents that carry the skill`)
+  }
+
+  // ── editor (either kind) ────────────────────────────────────────────────
   if (open) {
     const dirty = open.content !== open.base
+    const label = open.kind === 'skill' ? `${open.ref}/SKILL.md` : `library/${open.name}`
     return (
       <>
         <div className="settings-section-header">
           <div className="settings-section-title">
             <FileText size={16} strokeWidth={2} />
-            <span style={{ marginLeft: 8, fontFamily: 'var(--font-mono)' }}>{open.ref}/SKILL.md</span>
-            {open.isNew && <span style={badgeStyle('local')}>new — created on save</span>}
+            <span style={{ marginLeft: 8, fontFamily: 'var(--font-mono)' }}>{label}</span>
+            {open.kind === 'skill' && open.isNew && <span style={badgeStyle('local')}>new — created on save</span>}
+            {open.kind === 'doc' && <span style={badgeStyle('local')}>central — one edit hits all agents</span>}
           </div>
           <div className="settings-actions">
-            <button className="btn-secondary" disabled={saving || !dirty} title="Discard changes" onClick={() => setOpen({ ...open, content: open.base })}>
+            <button className="btn-secondary" disabled={saving || !dirty} title="Discard changes" onClick={() => setOpen({ ...open, content: open.base } as OpenItem)}>
               <Undo2 size={14} /> Revert
             </button>
-            <button className="btn-primary" disabled={saving || (!dirty && !open.isNew)} onClick={() => void save()}>
+            <button className="btn-primary" disabled={saving || (!dirty && !(open.kind === 'skill' && open.isNew))} onClick={() => void save()}>
               <Save size={14} /> {saving ? 'Saving…' : 'Save'}
             </button>
             <button
               className="btn-secondary"
               title="Back to the library"
-              onClick={() => { if (!dirty || window.confirm(`Discard unsaved changes to ${open.ref}?`)) { setOpen(null); setMsg('') } }}
+              onClick={() => { if (!dirty || window.confirm(`Discard unsaved changes to ${label}?`)) { setOpen(null); setMsg('') } }}
             >
               <X size={14} />
             </button>
@@ -118,9 +193,9 @@ export const HermesSkillsPanel: React.FC = () => {
         {msg && <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 6 }}>{msg}</div>}
         <textarea
           value={open.content}
-          onChange={(e) => setOpen({ ...open, content: e.target.value })}
+          onChange={(e) => setOpen({ ...open, content: e.target.value } as OpenItem)}
           spellCheck={false}
-          placeholder={open.isNew ? '---\nname: my-skill\ndescription: what it does\n---\n\n# Instructions…' : undefined}
+          placeholder={open.kind === 'skill' && open.isNew ? '---\nname: my-skill\ndescription: what it does\n---\n\n# Instructions…' : undefined}
           style={{
             width: '100%',
             minHeight: 480,
@@ -140,18 +215,23 @@ export const HermesSkillsPanel: React.FC = () => {
     )
   }
 
+  // ── list views ──────────────────────────────────────────────────────────
   return (
     <>
       <div className="settings-section-header">
         <div className="settings-section-title">Skills — Hermes library</div>
         <div className="settings-actions">
+          <div className="tools-subtabs">
+            <button className={`tools-subtab ${tab === 'skills' ? 'tools-subtab-active' : ''}`} onClick={() => setTab('skills')}>Skills Library</button>
+            <button className={`tools-subtab ${tab === 'reference' ? 'tools-subtab-active' : ''}`} onClick={() => setTab('reference')}>Reference Library</button>
+          </div>
           <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
             <Search size={13} style={{ position: 'absolute', left: 8, color: 'var(--fg-faint)', pointerEvents: 'none' }} />
             <input
               value={filter}
-              placeholder="filter skills…"
+              placeholder={tab === 'skills' ? 'filter skills…' : 'filter docs…'}
               onChange={(e) => setFilter(e.target.value)}
-              style={{ height: 28, padding: '0 8px 0 26px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--control-bg)', color: 'var(--fg)', fontSize: 12, width: 200 }}
+              style={{ ...inputStyle, paddingLeft: 26, width: 180 }}
             />
           </span>
           <button className="btn-icon-reload" onClick={() => void load()} title="Reload the library">
@@ -159,62 +239,123 @@ export const HermesSkillsPanel: React.FC = () => {
           </button>
         </div>
       </div>
-      <p style={{ fontSize: 12.5, color: 'var(--fg-muted)', margin: '0 0 8px', lineHeight: 1.5 }}>
-        The shared Hermes skills library ({skills?.length ?? '…'} skills) — every agent draws from here.
-        Edit a skill's SKILL.md or create new ones under <code>custom/</code>. Per-agent assignment lives on
-        each agent's editor (coming).
-      </p>
-
-      <div className="settings-row" style={{ marginBottom: 8 }}>
-        <div className="settings-row-label-with-info">
-          <label>New skill</label>
-        </div>
-        <span style={{ display: 'inline-flex', gap: 8 }}>
-          <input
-            value={newRef}
-            placeholder="custom/my-skill"
-            onChange={(e) => setNewRef(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') startNew() }}
-            style={{ height: 28, padding: '0 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--control-bg)', color: 'var(--fg)', fontSize: 12, fontFamily: 'var(--font-mono)', width: 240 }}
-          />
-          <button className="btn-secondary" disabled={!newRef.trim()} onClick={startNew}>
-            <Plus size={14} /> Create
-          </button>
-        </span>
-      </div>
-
       {err && <div className="settings-error" style={{ marginBottom: 8 }}>{err}</div>}
-      {!skills && !err && <div className="tool-empty">Loading the skills library…</div>}
       {msg && <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 6 }}>{msg}</div>}
 
-      {groups.map((g) => (
-        <React.Fragment key={g.category}>
-          <div className="settings-divider settings-divider-spaced">
-            <span>{g.category}</span>
-            <i />
+      {tab === 'skills' ? (
+        <>
+          <p style={{ fontSize: 12.5, color: 'var(--fg-muted)', margin: '0 0 8px', lineHeight: 1.5 }}>
+            The shared skills library ({skills?.length ?? '…'} skills) — every agent draws from here. Bonded
+            reference docs show under each skill; manage the bonds in the Reference Library sub-tab. Per-agent
+            assignment lives on each agent's editor.
+          </p>
+          <div className="settings-row" style={{ marginBottom: 8 }}>
+            <div className="settings-row-label-with-info">
+              <label>New skill</label>
+            </div>
+            <span style={{ display: 'inline-flex', gap: 8 }}>
+              <input
+                value={newRef}
+                placeholder="custom/my-skill"
+                onChange={(e) => setNewRef(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') startNew() }}
+                style={{ ...inputStyle, fontFamily: 'var(--font-mono)', width: 240 }}
+              />
+              <button className="btn-secondary" disabled={!newRef.trim()} onClick={startNew}>
+                <Plus size={14} /> Create
+              </button>
+            </span>
           </div>
+          {!skills && !err && <div className="tool-empty">Loading the skills library…</div>}
+          {groups.map((g) => (
+            <React.Fragment key={g.category}>
+              <div className="settings-divider settings-divider-spaced">
+                <span>{g.category}</span>
+                <i />
+              </div>
+              <div className="tools-list">
+                {g.items.map((s) => {
+                  const bonded = docsBySkill.get(s.name) ?? []
+                  return (
+                    <div key={s.ref} className="tool-item">
+                      <div className="tool-info">
+                        <div className="tool-name" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          {s.name}
+                          <span style={badgeStyle(s.source)}>{s.source}</span>
+                          {bonded.map((d) => (
+                            <span key={d.name} style={chipStyle} title={`Bonded library doc: ${d.title}`}>
+                              <Link2 size={10} /> {d.name}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="tool-meta" style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{s.ref}</div>
+                        {s.description && <div className="tool-meta">{s.description.replace(/^"|"$/g, '')}</div>}
+                      </div>
+                      <div className="tool-actions">
+                        <button className="btn-secondary" disabled={busyKey === s.ref} onClick={() => void openSkill(s.ref)}>
+                          {busyKey === s.ref ? 'Opening…' : 'Open →'}
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </React.Fragment>
+          ))}
+          {skills && groups.length === 0 && <div className="tool-empty">No skills match “{filter}”.</div>}
+        </>
+      ) : (
+        <>
+          <p style={{ fontSize: 12.5, color: 'var(--fg-muted)', margin: '0 0 8px', lineHeight: 1.5 }}>
+            The central reference docs ({library?.length ?? '…'}) — agents hold TOOLS.md pointers, never copies,
+            so an edit here reaches every agent. Bond a doc to skills and assigning the skill carries the doc
+            with it (retro-applies to agents that already have the skill); a doc can bond to many skills.
+          </p>
+          {!library && !err && <div className="tool-empty">Loading the reference library…</div>}
           <div className="tools-list">
-            {g.items.map((s) => (
-              <div key={s.ref} className="tool-item">
+            {filteredDocs.map((d) => (
+              <div key={d.name} className="tool-item">
                 <div className="tool-info">
-                  <div className="tool-name" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    {s.name}
-                    <span style={badgeStyle(s.source)}>{s.source}</span>
+                  <div className="tool-name">{d.title}</div>
+                  <div className="tool-meta" style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{d.name}</div>
+                  <div className="tool-meta" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+                    {d.skills.length === 0 && <span style={{ fontSize: 11, color: 'var(--fg-faint)' }}>not bonded — general reference</span>}
+                    {d.skills.map((sn) => (
+                      <span key={sn} style={chipStyle}>
+                        <Link2 size={10} /> {sn}
+                        <button
+                          title={`Unbond ${d.name} from ${sn}`}
+                          disabled={busyKey === d.name}
+                          onClick={() => void setBond(d.name, sn, false)}
+                          style={{ border: 'none', background: 'none', color: 'var(--fg-faint)', cursor: 'pointer', padding: '0 2px', fontSize: 12, lineHeight: 1 }}
+                        >×</button>
+                      </span>
+                    ))}
+                    <select
+                      value=""
+                      disabled={busyKey === d.name}
+                      onChange={(e) => { if (e.target.value) void setBond(d.name, e.target.value, true) }}
+                      style={{ ...inputStyle, height: 22, fontSize: 11, padding: '0 4px' }}
+                      title="Bond this doc to a skill"
+                    >
+                      <option value="">+ bond to skill…</option>
+                      {(skills ?? [])
+                        .filter((s) => !d.skills.includes(s.name))
+                        .map((s) => <option key={s.ref} value={s.name}>{s.name}{s.source === 'local' ? '' : ' (builtin)'}</option>)}
+                    </select>
                   </div>
-                  <div className="tool-meta" style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{s.ref}</div>
-                  {s.description && <div className="tool-meta">{s.description.replace(/^"|"$/g, '')}</div>}
                 </div>
                 <div className="tool-actions">
-                  <button className="btn-secondary" disabled={busyRef === s.ref} onClick={() => void openSkill(s.ref)}>
-                    {busyRef === s.ref ? 'Opening…' : 'Open →'}
+                  <button className="btn-secondary" disabled={busyKey === d.name} onClick={() => void openDoc(d.name)}>
+                    {busyKey === d.name ? 'Opening…' : 'Edit →'}
                   </button>
                 </div>
               </div>
             ))}
           </div>
-        </React.Fragment>
-      ))}
-      {skills && groups.length === 0 && <div className="tool-empty">No skills match “{filter}”.</div>}
+          {library && filteredDocs.length === 0 && <div className="tool-empty">No docs match “{filter}”.</div>}
+        </>
+      )}
     </>
   )
 }

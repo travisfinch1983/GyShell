@@ -25,7 +25,7 @@ import { hermesApi } from '../../stores/hermesApi'
 import styles from './Agents.module.scss'
 
 interface SkillRow { ref: string; name: string; category: string; description: string; source: 'builtin' | 'local'; assigned: boolean }
-interface LibDoc { name: string; title: string; skill: string | null; pointed: boolean }
+interface LibDoc { name: string; title: string; skills: string[]; pointed: boolean }
 interface OpenLibDoc { name: string; content: string; base: string }
 
 export const AgentSkills: React.FC<{ agentId: string }> = ({ agentId }) => {
@@ -50,17 +50,19 @@ export const AgentSkills: React.FC<{ agentId: string }> = ({ agentId }) => {
     void loadLibrary()
   }, [agentId])
 
+  // Many-to-many since 2597fb2: a doc can nest under several skills.
   const docsBySkill = useMemo(() => {
     const m = new Map<string, LibDoc[]>()
     for (const d of library) {
-      if (!d.skill) continue
-      const list = m.get(d.skill) ?? []
-      list.push(d)
-      m.set(d.skill, list)
+      for (const s of d.skills) {
+        const list = m.get(s) ?? []
+        list.push(d)
+        m.set(s, list)
+      }
     }
     return m
   }, [library])
-  const referenceDocs = useMemo(() => library.filter((d) => !d.skill), [library])
+  const referenceDocs = useMemo(() => library.filter((d) => d.skills.length === 0), [library])
 
   const groups = useMemo(() => {
     const q = filter.trim().toLowerCase()
