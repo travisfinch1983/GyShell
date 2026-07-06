@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { observer } from "mobx-react-lite";
-import { Plus, Pencil, Trash2, Users, X, Tag, Box } from "lucide-react";
+import { Plus, Pencil, Trash2, Users, X, Tag, Box, Wrench } from "lucide-react";
 import type { AppStore, AgentDefinition } from "../../stores/AppStore";
 import { ConfirmDialog } from "../Common/ConfirmDialog";
+import { AgentToolsPicker } from "./AgentToolsPicker";
 import { AGENT_ICON_REGISTRY } from "../../lib/agentIcons";
 
 interface Props {
@@ -323,6 +324,7 @@ export const AgentsPanel: React.FC<Props> = observer(({ store }) => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showEditor, setShowEditor] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [toolsAgentId, setToolsAgentId] = useState<string | null>(null);
 
   useEffect(() => {
     if (store.agents.length === 0) {
@@ -391,6 +393,9 @@ export const AgentsPanel: React.FC<Props> = observer(({ store }) => {
                 </div>
               </div>
               <div className="tool-actions">
+                <button className="icon-btn-sm" onClick={() => setToolsAgentId(agent.id)} title="Tools — pick this agent's gateway tools">
+                  <Wrench size={14} />
+                </button>
                 <button className="icon-btn-sm" onClick={() => openEditor(agent.id)} title="Edit">
                   <Pencil size={14} />
                 </button>
@@ -411,6 +416,14 @@ export const AgentsPanel: React.FC<Props> = observer(({ store }) => {
 
       {showEditor && (
         <AgentEditor store={store} agentId={editingId || undefined} onClose={() => setShowEditor(false)} />
+      )}
+
+      {toolsAgentId && (
+        <AgentToolsPicker
+          agentId={toolsAgentId}
+          agentName={store.agents.find((a) => a.id === toolsAgentId)?.name ?? toolsAgentId}
+          onClose={() => setToolsAgentId(null)}
+        />
       )}
 
       <ConfirmDialog
