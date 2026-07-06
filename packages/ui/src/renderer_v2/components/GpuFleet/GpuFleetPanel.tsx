@@ -1,7 +1,15 @@
 import React, { useEffect, useRef } from 'react'
 import { observer } from 'mobx-react-lite'
 import { gpuFleetStore, type FleetGpu } from '../../stores/GpuFleetStore'
+import { uiPrefsStore } from '../../stores/uiPrefsStore'
 import styles from './GpuFleet.module.scss'
+
+/** Sparkline poll rate — Travis #6: settable down to 1s in Settings › General
+ *  (the fleet data is cheap Prometheus reads). Persisted in ui-prefs. */
+export const GPU_FLEET_POLL_PREF = 'gpuFleetPollMs'
+export const GPU_FLEET_POLL_DEFAULT = 3000
+export const fleetPollMs = (): number =>
+  Math.min(60000, Math.max(1000, Number(uiPrefsStore.get(GPU_FLEET_POLL_PREF, GPU_FLEET_POLL_DEFAULT)) || GPU_FLEET_POLL_DEFAULT))
 
 const GIB = 1073741824
 
@@ -95,7 +103,7 @@ function sparkTitle(label: string, series: Array<number | null>): string {
   const min = Math.min(...vals)
   const max = Math.max(...vals)
   const avg = vals.reduce((a, b) => a + b, 0) / vals.length
-  const secs = (vals.length - 1) * 3
+  const secs = Math.round(((vals.length - 1) * fleetPollMs()) / 1000)
   const span = secs >= 60 ? `${Math.round(secs / 60)} min` : `${secs}s`
   return `${label}, last ~${span}: min ${Math.round(min)}% · avg ${Math.round(avg)}% · max ${Math.round(max)}%`
 }
@@ -143,11 +151,13 @@ export const GpuFleetPanel = observer(() => {
   const open = s.open
   const panelRef = useRef<HTMLDivElement>(null)
 
+  useEffect(() => { void uiPrefsStore.ensureLoaded() }, [])
+  const pollMs = fleetPollMs()
   useEffect(() => {
-    if (open) s.startPolling(3000)
+    if (open) s.startPolling(pollMs)
     else s.stopPolling()
     return () => s.stopPolling()
-  }, [open, s])
+  }, [open, pollMs, s])
 
   // Append one sample per store refresh into the rolling sparkline buffers.
   // During render (not an effect) so the cards below read the buffer WITH the
