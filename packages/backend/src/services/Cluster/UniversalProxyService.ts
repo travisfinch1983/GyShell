@@ -227,6 +227,9 @@ export class UniversalProxyService {
     // @ts-expect-error — JS router: Dynacat (Home dashboard) config editor — read/validate/save the YAML
     const { createDynacatRouter } = await import('./proxy/dynacat.js')
     app.use('/api/dynacat', createDynacatRouter())
+    const { createAddonsRouter, createAddonsProxyRouter, attachAddonsUpgrade } = await import('./proxy/addons.js')
+    app.use('/api/addons', createAddonsRouter())          // GET list of registered addons (runtime)
+    app.use('/addons', createAddonsProxyRouter())         // reverse-proxy /addons/<id>/* + shared theme.css
     // @ts-expect-error — JS router: native helper-script list/run (replaces ProxLab-bridged /api/scripts)
     const { createScriptsRouter } = await import('./proxy/scripts.js')
     app.use('/api/scripts', express.json({ limit: '10mb' }), createScriptsRouter({ sshExec: this.sshExec, pveApi: llmPve, dataDir: this.dataDir }))
@@ -276,6 +279,7 @@ export class UniversalProxyService {
 
     this.server = http.createServer(app)
     attachClaudeTermUpgrade(this.server) // ttyd WebSocket reverse-proxy for the Claude tab terminals (kept during the native-console transition)
+    attachAddonsUpgrade(this.server) // addon WebSocket reverse-proxy (/addons/<id>/*)
     // Native xterm.js console bridge (/api/claude/console/:id) — single-writer dtach attach
     // over SSH; replaces the ttyd terminals once verified (ailab-native-console.md).
     const { ClaudeConsoleService } = await import('../ClaudeConsole/ClaudeConsoleService')
