@@ -429,6 +429,16 @@ export class HermesManagementService {
     await fetch(`${gw}/api/v0/tool-groups/agent-${agentId}`, { method: 'DELETE', signal: AbortSignal.timeout(8000) }).catch(() => undefined)
   }
 
+  /** Seed a newly-created agent's workspace with the template operating docs from the
+   *  `default` profile (AGENTS/EXECUTION/TOOLS/HEARTBEAT/BOOT + blank IDENTITY/USER stubs).
+   *  cp -n = no-clobber, so anything --clone or Hermes bootstrap already placed is preserved.
+   *  SOUL.md is NOT here (it lives at the profile root, seeded by --clone from default). */
+  private async copyTemplateDocs(agentId: string): Promise<void> {
+    const src = `${this.profileHomeBase}/default/workspace`
+    const dst = `${this.profileHome(agentId)}/workspace`
+    await this.ssh(`mkdir -p ${shq(dst)} && cp -n ${shq(src)}/*.md ${shq(dst)}/ 2>/dev/null || true`)
+  }
+
   private async applyFallback(agentId: string, fallback: string[]): Promise<void> {
     const chain = fallback.filter((m) => m && m.trim()).map((model) => ({ provider: 'ailab', model }))
     const cfgPath = `${this.profileHome(agentId)}/config.yaml`
@@ -525,6 +535,9 @@ export class HermesManagementService {
       await this.hermes(createArgs)
       created = true
     }
+
+    // Seed the new agent's workspace from the doc templates (default/workspace).
+    if (created) await this.copyTemplateDocs(id)
 
     // Model → always via the ailab provider (the AI-Lab universal proxy).
     await this.hermes(['-p', id, 'config', 'set', 'model.provider', 'ailab'])
