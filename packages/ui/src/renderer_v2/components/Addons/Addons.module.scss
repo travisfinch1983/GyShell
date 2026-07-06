@@ -71,3 +71,7 @@
   min-height: 0;
   overflow: auto;
 }
+
+/* runtime addons (GET /api/addons) */
+.spacer { flex: 1; }
+.healthDot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-left: 5px; flex: 0 0 auto; }
