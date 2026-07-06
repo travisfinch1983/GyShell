@@ -58,6 +58,18 @@ export class HermesService {
     return this.mgmt.writeDoc(agentId, relpath, content)
   }
 
+  getAgentTools(agentId: string): Promise<{ selected: string[]; scoped: boolean; endpoint: string | null }> {
+    return this.mgmt.getAgentTools(agentId)
+  }
+
+  syncAgentTools(agentId: string, treeNames: string[]): Promise<{ endpoint: string; toolCount: number }> {
+    return this.mgmt.syncAgentTools(agentId, treeNames)
+  }
+
+  resetAgentTools(agentId: string): Promise<void> {
+    return this.mgmt.resetAgentTools(agentId)
+  }
+
   readSoul(agentId: string): Promise<string> {
     return this.mgmt.readSoul(agentId)
   }

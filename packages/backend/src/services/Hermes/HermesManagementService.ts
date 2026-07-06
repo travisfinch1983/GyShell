@@ -357,6 +357,60 @@ export class HermesManagementService {
     await this.writeRemoteFile(`${this.profileHome(agentId)}/${rel}`, content)
   }
 
+  /** The gateway MCP server name each agent uses (currently the full gateway; we repoint its URL
+   *  to a per-agent group to scope tools, keeping the NAME stable so tool-name prefixes don't move). */
+  private static readonly GATEWAY_SERVER = 'ai-lab' // AI-Lab-managed gateway MCP server (convergent name)
+  private static readonly GATEWAY_SERVER_ALIASES = ['ai-lab', 'mcpjungle'] // remove any of these before re-adding
+  private gatewayBase(): string {
+    return (process.env.MCPJUNGLE_URL || 'http://127.0.0.1:8080').replace(/\/+$/, '')
+  }
+
+  /** Read an agent's curated tool selection from its gateway group. `scoped:false` means the agent
+   *  has no group yet (it points at the FULL gateway = all tools). */
+  async getAgentTools(agentId: string): Promise<{ selected: string[]; scoped: boolean; endpoint: string | null }> {
+    const gw = this.gatewayBase()
+    try {
+      const r = await fetch(`${gw}/api/v0/tool-groups/agent-${agentId}`, { signal: AbortSignal.timeout(8000) })
+      if (!r.ok) return { selected: [], scoped: false, endpoint: null }
+      const g = (await r.json()) as any
+      return {
+        selected: Array.isArray(g?.included_tools) ? g.included_tools : [],
+        scoped: true,
+        endpoint: `${gw}/v0/groups/agent-${agentId}/mcp`,
+      }
+    } catch {
+      return { selected: [], scoped: false, endpoint: null }
+    }
+  }
+
+  /** Scope an agent to a curated tool set: upsert its gateway group, then repoint the agent's
+   *  native MCP server at the group endpoint (idempotent remove+add, same server name). */
+  async syncAgentTools(agentId: string, treeNames: string[]): Promise<{ endpoint: string; toolCount: number }> {
+    const gw = this.gatewayBase()
+    const group = `agent-${agentId}`
+    const payload = { name: group, description: `AI-Lab tool set for ${agentId}`, included_servers: [], included_tools: treeNames, excluded_tools: [] }
+    const r = await fetch(`${gw}/api/v0/tool-groups`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: AbortSignal.timeout(8000),
+    })
+    if (!r.ok) throw new Error(`group upsert -> ${r.status}: ${await r.text().catch(() => '')}`)
+    const endpoint = `${gw}/v0/groups/${group}/mcp`
+    for (const alias of HermesManagementService.GATEWAY_SERVER_ALIASES) {
+      await this.hermes(['-p', agentId, 'mcp', 'remove', alias]).catch(() => undefined)
+    }
+    await this.hermes(['-p', agentId, 'mcp', 'add', HermesManagementService.GATEWAY_SERVER, '--url', endpoint])
+    return { endpoint, toolCount: treeNames.length }
+  }
+
+  /** Revert an agent to the FULL gateway (remove its group + repoint the MCP server at /mcp). */
+  async resetAgentTools(agentId: string): Promise<void> {
+    const gw = this.gatewayBase()
+    for (const alias of HermesManagementService.GATEWAY_SERVER_ALIASES) {
+      await this.hermes(['-p', agentId, 'mcp', 'remove', alias]).catch(() => undefined)
+    }
+    await this.hermes(['-p', agentId, 'mcp', 'add', HermesManagementService.GATEWAY_SERVER, '--url', `${gw}/mcp`])
+    await fetch(`${gw}/api/v0/tool-groups/agent-${agentId}`, { method: 'DELETE', signal: AbortSignal.timeout(8000) }).catch(() => undefined)
+  }
+
   private async applyFallback(agentId: string, fallback: string[]): Promise<void> {
     const chain = fallback.filter((m) => m && m.trim()).map((model) => ({ provider: 'ailab', model }))
     const cfgPath = `${this.profileHome(agentId)}/config.yaml`

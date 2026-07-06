@@ -64,6 +64,25 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     }
   })
 
+  // Per-agent tool scoping via gateway groups. GET reads the agent's curated set (scoped:false
+  // = still on the FULL gateway). PUT scopes it to a group + repoints its MCP server. DELETE
+  // reverts to the full gateway.
+  router.get('/api/hermes/agents/:id/tools', async (req: Req, res: Res) => {
+    try { res.json(await hermes.getAgentTools(req.params.id)) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.put('/api/hermes/agents/:id/tools', json, async (req: Req, res: Res) => {
+    try {
+      const selected = Array.isArray((req.body as any)?.selected) ? (req.body as any).selected.filter((x: unknown) => typeof x === 'string') : null
+      if (!selected) return res.status(400).json({ error: 'body needs { selected: string[] }' })
+      res.json({ ok: true, ...(await hermes.syncAgentTools(req.params.id, selected)) })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.delete('/api/hermes/agents/:id/tools', async (req: Req, res: Res) => {
+    try { await hermes.resetAgentTools(req.params.id); res.json({ ok: true }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
   // Agent config docs — list + read/write the workspace/*.md operating docs on the Hermes
   // host (IDENTITY/USER/MEMORY/AGENTS/EXECUTION/TOOLS/… ). Path-validated, skills excluded.
   router.get('/api/hermes/agents/:id/docs', async (req: Req, res: Res) => {
