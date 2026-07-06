@@ -50,8 +50,12 @@ export class HermesService {
     return this.mgmt.addDocFromTemplate(agentId, templateRel)
   }
 
-  listDocs(agentId: string): Promise<Array<{ path: string; bytes: number }>> {
+  listDocs(agentId: string): Promise<Array<{ path: string; bytes: number; protected: boolean }>> {
     return this.mgmt.listDocs(agentId)
+  }
+
+  deleteDoc(agentId: string, relpath: string): Promise<void> {
+    return this.mgmt.deleteDoc(agentId, relpath)
   }
 
   readDoc(agentId: string, relpath: string): Promise<string> {

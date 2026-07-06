@@ -102,6 +102,10 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     try { res.json({ path: String(req.query.path || ''), content: await hermes.readDoc(req.params.id, String(req.query.path || '')) }) }
     catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
   })
+  router.delete('/api/hermes/agents/:id/doc', async (req: Req, res: Res) => {
+    try { await hermes.deleteDoc(req.params.id, String(req.query.path || '')); res.json({ ok: true }) }
+    catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
+  })
   router.put('/api/hermes/agents/:id/doc', json, async (req: Req, res: Res) => {
     try {
       const path = String((req.body as any)?.path || '')

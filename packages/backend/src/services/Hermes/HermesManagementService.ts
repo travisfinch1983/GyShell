@@ -334,6 +334,16 @@ export class HermesManagementService {
     return spec
   }
 
+  /** The standard/default docs every agent has — protected from deletion (basename match). */
+  private static readonly PROTECTED_DOC_BASENAMES = new Set([
+    'SOUL.md', 'AGENTS.md', 'BOOT.md', 'BOOTSTRAP.md', 'EXECUTION.md',
+    'HEARTBEAT.md', 'IDENTITY.md', 'TOOLS.md', 'USER.md', 'MEMORY.md',
+  ])
+  private isProtectedDoc(rel: string): boolean {
+    const base = rel.split('/').pop() || rel
+    return HermesManagementService.PROTECTED_DOC_BASENAMES.has(base)
+  }
+
   /** Validate a caller-supplied relative doc path: a `.md` file inside the profile, no traversal,
    *  never a bundled skill. Returns the cleaned rel path or null. */
   private safeDocRel(relpath: unknown): string | null {
@@ -346,18 +356,18 @@ export class HermesManagementService {
 
   /** List the editable config markdown docs for an agent — SOUL.md + workspace/*.md (excludes
    *  bundled skills). Returns rel paths + byte sizes. */
-  async listDocs(agentId: string): Promise<Array<{ path: string; bytes: number }>> {
+  async listDocs(agentId: string): Promise<Array<{ path: string; bytes: number; protected: boolean }>> {
     const home = this.profileHome(agentId)
     const cmd = `cd ${shq(home)} 2>/dev/null && find -L . -maxdepth 3 -type f -name '*.md' -not -path '*/skills/*' -printf '%s\t%P\n' 2>/dev/null | sort -t/ -k1`
     let out = ''
     try { out = await this.ssh(cmd) } catch { return [] }
-    const docs: Array<{ path: string; bytes: number }> = []
+    const docs: Array<{ path: string; bytes: number; protected: boolean }> = []
     for (const line of out.split('\n')) {
       const tab = line.indexOf('\t')
       if (tab < 0) continue
       const bytes = parseInt(line.slice(0, tab), 10) || 0
       const rel = line.slice(tab + 1).trim()
-      if (this.safeDocRel(rel)) docs.push({ path: rel, bytes })
+      if (this.safeDocRel(rel)) docs.push({ path: rel, bytes, protected: this.isProtectedDoc(rel) })
     }
     return docs
   }
@@ -450,6 +460,15 @@ export class HermesManagementService {
     const dir = dst.replace(/\/[^/]+$/, '')
     await this.ssh(`test -f ${shq(src)} && mkdir -p ${shq(dir)} && cp -f ${shq(src)} ${shq(dst)}`)
     return rel
+  }
+
+  /** Delete a non-default doc from an agent workspace. Refuses the standard/default docs and
+   *  invalid paths. */
+  async deleteDoc(agentId: string, relpath: string): Promise<void> {
+    const rel = this.safeDocRel(relpath)
+    if (!rel) throw new Error('invalid doc path')
+    if (this.isProtectedDoc(rel)) throw new Error('cannot delete a default doc')
+    await this.ssh(`rm -f ${shq(`${this.profileHome(agentId)}/${rel}`)}`)
   }
 
   private async applyFallback(agentId: string, fallback: string[]): Promise<void> {
