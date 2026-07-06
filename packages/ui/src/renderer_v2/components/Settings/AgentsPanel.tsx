@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { observer } from "mobx-react-lite";
-import { Plus, Pencil, Trash2, Users, X, Tag, Box, Wrench } from "lucide-react";
+import { Plus, Pencil, Trash2, Users, X, Tag, Box } from "lucide-react";
 import type { AppStore, AgentDefinition } from "../../stores/AppStore";
 import { ConfirmDialog } from "../Common/ConfirmDialog";
-import { AgentToolsPicker } from "./AgentToolsPicker";
+import { AgentToolsSelector } from "./AgentToolsPicker";
 import { AGENT_ICON_REGISTRY } from "../../lib/agentIcons";
 
 interface Props {
@@ -55,9 +55,7 @@ const AgentEditor = observer(
         : newAgentDraft(),
     );
     const [isSaving, setIsSaving] = useState(false);
-
-    const builtInTools = store.builtInTools.filter((t) => t.enabled);
-    const mcpTools = store.mcpTools.filter((t) => t.enabled);
+    const [tab, setTab] = useState<"general" | "tools">("general");
 
     // Multi-select against individual model definitions (items), not profiles.
     // Profiles are user-created bundles (most users have just one), but agents
@@ -73,16 +71,6 @@ const AgentEditor = observer(
 
     const itemSlots = (item: any): number =>
       typeof item?._proxlabSlots === "number" && item._proxlabSlots > 0 ? item._proxlabSlots : 1;
-
-    const toggleTool = (name: string) => {
-      setDraft((d) => {
-        const has = d.allowedTools.includes(name);
-        return {
-          ...d,
-          allowedTools: has ? d.allowedTools.filter((t) => t !== name) : [...d.allowedTools, name],
-        };
-      });
-    };
 
     const toggleModel = (profileId: string) => {
       setDraft((d) => {
@@ -100,7 +88,11 @@ const AgentEditor = observer(
       if (!draft.name.trim()) return;
       setIsSaving(true);
       try {
-        await store.saveAgent(draft);
+        // allowedTools is written ONLY by the Tools sub-tab's backend sync
+        // (PUT /api/mcp/agent-tools) — source the freshest value at save time
+        // so this draft snapshot never stomps a canonicalized selection.
+        const fresh = store.agents.find((a) => a.id === draft.id)?.allowedTools;
+        await store.saveAgent({ ...draft, allowedTools: fresh ?? draft.allowedTools });
         onClose();
       } finally {
         setIsSaving(false);
@@ -116,7 +108,20 @@ const AgentEditor = observer(
               <X size={16} />
             </button>
           </div>
-          <div className="editor-body">
+          <div className="editor-body" style={{ maxHeight: "70vh", overflowY: "auto" }}>
+            <div className="tools-subtabs" style={{ marginBottom: 10 }}>
+              <button className={`tools-subtab ${tab === "general" ? "tools-subtab-active" : ""}`} onClick={() => setTab("general")}>General</button>
+              <button className={`tools-subtab ${tab === "tools" ? "tools-subtab-active" : ""}`} onClick={() => setTab("tools")}>Tools</button>
+            </div>
+
+            {tab === "tools" ? (
+              <AgentToolsSelector
+                agentId={draft.id}
+                persisted={!!existing}
+                onSaved={() => void store.loadAgents()}
+              />
+            ) : (
+            <>
             <div className="editor-row">
               <span className="editor-icon"><Tag size={16} strokeWidth={2} /></span>
               <input
@@ -266,46 +271,8 @@ const AgentEditor = observer(
               />
             </div>
 
-            <div style={{ marginTop: 12 }}>
-              <label style={{ fontSize: 12, opacity: 0.75, marginBottom: 4, display: "block" }}>
-                Allowed tools <span style={{ opacity: 0.6 }}>({draft.allowedTools.length} selected)</span>
-              </label>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 6, maxHeight: 220, overflowY: "auto", padding: 8, border: "1px solid var(--color-border)", borderRadius: 4 }}>
-                {builtInTools.length > 0 && (
-                  <div style={{ gridColumn: "1 / -1", fontSize: 11, opacity: 0.6, marginTop: 4 }}>Built-in</div>
-                )}
-                {builtInTools.map((tool) => (
-                  <label key={`bi-${tool.name}`} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
-                    <input
-                      type="checkbox"
-                      checked={draft.allowedTools.includes(tool.name)}
-                      onChange={() => toggleTool(tool.name)}
-                      disabled={isSaving}
-                    />
-                    <span title={tool.description || ""}>{tool.name}</span>
-                  </label>
-                ))}
-                {mcpTools.length > 0 && (
-                  <div style={{ gridColumn: "1 / -1", fontSize: 11, opacity: 0.6, marginTop: 8 }}>MCP servers</div>
-                )}
-                {mcpTools.map((tool) => (
-                  <label key={`mcp-${tool.name}`} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
-                    <input
-                      type="checkbox"
-                      checked={draft.allowedTools.includes(tool.name)}
-                      onChange={() => toggleTool(tool.name)}
-                      disabled={isSaving}
-                    />
-                    <span>{tool.name}</span>
-                  </label>
-                ))}
-                {builtInTools.length === 0 && mcpTools.length === 0 && (
-                  <div style={{ gridColumn: "1 / -1", fontSize: 12, opacity: 0.6 }}>
-                    No tools enabled. Enable tools in the Tools tab first.
-                  </div>
-                )}
-              </div>
-            </div>
+            </>
+            )}
           </div>
           <div className="editor-footer" style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: 12 }}>
             <button className="btn-secondary" onClick={onClose} disabled={isSaving}>Cancel</button>
@@ -324,7 +291,6 @@ export const AgentsPanel: React.FC<Props> = observer(({ store }) => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showEditor, setShowEditor] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [toolsAgentId, setToolsAgentId] = useState<string | null>(null);
 
   useEffect(() => {
     if (store.agents.length === 0) {
@@ -393,9 +359,6 @@ export const AgentsPanel: React.FC<Props> = observer(({ store }) => {
                 </div>
               </div>
               <div className="tool-actions">
-                <button className="icon-btn-sm" onClick={() => setToolsAgentId(agent.id)} title="Tools — pick this agent's gateway tools">
-                  <Wrench size={14} />
-                </button>
                 <button className="icon-btn-sm" onClick={() => openEditor(agent.id)} title="Edit">
                   <Pencil size={14} />
                 </button>
@@ -416,14 +379,6 @@ export const AgentsPanel: React.FC<Props> = observer(({ store }) => {
 
       {showEditor && (
         <AgentEditor store={store} agentId={editingId || undefined} onClose={() => setShowEditor(false)} />
-      )}
-
-      {toolsAgentId && (
-        <AgentToolsPicker
-          agentId={toolsAgentId}
-          agentName={store.agents.find((a) => a.id === toolsAgentId)?.name ?? toolsAgentId}
-          onClose={() => setToolsAgentId(null)}
-        />
       )}
 
       <ConfirmDialog
