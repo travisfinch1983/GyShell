@@ -58,6 +58,11 @@ const inputStyle: React.CSSProperties = {
   fontSize: 12,
 }
 
+/** Rows rendered per expanded category before "show more" — keeps the DOM
+ *  small at 791-skill scale (claude-extended alone is 540) without a
+ *  virtualization dependency. */
+const PAGE = 60
+
 export const HermesSkillsPanel: React.FC = () => {
   const [tab, setTab] = useState<'skills' | 'reference'>('skills')
   const [skills, setSkills] = useState<SkillEntry[] | null>(null)
@@ -69,6 +74,12 @@ export const HermesSkillsPanel: React.FC = () => {
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
   const [newRef, setNewRef] = useState('')
+  // Browse-at-scale state: multi-select category chips (null = all shown),
+  // per-category expansion (custom open by default), per-category page depth.
+  // Tag chips (backend coming) will slot into the same chip row.
+  const [activeCats, setActiveCats] = useState<Set<string> | null>(null)
+  const [expandedCats, setExpandedCats] = useState<Set<string>>(new Set(['custom']))
+  const [pages, setPages] = useState<Map<string, number>>(new Map())
 
   const load = () =>
     Promise.all([hermesApi.listSkills(), hermesApi.listLibrary()]).then(([s, l]) => {
@@ -89,10 +100,18 @@ export const HermesSkillsPanel: React.FC = () => {
     return m
   }, [library])
 
+  /** Unfiltered per-category counts for the chip row. */
+  const catCounts = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const s of skills ?? []) m.set(s.category, (m.get(s.category) ?? 0) + 1)
+    return [...m.entries()].sort(([a], [b]) => (a === 'custom' ? -1 : b === 'custom' ? 1 : a.localeCompare(b)))
+  }, [skills])
+
   const groups = useMemo(() => {
     const q = filter.trim().toLowerCase()
     const match = (s: SkillEntry) =>
-      !q || s.ref.toLowerCase().includes(q) || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
+      (!activeCats || activeCats.has(s.category)) &&
+      (!q || s.ref.toLowerCase().includes(q) || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q))
     const byCat = new Map<string, SkillEntry[]>()
     for (const s of (skills ?? []).filter(match)) {
       const list = byCat.get(s.category) ?? []
@@ -102,7 +121,28 @@ export const HermesSkillsPanel: React.FC = () => {
     return [...byCat.entries()]
       .sort(([a], [b]) => (a === 'custom' ? -1 : b === 'custom' ? 1 : a.localeCompare(b)))
       .map(([category, items]) => ({ category, items: items.sort((a, b) => a.ref.localeCompare(b.ref)) }))
-  }, [skills, filter])
+  }, [skills, filter, activeCats])
+
+  const toggleCat = (cat: string) => {
+    setActiveCats((prev) => {
+      const all = new Set(catCounts.map(([c]) => c))
+      const cur = prev ?? all
+      const next = new Set(cur)
+      if (next.has(cat)) next.delete(cat); else next.add(cat)
+      return next.size === all.size ? null : next
+    })
+  }
+
+  const searching = filter.trim().length > 0
+  const isOpen = (cat: string) => searching || expandedCats.has(cat)
+  const toggleExpand = (cat: string) =>
+    setExpandedCats((prev) => {
+      const next = new Set(prev)
+      if (next.has(cat)) next.delete(cat); else next.add(cat)
+      return next
+    })
+  const pageOf = (cat: string) => pages.get(cat) ?? 1
+  const showMore = (cat: string) => setPages((prev) => new Map(prev).set(cat, pageOf(cat) + 1))
 
   const filteredDocs = useMemo(() => {
     const q = filter.trim().toLowerCase()
@@ -267,42 +307,91 @@ export const HermesSkillsPanel: React.FC = () => {
             </span>
           </div>
           {!skills && !err && <div className="tool-empty">Loading the skills library…</div>}
-          {groups.map((g) => (
-            <React.Fragment key={g.category}>
-              <div className="settings-divider settings-divider-spaced">
-                <span>{g.category}</span>
-                <i />
-              </div>
-              <div className="tools-list">
-                {g.items.map((s) => {
-                  const bonded = docsBySkill.get(s.name) ?? []
-                  return (
-                    <div key={s.ref} className="tool-item">
-                      <div className="tool-info">
-                        <div className="tool-name" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                          {s.name}
-                          <span style={badgeStyle(s.source)}>{s.source}</span>
-                          {bonded.map((d) => (
-                            <span key={d.name} style={chipStyle} title={`Bonded library doc: ${d.title}`}>
-                              <Link2 size={10} /> {d.name}
-                            </span>
-                          ))}
+
+          {/* Category filter chips — multi-select; tag chips join this row
+              once the tag backend lands. */}
+          {catCounts.length > 1 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '2px 0 10px' }}>
+              {catCounts.map(([cat, n]) => {
+                const on = !activeCats || activeCats.has(cat)
+                return (
+                  <button
+                    key={cat}
+                    onClick={() => toggleCat(cat)}
+                    title={`${on ? 'Hide' : 'Show'} ${cat} (${n})`}
+                    style={{
+                      ...chipStyle,
+                      cursor: 'pointer',
+                      padding: '2px 9px',
+                      opacity: on ? 1 : 0.45,
+                      borderColor: on ? 'var(--accent)' : 'var(--border)',
+                      color: on ? 'var(--fg)' : 'var(--fg-muted)',
+                    }}
+                  >
+                    {cat} <span style={{ color: 'var(--fg-faint)' }}>{n}</span>
+                  </button>
+                )
+              })}
+              {activeCats && (
+                <button onClick={() => setActiveCats(null)} style={{ ...chipStyle, cursor: 'pointer', padding: '2px 9px', color: 'var(--accent)', borderColor: 'var(--accent)' }}>
+                  show all
+                </button>
+              )}
+            </div>
+          )}
+
+          {groups.map((g) => {
+            const openGroup = isOpen(g.category)
+            const visible = openGroup ? g.items.slice(0, pageOf(g.category) * PAGE) : []
+            return (
+              <React.Fragment key={g.category}>
+                <div
+                  className="settings-divider settings-divider-spaced"
+                  style={{ cursor: 'pointer', userSelect: 'none' }}
+                  onClick={() => toggleExpand(g.category)}
+                  title={openGroup ? 'Collapse' : 'Expand'}
+                >
+                  <span>{openGroup ? '▾' : '▸'} {g.category} ({g.items.length})</span>
+                  <i />
+                </div>
+                {openGroup && (
+                  <div className="tools-list">
+                    {visible.map((s) => {
+                      const bonded = docsBySkill.get(s.name) ?? []
+                      return (
+                        <div key={s.ref} className="tool-item">
+                          <div className="tool-info">
+                            <div className="tool-name" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              {s.name}
+                              <span style={badgeStyle(s.source)}>{s.source}</span>
+                              {bonded.map((d) => (
+                                <span key={d.name} style={chipStyle} title={`Bonded library doc: ${d.title}`}>
+                                  <Link2 size={10} /> {d.name}
+                                </span>
+                              ))}
+                            </div>
+                            <div className="tool-meta" style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{s.ref}</div>
+                            {s.description && <div className="tool-meta">{s.description.replace(/^"|"$/g, '')}</div>}
+                          </div>
+                          <div className="tool-actions">
+                            <button className="btn-secondary" disabled={busyKey === s.ref} onClick={() => void openSkill(s.ref)}>
+                              {busyKey === s.ref ? 'Opening…' : 'Open →'}
+                            </button>
+                          </div>
                         </div>
-                        <div className="tool-meta" style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{s.ref}</div>
-                        {s.description && <div className="tool-meta">{s.description.replace(/^"|"$/g, '')}</div>}
-                      </div>
-                      <div className="tool-actions">
-                        <button className="btn-secondary" disabled={busyKey === s.ref} onClick={() => void openSkill(s.ref)}>
-                          {busyKey === s.ref ? 'Opening…' : 'Open →'}
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </React.Fragment>
-          ))}
-          {skills && groups.length === 0 && <div className="tool-empty">No skills match “{filter}”.</div>}
+                      )
+                    })}
+                    {g.items.length > visible.length && (
+                      <button className="btn-secondary" style={{ margin: '6px 0' }} onClick={() => showMore(g.category)}>
+                        show {Math.min(PAGE, g.items.length - visible.length)} more of {g.items.length - visible.length} remaining
+                      </button>
+                    )}
+                  </div>
+                )}
+              </React.Fragment>
+            )
+          })}
+          {skills && groups.length === 0 && <div className="tool-empty">No skills match the current filters.</div>}
         </>
       ) : (
         <>

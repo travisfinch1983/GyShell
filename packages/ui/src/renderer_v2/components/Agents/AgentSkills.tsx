@@ -25,6 +25,10 @@ import { hermesApi } from '../../stores/hermesApi'
 import styles from './Agents.module.scss'
 
 interface SkillRow { ref: string; name: string; category: string; description: string; source: 'builtin' | 'local'; assigned: boolean }
+
+/** Rows per expanded category before "show more" — the library is ~791 skills
+ *  (claude-extended alone is 540), so groups collapse and paginate. */
+const PAGE = 60
 interface LibDoc { name: string; title: string; skills: string[]; pointed: boolean }
 interface OpenLibDoc { name: string; content: string; base: string }
 
@@ -38,6 +42,9 @@ export const AgentSkills: React.FC<{ agentId: string }> = ({ agentId }) => {
   const [docBusy, setDocBusy] = useState('')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
+  const [activeCats, setActiveCats] = useState<Set<string> | null>(null)
+  const [expandedCats, setExpandedCats] = useState<Set<string>>(new Set(['custom']))
+  const [pages, setPages] = useState<Map<string, number>>(new Map())
 
   const load = () =>
     hermesApi.listAgentSkills(agentId).then((s) => {
@@ -64,10 +71,17 @@ export const AgentSkills: React.FC<{ agentId: string }> = ({ agentId }) => {
   }, [library])
   const referenceDocs = useMemo(() => library.filter((d) => d.skills.length === 0), [library])
 
+  const catCounts = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const s of skills ?? []) m.set(s.category, (m.get(s.category) ?? 0) + 1)
+    return [...m.entries()].sort(([a], [b]) => (a === 'custom' ? -1 : b === 'custom' ? 1 : a.localeCompare(b)))
+  }, [skills])
+
   const groups = useMemo(() => {
     const q = filter.trim().toLowerCase()
     const match = (s: SkillRow) =>
-      !q || s.ref.toLowerCase().includes(q) || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
+      (!activeCats || activeCats.has(s.category)) &&
+      (!q || s.ref.toLowerCase().includes(q) || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q))
     const byCat = new Map<string, SkillRow[]>()
     for (const s of (skills ?? []).filter(match)) {
       const list = byCat.get(s.category) ?? []
@@ -77,7 +91,27 @@ export const AgentSkills: React.FC<{ agentId: string }> = ({ agentId }) => {
     return [...byCat.entries()]
       .sort(([a], [b]) => (a === 'custom' ? -1 : b === 'custom' ? 1 : a.localeCompare(b)))
       .map(([category, items]) => ({ category, items: items.sort((a, b) => a.ref.localeCompare(b.ref)) }))
-  }, [skills, filter])
+  }, [skills, filter, activeCats])
+
+  const toggleCat = (cat: string) => {
+    setActiveCats((prev) => {
+      const all = new Set(catCounts.map(([c]) => c))
+      const cur = prev ?? all
+      const next = new Set(cur)
+      if (next.has(cat)) next.delete(cat); else next.add(cat)
+      return next.size === all.size ? null : next
+    })
+  }
+  const searching = filter.trim().length > 0
+  const isOpen = (cat: string) => searching || expandedCats.has(cat)
+  const toggleExpand = (cat: string) =>
+    setExpandedCats((prev) => {
+      const next = new Set(prev)
+      if (next.has(cat)) next.delete(cat); else next.add(cat)
+      return next
+    })
+  const pageOf = (cat: string) => pages.get(cat) ?? 1
+  const showMore = (cat: string) => setPages((prev) => new Map(prev).set(cat, pageOf(cat) + 1))
 
   const assignedCustom = (skills ?? []).filter((s) => s.source === 'local' && s.assigned).length
 
@@ -202,12 +236,43 @@ export const AgentSkills: React.FC<{ agentId: string }> = ({ agentId }) => {
       {err && <div className={styles.formMsg} style={{ color: 'var(--danger, #f87171)' }}>{err}</div>}
       {msg && <div className={styles.dim} style={{ fontSize: 12 }}>{msg}</div>}
       {!skills && !err && <div className={styles.dim}>Loading skills…</div>}
+
+      {/* Category chips — multi-select filter; tag chips slot in here later. */}
+      {catCounts.length > 1 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '8px 0 2px' }}>
+          {catCounts.map(([cat, n]) => {
+            const on = !activeCats || activeCats.has(cat)
+            return (
+              <button
+                key={cat}
+                onClick={() => toggleCat(cat)}
+                title={`${on ? 'Hide' : 'Show'} ${cat} (${n})`}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11,
+                  fontFamily: 'var(--font-mono)', padding: '2px 9px', borderRadius: 9,
+                  border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`,
+                  background: 'var(--control-bg)', cursor: 'pointer',
+                  opacity: on ? 1 : 0.45, color: on ? 'var(--fg)' : 'var(--fg-muted)',
+                }}
+              >
+                {cat} <span style={{ color: 'var(--fg-faint)' }}>{n}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
       {groups.map((g) => (
         <div key={g.category} style={{ marginTop: 8 }}>
-          <div className={styles.dim} style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
-            {g.category}{g.category === 'custom' ? ' — toggleable' : ''}
+          <div
+            className={styles.dim}
+            style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4, cursor: 'pointer', userSelect: 'none' }}
+            onClick={() => toggleExpand(g.category)}
+            title={isOpen(g.category) ? 'Collapse' : 'Expand'}
+          >
+            {isOpen(g.category) ? '▾' : '▸'} {g.category} ({g.items.length}){g.category === 'custom' ? ' — toggleable' : ''}
           </div>
-          {g.items.map((s) => (
+          {isOpen(g.category) && g.items.slice(0, pageOf(g.category) * PAGE).map((s) => (
             <React.Fragment key={s.ref}>
               <label
                 className={styles.summaryRow}
@@ -232,6 +297,11 @@ export const AgentSkills: React.FC<{ agentId: string }> = ({ agentId }) => {
               {(docsBySkill.get(s.name) ?? []).map((d) => docRow(d, true))}
             </React.Fragment>
           ))}
+          {isOpen(g.category) && g.items.length > pageOf(g.category) * PAGE && (
+            <button className={styles.btn} style={{ margin: '4px 0', fontSize: 11 }} onClick={() => showMore(g.category)}>
+              show {Math.min(PAGE, g.items.length - pageOf(g.category) * PAGE)} more of {g.items.length - pageOf(g.category) * PAGE} remaining
+            </button>
+          )}
           {g.category === 'custom' && referenceDocs.length > 0 && (
             <div style={{ marginTop: 10 }}>
               <div className={styles.dim} style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
