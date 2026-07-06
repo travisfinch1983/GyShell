@@ -3,6 +3,7 @@ import { observer } from 'mobx-react-lite'
 import {
   Bot,
   CalendarClock,
+  FileText,
   Fingerprint,
   Hash,
   PenLine,
@@ -17,6 +18,7 @@ import { hermesAgentSpecSchema, type HermesAgentSpec } from '@gyshell/shared'
 import type { CatalogModelWithCaps, ModelCapabilities } from '../../stores/hermesApi'
 import { hermesAgentsStore as store } from '../../stores/HermesAgentsStore'
 import { hermesApi } from '../../stores/hermesApi'
+import { AgentDocs } from './AgentDocs'
 import { confirmStore } from '../../stores/confirmStore'
 import styles from './Agents.module.scss'
 
@@ -40,12 +42,13 @@ export const CapBadges: React.FC<{ caps?: ModelCapabilities }> = ({ caps }) => {
   )
 }
 
-type SectionKey = 'identity' | 'model' | 'persona' | 'tools' | 'channels' | 'schedules'
+type SectionKey = 'identity' | 'model' | 'persona' | 'docs' | 'tools' | 'channels' | 'schedules'
 
 const SECTIONS: Array<{ key: SectionKey; label: string; Icon: LucideIcon }> = [
   { key: 'identity', label: 'Identity', Icon: Fingerprint },
   { key: 'model', label: 'Model & behavior', Icon: Bot },
   { key: 'persona', label: 'Persona · SOUL', Icon: PenLine },
+  { key: 'docs', label: 'Docs', Icon: FileText },
   { key: 'tools', label: 'Tools', Icon: Wrench },
   { key: 'channels', label: 'Channels', Icon: Hash },
   { key: 'schedules', label: 'Schedules', Icon: CalendarClock },
@@ -511,6 +514,21 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
                 <button className={styles.btn} onClick={() => setSoulOpen(true)}>Open editor →</button>
               </div>
             ),
+          )}
+        </section>
+      )}
+
+      {section === 'docs' && (
+        <section>
+          <div className={styles.sectionTitle}>Config docs</div>
+          <div className={styles.sectionSub}>
+            The agent's operating .md files on the Hermes host (IDENTITY, USER, MEMORY, TOOLS, library guides…).
+            SOUL.md is edited in the Persona section.
+          </div>
+          {editing && (initialSpec?.agentId ?? editId) ? (
+            <AgentDocs agentId={initialSpec?.agentId ?? editId ?? agentId} />
+          ) : (
+            <div className={styles.dim}>Save the agent first — docs live on its provisioned Hermes profile.</div>
           )}
         </section>
       )}

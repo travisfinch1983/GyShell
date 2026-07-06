@@ -96,6 +96,42 @@ export const hermesApi = {
     }
   },
 
+  /** GET /api/hermes/agents/:id/docs — the agent's config .md operating docs
+   *  (path-validated server-side: .md only, no traversal, skills excluded).
+   *  Null on failure so the section can show an error instead of an empty list. */
+  async listDocs(id: string): Promise<Array<{ path: string; bytes: number }> | null> {
+    try {
+      const r = await bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/docs`)
+      if (r?.error || !Array.isArray(r?.docs)) return null
+      return r.docs as Array<{ path: string; bytes: number }>
+    } catch {
+      return null
+    }
+  },
+
+  /** GET /api/hermes/agents/:id/doc?path= — one doc's live content. Null on
+   *  failure — callers must NOT open an editor on '' (a later save would wipe
+   *  the real file; same reasoning as getSoul). */
+  async getDoc(id: string, path: string): Promise<string | null> {
+    try {
+      const r = await bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/doc?path=${encodeURIComponent(path)}`)
+      if (r?.error) return null
+      return typeof r?.content === 'string' ? r.content : null
+    } catch {
+      return null
+    }
+  },
+
+  /** PUT /api/hermes/agents/:id/doc { path, content } — writes the real file. */
+  async putDoc(id: string, path: string, content: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('PUT', `/api/hermes/agents/${encodeURIComponent(id)}/doc`, { path, content })
+      return { ok: r?.ok !== false && !r?.error, error: r?.error ? String(r.error) : undefined }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
   /** DELETE /api/hermes/agents/:id — removes the Hermes profile. */
   async remove(id: string): Promise<{ ok: boolean; error?: string }> {
     try {
