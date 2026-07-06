@@ -27,6 +27,7 @@ import {
   KeyRound,
   SlidersHorizontal,
   Activity,
+  ExternalLink,
 } from "lucide-react";
 import { observer } from "mobx-react-lite";
 import type { AppStore } from "../../stores/AppStore";
@@ -204,6 +205,62 @@ function AccessTokenRevealDialog(props: {
     document.body,
   );
 }
+
+/**
+ * Settings › Tools — the embedded MCP Gateway webui (config federation Stage 3).
+ * The gateway is the single control surface for ALL tools: the agent's built-in
+ * tools are surfaced to it as the "ailab-native" server and gate from the
+ * gateway's enable/disable state, so the old local sections (MCP-servers
+ * listing + built-in-tools toggles) are retired — one surface, no split brain.
+ */
+const MCP_GATEWAY_URL = "https://mcp.deeveeyant.com";
+
+const ToolsGatewayEmbed: React.FC = () => {
+  const [frameKey, setFrameKey] = useState(0);
+  return (
+    <>
+      <div className="settings-section-header">
+        <div className="settings-section-title">Tools — MCP Gateway</div>
+        <div className="settings-actions">
+          <button
+            className="btn-icon-reload"
+            onClick={() => setFrameKey((k) => k + 1)}
+            title="Reload the gateway webui"
+          >
+            <RefreshCw size={14} />
+          </button>
+          <a
+            className="btn-secondary"
+            href={MCP_GATEWAY_URL}
+            target="_blank"
+            rel="noreferrer"
+            title="Open the gateway webui in a new tab"
+          >
+            <ExternalLink size={14} />
+          </a>
+        </div>
+      </div>
+      <p style={{ fontSize: 12.5, color: "var(--fg-muted)", margin: "0 0 10px", lineHeight: 1.5 }}>
+        One surface for every tool: MCP servers <em>and</em> the agent's built-in tools
+        (the <code>ailab-native</code> server). Enable/disable here takes effect within ~30s.
+        Proxy injection settings live in Settings › Proxy.
+      </p>
+      <iframe
+        key={frameKey}
+        src={MCP_GATEWAY_URL}
+        title="MCP Gateway"
+        style={{
+          width: "100%",
+          height: "calc(100vh - 260px)",
+          minHeight: 480,
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          background: "var(--panel-bg)",
+        }}
+      />
+    </>
+  );
+};
 
 export const SettingsView: React.FC<{ store: AppStore }> = observer(
   ({ store }) => {
@@ -1710,136 +1767,7 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
               <TtsSettingsPanel store={store} />
             ) : null}
 
-            {store.settingsSection === "tools" ? (
-            <>
-              <div className="settings-section-header">
-                <div className="settings-section-title">
-                  {t.settings.tools}
-                  <InfoTooltip content={t.settings.tooltips.mcpConfig} />
-                </div>
-              </div>
-              <div className="settings-subsection-header">
-                <div className="settings-divider">
-                  <span>{t.settings.mcpConfig}</span>
-                  <i />
-                </div>
-                <div className="settings-actions">
-                  <InfoTooltip content={t.settings.tooltips.mcpConfig}>
-                      <button
-                        className="btn-secondary"
-                        onClick={() => store.openMcpConfig()}
-                      >
-                      {t.settings.editMcpConfig}
-                    </button>
-                  </InfoTooltip>
-                  <button
-                    className="btn-icon-reload"
-                    onClick={() => store.reloadMcpTools()}
-                    title={t.settings.reloadMcpTools}
-                  >
-                    <RefreshCw size={14} />
-                  </button>
-                </div>
-              </div>
-              <div className="tools-list">
-                {store.mcpTools.map((tool) => {
-                    const statusClass = !tool.enabled
-                      ? "is-disabled"
-                      : tool.status === "connected"
-                        ? "is-ok"
-                        : tool.status === "error"
-                          ? "is-error"
-                          : "is-pending";
-                  return (
-                    <div key={tool.name} className="tool-item">
-                      <div className="tool-info">
-                        <div className="tool-name">{tool.name}</div>
-                        <div className="tool-meta">
-                            {tool.toolCount !== undefined
-                              ? `${tool.toolCount} ${t.settings.toolsCount}`
-                              : t.settings.toolsUnknown}
-                        </div>
-                          {tool.error ? (
-                            <div className="tool-error">{tool.error}</div>
-                          ) : null}
-                      </div>
-                      <div className="tool-actions">
-                        <span className={`status-dot ${statusClass}`} />
-                        <label className="switch">
-                          <input
-                            type="checkbox"
-                            checked={tool.enabled}
-                              onChange={(e) =>
-                                store.setMcpToolEnabled(
-                                  tool.name,
-                                  e.target.checked,
-                                )
-                              }
-                          />
-                          <span className="switch-slider" />
-                        </label>
-                      </div>
-                    </div>
-                    );
-                })}
-                  {store.mcpTools.length === 0 ? (
-                    <div className="tool-empty">{t.settings.noMcpTools}</div>
-                  ) : null}
-              </div>
-
-              <div className="settings-divider settings-divider-spaced">
-                <span>{t.settings.builtInTools}</span>
-                <i />
-              </div>
-              <div className="tools-list">
-                {store.builtInTools.map((tool) => {
-                  const perm = (tool as any).permission || (tool.enabled ? 'always-ask' : 'disabled');
-                  const dotClass =
-                    perm === 'always-allow' ? 'is-ok' :
-                    perm === 'ask-once-session' ? 'is-ok' :
-                    perm === 'always-ask' ? 'is-pending' :
-                    'is-disabled';
-                  return (
-                    <div key={tool.name} className="tool-item">
-                      <div className="tool-info">
-                        <div className="tool-name">{tool.name}</div>
-                        <div className="tool-meta">{tool.description || ""}</div>
-                      </div>
-                      <div className="tool-actions" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <span className={`status-dot ${dotClass}`} />
-                        <select
-                          value={perm}
-                          onChange={(e) =>
-                            store.setBuiltInToolPermission(
-                              tool.name,
-                              e.target.value as any,
-                            )
-                          }
-                          title={
-                            perm === 'always-allow' ? 'Tool runs without ever prompting' :
-                            perm === 'ask-once-session' ? 'Prompt on first use this session, auto-allow after' :
-                            perm === 'always-ask' ? 'Prompt for approval on every call' :
-                            'Tool is hidden from the model entirely'
-                          }
-                          style={{ fontSize: 11, padding: '2px 4px' }}
-                        >
-                          <option value="always-allow">Always Allow</option>
-                          <option value="ask-once-session">Ask Once / Session</option>
-                          <option value="always-ask">Always Ask</option>
-                          <option value="disabled">Disabled</option>
-                        </select>
-                      </div>
-                    </div>
-                  );
-                })}
-                {store.builtInTools.length === 0 ? (
-                  <div className="tool-empty">
-                    {t.settings.noBuiltInTools}
-                  </div>
-                ) : null}
-              </div>
-            </>
-          ) : null}
+            {store.settingsSection === "tools" ? <ToolsGatewayEmbed /> : null}
 
             {store.settingsSection === "skills" ? (
             <>
