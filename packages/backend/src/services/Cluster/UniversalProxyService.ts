@@ -37,6 +37,7 @@ export class UniversalProxyService {
   private fleetRouter: unknown = null
   /** AI-Lab x Hermes control-plane HTTP surface (createHermesRouter) — set via start opts. */
   private hermesRouter: unknown = null
+  private agentToolsRouter: unknown = null
 
   private detectLanIp(): string {
     const ifaces = os.networkInterfaces()
@@ -99,9 +100,10 @@ export class UniversalProxyService {
       conn.connect({ host, port: 22, username: 'root', privateKey: key, readyTimeout: opts.timeout || 12000, hostVerifier: () => true })
     })
 
-  async start(opts: { dataDir?: string; host?: string; port?: number; fleetRouter?: unknown; hermesRouter?: unknown } = {}): Promise<void> {
+  async start(opts: { dataDir?: string; host?: string; port?: number; fleetRouter?: unknown; hermesRouter?: unknown; agentToolsRouter?: unknown } = {}): Promise<void> {
     this.fleetRouter = opts.fleetRouter ?? this.fleetRouter
     this.hermesRouter = opts.hermesRouter ?? this.hermesRouter
+    this.agentToolsRouter = opts.agentToolsRouter ?? this.agentToolsRouter
     this.dataDir = opts.dataDir || this.dataDir
     this.host = opts.host || this.host
     this.port = opts.port || this.port
@@ -209,6 +211,7 @@ export class UniversalProxyService {
     app.use('/api/ai/credentials', invJson, invModule.credRouter)
     app.use('/api/ai', express.json({ limit: '50mb' }), aiModule.router)
     app.use('/api/system', createSystemRouter({ exec: this.sshExec }))
+    if (this.agentToolsRouter) app.use(this.agentToolsRouter as any) // /api/mcp/agent-tools/* — before /api/mcp
     const { createMcpRouter } = await import('./proxy/mcp.js')
     app.use('/api/mcp', createMcpRouter({ exec: this.sshExec }))
     const { createUiPrefsRouter } = await import('./proxy/ui-prefs.js')
