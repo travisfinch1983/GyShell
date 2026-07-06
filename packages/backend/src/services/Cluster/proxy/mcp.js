@@ -1,49 +1,30 @@
-// MCPJungle gateway management — ported from ProxLab server.js (/api/mcp/*).
-// Runs the `mcpjungle` CLI on the gateway container via SSH + fetches its health.
+// AI-Lab MCP Gateway management — /api/mcp/*.
+// Talks to the MCPJungle 0.4.5 REST API directly (the gateway now runs locally on the
+// AI-Lab container as ai-lab-mcp.service, so no SSH/CLI-text-parsing needed — that path
+// broke when 0.4.5 changed the `list` output format). `exec` is retained only for the
+// rare deregister-server call.
 import express from 'express'
 import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 
-const MCPJUNGLE_URL = process.env.MCPJUNGLE_URL || 'http://10.0.0.52:8080'
-const MCPJUNGLE_HOST = process.env.MCPJUNGLE_HOST || '10.0.0.52'
+const MCPJUNGLE_URL = (process.env.MCPJUNGLE_URL || 'http://127.0.0.1:8080').replace(/\/+$/, '')
+const MCPJUNGLE_HOST = process.env.MCPJUNGLE_HOST || '127.0.0.1'
 
-/** Parse `mcpjungle list servers` output into structured data (verbatim from ProxLab). */
-function parseServerList(output) {
-  const servers = []
-  const blocks = output.split(/(?=^\d+\.\s)/m)
-  for (const block of blocks) {
-    const nameMatch = block.match(/^\d+\.\s+(\S+)/)
-    if (!nameMatch) continue
-    const name = nameMatch[1]
-    const descMatch = block.match(/^\d+\.\s+\S+\n(.+)/m)
-    const transportMatch = block.match(/Transport:\s+(\S+)/)
-    const cmdMatch = block.match(/Command:\s+(.+)/)
-    const envMatch = block.match(/Environment variables:\s+map\[(.+)\]/)
-    const urlMatch = block.match(/URL:\s+(\S+)/)
-    servers.push({
-      name,
-      description: descMatch ? descMatch[1].trim() : '',
-      transport: transportMatch ? transportMatch[1] : '',
-      command: cmdMatch ? cmdMatch[1].trim() : '',
-      url: urlMatch ? urlMatch[1] : '',
-      env: envMatch ? envMatch[1] : '',
-    })
-  }
-  return servers
+async function gwGet(path) {
+  const r = await fetch(`${MCPJUNGLE_URL}${path}`, { signal: AbortSignal.timeout(8000) })
+  if (!r.ok) throw new Error(`gateway ${path} -> ${r.status}`)
+  return r.json()
+}
+async function gwPost(path) {
+  const r = await fetch(`${MCPJUNGLE_URL}${path}`, { method: 'POST', signal: AbortSignal.timeout(8000) })
+  if (!r.ok) throw new Error(`gateway ${path} -> ${r.status}`)
+  return r.json().catch(() => ({}))
 }
 
-/** Parse `mcpjungle list tools` output into structured data (verbatim from ProxLab). */
-function parseToolList(output) {
-  const tools = []
-  const lines = output.split('\n')
-  for (const line of lines) {
-    const match = line.match(/^\d+\.\s+(\S+)\s+\[(ENABLED|DISABLED)\]/)
-    if (match) {
-      const [serverName, toolName] = match[1].split('__')
-      tools.push({ fullName: match[1], server: serverName, tool: toolName, enabled: match[2] === 'ENABLED' })
-    }
-  }
-  return tools
+/** "server__tool" -> "tool" (the gateway namespaces every tool with its server). */
+const shortName = (full) => {
+  const i = full.indexOf('__')
+  return i === -1 ? full : full.slice(i + 2)
 }
 
 export function createMcpRouter({ exec }) {
@@ -52,7 +33,7 @@ export function createMcpRouter({ exec }) {
   const settingsPath = join(dataDir, 'mcp-settings.json')
 
   async function mcpjungleCli(cmd) {
-    const result = await exec(MCPJUNGLE_HOST, `cd /opt/mcpjungle && PATH=/usr/local/bin:$PATH mcpjungle ${cmd} 2>&1`, { timeout: 15000 })
+    const result = await exec(MCPJUNGLE_HOST, `PATH=/opt/ai-lab-mcp:/usr/local/bin:$PATH mcpjungle ${cmd} 2>&1`, { timeout: 15000 })
     return (result.stdout || '') + (result.stderr || '')
   }
   const getSettings = () => {
@@ -67,24 +48,85 @@ export function createMcpRouter({ exec }) {
   router.get('/health', async (_req, res) => {
     try {
       const resp = await fetch(`${MCPJUNGLE_URL}/health`, { signal: AbortSignal.timeout(8000) })
-      const gateway = await resp.json()
-      res.json(gateway)
+      res.json(await resp.json())
     } catch (e) {
       res.json({ status: 'unreachable', error: e.message })
     }
   })
-  router.get('/servers', async (_req, res) => {
-    try { res.json(parseServerList(await mcpjungleCli('list servers'))) } catch (e) { res.status(502).json({ error: e.message }) }
+
+  // Grouped tree for the native quick-toggle panel: every registered server with its tools
+  // and their global enable state (servers AND tools each carry an `enabled` flag). The
+  // `ailab-native` server shows up here too, so the agent's built-ins toggle alongside MCP.
+  router.get('/tree', async (_req, res) => {
+    try {
+      const servers = await gwGet('/api/v0/servers')
+      const out = []
+      for (const s of servers) {
+        let tools = []
+        try { tools = await gwGet(`/api/v0/tools?server=${encodeURIComponent(s.name)}`) } catch { tools = [] }
+        const mapped = tools.map((t) => ({
+          name: t.name,
+          shortName: shortName(t.name),
+          enabled: t.enabled !== false,
+          description: t.description || '',
+        }))
+        out.push({
+          name: s.name,
+          description: s.description || '',
+          enabled: s.enabled !== false,
+          sessionMode: s.session_mode || '',
+          transport: s.transport || '',
+          toolCount: mapped.length,
+          enabledCount: mapped.filter((t) => t.enabled).length,
+          tools: mapped,
+        })
+      }
+      out.sort((a, b) => a.name.localeCompare(b.name))
+      res.json({ servers: out })
+    } catch (e) {
+      res.status(502).json({ error: e.message })
+    }
   })
-  router.get('/tools', async (_req, res) => {
-    try { res.json(parseToolList(await mcpjungleCli('list tools'))) } catch (e) { res.status(502).json({ error: e.message }) }
+
+  // Toggle a single tool or a whole server on/off globally.
+  // body: { scope: 'tool' | 'server', name: string, enabled: boolean }
+  router.post('/toggle', express.json(), async (req, res) => {
+    const { scope, name, enabled } = req.body || {}
+    if (!name || (scope !== 'tool' && scope !== 'server')) {
+      return res.status(400).json({ error: 'body needs { scope: "tool"|"server", name, enabled }' })
+    }
+    const action = enabled ? 'enable' : 'disable'
+    try {
+      if (scope === 'tool') await gwPost(`/api/v0/tools/${action}?entity=${encodeURIComponent(name)}`)
+      else await gwPost(`/api/v0/servers/${encodeURIComponent(name)}/${action}`)
+      res.json({ ok: true, scope, name, enabled: !!enabled })
+    } catch (e) {
+      res.status(502).json({ error: e.message })
+    }
+  })
+
+  // Legacy list endpoints, now REST-backed (this also revives the old dead panel).
+  router.get('/servers', async (_req, res) => {
+    try { res.json(await gwGet('/api/v0/servers')) } catch (e) { res.status(502).json({ error: e.message }) }
+  })
+  router.get('/tools', async (req, res) => {
+    try {
+      if (req.query.server) return res.json(await gwGet(`/api/v0/tools?server=${encodeURIComponent(String(req.query.server))}`))
+      const servers = await gwGet('/api/v0/servers')
+      const all = []
+      for (const s of servers) {
+        try { all.push(...(await gwGet(`/api/v0/tools?server=${encodeURIComponent(s.name)}`))) } catch { /* skip */ }
+      }
+      res.json(all)
+    } catch (e) { res.status(502).json({ error: e.message }) }
   })
   router.post('/tools/:name/enable', async (req, res) => {
-    try { await mcpjungleCli(`enable tool ${req.params.name}`); res.json({ ok: true }) } catch (e) { res.status(502).json({ error: e.message }) }
+    try { await gwPost(`/api/v0/tools/enable?entity=${encodeURIComponent(req.params.name)}`); res.json({ ok: true }) } catch (e) { res.status(502).json({ error: e.message }) }
   })
   router.post('/tools/:name/disable', async (req, res) => {
-    try { await mcpjungleCli(`disable tool ${req.params.name}`); res.json({ ok: true }) } catch (e) { res.status(502).json({ error: e.message }) }
+    try { await gwPost(`/api/v0/tools/disable?entity=${encodeURIComponent(req.params.name)}`); res.json({ ok: true }) } catch (e) { res.status(502).json({ error: e.message }) }
   })
+
   router.get('/settings', (_req, res) => res.json(getSettings()))
   router.put('/settings', express.json(), (req, res) => {
     try { res.json(saveSettings({ ...getSettings(), ...(req.body || {}) })) } catch (e) { res.status(500).json({ error: e.message }) }
