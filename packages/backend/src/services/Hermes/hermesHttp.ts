@@ -83,6 +83,15 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
 
+  // Add a doc to an agent by copying it from the `default` template store. Returns the new path.
+  router.post('/api/hermes/agents/:id/add-doc', json, async (req: Req, res: Res) => {
+    try {
+      const templatePath = String((req.body as any)?.templatePath || '')
+      const path = await hermes.addDocFromTemplate(req.params.id, templatePath)
+      res.json({ ok: true, path })
+    } catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
+  })
+
   // Agent config docs — list + read/write the workspace/*.md operating docs on the Hermes
   // host (IDENTITY/USER/MEMORY/AGENTS/EXECUTION/TOOLS/… ). Path-validated, skills excluded.
   router.get('/api/hermes/agents/:id/docs', async (req: Req, res: Res) => {
