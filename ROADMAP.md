@@ -26,3 +26,10 @@ Living list of planned / deferred work. Add items as they surface; check off whe
   `hermesHttp`. UI: `renderer_v2/components/Settings/HermesSkillsPanel.tsx`.
 - kvcache Optane shim: auto-provisioned per llama.cpp launch (`ai.js`); see
   memory `project_kvcache_proxy`.
+
+## AI Services / GPU panel / Addons (queued 2026-07-06)
+- [ ] **#1 Service-card GPU badges** — cards regressed (pre-gitea overwrite); show a badge per GPU currently assigned to each service. Data: registry `gpuPciIds` → gpuMonitor resolve (same as `comfyui-instances`).
+- [ ] **#2 llama.cpp / ik_llama.cpp name-override field** — add a model-id alias-override input to the launch options, persisted to the launch TEMPLATE (`aliasOverride`) so it survives without hand-editing after each launch.
+- [ ] **#3 GPU fleet panel: meters → sparklines** — swap the GPU% + VRAM bar meters to sparklines. (Pure UI; accumulate rolling samples client-side.) → Fable
+- [ ] **#4 Per-service resource sparklines on cards** — regressed. Each card gets a GPU-usage sparkline (avg across its assigned GPUs) + a VRAM sparkline — attributed to the SERVICE, not the whole GPU. Needs backend: nvidia-smi `pmon` (per-pid SM%) + `--query-compute-apps` (per-pid VRAM) + pid→service mapping.
+- [ ] **#5 Runtime addon proxy (no rebuild)** — addons as self-contained services with own UI, reverse-proxied into an Addons sub-tab created at runtime. Precedent: Dynacat `/dash` embed. Registry-driven: register addon {name,url} → backend proxies `/addons/<name>/*` → UI fetches addon list + renders iframe sub-tab. No AI-Lab rebuild/restart.
