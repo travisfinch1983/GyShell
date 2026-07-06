@@ -243,6 +243,21 @@ export class UniversalProxyService {
     // @ts-expect-error — JS router: native Proxmox cluster/guest/GPU management (replaces ProxLab-bridged
     // /api/pve, /api/guests, /api/gpu, /api/storages). Mounted at /api (declares its real public paths);
     // placed AFTER the specific /api/* routers so it can't shadow them.
+    // AI-Lab FTP control plane (createFtpRouter): /api/ftp/* — SFTPGo (ai-lab-ftp.service) wrapper.
+    {
+      const { FtpService } = await import('../Ftp/FtpService')
+      const { createFtpRouter } = await import('../Ftp/ftpHttp')
+      const ftp = new FtpService({
+        adminUrl: process.env.SFTPGO_ADMIN_URL || 'http://127.0.0.1:8092',
+        adminUser: process.env.SFTPGO_ADMIN_USER || 'ailab',
+        adminPass: process.env.SFTPGO_ADMIN_PASS || '',
+        sftpPort: Number(process.env.FTP_SFTP_PORT || 2022),
+        ftpPort: Number(process.env.FTP_FTP_PORT || 2121),
+        publicHost: process.env.FTP_PUBLIC_HOST || '10.0.0.219',
+      })
+      app.use(createFtpRouter(ftp))
+    }
+
     const { createClusterRouter } = await import('./proxy/cluster.js')
     app.use('/api', express.json({ limit: '10mb' }), createClusterRouter({
       pveApi: llmPve, gpuMonitor: llmGpuMon, hookscriptDeploy: llmHook,
