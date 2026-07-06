@@ -319,9 +319,44 @@ export const hermesApi = {
   /** GET /api/hermes/skills — the Hermes skills LIBRARY (2f264d2): all skills
    *  (builtin + Travis's local imports under category "custom"). `ref` is the
    *  lib-relative dir path (can be >2 segments, e.g. mlops/inference/vllm). */
-  async listSkills(): Promise<Array<{ ref: string; name: string; dir: string; category: string; description: string; source: 'builtin' | 'local' }> | null> {
+  async listSkills(): Promise<Array<{ ref: string; name: string; dir: string; category: string; description: string; source: 'builtin' | 'local'; tags?: string[] }> | null> {
     try {
       const r = await bridge().request('GET', '/api/hermes/skills')
+      if (r?.error || !Array.isArray(r?.skills)) return null
+      return r.skills
+    } catch {
+      return null
+    }
+  },
+
+  /** GET /api/hermes/skills/tags → distinct curated tags, count-desc (1a0f639;
+   *  seeded from the local-model audit harvest — ~1133 tags). */
+  async listSkillTags(): Promise<Array<{ tag: string; count: number }> | null> {
+    try {
+      const r = await bridge().request('GET', '/api/hermes/skills/tags')
+      if (r?.error || !Array.isArray(r?.tags)) return null
+      return r.tags
+    } catch {
+      return null
+    }
+  },
+
+  /** PUT /api/hermes/skills/tags { ref, tags } — replaces a skill's curated
+   *  tags (empty clears; server lowercases/dedupes/caps at 32). */
+  async putSkillTags(ref: string, tags: string[]): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('PUT', '/api/hermes/skills/tags', { ref, tags })
+      return { ok: r?.ok !== false && !r?.error, error: r?.error ? String(r.error) : undefined }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
+  /** GET /api/hermes/skills/search?q= — matches metadata (name/description/
+   *  ref/tags) OR SKILL.md body content; same skill shape as /skills. */
+  async searchSkills(q: string): Promise<Array<{ ref: string; name: string; dir: string; category: string; description: string; source: 'builtin' | 'local'; tags?: string[] }> | null> {
+    try {
+      const r = await bridge().request('GET', `/api/hermes/skills/search?q=${encodeURIComponent(q)}`)
       if (r?.error || !Array.isArray(r?.skills)) return null
       return r.skills
     } catch {

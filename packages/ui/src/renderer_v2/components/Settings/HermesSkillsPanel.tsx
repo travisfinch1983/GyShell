@@ -18,7 +18,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { FileText, Link2, Plus, RefreshCw, Save, Search, Undo2, X } from 'lucide-react'
 import { hermesApi } from '../../stores/hermesApi'
 
-interface SkillEntry { ref: string; name: string; dir: string; category: string; description: string; source: 'builtin' | 'local' }
+interface SkillEntry { ref: string; name: string; dir: string; category: string; description: string; source: 'builtin' | 'local'; tags?: string[] }
 interface LibDoc { name: string; title: string; skills: string[] }
 type OpenItem =
   | { kind: 'skill'; ref: string; content: string; base: string; isNew: boolean }
@@ -80,11 +80,22 @@ export const HermesSkillsPanel: React.FC = () => {
   const [activeCats, setActiveCats] = useState<Set<string> | null>(null)
   const [expandedCats, setExpandedCats] = useState<Set<string>>(new Set(['custom']))
   const [pages, setPages] = useState<Map<string, number>>(new Map())
+  // Tag filtering (1a0f639): top chips by count + a find-a-tag input (1133
+  // distinct tags can't all be chips). Selected tags AND-narrow the list.
+  const [tagCounts, setTagCounts] = useState<Array<{ tag: string; count: number }>>([])
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set())
+  const [tagFind, setTagFind] = useState('')
+  // Content search: backend grep across SKILL.md bodies; result = a ref set
+  // that becomes the base list until cleared or the query text changes.
+  const [deepHits, setDeepHits] = useState<{ q: string; refs: Set<string> } | null>(null)
+  const [deepBusy, setDeepBusy] = useState(false)
+  // Tag editing in the editor header
+  const [tagDraft, setTagDraft] = useState('')
 
   const load = () =>
-    Promise.all([hermesApi.listSkills(), hermesApi.listLibrary()]).then(([s, l]) => {
+    Promise.all([hermesApi.listSkills(), hermesApi.listLibrary(), hermesApi.listSkillTags()]).then(([s, l, t]) => {
       if (s === null || l === null) setErr('Failed to list the Hermes library — host unreachable?')
-      else { setSkills(s); setLibrary(l); setErr('') }
+      else { setSkills(s); setLibrary(l); setTagCounts(t ?? []); setErr('') }
     })
   useEffect(() => { void load() }, [])
 
@@ -110,8 +121,10 @@ export const HermesSkillsPanel: React.FC = () => {
   const groups = useMemo(() => {
     const q = filter.trim().toLowerCase()
     const match = (s: SkillEntry) =>
+      (!deepHits || deepHits.refs.has(s.ref)) &&
       (!activeCats || activeCats.has(s.category)) &&
-      (!q || s.ref.toLowerCase().includes(q) || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q))
+      [...selectedTags].every((t) => (s.tags ?? []).includes(t)) &&
+      (!q || s.ref.toLowerCase().includes(q) || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q) || (s.tags ?? []).some((t) => t.includes(q)))
     const byCat = new Map<string, SkillEntry[]>()
     for (const s of (skills ?? []).filter(match)) {
       const list = byCat.get(s.category) ?? []
@@ -121,7 +134,34 @@ export const HermesSkillsPanel: React.FC = () => {
     return [...byCat.entries()]
       .sort(([a], [b]) => (a === 'custom' ? -1 : b === 'custom' ? 1 : a.localeCompare(b)))
       .map(([category, items]) => ({ category, items: items.sort((a, b) => a.ref.localeCompare(b.ref)) }))
-  }, [skills, filter, activeCats])
+  }, [skills, filter, activeCats, selectedTags, deepHits])
+
+  const deepSearch = async () => {
+    const q = filter.trim()
+    if (!q) return
+    setDeepBusy(true); setMsg('')
+    const hits = await hermesApi.searchSkills(q)
+    setDeepBusy(false)
+    if (hits === null) { setMsg('Content search failed — host unreachable?'); return }
+    setDeepHits({ q, refs: new Set(hits.map((h) => h.ref)) })
+    setMsg(`Content search “${q}”: ${hits.length} skills (metadata + SKILL.md bodies)`)
+  }
+
+  const toggleTag = (tag: string) =>
+    setSelectedTags((prev) => {
+      const next = new Set(prev)
+      if (next.has(tag)) next.delete(tag); else next.add(tag)
+      return next
+    })
+
+  const saveTags = async (ref: string, tags: string[]) => {
+    // optimistic; the sidecar is authoritative on failure
+    setSkills((prev) => prev?.map((s) => (s.ref === ref ? { ...s, tags } : s)) ?? prev)
+    if (open?.kind === 'skill' && open.ref === ref) setMsg('')
+    const r = await hermesApi.putSkillTags(ref, tags)
+    if (!r.ok) { setMsg(`Tag save failed: ${r.error ?? 'unknown'}`); await load(); return }
+    void hermesApi.listSkillTags().then((t) => setTagCounts(t ?? []))
+  }
 
   const toggleCat = (cat: string) => {
     setActiveCats((prev) => {
@@ -231,6 +271,39 @@ export const HermesSkillsPanel: React.FC = () => {
           </div>
         </div>
         {msg && <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 6 }}>{msg}</div>}
+        {open.kind === 'skill' && !open.isNew && (() => {
+          const cur = skills?.find((s) => s.ref === open.ref)?.tags ?? []
+          const addTag = () => {
+            const t = tagDraft.trim().toLowerCase()
+            if (!t || cur.includes(t)) { setTagDraft(''); return }
+            setTagDraft('')
+            void saveTags(open.ref, [...cur, t])
+          }
+          return (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+              <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>Tags:</span>
+              {cur.map((t) => (
+                <span key={t} style={chipStyle}>
+                  {t}
+                  <button
+                    title={`Remove tag ${t}`}
+                    onClick={() => void saveTags(open.ref, cur.filter((x) => x !== t))}
+                    style={{ border: 'none', background: 'none', color: 'var(--fg-faint)', cursor: 'pointer', padding: '0 2px', fontSize: 12, lineHeight: 1 }}
+                  >×</button>
+                </span>
+              ))}
+              <input
+                value={tagDraft}
+                list="hermes-skill-tags"
+                placeholder="add tag…"
+                onChange={(e) => setTagDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') addTag() }}
+                style={{ ...inputStyle, height: 22, fontSize: 11, width: 130 }}
+              />
+              {tagDraft.trim() && <button className="btn-secondary" style={{ height: 22, fontSize: 11, padding: '0 8px' }} onClick={addTag}>add</button>}
+            </div>
+          )
+        })()}
         <textarea
           value={open.content}
           onChange={(e) => setOpen({ ...open, content: e.target.value } as OpenItem)}
@@ -270,10 +343,21 @@ export const HermesSkillsPanel: React.FC = () => {
             <input
               value={filter}
               placeholder={tab === 'skills' ? 'filter skills…' : 'filter docs…'}
-              onChange={(e) => setFilter(e.target.value)}
+              onChange={(e) => { setFilter(e.target.value); setDeepHits(null) }}
+              onKeyDown={(e) => { if (e.key === 'Enter' && tab === 'skills') void deepSearch() }}
               style={{ ...inputStyle, paddingLeft: 26, width: 180 }}
             />
           </span>
+          {tab === 'skills' && (
+            <button
+              className="btn-secondary"
+              disabled={deepBusy || !filter.trim()}
+              title="Search SKILL.md file contents too (backend grep) — Enter does the same"
+              onClick={() => void deepSearch()}
+            >
+              {deepBusy ? 'Searching…' : 'Content search'}
+            </button>
+          )}
           <button className="btn-icon-reload" onClick={() => void load()} title="Reload the library">
             <RefreshCw size={14} />
           </button>
@@ -340,6 +424,55 @@ export const HermesSkillsPanel: React.FC = () => {
             </div>
           )}
 
+          {/* Tag chips — top by count + selected; 1133 distinct tags, so the
+              rest are reachable via the find-a-tag input. AND-narrowing. */}
+          {tagCounts.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '0 0 10px', alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: 'var(--fg-faint)' }}>tags:</span>
+              {[
+                ...tagCounts.slice(0, 18),
+                ...tagCounts.slice(18).filter(({ tag }) => selectedTags.has(tag)),
+              ].map(({ tag, count }) => {
+                const on = selectedTags.has(tag)
+                return (
+                  <button
+                    key={tag}
+                    onClick={() => toggleTag(tag)}
+                    title={`${on ? 'Stop narrowing' : 'Narrow'} to skills tagged "${tag}" (${count})`}
+                    style={{
+                      ...chipStyle, cursor: 'pointer', padding: '2px 9px',
+                      borderColor: on ? 'var(--accent)' : 'var(--border)',
+                      background: on ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'var(--control-bg)',
+                      color: on ? 'var(--accent)' : 'var(--fg-muted)',
+                    }}
+                  >
+                    {tag} <span style={{ color: 'var(--fg-faint)' }}>{count}</span>
+                  </button>
+                )
+              })}
+              <input
+                value={tagFind}
+                list="hermes-skill-tags"
+                placeholder={`find tag… (${tagCounts.length})`}
+                onChange={(e) => setTagFind(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter') return
+                  const t = tagFind.trim().toLowerCase()
+                  if (t && tagCounts.some((x) => x.tag === t)) { toggleTag(t); setTagFind('') }
+                }}
+                style={{ ...inputStyle, height: 22, fontSize: 11, width: 140 }}
+              />
+              {selectedTags.size > 0 && (
+                <button onClick={() => setSelectedTags(new Set())} style={{ ...chipStyle, cursor: 'pointer', padding: '2px 9px', color: 'var(--accent)', borderColor: 'var(--accent)' }}>
+                  clear tags
+                </button>
+              )}
+              <datalist id="hermes-skill-tags">
+                {tagCounts.map(({ tag }) => <option key={tag} value={tag} />)}
+              </datalist>
+            </div>
+          )}
+
           {groups.map((g) => {
             const openGroup = isOpen(g.category)
             const visible = openGroup ? g.items.slice(0, pageOf(g.category) * PAGE) : []
@@ -370,7 +503,13 @@ export const HermesSkillsPanel: React.FC = () => {
                                 </span>
                               ))}
                             </div>
-                            <div className="tool-meta" style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{s.ref}</div>
+                            <div className="tool-meta" style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+                              {s.ref}
+                              {(s.tags ?? []).slice(0, 5).map((t) => (
+                                <span key={t} style={{ ...chipStyle, marginLeft: 6, padding: '0 6px', fontSize: 10, cursor: 'pointer' }} title={`Narrow to "${t}"`} onClick={() => toggleTag(t)}>{t}</span>
+                              ))}
+                              {(s.tags?.length ?? 0) > 5 && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--fg-faint)' }}>+{(s.tags?.length ?? 0) - 5}</span>}
+                            </div>
                             {s.description && <div className="tool-meta">{s.description.replace(/^"|"$/g, '')}</div>}
                           </div>
                           <div className="tool-actions">
