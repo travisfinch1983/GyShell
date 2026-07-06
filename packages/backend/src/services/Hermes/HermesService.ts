@@ -46,6 +46,18 @@ export class HermesService {
     return this.mgmt.reconstructSpec(agentId)
   }
 
+  listDocs(agentId: string): Promise<Array<{ path: string; bytes: number }>> {
+    return this.mgmt.listDocs(agentId)
+  }
+
+  readDoc(agentId: string, relpath: string): Promise<string> {
+    return this.mgmt.readDoc(agentId, relpath)
+  }
+
+  writeDoc(agentId: string, relpath: string, content: string): Promise<void> {
+    return this.mgmt.writeDoc(agentId, relpath, content)
+  }
+
   readSoul(agentId: string): Promise<string> {
     return this.mgmt.readSoul(agentId)
   }

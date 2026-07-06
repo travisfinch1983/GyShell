@@ -312,6 +312,51 @@ export class HermesManagementService {
     return spec
   }
 
+  /** Validate a caller-supplied relative doc path: a `.md` file inside the profile, no traversal,
+   *  never a bundled skill. Returns the cleaned rel path or null. */
+  private safeDocRel(relpath: unknown): string | null {
+    if (typeof relpath !== 'string' || !relpath) return null
+    if (relpath.includes('..') || relpath.startsWith('/') || relpath.includes('\0')) return null
+    if (!relpath.endsWith('.md')) return null
+    if (relpath.startsWith('skills/') || relpath.includes('/skills/')) return null
+    return relpath
+  }
+
+  /** List the editable config markdown docs for an agent — SOUL.md + workspace/*.md (excludes
+   *  bundled skills). Returns rel paths + byte sizes. */
+  async listDocs(agentId: string): Promise<Array<{ path: string; bytes: number }>> {
+    const home = this.profileHome(agentId)
+    const cmd = `cd ${shq(home)} 2>/dev/null && find . -maxdepth 3 -type f -name '*.md' -not -path '*/skills/*' -printf '%s\t%P\n' 2>/dev/null | sort -t/ -k1`
+    let out = ''
+    try { out = await this.ssh(cmd) } catch { return [] }
+    const docs: Array<{ path: string; bytes: number }> = []
+    for (const line of out.split('\n')) {
+      const tab = line.indexOf('\t')
+      if (tab < 0) continue
+      const bytes = parseInt(line.slice(0, tab), 10) || 0
+      const rel = line.slice(tab + 1).trim()
+      if (this.safeDocRel(rel)) docs.push({ path: rel, bytes })
+    }
+    return docs
+  }
+
+  /** Read one config doc off the host. Empty string if missing. Throws on an invalid path. */
+  async readDoc(agentId: string, relpath: string): Promise<string> {
+    const rel = this.safeDocRel(relpath)
+    if (!rel) throw new Error('invalid doc path')
+    const full = `${this.profileHome(agentId)}/${rel}`
+    const b64 = (await this.ssh(`base64 -w0 ${shq(full)} 2>/dev/null || true`)).trim()
+    if (!b64) return ''
+    try { return Buffer.from(b64, 'base64').toString('utf8') } catch { return '' }
+  }
+
+  /** Write one config doc on the host. Throws on an invalid path. */
+  async writeDoc(agentId: string, relpath: string, content: string): Promise<void> {
+    const rel = this.safeDocRel(relpath)
+    if (!rel) throw new Error('invalid doc path')
+    await this.writeRemoteFile(`${this.profileHome(agentId)}/${rel}`, content)
+  }
+
   private async applyFallback(agentId: string, fallback: string[]): Promise<void> {
     const chain = fallback.filter((m) => m && m.trim()).map((model) => ({ provider: 'ailab', model }))
     const cfgPath = `${this.profileHome(agentId)}/config.yaml`
