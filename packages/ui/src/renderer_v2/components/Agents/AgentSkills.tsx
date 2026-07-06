@@ -13,20 +13,19 @@
  *
  * Library docs are CENTRAL (agents hold TOOLS.md pointers, never copies).
  * Bonded docs (doc.skill === skill.name) nest under their skill — assigning
- * the skill auto-injects the pointer, so the child rows are informational
- * plus: Edit (the central doc — one edit, every agent sees it) and explicit
- * "+ pointer"/"− pointer" per-agent override actions. General docs
- * (skill:null) sit in their own "library reference" group. The override
- * actions are stateless buttons by design: the backend has no pointer
- * read-back, and a toggle that guesses state would lie.
+ * the skill auto-injects the pointer. Each doc row: Edit (the central doc —
+ * one edit, every agent sees it) and a STATEFUL pointer toggle bound to the
+ * per-agent `pointed` read-back (5a8da3d) — on/off drives POST library-doc
+ * {name, assigned}, optimistic, refetch on error. General docs (skill:null)
+ * sit in their own "library reference" group.
  */
 import React, { useEffect, useMemo, useState } from 'react'
-import { FileText, Minus, Plus, Save, Search, Undo2, X } from 'lucide-react'
+import { FileText, Save, Search, Undo2, X } from 'lucide-react'
 import { hermesApi } from '../../stores/hermesApi'
 import styles from './Agents.module.scss'
 
 interface SkillRow { ref: string; name: string; category: string; description: string; source: 'builtin' | 'local'; assigned: boolean }
-interface LibDoc { name: string; title: string; skill: string | null }
+interface LibDoc { name: string; title: string; skill: string | null; pointed: boolean }
 interface OpenLibDoc { name: string; content: string; base: string }
 
 export const AgentSkills: React.FC<{ agentId: string }> = ({ agentId }) => {
@@ -45,9 +44,10 @@ export const AgentSkills: React.FC<{ agentId: string }> = ({ agentId }) => {
       if (s === null) setErr('Failed to list skills — Hermes host unreachable?')
       else { setSkills(s); setErr('') }
     })
+  const loadLibrary = () => hermesApi.listAgentLibraryDocs(agentId).then((d) => setLibrary(d ?? []))
   useEffect(() => {
     void load()
-    void hermesApi.listLibrary().then((d) => setLibrary(d ?? []))
+    void loadLibrary()
   }, [agentId])
 
   const docsBySkill = useMemo(() => {
@@ -90,6 +90,9 @@ export const AgentSkills: React.FC<{ agentId: string }> = ({ agentId }) => {
       setErr(`${s.assigned ? 'Unassign' : 'Assign'} failed: ${r.error ?? 'unknown'}`)
       await load()
     }
+    // assignment auto-injects/removes the bonded doc's pointer — refresh the
+    // doc checkboxes so they track the TOOLS.md side effect
+    void loadLibrary()
   }
 
   const openLibDoc = async (name: string) => {
@@ -110,28 +113,32 @@ export const AgentSkills: React.FC<{ agentId: string }> = ({ agentId }) => {
     setMsg('Saved ✓ — central doc, all agents see the change')
   }
 
-  const pointer = async (name: string, assigned: boolean) => {
-    setDocBusy(name); setMsg('')
-    const r = await hermesApi.setAgentLibraryDoc(agentId, name, assigned)
+  const togglePointer = async (d: LibDoc) => {
+    const next = !d.pointed
+    setDocBusy(d.name); setMsg('')
+    // optimistic; refetch restores TOOLS.md truth on failure
+    setLibrary((prev) => prev.map((x) => (x.name === d.name ? { ...x, pointed: next } : x)))
+    const r = await hermesApi.setAgentLibraryDoc(agentId, d.name, next)
     setDocBusy('')
-    setMsg(r.ok
-      ? `${assigned ? 'Added' : 'Removed'} the ${name} pointer ${assigned ? 'to' : 'from'} ${agentId}'s TOOLS.md ✓`
-      : `Pointer update failed: ${r.error ?? 'unknown'}`)
+    if (!r.ok) {
+      setMsg(`Pointer update failed: ${r.error ?? 'unknown'}`)
+      await loadLibrary()
+    }
   }
 
   const docRow = (d: LibDoc, indent: boolean) => (
     <div key={d.name} className={styles.summaryRow} style={{ padding: '2px 0', marginLeft: indent ? 26 : 0 }}>
-      <FileText size={12} />
-      <span className={styles.dim} style={{ fontSize: 11.5 }} title={d.name}>{d.title}</span>
+      <label
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 7, cursor: 'pointer', minWidth: 0 }}
+        title={`${d.pointed ? 'Remove' : 'Add'} the ${d.name} pointer ${d.pointed ? 'from' : 'to'} this agent's TOOLS.md (manual override — skill assignment manages bonded docs automatically)`}
+      >
+        <input type="checkbox" checked={d.pointed} disabled={docBusy === d.name} onChange={() => void togglePointer(d)} />
+        <FileText size={12} />
+        <span className={styles.dim} style={{ fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.title}</span>
+      </label>
       <span className={styles.spacer} />
       <button className={styles.btn} style={{ fontSize: 11 }} disabled={docBusy === d.name} onClick={() => void openLibDoc(d.name)}>
         {docBusy === d.name ? '…' : 'Edit'}
-      </button>
-      <button className={styles.btn} style={{ fontSize: 11 }} title={`Add the ${d.name} pointer to this agent's TOOLS.md (manual override)`} disabled={docBusy === d.name} onClick={() => void pointer(d.name, true)}>
-        <Plus size={11} /> pointer
-      </button>
-      <button className={styles.btn} style={{ fontSize: 11 }} title={`Remove the ${d.name} pointer from this agent's TOOLS.md`} disabled={docBusy === d.name} onClick={() => void pointer(d.name, false)}>
-        <Minus size={11} /> pointer
       </button>
     </div>
   )
@@ -236,7 +243,8 @@ export const AgentSkills: React.FC<{ agentId: string }> = ({ agentId }) => {
       {skills && groups.length === 0 && <div className={styles.dim}>No skills match “{filter}”.</div>}
       <div className={styles.dim} style={{ marginTop: 8, fontSize: 11 }}>
         Library docs are central — agents carry TOOLS.md pointers, never copies. Assigning a skill injects its
-        bonded doc's pointer automatically; the +/− pointer buttons are per-agent manual overrides.
+        bonded doc's pointer automatically; the doc checkboxes show this agent's actual TOOLS.md state and
+        toggle it as a manual override.
       </div>
     </div>
   )

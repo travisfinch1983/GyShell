@@ -277,10 +277,22 @@ export const hermesApi = {
     }
   },
 
-  /** POST /api/hermes/agents/:id/library-doc { name, assigned } — manually
-   *  add/remove one doc's TOOLS.md pointer for one agent (the override path;
-   *  skill assignment auto-injects bonded docs' pointers). NO read-back
-   *  exists, so the UI offers explicit actions rather than stateful toggles. */
+  /** GET /api/hermes/agents/:id/library-docs — the central docs with a
+   *  per-agent `pointed` flag: is the doc currently in THIS agent's TOOLS.md
+   *  LIBRARY-TOC (5a8da3d). Powers the stateful pointer toggles. */
+  async listAgentLibraryDocs(id: string): Promise<Array<{ name: string; title: string; skill: string | null; pointed: boolean }> | null> {
+    try {
+      const r = await bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/library-docs`)
+      if (r?.error || !Array.isArray(r?.docs)) return null
+      return r.docs
+    } catch {
+      return null
+    }
+  },
+
+  /** POST /api/hermes/agents/:id/library-doc { name, assigned } — add/remove
+   *  one doc's TOOLS.md pointer for one agent (the override path; skill
+   *  assignment auto-injects bonded docs' pointers). */
   async setAgentLibraryDoc(id: string, name: string, assigned: boolean): Promise<{ ok: boolean; error?: string }> {
     try {
       const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/library-doc`, { name, assigned })
