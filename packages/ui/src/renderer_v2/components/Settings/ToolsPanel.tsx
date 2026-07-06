@@ -20,8 +20,10 @@ import './ToolsPanel.scss'
 function bridge(): any { return (window as any).gyshell?.cluster }
 
 const MCP_GATEWAY_URL = 'https://mcp.deeveeyant.com'
-/** Fit MCPJungle's fixed-min-width dashboard inside the settings column. */
-const GATEWAY_SCALE = 0.85
+/** Only the webui's own Tools tab (a wide table) overflows; we can't target it
+ *  inside the iframe, so scale the whole page — but keep k near 0.9 so the
+ *  tabs that already fit don't visibly shrink. */
+const GATEWAY_SCALE = 0.9
 
 interface TreeTool { name: string; shortName: string; enabled: boolean; description: string }
 interface TreeServer {
