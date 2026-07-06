@@ -45,6 +45,7 @@ import "./TtsSettingsPanel.scss";
 import { FtpSettingsPanel } from "./FtpSettingsPanel";
 import { uiPrefsStore } from "../../stores/uiPrefsStore";
 import { GPU_FLEET_POLL_PREF, GPU_FLEET_POLL_DEFAULT, fleetPollMs } from "../GpuFleet/GpuFleetPanel";
+import { SERVICE_USAGE_POLL_PREF, SERVICE_USAGE_POLL_DEFAULT, serviceUsagePollMs } from "../../stores/AiServicesStore";
 import { ToolsPanel } from "./ToolsPanel";
 import { HermesSkillsPanel } from "./HermesSkillsPanel";
 import { Select } from "../../platform/Select";
@@ -1129,13 +1130,13 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
               </div>
 
               <div className="settings-section-header" style={{ marginTop: 24 }}>
-                <div className="settings-section-title">GPU Fleet</div>
+                <div className="settings-section-title">Monitoring poll rates</div>
               </div>
               <div className="settings-rows">
                 <div className="settings-row">
                   <div className="settings-row-label-with-info">
-                    <label title="How often the GPU Fleet panel samples metrics for its sparklines. The data is cheap (Prometheus), so 1s is fine for rapid monitoring. Service-card sparklines keep their own cadence.">
-                      Sparkline poll rate
+                    <label title="How often the GPU Fleet panel samples metrics for its sparklines. Prometheus-sourced — zero host cost at any rate, so 1s is fine for rapid monitoring.">
+                      GPU Fleet sparkline poll rate
                     </label>
                   </div>
                   <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
@@ -1153,6 +1154,30 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                     />
                     <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>
                       seconds · applies live to the GPU Fleet panel
+                    </span>
+                  </div>
+                </div>
+                <div className="settings-row">
+                  <div className="settings-row-label-with-info">
+                    <label title="How often the AI Service cards poll per-service GPU usage. The interval also rides as ?maxAge, so the backend samples nvtop that fresh — 1s means truly ~1s-fresh data while the drawer is open (costs an nvtop pass per second on the hosts).">
+                      AI Service card sparkline poll rate
+                    </label>
+                  </div>
+                  <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                    <input
+                      type="number"
+                      min={1}
+                      max={60}
+                      step={1}
+                      value={Math.round(serviceUsagePollMs() / 1000)}
+                      onChange={(e) => {
+                        const s = Math.min(60, Math.max(1, parseInt(e.target.value, 10) || SERVICE_USAGE_POLL_DEFAULT / 1000));
+                        uiPrefsStore.set(SERVICE_USAGE_POLL_PREF, s * 1000);
+                      }}
+                      style={{ width: 70, height: 28, padding: "0 8px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--control-bg)", color: "var(--fg)", fontSize: 13 }}
+                    />
+                    <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>
+                      seconds · takes effect on the next poll
                     </span>
                   </div>
                 </div>
