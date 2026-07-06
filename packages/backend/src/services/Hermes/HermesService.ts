@@ -46,6 +46,10 @@ export class HermesService {
     return this.mgmt.reconstructSpec(agentId)
   }
 
+  addDocFromTemplate(agentId: string, templateRel: string): Promise<string> {
+    return this.mgmt.addDocFromTemplate(agentId, templateRel)
+  }
+
   listDocs(agentId: string): Promise<Array<{ path: string; bytes: number }>> {
     return this.mgmt.listDocs(agentId)
   }

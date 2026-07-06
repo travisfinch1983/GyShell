@@ -439,6 +439,19 @@ export class HermesManagementService {
     await this.ssh(`mkdir -p ${shq(dst)} && cp -n ${shq(src)}/*.md ${shq(dst)}/ 2>/dev/null || true`)
   }
 
+  /** Copy a doc from the `default` template store into an agent's workspace (the per-agent
+   *  "add from template" action). Overwrites if present (explicit user action). Returns the
+   *  rel path. Throws if the template path is invalid or the template doesn't exist. */
+  async addDocFromTemplate(agentId: string, templateRel: string): Promise<string> {
+    const rel = this.safeDocRel(templateRel)
+    if (!rel) throw new Error('invalid template path')
+    const src = `${this.profileHomeBase}/default/${rel}`
+    const dst = `${this.profileHome(agentId)}/${rel}`
+    const dir = dst.replace(/\/[^/]+$/, '')
+    await this.ssh(`test -f ${shq(src)} && mkdir -p ${shq(dir)} && cp -f ${shq(src)} ${shq(dst)}`)
+    return rel
+  }
+
   private async applyFallback(agentId: string, fallback: string[]): Promise<void> {
     const chain = fallback.filter((m) => m && m.trim()).map((model) => ({ provider: 'ailab', model }))
     const cfgPath = `${this.profileHome(agentId)}/config.yaml`
