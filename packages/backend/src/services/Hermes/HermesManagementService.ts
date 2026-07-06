@@ -577,8 +577,8 @@ export class HermesManagementService {
     const dst = `${this.profileHome(agentId)}/skills/${r}`
     const parent = dst.replace(/\/[^/]+$/, '')
     await this.ssh(`test -d ${shq(src)} && mkdir -p ${shq(parent)} && cp -a ${shq(src)} ${shq(parent)}/`)
-    const bonded = await this.bondedDocFor(r)
-    if (bonded) await this.updateAgentToc(agentId, [bonded], [])
+    const bonded = await this.bondedDocsFor(r.split('/').pop() || r)
+    if (bonded.length) await this.updateAgentToc(agentId, bonded, [])
   }
 
   /** Unassign a skill from an agent (remove its dir from profile/skills/). */
@@ -586,8 +586,8 @@ export class HermesManagementService {
     const r = this.safeSkillRef(ref)
     if (!r) throw new Error('invalid skill ref')
     await this.ssh(`rm -rf ${shq(`${this.profileHome(agentId)}/skills/${r}`)}`)
-    const bonded = await this.bondedDocFor(r)
-    if (bonded) await this.updateAgentToc(agentId, [], [bonded])
+    const bonded = await this.bondedDocsFor(r.split('/').pop() || r)
+    if (bonded.length) await this.updateAgentToc(agentId, [], bonded)
   }
 
   private static readonly LIBRARY_DIR = '/root/.hermes/library'
@@ -598,11 +598,14 @@ export class HermesManagementService {
   }
 
   /** List central library docs. skill = the bonded skill name for `skill-<name>.md`, else null. */
-  async listLibraryDocs(): Promise<Array<{ name: string; title: string; skill: string | null }>> {
+  async listLibraryDocs(): Promise<Array<{ name: string; title: string; skills: string[] }>> {
     const py = [
       'import os, re, json',
       `D = ${JSON.stringify(HermesManagementService.LIBRARY_DIR)}`,
       'out = []',
+      'import json as _j',
+      '_bf = os.path.join(D, "bonds.json")',
+      'B = _j.load(open(_bf)) if os.path.exists(_bf) else {}',
       'for f in sorted(os.listdir(D)) if os.path.isdir(D) else []:',
       '    if not f.endswith(".md"): continue',
       '    title = f',
@@ -610,8 +613,7 @@ export class HermesManagementService {
       '        for ln in open(os.path.join(D, f), errors="replace"):',
       '            if ln.strip().startswith("# "): title = ln.strip()[2:].strip(); break',
       '    except Exception: pass',
-      '    skill = f[6:-3] if f.startswith("skill-") else None',
-      '    out.append({"name": f, "title": title, "skill": skill})',
+      '    out.append({"name": f, "title": title, "skills": B.get(f, [])})',
       'print(json.dumps(out))',
     ].join('\n')
     const b64 = Buffer.from(py, 'utf8').toString('base64')
@@ -679,12 +681,38 @@ export class HermesManagementService {
     await this.ssh(`printf %s ${shq(b64)} | base64 -d | python3 - ${shq(toolsPath)} ${shq(HermesManagementService.LIBRARY_DIR)} ${shq(addB64)} ${shq(remB64)}`)
   }
 
-  /** The bonded library doc for a skill ref (skill-<dirname>.md) if it exists in the library. */
-  private async bondedDocFor(ref: string): Promise<string | null> {
-    const dir = ref.split('/').pop() || ref
-    const doc = `skill-${dir}.md`
-    const found = (await this.ssh(`test -f ${shq(`${HermesManagementService.LIBRARY_DIR}/${doc}`)} && echo y || true`)).trim()
-    return found === 'y' ? doc : null
+  private async readBonds(): Promise<Record<string, string[]>> {
+    const b64 = (await this.ssh(`base64 -w0 ${shq(`${HermesManagementService.LIBRARY_DIR}/bonds.json`)} 2>/dev/null || true`)).trim()
+    if (!b64) return {}
+    try { return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')) } catch { return {} }
+  }
+  private async writeBonds(bonds: Record<string, string[]>): Promise<void> {
+    await this.writeRemoteFile(`${HermesManagementService.LIBRARY_DIR}/bonds.json`, JSON.stringify(bonds, null, 2))
+  }
+  /** All library docs bonded to a skill name. */
+  private async bondedDocsFor(skillName: string): Promise<string[]> {
+    const bonds = await this.readBonds()
+    return Object.keys(bonds).filter((doc) => (bonds[doc] || []).includes(skillName)).sort()
+  }
+  /** Agent ids that currently have a skill (by dir name) assigned in their profile. */
+  private async agentsWithSkill(skillName: string): Promise<string[]> {
+    const out = await this.ssh(`find ${shq(this.profileHomeBase)}/*/skills -maxdepth 3 -type d -name ${shq(skillName)} 2>/dev/null | sed -E 's#${this.profileHomeBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/([^/]+)/.*#\\1#' | sort -u`).catch(() => '')
+    return out.split('\n').map((x) => x.trim()).filter(Boolean)
+  }
+  /** Add/remove a skill from a doc's bond list, and reflect it into every agent that has the skill. */
+  async bondDoc(name: string, skill: string, bonded: boolean): Promise<void> {
+    const n = this.safeLibDocName(name)
+    if (!n) throw new Error('invalid library doc name')
+    if (!/^[A-Za-z0-9._-]+$/.test(skill)) throw new Error('invalid skill name')
+    const bonds = await this.readBonds()
+    const cur = new Set(bonds[n] || [])
+    if (bonded) cur.add(skill); else cur.delete(skill)
+    bonds[n] = Array.from(cur).sort()
+    await this.writeBonds(bonds)
+    // Only ADD retroactively (reflect a new bond onto agents that already have the skill).
+    // Never retroactively remove: a doc can be pointed via another assigned skill or a manual pin,
+    // so an unbond must not yank a pointer that other reasons still hold. Removal happens on unassign.
+    if (bonded) { for (const agentId of await this.agentsWithSkill(skill)) await this.updateAgentToc(agentId, [n], []) }
   }
 
   /** Add/remove a library doc pointer on an agent manually (independent of skills). */

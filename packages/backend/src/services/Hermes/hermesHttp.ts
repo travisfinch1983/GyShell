@@ -146,6 +146,10 @@ export function createHermesRouter(hermes: HermesService): express.Router {
   router.put('/api/hermes/library/doc', json, async (req: Req, res: Res) => {
     try { await hermes.writeLibraryDoc(String(req.query.name || (req.body as any)?.name || ''), typeof (req.body as any)?.content === 'string' ? (req.body as any).content : ''); res.json({ ok: true }) } catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
   })
+  router.post('/api/hermes/library/bond', json, async (req: Req, res: Res) => {
+    try { const b = req.body as any; await hermes.bondDoc(String(b?.doc || ''), String(b?.skill || ''), b?.bonded !== false); res.json({ ok: true }) }
+    catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
+  })
   router.post('/api/hermes/agents/:id/library-doc', json, async (req: Req, res: Res) => {
     try { await hermes.setAgentLibraryDoc(req.params.id, String((req.body as any)?.name || ''), (req.body as any)?.assigned !== false); res.json({ ok: true }) } catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
   })

@@ -86,10 +86,11 @@ export class HermesService {
     return this.mgmt.listAgentLibraryDocs(agentId)
   }
 
-  listLibraryDocs(): Promise<Array<{ name: string; title: string; skill: string | null }>> {
+  listLibraryDocs(): Promise<Array<{ name: string; title: string; skills: string[] }>> {
     return this.mgmt.listLibraryDocs()
   }
 
+  bondDoc(name: string, skill: string, bonded: boolean): Promise<void> { return this.mgmt.bondDoc(name, skill, bonded) }
   readLibraryDoc(name: string): Promise<string> { return this.mgmt.readLibraryDoc(name) }
   writeLibraryDoc(name: string, content: string): Promise<void> { return this.mgmt.writeLibraryDoc(name, content) }
   setAgentLibraryDoc(agentId: string, name: string, assigned: boolean): Promise<void> { return this.mgmt.setAgentLibraryDoc(agentId, name, assigned) }
