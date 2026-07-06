@@ -1,4 +1,5 @@
 import { makeAutoObservable, runInAction } from 'mobx'
+import { uiPrefsStore } from './uiPrefsStore'
 
 /**
  * AiServicesStore — AI Services tab (migrated from ProxLab ai.js).
@@ -62,6 +63,15 @@ export type AiView = 'services' | 'pool'
 type Lifecycle = 'kill' | 'suspend' | 'start' | 'restart'
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let usageTimer: ReturnType<typeof setTimeout> | null = null
+
+/** AI Service card sparkline poll rate — Travis #6b: independent of the GPU
+ *  Fleet rate; also sent as ?maxAge so the backend nvtop TTL follows it.
+ *  Default 15s = the cadence the usage poll historically rode (load()). */
+export const SERVICE_USAGE_POLL_PREF = 'serviceUsagePollMs'
+export const SERVICE_USAGE_POLL_DEFAULT = 15000
+export const serviceUsagePollMs = (): number =>
+  Math.min(60000, Math.max(1000, Number(uiPrefsStore.get(SERVICE_USAGE_POLL_PREF, SERVICE_USAGE_POLL_DEFAULT)) || SERVICE_USAGE_POLL_DEFAULT))
 
 const IMAGE_GEN_PROVIDERS = new Set(['comfyui', 'sdnext', 'fooocus', 'invokeai'])
 const STT_PROVIDERS = new Set(['faster-whisper'])
@@ -174,8 +184,8 @@ export class AiServicesStore {
       } catch {
         /* ignore */
       }
-      // per-service GPU usage (best-effort; endpoint may not be deployed yet)
-      void this.pollServiceUsage()
+      // (per-service GPU usage polls on its OWN timer — see startPolling —
+      // so Travis can tune the card cadence independently, Travis #6b)
       // per-service status/tps (parallel; best-effort)
       void Promise.all(
         services.map(async (s) => {
@@ -299,7 +309,11 @@ export class AiServicesStore {
    *  until the endpoint deploys (404/error → serviceUsageLive stays false). */
   private async pollServiceUsage(): Promise<void> {
     try {
-      const r: any = await this.cluster().request('GET', '/api/ai/service-usage')
+      // ?maxAge follows the configured cadence — the backend's nvtop-snapshot
+      // TTL tracks the caller (5aab694; 1s floor / 60s ceiling), so a 1s
+      // setting really means ~1s-fresh per-service data while the tab's open.
+      const ms = serviceUsagePollMs()
+      const r: any = await this.cluster().request('GET', `/api/ai/service-usage?maxAge=${ms}`)
       const svcs = r?.services
       if (!svcs || typeof svcs !== 'object') return
       runInAction(() => {
@@ -325,6 +339,7 @@ export class AiServicesStore {
 
   startPolling(intervalMs = 15000): void {
     void this.load()
+    this.scheduleUsagePoll(true)
     if (pollTimer) return
     pollTimer = setInterval(() => void this.load(), intervalMs)
   }
@@ -333,6 +348,20 @@ export class AiServicesStore {
       clearInterval(pollTimer)
       pollTimer = null
     }
+    if (usageTimer) {
+      clearTimeout(usageTimer)
+      usageTimer = null
+    }
+  }
+
+  /** Self-rescheduling per-service usage loop — reads the ui-pref each tick
+   *  so a Settings change takes effect on the next poll, no restart plumbing. */
+  private scheduleUsagePoll(immediate = false): void {
+    if (usageTimer) clearTimeout(usageTimer)
+    usageTimer = setTimeout(async () => {
+      await this.pollServiceUsage()
+      if (usageTimer !== null) this.scheduleUsagePoll()
+    }, immediate ? 0 : serviceUsagePollMs())
   }
 }
 
