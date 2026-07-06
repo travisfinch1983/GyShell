@@ -348,7 +348,7 @@ export class HermesManagementService {
    *  bundled skills). Returns rel paths + byte sizes. */
   async listDocs(agentId: string): Promise<Array<{ path: string; bytes: number }>> {
     const home = this.profileHome(agentId)
-    const cmd = `cd ${shq(home)} 2>/dev/null && find . -maxdepth 3 -type f -name '*.md' -not -path '*/skills/*' -printf '%s\t%P\n' 2>/dev/null | sort -t/ -k1`
+    const cmd = `cd ${shq(home)} 2>/dev/null && find -L . -maxdepth 3 -type f -name '*.md' -not -path '*/skills/*' -printf '%s\t%P\n' 2>/dev/null | sort -t/ -k1`
     let out = ''
     try { out = await this.ssh(cmd) } catch { return [] }
     const docs: Array<{ path: string; bytes: number }> = []
