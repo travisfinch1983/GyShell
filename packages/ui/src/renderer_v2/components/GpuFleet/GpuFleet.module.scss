@@ -176,32 +176,19 @@
   letter-spacing: 0.2px;
 }
 
-.barTrack {
+/* sparkline meters (replaced the fill-bar meters; same status color language) */
+.spark {
   flex: 1;
-  height: 6px;
+  height: 26px;
+  min-width: 0;
   background: var(--control-bg);
   border-radius: 3px;
-  overflow: hidden;
+  color: var(--accent); /* fallback before the first sample classifies */
 }
 
-.barFill {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 3px;
-  transition: width 0.3s ease;
-}
-
-.barCool {
-  background: var(--success);
-}
-
-.barWarm {
-  background: #f0a020;
-}
-
-.barHot {
-  background: var(--danger);
-}
+.sparkCool { color: var(--success); }
+.sparkWarm { color: #f0a020; }
+.sparkHot { color: var(--danger); }
 
 .barText {
   width: 48px;
