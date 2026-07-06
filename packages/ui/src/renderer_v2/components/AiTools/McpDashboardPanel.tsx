@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { RefreshCw, ExternalLink, Save } from 'lucide-react'
+import { RefreshCw, ExternalLink } from 'lucide-react'
 import { mcpServersStore as store } from '../../stores/McpServersStore'
 import styles from './AiTools.module.scss'
 
@@ -13,17 +13,14 @@ import styles from './AiTools.module.scss'
  * DNS) — same-scheme as the AI-Lab origin, so no mixed content; the browser
  * still never talks to a 10.0.0.x address directly.
  *
- * The Tool Proxy Settings strip stays native: toolInjection/maxToolRounds are
- * AI-Lab's OWN llm-proxy config (PUT /api/mcp/settings), not gateway state —
- * the dashboard has no surface for them.
+ * The Tool Proxy Settings (toolInjection/maxToolRounds — AI-Lab's OWN
+ * llm-proxy config the dashboard can't manage) live in Settings › Proxy.
  */
 const DASHBOARD_URL = 'https://mcp.deeveeyant.com'
 
 export const McpDashboardPanel: React.FC = observer(() => {
   useEffect(() => { if (!store.loaded) void store.load() }, [])
   const [frameKey, setFrameKey] = useState(0)
-  const [saved, setSaved] = useState(false)
-  const save = async () => { await store.saveSettings(); setSaved(true); setTimeout(() => setSaved(false), 2000) }
 
   return (
     <div className={`${styles.panel} ${styles.dashPanel}`}>
@@ -33,15 +30,6 @@ export const McpDashboardPanel: React.FC = observer(() => {
           {store.loading ? 'checking…' : store.connected ? 'Gateway connected' : 'Gateway unreachable'}
         </span>
         <span className={styles.spacer} />
-        <label className={styles.chk}>
-          <input type="checkbox" checked={store.settings.toolInjection !== false} onChange={(e) => store.setSetting('toolInjection', e.target.checked)} />
-          Inject tools into LLM requests
-        </label>
-        <label className={styles.numLbl}>
-          Max tool rounds
-          <input className={styles.num} type="number" min={1} max={50} value={store.settings.maxToolRounds ?? 20} onChange={(e) => store.setSetting('maxToolRounds', parseInt(e.target.value, 10) || 20)} />
-        </label>
-        <button className={styles.btnPrimary} onClick={() => void save()}><Save size={13} /> {saved ? 'Saved!' : 'Save'}</button>
         <button className={styles.btn} title="Reload dashboard" onClick={() => { setFrameKey((k) => k + 1); void store.load() }}>
           <RefreshCw size={13} />
         </button>

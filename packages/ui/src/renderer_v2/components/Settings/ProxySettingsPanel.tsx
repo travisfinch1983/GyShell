@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { RefreshCw, Play, Download, Loader2 } from 'lucide-react'
+import { observer } from 'mobx-react-lite'
+import { RefreshCw, Play, Download, Loader2, Save } from 'lucide-react'
+import { mcpServersStore } from '../../stores/McpServersStore'
 
 function bridge(): any { return (window as any).gyshell?.cluster }
 const BASE = '/api/proxy/claude-max'
@@ -24,7 +26,61 @@ function downloadFile(name: string, data: unknown) {
   URL.revokeObjectURL(url)
 }
 
-/** Settings → Proxy: Claude Max prompt-capture toggle + cache-miss diff viewer. */
+/** MCP tool-injection settings for the llm proxy (PUT /api/mcp/settings) —
+ *  AI-Lab's own proxy config, relocated here from the AI-Tools MCP panel when
+ *  that panel became the MCPJungle dashboard embed (which has no surface for it). */
+const McpToolProxySection: React.FC = observer(() => {
+  const store = mcpServersStore
+  useEffect(() => { if (!store.loaded) void store.load() }, [])
+  const [saved, setSaved] = useState(false)
+  const save = async () => { await store.saveSettings(); setSaved(true); setTimeout(() => setSaved(false), 2000) }
+
+  return (
+    <>
+      <div className="settings-section-header">
+        <div className="settings-section-title">MCP Tool Proxy</div>
+      </div>
+      <div className="settings-rows">
+        <p style={{ fontSize: 12.5, color: 'var(--fg-muted)', margin: '0 0 8px', lineHeight: 1.5 }}>
+          How the LLM proxy uses the MCP gateway's tools. Server registration and per-tool
+          enable/disable live in the MCP dashboard (AI · Tools → MCP Servers).
+        </p>
+        <div className="settings-row">
+          <div className="settings-row-label-with-info">
+            <label>Inject tools into LLM requests</label>
+          </div>
+          <label className="switch">
+            <input type="checkbox" checked={store.settings.toolInjection !== false} onChange={(e) => store.setSetting('toolInjection', e.target.checked)} />
+            <span className="switch-slider" />
+          </label>
+        </div>
+        <div className="settings-row">
+          <div className="settings-row-label-with-info">
+            <label>Max tool rounds</label>
+          </div>
+          <input
+            type="number"
+            min={1}
+            max={50}
+            value={store.settings.maxToolRounds ?? 20}
+            onChange={(e) => store.setSetting('maxToolRounds', parseInt(e.target.value, 10) || 20)}
+            style={{ width: 70, height: 28, padding: '0 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--control-bg)', color: 'var(--fg)', fontSize: 13 }}
+          />
+        </div>
+        <div className="settings-row">
+          <div className="settings-row-label-with-info">
+            <label>Apply</label>
+          </div>
+          <button className="btn-secondary" onClick={() => void save()}>
+            <Save size={14} /> {saved ? 'Saved!' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </>
+  )
+})
+
+/** Settings → Proxy: MCP tool-proxy config + Claude Max prompt-capture toggle + cache-miss diff viewer. */
 export const ProxySettingsPanel: React.FC = () => {
   const [status, setStatus] = useState<CaptureStatus | null>(null)
   const [captures, setCaptures] = useState<CaptureRow[]>([])
@@ -86,7 +142,9 @@ export const ProxySettingsPanel: React.FC = () => {
 
   return (
     <>
-      <div className="settings-section-header">
+      <McpToolProxySection />
+
+      <div className="settings-section-header" style={{ marginTop: 20 }}>
         <div className="settings-section-title">Claude Max — Prompt Capture</div>
       </div>
       <div className="settings-rows">

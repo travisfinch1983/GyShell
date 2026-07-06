@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { LogOut, Play, ListRestart, Terminal as TermIcon, Trash2 } from 'lucide-react'
+import { LogOut, RotateCcw, ListRestart, Terminal as TermIcon, Trash2 } from 'lucide-react'
 import { claudeInstancesStore as store } from '../../stores/ClaudeInstancesStore'
 import { confirmStore } from '../../stores/confirmStore'
 import { uiPrefsStore } from '../../stores/uiPrefsStore'
@@ -88,8 +88,18 @@ export const InstanceView: React.FC<{ instance: ClaudeInstance }> = observer(({ 
         >
           <LogOut size={13} /> Exit
         </button>
-        <button className={styles.btn} disabled={busy} title="claude -c — restart the session if needed and resume the most recent conversation" onClick={() => void run('resume-continue', 'Resume -c')}>
-          <Play size={13} /> Resume -c
+        <button
+          className={styles.btn}
+          disabled={busy}
+          title="Restart the unit and relaunch claude --continue — resumes the most recent conversation"
+          onClick={() =>
+            void run('resume-continue', 'Restart', {
+              title: 'Restart instance',
+              message: `Restart “${instance.name}”? Resumes the conversation (claude --continue), but any in-flight turn is interrupted.`,
+            })
+          }
+        >
+          <RotateCcw size={13} /> Restart
         </button>
         <button className={styles.btn} disabled={busy} title="claude -r — open the conversation picker" onClick={() => void run('resume-pick', 'Resume -r')}>
           <ListRestart size={13} /> Resume -r
