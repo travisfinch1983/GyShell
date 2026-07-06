@@ -3188,11 +3188,25 @@ WantedBy=multi-user.target
   /** GET /active-services — List all active services with computed serviceType */
   router.get('/active-services', (req, res) => {
     const state = loadActiveServices();
-    // Enrich each service with a computed serviceType field
+    // Enrich each service with a computed serviceType field + its assigned-GPU badges.
     const enriched = { ...state };
     if (enriched.services) {
+      // Resolve gpuPciIds -> friendly GPU (assigned AT LAUNCH — authoritative). Best-effort.
+      let pciLookup = {};
+      try {
+        const inventory = gpuMonitor.getEnrichedInventory();
+        const gpuConfig = gpuMonitor.getConfig();
+        const aiConfig = loadAiConfig();
+        const clusterGpus = getClusterGpus(inventory, gpuConfig, aiConfig);
+        pciLookup = Object.fromEntries(clusterGpus.map((g) => [`${g.node}:${g.pciId}`, g]));
+      } catch { /* gpu resolution best-effort */ }
       for (const svc of Object.values(enriched.services)) {
         svc.serviceType = classifyServiceType(svc);
+        const pcis = Array.isArray(svc.gpuPciIds) ? svc.gpuPciIds : [];
+        svc.assignedGpus = pcis.map((pciId) => {
+          const g = pciLookup[`${svc.node}:${pciId}`] || {};
+          return { pci_id: pciId, name: g.friendlyName || 'GPU', arch: g.spec?.arch || null, vram_total_mb: g.vramMB || 0 };
+        });
       }
     }
     res.json(enriched);
@@ -3246,7 +3260,7 @@ WantedBy=multi-user.target
             model, modelFamily, modelVariant, quantFormat, quantSize, contextSize,
             isTts, isImageGen, isStt, isTools, cudaDevices, gpuPciIds: explicitGpuPciIds,
             reservedVramMB: reqReservedVramMB,
-            isSystemService, systemdUnit, slots: reqSlots } = req.body;
+            isSystemService, systemdUnit, slots: reqSlots, aliasOverride } = req.body;
     if (!id || !providerId || !port || !tmuxSession) {
       return res.status(400).json({ error: 'id, providerId, port, and tmuxSession are required' });
     }
@@ -3328,6 +3342,11 @@ WantedBy=multi-user.target
     const defaultReserve = PROVIDER_VRAM_RESERVES[providerId];
     state.services[id].gpuPciIds = gpuPciIds;
     state.services[id].reservedVramMB = reqReservedVramMB ?? defaultReserve;
+
+    // Model-id name override from the launch options / template — applies immediately at launch
+    // (the proxy's /v1/models renames the model to this), so no manual set-identifier step.
+    const trimmedAlias = typeof aliasOverride === 'string' ? aliasOverride.trim() : '';
+    if (trimmedAlias) state.services[id].aliasOverride = trimmedAlias;
 
     // Assign stable proxy slot (lowest unused for this service type)
     assignProxySlot(state, state.services[id]);
@@ -4266,6 +4285,74 @@ WantedBy=multi-user.target
         });
       }
       res.json({ agents });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /** GET /comfyui-instances — discover every running ComfyUI server for agents (e.g. Cinder).
+   * Returns each instance's container, URL (ip:port), and the GPUs ASSIGNED AT LAUNCH, which are
+   * AUTHORITATIVE — ComfyUI's own /system_stats only ever reports GPU 0, so agents must NOT infer
+   * GPU count from it (that was the recurring "add GPUs and restart" confusion). Includes live VRAM
+   * so an agent can pick the right instance for the job.
+   * Response: { count, note, instances: [{ container, node, vmid, url, status, gpus: [...] }] } */
+  router.get('/comfyui-instances', async (req, res) => {
+    try {
+      const activeServicesData = loadActiveServices();
+      const services = activeServicesData?.services || {};
+      const comfy = Object.values(services).filter((s) => s.providerId === 'comfyui' && Array.isArray(s.gpuPciIds) && s.gpuPciIds.length);
+
+      const inventory = gpuMonitor.getEnrichedInventory();
+      const gpuConfig = gpuMonitor.getConfig();
+      const aiConfig = loadAiConfig();
+      const clusterGpusRaw = getClusterGpus(inventory, gpuConfig, aiConfig);
+      const gpuSpecLookup = Object.fromEntries(clusterGpusRaw.map((g) => [g.configKey, { vramMB: g.vramMB }]));
+      const vramUsage = getGpuVramUsage(gpuMonitor.getLatest(), activeServicesData, gpuSpecLookup);
+      const clusterGpus = getClusterGpus(inventory, gpuConfig, aiConfig, vramUsage);
+      const pciLookup = Object.fromEntries(clusterGpus.map((g) => [`${g.node}:${g.pciId}`, g]));
+
+      const note = "GPUs listed per instance are the set ASSIGNED AT LAUNCH and are authoritative. "
+        + "ComfyUI's own /system_stats only reports GPU 0 — do NOT infer GPU count from it, and do NOT "
+        + "add GPUs or restart the container based on it. Choose an instance by matching its GPUs to the job: "
+        + "large/high-VRAM models (e.g. LTX / video, big SDXL or FLUX) belong on the V100 rig; smaller models "
+        + "run faster on a newer, lower-VRAM GPU (e.g. the 4090). Prefer the instance with more free VRAM.";
+
+      const instances = await Promise.all(comfy.map(async (s) => {
+        const node = s.node;
+        const sortedPci = [...s.gpuPciIds].sort();  // CUDA index order under CUDA_DEVICE_ORDER=PCI_BUS_ID
+        const gpus = sortedPci.map((pciId, idx) => {
+          const g = pciLookup[`${node}:${pciId}`] || {};
+          return {
+            cuda_index: idx,
+            pci_id: pciId,
+            name: g.friendlyName || 'Unknown',
+            arch: g.spec?.arch || null,
+            vram_total_mb: g.vramMB || 0,
+            vram_used_mb: g.liveUsedMB || 0,
+            vram_available_mb: (g.availableVramMB != null ? g.availableVramMB : (g.vramMB || 0)),
+          };
+        });
+        let status = 'unknown';
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 2500);
+          const r = await fetch(`${s.endpoint}/system_stats`, { signal: ctrl.signal });
+          clearTimeout(t);
+          status = r.ok ? 'up' : 'unreachable';
+        } catch { status = 'down'; }
+        return {
+          container: s.containerName,
+          node,
+          vmid: s.vmid,
+          url: s.endpoint,
+          systemd_unit: s.systemdUnit,
+          reserved_vram_mb: (s.reservedVramMB != null ? s.reservedVramMB : null),
+          status,
+          gpus,
+        };
+      }));
+
+      res.json({ count: instances.length, note, instances });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
