@@ -42,14 +42,17 @@ const kinds = (id: string) => hermesChatStore.state(id).items.map((i: ChatItem) 
   feed(id, { t: 'usageUpdate', raw: { size: 262144, used: 11767, session_update: 'usage_update' } })
   feed(id, { t: 'turn_done', stop_reason: 'end_turn' })
 
-  assertEqual(kinds(id), ['system', 'user', 'thought', 'assistant', 'system'], 'case1: item kinds in order')
+  // ready is HEADER state (sessionId/currentModel), never a chat item — the
+  // old "attached — session…" row stacked once per tab-swap re-attach.
+  assertEqual(kinds(id), ['user', 'thought', 'assistant', 'system'], 'case1: item kinds in order (no attached row)')
   const s = hermesChatStore.state(id)
-  assertEqual(s.items[2].text, 'The user asks about the model.', 'case1: thought chunks accumulate')
-  assertEqual(s.items[3].text, "I'm running on Qwen3.6 via a custom provider.", 'case1: message chunks accumulate')
-  assertEqual(s.items[3].streaming, false, 'case1: turn_done clears streaming')
+  assertEqual(s.items[1].text, 'The user asks about the model.', 'case1: thought chunks accumulate')
+  assertEqual(s.items[2].text, "I'm running on Qwen3.6 via a custom provider.", 'case1: message chunks accumulate')
+  assertEqual(s.items[2].streaming, false, 'case1: turn_done clears streaming')
   assertEqual(s.usage, { used: 11767, size: 262144 }, 'case1: usage meter from real payload')
   assertEqual(s.commands.length, 2, 'case1: slash catalog stored')
   assertEqual(s.currentModel, 'custom:Qwen3.6', 'case1: model from ready')
+  assertEqual(s.sessionId, 'a2cc0b45', 'case1: session id captured as header state')
   assertEqual(s.busy, false, 'case1: busy cleared')
 }
 
@@ -144,13 +147,15 @@ const kinds = (id: string) => hermesChatStore.state(id).items.map((i: ChatItem) 
   assertEqual(s.items[0].text.includes('allow-workspace'), true, 'case8: option id shown')
 }
 
-// ── case 9: re-attach ready mid-history appends, does not reset ─────────────
+// ── case 9: re-attach ready adds ZERO items (tab swaps must not stack rows) ──
 {
   const id = 'case9'
   feed(id, { t: 'message', text: 'before drop' })
   feed(id, { t: 'turn_done', stop_reason: 'end_turn' })
   feed(id, { t: 'ready', session_id: 'a2cc0b45', models: null, current_model: 'custom:Qwen3.6', modes: null })
-  assertEqual(kinds(id), ['assistant', 'system', 'system'], 'case9: reattach keeps prior transcript')
+  feed(id, { t: 'ready', session_id: 'a2cc0b45', models: null, current_model: 'custom:Qwen3.6', modes: null })
+  assertEqual(kinds(id), ['assistant', 'system'], 'case9: reattach keeps prior transcript, adds no items')
+  assertEqual(hermesChatStore.state(id).sessionId, 'a2cc0b45', 'case9: session id updated in header state')
 }
 
 if (failures) {

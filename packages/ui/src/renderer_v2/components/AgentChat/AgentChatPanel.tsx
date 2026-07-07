@@ -124,6 +124,11 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
         <span className={`${styles.dot} ${s.connected ? styles.dotOn : ''}`} title={s.connected ? 'stream attached' : 'stream detached — reconnecting'} />
         <strong>{spec?.displayName ?? agentId}</strong>
         {s.currentModel && <span className={styles.dim}>{s.currentModel}</span>}
+        {s.sessionId && (
+          <span className={styles.dim} title={`backend session ${s.sessionId}`} style={{ fontSize: 10, opacity: 0.75 }}>
+            #{s.sessionId.slice(0, 8)}
+          </span>
+        )}
         <span className={styles.spacer} />
         {pct !== null && s.usage && (
           <span className={styles.usage} title={`context: ${s.usage.used.toLocaleString()} / ${s.usage.size.toLocaleString()} tokens`}>
