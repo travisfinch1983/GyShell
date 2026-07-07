@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import type { AppStore } from '../../stores/AppStore'
 import { ChatPanel } from '../Chat/ChatPanel'
@@ -7,6 +7,7 @@ import { Bot, History, MessagesSquare, Plus, X } from 'lucide-react'
 import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
 import { AgentConversation } from '../AgentChat/AgentChatPanel'
 import { hermesChatStore } from '../../stores/HermesChatStore'
+import { hermesConversationsStore } from '../../stores/hermesConversationsStore'
 import './globalChat.scss'
 import { newUuid } from '../../lib/uuid'
 
@@ -71,7 +72,10 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
   // Resolve the active tab; fall back to the first main session.
   const sep = active.indexOf(':')
   const [kind, ref] = sep > 0 ? [active.slice(0, sep), active.slice(sep + 1)] : ['session', '']
-  const activeHermes = kind === 'hermes' ? hermesTabs.find((t) => t.cid === ref) ?? null : null
+  const activeHermes = kind === 'hermes' ? (hermesTabs.find((t) => t.cid === ref && hermesConversationsStore.has(t.cid)) ?? null) : null
+  // Tabs whose conversation still lives in the shared store — a delete in the full-page Chat tab
+  // (hermesConversationsStore.remove) drops the conversation from this panel too.
+  const visibleHermesTabs = hermesTabs.filter((t) => hermesConversationsStore.has(t.cid))
   const activeSessionId = !activeHermes
     ? (kind === 'session' && sessionIds.includes(ref)
         ? ref
@@ -88,6 +92,25 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
     setHermesTabs(tabs)
     localStorage.setItem(HERMES_TABS_KEY, JSON.stringify(tabs))
   }
+
+  // Seed the shared store with this browser's tabs (so the full-page Chat tab sees them too), then
+  // reconcile against the server registry.
+  useLayoutEffect(() => {
+    hermesTabs.forEach((t) => hermesConversationsStore.ensure(t.cid, t.agentId))
+    void hermesConversationsStore.refresh()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // When a conversation is deleted elsewhere (full-page Chat tab), the shared store drops it — prune
+  // it from this panel's tabs + localStorage so it doesn't linger here or reappear on reload.
+  useEffect(() => {
+    setHermesTabs((prev) => {
+      const kept = prev.filter((t) => hermesConversationsStore.has(t.cid))
+      if (kept.length === prev.length) return prev
+      localStorage.setItem(HERMES_TABS_KEY, JSON.stringify(kept))
+      return kept
+    })
+  }, [hermesConversationsStore.list.length])
 
   // Cross-device: pull the server-side conversation list and add any conversations this browser
   // doesn't already have as tabs (localStorage is per-device; the server registry is authoritative).
@@ -130,12 +153,14 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
     // ALWAYS a new conversation (Travis): fresh cid → fresh backend session,
     // even when other tabs for the same agent exist — each has its own context.
     const tab: HermesTab = { cid: newUuid(), agentId }
+    hermesConversationsStore.ensure(tab.cid, agentId)
     saveHermesTabs([...hermesTabs, tab])
     pick(`hermes:${tab.cid}`)
   }
   const closeHermesTab = (tab: HermesTab) => {
-    // END + WIPE: kill the backend session + transcript; local state dropped too.
-    void hermesChatStore.end(tab.agentId, tab.cid)
+    // Shared-store delete: drops the conversation from the full-page Chat tab too (both observe the
+    // store) AND wipes the backend session + transcript. Local tab + localStorage dropped as well.
+    void hermesConversationsStore.remove(tab.cid, tab.agentId)
     saveHermesTabs(hermesTabs.filter((t) => t.cid !== tab.cid))
     if (activeHermes?.cid === tab.cid) pick(sessionIds[0] ? `session:${sessionIds[0]}` : '')
   }
@@ -159,9 +184,9 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
               <button className="glc-tab-close" onClick={(e) => { e.stopPropagation(); closeSessionTab(s.id) }}><X size={11} /></button>
             </div>
           ))}
-          {hermesTabs.map((t, i) => {
-            const dupIndex = hermesTabs.filter((x, j) => x.agentId === t.agentId && j <= i).length
-            const dups = hermesTabs.filter((x) => x.agentId === t.agentId).length
+          {visibleHermesTabs.map((t, i) => {
+            const dupIndex = visibleHermesTabs.filter((x, j) => x.agentId === t.agentId && j <= i).length
+            const dups = visibleHermesTabs.filter((x) => x.agentId === t.agentId).length
             const name = hermesAgentsStore.specs.get(t.agentId)?.displayName ?? t.agentId
             return (
               <div key={t.cid} className={`glc-tab hermes ${activeHermes?.cid === t.cid ? 'active' : ''}`} onClick={() => pick(`hermes:${t.cid}`)}>

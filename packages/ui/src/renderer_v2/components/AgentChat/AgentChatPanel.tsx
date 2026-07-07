@@ -6,7 +6,7 @@ import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Plus
 import type { HermesSlashCommand } from '@gyshell/shared'
 import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
 import { hermesChatStore as chat, type ChatItem } from '../../stores/HermesChatStore'
-import { hermesApi } from '../../stores/hermesApi'
+import { hermesConversationsStore, type ConvMeta } from '../../stores/hermesConversationsStore'
 import styles from './AgentChat.module.scss'
 import { newUuid } from '../../lib/uuid'
 
@@ -209,23 +209,19 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
 
 /** Full-page Hermes chat surface (ChatGPT-style), mounted as the "Chat" primary tab — the primary
  *  home for talking to agents. Left: a conversation sidebar (your conversations grouped by agent,
- *  backed by the server-side registry so they follow you across devices) + a "New chat" agent
- *  picker. Right: the selected AgentConversation. */
-interface ConvMeta { conversationId: string; agentId: string; title?: string; lastActive: number }
-
+ *  from the shared hermesConversationsStore, so they follow you across devices AND stay in sync with
+ *  the GlobalChat side panel — a delete here disappears there and vice-versa). Right: the selected
+ *  AgentConversation. */
 export const AgentChatPanel: React.FC = observer(() => {
-  const [convs, setConvs] = useState<ConvMeta[]>([])
   const [active, setActive] = useState<string>('')
   const [pickerOpen, setPickerOpen] = useState(false)
   const pickerRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     void hermesAgentsStore.refresh()
-    void (async () => {
-      const list = await hermesApi.conversations()
-      setConvs(list)
-      setActive((a) => a || list[0]?.conversationId || '')
-    })()
+    void hermesConversationsStore.refresh().then(() => {
+      setActive((a) => a || hermesConversationsStore.list[0]?.conversationId || '')
+    })
   }, [])
 
   useEffect(() => {
@@ -238,30 +234,29 @@ export const AgentChatPanel: React.FC = observer(() => {
   const nameOf = (agentId: string) => hermesAgentsStore.specs.get(agentId)?.displayName ?? agentId
 
   const newChat = (agentId: string) => {
-    const cid = newUuid()
-    setConvs((prev) => [{ conversationId: cid, agentId, title: '', lastActive: Date.now() }, ...prev])
-    setActive(cid)
+    setActive(hermesConversationsStore.newChat(agentId))
     setPickerOpen(false)
   }
 
-  // Delete = END + WIPE the backend session (a conversation lives until you delete it).
+  // Delete = shared store remove: drops it from THIS panel and the GlobalChat side panel (both
+  // observe the store) and wipes the backend session (a conversation lives until you delete it).
   const deleteChat = (e: React.MouseEvent, c: ConvMeta) => {
     e.stopPropagation()
-    void hermesApi.endConversation(c.agentId, c.conversationId)
-    setConvs((prev) => prev.filter((x) => x.conversationId !== c.conversationId))
+    void hermesConversationsStore.remove(c.conversationId, c.agentId)
     setActive((a) => (a === c.conversationId ? '' : a))
   }
 
-  const groups = useMemo(() => {
+  // Group the shared list by agent (inline, no memo — the observer re-renders on store changes).
+  const groups = (() => {
     const m = new Map<string, ConvMeta[]>()
-    for (const c of [...convs].sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0))) {
+    for (const c of hermesConversationsStore.list) {
       if (!m.has(c.agentId)) m.set(c.agentId, [])
       m.get(c.agentId)!.push(c)
     }
     return [...m.entries()]
-  }, [convs])
+  })()
 
-  const activeConv = convs.find((c) => c.conversationId === active) ?? null
+  const activeConv = hermesConversationsStore.list.find((c) => c.conversationId === active) ?? null
 
   return (
     <div className={styles.panel}>
@@ -300,7 +295,7 @@ export const AgentChatPanel: React.FC = observer(() => {
               ))}
             </div>
           ))}
-          {convs.length === 0 && <div className={styles.dim} style={{ padding: 12 }}>No conversations yet — start a New chat.</div>}
+          {hermesConversationsStore.list.length === 0 && <div className={styles.dim} style={{ padding: 12 }}>No conversations yet — start a New chat.</div>}
         </div>
         <div className={styles.listFoot}>
           <Settings2 size={12} /> Manage agents in Settings › Agents
