@@ -185,13 +185,6 @@ export class HermesManagementService {
     return this.ssh([this.hermesBin, ...parts.map(shq)].join(' '))
   }
 
-  /** Like hermes(), but feeds stdin (base64-safe) to answer non-interactive prompts.
-   *  `hermes mcp add` prompts auth? [Y/n] then enable-all? [Y/n/select] — pipe n then Y. */
-  private hermesInput(stdin: string, parts: string[]): Promise<string> {
-    const b64 = Buffer.from(stdin, 'utf8').toString('base64')
-    return this.ssh(`printf %s ${shq(b64)} | base64 -d | ${[this.hermesBin, ...parts.map(shq)].join(' ')}`)
-  }
-
   /** Repoint the agent's gateway MCP server to `url` in ONE ssh call: remove any server under
    *  our known names (explicit Y to the [Y/n] confirm), then add pointing at `url` (n = no auth,
    *  Y = enable all tools). Single connection + explicit stdin per command avoids the
@@ -794,7 +787,7 @@ export class HermesManagementService {
   }
 
   /** Central library docs annotated with whether each is pointed on the given agent (for stateful toggles). */
-  async listAgentLibraryDocs(agentId: string): Promise<Array<{ name: string; title: string; skill: string | null; pointed: boolean }>> {
+  async listAgentLibraryDocs(agentId: string): Promise<Array<{ name: string; title: string; skills: string[]; pointed: boolean }>> {
     const [docs, pointed] = await Promise.all([this.listLibraryDocs(), this.pointedLibDocs(agentId)])
     return docs.map((d) => ({ ...d, pointed: pointed.has(d.name) }))
   }
