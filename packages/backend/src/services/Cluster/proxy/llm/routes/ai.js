@@ -4362,10 +4362,16 @@ WantedBy=multi-user.target
     }
   });
 
-  /** GET /service-usage — live GPU%/VRAM per service, attributed to the service's OWN GPU processes
-   *  (matched by its port appearing in each GPU process cmdline); falls back to whole-GPU numbers
-   *  (attribution:"gpu-total") when it can't resolve processes. Sampling is on-demand + TTL-cached
-   *  in the GPU monitor, so nvtop only runs while the UI is actually polling this (tab open). */
+  /** GET /service-usage — per-service GPU usage from the service-gpu-exporter via Prometheus
+   *  (job `service-gpu` on the GPU PVE hosts, 10s scrape; infra/service-gpu-exporter/). The
+   *  exporter attributes VRAM + pmon SM% to GPU processes and keys them by each process's LIVE
+   *  listening port (never a hardcoded one); this route joins host+port -> serviceId via the
+   *  active-services registry, which is rebuilt on every launch, so dynamic ports survive
+   *  reboots. Idle service = no exporter series = honest zeros (the old nvtop-cmdline path
+   *  read the whole-GPU total there). attribution:"gpu-total" only when a GPU process on the
+   *  service's card(s) exists but couldn't be port-resolved (exporter port="none") — then the
+   *  card gets whole-GPU numbers from the nvidia_smi job, marked as such. ?maxAge is accepted
+   *  for compat and ignored: freshness is the exporter's scrape cadence now. */
   router.get('/service-usage', async (req, res) => {
     try {
       const state = loadActiveServices();
@@ -4376,51 +4382,88 @@ WantedBy=multi-user.target
       const clusterGpus = getClusterGpus(inventory, gpuConfig, aiConfig);
       const pciTotal = Object.fromEntries(clusterGpus.map((g) => [`${g.node}:${g.pciId}`, g.vramMB || 0]));
 
-      // one snapshot per node that hosts a GPU service (TTL-cached in the monitor)
-      const nodes = [...new Set(services.filter((s) => (s.gpuPciIds || []).length).map((s) => s.node))];
-      const snaps = {};
-      await Promise.all(nodes.map(async (n) => { snaps[n] = await gpuMonitor.getNodeSnapshot(n); }));
+      const promBase = process.env.PROMETHEUS_URL || 'http://10.0.0.79:9090';
+      const promq = async (query) => {
+        const r = await fetch(`${promBase}/api/v1/query?query=${encodeURIComponent(query)}`, { signal: AbortSignal.timeout(8000) });
+        const d = await r.json();
+        return (d && d.data && d.data.result) || [];
+      };
+      const [vramRows, utilRows, infoRows, gpuUsedRows, gpuUtilRows] = await Promise.all([
+        promq('service_gpu_vram_bytes'),
+        promq('service_gpu_util_ratio'),
+        promq('nvidia_smi_gpu_info'),
+        promq('nvidia_smi_memory_used_bytes'),
+        promq('nvidia_smi_utilization_gpu_ratio'),
+      ]);
+
+      // Label reconciliation: exporter gpu_uuid carries the GPU- prefix, nvidia_smi's uuid
+      // doesn't; the registry speaks pci ids like 0000:b5:00.0, gpu_info pci_bus_id is
+      // 00000000:B5:00.0 -> compare on the lowercased bus:dev.fn suffix.
+      const normUuid = (u) => String(u || '').replace(/^GPU-/, '').toLowerCase();
+      const normPci = (pci) => String(pci || '').toLowerCase().split(':').slice(-2).join(':');
+      const val = (r) => Number(r.value && r.value[1]) || 0;
+
+      const uuidPci = {};
+      for (const r of infoRows) uuidPci[`${r.metric.host}:${normUuid(r.metric.uuid)}`] = normPci(r.metric.pci_bus_id);
+      const wholeUsed = {}; const wholeUtil = {};
+      for (const r of gpuUsedRows) wholeUsed[`${r.metric.host}:${uuidPci[`${r.metric.host}:${normUuid(r.metric.uuid)}`] || ''}`] = val(r);
+      for (const r of gpuUtilRows) wholeUtil[`${r.metric.host}:${uuidPci[`${r.metric.host}:${normUuid(r.metric.uuid)}`] || ''}`] = val(r) * 100;
+
+      // exporter rows -> per host:port buckets (+ per-gpu SM ratio), and host:pci flags for
+      // GPU processes the exporter couldn't port-resolve (port="none")
+      const utilByKey = {};
+      for (const r of utilRows) utilByKey[`${r.metric.host}|${r.metric.port}|${normUuid(r.metric.gpu_uuid)}`] = val(r);
+      const byHostPort = {}; const unresolved = {};
+      for (const r of vramRows) {
+        const host = r.metric.host;
+        const u = normUuid(r.metric.gpu_uuid);
+        const pci = uuidPci[`${host}:${u}`] || '';
+        if (r.metric.port === 'none') { unresolved[`${host}:${pci}`] = true; continue; }
+        const k = `${host}:${r.metric.port}`;
+        (byHostPort[k] = byHostPort[k] || []).push({ pci, vramBytes: val(r), utilRatio: utilByKey[`${host}|${r.metric.port}|${u}`] || 0 });
+      }
 
       const out = {};
       for (const s of services) {
-        const pcis = Array.isArray(s.gpuPciIds) ? s.gpuPciIds : [];
-        if (!pcis.length) continue;
-        const vram_total_mb = pcis.reduce((sum, p) => sum + (pciTotal[`${s.node}:${p}`] || 0), 0);
-        const snap = snaps[s.node];
-        const svcGpus = (snap && snap.gpus ? snap.gpus : []).filter((g) => pcis.includes(g.pciId));
-        const portRe = s.port ? new RegExp('--port[ =]?' + s.port + '(?![0-9])') : null;
+        const rawPcis = Array.isArray(s.gpuPciIds) ? s.gpuPciIds : [];
+        if (!rawPcis.length) continue;
+        const pcis = rawPcis.map(normPci);
+        const totalOf = (normed) => pciTotal[`${s.node}:${rawPcis.find((x) => normPci(x) === normed) || ''}`] || 0;
+        const vram_total_mb = rawPcis.reduce((sum, pci) => sum + (pciTotal[`${s.node}:${pci}`] || 0), 0);
 
-        let attribution = 'per-process', anyMatch = false;
-        const gpus = [];
-        for (const g of svcGpus) {
-          const procs = (g.processes || []).filter((p) => portRe && portRe.test(p.cmdline || ''));
-          if (procs.length) anyMatch = true;
-          const vram = Math.round(procs.reduce((a, p) => a + (p.memBytes || 0), 0) / 1048576);
-          const util = Math.max(0, g.gpuUtil || 0);  // nvtop per-process GPU% is N/A; use the GPU util
-          gpus.push({ pci_id: g.pciId, util_pct: util, vram_used_mb: vram,
-                      vram_total_mb: g.memTotal || pciTotal[`${s.node}:${g.pciId}`] || 0 });
-        }
-        let vram_used_mb, gpu_util_pct;
-        if (anyMatch) {
-          vram_used_mb = gpus.reduce((a, g) => a + g.vram_used_mb, 0);
-          gpu_util_pct = gpus.length ? Math.round(gpus.reduce((a, g) => a + g.util_pct, 0) / gpus.length) : 0;
+        const rows = (byHostPort[`${s.node}:${s.port}`] || []).filter((r) => !r.pci || pcis.includes(r.pci));
+        if (rows.length) {
+          const perPci = {};
+          for (const r of rows) { const g = (perPci[r.pci] = perPci[r.pci] || { vram: 0, util: 0 }); g.vram += r.vramBytes; g.util += r.utilRatio; }
+          const gpus = Object.entries(perPci).map(([pci, g]) => ({
+            pci_id: pci, util_pct: Math.min(100, Math.round(g.util * 100)),
+            vram_used_mb: Math.round(g.vram / 1048576), vram_total_mb: totalOf(pci),
+          }));
+          out[s.id] = {
+            gpu_util_pct: gpus.length ? Math.round(gpus.reduce((a, g) => a + g.util_pct, 0) / gpus.length) : 0,
+            vram_used_mb: gpus.reduce((a, g) => a + g.vram_used_mb, 0),
+            vram_total_mb, attribution: 'per-process', gpus,
+          };
+        } else if (pcis.some((pci) => unresolved[`${s.node}:${pci}`])) {
+          const gpus = pcis.map((pci) => ({
+            pci_id: pci, util_pct: Math.round(wholeUtil[`${s.node}:${pci}`] || 0),
+            vram_used_mb: Math.round((wholeUsed[`${s.node}:${pci}`] || 0) / 1048576), vram_total_mb: totalOf(pci),
+          }));
+          out[s.id] = {
+            gpu_util_pct: gpus.length ? Math.round(gpus.reduce((a, g) => a + g.util_pct, 0) / gpus.length) : 0,
+            vram_used_mb: gpus.reduce((a, g) => a + g.vram_used_mb, 0),
+            vram_total_mb, attribution: 'gpu-total', gpus,
+          };
         } else {
-          // fallback: whole-GPU numbers for the service's assigned GPUs
-          attribution = 'gpu-total';
-          gpus.length = 0;
-          for (const g of svcGpus) gpus.push({ pci_id: g.pciId, util_pct: Math.max(0, g.gpuUtil || 0),
-                      vram_used_mb: g.memUsed || 0, vram_total_mb: g.memTotal || 0 });
-          vram_used_mb = gpus.reduce((a, g) => a + g.vram_used_mb, 0);
-          gpu_util_pct = gpus.length ? Math.round(gpus.reduce((a, g) => a + g.util_pct, 0) / gpus.length) : 0;
+          // idle: no GPU process belongs to this service right now -> honest zeros
+          out[s.id] = { gpu_util_pct: 0, vram_used_mb: 0, vram_total_mb, attribution: 'per-process', gpus: [] };
         }
-        out[s.id] = { gpu_util_pct, vram_used_mb, vram_total_mb, attribution, gpus };
       }
       res.json({ sampledAt: Date.now(), services: out });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
   });
-
   /**
    * POST /estimate — Estimate VRAM and find GPU placements.
    *

@@ -1,0 +1,13 @@
+[Unit]
+Description=Per-service GPU usage Prometheus exporter (AI-Lab)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/ai-lab/exporters/service_gpu_exporter.py
+Restart=always
+RestartSec=5
+# needs host /proc + nvidia-smi; runs as root on the PVE host like the
+# nvidia_smi exporter beside it
+
+[Install]
+WantedBy=multi-user.target

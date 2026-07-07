@@ -1159,7 +1159,7 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                 </div>
                 <div className="settings-row">
                   <div className="settings-row-label-with-info">
-                    <label title="How often the AI Service cards poll per-service GPU usage. The interval also rides as ?maxAge, so the backend samples nvtop that fresh — 1s means truly ~1s-fresh data while the drawer is open (costs an nvtop pass per second on the hosts).">
+                    <label title="How often the AI Service cards poll per-service GPU usage. Data comes from the service-gpu exporter via Prometheus (10s scrape), so polling faster than 10s re-reads the same sample — like the fleet panel's 15s reality.">
                       AI Service card sparkline poll rate
                     </label>
                   </div>
