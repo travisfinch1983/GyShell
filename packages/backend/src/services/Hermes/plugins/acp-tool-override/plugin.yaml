@@ -1,0 +1,4 @@
+name: acp-tool-override
+version: 1.0.0
+description: "Per-agent native-tool on/off for the ACP chat agent. Redefines the hermes-acp toolset at load from state.json (written by the AI-Lab settings UI). Default: browser-automation tools off (web_search kept). Survives hermes update; no watchdog."
+author: "AI-Lab (claude1)"
