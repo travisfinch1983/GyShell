@@ -21,6 +21,7 @@ import type { CatalogModelWithCaps, ModelCapabilities } from '../../stores/herme
 import { hermesAgentsStore as store } from '../../stores/HermesAgentsStore'
 import { hermesApi } from '../../stores/hermesApi'
 import { AgentDocs, InlineDocEditor } from './AgentDocs'
+import { AgentNativeTools } from './AgentNativeTools'
 import { AgentSkills } from './AgentSkills'
 import { HermesToolPicker } from './HermesToolPicker'
 import { confirmStore } from '../../stores/confirmStore'
@@ -569,6 +570,7 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
           {liveDocId
             ? <HermesToolPicker agentId={liveDocId} />
             : <div className={styles.dim}>Save the agent first — tool scoping targets its provisioned Hermes profile.</div>}
+          {liveDocId && <AgentNativeTools agentId={liveDocId} />}
           {card(
             <>
               <div className={styles.chipRow}>

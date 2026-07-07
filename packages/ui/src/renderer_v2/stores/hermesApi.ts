@@ -316,6 +316,41 @@ export const hermesApi = {
     }
   },
 
+  /** GET /api/hermes/agents/:id/native-tools — the agent's native (built-in
+   *  Hermes) tools with per-tool enabled state, via the acp-tool-override
+   *  plugin (claude1 88bbf79). Changes apply on the agent's NEXT session. */
+  async agentNativeTools(id: string): Promise<{ tools: Array<{ name: string; category: string; enabled: boolean }>; pluginInstalled: boolean } | null> {
+    try {
+      const r = await bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/native-tools`)
+      if (r?.error || !Array.isArray(r?.tools)) return null
+      return { tools: r.tools, pluginInstalled: !!r.pluginInstalled }
+    } catch {
+      return null
+    }
+  },
+
+  /** PUT /api/hermes/agents/:id/native-tools { disabled } — writes the
+   *  plugin's state.json for ONE agent (full OFF list; ensures the plugin). */
+  async putAgentNativeTools(id: string, disabled: string[]): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('PUT', `/api/hermes/agents/${encodeURIComponent(id)}/native-tools`, { disabled })
+      return { ok: !r?.error, error: r?.error ? String(r.error) : undefined }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
+  /** PUT /api/hermes/native-tools { disabled } — same OFF list applied to ALL
+   *  agents (the global default). */
+  async putGlobalNativeTools(disabled: string[]): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('PUT', '/api/hermes/native-tools', { disabled })
+      return { ok: !r?.error, error: r?.error ? String(r.error) : undefined }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
   /** GET /api/hermes/skills — the Hermes skills LIBRARY (2f264d2): all skills
    *  (builtin + Travis's local imports under category "custom"). `ref` is the
    *  lib-relative dir path (can be >2 segments, e.g. mlops/inference/vllm). */
