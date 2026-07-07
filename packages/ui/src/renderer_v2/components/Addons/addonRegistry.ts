@@ -1,9 +1,12 @@
 import type React from 'react'
-import { Blocks, ImageUpscale, type LucideIcon } from 'lucide-react'
+import { Blocks, ImageDown, ImageUpscale, type LucideIcon } from 'lucide-react'
 import { DashboardView } from './upscaler/DashboardView'
 import { BrowseView } from './upscaler/BrowseView'
 import { HistoryView } from './upscaler/HistoryView'
 import { SyncView } from './upscaler/SyncView'
+import { DashboardView as R34DashboardView } from './rule34/DashboardView'
+import { BrowserView as R34BrowserView } from './rule34/BrowserView'
+import { SettingsView as R34SettingsView } from './rule34/SettingsView'
 
 /**
  * Addon registry — SELF-CONTAINED addon modules as Addons-tab sub-tabs.
@@ -42,6 +45,7 @@ export interface AddonManifest {
 
 export const ADDON_ICONS: Record<string, LucideIcon> = {
   upscale: ImageUpscale,
+  r34: ImageDown,
   default: Blocks,
 }
 
@@ -51,6 +55,9 @@ export const NATIVE_VIEWS: Record<string, React.ComponentType> = {
   'upscaler.browse': BrowseView,
   'upscaler.history': HistoryView,
   'upscaler.sync': SyncView,
+  'rule34.dashboard': R34DashboardView,
+  'rule34.browser': R34BrowserView,
+  'rule34.settings': R34SettingsView,
 }
 
 export const ADDONS: AddonManifest[] = [
@@ -67,6 +74,19 @@ export const ADDONS: AddonManifest[] = [
       { id: 'history', label: 'History', kind: 'native' },
       { id: 'sync', label: 'Sync', kind: 'native' },
       // 'compare' is a detail view reached from history/browse (overlay), not a tab.
+    ],
+  },
+  {
+    id: 'rule34',
+    label: 'Rule34 Scraper',
+    icon: 'r34',
+    // Bundled module at /opt/ai-lab/addons/rule34 (FastAPI, systemd ailab-addon-rule34.service);
+    // JSON API under /addons/rule34/api/* — scrape/download/browse rule34.xxx posts.
+    basePath: '/addons/rule34',
+    views: [
+      { id: 'dashboard', label: 'Dashboard', kind: 'native' },
+      { id: 'browser', label: 'Browser', kind: 'native' },
+      { id: 'settings', label: 'Settings', kind: 'native' },
     ],
   },
 ]

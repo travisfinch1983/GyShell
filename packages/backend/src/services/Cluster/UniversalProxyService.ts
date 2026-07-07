@@ -227,6 +227,7 @@ export class UniversalProxyService {
     // @ts-expect-error — JS router: Dynacat (Home dashboard) config editor — read/validate/save the YAML
     const { createDynacatRouter } = await import('./proxy/dynacat.js')
     app.use('/api/dynacat', createDynacatRouter())
+    // @ts-expect-error — JS router: runtime addon registry + reverse-proxy (drop-in addons, no rebuild)
     const { createAddonsRouter, createAddonsProxyRouter, attachAddonsUpgrade } = await import('./proxy/addons.js')
     app.use('/api/addons', createAddonsRouter())          // GET list of registered addons (runtime)
     app.use('/addons', createAddonsProxyRouter())         // reverse-proxy /addons/<id>/* + shared theme.css

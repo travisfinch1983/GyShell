@@ -304,16 +304,12 @@ export class AiServicesStore {
   }
 
   /** Poll GET /api/ai/service-usage and append into the per-service buffers.
-   *  Contract (claude1 #4): { sampledAt, services: { [id]: { gpu_util_pct,
-   *  vram_used_mb, vram_total_mb, attribution, gpus[] } } }. Silent no-op
-   *  until the endpoint deploys (404/error → serviceUsageLive stays false). */
+   *  Contract: { sampledAt, services: { [id]: { gpu_util_pct, vram_used_mb,
+   *  vram_total_mb, attribution, gpus[] } } } — served from the
+   *  service-gpu-exporter via Prometheus (cheap reads, no on-view gating). */
   private async pollServiceUsage(): Promise<void> {
     try {
-      // ?maxAge follows the configured cadence — the backend's nvtop-snapshot
-      // TTL tracks the caller (5aab694; 1s floor / 60s ceiling), so a 1s
-      // setting really means ~1s-fresh per-service data while the tab's open.
-      const ms = serviceUsagePollMs()
-      const r: any = await this.cluster().request('GET', `/api/ai/service-usage?maxAge=${ms}`)
+      const r: any = await this.cluster().request('GET', '/api/ai/service-usage')
       const svcs = r?.services
       if (!svcs || typeof svcs !== 'object') return
       runInAction(() => {
@@ -339,7 +335,6 @@ export class AiServicesStore {
 
   startPolling(intervalMs = 15000): void {
     void this.load()
-    this.scheduleUsagePoll(true)
     if (pollTimer) return
     pollTimer = setInterval(() => void this.load(), intervalMs)
   }
@@ -348,21 +343,22 @@ export class AiServicesStore {
       clearInterval(pollTimer)
       pollTimer = null
     }
-    if (usageTimer) {
-      clearTimeout(usageTimer)
-      usageTimer = null
-    }
   }
 
-  /** Self-rescheduling per-service usage loop — reads the ui-pref each tick
-   *  so a Settings change takes effect on the next poll, no restart plumbing. */
-  private scheduleUsagePoll(immediate = false): void {
-    if (usageTimer) clearTimeout(usageTimer)
-    usageTimer = setTimeout(async () => {
+  /** Self-rescheduling per-service usage loop — runs CONTINUOUSLY from app
+   *  start (Travis: the data is pre-scraped Prometheus now, so no on-view
+   *  gating — cards open with warm sparklines). Reads the ui-pref each tick
+   *  so a Settings change takes effect on the next poll. */
+  startUsagePolling(): void {
+    if (usageTimer) return
+    const tick = async () => {
       await this.pollServiceUsage()
-      if (usageTimer !== null) this.scheduleUsagePoll()
-    }, immediate ? 0 : serviceUsagePollMs())
+      usageTimer = setTimeout(() => void tick(), serviceUsagePollMs())
+    }
+    usageTimer = setTimeout(() => void tick(), 0)
   }
 }
 
 export const aiServicesStore = new AiServicesStore()
+// always-on usage polling — sparkline buffers stay warm even with the drawer closed
+if (typeof window !== 'undefined') aiServicesStore.startUsagePolling()
