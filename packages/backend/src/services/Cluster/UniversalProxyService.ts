@@ -187,6 +187,9 @@ export class UniversalProxyService {
           totalEntries: s.totalEntries, present: s.present, missing: s.missing, requeued: s.requeued, skippedNodes: s.skippedNodes,
         })))
         .catch((e: any) => console.warn('[universal-proxy] boot cache reconcile failed:', e?.message))
+      Promise.resolve(aiModule.runOrphanCleanup?.('boot'))
+        .then((s: any) => { if (s && s.count > 0) console.log('[universal-proxy] orphan cleanup (boot): removed', s.count, 'orphan unit(s)') })
+        .catch(() => undefined)
     }, 30000)
 
     // #266 follow-up: a NODE reboot (e.g. px-epyc) wipes its tmpfs /model-cache but does NOT restart
@@ -197,6 +200,9 @@ export class UniversalProxyService {
     this.cacheReconcileTimer = setInterval(() => {
       Promise.resolve(aiModule.runCacheReconcile?.('periodic'))
         .then((s: any) => { if (s && s.requeued > 0) console.log('[universal-proxy] cache reconcile (periodic): re-queued', s.requeued, 'missing cache entr(ies)', JSON.stringify({ present: s.present, missing: s.missing, byNode: s.byNode })) })
+        .catch(() => undefined)
+      Promise.resolve(aiModule.runOrphanCleanup?.('periodic'))
+        .then((s: any) => { if (s && s.count > 0) console.log('[universal-proxy] orphan cleanup (periodic): removed', s.count, 'orphan(s):', (s.cleaned || []).join(', ')) })
         .catch(() => undefined)
     }, 10 * 60 * 1000)
 

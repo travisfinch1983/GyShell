@@ -2177,6 +2177,20 @@ if out: print(json.dumps(out))
       if (port) kvShim = { port: Number(port), shimPort: Number(port) + 1000, cacheDir: optanePath, fingerprint: slotName, slotCount: Number(par) || 0 };
     }
 
+    // kcpps runtime NAS fallback: koboldcpp loads a base64 config whose model paths live INSIDE the
+    // blob, invisible to the mc() regex above. Inject a runtime resolver that rewrites every
+    // /model-cache or /models path in the decoded config to cache-if-present-else-NAS — so a launch
+    // always loads the cache version when present and falls back to NAS otherwise (even if the model
+    // was never cached). ALL backends now honor cache-first-then-NAS at load time.
+    if (providerId === 'koboldcpp') {
+      const cfgMatch = finalCommand.match(/base64 -d > (\S+\.kcpps)/);
+      if (cfgMatch) {
+        const cfgFile = cfgMatch[1];
+        const kResolve = `python3 -c 'import json,os,sys; f=sys.argv[1]; d=json.load(open(f)); rc=lambda p:(p if os.path.exists(p) else "/models/"+p[13:]); rn=lambda p:("/model-cache/"+p[8:] if os.path.exists("/model-cache/"+p[8:]) else p); d.update({k:(rc(v) if isinstance(v,str) and v.startswith("/model-cache/") else (rn(v) if isinstance(v,str) and v.startswith("/models/") else v)) for k,v in d.items()}); json.dump(d,open(f,"w"))' ${cfgFile}`;
+        finalCommand = finalCommand.replace(`> ${cfgFile} &&`, `> ${cfgFile} && ${kResolve} &&`);
+      }
+    }
+
     // Build the launch script content
     // PyInstaller-based providers (KoboldCpp) need isolated TMPDIR to prevent
     // _MEI* temp directory collisions that cause silent freezes
@@ -3502,13 +3516,20 @@ WantedBy=multi-user.target
 
     try {
       if (svc.isSystemService) {
-        // Stop + disable + remove unit file + launch script + daemon-reload
+        // Stop + disable + remove unit file + launch script + reset-failed + daemon-reload.
+        // ALSO tear down the paired Optane kvcache-proxy@<port> companion (unit + config) so a
+        // Stop/Remove leaves NO leftovers that re-arm on boot and fight for the GPU.
+        const kvPort = svc.port || ((svc.systemdUnit || '').match(/-(\d+)$/) || [])[1];
+        const kvUnit = kvPort ? `kvcache-proxy@${kvPort}` : '';
         const cleanupCmd = [
           `pct exec ${svc.vmid} -- bash -c '`,
           `systemctl stop ${svc.systemdUnit} 2>/dev/null;`,
           ` systemctl disable ${svc.systemdUnit} 2>/dev/null;`,
+          kvUnit ? ` systemctl stop ${kvUnit} 2>/dev/null; systemctl disable ${kvUnit} 2>/dev/null;` : ``,
           ` rm -f /etc/systemd/system/${svc.systemdUnit}.service;`,
           ` rm -f ${svc.scriptPath};`,
+          kvPort ? ` rm -f /opt/kvcache-proxy/configs/${kvPort}.json;` : ``,
+          ` systemctl reset-failed ${svc.systemdUnit}${kvUnit ? ` ${kvUnit}` : ``} 2>/dev/null;`,
           ` systemctl daemon-reload`,
           `'`,
         ].join('');
@@ -7201,6 +7222,56 @@ WantedBy=multi-user.target
     res.json({ models, generatedAt: Date.now(), note: 'API-level counts at the AI-Lab proxy boundary; authoritative for the dashboard.' });
   });
 
+  // ── Orphan service cleanup ──────────────────────────────────────────────────
+  // A relaunch/teardown can leave a stale, still-ENABLED proxlab-* unit (+ its kvcache-proxy
+  // companion) that keeps re-arming on boot and fighting for a GPU the new model wants. The kill
+  // endpoint now tears these down on Stop/Remove; this is the scheduled safety-net that sweeps any
+  // that slipped through. Conservative: only removes FAILED proxlab-* units NOT tracked as active
+  // services (a live/registered service is never touched, even if momentarily failed).
+  let orphanCleanupRunning = false;
+  let lastOrphanCleanup = null;
+  async function runOrphanCleanup(trigger) {
+    if (orphanCleanupRunning) return { skipped: 'already-running', last: lastOrphanCleanup };
+    orphanCleanupRunning = true;
+    const cleaned = [];
+    try {
+      const cfg = loadAiConfig();
+      const nodeMap = pveApi.getNodeMap();
+      const state = loadActiveServices();
+      const registered = new Set(Object.values(state.services).map((s) => s.systemdUnit).filter(Boolean));
+      for (const [node, agent] of Object.entries(cfg.agents || {})) {
+        const hostIp = nodeMap[node]?.ip || agent.hostIp;
+        const vmid = agent.vmid;
+        if (!hostIp || !vmid) continue;
+        const listCmd = `pct exec ${vmid} -- bash -c "systemctl list-units 'proxlab-*' --state=failed --no-legend --no-pager --plain 2>/dev/null | awk '{print \\$1}'"`;
+        let out;
+        try { out = (await sshService.exec(hostIp, listCmd, { timeout: 10000 })).stdout || ''; } catch { continue; }
+        for (const unitFile of out.split('\n').map((l) => l.trim()).filter((l) => l.endsWith('.service'))) {
+          const unitName = unitFile.replace(/\.service$/, '');
+          if (registered.has(unitName)) continue;
+          const port = ((unitName.match(/-(\d+)$/) || [])[1]) || '';
+          const script = `/opt/proxlab/services/${unitName.replace(/^proxlab-/, '')}.sh`;
+          const kv = port ? `kvcache-proxy@${port}` : '';
+          const cmd = `pct exec ${vmid} -- bash -c 'systemctl stop ${unitName} 2>/dev/null; systemctl disable ${unitName} 2>/dev/null;`
+            + (kv ? ` systemctl stop ${kv} 2>/dev/null; systemctl disable ${kv} 2>/dev/null;` : '')
+            + ` rm -f /etc/systemd/system/${unitName}.service; rm -f ${script};`
+            + (port ? ` rm -f /opt/kvcache-proxy/configs/${port}.json;` : '')
+            + ` systemctl reset-failed ${unitName}${kv ? ` ${kv}` : ''} 2>/dev/null; systemctl daemon-reload'`;
+          try { await sshService.exec(hostIp, cmd, { timeout: 15000 }); cleaned.push(`${node}:${unitName}`); } catch {}
+        }
+      }
+      lastOrphanCleanup = { trigger, cleaned, count: cleaned.length, at: Date.now() };
+      if (cleaned.length) console.log(`[orphan-cleanup] (${trigger}) removed ${cleaned.length} failed orphan unit(s): ${cleaned.join(', ')}`);
+      return lastOrphanCleanup;
+    } finally { orphanCleanupRunning = false; }
+  }
+
+  // Manual trigger for the orphan sweep (also runs on a schedule via UniversalProxyService).
+  router.post('/active-services/orphan-cleanup', async (_req, res) => {
+    try { res.json(await runOrphanCleanup('manual')); }
+    catch (e) { res.status(500).json({ error: String(e.message) }); }
+  });
+
   return {
     router,
     metricsPoller,
@@ -7210,6 +7281,7 @@ WantedBy=multi-user.target
     stopWatchdog,
     validateAndRestoreCache,
     runCacheReconcile,
+    runOrphanCleanup,
     ensureAgentSshKeys,
     setBroadcast: (fn) => { broadcastFn = fn; },
   };
