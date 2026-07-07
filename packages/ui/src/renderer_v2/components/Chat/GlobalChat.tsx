@@ -211,13 +211,13 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
                 <MessagesSquare size={13} /> AI-Lab Assistant
                 <span className="glc-picker-sub">main chat engine</span>
               </button>
-              {hermesAgentsStore.agents.map((id) => (
+              {hermesAgentsStore.chattableAgents.map((id) => (
                 <button key={id} className="glc-picker-item" onClick={() => openHermesTab(id)}>
                   <Bot size={13} /> {hermesAgentsStore.specs.get(id)?.displayName ?? id}
                   <span className="glc-picker-sub">new conversation</span>
                 </button>
               ))}
-              {hermesAgentsStore.loaded && hermesAgentsStore.agents.length === 0 && (
+              {hermesAgentsStore.loaded && hermesAgentsStore.chattableAgents.length === 0 && (
                 <div className="glc-picker-sub" style={{ padding: '4px 12px' }}>No Hermes agents — create one in Settings › Agents.</div>
               )}
             </div>

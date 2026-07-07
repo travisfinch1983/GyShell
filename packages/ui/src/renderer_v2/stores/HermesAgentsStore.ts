@@ -28,6 +28,12 @@ class HermesAgentsStore {
     makeAutoObservable(this)
   }
 
+  /** Agents you can actually start a conversation with — excludes the "default" profile, which is
+   *  only the template new agents are cloned from (still editable in Settings via `agents`). */
+  get chattableAgents(): string[] {
+    return this.agents.filter((id) => id !== 'default')
+  }
+
   async refresh(): Promise<void> {
     try {
       const { agents, capabilities } = await hermesApi.listAgents()

@@ -267,8 +267,8 @@ export const AgentChatPanel: React.FC = observer(() => {
           </button>
           {pickerOpen && (
             <div className={styles.slashMenu} style={{ top: '100%', bottom: 'auto', left: 0, right: 0, maxHeight: 280, overflowY: 'auto' }}>
-              {hermesAgentsStore.agents.length === 0 && <div className={styles.slashHint}>No agents — build one in Settings › Agents.</div>}
-              {hermesAgentsStore.agents.map((id) => (
+              {hermesAgentsStore.chattableAgents.length === 0 && <div className={styles.slashHint}>No agents — build one in Settings › Agents.</div>}
+              {hermesAgentsStore.chattableAgents.map((id) => (
                 <button key={id} className={styles.slashItem} onClick={() => newChat(id)}>
                   <Bot size={12} /> {nameOf(id)}
                 </button>
