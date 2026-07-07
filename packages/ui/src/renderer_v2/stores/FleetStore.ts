@@ -8,6 +8,7 @@ import type {
   BusRecord,
   FleetGuardConfig,
 } from '@gyshell/shared'
+import { newUuid } from '../lib/uuid'
 
 function bridge(): any {
   return (window as any).gyshell?.fleet
@@ -158,7 +159,7 @@ class FleetStore {
     const fleet = bridge()
     if (!fleet || !body.trim()) return
     const kind = to === 'broadcast' ? 'broadcast' : 'dm'
-    await fleet.send({ id: crypto.randomUUID(), from: 'user', to, kind, body: body.trim() })
+    await fleet.send({ id: newUuid(), from: 'user', to, kind, body: body.trim() })
     await this.refreshStatus()
   }
 

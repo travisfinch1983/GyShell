@@ -270,15 +270,27 @@ class HermesChatStore {
    *  own finally. */
   private async handleCaptureRequest(conversationId: string, requestId: string): Promise<void> {
     if (typeof document === 'undefined') return // spec env
+    const fail = (why: string) => {
+      // Still NO POST — the backend's 20s timeout tells the agent it couldn't
+      // see. But the failure must be VISIBLE here: fully-silent failure made
+      // view_screen problems indistinguishable from a closed panel (e2e
+      // finding, 2026-07-07).
+      const s = this.state(conversationId)
+      runInAction(() => {
+        s.items.push({ id: this.nextId++, kind: 'error', text: `screen capture failed — the agent's view_screen will time out (${why})`, ts: Date.now() })
+      })
+    }
     try {
       const shot = await captureUI({ hide: ['.ai-lab-global-chat'] })
-      if (!shot) return
+      if (!shot) { fail('capture returned no image'); return }
       await hermesApi.screenCapture(requestId, shot)
       const s = this.state(conversationId)
       runInAction(() => {
         s.items.push({ id: this.nextId++, kind: 'system', text: '📸 agent viewed your screen', ts: Date.now() })
       })
-    } catch { /* no POST — backend timeout informs the agent */ }
+    } catch (e) {
+      fail(String((e as Error)?.message ?? e))
+    }
   }
 
   /**

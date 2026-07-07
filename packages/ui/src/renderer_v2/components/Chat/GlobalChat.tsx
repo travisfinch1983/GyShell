@@ -8,6 +8,7 @@ import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
 import { AgentConversation } from '../AgentChat/AgentChatPanel'
 import { hermesChatStore } from '../../stores/HermesChatStore'
 import './globalChat.scss'
+import { newUuid } from '../../lib/uuid'
 
 interface Props {
   store: AppStore
@@ -39,7 +40,7 @@ const loadHermesTabs = (): HermesTab[] => {
     // Migrate the pre-conversation format (plain agentId strings) — each old tab
     // becomes a fresh conversation (the old shared per-agent session is legacy).
     return raw
-      .map((t) => (typeof t === 'string' ? { cid: crypto.randomUUID(), agentId: t } : t))
+      .map((t) => (typeof t === 'string' ? { cid: newUuid(), agentId: t } : t))
       .filter((t) => t && typeof t.cid === 'string' && typeof t.agentId === 'string')
   } catch { return [] }
 }
@@ -107,7 +108,7 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
     setPickerOpen(false)
     // ALWAYS a new conversation (Travis): fresh cid → fresh backend session,
     // even when other tabs for the same agent exist — each has its own context.
-    const tab: HermesTab = { cid: crypto.randomUUID(), agentId }
+    const tab: HermesTab = { cid: newUuid(), agentId }
     saveHermesTabs([...hermesTabs, tab])
     pick(`hermes:${tab.cid}`)
   }
