@@ -18,11 +18,11 @@ import { makeAutoObservable, runInAction } from 'mobx'
 import { hermesStreamEventSchema, type HermesSlashCommand, type HermesStreamEvent } from '@gyshell/shared'
 import { hermesApi } from './hermesApi'
 import { buildViewSnapshot } from '../lib/viewContext'
-import { captureUI } from '../services/ScreenshotService'
+import { captureUI, hasLiveShare, acquireScreenShare } from '../services/ScreenshotService'
 
 export interface ChatItem {
   id: number
-  kind: 'user' | 'assistant' | 'thought' | 'tool' | 'system' | 'error' | 'plan'
+  kind: 'user' | 'assistant' | 'thought' | 'tool' | 'system' | 'error' | 'plan' | 'capture_consent'
   text: string
   /** tool cards: ACP tool_call id + latest status */
   toolId?: string | null
@@ -34,6 +34,9 @@ export interface ChatItem {
   streaming?: boolean
   /** user turns: what page context rode along ('text' = viewContext, 'vision' = +screenshot). */
   ctxAttached?: 'text' | 'vision'
+  /** capture_consent: the pending view_screen request this button completes. */
+  requestId?: string
+  capConvId?: string
   ts: number
 }
 
@@ -270,18 +273,30 @@ class HermesChatStore {
    *  own finally. */
   private async handleCaptureRequest(conversationId: string, requestId: string): Promise<void> {
     if (typeof document === 'undefined') return // spec env
+    if (!hasLiveShare()) {
+      // getDisplayMedia needs a user gesture, which the agent's request lacks — surface a one-click
+      // grant. The button acquires the stream (gesture) and completes THIS capture; the stream then
+      // persists so every later capture is silent.
+      const s = this.state(conversationId)
+      runInAction(() => {
+        s.items.push({ id: this.nextId++, kind: 'capture_consent', text: 'wants to see your screen', requestId, capConvId: conversationId, ts: Date.now() })
+      })
+      return
+    }
+    await this.doCapture(conversationId, requestId)
+  }
+
+  /** Grab a still from the live share stream and POST it back. On failure: no POST — the backend's
+   *  20s timeout tells the agent it couldn't see, and we surface a visible error. */
+  private async doCapture(conversationId: string, requestId: string): Promise<void> {
     const fail = (why: string) => {
-      // Still NO POST — the backend's 20s timeout tells the agent it couldn't
-      // see. But the failure must be VISIBLE here: fully-silent failure made
-      // view_screen problems indistinguishable from a closed panel (e2e
-      // finding, 2026-07-07).
       const s = this.state(conversationId)
       runInAction(() => {
         s.items.push({ id: this.nextId++, kind: 'error', text: `screen capture failed — the agent's view_screen will time out (${why})`, ts: Date.now() })
       })
     }
     try {
-      const shot = await captureUI({ hide: ['.ai-lab-global-chat'] })
+      const shot = await captureUI()
       if (!shot) { fail('capture returned no image'); return }
       await hermesApi.screenCapture(requestId, shot)
       const s = this.state(conversationId)
@@ -291,6 +306,25 @@ class HermesChatStore {
     } catch (e) {
       fail(String((e as Error)?.message ?? e))
     }
+  }
+
+  /** Wired to the capture_consent button (user gesture): acquire the share stream, drop the prompt,
+   *  then complete the pending capture. Later captures reuse the stream silently. */
+  async grantScreenShareAndCapture(conversationId: string, requestId: string): Promise<void> {
+    const ok = await acquireScreenShare()
+    const s = this.state(conversationId)
+    runInAction(() => {
+      for (let i = s.items.length - 1; i >= 0; i--) {
+        if (s.items[i].kind === 'capture_consent' && s.items[i].requestId === requestId) s.items.splice(i, 1)
+      }
+    })
+    if (!ok) {
+      runInAction(() => {
+        s.items.push({ id: this.nextId++, kind: 'system', text: 'screen share not granted — the agent will time out', ts: Date.now() })
+      })
+      return
+    }
+    await this.doCapture(conversationId, requestId)
   }
 
   /**

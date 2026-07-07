@@ -71,6 +71,18 @@ const Row: React.FC<{ item: ChatItem }> = ({ item }) => {
     case 'tool': return <ToolCard item={item} />
     case 'plan': return <PlanCard item={item} />
     case 'error': return <div className={styles.msgError}>{item.text}</div>
+    case 'capture_consent':
+      return (
+        <div className={styles.sysRow}>
+          <button
+            className="btn-primary"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            onClick={() => void chat.grantScreenShareAndCapture(item.capConvId ?? '', item.requestId ?? '')}
+          >
+            <Camera size={12} /> The agent {item.text} — share it
+          </button>
+        </div>
+      )
     default: return <div className={styles.sysRow}>{item.text}</div>
   }
 }

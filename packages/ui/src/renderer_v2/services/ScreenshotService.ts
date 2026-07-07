@@ -1,90 +1,90 @@
-import html2canvas from 'html2canvas'
+/**
+ * ScreenshotService — on-demand screen capture for the agent's `view_screen` tool.
+ *
+ * Uses getDisplayMedia (REAL rendered pixels) instead of html2canvas. html2canvas choked on
+ * AI-Lab's modern CSS (531 color-mix() uses) and — fatally — cannot render cross-origin iframes
+ * (Grafana/Dynacat/addons), so it could never show what the user is actually looking at.
+ * getDisplayMedia captures the true composited frame: any CSS, any embedded panel.
+ *
+ * Constraint: getDisplayMedia requires a USER GESTURE, but the agent's capture_request has none.
+ * So the first request per session surfaces a "Share screen" button (the click IS the gesture);
+ * the granted MediaStream is then kept alive and every later capture grabs a still SILENTLY —
+ * no re-prompt, no DOM manipulation, no panel vanish.
+ */
 
 export interface CaptureOptions {
-  /** CSS selector for the root element to capture. Default: '.gyshell-body' */
-  selector?: string
-  /** Max width in pixels (scales down proportionally). Default: 1280 */
+  /** Longest edge of the returned JPEG. Default 1600. */
   maxWidth?: number
-  /** JPEG quality 0-1. Default: 0.85 */
+  /** JPEG quality 0-1. Default 0.85. */
   quality?: number
-  /** CSS selectors to exclude from capture (elements get hidden temporarily). */
-  exclude?: string[]
-  /** CSS selectors to REMOVE from layout during capture (display:none + reflow,
-   *  restored after). Use for overlays/panels that would otherwise cover the
-   *  content the capture is meant to show — `exclude`'s visibility:hidden keeps
-   *  the element's box and (with html2canvas) can still mask what's behind it. */
-  hide?: string[]
 }
 
-const DEFAULT_OPTIONS: Required<CaptureOptions> = {
-  selector: '.gyshell-body',
-  maxWidth: 1280,
-  quality: 0.85,
-  exclude: [],
-  hide: [],
+const DEFAULT_OPTIONS: Required<CaptureOptions> = { maxWidth: 1600, quality: 0.85 }
+
+let shareStream: MediaStream | null = null
+
+function liveTrack(): MediaStreamTrack | null {
+  const t = shareStream?.getVideoTracks?.().find((v) => v.readyState === 'live')
+  return t ?? null
 }
 
-/**
- * Capture the GyShell UI as a base64 JPEG data URL.
- * Uses html2canvas to render the DOM to a canvas, then scales and compresses.
- */
+/** True when an active screen-share stream is available for a silent capture. */
+export function hasLiveShare(): boolean {
+  return liveTrack() !== null
+}
+
+/** Acquire (or re-acquire) the screen-share stream. MUST be called from a user gesture
+ *  (a button click). Resolves true if the user picked a source. The stream persists for the
+ *  session; if the user stops sharing it self-clears so the next request re-prompts. */
+export async function acquireScreenShare(): Promise<boolean> {
+  if (hasLiveShare()) return true
+  try {
+    const md = navigator.mediaDevices as (MediaDevices & { getDisplayMedia?: (c: unknown) => Promise<MediaStream> }) | undefined
+    if (!md?.getDisplayMedia) return false
+    const stream = await md.getDisplayMedia({ video: { frameRate: 2 }, audio: false })
+    shareStream = stream
+    stream.getVideoTracks().forEach((t) => t.addEventListener('ended', () => { if (shareStream === stream) shareStream = null }))
+    return true
+  } catch {
+    shareStream = null // user cancelled / denied / unsupported
+    return false
+  }
+}
+
+/** Stop sharing and release the stream (e.g. when the chat tab closes). */
+export function stopScreenShare(): void {
+  shareStream?.getTracks().forEach((t) => t.stop())
+  shareStream = null
+}
+
+/** Grab a still from the live share stream as a JPEG data URL. Returns null if there is no
+ *  live stream (caller must acquire first via a gesture) or a frame can't be decoded. */
 export async function captureUI(options?: CaptureOptions): Promise<string | null> {
   const opts = { ...DEFAULT_OPTIONS, ...options }
-  const element = document.querySelector(opts.selector) as HTMLElement
-  if (!element) return null
-
-  // Temporarily hide excluded elements
-  const hidden: Array<{ el: HTMLElement; prev: string }> = []
-  for (const sel of opts.exclude) {
-    document.querySelectorAll<HTMLElement>(sel).forEach(el => {
-      hidden.push({ el, prev: el.style.visibility })
-      el.style.visibility = 'hidden'
-    })
-  }
-  // Remove `hide` targets from layout entirely so content behind/beside them is
-  // captured (overlay → reveals what's underneath; flex/grid sibling → the main
-  // view reclaims the space), then let the browser reflow before snapshotting.
-  const removed: Array<{ el: HTMLElement; prev: string }> = []
-  for (const sel of opts.hide) {
-    document.querySelectorAll<HTMLElement>(sel).forEach(el => {
-      removed.push({ el, prev: el.style.display })
-      el.style.display = 'none'
-    })
-  }
-  if (removed.length) {
-    void document.body.offsetHeight // force synchronous reflow
-    await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r()))) // let paint settle
-  }
-
+  const track = liveTrack()
+  if (!track) return null
+  const video = document.createElement('video')
+  video.muted = true
+  video.srcObject = new MediaStream([track])
   try {
-    const canvas = await html2canvas(element, {
-      backgroundColor: null,
-      scale: 1,
-      logging: false,
-      useCORS: true,
-      allowTaint: true,
-    })
-
-    // Scale down if needed
-    const ratio = Math.min(1, opts.maxWidth / canvas.width)
-    if (ratio < 1) {
-      const scaled = document.createElement('canvas')
-      scaled.width = Math.round(canvas.width * ratio)
-      scaled.height = Math.round(canvas.height * ratio)
-      const ctx = scaled.getContext('2d')
-      if (ctx) {
-        ctx.drawImage(canvas, 0, 0, scaled.width, scaled.height)
-        return scaled.toDataURL('image/jpeg', opts.quality)
-      }
+    await video.play().catch(() => undefined)
+    if (video.readyState < 2) {
+      await new Promise<void>((r) => { video.onloadeddata = () => r(); setTimeout(r, 2500) })
     }
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    const w = video.videoWidth
+    const h = video.videoHeight
+    if (!w || !h) return null
+    const ratio = Math.min(1, opts.maxWidth / w)
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.round(w * ratio)
+    canvas.height = Math.round(h * ratio)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
     return canvas.toDataURL('image/jpeg', opts.quality)
   } finally {
-    // Restore hidden elements
-    for (const { el, prev } of hidden) {
-      el.style.visibility = prev
-    }
-    for (const { el, prev } of removed) {
-      el.style.display = prev
-    }
+    video.pause()
+    video.srcObject = null
   }
 }
