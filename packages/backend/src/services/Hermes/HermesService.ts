@@ -170,6 +170,10 @@ export class HermesService {
     this.bridge.stopSession(sessionKey)
   }
 
+  listConversations(): Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }> {
+    return this.bridge.listConversations()
+  }
+
   /** On-demand screen capture for the page-aware `view_screen` MCP tool. Emits a
    *  `capture_request` to the most-recent conversation's stream, waits for the frontend to
    *  POST the image, writes it to the agent's workspace on CT158, and returns the LOCAL path

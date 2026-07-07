@@ -284,6 +284,12 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     }
   })
 
+  // Server-side conversation list — the tab list, so conversations follow the user to ANY device.
+  router.get('/api/hermes/conversations', (_req: Req, res: Res) => {
+    try { res.json({ conversations: hermes.listConversations() }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
   // End + WIPE a conversation's session (called when a chat tab is closed) so a same-agent
   // reopen starts brand new. Idempotent — no-op if nothing's running for that key.
   router.delete('/api/hermes/agents/:id/session', (req: Req, res: Res) => {

@@ -66,18 +66,31 @@ interface AcpSession {
   truncated: boolean // set once the ring has dropped events past the cap
 }
 
+/** Server-side per-conversation metadata — powers resume (sessionId) AND the cross-device
+ *  conversation list (agentId + title + lastActive). Persisted to hermes-sessions.json. */
+export interface ConversationMeta { sessionId: string; agentId: string; title?: string; lastActive: number }
+
 export class HermesAcpBridge extends EventEmitter {
   private readonly sessions = new Map<string, AcpSession>()
 
   /** conversationId (sessionKey) -> hermes session id, persisted so each tab's session survives an
    *  ai-lab restart (resumed on respawn). Per-conversation, so multiple tabs on one agent stay distinct. */
-  private persistedSessions: Record<string, string> = {}
+  private persistedSessions: Record<string, ConversationMeta> = {}
   private sessionMapFile(): string {
     return this.cfg.sessionMapPath
       ?? (process.env.AILAB_PROXY_DATA_DIR ? `${process.env.AILAB_PROXY_DATA_DIR}/hermes-sessions.json` : '/opt/ai-lab/.gybackend-data/hermes-sessions.json')
   }
   private loadSessionMap(): void {
-    try { if (existsSync(this.sessionMapFile())) this.persistedSessions = (JSON.parse(readFileSync(this.sessionMapFile(), 'utf-8')) as Record<string, string>) || {} } catch { this.persistedSessions = {} }
+    try {
+      if (!existsSync(this.sessionMapFile())) return
+      const raw = JSON.parse(readFileSync(this.sessionMapFile(), 'utf-8')) as Record<string, string | ConversationMeta>
+      const out: Record<string, ConversationMeta> = {}
+      for (const [k, v] of Object.entries(raw || {})) {
+        if (typeof v === 'string') out[k] = { sessionId: v, agentId: '', lastActive: 0 } // migrate legacy string entries
+        else if (v && typeof v === 'object' && (v as ConversationMeta).sessionId) out[k] = { sessionId: v.sessionId, agentId: v.agentId || '', title: v.title, lastActive: v.lastActive || 0 }
+      }
+      this.persistedSessions = out
+    } catch { this.persistedSessions = {} }
   }
   private saveSessionMap(): void {
     try { const p = this.sessionMapFile(); mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, JSON.stringify(this.persistedSessions)) } catch { /* best-effort */ }
@@ -110,7 +123,7 @@ export class HermesAcpBridge extends EventEmitter {
     const existing = this.sessions.get(sessionKey)
     if (existing && existing.proc.exitCode === null) return existing
 
-    const resumeId = sessionKey ? this.persistedSessions[sessionKey] : undefined
+    const resumeId = sessionKey ? this.persistedSessions[sessionKey]?.sessionId : undefined
     const proc = spawn('ssh', this.sshArgs(agentId, resumeId), { stdio: ['pipe', 'pipe', 'pipe'] })
     const emitter = new EventEmitter()
     emitter.setMaxListeners(0)
@@ -149,7 +162,7 @@ export class HermesAcpBridge extends EventEmitter {
           session.readyResolved = true
           session.lastReady = ev
           const sid = (ev as { session_id?: string }).session_id
-          if (sid && sessionKey) { this.persistedSessions[sessionKey] = sid; this.saveSessionMap() }
+          if (sid && sessionKey) { const prev = this.persistedSessions[sessionKey]; this.persistedSessions[sessionKey] = { sessionId: sid, agentId, title: prev?.title, lastActive: Date.now() }; this.saveSessionMap() }
           resolveReady(ev)
         }
         emitter.emit('event', ev)
@@ -203,6 +216,9 @@ export class HermesAcpBridge extends EventEmitter {
     session.history.push(uev)
     { const cap = this.cfg.historyCap ?? 5000
       if (session.history.length > cap) { session.history.splice(0, session.history.length - cap); session.truncated = true } }
+    // Server-side conversation registry: first user message becomes the tab title; every turn bumps lastActive.
+    const meta = this.persistedSessions[sessionKey]
+    if (meta) { meta.lastActive = Date.now(); if (!meta.title && text.trim()) meta.title = text.trim().slice(0, 80); this.saveSessionMap() }
     const payload: Record<string, unknown> = { type: 'prompt', text }
     if (extra?.context) payload.context = extra.context
     if (extra?.screenshot) payload.screenshot = extra.screenshot
@@ -260,6 +276,9 @@ export class HermesAcpBridge extends EventEmitter {
    *  Removes it from the map immediately so a same-key reopen starts a FRESH session —
    *  this is what makes "close tab wipes the conversation" true. */
   stopSession(sessionKey: string): void {
+    // Deleting a tab wipes the conversation from the server registry too, so it stops appearing on
+    // every device (matches the 'a conversation lives until I delete the tab' rule).
+    if (this.persistedSessions[sessionKey]) { delete this.persistedSessions[sessionKey]; this.saveSessionMap() }
     const session = this.sessions.get(sessionKey)
     if (!session) return
     this.sessions.delete(sessionKey)
@@ -272,6 +291,15 @@ export class HermesAcpBridge extends EventEmitter {
       agentId: s.agentId, startedAt: s.startedAt, lastActivity: s.lastActivity,
       model: s.lastReady?.current_model,
     }))
+  }
+
+  /** Server-side conversation list (cross-device): every persisted conversation with a known agent,
+   *  newest first. Powers the tab list so conversations follow the user to any browser/device. */
+  listConversations(): Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }> {
+    return Object.entries(this.persistedSessions)
+      .filter(([, m]) => !!m.agentId)
+      .map(([conversationId, m]) => ({ conversationId, agentId: m.agentId, title: m.title, lastActive: m.lastActive }))
+      .sort((a, b) => b.lastActive - a.lastActive)
   }
 
   hasSession(agentId: string): boolean {

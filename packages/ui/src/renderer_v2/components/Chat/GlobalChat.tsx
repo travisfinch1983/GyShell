@@ -89,6 +89,27 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
     localStorage.setItem(HERMES_TABS_KEY, JSON.stringify(tabs))
   }
 
+  // Cross-device: pull the server-side conversation list and add any conversations this browser
+  // doesn't already have as tabs (localStorage is per-device; the server registry is authoritative).
+  useEffect(() => {
+    void (async () => {
+      try {
+        const b = (window as unknown as { gyshell?: { cluster?: { request: (m: string, p: string) => Promise<unknown> } } }).gyshell?.cluster
+        const r = (await b?.request('GET', '/api/hermes/conversations')) as { conversations?: Array<{ conversationId: string; agentId: string }> } | undefined
+        const convs = Array.isArray(r?.conversations) ? r!.conversations : []
+        if (!convs.length) return
+        setHermesTabs((prev) => {
+          const have = new Set(prev.map((t) => t.cid))
+          const extra = convs.filter((c) => c.conversationId && c.agentId && !have.has(c.conversationId)).map((c) => ({ cid: c.conversationId, agentId: c.agentId }))
+          if (!extra.length) return prev
+          const merged = [...prev, ...extra]
+          localStorage.setItem(HERMES_TABS_KEY, JSON.stringify(merged))
+          return merged
+        })
+      } catch { /* best-effort */ }
+    })()
+  }, [])
+
   // Keep ChatStore's activeSessionId in sync when a session tab is active.
   useEffect(() => {
     if (!visible || !activeSessionId) return
