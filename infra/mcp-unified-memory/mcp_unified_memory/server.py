@@ -366,17 +366,24 @@ def search_weaviate(client: httpx.Client, db: dict, query_vector: list, k: int) 
         weaviate_class = COLLECTION_NAME[0].upper() + COLLECTION_NAME[1:]
         resp = client.post(
             f"http://{db['host']}:{db['port']}/v1/graphql",
-            json={"query": f'{{ Get {{ {weaviate_class}(nearVector: {{vector: {json.dumps(query_vector)}}}, limit: {k}) {{ text memory_id user_id metadata _additional {{ id distance }} }} }} }}'},
+            json={"query": f'{{ Get {{ {weaviate_class}(nearVector: {{vector: {json.dumps(query_vector)}}}, limit: {k}) {{ text memory_id metadata _additional {{ id distance }} }} }} }}'},
             timeout=15.0,
         )
         data = resp.json()
         results = data.get("data", {}).get("Get", {}).get(weaviate_class, [])
-        return [
-            {"text": p.get("text", "")[:500], "score": 1 - (p.get("_additional", {}).get("distance", 0)),
-             "id": p.get("memory_id", p.get("_additional", {}).get("id", "")),
-             "source": "weaviate", "rank": i + 1, "metadata": {"user_id": p.get("user_id", "")}}
-            for i, p in enumerate(results)
-        ]
+        out = []
+        for i, p in enumerate(results):
+            # weaviate has no top-level user_id property; writes stash the full
+            # payload (incl. user_id) as a JSON string in the metadata prop
+            try:
+                owner = json.loads(p.get("metadata") or "{}").get("user_id", "")
+            except Exception:
+                owner = ""
+            out.append(
+                {"text": p.get("text", "")[:500], "score": 1 - (p.get("_additional", {}).get("distance", 0)),
+                 "id": p.get("memory_id", p.get("_additional", {}).get("id", "")),
+                 "source": "weaviate", "rank": i + 1, "metadata": {"user_id": owner}})
+        return out
     except Exception as e:
         print(f"[unified-memory] Weaviate search failed: {e}")
         return []
