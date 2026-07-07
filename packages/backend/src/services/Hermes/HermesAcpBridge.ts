@@ -1,5 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { EventEmitter } from 'events'
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { dirname } from 'path'
 
 /**
  * HermesAcpBridge — the BACKEND-OWNED persistent runner for Hermes agent sessions
@@ -27,6 +29,7 @@ export interface HermesAcpConfig {
   pythonBin?: string // default the hermes venv python (has the `acp` lib)
   readyTimeoutMs?: number // default 30000
   historyCap?: number // max events buffered per session (ring); default 5000
+  sessionMapPath?: string // where conversationId->hermes sessionId persists (survives ai-lab restart -> resume)
 }
 
 /** A normalized event from acp-bridge (t = ready|message|thought|tool_start|tool_progress|commands|usage|turn_done|error|update). */
@@ -66,11 +69,26 @@ interface AcpSession {
 export class HermesAcpBridge extends EventEmitter {
   private readonly sessions = new Map<string, AcpSession>()
 
-  constructor(private readonly cfg: HermesAcpConfig) {
-    super()
+  /** conversationId (sessionKey) -> hermes session id, persisted so each tab's session survives an
+   *  ai-lab restart (resumed on respawn). Per-conversation, so multiple tabs on one agent stay distinct. */
+  private persistedSessions: Record<string, string> = {}
+  private sessionMapFile(): string {
+    return this.cfg.sessionMapPath
+      ?? (process.env.AILAB_PROXY_DATA_DIR ? `${process.env.AILAB_PROXY_DATA_DIR}/hermes-sessions.json` : '/opt/ai-lab/.gybackend-data/hermes-sessions.json')
+  }
+  private loadSessionMap(): void {
+    try { if (existsSync(this.sessionMapFile())) this.persistedSessions = (JSON.parse(readFileSync(this.sessionMapFile(), 'utf-8')) as Record<string, string>) || {} } catch { this.persistedSessions = {} }
+  }
+  private saveSessionMap(): void {
+    try { const p = this.sessionMapFile(); mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, JSON.stringify(this.persistedSessions)) } catch { /* best-effort */ }
   }
 
-  private sshArgs(agentId: string): string[] {
+  constructor(private readonly cfg: HermesAcpConfig) {
+    super()
+    this.loadSessionMap()
+  }
+
+  private sshArgs(agentId: string, resumeId?: string): string[] {
     const py = this.cfg.pythonBin ?? '/usr/local/lib/hermes-agent/venv/bin/python'
     const bridge = this.cfg.bridgePath ?? '/opt/acp-bridge/acp-bridge.py'
     return [
@@ -81,6 +99,7 @@ export class HermesAcpBridge extends EventEmitter {
       '-o', 'ServerAliveCountMax=3',
       `${this.cfg.user ?? 'root'}@${this.cfg.host}`,
       py, bridge, '--profile', agentId,
+      ...(resumeId ? ['--resume', resumeId] : []),
     ]
   }
 
@@ -91,7 +110,8 @@ export class HermesAcpBridge extends EventEmitter {
     const existing = this.sessions.get(sessionKey)
     if (existing && existing.proc.exitCode === null) return existing
 
-    const proc = spawn('ssh', this.sshArgs(agentId), { stdio: ['pipe', 'pipe', 'pipe'] })
+    const resumeId = sessionKey ? this.persistedSessions[sessionKey] : undefined
+    const proc = spawn('ssh', this.sshArgs(agentId, resumeId), { stdio: ['pipe', 'pipe', 'pipe'] })
     const emitter = new EventEmitter()
     emitter.setMaxListeners(0)
 
@@ -128,6 +148,8 @@ export class HermesAcpBridge extends EventEmitter {
         if (ev.t === 'ready' && !session.readyResolved) {
           session.readyResolved = true
           session.lastReady = ev
+          const sid = (ev as { session_id?: string }).session_id
+          if (sid && sessionKey) { this.persistedSessions[sessionKey] = sid; this.saveSessionMap() }
           resolveReady(ev)
         }
         emitter.emit('event', ev)
