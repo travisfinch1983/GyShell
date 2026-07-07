@@ -24,6 +24,7 @@ export class UniversalProxyService {
   private server?: http.Server
   private registry: Record<string, any[]> = {}
   private refreshTimer?: ReturnType<typeof setInterval>
+  private cacheReconcileTimer?: ReturnType<typeof setInterval>
   private lastRefresh = 0
   private host = '0.0.0.0'
   private port = DEFAULT_PORT
@@ -188,6 +189,17 @@ export class UniversalProxyService {
         .catch((e: any) => console.warn('[universal-proxy] boot cache reconcile failed:', e?.message))
     }, 30000)
 
+    // #266 follow-up: a NODE reboot (e.g. px-epyc) wipes its tmpfs /model-cache but does NOT restart
+    // AI-Lab, so the one-shot boot reconcile above never re-fires and the cache stays empty until a
+    // manual trigger. Poll periodically (single-flight guarded in runCacheReconcile; ~sub-second when
+    // everything is present) so a rebooted node auto-refills within the interval. Cache is only a perf
+    // optimization (services fall back to NAS via the mc() resolver), so a modest cadence is enough.
+    this.cacheReconcileTimer = setInterval(() => {
+      Promise.resolve(aiModule.runCacheReconcile?.('periodic'))
+        .then((s: any) => { if (s && s.requeued > 0) console.log('[universal-proxy] cache reconcile (periodic): re-queued', s.requeued, 'missing cache entr(ies)', JSON.stringify({ present: s.present, missing: s.missing, byNode: s.byNode })) })
+        .catch(() => undefined)
+    }, 10 * 60 * 1000)
+
     const app = express()
     app.use('/api/proxy/vector', createVectorProxyRouter())
     // Claude MAX-subscription proxy (direct api.anthropic.com via OAuth). Mounted at the
@@ -296,6 +308,7 @@ export class UniversalProxyService {
 
   async stop(): Promise<void> {
     if (this.refreshTimer) clearInterval(this.refreshTimer)
+    if (this.cacheReconcileTimer) clearInterval(this.cacheReconcileTimer)
     if (this.server) await new Promise<void>((r) => this.server!.close(() => r()))
   }
 
