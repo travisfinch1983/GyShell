@@ -12,6 +12,7 @@ import {
   Radio,
   BrainCircuit,
   Bot,
+  MessageSquare,
   Blocks,
   Image as ImageIcon,
   AudioLines,
@@ -29,7 +30,7 @@ import {
 import { uiPrefsStore } from '../../stores/uiPrefsStore'
 import styles from './PrimarySidebar.module.scss'
 
-export type PrimaryTab = 'home' | 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'monitor' | 'fleet' | 'addons'
+export type PrimaryTab = 'home' | 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'monitor' | 'fleet' | 'addons' | 'chat'
 
 interface TabDef {
   id: PrimaryTab
@@ -39,6 +40,7 @@ interface TabDef {
 
 const TABS: TabDef[] = [
   { id: 'home',      label: 'Home',      Icon: LayoutDashboard },
+  { id: 'chat',      label: 'Chat',      Icon: MessageSquare },
   { id: 'terminal',  label: 'Terminal',  Icon: Terminal },
   { id: 'claude',    label: 'Claude',    Icon: Sparkles },
   { id: 'fleet',     label: 'Fleet Feed', Icon: Radio },

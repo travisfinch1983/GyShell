@@ -14,6 +14,7 @@ import { TerminalWorkspace } from './components/Terminal/TerminalWorkspace'
 import { AgentRail } from './components/AgentRail/AgentRail'
 import { PrimarySidebar, type PrimaryTab } from './components/PrimarySidebar/PrimarySidebar'
 import { GlobalChat } from './components/Chat/GlobalChat'
+import { AgentChatPanel } from './components/AgentChat/AgentChatPanel'
 import { FleetPanel } from './components/Fleet/FleetPanel'
 import { AddonsPanel } from './components/Addons/AddonsPanel'
 import { ContextMenuOverlay } from './components/Common/ContextMenuOverlay'
@@ -234,6 +235,7 @@ export const App: React.FC = observer(() => {
           </div>
 
           {primaryTab === 'home' && <HomePanel />}
+          {primaryTab === 'chat' && <AgentChatPanel />}
           {primaryTab === 'claude' && <ClaudePanel />}
           {primaryTab === 'cluster' && <ClusterPanel />}
 

@@ -467,6 +467,11 @@ export const hermesApi = {
     return bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/history?conversationId=${encodeURIComponent(conversationId)}${since != null ? `&since=${since}` : ''}`)
   },
 
+  /** GET /api/hermes/conversations — server-side conversation registry (cross-device tab list). */
+  async conversations(): Promise<Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }>> {
+    try { const r = await bridge().request('GET', '/api/hermes/conversations'); return Array.isArray((r as { conversations?: unknown })?.conversations) ? (r as { conversations: Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }> }).conversations : [] } catch { return [] }
+  },
+
   /** DELETE /session?conversationId — END + WIPE: kills the backend session and
    *  drops its transcript, so a same-agent reopen is brand new. Call on tab close. */
   async endConversation(id: string, conversationId: string): Promise<void> {

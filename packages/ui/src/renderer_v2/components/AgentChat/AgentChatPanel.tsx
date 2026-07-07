@@ -2,10 +2,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, ScanEye, SendHorizonal, Settings2, Wrench } from 'lucide-react'
+import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Plus, ScanEye, SendHorizonal, Settings2, Trash2, Wrench } from 'lucide-react'
 import type { HermesSlashCommand } from '@gyshell/shared'
 import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
 import { hermesChatStore as chat, type ChatItem } from '../../stores/HermesChatStore'
+import { hermesApi } from '../../stores/hermesApi'
 import styles from './AgentChat.module.scss'
 import { newUuid } from '../../lib/uuid'
 
@@ -206,42 +207,108 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
   )
 })
 
-/** Full-page Hermes chat surface (agent list left, conversation right). Currently
- *  UNMOUNTED — kept for the planned full-page Chat primary tab (feature B); the
- *  live home of agent chat is GlobalChat's Agents mode (side panel). */
+/** Full-page Hermes chat surface (ChatGPT-style), mounted as the "Chat" primary tab — the primary
+ *  home for talking to agents. Left: a conversation sidebar (your conversations grouped by agent,
+ *  backed by the server-side registry so they follow you across devices) + a "New chat" agent
+ *  picker. Right: the selected AgentConversation. */
+interface ConvMeta { conversationId: string; agentId: string; title?: string; lastActive: number }
+
 export const AgentChatPanel: React.FC = observer(() => {
-  const [active, setActive] = useState<string | null>(null)
-  // One conversation per agent for this surface's lifetime (feature-B scope).
-  const cids = useRef(new Map<string, string>())
-  const cidFor = (agentId: string) => {
-    let c = cids.current.get(agentId)
-    if (!c) { c = newUuid(); cids.current.set(agentId, c) }
-    return c
-  }
+  const [convs, setConvs] = useState<ConvMeta[]>([])
+  const [active, setActive] = useState<string>('')
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const pickerRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    void hermesAgentsStore.refresh().then(() => {
-      setActive((a) => a ?? hermesAgentsStore.agents[0] ?? null)
-    })
+    void hermesAgentsStore.refresh()
+    void (async () => {
+      const list = await hermesApi.conversations()
+      setConvs(list)
+      setActive((a) => a || list[0]?.conversationId || '')
+    })()
   }, [])
+
+  useEffect(() => {
+    if (!pickerOpen) return
+    const close = (e: MouseEvent) => { if (!pickerRef.current?.contains(e.target as Node)) setPickerOpen(false) }
+    window.addEventListener('mousedown', close)
+    return () => window.removeEventListener('mousedown', close)
+  }, [pickerOpen])
+
+  const nameOf = (agentId: string) => hermesAgentsStore.specs.get(agentId)?.displayName ?? agentId
+
+  const newChat = (agentId: string) => {
+    const cid = newUuid()
+    setConvs((prev) => [{ conversationId: cid, agentId, title: '', lastActive: Date.now() }, ...prev])
+    setActive(cid)
+    setPickerOpen(false)
+  }
+
+  // Delete = END + WIPE the backend session (a conversation lives until you delete it).
+  const deleteChat = (e: React.MouseEvent, c: ConvMeta) => {
+    e.stopPropagation()
+    void hermesApi.endConversation(c.agentId, c.conversationId)
+    setConvs((prev) => prev.filter((x) => x.conversationId !== c.conversationId))
+    setActive((a) => (a === c.conversationId ? '' : a))
+  }
+
+  const groups = useMemo(() => {
+    const m = new Map<string, ConvMeta[]>()
+    for (const c of [...convs].sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0))) {
+      if (!m.has(c.agentId)) m.set(c.agentId, [])
+      m.get(c.agentId)!.push(c)
+    }
+    return [...m.entries()]
+  }, [convs])
+
+  const activeConv = convs.find((c) => c.conversationId === active) ?? null
 
   return (
     <div className={styles.panel}>
       <div className={styles.list}>
-        <div className={styles.listHead}>Hermes agents</div>
-        {hermesAgentsStore.agents.map((id) => (
-          <button key={id} className={`${styles.listItem} ${active === id ? styles.listItemActive : ''}`} onClick={() => setActive(id)}>
-            <Bot size={13} /> {hermesAgentsStore.specs.get(id)?.displayName ?? id}
+        <div className={styles.listHead} ref={pickerRef} style={{ position: 'relative' }}>
+          <button className={styles.btnPrimary} style={{ width: '100%', justifyContent: 'center' }} onClick={() => setPickerOpen((o) => !o)}>
+            <Plus size={13} /> New chat
           </button>
-        ))}
-        {hermesAgentsStore.loaded && hermesAgentsStore.agents.length === 0 && (
-          <div className={styles.dim}>No agents yet.</div>
-        )}
+          {pickerOpen && (
+            <div className={styles.slashMenu} style={{ top: '100%', left: 0, right: 0, maxHeight: 280, overflowY: 'auto' }}>
+              {hermesAgentsStore.agents.length === 0 && <div className={styles.slashHint}>No agents — build one in Settings › Agents.</div>}
+              {hermesAgentsStore.agents.map((id) => (
+                <button key={id} className={styles.slashItem} onClick={() => newChat(id)}>
+                  <Bot size={12} /> {nameOf(id)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+          {groups.map(([agentId, list]) => (
+            <div key={agentId}>
+              <div className={styles.dim} style={{ padding: '8px 10px 2px', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4 }}>{nameOf(agentId)}</div>
+              {list.map((c) => (
+                <div
+                  key={c.conversationId}
+                  className={`${styles.listItem} ${active === c.conversationId ? styles.listItemActive : ''}`}
+                  onClick={() => setActive(c.conversationId)}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <MessageSquare size={12} />
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.title || 'New conversation'}</span>
+                  <span onClick={(e) => deleteChat(e, c)} title="Delete conversation" style={{ opacity: 0.55, cursor: 'pointer', display: 'inline-flex' }}><Trash2 size={12} /></span>
+                </div>
+              ))}
+            </div>
+          ))}
+          {convs.length === 0 && <div className={styles.dim} style={{ padding: 12 }}>No conversations yet — start a New chat.</div>}
+        </div>
         <div className={styles.listFoot}>
-          <Settings2 size={12} /> Build &amp; configure in Settings › Agents
+          <Settings2 size={12} /> Manage agents in Settings › Agents
         </div>
       </div>
-      {active ? <AgentConversation key={active} agentId={active} conversationId={cidFor(active)} /> : <div className={styles.emptyConv}>Pick an agent.</div>}
+      {activeConv
+        ? <AgentConversation key={activeConv.conversationId} agentId={activeConv.agentId} conversationId={activeConv.conversationId} />
+        : <div className={styles.emptyConv}>Pick a conversation or start a New chat.</div>}
     </div>
   )
 })
