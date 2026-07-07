@@ -45,9 +45,17 @@ export const App: React.FC = observer(() => {
   // expand affordance was removed in favor of always-on icons (model + agent
   // shortcuts with status badges). The chat overlay's visibility is now its
   // own state so opening the chat doesn't expand the sidebar and vice versa.
-  const [chatOpen, setChatOpen] = useState(
-    () => localStorage.getItem('ai-lab-chat-open') === 'true'
-  )
+  // Chat-open is PER-BROWSER-TAB (sessionStorage) — a reload restores this
+  // tab's own state instead of whichever tab toggled last (the old shared
+  // localStorage key made every reloading tab pop the chat open). localStorage
+  // stays as the write-through seed for brand-new tabs only.
+  const [chatOpen, setChatOpen] = useState(() => {
+    try {
+      const perTab = sessionStorage.getItem('ai-lab-chat-open')
+      if (perTab != null) return perTab === 'true'
+    } catch { /* private mode */ }
+    return localStorage.getItem('ai-lab-chat-open') === 'true'
+  })
   // Always start collapsed on page load (don't restore a previously-open state).
   const [servicesDrawerOpen, setServicesDrawerOpen] = useState(false)
   const toggleServicesDrawer = useCallback(() => {
@@ -60,7 +68,8 @@ export const App: React.FC = observer(() => {
   const toggleChat = useCallback(() => {
     setChatOpen(prev => {
       const next = !prev
-      localStorage.setItem('ai-lab-chat-open', String(next))
+      try { sessionStorage.setItem('ai-lab-chat-open', String(next)) } catch { /* private mode */ }
+      localStorage.setItem('ai-lab-chat-open', String(next)) // seeds NEW tabs only
       return next
     })
   }, [])
