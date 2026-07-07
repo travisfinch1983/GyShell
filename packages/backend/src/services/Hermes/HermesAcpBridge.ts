@@ -195,6 +195,14 @@ export class HermesAcpBridge extends EventEmitter {
   prompt(sessionKey: string, text: string, extra?: { context?: string; screenshot?: string }): void {
     const session = this.sessions.get(sessionKey)
     if (!session || session.proc.exitCode !== null) throw new Error(`no live acp session for ${sessionKey}`)
+    // Record the user's turn in the ring buffer so a refreshed/reconnecting UI rebuilds it.
+    // The bridge only buffers ASSISTANT events (from stdout); the user's message otherwise
+    // exists only client-side (optimistic bubble) and vanishes on refresh. Buffer only — do NOT
+    // emit, or the live view double-shows it. Renders via the reducer's `case 'user'`.
+    const uev = { t: 'user', text, seq: ++session.seq } as unknown as AcpEvent
+    session.history.push(uev)
+    { const cap = this.cfg.historyCap ?? 5000
+      if (session.history.length > cap) { session.history.splice(0, session.history.length - cap); session.truncated = true } }
     const payload: Record<string, unknown> = { type: 'prompt', text }
     if (extra?.context) payload.context = extra.context
     if (extra?.screenshot) payload.screenshot = extra.screenshot
