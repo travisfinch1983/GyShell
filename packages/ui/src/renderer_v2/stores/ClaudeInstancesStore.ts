@@ -34,7 +34,11 @@ class ClaudeInstancesStore {
 
   async reload(): Promise<void> {
     try {
-      this.api ??= await resolveInstanceManagerApi()
+      // Re-probe whenever we're on the mock: a tab that loads during a backend
+      // restart window used to get the mock FOREVER (`??=` probed once) — the
+      // "stale old version" Travis saw was this banner stuck until a lucky
+      // manual reload. Now the mock is a transparent stand-in that self-heals.
+      if (!this.api || this.api.mocked) this.api = await resolveInstanceManagerApi()
       const instances = await this.api.list()
       runInAction(() => {
         this.instances = instances
@@ -42,12 +46,24 @@ class ClaudeInstancesStore {
         this.loaded = true
         this.err = ''
       })
+      if (this.api.mocked) this.scheduleMockRetry()
     } catch (e: any) {
       runInAction(() => {
         this.err = e?.message || 'instance list failed'
         this.loaded = true
       })
     }
+  }
+
+  private mockRetryTimer: ReturnType<typeof setTimeout> | null = null
+  /** While on the mock, quietly re-probe the real API every 8s so a tab that
+   *  loaded mid-restart recovers by itself once the backend is back. */
+  private scheduleMockRetry(): void {
+    if (this.mockRetryTimer) return
+    this.mockRetryTimer = setTimeout(() => {
+      this.mockRetryTimer = null
+      void this.reload()
+    }, 8000)
   }
 
   private async withBusy<T>(id: string, fn: () => Promise<T>): Promise<T> {
