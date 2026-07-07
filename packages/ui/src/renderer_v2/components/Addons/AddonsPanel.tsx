@@ -143,7 +143,10 @@ export const AddonsPanel: React.FC = () => {
 
   const loadRuntime = async () => {
     try {
-      const r = await bridge().request('GET', '/api/addons')
+      // NOTE: plain same-origin fetch — the gyshell cluster proxy allowlists
+      // paths and rejects /api/addons ('path not allowed'). fetch works + is
+      // consistent with the health-dot fetch below. (claude2 fix, flagged to claude1)
+      const r = await fetch('/api/addons', { headers: { accept: 'application/json' } }).then((res) => res.json())
       const addons = (Array.isArray(r?.addons) ? r.addons : []) as RuntimeAddon[]
       const list = addons.filter((a) => a.enabled !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
       setRuntime(list)

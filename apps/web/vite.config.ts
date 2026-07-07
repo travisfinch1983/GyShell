@@ -94,6 +94,25 @@ export default defineConfig({
         ws: true,
         rewrite: (path) => path.replace(/^\/addons\/upscaler/, '') || '/',
       },
+      // Rule34 scraper addon: ailab-addon-rule34.service @ 127.0.0.1:8091, prefix-stripped.
+      '/addons/rule34': {
+        target: process.env.ADDON_RULE34_URL || 'http://127.0.0.1:8091',
+        changeOrigin: true,
+        ws: true,
+        rewrite: (path) => path.replace(/^\/addons\/rule34/, '') || '/',
+      },
+      // GENERAL runtime-addon proxy -> AI-Lab backend (:17890), which reverse-proxies /addons/<id>/*
+      // to each addon's own service via its manifest, and serves /addons/_shared/theme.css|js. THIS is
+      // what makes runtime addons zero-touch: dropping a manifest works with NO vite entry or restart.
+      // (upscaler/rule34 above are only the COMPILED addons w/ their own backends; once self-served they
+      // drop their entry and ride this. Listed AFTER them so the specific prefixes still match first.)
+      '/addons': {
+        target: 'http://127.0.0.1:17890',
+        changeOrigin: true,
+        ws: true,
+        timeout: 0,
+        proxyTimeout: 0,
+      },
       // FileBrowser Quantum (File Manager tab) — sidecar on :8082 in this container, browsing the mounted
       // NAS pools (/nas). Configured with baseURL=/files so it SERVES under /files (no rewrite — keep the
       // prefix). Same-origin iframe, so X-Frame-Options:SAMEORIGIN (if any) permits it. ws for live updates.
