@@ -177,6 +177,18 @@ class HermesChatStore {
         // bridge never emits this) — rebuilds the user's own bubbles on restore.
         push({ kind: 'user', text: ev.text })
         break
+      // ── resumed-session replay (bridge persistence): the prior transcript
+      // arrives BEFORE `ready` as complete turns — same bubbles as live, just
+      // backfilled, never streaming, and never flipping `busy`. ─────────────
+      case 'history':
+        push({ kind: ev.role === 'user' ? 'user' : 'assistant', text: ev.text, streaming: false })
+        break
+      case 'history_thought':
+        push({ kind: 'thought', text: ev.text, streaming: false })
+        break
+      case 'history_tool':
+        push({ kind: 'tool', toolId: ev.id ?? null, title: ev.title ?? ev.kind ?? 'tool', status: 'completed', text: '' })
+        break
       case 'message': {
         s.busy = true // covers turns initiated by other clients of the shared session
         const l = last()

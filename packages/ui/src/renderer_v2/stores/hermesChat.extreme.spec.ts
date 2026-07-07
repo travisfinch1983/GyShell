@@ -147,6 +147,26 @@ const kinds = (id: string) => hermesChatStore.state(id).items.map((i: ChatItem) 
   assertEqual(s.items[0].text.includes('allow-workspace'), true, 'case8: option id shown')
 }
 
+// ── case 10: resumed-session replay — history events rebuild the transcript ──
+{
+  const id = 'case10'
+  // bridge persistence (57cce93): prior transcript arrives BEFORE ready
+  feed(id, { t: 'history', role: 'user', text: 'teach: the sky is teal' })
+  feed(id, { t: 'history_thought', text: 'noting the fact' })
+  feed(id, { t: 'history_tool', id: 'ht-1', title: 'memory_save', kind: 'memory', raw: {} })
+  feed(id, { t: 'history', role: 'assistant', text: 'Remembered.' })
+  feed(id, { t: 'ready', session_id: 'resumed-1', models: null, current_model: 'custom:Qwen3.6', modes: null })
+  const s10 = hermesChatStore.state(id)
+  assertEqual(kinds(id), ['user', 'thought', 'tool', 'assistant'], 'case10: history replay rebuilds bubbles in order')
+  assertEqual(s10.busy, false, 'case10: history replay never flips busy')
+  assertEqual(s10.items[3].streaming, false, 'case10: history bubbles are complete, not streaming')
+  assertEqual(s10.items[2].status, 'completed', 'case10: replayed tool card reads completed')
+  // a LIVE chunk after resume opens a NEW bubble — never appends to history
+  feed(id, { t: 'message', text: 'And now live.' })
+  assertEqual(kinds(id), ['user', 'thought', 'tool', 'assistant', 'assistant'], 'case10: live message starts a fresh bubble')
+  assertEqual(s10.items[4].streaming, true, 'case10: the live bubble streams')
+}
+
 // ── case 9: re-attach ready adds ZERO items (tab swaps must not stack rows) ──
 {
   const id = 'case9'
