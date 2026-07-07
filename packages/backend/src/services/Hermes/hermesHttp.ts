@@ -83,6 +83,33 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
 
+  // Native (built-in Hermes) tool on/off for the ACP chat agent — backs the acp-tool-override
+  // plugin (native browser tools etc. can't be toggled via Hermes config on the ACP runtime).
+  // GET catalog = the pristine native tool list; GET per-agent = catalog + current enabled state;
+  // PUT = the full OFF list (per-tool). PUT /native-tools (no id) applies to every agent.
+  router.get('/api/hermes/native-tools/catalog', async (_req: Req, res: Res) => {
+    try { res.json({ tools: await hermes.nativeToolCatalog() }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.get('/api/hermes/agents/:id/native-tools', async (req: Req, res: Res) => {
+    try { res.json(await hermes.getAgentNativeTools(req.params.id)) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.put('/api/hermes/agents/:id/native-tools', json, async (req: Req, res: Res) => {
+    try {
+      const disabled = Array.isArray((req.body as any)?.disabled) ? (req.body as any).disabled.filter((x: unknown) => typeof x === 'string') : null
+      if (!disabled) return res.status(400).json({ error: 'body needs { disabled: string[] }' })
+      res.json({ ok: true, ...(await hermes.setAgentNativeTools(req.params.id, disabled)) })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.put('/api/hermes/native-tools', json, async (req: Req, res: Res) => {
+    try {
+      const disabled = Array.isArray((req.body as any)?.disabled) ? (req.body as any).disabled.filter((x: unknown) => typeof x === 'string') : null
+      if (!disabled) return res.status(400).json({ error: 'body needs { disabled: string[] }' })
+      res.json({ ok: true, ...(await hermes.setGlobalNativeTools(disabled)) })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
   // Add a doc to an agent by copying it from the `default` template store. Returns the new path.
   router.post('/api/hermes/agents/:id/add-doc', json, async (req: Req, res: Res) => {
     try {

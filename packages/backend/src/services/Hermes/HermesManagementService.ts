@@ -235,6 +235,103 @@ export class HermesManagementService {
     return `${this.profileHomeBase}/${agentId}`
   }
 
+  // ---- Native tool overrides (ACP chat agent) — backs the acp-tool-override Hermes plugin ----
+  // ACP hardcodes enabled_toolsets=["hermes-acp"] at agent creation and ignores
+  // agent.disabled_toolsets, so native tools (browser automation etc.) can't be toggled via
+  // config. The acp-tool-override plugin redefines the hermes-acp toolset from a per-agent
+  // state.json; these methods read the catalog and read/write that desired-state.
+  private _nativeCatalog: Array<{ name: string; category: string }> | null = null
+  private static readonly NATIVE_PLUGIN = 'acp-tool-override'
+  private static readonly HERMES_PY = '/usr/local/lib/hermes-agent/venv/bin/python'
+
+  private nativePluginDir(agentId: string): string {
+    return `${this.profileHome(agentId)}/plugins/${HermesManagementService.NATIVE_PLUGIN}`
+  }
+
+  /** PRISTINE hermes-acp native tool catalog (name + source-toolset category). A bare
+   *  `import toolsets` does NOT load hermes plugins, so this reflects the un-overridden full set
+   *  the UI can toggle. Static per Hermes version, so cached. */
+  async nativeToolCatalog(): Promise<Array<{ name: string; category: string }>> {
+    if (this._nativeCatalog) return this._nativeCatalog
+    const py = [
+      'import json',
+      'from toolsets import get_toolset_info, TOOLSETS',
+      'info = get_toolset_info("hermes-acp") or {}',
+      'tools = info.get("resolved_tools") or info.get("direct_tools") or []',
+      'def cat(t):',
+      '    for n, ts in TOOLSETS.items():',
+      '        if n in ("hermes-acp", "hermes-api-server"): continue',
+      '        if t in (ts.get("tools") or []): return n',
+      '    return "other"',
+      'print(json.dumps([{"name": t, "category": cat(t)} for t in sorted(tools)]))',
+    ].join('\n')
+    const b64 = Buffer.from(py, 'utf8').toString('base64')
+    const out = await this.ssh(`printf %s ${shq(b64)} | base64 -d | ${HermesManagementService.HERMES_PY} -`)
+    this._nativeCatalog = JSON.parse(out.trim())
+    return this._nativeCatalog!
+  }
+
+  private async readNativeState(agentId: string): Promise<{ disabled_tools: string[]; disabled_toolsets: string[] }> {
+    const p = `${this.nativePluginDir(agentId)}/state.json`
+    const b64 = (await this.ssh(`base64 -w0 ${shq(p)} 2>/dev/null || true`)).trim()
+    if (!b64) return { disabled_tools: [], disabled_toolsets: [] }
+    try {
+      const d = JSON.parse(Buffer.from(b64, 'base64').toString('utf8')) as { disabled_tools?: unknown; disabled_toolsets?: unknown }
+      return {
+        disabled_tools: Array.isArray(d.disabled_tools) ? (d.disabled_tools as string[]) : [],
+        disabled_toolsets: Array.isArray(d.disabled_toolsets) ? (d.disabled_toolsets as string[]) : [],
+      }
+    } catch { return { disabled_tools: [], disabled_toolsets: [] } }
+  }
+
+  /** Native tools for an agent with current on/off state (enabled=false = removed from the chat
+   *  agent by the plugin). */
+  async getAgentNativeTools(agentId: string): Promise<{ tools: Array<{ name: string; category: string; enabled: boolean }>; pluginInstalled: boolean }> {
+    const [catalog, state, installed] = await Promise.all([
+      this.nativeToolCatalog(),
+      this.readNativeState(agentId),
+      this.nativePluginInstalled(agentId),
+    ])
+    const off = new Set(state.disabled_tools)
+    const offSets = new Set(state.disabled_toolsets)
+    const tools = catalog.map((t) => ({ name: t.name, category: t.category, enabled: !(off.has(t.name) || offSets.has(t.category)) }))
+    return { tools, pluginInstalled: installed }
+  }
+
+  /** Set an agent's disabled native tools by exact name (per-tool model: `disabled` is the full
+   *  OFF list). Writes the plugin state.json and ensures the plugin is enabled. */
+  async setAgentNativeTools(agentId: string, disabled: string[]): Promise<{ applied: number; disabled: string[] }> {
+    const catalog = await this.nativeToolCatalog()
+    const valid = new Set(catalog.map((t) => t.name))
+    const clean = [...new Set((disabled || []).filter((t) => typeof t === 'string' && valid.has(t)))].sort()
+    await this.ensureNativePluginEnabled(agentId)
+    const state = { disabled_toolsets: [] as string[], disabled_tools: clean }
+    await this.writeRemoteFile(`${this.nativePluginDir(agentId)}/state.json`, JSON.stringify(state, null, 1) + '\n')
+    return { applied: clean.length, disabled: clean }
+  }
+
+  /** Apply the same disabled-tool set to EVERY agent (global default). */
+  async setGlobalNativeTools(disabled: string[]): Promise<{ agents: number }> {
+    const agents = await this.listAgents()
+    for (const id of agents) {
+      try { await this.setAgentNativeTools(id, disabled) } catch { /* skip agents missing the plugin */ }
+    }
+    return { agents: agents.length }
+  }
+
+  private async nativePluginInstalled(agentId: string): Promise<boolean> {
+    const p = `${this.nativePluginDir(agentId)}/__init__.py`
+    return (await this.ssh(`test -f ${shq(p)} && echo yes || echo no`)).trim() === 'yes'
+  }
+
+  /** Ensure `acp-tool-override` is in the profile's plugins.enabled (idempotent). No-op if already
+   *  listed; appends a plugins block if the key is absent. Plugin files ship with the profile. */
+  private async ensureNativePluginEnabled(agentId: string): Promise<void> {
+    const cfg = `${this.profileHome(agentId)}/config.yaml`
+    const name = HermesManagementService.NATIVE_PLUGIN
+    await this.ssh(`grep -q ${shq(name)} ${shq(cfg)} || printf '\\nplugins:\\n  enabled:\\n  - %s\\n' ${shq(name)} >> ${shq(cfg)}`)
+  }
+
   /**
    * Upsert (or clear) a secret in Hermes's GLOBAL .env — the account-wide secret store every
    * profile inherits (e.g. `ELEVENLABS_API_KEY` for the ElevenLabs TTS provider). This is the

@@ -82,6 +82,19 @@ export class HermesService {
     return this.mgmt.resetAgentTools(agentId)
   }
 
+  nativeToolCatalog(): Promise<Array<{ name: string; category: string }>> {
+    return this.mgmt.nativeToolCatalog()
+  }
+  getAgentNativeTools(agentId: string): Promise<{ tools: Array<{ name: string; category: string; enabled: boolean }>; pluginInstalled: boolean }> {
+    return this.mgmt.getAgentNativeTools(agentId)
+  }
+  setAgentNativeTools(agentId: string, disabled: string[]): Promise<{ applied: number; disabled: string[] }> {
+    return this.mgmt.setAgentNativeTools(agentId, disabled)
+  }
+  setGlobalNativeTools(disabled: string[]): Promise<{ agents: number }> {
+    return this.mgmt.setGlobalNativeTools(disabled)
+  }
+
   listAgentLibraryDocs(agentId: string): Promise<Array<{ name: string; title: string; skill: string | null; pointed: boolean }>> {
     return this.mgmt.listAgentLibraryDocs(agentId)
   }
