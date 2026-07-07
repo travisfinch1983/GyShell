@@ -62,6 +62,28 @@ def _content_text(d):
     return str(c)
 
 
+def _strip_view_preamble(text):
+    """Remove the page-aware preambles the prompt path prepends (screenshot note +
+    [Current view context] {json}) so a DISPLAYED/replayed user turn shows only what the user typed.
+    The agent still received the full context at turn time; this is display-only."""
+    if not text:
+        return text
+    import re as _re
+    t = _re.sub(r"^\[The user's current screen is captured at[^\]]*\]\s*", "", text, flags=_re.S)
+    if t.startswith("[Current view context]"):
+        i = t.find("{")
+        if i != -1:
+            depth = 0
+            for j in range(i, len(t)):
+                if t[j] == "{":
+                    depth += 1
+                elif t[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return t[j + 1:].lstrip()
+    return t
+
+
 class BridgeClient:
     # mode == "replay" while a session/load is streaming prior history; "live" otherwise.
     def __init__(self):
@@ -78,7 +100,7 @@ class BridgeClient:
                   **({"role": "assistant"} if replaying else {}), "text": _content_text(d)})
         elif name == "UserMessageChunk":
             # Only meaningful during replay (live user turns originate from us).
-            emit({"t": "history", "role": "user", "text": _content_text(d)})
+            emit({"t": "history", "role": "user", "text": _strip_view_preamble(_content_text(d))})
         elif name == "AgentThoughtChunk":
             emit({"t": "history_thought" if replaying else "thought", "text": _content_text(d)})
         elif name in ("ToolCallStart", "ToolCall"):
@@ -225,6 +247,22 @@ async def main():
             emit({"t": "ready", "session_id": session_id, "resumed": resumed,
                   "models": models.get("available_models"), "current_model": models.get("current_model_id"),
                   "modes": modes.get("available_modes")})
+
+            # Run each prompt as a task so the stdin loop stays free to receive a {"type":"cancel"}
+            # while the model is inferring. conn.cancel() (ACP session/cancel) makes conn.prompt()
+            # resolve with stop_reason "cancelled", so run_prompt always emits a single turn_done.
+            async def run_prompt(block):
+                stop = None
+                try:
+                    resp = await conn.prompt(prompt=[block], session_id=session_id)
+                    rd = _dump(resp)
+                    stop = rd.get("stop_reason") or rd.get("stopReason") or "end_turn"
+                except Exception as e:
+                    emit({"t": "error", "where": "prompt", "message": str(e)})
+                    stop = "error"
+                emit({"t": "turn_done", "stop_reason": stop})
+            current = None
+
             async for line in stdin_lines():
                 if not line:
                     continue
@@ -262,13 +300,22 @@ async def main():
                         preamble.append(f"[Current view context]\n{ctx}")
                     full_text = ("\n\n".join(preamble) + "\n\n" + text) if preamble else text
                     block = TextContentBlock(type="text", text=full_text) if TextContentBlock else {"type": "text", "text": full_text}
-                    try:
-                        resp = await conn.prompt(prompt=[block], session_id=session_id)
-                        rd = _dump(resp)
-                        emit({"t": "turn_done", "stop_reason": rd.get("stop_reason") or rd.get("stopReason")})
-                    except Exception as e:
-                        emit({"t": "error", "where": "prompt", "message": str(e)})
+                    if current and not current.done():
+                        emit({"t": "error", "where": "prompt", "message": "busy: a turn is already running"}); continue
+                    current = asyncio.create_task(run_prompt(block))
+                elif cmd.get("type") == "cancel":
+                    # Stop button -> server -> here: abort the in-flight turn via ACP session/cancel.
+                    if current and not current.done():
+                        try:
+                            await conn.cancel(session_id=session_id)
+                        except Exception as e:
+                            emit({"t": "error", "where": "cancel", "message": str(e)})
                 elif cmd.get("type") == "close":
+                    if current and not current.done():
+                        try:
+                            await conn.cancel(session_id=session_id)
+                        except Exception:
+                            pass
                     break
         except Exception as e:
             emit({"t": "error", "where": "session", "message": str(e), "tb": traceback.format_exc()[:500]})

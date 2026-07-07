@@ -64,6 +64,7 @@ interface AcpSession {
   history: AcpEvent[] // ring buffer of emitted events (for transcript read-back)
   seq: number // monotonic event counter (last assigned seq)
   truncated: boolean // set once the ring has dropped events past the cap
+  status: 'idle' | 'busy' // server-authoritative turn state (drives the UI Stop button)
 }
 
 /** Server-side per-conversation metadata — powers resume (sessionId) AND the cross-device
@@ -135,7 +136,7 @@ export class HermesAcpBridge extends EventEmitter {
     const session: AcpSession = {
       agentId, proc, emitter, ready, readyResolved: false,
       stdoutBuf: '', startedAt: Date.now(), lastActivity: Date.now(),
-      history: [], seq: 0, truncated: false,
+      history: [], seq: 0, truncated: false, status: 'idle',
     }
 
     proc.stdout.on('data', (chunk: Buffer) => {
@@ -168,12 +169,16 @@ export class HermesAcpBridge extends EventEmitter {
         emitter.emit('event', ev)
         // fleet-wide fan-out so a single observer (bus wiring, logger) can watch all agents
         this.emit('event', { agentId, event: ev })
+        // A finished turn is authoritative idle (covers cancelled/errored/normal — the bridge
+        // always emits turn_done when the prompt task resolves).
+        if (ev.t === 'turn_done') this.setStatus(sessionKey, 'idle')
       }
     })
 
     proc.stderr.on('data', (d: Buffer) => this.emit('stderr', { agentId, text: d.toString('utf8') }))
 
     proc.on('exit', (code) => {
+      this.setStatus(sessionKey, 'idle') // a crashed/exited turn is no longer running
       this.sessions.delete(sessionKey)
       if (!session.readyResolved) { try { rejectReady(new Error(`acp-bridge for ${agentId} exited (code ${code}) before ready`)) } catch { /* noop */ } }
       emitter.emit('exit', code)
@@ -223,6 +228,36 @@ export class HermesAcpBridge extends EventEmitter {
     if (extra?.context) payload.context = extra.context
     if (extra?.screenshot) payload.screenshot = extra.screenshot
     session.proc.stdin.write(JSON.stringify(payload) + '\n')
+    this.setStatus(sessionKey, 'busy')
+  }
+
+  /** Server-authoritative turn state for a conversation (survives UI disconnects because it lives
+   *  here, not in any browser). 'idle' when no session exists. Drives the UI Stop button. */
+  getStatus(sessionKey: string): 'idle' | 'busy' {
+    return this.sessions.get(sessionKey)?.status ?? 'idle'
+  }
+
+  /** Flip a session's turn state and broadcast it as a seq'd {t:'status'} event through the SAME
+   *  ring + emitter pipeline as every other event — so live observers, /history read-back, and
+   *  /stream?since= replay all converge on one truth (no client-side guessing). No-op if unchanged. */
+  private setStatus(sessionKey: string, status: 'idle' | 'busy'): void {
+    const session = this.sessions.get(sessionKey)
+    if (!session || session.status === status) return
+    session.status = status
+    const ev = { t: 'status', status, seq: ++session.seq } as unknown as AcpEvent
+    session.history.push(ev)
+    const cap = this.cfg.historyCap ?? 5000
+    if (session.history.length > cap) { session.history.splice(0, session.history.length - cap); session.truncated = true }
+    session.emitter.emit('event', ev)
+    this.emit('event', { agentId: session.agentId, event: ev })
+  }
+
+  /** Stop the in-flight turn: forward an ACP session/cancel to the bridge. The turn ends with
+   *  stop_reason 'cancelled' -> turn_done -> status idle (all server-driven). Idempotent. */
+  cancel(sessionKey: string): void {
+    const session = this.sessions.get(sessionKey)
+    if (!session || session.proc.exitCode !== null) return
+    session.proc.stdin.write(JSON.stringify({ type: 'cancel' }) + '\n')
   }
 
   /** Subscribe to a session's normalized events. Returns an unsubscribe fn (safe to call any time). */

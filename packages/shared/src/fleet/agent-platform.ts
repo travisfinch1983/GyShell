@@ -249,6 +249,7 @@ export const hermesStreamEventSchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('capture_request'), requestId: z.string() }),
   /** Bridge auto-approved a permission request (mode-driven). */
   z.object({ t: z.literal('permission_auto_allow'), option_id: z.string().nullish() }),
+  z.object({ t: z.literal('status'), status: z.enum(['idle', 'busy']) }),
   z.object({ t: z.literal('turn_done'), stop_reason: z.string().nullish() }),
   z.object({ t: z.literal('error'), where: z.string().optional(), message: z.string(), tb: z.string().optional() }),
 ])

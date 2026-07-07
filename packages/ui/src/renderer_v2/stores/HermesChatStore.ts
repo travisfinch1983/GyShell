@@ -193,21 +193,18 @@ class HermesChatStore {
         push({ kind: 'tool', toolId: ev.id ?? null, title: ev.title ?? ev.kind ?? 'tool', status: 'completed', text: '' })
         break
       case 'message': {
-        s.busy = true // covers turns initiated by other clients of the shared session
         const l = last()
         if (l && l.kind === 'assistant' && l.streaming) l.text += ev.text
         else push({ kind: 'assistant', text: ev.text, streaming: true })
         break
       }
       case 'thought': {
-        s.busy = true
         const l = last()
         if (l && l.kind === 'thought' && l.streaming) l.text += ev.text
         else push({ kind: 'thought', text: ev.text, streaming: true })
         break
       }
       case 'tool_start':
-        s.busy = true
         push({ kind: 'tool', toolId: ev.id ?? null, title: ev.title ?? ev.kind ?? 'tool', status: 'running', text: '' })
         break
       case 'tool_progress': {
@@ -250,6 +247,11 @@ class HermesChatStore {
       case 'permission_auto_allow':
         // The bridge auto-approves (mode-driven) — informational, nothing to ask the user.
         push({ kind: 'system', text: `permission auto-allowed (${ev.option_id ?? 'default option'})` })
+        break
+      case 'status':
+        // SERVER-AUTHORITATIVE turn state — the single source of truth for the Stop button. Set here
+        // (not guessed from stream activity), so reconnects and other-device turns are always right.
+        s.busy = ev.status === 'busy'
         break
       case 'turn_done': {
         for (const i of s.items) i.streaming = false
@@ -335,6 +337,13 @@ class HermesChatStore {
    * augments the agent's turn server-side — the displayed message stays clean;
    * the transcript marks carrying turns with a chip (ctxAttached).
    */
+  /** Stop button — cancel the in-flight turn. Purely a REQUEST to the server; we do NOT optimistically
+   *  flip busy — the authoritative idle status arrives back over the stream once the model actually
+   *  stops, so the button state always reflects the real backend state. */
+  stop(agentId: string, conversationId: string): void {
+    void hermesApi.stop(agentId, conversationId)
+  }
+
   async send(agentId: string, conversationId: string, text: string): Promise<void> {
     const s = this.state(conversationId)
     const t = text.trim()

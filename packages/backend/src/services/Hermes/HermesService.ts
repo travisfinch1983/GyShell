@@ -170,6 +170,16 @@ export class HermesService {
     this.bridge.stopSession(sessionKey)
   }
 
+  /** Server-authoritative turn state (idle|busy) for a conversation — drives the UI Stop button. */
+  getStatus(sessionKey: string): 'idle' | 'busy' {
+    return this.bridge.getStatus(sessionKey)
+  }
+
+  /** Stop the in-flight turn (Stop button) — server forwards ACP session/cancel to the model. */
+  cancelTurn(sessionKey: string): void {
+    this.bridge.cancel(sessionKey)
+  }
+
   listConversations(): Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }> {
     return this.bridge.listConversations()
   }

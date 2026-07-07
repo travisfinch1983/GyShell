@@ -467,6 +467,12 @@ export const hermesApi = {
     return bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/history?conversationId=${encodeURIComponent(conversationId)}${since != null ? `&since=${since}` : ''}`)
   },
 
+  /** POST /cancel — Stop button: cancel the in-flight turn (server forwards ACP session/cancel to
+   *  the model). Fire-and-forget; the authoritative idle status arrives back over /stream. */
+  async stop(agentId: string, conversationId: string): Promise<void> {
+    await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(agentId)}/cancel?conversationId=${encodeURIComponent(conversationId)}`, {})
+  },
+
   /** GET /api/hermes/conversations — server-side conversation registry (cross-device tab list). */
   async conversations(): Promise<Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }>> {
     try { const r = await bridge().request('GET', '/api/hermes/conversations'); return Array.isArray((r as { conversations?: unknown })?.conversations) ? (r as { conversations: Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }> }).conversations : [] } catch { return [] }

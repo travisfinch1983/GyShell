@@ -290,6 +290,29 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
 
+  // Server-authoritative turn state (idle|busy). The UI reflects THIS for the Stop button, so a
+  // reconnecting / other-device client is never stuck showing the wrong state.
+  router.get('/api/hermes/agents/:id/status', (req: Req, res: Res) => {
+    const q = req.query as { conversationId?: unknown }
+    const key = typeof q.conversationId === 'string' ? q.conversationId : req.params.id
+    res.json({ status: hermes.getStatus(key) })
+  })
+
+  // Stop button: cancel the in-flight turn (server forwards ACP session/cancel to the model). The
+  // turn ends with stop_reason 'cancelled' and the status flips to idle over /stream. Idempotent.
+  router.post('/api/hermes/agents/:id/cancel', json, (req: Req, res: Res) => {
+    try {
+      const q = req.query as { conversationId?: unknown }
+      const b = (req.body ?? {}) as { conversationId?: unknown }
+      const key = typeof q.conversationId === 'string' ? q.conversationId
+        : typeof b.conversationId === 'string' ? b.conversationId : req.params.id
+      hermes.cancelTurn(key)
+      res.json({ ok: true })
+    } catch (e) {
+      res.status(500).json({ error: String((e as Error).message) })
+    }
+  })
+
   // End + WIPE a conversation's session (called when a chat tab is closed) so a same-agent
   // reopen starts brand new. Idempotent — no-op if nothing's running for that key.
   router.delete('/api/hermes/agents/:id/session', (req: Req, res: Res) => {
@@ -370,6 +393,10 @@ export function createHermesRouter(hermes: HermesService): express.Router {
       res.write(`data: ${JSON.stringify(ready)}\n\n`)
       lastWritten = ready.seq ?? 0
     }
+
+    // Always (re)assert the authoritative turn state on connect so a reconnecting or new client can
+    // never be stuck showing the wrong Stop-button state (the OpenClaw failure mode). Idempotent.
+    try { res.write(`data: ${JSON.stringify({ t: 'status', status: hermes.getStatus(key) })}\n\n`) } catch { /* client gone */ }
 
     // Flush anything that arrived during replay, deduped against what we just wrote, then
     // hand the listener the live channel.

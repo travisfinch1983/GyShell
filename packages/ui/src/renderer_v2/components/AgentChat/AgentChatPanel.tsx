@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Plus, ScanEye, SendHorizonal, Settings2, Trash2, Wrench } from 'lucide-react'
+import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Plus, ScanEye, SendHorizonal, Settings2, Square, Trash2, Wrench } from 'lucide-react'
 import type { HermesSlashCommand } from '@gyshell/shared'
 import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
 import { hermesChatStore as chat, type ChatItem } from '../../stores/HermesChatStore'
@@ -198,9 +198,15 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
               if (e.key === 'Tab' && slashOpen && slashMatches[0]) { e.preventDefault(); setText(`/${slashMatches[0].name} `); setSlashOpen(false) }
             }}
           />
-          <button className={styles.btnPrimary} disabled={s.busy || !text.trim()} onClick={send}>
-            <SendHorizonal size={13} />
-          </button>
+          {s.busy ? (
+            <button className={styles.btnStop} title="Stop generating" onClick={() => chat.stop(agentId, conversationId)}>
+              <Square size={11} fill="currentColor" /> Stop
+            </button>
+          ) : (
+            <button className={styles.btnPrimary} disabled={!text.trim()} onClick={send}>
+              <SendHorizonal size={13} />
+            </button>
+          )}
         </div>
       </div>
     </div>
