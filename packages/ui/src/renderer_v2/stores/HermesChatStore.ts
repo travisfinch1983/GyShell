@@ -46,11 +46,14 @@ export interface AgentChatState {
   /** context-window meter from usageUpdate: {used, size} */
   usage: { used: number; size: number } | null
   currentModel: string | null
+  /** backend session id from `ready` — HEADER state, never a chat item (the
+   *  old "attached — session…" items stacked one per tab-swap re-attach). */
+  sessionId: string | null
   error: string | null
 }
 
 function emptyState(): AgentChatState {
-  return { items: [], connected: false, busy: false, commands: [], usage: null, currentModel: null, error: null }
+  return { items: [], connected: false, busy: false, commands: [], usage: null, currentModel: null, sessionId: null, error: null }
 }
 
 class HermesChatStore {
@@ -107,12 +110,9 @@ class HermesChatStore {
         replayed++
         if (typeof raw.seq === 'number') since = raw.seq
       }
-      if (replayed > 0) {
-        const s = this.state(conversationId)
-        runInAction(() => {
-          s.items.push({ id: this.nextId++, kind: 'system', text: 'transcript restored from server', ts: Date.now() })
-        })
-      }
+      // no "transcript restored" chat item — the restored transcript IS the
+      // indicator, and the row re-stacked on re-attach (Travis had ~5).
+      void replayed
     } catch { /* no history yet / route hiccup — stream from live */ }
     this.openStream(agentId, conversationId, since)
   }
@@ -165,8 +165,11 @@ class HermesChatStore {
 
     switch (ev.t) {
       case 'ready': {
+        // Header state only — no chat item. `ready` re-arrives on EVERY
+        // re-attach (tab swap → openStream → backend re-sends it), so pushing
+        // an item here stacked one "attached — session…" row per swap.
         s.currentModel = ev.current_model ?? null
-        push({ kind: 'system', text: `attached — session ${ev.session_id ?? '?'}${ev.current_model ? ` · ${ev.current_model}` : ''}` })
+        s.sessionId = ev.session_id ?? null
         break
       }
       case 'user':
