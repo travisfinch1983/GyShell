@@ -1,0 +1,15 @@
+[Unit]
+Description=AI-Lab memory MCP server (unified multi-DB memory, streamable HTTP, per-caller /u/<name>/mcp routing)
+After=network.target
+
+[Service]
+Environment=MEMORY_MCP_HTTP_PORT=9847
+Environment=HIPPOCAMPAI_URL=http://10.0.0.26:8000
+Environment=HIPPOCAMPAI_USER=claude
+Environment=PROXLAB_URL=http://10.0.0.219:17890
+ExecStart=/opt/mcp-unified-memory/.venv/bin/python -m mcp_unified_memory --http
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

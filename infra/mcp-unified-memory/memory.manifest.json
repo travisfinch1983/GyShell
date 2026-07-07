@@ -1,0 +1,7 @@
+{
+  "name": "memory",
+  "transport": "streamable_http",
+  "description": "Unified multi-backend memory (per-caller user_id routing; direct per-agent endpoints at /u/<name>/mcp)",
+  "url": "http://10.0.0.219:9847/mcp",
+  "notes": "Consolidation 2026-07-07: replaces the npx knowledge-graph 'memory', 'unified-memory', and 'hippocampai-claude' stdio registrations. One systemd service (ai-lab-memory-mcp on CT152 :9847). Callers hitting /mcp write/read the default namespace (claude); per-agent isolation = point the client at /u/<agent-name>/mcp on the same port. Vector-DB recalls are namespace-filtered by payload user_id; legacy entries without user_id belong to 'claude'."
+}

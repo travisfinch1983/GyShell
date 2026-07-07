@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-unified-memory"
+version = "0.1.0"
+description = "Unified RAG memory MCP server with multi-vector-DB consensus search"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "httpx>=0.27.0",
+]
+
+[project.scripts]
+mcp-unified-memory = "mcp_unified_memory.__main__:main"
