@@ -30,10 +30,6 @@ interface RuntimeAddon {
   order?: number
 }
 
-function bridge(): any {
-  return (window as any).gyshell?.cluster
-}
-
 /** 'dark' | 'light' from the LIVE --app-bg token (themes are applied as CSS
  *  custom properties on <html>, no data-theme attribute to read) — with a
  *  MutationObserver on the style attribute so theme toggles propagate. */

@@ -12,6 +12,7 @@ import {
   type SplitDirection
 } from './types'
 import { isPanelKind } from './panelKindMeta'
+import { newUuid } from '../lib/uuid'
 
 interface LegacyLayoutSnapshot {
   panelOrder?: string[]
@@ -40,7 +41,7 @@ const cloneValue = <T>(value: T): T => {
 
 export const makeLayoutId = (prefix: string): string => {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
-    return `${prefix}-${globalThis.crypto.randomUUID()}`
+    return `${prefix}-${newUuid()}`
   }
   return `${prefix}-${Math.random().toString(16).slice(2)}-${Date.now().toString(16)}`
 }

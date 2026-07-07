@@ -7,6 +7,7 @@ import type { HermesSlashCommand } from '@gyshell/shared'
 import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
 import { hermesChatStore as chat, type ChatItem } from '../../stores/HermesChatStore'
 import styles from './AgentChat.module.scss'
+import { newUuid } from '../../lib/uuid'
 
 /** Collapsible reasoning block. */
 const ThoughtRow: React.FC<{ item: ChatItem }> = ({ item }) => {
@@ -202,7 +203,7 @@ export const AgentChatPanel: React.FC = observer(() => {
   const cids = useRef(new Map<string, string>())
   const cidFor = (agentId: string) => {
     let c = cids.current.get(agentId)
-    if (!c) { c = crypto.randomUUID(); cids.current.set(agentId, c) }
+    if (!c) { c = newUuid(); cids.current.set(agentId, c) }
     return c
   }
 

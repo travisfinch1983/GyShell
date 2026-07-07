@@ -221,6 +221,12 @@ export const hermesStreamEventSchema = z.discriminatedUnion('t', [
   /** User turn — emitted into CONVERSATION HISTORY by the prompt route (not by
    *  the live bridge): lets a /history replay rebuild the user's own bubbles. */
   z.object({ t: z.literal('user'), text: z.string() }),
+  // Resumed-session replay (bridge session persistence, claude1 57cce93):
+  // the bridge replays the prior transcript BEFORE `ready` on a resumed
+  // session — complete turns, not streamed chunks. Absent on fresh sessions.
+  z.object({ t: z.literal('history'), role: z.enum(['user', 'assistant']), text: z.string() }),
+  z.object({ t: z.literal('history_thought'), text: z.string() }),
+  z.object({ t: z.literal('history_tool'), id: z.string().nullish(), title: z.string().nullish(), kind: z.string().nullish(), raw: z.unknown() }),
   /** Assistant text chunk — append to the current bubble. */
   z.object({ t: z.literal('message'), text: z.string() }),
   /** Reasoning chunk — append to the collapsible thought block. */

@@ -177,6 +177,18 @@ class HermesChatStore {
         // bridge never emits this) — rebuilds the user's own bubbles on restore.
         push({ kind: 'user', text: ev.text })
         break
+      // ── resumed-session replay (bridge persistence): the prior transcript
+      // arrives BEFORE `ready` as complete turns — same bubbles as live, just
+      // backfilled, never streaming, and never flipping `busy`. ─────────────
+      case 'history':
+        push({ kind: ev.role === 'user' ? 'user' : 'assistant', text: ev.text, streaming: false })
+        break
+      case 'history_thought':
+        push({ kind: 'thought', text: ev.text, streaming: false })
+        break
+      case 'history_tool':
+        push({ kind: 'tool', toolId: ev.id ?? null, title: ev.title ?? ev.kind ?? 'tool', status: 'completed', text: '' })
+        break
       case 'message': {
         s.busy = true // covers turns initiated by other clients of the shared session
         const l = last()
@@ -258,15 +270,27 @@ class HermesChatStore {
    *  own finally. */
   private async handleCaptureRequest(conversationId: string, requestId: string): Promise<void> {
     if (typeof document === 'undefined') return // spec env
+    const fail = (why: string) => {
+      // Still NO POST — the backend's 20s timeout tells the agent it couldn't
+      // see. But the failure must be VISIBLE here: fully-silent failure made
+      // view_screen problems indistinguishable from a closed panel (e2e
+      // finding, 2026-07-07).
+      const s = this.state(conversationId)
+      runInAction(() => {
+        s.items.push({ id: this.nextId++, kind: 'error', text: `screen capture failed — the agent's view_screen will time out (${why})`, ts: Date.now() })
+      })
+    }
     try {
       const shot = await captureUI({ hide: ['.ai-lab-global-chat'] })
-      if (!shot) return
+      if (!shot) { fail('capture returned no image'); return }
       await hermesApi.screenCapture(requestId, shot)
       const s = this.state(conversationId)
       runInAction(() => {
         s.items.push({ id: this.nextId++, kind: 'system', text: '📸 agent viewed your screen', ts: Date.now() })
       })
-    } catch { /* no POST — backend timeout informs the agent */ }
+    } catch (e) {
+      fail(String((e as Error)?.message ?? e))
+    }
   }
 
   /**
