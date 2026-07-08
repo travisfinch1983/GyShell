@@ -27,7 +27,7 @@ export class ClusterService {
   private readonly timeoutMs: number
 
   // Only cluster-management paths are proxyable from the renderer.
-  private static readonly ALLOWED_PREFIXES = ['/api/guests/', '/api/gpu', '/api/storages', '/api/pve/', '/api/ai', '/api/discovery', '/api/scripts', '/api/script-catalog', '/api/civitai', '/api/system', '/api/mcp', '/api/ui-prefs', '/api/proxy', '/api/claude', '/api/hermes', '/api/ftp', '/api/agent', '/api/addons']
+  private static readonly ALLOWED_PREFIXES = ['/api/guests/', '/api/gpu', '/api/storages', '/api/pve/', '/api/ai', '/api/discovery', '/api/scripts', '/api/script-catalog', '/api/civitai', '/api/system', '/api/mcp', '/api/ui-prefs', '/api/proxy', '/api/claude', '/api/hermes', '/api/flowcharts', '/api/ftp', '/api/agent', '/api/addons']
 
   constructor(opts: ClusterServiceOptions = {}) {
     this.base = (opts.proxlabBase || DEFAULT_BASE).replace(/\/+$/, '')
@@ -39,7 +39,7 @@ export class ClusterService {
   // /api/ai is now fully native (the ported launch/scan/estimate/gpu/providers/services/HF router on the
   // universal proxy). AI-Lab only uses /api/ai/{providers,hf,active-services,config} + the launch
   // endpoints — none of the un-ported RAG/inventory sub-paths — so the whole prefix routes local.
-  private static readonly LOCAL_PREFIXES = ['/api/civitai', '/api/ai', '/api/system', '/api/mcp', '/api/ui-prefs', '/api/proxy', '/api/claude', '/api/discovery', '/api/pve', '/api/guests', '/api/gpu', '/api/storages', '/api/scripts', '/api/script-catalog', '/api/hermes', '/api/ftp', '/api/agent', '/api/addons']
+  private static readonly LOCAL_PREFIXES = ['/api/civitai', '/api/ai', '/api/system', '/api/mcp', '/api/ui-prefs', '/api/proxy', '/api/claude', '/api/discovery', '/api/pve', '/api/guests', '/api/gpu', '/api/storages', '/api/scripts', '/api/script-catalog', '/api/hermes', '/api/flowcharts', '/api/ftp', '/api/agent', '/api/addons']
   private localBase = `http://127.0.0.1:${process.env.AILAB_PROXY_PORT || 17890}`
 
   private async send(method: HttpMethod, path: string, body?: unknown): Promise<unknown> {
