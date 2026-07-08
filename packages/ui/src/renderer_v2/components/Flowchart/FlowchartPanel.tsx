@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ReactFlow,
   ReactFlowProvider,
+  ConnectionMode,
   addEdge,
   useNodesState,
   useEdgesState,
@@ -157,6 +158,7 @@ function Inner() {
             onInit={setRf}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
+            connectionMode={ConnectionMode.Loose}
             onSelectionChange={({ nodes: sel }) => setSelId(sel[0]?.id ?? null)}
             deleteKeyCode={['Delete', 'Backspace']}
             fitView
