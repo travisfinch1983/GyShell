@@ -20,9 +20,11 @@ import '@xyflow/react/dist/style.css'
 import { Save, FolderOpen, FilePlus2, Trash2, Maximize2 } from 'lucide-react'
 import { NODE_SHAPES, type NodeShapeType, type FlowNodeData, type FlowEdgeKind } from './nodeTypes'
 import { FlowNode } from './FlowNode'
+import { FloatingEdge } from './FloatingEdge'
 import styles from './FlowchartPanel.module.css'
 
 const nodeTypes = { flow: FlowNode }
+const edgeTypes = { default: FloatingEdge, floating: FloatingEdge }
 const bridge = (): { request: (m: string, p: string, b?: unknown) => Promise<any> } | undefined =>
   (window as unknown as { gyshell?: { cluster?: any } }).gyshell?.cluster
 
@@ -76,7 +78,7 @@ function Inner() {
     return () => clearTimeout(t)
   }, [nodes, edges, name, chartId])
 
-  const onConnect = useCallback((c: Connection) => setEdges((es) => addEdge({ ...c, ...edgeStyleFor(edgeKind) }, es)), [edgeKind, setEdges])
+  const onConnect = useCallback((c: Connection) => setEdges((es) => addEdge({ ...c, type: 'floating', ...edgeStyleFor(edgeKind) }, es)), [edgeKind, setEdges])
 
   const addNode = useCallback((shape: NodeShapeType) => {
     const meta = NODE_SHAPES[shape]
@@ -154,6 +156,7 @@ function Inner() {
             onConnect={onConnect}
             onInit={setRf}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             onSelectionChange={({ nodes: sel }) => setSelId(sel[0]?.id ?? null)}
             deleteKeyCode={['Delete', 'Backspace']}
             fitView
