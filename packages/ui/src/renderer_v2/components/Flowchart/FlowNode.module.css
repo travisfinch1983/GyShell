@@ -1,0 +1,59 @@
+.node {
+  min-width: 120px;
+  min-height: 46px;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  box-sizing: border-box;
+  font-size: 13px;
+  line-height: 1.25;
+  color: var(--fg, #e6e6e6);
+  background: color-mix(in srgb, var(--node-color) 16%, var(--app-bg, #1a1a1a));
+  border: 2px solid var(--node-color);
+  border-radius: 4px;
+}
+.selected {
+  box-shadow: 0 0 0 2px var(--node-color), 0 4px 18px rgba(0, 0, 0, 0.35);
+}
+.label {
+  pointer-events: none;
+  overflow-wrap: anywhere;
+  max-width: 260px;
+}
+
+.rectangle { border-radius: 3px; }
+.rounded { border-radius: 12px; }
+.ellipse { border-radius: 50%; min-width: 120px; min-height: 70px; }
+.diamond {
+  clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+  min-width: 120px;
+  min-height: 90px;
+}
+.hexagon {
+  clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+  min-width: 140px;
+}
+.cylinder {
+  border-radius: 50% / 14px;
+}
+/* Group = a large translucent container to visually box related nodes. */
+.group {
+  min-width: 240px;
+  min-height: 150px;
+  border-style: dashed;
+  border-radius: 10px;
+  align-items: flex-start;
+  justify-content: flex-start;
+  background: color-mix(in srgb, var(--node-color) 7%, transparent);
+  font-weight: 600;
+  color: var(--node-color);
+}
+
+.handle {
+  width: 9px;
+  height: 9px;
+  background: var(--node-color);
+  border: 1.5px solid var(--app-bg, #1a1a1a);
+}

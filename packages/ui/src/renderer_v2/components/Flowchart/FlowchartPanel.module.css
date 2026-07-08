@@ -1,0 +1,113 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--app-bg);
+  color: var(--fg);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.nameInput {
+  background: var(--control-bg, #232323);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  padding: 5px 9px;
+  font-size: 13px;
+  min-width: 180px;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--control-bg, #232323);
+  color: var(--fg);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.btn:hover { border-color: var(--accent); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.sep { width: 1px; height: 20px; background: var(--border); margin: 0 2px; }
+.spacer { flex: 1; }
+.edgeSel { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--fg-muted); }
+.edgeSel select, .field select, .field input, .field textarea {
+  background: var(--control-bg, #232323);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  padding: 4px 6px;
+  font-size: 12.5px;
+}
+
+.body { flex: 1; display: flex; min-height: 0; }
+
+.palette {
+  width: 168px;
+  flex: 0 0 auto;
+  border-right: 1px solid var(--border);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+.paletteHead { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-muted); padding: 0 4px 2px; }
+.shapeBtn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--control-bg, #232323);
+  color: var(--fg);
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+}
+.shapeBtn:hover { background: color-mix(in srgb, var(--accent) 12%, var(--control-bg, #232323)); }
+.swatch { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto; }
+.paletteHint { margin-top: auto; font-size: 11px; color: var(--fg-faint, #888); line-height: 1.4; padding: 8px 4px 0; }
+
+.canvas { flex: 1; min-width: 0; position: relative; }
+
+.props {
+  width: 232px;
+  flex: 0 0 auto;
+  border-left: 1px solid var(--border);
+  padding: 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+}
+.propsHead { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-muted); }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--fg-muted); }
+.field input[type="color"] { height: 30px; padding: 2px; width: 100%; }
+.btnDanger {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 6px 10px; border: 1px solid var(--danger, #e5484d); border-radius: 6px;
+  background: transparent; color: var(--danger, #e5484d); font-size: 12px; cursor: pointer; margin-top: 4px;
+}
+.btnDanger:hover { background: color-mix(in srgb, var(--danger, #e5484d) 12%, transparent); }
+
+.modalBg { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.45); display: flex; align-items: center; justify-content: center; z-index: 20; }
+.modal { background: var(--app-bg); border: 1px solid var(--border); border-radius: 10px; padding: 14px; min-width: 360px; max-width: 520px; max-height: 70%; overflow-y: auto; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5); }
+.modalHead { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+.dim { color: var(--fg-muted); font-size: 12px; }
+.savedRow { display: flex; align-items: center; gap: 10px; padding: 6px 4px; border-bottom: 1px solid var(--border); }
+.savedName { flex: 1; text-align: left; background: none; border: none; color: var(--fg); font-size: 13px; cursor: pointer; }
+.savedName:hover { color: var(--accent); }
+.savedDel { background: none; border: none; color: var(--fg-muted); cursor: pointer; display: inline-flex; }
+.savedDel:hover { color: var(--danger, #e5484d); }

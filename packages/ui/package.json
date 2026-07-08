@@ -9,5 +9,8 @@
   "scripts": {
     "build": "echo \"ui: built by electron-vite renderer pipeline\"",
     "typecheck": "echo \"ui: checked by root tsconfig.web.json\""
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.10.2"
   }
 }

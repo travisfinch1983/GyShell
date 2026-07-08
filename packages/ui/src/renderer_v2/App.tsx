@@ -15,6 +15,7 @@ import { AgentRail } from './components/AgentRail/AgentRail'
 import { PrimarySidebar, type PrimaryTab } from './components/PrimarySidebar/PrimarySidebar'
 import { GlobalChat } from './components/Chat/GlobalChat'
 import { AgentChatPanel } from './components/AgentChat/AgentChatPanel'
+import { FlowchartPanel } from './components/Flowchart/FlowchartPanel'
 import { FleetPanel } from './components/Fleet/FleetPanel'
 import { AddonsPanel } from './components/Addons/AddonsPanel'
 import { ContextMenuOverlay } from './components/Common/ContextMenuOverlay'
@@ -258,12 +259,7 @@ export const App: React.FC = observer(() => {
 
           {primaryTab === 'addons' && <AddonsPanel />}
 
-          {primaryTab === 'flowchart' && (
-            <PlaceholderPanel
-              title="Flowchart"
-              body="Visual structure builder coming in Phase 2 — port of the xyflow-based diagram tool from claude-dhb, generalized for rect / circle / group shapes with nesting + a saved diagram library."
-            />
-          )}
+          {primaryTab === 'flowchart' && <FlowchartPanel />}
           {primaryTab === 'files' && <FilesPanel />}
           {primaryTab === 'monitor' && (
             <PlaceholderPanel
