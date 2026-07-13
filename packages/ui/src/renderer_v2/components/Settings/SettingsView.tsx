@@ -505,7 +505,7 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
             <span className="icon">
               <Volume2 size={16} strokeWidth={2} />
             </span>
-            <span>TTS & STT</span>
+            <span>Support Models</span>
           </div>
           <div
               className={

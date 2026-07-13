@@ -1,20 +1,23 @@
 /**
- * TtsSettingsPanel — TTS & STT configuration tab in Settings.
+ * TtsSettingsPanel — the "Support Models" tab in Settings.
  *
- * Configures:
+ * Configures the models that support the agents rather than being agents:
+ * - Vision Description model (global Hermes role — describes images to
+ *   text-only agents; vision-capable agents see images natively and ignore it)
  * - STT provider and model selection
  * - TTS provider and model selection
  * - Single/dual pipeline toggle
  * - RVC voice conversion toggle
  *
- * Settings stored in settings.ttsConfig / settings.sttConfig
+ * TTS/STT settings stored in settings.ttsConfig / settings.sttConfig;
+ * Vision Description lives backend-side (GET/PUT /api/hermes/support-models).
  */
 
 import React, { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { observer } from 'mobx-react-lite'
 import {
-  Volume2, Mic, RefreshCw, CircleDot,
+  Volume2, Mic, RefreshCw, CircleDot, Eye,
 } from 'lucide-react'
 import {
   getTtsProviders,
@@ -25,6 +28,7 @@ import {
   type SttProvider,
   type RvcModel,
 } from '../../services/ProxlabDiscovery'
+import { hermesApi, type SupportModelRole, type CatalogModelWithCaps } from '../../stores/hermesApi'
 
 interface TtsConfig {
   enabled: boolean
@@ -58,6 +62,98 @@ const DEFAULT_STT_CONFIG: SttConfig = {
   enabled: true,
   provider: 1,
   model: 'large-v3-turbo',
+}
+
+// ─── Vision Description Section ───────────────────────────────────────────────
+// Global Hermes role: the model that describes images to TEXT-ONLY agents.
+// Vision-capable agents see images natively and ignore this setting entirely.
+
+const VisionDescriptionSection: React.FC = () => {
+  const [visionModels, setVisionModels] = useState<CatalogModelWithCaps[]>([])
+  const [role, setRole] = useState<SupportModelRole | null>(null)
+  // Wipe guard: the selector only renders after a successful GET, so a failed
+  // load can never turn into a blind PUT over live config.
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [saving, setSaving] = useState(false)
+  const [status, setStatus] = useState('')
+
+  const load = async () => {
+    setState('loading')
+    const [roles, catalog] = await Promise.all([hermesApi.getSupportModels(), hermesApi.listCatalog()])
+    if (roles === null) { setState('error'); return }
+    setRole(roles.visionDescription)
+    setVisionModels(catalog.filter((m) => m.capabilities?.vision === true))
+    setState('ready')
+  }
+
+  useEffect(() => { load() }, [])
+
+  const apply = async (model: string) => {
+    const next: SupportModelRole | null = model ? { provider: role?.provider || 'ailab', model } : null
+    const prev = role
+    setRole(next)
+    setSaving(true)
+    setStatus('')
+    const r = await hermesApi.setSupportModels(next)
+    setSaving(false)
+    if (!r.ok) {
+      setRole(prev)
+      setStatus(`save failed${r.error ? ` — ${r.error}` : ''}`)
+      return
+    }
+    setStatus(
+      next
+        ? `saved${typeof r.agentsUpdated === 'number' ? ` — ${r.agentsUpdated} agent${r.agentsUpdated === 1 ? '' : 's'} updated` : ''}`
+        : 'cleared — text-only agents get no image descriptions',
+    )
+  }
+
+  // Current value may reference a model missing from the catalog (renamed,
+  // unloaded) — keep it selectable rather than silently showing something else.
+  const options = visionModels.map((m) => m.id)
+  if (role?.model && !options.includes(role.model)) options.unshift(role.model)
+
+  return (
+    <div className="tts-section">
+      <div className="tts-section-header">
+        <Eye size={13} />
+        <span>Vision Description</span>
+      </div>
+      <div className="tts-section-body">
+        {state === 'loading' ? (
+          <div className="tts-empty">Loading current assignment…</div>
+        ) : state === 'error' ? (
+          <div className="tts-empty">
+            Could not load the current assignment — not editable until it loads.{' '}
+            <button className="tts-retry" onClick={load} style={{ cursor: 'pointer' }}>Retry</button>
+          </div>
+        ) : (
+          <>
+            <div className="tts-field">
+              <label>Describer Model{saving ? ' (saving…)' : ''}</label>
+              <select
+                value={role?.model || ''}
+                onChange={(e) => apply(e.target.value)}
+                className="tts-select"
+                disabled={saving}
+              >
+                <option value="">(None — text-only agents get no image descriptions)</option>
+                {options.map((id) => (
+                  <option key={id} value={id}>{id}</option>
+                ))}
+              </select>
+              {status && <span className="tts-hint">{status}</span>}
+            </div>
+            <span className="tts-hint">
+              Only used for text-only agents: a non-vision model can't see pixels, so incoming
+              images are described to it by this model. Vision-capable agents ignore it — they
+              see images natively.
+            </span>
+          </>
+        )}
+      </div>
+    </div>
+  )
 }
 
 export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) => {
@@ -112,7 +208,7 @@ export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) =
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
         <Volume2 size={16} />
-        <span style={{ fontSize: 14, fontWeight: 700 }}>TTS & STT Configuration</span>
+        <span style={{ fontSize: 14, fontWeight: 700 }}>Support Models</span>
         <button
           className={`proxlab-refresh ${refreshing ? 'spinning' : ''}`}
           onClick={handleRefresh}
@@ -122,6 +218,9 @@ export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) =
           <RefreshCw size={12} />
         </button>
       </div>
+
+      {/* ─── Vision Description Section ───────────────────────────── */}
+      <VisionDescriptionSection />
 
       {/* ─── STT Section ──────────────────────────────────────────── */}
       <div className="tts-section">

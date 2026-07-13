@@ -27,6 +27,10 @@ export interface HermesApplyResult {
   error?: string
 }
 
+/** One global support-model role assignment (Support Models tab). */
+export interface SupportModelRole { provider: string; model: string }
+export interface SupportModels { visionDescription: SupportModelRole | null }
+
 export interface HermesPromptResult {
   ok: boolean
   reply?: string
@@ -484,6 +488,38 @@ export const hermesApi = {
     try {
       await bridge().request('DELETE', `/api/hermes/agents/${encodeURIComponent(id)}/session?conversationId=${encodeURIComponent(conversationId)}`)
     } catch { /* best-effort — a dead backend session just ages out */ }
+  },
+
+  /**
+   * GET /api/hermes/support-models → global role assignments. Returns null on
+   * transport failure (distinct from a legitimately unset role) so the editor
+   * can stay closed instead of blind-saving over live config.
+   */
+  async getSupportModels(): Promise<SupportModels | null> {
+    try {
+      const r = await bridge().request('GET', '/api/hermes/support-models')
+      const roles = r?.roles
+      if (!roles || typeof roles !== 'object') return null
+      const vd = roles.visionDescription
+      return {
+        visionDescription: vd && typeof vd.model === 'string' && vd.model
+          ? { provider: String(vd.provider || 'ailab'), model: vd.model }
+          : null,
+      }
+    } catch {
+      return null
+    }
+  },
+
+  /** PUT /api/hermes/support-models — applies globally; null clears the role. */
+  async setSupportModels(visionDescription: SupportModelRole | null): Promise<{ ok: boolean; agentsUpdated?: number; error?: string }> {
+    try {
+      const r = await bridge().request('PUT', '/api/hermes/support-models', { visionDescription })
+      if (r?.error) return { ok: false, error: String(r.error) }
+      return { ok: r?.ok !== false, agentsUpdated: typeof r?.agentsUpdated === 'number' ? r.agentsUpdated : undefined }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
   },
 
   /**
