@@ -10,6 +10,8 @@ export interface HermesServiceConfig {
   specsFile?: string
   /** JSON file where Provider Services entries (keyed non-model providers) are persisted. */
   providerServicesFile?: string
+  /** JSON file where global Support-Models roles persist. */
+  supportModelsFile?: string
 }
 
 /**
@@ -29,7 +31,7 @@ export class HermesService {
   private readonly pendingCaptures = new Map<string, (image: string) => void>()
 
   constructor(cfg: HermesServiceConfig) {
-    this.mgmt = new HermesManagementService({ host: cfg.host, sshKeyPath: cfg.sshKeyPath, specsFile: cfg.specsFile, providerServicesFile: cfg.providerServicesFile })
+    this.mgmt = new HermesManagementService({ host: cfg.host, sshKeyPath: cfg.sshKeyPath, specsFile: cfg.specsFile, providerServicesFile: cfg.providerServicesFile, supportModelsFile: cfg.supportModelsFile })
     this.bridge = new HermesAcpBridge({ host: cfg.host, sshKeyPath: cfg.sshKeyPath })
   }
 
@@ -147,6 +149,13 @@ export class HermesService {
     return this.mgmt.applySpec(spec)
   }
 
+  getSupportModels(): ReturnType<HermesManagementService['getSupportModels']> {
+    return this.mgmt.getSupportModels()
+  }
+  setSupportModels(roles: Parameters<HermesManagementService['setSupportModels']>[0]): Promise<{ agentsUpdated: number }> {
+    return this.mgmt.setSupportModels(roles)
+  }
+
   async deleteAgent(agentId: string): Promise<void> {
     this.bridge.stopSession(agentId)
     await this.mgmt.deleteAgent(agentId)
@@ -214,10 +223,10 @@ export class HermesService {
   /** Fire a prompt WITHOUT waiting for the turn to finish — the reply arrives over the
    *  event stream (/stream). Used by the streaming chat so the HTTP call returns fast
    *  (an LLM turn can take minutes; the cluster-proxy RPC would otherwise time out). */
-  async sendPrompt(agentId: string, text: string, opts: { context?: string; screenshot?: string; sessionKey?: string } = {}): Promise<void> {
+  async sendPrompt(agentId: string, text: string, opts: { context?: string; screenshot?: string; images?: string[]; sessionKey?: string } = {}): Promise<void> {
     const key = opts.sessionKey ?? agentId
     await this.bridge.ensureReady(key, agentId)
-    this.bridge.prompt(key, text, { context: opts.context, screenshot: opts.screenshot })
+    this.bridge.prompt(key, text, { context: opts.context, screenshot: opts.screenshot, images: opts.images })
   }
 
   /**
@@ -234,7 +243,7 @@ export class HermesService {
    * prompts, collects `message` chunks until `turn_done`. Used by the HTTP prompt route
    * and the (deferred) bus subscriber.
    */
-  async runTurn(agentId: string, text: string, opts: { timeoutMs?: number; context?: string; screenshot?: string; sessionKey?: string } = {}): Promise<{ reply: string; stopReason?: string }> {
+  async runTurn(agentId: string, text: string, opts: { timeoutMs?: number; context?: string; screenshot?: string; images?: string[]; sessionKey?: string } = {}): Promise<{ reply: string; stopReason?: string }> {
     const key = opts.sessionKey ?? agentId
     await this.bridge.ensureReady(key, agentId)
     const parts: string[] = []
@@ -252,7 +261,7 @@ export class HermesService {
         }
       })
       try {
-        this.bridge.prompt(key, text, { context: opts.context, screenshot: opts.screenshot })
+        this.bridge.prompt(key, text, { context: opts.context, screenshot: opts.screenshot, images: opts.images })
       } catch (e) {
         clearTimeout(timer); off(); reject(e as Error)
       }

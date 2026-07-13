@@ -210,7 +210,7 @@ export class HermesAcpBridge extends EventEmitter {
    *  Feature A (page-aware): optional structured view `context` and a `screenshot`
    *  (data URL / base64 PNG) ride along; acp-bridge.py injects them into the turn
    *  (screenshot saved to a file the agent reads with its own vision/read tool). */
-  prompt(sessionKey: string, text: string, extra?: { context?: string; screenshot?: string }): void {
+  prompt(sessionKey: string, text: string, extra?: { context?: string; screenshot?: string; images?: string[] }): void {
     const session = this.sessions.get(sessionKey)
     if (!session || session.proc.exitCode !== null) throw new Error(`no live acp session for ${sessionKey}`)
     // Record the user's turn in the ring buffer so a refreshed/reconnecting UI rebuilds it.
@@ -227,6 +227,7 @@ export class HermesAcpBridge extends EventEmitter {
     const payload: Record<string, unknown> = { type: 'prompt', text }
     if (extra?.context) payload.context = extra.context
     if (extra?.screenshot) payload.screenshot = extra.screenshot
+    if (extra?.images?.length) payload.images = extra.images
     session.proc.stdin.write(JSON.stringify(payload) + '\n')
     this.setStatus(sessionKey, 'busy')
   }

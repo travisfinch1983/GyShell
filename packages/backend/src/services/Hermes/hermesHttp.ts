@@ -242,7 +242,7 @@ export function createHermesRouter(hermes: HermesService): express.Router {
 
   // Fire one turn and return the assembled reply (also streams to any /stream observers).
   router.post('/api/hermes/agents/:id/prompt', json, async (req: Req, res: Res) => {
-    const body = (req.body ?? {}) as { text?: unknown; context?: unknown; screenshot?: unknown; conversationId?: unknown; wait?: unknown }
+    const body = (req.body ?? {}) as { text?: unknown; context?: unknown; screenshot?: unknown; images?: unknown; conversationId?: unknown; wait?: unknown }
     const text = String(body.text ?? '')
     if (!text.trim()) return res.status(400).json({ error: 'text required' })
     // Feature A (page-aware): optional structured view context + screenshot data URL.
@@ -250,6 +250,7 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     const opts = {
       context: typeof body.context === 'string' ? body.context : undefined,
       screenshot: typeof body.screenshot === 'string' ? body.screenshot : undefined,
+      images: Array.isArray(body.images) ? (body.images as unknown[]).filter((x) => typeof x === 'string') as string[] : undefined,
       sessionKey: typeof body.conversationId === 'string' ? body.conversationId : undefined,
     }
     try {
@@ -448,6 +449,24 @@ export function createHermesRouter(hermes: HermesService): express.Router {
     } catch (e) {
       res.status(500).json({ error: String((e as Error).message) })
     }
+  })
+
+  // Global Support-Models roles (Vision Description describer for text-only agents, etc.).
+  // GET returns the stored roles; PUT replaces them and re-applies vision routing to all agents.
+  router.get('/api/hermes/support-models', (_req: Req, res: Res) => {
+    try { res.json({ roles: hermes.getSupportModels() }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.put('/api/hermes/support-models', json, async (req: Req, res: Res) => {
+    try {
+      const b = (req.body ?? {}) as { visionDescription?: { provider?: unknown; model?: unknown } | null }
+      const vd = b.visionDescription
+      const roles = vd && typeof vd.model === 'string' && vd.model
+        ? { visionDescription: { provider: typeof vd.provider === 'string' ? vd.provider : 'ailab', model: vd.model } }
+        : {}
+      const r = await hermes.setSupportModels(roles)
+      res.json({ ok: true, ...r })
+    } catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
   })
 
   return router

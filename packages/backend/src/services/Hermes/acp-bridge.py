@@ -38,10 +38,10 @@ from acp import PROTOCOL_VERSION
 from acp.stdio import spawn_agent_process
 try:
     from acp.schema import (ClientCapabilities, FileSystemCapabilities, TextContentBlock,
-                            RequestPermissionResponse, ReadTextFileResponse)
+                            ImageContentBlock, RequestPermissionResponse, ReadTextFileResponse)
 except Exception:
     ClientCapabilities = FileSystemCapabilities = TextContentBlock = None
-    RequestPermissionResponse = ReadTextFileResponse = None
+    ImageContentBlock = RequestPermissionResponse = ReadTextFileResponse = None
 
 
 def emit(obj):
@@ -63,6 +63,30 @@ def _content_text(d):
     return str(c)
 
 
+def _parse_image(src):
+    """(data-URL | bare-base64) -> (base64_str, mime). Defaults to image/png."""
+    s = str(src)
+    if s.startswith("data:"):
+        header, b64 = s.split(",", 1)
+        mime = header[5:].split(";")[0] if ":" in header else "image/png"
+        return b64, (mime or "image/png")
+    return s, "image/png"
+
+
+def _image_block(b64, mime):
+    """Build a NATIVE ACP ImageContentBlock (base64 data + mimeType). Hermes' acp_adapter
+    (server.py::_image_block_to_openai_part) maps this to an OpenAI-style image_url part; its
+    gateway then routes native (vision model sees the pixels) vs describe (text-only model) per
+    `agent.image_input_mode`/`model.supports_vision`. Falls back to a plain dict if the schema
+    class isn't importable."""
+    if ImageContentBlock is not None:
+        try:
+            return ImageContentBlock(type="image", data=b64, mime_type=mime)
+        except Exception:
+            pass
+    return {"type": "image", "data": b64, "mimeType": mime}
+
+
 def _strip_view_preamble(text):
     """Remove the page-aware preambles the prompt path prepends (screenshot note +
     [Current view context] {json}) so a DISPLAYED/replayed user turn shows only what the user typed.
@@ -70,7 +94,7 @@ def _strip_view_preamble(text):
     if not text:
         return text
     import re as _re
-    t = _re.sub(r"^\[The user's current screen is captured at[^\]]*\]\s*", "", text, flags=_re.S)
+    t = _re.sub(r"^\[The user's current screen is (?:captured at|attached)[^\]]*\]\s*", "", text, flags=_re.S)
     if t.startswith("[Current view context]"):
         i = t.find("{")
         if i != -1:
@@ -267,10 +291,10 @@ async def main():
                 return ("longer than limit" in m or "separator is found" in m
                         or "incomplete read" in m or "connection lost" in m or "connection closed" in m)
 
-            async def run_prompt(block):
+            async def run_prompt(blocks):
                 stop, fatal = None, False
                 try:
-                    resp = await conn.prompt(prompt=[block], session_id=session_id)
+                    resp = await conn.prompt(prompt=blocks, session_id=session_id)
                     rd = _dump(resp)
                     stop = rd.get("stop_reason") or rd.get("stopReason") or "end_turn"
                 except Exception as e:
@@ -301,37 +325,41 @@ async def main():
                     emit({"t": "error", "where": "stdin", "message": "bad json: " + line[:120]}); continue
                 if cmd.get("type") == "prompt":
                     text = cmd.get("text", "")
-                    # Feature A (page-aware): optional structured view context + screenshot.
-                    # The screenshot is saved to a file in the agent's cwd; the agent reads it
-                    # with its own read/vision tool (no ACP multimodal dependency).
+                    # Feature A (page-aware): optional structured view context.
                     ctx = cmd.get("context")
-                    shot = cmd.get("screenshot")
-                    preamble = []
-                    if shot:
+                    # Images ride along as NATIVE ACP ImageContentBlocks (base64 data + mimeType):
+                    #   - `screenshot`: the single page-aware screen capture (Feature A), and/or
+                    #   - `images`: an explicit list (chat attachments, workflow frames).
+                    # Hermes converts each to an OpenAI image_url part and routes native (vision
+                    # model sees pixels) vs describe (text-only model) per model capability — no
+                    # save-to-file / read-tool round-trip, no lossy separate-model description for
+                    # a vision-capable agent.
+                    raw_images = []
+                    if cmd.get("screenshot"):
+                        raw_images.append(("screen", cmd.get("screenshot")))
+                    for im in (cmd.get("images") or []):
+                        raw_images.append(("image", im))
+                    image_blocks, saw_screen = [], False
+                    for kind, src in raw_images:
                         try:
-                            s = str(shot)
-                            if s.startswith("data:"):
-                                header, b64 = s.split(",", 1)
-                                mime = header[5:].split(";")[0] if ":" in header else "image/png"
-                            else:
-                                b64, mime = s, "image/png"
-                            ext = {"image/jpeg": "jpg", "image/jpg": "jpg",
-                                   "image/webp": "webp", "image/png": "png"}.get(mime, "png")
-                            shot_path = os.path.join(agent_cwd, ".screen." + ext)
-                            with open(shot_path, "wb") as f:
-                                f.write(base64.b64decode(b64))
-                            preamble.append(
-                                f"[The user's current screen is captured at {shot_path} — "
-                                f"use your read tool on that path to see exactly what they are looking at.]")
+                            b64, mime = _parse_image(src)
+                            image_blocks.append(_image_block(b64, mime))
+                            if kind == "screen":
+                                saw_screen = True
                         except Exception as e:
-                            emit({"t": "error", "where": "screenshot", "message": str(e)})
+                            emit({"t": "error", "where": "image", "message": str(e)})
+                    preamble = []
+                    if saw_screen:
+                        preamble.append("[The user's current screen is attached as an image — "
+                                        "look at it to see exactly what they are viewing.]")
                     if ctx:
                         preamble.append(f"[Current view context]\n{ctx}")
                     full_text = ("\n\n".join(preamble) + "\n\n" + text) if preamble else text
-                    block = TextContentBlock(type="text", text=full_text) if TextContentBlock else {"type": "text", "text": full_text}
+                    text_block = TextContentBlock(type="text", text=full_text) if TextContentBlock else {"type": "text", "text": full_text}
+                    blocks = [text_block] + image_blocks
                     if current and not current.done():
                         emit({"t": "error", "where": "prompt", "message": "busy: a turn is already running"}); continue
-                    current = asyncio.create_task(run_prompt(block))
+                    current = asyncio.create_task(run_prompt(blocks))
                 elif cmd.get("type") == "cancel":
                     # Stop button -> server -> here: abort the in-flight turn via ACP session/cancel.
                     if current and not current.done():

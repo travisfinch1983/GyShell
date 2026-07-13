@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from '
 import { dirname } from 'path'
 import type { HermesAgentSpec, ProviderService } from '@gyshell/shared'
 import { PROVIDER_SERVICE_CAPS } from '@gyshell/shared'
+// @ts-expect-error — proxy capability resolver ships as untyped JS (same pattern as the other proxy/*.js imports)
+import { resolveModelCapabilities } from '../Cluster/proxy/model-capabilities.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -35,6 +37,15 @@ export interface HermesManagementConfig {
   /** JSON file where Provider Services entries (ElevenLabs etc. — keyed non-model providers)
    *  are persisted. Keys are stored here; the effective secret is pushed to Hermes .env. */
   providerServicesFile?: string
+  /** JSON file where global Support-Models roles (Vision Description describer, etc.) persist. */
+  supportModelsFile?: string
+}
+
+/** Global "Support Models" role assignments — models wired to non-primary roles. */
+export interface SupportModelRoles {
+  /** The model that DESCRIBES images for TEXT-ONLY agents (vision agents see pixels natively
+   *  and ignore this). Applied to each text-only agent's `auxiliary.vision`. */
+  visionDescription?: { provider: string; model: string }
 }
 
 /** Single-quote a string for safe embedding in a remote shell command. */
@@ -96,6 +107,63 @@ export class HermesManagementService {
   private saveProviderServicesFile(list: ProviderService[]): void {
     if (!this.cfg.providerServicesFile) return
     atomicWriteJson(this.cfg.providerServicesFile, list)
+  }
+
+  // ── Support Models roles (global describer/TTS/STT model assignments) ───────────
+  private loadSupportModels(): SupportModelRoles {
+    if (!this.cfg.supportModelsFile || !existsSync(this.cfg.supportModelsFile)) return {}
+    try {
+      const o = JSON.parse(readFileSync(this.cfg.supportModelsFile, 'utf8'))
+      return o && typeof o === 'object' ? (o as SupportModelRoles) : {}
+    } catch {
+      return {}
+    }
+  }
+
+  getSupportModels(): SupportModelRoles {
+    return this.loadSupportModels()
+  }
+
+  /** Persist the global Support-Models roles and re-apply vision routing to EVERY agent, so a
+   *  describer change propagates to all text-only agents at once (vision agents are unaffected). */
+  async setSupportModels(roles: SupportModelRoles): Promise<{ agentsUpdated: number }> {
+    const clean: SupportModelRoles = {}
+    if (roles.visionDescription?.model) {
+      clean.visionDescription = { provider: roles.visionDescription.provider || 'ailab', model: roles.visionDescription.model }
+    }
+    if (this.cfg.supportModelsFile) atomicWriteJson(this.cfg.supportModelsFile, clean)
+    const agents = await this.listAgents()
+    let n = 0
+    for (const id of agents) {
+      const model = this.getSpec(id)?.model
+      if (!model) continue
+      try { await this.applyVisionConfig(id, model); n++ } catch { /* skip unreachable/legacy */ }
+    }
+    return { agentsUpdated: n }
+  }
+
+  /** Reconcile native-vision routing for an agent, keyed on its model's vision capability.
+   *  VISION model → declare `model.supports_vision: true` — the escape hatch a custom/local
+   *  provider needs (models.dev can't resolve a local Qwen id, so without this Hermes silently
+   *  routes to the DESCRIBE pipeline). That makes the gateway attach images NATIVELY and
+   *  `vision_analyze` use its native fast-path (pixels straight to context, no separate model).
+   *  Keep `auxiliary.vision.provider: auto` — an explicit aux-vision backend would force describe
+   *  mode (decide_image_input_mode rule 1). TEXT-ONLY model → `supports_vision: false` + pin the
+   *  global Vision Description describer so its (needed) describe path uses a known-good model. */
+  private async applyVisionConfig(agentId: string, model: string): Promise<void> {
+    const caps = resolveModelCapabilities(model)
+    if (caps?.vision) {
+      await this.hermes(['-p', agentId, 'config', 'set', 'model.supports_vision', 'true'])
+      await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.vision.provider', 'auto'])
+      await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.vision.model', ''])
+    } else {
+      await this.hermes(['-p', agentId, 'config', 'set', 'model.supports_vision', 'false'])
+      const d = this.loadSupportModels().visionDescription
+      if (d?.model) {
+        await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.vision.provider', d.provider || 'ailab'])
+        await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.vision.model', d.model])
+      }
+    }
   }
 
   /** The effective secret for an envVar across the whole registry: the key of the first ENABLED
@@ -330,6 +398,62 @@ export class HermesManagementService {
     const cfg = `${this.profileHome(agentId)}/config.yaml`
     const name = HermesManagementService.NATIVE_PLUGIN
     await this.ssh(`grep -q ${shq(name)} ${shq(cfg)} || printf '\\nplugins:\\n  enabled:\\n  - %s\\n' ${shq(name)} >> ${shq(cfg)}`)
+  }
+
+  // Canonical source profile for the composite memory plugin files (composite router + hippocampai
+  // lane). Kept in the `default` profile so a new agent inherits whatever version default ships.
+  private static readonly MEMORY_TEMPLATE_PROFILE = 'default'
+
+  /** Ensure the composite memory stack on a profile (idempotent, ALWAYS reconciled). Copies the
+   *  composite router + hippocampai lane plugin files from the canonical `default` profile and
+   *  sets `memory.provider: composite` — de-duping any shadowing empty `provider:` key, or adding a
+   *  memory block if none exists. The openviking lane is bundled in Hermes; the shared OpenViking
+   *  key lives in the global `.env` every profile inherits. This is what makes composite the
+   *  default for NEW agents, since `hermes profile create --clone` carries neither the plugins nor
+   *  a non-empty provider. Native user-config + plugin-file writes — not a Hermes-source patch. */
+  private async ensureCompositeMemory(agentId: string): Promise<void> {
+    if (agentId === HermesManagementService.MEMORY_TEMPLATE_PROFILE) return
+    const home = this.profileHome(agentId)
+    const tmpl = `${this.profileHomeBase}/${HermesManagementService.MEMORY_TEMPLATE_PROFILE}/plugins`
+    // 1. Plugin files (composite + hippocampai). openviking lane is bundled in Hermes.
+    await this.ssh(
+      `for n in composite hippocampai; do mkdir -p ${shq(home)}/plugins/"$n" && ` +
+        `cp -f ${shq(tmpl)}/"$n"/__init__.py ${shq(home)}/plugins/"$n"/__init__.py 2>/dev/null || true; done`,
+    )
+    // 1b. Fleet skill: ask-claude — lets the agent report bugs / permission issues / blockers
+    // to claude1 (the maintainer) over the fleet bus. Copied from the `default` profile so every
+    // new agent gets the escalation channel by default.
+    const skillSrc = `${this.profileHomeBase}/${HermesManagementService.MEMORY_TEMPLATE_PROFILE}/skills/custom/ask-claude`
+    await this.ssh(
+      `test -d ${shq(skillSrc)} && mkdir -p ${shq(home)}/skills/custom && ` +
+        `cp -rf ${shq(skillSrc)} ${shq(home)}/skills/custom/ 2>/dev/null || true`,
+    )
+    // 2. memory.provider = composite (dedupe shadowing provider keys; add a memory block if absent).
+    const script = [
+      'import sys',
+      'p = sys.argv[1]',
+      'lines = open(p).read().split("\\n")',
+      'out, inm, seen, saw = [], False, False, False',
+      'for line in lines:',
+      '    if line.startswith("memory:"):',
+      '        inm, seen, saw = True, False, True; out.append(line); continue',
+      '    if inm:',
+      '        if line and not line[0].isspace():',
+      '            if not seen: out.append("  provider: composite")',
+      '            inm = False; out.append(line); continue',
+      '        if line.strip().startswith("provider:"):',
+      '            if not seen: seen = True; out.append("  provider: composite")',
+      '            continue',
+      '        out.append(line); continue',
+      '    out.append(line)',
+      'if inm and not seen: out.append("  provider: composite")',
+      'if not saw:',
+      '    out += ["memory:", "  provider: composite", "  memory_enabled: true",',
+      '            "  user_profile_enabled: true", "  write_approval: false"]',
+      'open(p, "w").write("\\n".join(out))',
+    ].join('\n')
+    const b64 = Buffer.from(script, 'utf8').toString('base64')
+    await this.ssh(`printf %s ${shq(b64)} | base64 -d | python3 - ${shq(`${home}/config.yaml`)}`)
   }
 
   /**
@@ -993,6 +1117,9 @@ export class HermesManagementService {
     await this.hermes(['-p', id, 'config', 'set', 'model.provider', 'ailab'])
     await this.hermes(['-p', id, 'config', 'set', 'model.default', spec.model])
 
+    // Native-vision routing keyed on the model's capability (supports_vision + describe backend).
+    await this.applyVisionConfig(id, spec.model)
+
     // Fallback chain → Hermes-native `fallback_providers` (failover on rate-limit/overload/
     // connection errors). Written into config.yaml directly (see applyFallback for why).
     await this.applyFallback(id, spec.fallback)
@@ -1011,6 +1138,12 @@ export class HermesManagementService {
     // block from the spec and re-applying resets it rather than leaving stale config behind.
     await this.applyTts(id, spec.tts)
     await this.applyDelegation(id, spec.subAgents)
+
+    // Composite memory stack (unified-MCP consensus recall + native-lane capture) — ALWAYS
+    // reconciled, so every agent (freshly created or edited) converges on the standard memory
+    // provider. `hermes profile create --clone` doesn't carry plugins and leaves provider empty,
+    // so this is what actually makes composite the default. Shared OpenViking key is global .env.
+    await this.ensureCompositeMemory(id)
 
     // Enabled toolsets — additive: enable what the spec requests. (Does not disable others; a
     // full enable/disable sync would risk stripping Hermes defaults the profile relies on.)
