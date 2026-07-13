@@ -30,6 +30,7 @@ Normalized stdout events:
   {"t":"usage","raw":{...}}           # token metrics
   {"t":"turn_done","stop_reason":...}
   {"t":"error","where":...,"message":...}
+  {"t":"fatal","reason":"stream_broken","recoverable":true,"message":...}  # read loop died; restart chat
 """
 import argparse, asyncio, base64, json, os, sys, traceback
 
@@ -251,16 +252,44 @@ async def main():
             # Run each prompt as a task so the stdin loop stays free to receive a {"type":"cancel"}
             # while the model is inferring. conn.cancel() (ACP session/cancel) makes conn.prompt()
             # resolve with stop_reason "cancelled", so run_prompt always emits a single turn_done.
+            # A transport-level failure (e.g. an ACP event larger than the stdio read buffer)
+            # kills the connection's read loop and ORPHANS the Hermes subprocess — it keeps
+            # inferring into a dead pipe while the UI silently freezes. Detect those specifically:
+            # emit a clear recoverable-terminal signal, kill the orphaned Hermes, and exit so the
+            # backend sees the dead session and the UI can reconnect/respawn a clean one.
+            _FATAL_STREAM = (asyncio.LimitOverrunError, asyncio.IncompleteReadError,
+                             ConnectionError, EOFError, BrokenPipeError)
+
+            def _is_fatal_stream(e):
+                if isinstance(e, _FATAL_STREAM):
+                    return True
+                m = str(e).lower()
+                return ("longer than limit" in m or "separator is found" in m
+                        or "incomplete read" in m or "connection lost" in m or "connection closed" in m)
+
             async def run_prompt(block):
-                stop = None
+                stop, fatal = None, False
                 try:
                     resp = await conn.prompt(prompt=[block], session_id=session_id)
                     rd = _dump(resp)
                     stop = rd.get("stop_reason") or rd.get("stopReason") or "end_turn"
                 except Exception as e:
-                    emit({"t": "error", "where": "prompt", "message": str(e)})
-                    stop = "error"
+                    if _is_fatal_stream(e):
+                        emit({"t": "fatal", "reason": "stream_broken", "recoverable": True,
+                              "message": ("ACP stream broke (" + type(e).__name__ + "): " + str(e)[:200]
+                                          + " — restart this chat to reconnect.")})
+                        stop, fatal = "error", True
+                    else:
+                        emit({"t": "error", "where": "prompt", "message": str(e)})
+                        stop = "error"
                 emit({"t": "turn_done", "stop_reason": stop})
+                if fatal:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    sys.stdout.flush()
+                    os._exit(3)
             current = None
 
             async for line in stdin_lines():
