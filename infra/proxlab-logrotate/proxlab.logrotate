@@ -1,0 +1,19 @@
+# Rotation for AI-Lab service logs (/var/log/proxlab/*.log) inside the agent
+# containers (CT177 on px-gpu, CT176 on px-epyc). Deployed to
+# /etc/logrotate.d/proxlab — see deploy.sh / README.md in this directory.
+#
+# copytruncate is LOAD-BEARING: the writers hold open append fds forever
+# (tmux `pipe-pane -o "cat >> log"` and systemd `StandardOutput=append:`).
+# A rename-based rotation would leave them writing into the rotated file;
+# copytruncate copies then truncates in place so the fd stays valid.
+
+/var/log/proxlab/*.log {
+    daily
+    maxsize 50M
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
