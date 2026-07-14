@@ -103,6 +103,35 @@
 
 .spacer { flex: 1; }
 
+// Per-conversation model swap — compact, reads like the dim model label it replaced.
+.modelSwap {
+  max-width: 260px;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 1px 4px;
+  cursor: pointer;
+  text-overflow: ellipsis;
+
+  &:hover:not(:disabled) {
+    border-color: var(--border);
+    color: var(--fg);
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  option {
+    background: var(--panel-bg, #1b1b1f);
+    color: var(--fg);
+  }
+}
+
 .usage {
   display: inline-flex;
   align-items: center;

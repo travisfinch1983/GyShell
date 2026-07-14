@@ -80,6 +80,12 @@ class HermesChatStore {
     return s
   }
 
+  /** Optimistic header update after a per-conversation model swap POST —
+   *  the authoritative value re-arrives on the next `ready` event. */
+  setCurrentModel(conversationId: string, modelId: string): void {
+    this.state(conversationId).currentModel = modelId
+  }
+
   /**
    * Open the observer stream (idempotent). Never affects the backend session.
    * Keys are CONVERSATION ids (per-tab isolation — per-agent keying is the

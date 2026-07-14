@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Plus, ScanEye, SendHorizonal, Settings2, Square, Trash2, Wrench } from 'lucide-react'
 import type { HermesSlashCommand } from '@gyshell/shared'
 import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
+import { hermesApi } from '../../stores/hermesApi'
 import { hermesChatStore as chat, type ChatItem } from '../../stores/HermesChatStore'
 import { hermesConversationsStore, type ConvMeta } from '../../stores/hermesConversationsStore'
 import styles from './AgentChat.module.scss'
@@ -97,6 +98,28 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
   const [text, setText] = useState('')
   const [slashOpen, setSlashOpen] = useState(false)
   const logRef = useRef<HTMLDivElement | null>(null)
+  // Per-conversation model swap (backend 2ce0aa1): raw catalog ids verbatim.
+  const [modelIds, setModelIds] = useState<string[]>([])
+  const [swapping, setSwapping] = useState(false)
+  const [swapMsg, setSwapMsg] = useState('')
+  useEffect(() => { void hermesApi.listRawModelIds().then(setModelIds) }, [])
+
+  const swapModel = async (modelId: string) => {
+    if (!modelId || modelId === s.currentModel) return
+    setSwapping(true)
+    setSwapMsg('')
+    const r = await hermesApi.setConversationModel(agentId, conversationId, modelId)
+    setSwapping(false)
+    if (r.ok) {
+      chat.setCurrentModel(conversationId, modelId)
+      setSwapMsg('model swapped ✓')
+      setTimeout(() => setSwapMsg(''), 4000)
+    } else {
+      setSwapMsg(/no live acp session/i.test(r.error ?? '')
+        ? 'session not live yet — send a message first, then swap'
+        : `swap failed — ${r.error ?? 'unknown'}`)
+    }
+  }
 
   useEffect(() => {
     chat.attach(agentId, conversationId)
@@ -138,7 +161,19 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
       <div className={styles.convHead}>
         <span className={`${styles.dot} ${s.connected ? styles.dotOn : ''}`} title={s.connected ? 'stream attached' : 'stream detached — reconnecting'} />
         <strong>{spec?.displayName ?? agentId}</strong>
-        {s.currentModel && <span className={styles.dim}>{s.currentModel}</span>}
+        <select
+          className={styles.modelSwap}
+          value={s.currentModel ?? ''}
+          disabled={swapping || modelIds.length === 0}
+          title="Swap this conversation's model (live session only — takes effect next turn)"
+          onChange={(e) => void swapModel(e.target.value)}
+        >
+          {!s.currentModel && <option value="">{modelIds.length ? 'model…' : 'loading models…'}</option>}
+          {/* keep an off-catalog current model selectable rather than snapping elsewhere */}
+          {s.currentModel && !modelIds.includes(s.currentModel) && <option value={s.currentModel}>{s.currentModel}</option>}
+          {modelIds.map((id) => <option key={id} value={id}>{id}</option>)}
+        </select>
+        {swapMsg && <span className={styles.dim} style={{ fontSize: 10 }}>{swapMsg}</span>}
         {s.sessionId && (
           <span className={styles.dim} title={`backend session ${s.sessionId}`} style={{ fontSize: 10, opacity: 0.75 }}>
             #{s.sessionId.slice(0, 8)}

@@ -494,6 +494,35 @@ export const hermesApi = {
   },
 
   /**
+   * POST /api/hermes/agents/:id/model {conversationId, modelId} — per-
+   * conversation model swap (2ce0aa1): forwards ACP session/set_model to the
+   * live bridge; Hermes recreates the session agent on the new model and
+   * persists it. REQUIRES a live session — 500 "no live acp session" if the
+   * conversation hasn't been warmed with a message yet. modelId is the raw
+   * catalog id verbatim (keep "[DS] "/"[OR] " prefixes — Hermes resolves them).
+   */
+  async setConversationModel(agentId: string, conversationId: string, modelId: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(agentId)}/model`, { conversationId, modelId })
+      if (r?.error) return { ok: false, error: String(r.error) }
+      return { ok: r?.ok === true }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
+  /** Raw model id list (GET /api/proxy/llm/v1/models) — verbatim ids for the
+   *  per-conversation swap dropdown, tagged prefixes intact. */
+  async listRawModelIds(): Promise<string[]> {
+    try {
+      const r = await bridge().request('GET', '/api/proxy/llm/v1/models')
+      return ((r?.data ?? []) as Array<{ id?: string }>).map((m) => m.id).filter((id): id is string => typeof id === 'string' && id.length > 0)
+    } catch {
+      return []
+    }
+  },
+
+  /**
    * GET /api/hermes/doc-templates/user → the canonical shared USER doc
    * (/root/.hermes/global/USER.md — "About Your Human"). Null on failure so
    * the editor never opens empty over the real file.
