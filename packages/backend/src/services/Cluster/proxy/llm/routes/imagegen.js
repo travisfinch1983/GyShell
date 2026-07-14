@@ -339,13 +339,26 @@ export function createImagegenRouter(config) {
   });
 
   // ---- full image ----
-  router.get('/image', (req, res) => {
+  router.get('/image', async (req, res) => {
     let file;
     try { file = safeResolve(req.query.path); } catch { return res.status(400).end(); }
     if (!existsSync(file) || !statSync(file).isFile()) return res.status(404).end();
     const ext = path.extname(file).toLowerCase();
     const type = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp'
       : (ext === '.jpg' || ext === '.jpeg') ? 'image/jpeg' : 'application/octet-stream';
+    // Optional downscale: ?maxdim=N caps the longest side (fit inside, no enlargement) and returns
+    // webp. Used by the agent view_image tool to keep vision-token / KV cost sane on long runs.
+    const maxdim = Math.max(64, Math.min(4096, parseInt(String(req.query.maxdim || ''), 10) || 0));
+    if (maxdim) {
+      try {
+        const buf = await sharp(file).rotate()
+          .resize(maxdim, maxdim, { fit: 'inside', withoutEnlargement: true })
+          .webp({ quality: 82 }).toBuffer();
+        res.set('Cache-Control', 'private, max-age=3600');
+        res.type('image/webp');
+        return res.end(buf);
+      } catch { /* fall through to original */ }
+    }
     res.set('Cache-Control', 'private, max-age=3600');
     res.type(type);
     createReadStream(file).pipe(res);
