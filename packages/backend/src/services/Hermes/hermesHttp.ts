@@ -459,11 +459,18 @@ export function createHermesRouter(hermes: HermesService): express.Router {
   })
   router.put('/api/hermes/support-models', json, async (req: Req, res: Res) => {
     try {
-      const b = (req.body ?? {}) as { visionDescription?: { provider?: unknown; model?: unknown } | null }
-      const vd = b.visionDescription
-      const roles = vd && typeof vd.model === 'string' && vd.model
-        ? { visionDescription: { provider: typeof vd.provider === 'string' ? vd.provider : 'ailab', model: vd.model } }
-        : {}
+      const b = (req.body ?? {}) as Record<string, unknown>
+      const parseRole = (v: unknown): { provider: string; model: string } | undefined => {
+        const o = v as { provider?: unknown; model?: unknown } | null
+        return o && typeof o.model === 'string' && o.model
+          ? { provider: typeof o.provider === 'string' ? o.provider : 'ailab', model: o.model }
+          : undefined
+      }
+      // Merge: only role keys PRESENT in the body change (null/empty clears; absent = preserved).
+      const roles: Record<string, { provider: string; model: string }> = { ...(hermes.getSupportModels() as Record<string, { provider: string; model: string }>) }
+      for (const key of ['visionDescription', 'compaction']) {
+        if (key in b) { const r = parseRole(b[key]); if (r) roles[key] = r; else delete roles[key] }
+      }
       const r = await hermes.setSupportModels(roles)
       res.json({ ok: true, ...r })
     } catch (e) { res.status(400).json({ error: String((e as Error).message) }) }

@@ -46,6 +46,9 @@ export interface SupportModelRoles {
   /** The model that DESCRIBES images for TEXT-ONLY agents (vision agents see pixels natively
    *  and ignore this). Applied to each text-only agent's `auxiliary.vision`. */
   visionDescription?: { provider: string; model: string }
+  /** The model that runs context COMPACTION (trajectory summarization) for every agent, via
+   *  `auxiliary.compression`. Unset → `auto` (the agent's own main model). */
+  compaction?: { provider: string; model: string }
 }
 
 /** Single-quote a string for safe embedding in a remote shell command. */
@@ -131,13 +134,16 @@ export class HermesManagementService {
     if (roles.visionDescription?.model) {
       clean.visionDescription = { provider: roles.visionDescription.provider || 'ailab', model: roles.visionDescription.model }
     }
+    if (roles.compaction?.model) {
+      clean.compaction = { provider: roles.compaction.provider || 'ailab', model: roles.compaction.model }
+    }
     if (this.cfg.supportModelsFile) atomicWriteJson(this.cfg.supportModelsFile, clean)
     const agents = await this.listAgents()
     let n = 0
     for (const id of agents) {
       const model = this.getSpec(id)?.model
       if (!model) continue
-      try { await this.applyVisionConfig(id, model); n++ } catch { /* skip unreachable/legacy */ }
+      try { await this.applyVisionConfig(id, model); await this.applyCompactionConfig(id); n++ } catch { /* skip unreachable/legacy */ }
     }
     return { agentsUpdated: n }
   }
@@ -163,6 +169,20 @@ export class HermesManagementService {
         await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.vision.provider', d.provider || 'ailab'])
         await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.vision.model', d.model])
       }
+    }
+  }
+
+  /** Route the agent's context-compaction (trajectory summarization) to the global Compaction
+   *  model via `auxiliary.compression`. Unset → `auto` (falls back to the agent's own main model,
+   *  see auxiliary_client main-agent fallback). Model-agnostic — applied to every agent. */
+  private async applyCompactionConfig(agentId: string): Promise<void> {
+    const c = this.loadSupportModels().compaction
+    if (c?.model) {
+      await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.compression.provider', c.provider || 'ailab'])
+      await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.compression.model', c.model])
+    } else {
+      await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.compression.provider', 'auto'])
+      await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.compression.model', ''])
     }
   }
 
@@ -1119,6 +1139,8 @@ export class HermesManagementService {
 
     // Native-vision routing keyed on the model's capability (supports_vision + describe backend).
     await this.applyVisionConfig(id, spec.model)
+    // Context-compaction model (global Compaction support-model role).
+    await this.applyCompactionConfig(id)
 
     // Fallback chain → Hermes-native `fallback_providers` (failover on rate-limit/overload/
     // connection errors). Written into config.yaml directly (see applyFallback for why).
