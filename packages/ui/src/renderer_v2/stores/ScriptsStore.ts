@@ -41,6 +41,7 @@ interface PickerState {
   ebookCount: number
   loading: boolean
   error: string | null
+  localVmid: number | null
 }
 
 export class ScriptsStore {
@@ -54,7 +55,7 @@ export class ScriptsStore {
   argsByScript: Record<string, string> = {}
   picker: PickerState = {
     open: false, scriptName: '', path: '/nas', parent: null,
-    dirs: [], ebookCount: 0, loading: false, error: null,
+    dirs: [], ebookCount: 0, loading: false, error: null, localVmid: null,
   }
 
   constructor() {
@@ -134,6 +135,7 @@ export class ScriptsStore {
           this.picker.parent = d.parent ?? null
           this.picker.dirs = Array.isArray(d.dirs) ? d.dirs : []
           this.picker.ebookCount = d.ebookCount ?? 0
+          this.picker.localVmid = d.localVmid ?? null
           // Auto-select the container whose filesystem we're browsing as the run target.
           if (d.localVmid != null && String(this.selectedTarget) !== String(d.localVmid)) {
             this.selectedTarget = String(d.localVmid)
@@ -154,6 +156,9 @@ export class ScriptsStore {
   chooseCurrentFolder(): void {
     runInAction(() => {
       this.argsByScript[this.picker.scriptName] = this.picker.path
+      // Pin the run target to the container we browsed (the fs this path lives on),
+      // so the script never executes against a guest where the path doesn't exist.
+      if (this.picker.localVmid != null) this.selectedTarget = String(this.picker.localVmid)
       this.picker.open = false
     })
   }
