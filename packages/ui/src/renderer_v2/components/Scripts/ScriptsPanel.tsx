@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect } from 'react'
 import { observer } from 'mobx-react-lite'
-import { RefreshCw, FileCode, Play, Loader2 } from 'lucide-react'
+import { RefreshCw, FileCode, Play, Loader2, FolderOpen, Folder, CornerLeftUp, X } from 'lucide-react'
 import { scriptsStore, type ScriptDef } from '../../stores/ScriptsStore'
 import styles from './Scripts.module.scss'
 
@@ -17,7 +17,7 @@ function fmtBytes(b?: number): string {
 }
 
 const ScriptCard: React.FC<{ script: ScriptDef }> = observer(({ script }) => {
-  const [args, setArgs] = useState('')
+  const args = scriptsStore.argsByScript[script.name] ?? ''
   const out = scriptsStore.outputs[script.name]
   const running = !!out?.running
   return (
@@ -34,11 +34,19 @@ const ScriptCard: React.FC<{ script: ScriptDef }> = observer(({ script }) => {
           placeholder="arguments (optional)"
           value={args}
           disabled={running}
-          onChange={(e) => setArgs(e.target.value)}
+          onChange={(e) => scriptsStore.setArgs(script.name, e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') void scriptsStore.run(script.name, args)
           }}
         />
+        <button
+          className={styles.browseBtn}
+          title="Browse for a folder"
+          disabled={running}
+          onClick={() => scriptsStore.openPicker(script.name)}
+        >
+          <FolderOpen size={13} />
+        </button>
         <button className={styles.runBtn} disabled={running || !scriptsStore.selectedTarget} onClick={() => void scriptsStore.run(script.name, args)}>
           {running ? <Loader2 size={13} className={styles.spin} /> : <Play size={13} />} Run
         </button>
@@ -57,6 +65,61 @@ const ScriptCard: React.FC<{ script: ScriptDef }> = observer(({ script }) => {
           )}
         </div>
       )}
+    </div>
+  )
+})
+
+const FolderPicker: React.FC = observer(() => {
+  const p = scriptsStore.picker
+  if (!p.open) return null
+  return (
+    <div className={styles.modalOverlay} onClick={() => scriptsStore.closePicker()}>
+      <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div className={styles.modalHead}>
+          <FolderOpen size={15} />
+          <span className={styles.modalTitle}>Select a folder</span>
+          <span className={styles.modalScript}>{p.scriptName}</span>
+          <div className={styles.spacer} />
+          <button className={styles.iconBtn} title="Close" onClick={() => scriptsStore.closePicker()}>
+            <X size={15} />
+          </button>
+        </div>
+
+        <div className={styles.pathBar}>
+          <code className={styles.pathText}>{p.path}</code>
+          {p.ebookCount > 0 && <span className={styles.ebookBadge}>{p.ebookCount} ebook{p.ebookCount === 1 ? '' : 's'} here</span>}
+        </div>
+
+        {p.error && <div className={styles.pickerErr}>{p.error}</div>}
+
+        <div className={styles.dirList}>
+          {p.parent && (
+            <button className={styles.dirRow} onClick={() => void scriptsStore.browseTo(p.parent!)}>
+              <CornerLeftUp size={14} className={styles.dirIcon} />
+              <span>..</span>
+            </button>
+          )}
+          {p.loading ? (
+            <div className={styles.dirMuted}><Loader2 size={14} className={styles.spin} /> loading…</div>
+          ) : p.dirs.length === 0 ? (
+            <div className={styles.dirMuted}>(no subfolders)</div>
+          ) : (
+            p.dirs.map((d) => (
+              <button key={d.path} className={styles.dirRow} onClick={() => void scriptsStore.browseTo(d.path)} title={d.path}>
+                <Folder size={14} className={styles.dirIcon} />
+                <span className={styles.dirName}>{d.name}</span>
+              </button>
+            ))
+          )}
+        </div>
+
+        <div className={styles.modalFoot}>
+          <span className={styles.footHint}>Runs against this folder (recursively) in guest {scriptsStore.selectedTarget || '—'}.</span>
+          <div className={styles.spacer} />
+          <button className={styles.cancelBtn} onClick={() => scriptsStore.closePicker()}>Cancel</button>
+          <button className={styles.useBtn} onClick={() => scriptsStore.chooseCurrentFolder()}>Use this folder</button>
+        </div>
+      </div>
     </div>
   )
 })
@@ -99,6 +162,8 @@ export const ScriptsPanel: React.FC = observer(() => {
           ))}
         </div>
       </div>
+
+      <FolderPicker />
     </div>
   )
 })

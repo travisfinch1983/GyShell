@@ -34,7 +34,8 @@
 
 import { Router } from 'express';
 import { readdir, readFile, stat } from 'fs/promises';
-import { join } from 'path';
+import { join, resolve as pathResolve, dirname } from 'path';
+import os from 'os';
 
 /**
  * Create the scripts router with list, get, and run endpoints.
@@ -79,6 +80,30 @@ export function createScriptsRouter({ sshExec, pveApi, dataDir }) {
     } catch (err) {
       // Missing dir / unreadable -> empty list (matches ProxLab behaviour)
       res.json([]);
+    }
+  });
+
+  // ─── Browse the AI-Lab container's local filesystem (folder picker) ──────────
+  // The backend runs INSIDE the AI-Lab LXC where the NAS pools are mounted, so it
+  // lists directories directly. Returns subfolders under `path` (default /nas),
+  // a count of ebooks in the current folder, and the AI-Lab's own guest vmid so
+  // the UI can auto-select it as the run target. MUST be registered before /:name.
+  router.get('/browse', async (req, res) => {
+    const EBOOK_RE = /\.(epub|mobi|azw3?|azw4|prc|kf8)$/i;
+    let dir = (typeof req.query.path === 'string' && req.query.path) ? req.query.path : '/nas';
+    try {
+      dir = pathResolve(dir);
+      const ents = await readdir(dir, { withFileTypes: true });
+      const dirs = ents
+        .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+        .map((e) => ({ name: e.name, path: join(dir, e.name) }))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+      const ebookCount = ents.filter((e) => e.isFile() && EBOOK_RE.test(e.name)).length;
+      res.json({ path: dir, parent: dir === '/' ? null : dirname(dir), dirs, ebookCount, localVmid: resolveOwnVmid(pveApi) });
+    } catch (err) {
+      const msg = err.code === 'ENOENT' ? 'Folder not found'
+        : err.code === 'EACCES' ? 'Permission denied' : err.message;
+      res.status(400).json({ error: msg, path: dir });
     }
   });
 
@@ -141,6 +166,27 @@ export function createScriptsRouter({ sshExec, pveApi, dataDir }) {
   });
 
   return router;
+}
+
+/**
+ * Resolve the AI-Lab's own guest vmid by matching this host's non-internal IPv4
+ * addresses against the PVE guest list. Lets the folder picker auto-select the
+ * container whose filesystem it is browsing as the run target. null if unknown.
+ */
+function resolveOwnVmid(pveApi) {
+  try {
+    const own = new Set(
+      Object.values(os.networkInterfaces()).flat()
+        .filter((i) => i && i.family === 'IPv4' && !i.internal)
+        .map((i) => i.address)
+    );
+    const g = (pveApi?.getGuests?.() || []).find((gg) =>
+      [gg.ip, ...(gg.ips || [])].filter(Boolean)
+        .some((ip) => own.has(String(ip).split('/')[0])));
+    return g ? g.vmid : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
