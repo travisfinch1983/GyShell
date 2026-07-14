@@ -367,6 +367,25 @@ async def main():
                             await conn.cancel(session_id=session_id)
                         except Exception as e:
                             emit({"t": "error", "where": "cancel", "message": str(e)})
+                elif cmd.get("type") == "set_model":
+                    # Swap the model for THIS conversation's live session (ACP session/set_model).
+                    # Hermes re-creates the session agent with the new model and persists it, so the
+                    # switch survives reconnect. model_id is any AI-Lab proxy catalog id (routes via
+                    # the ailab provider). Tries the typed client method, falls back to a raw request.
+                    mid = cmd.get("model_id")
+                    if not mid:
+                        emit({"t": "error", "where": "set_model", "message": "model_id required"})
+                    else:
+                        try:
+                            if hasattr(conn, "set_session_model"):
+                                await conn.set_session_model(session_id=session_id, model_id=mid)
+                            elif hasattr(conn, "session_set_model"):
+                                await conn.session_set_model(session_id=session_id, model_id=mid)
+                            else:
+                                await conn.send_request("session/set_model", {"sessionId": session_id, "modelId": mid})
+                            emit({"t": "model_set", "model_id": mid})
+                        except Exception as e:
+                            emit({"t": "error", "where": "set_model", "message": str(e)})
                 elif cmd.get("type") == "close":
                     if current and not current.done():
                         try:

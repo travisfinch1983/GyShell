@@ -311,6 +311,15 @@ export class HermesAcpBridge extends EventEmitter {
   /** Gracefully close a session (asks the bridge to exit, then hard-kills as a backstop).
    *  Removes it from the map immediately so a same-key reopen starts a FRESH session —
    *  this is what makes "close tab wipes the conversation" true. */
+  /** Swap the model for a live conversation's ACP session (session/set_model). Hermes re-creates
+   *  the session agent with the new model and persists it, so the switch survives reconnect.
+   *  `modelId` = any AI-Lab proxy catalog id (routes via the ailab provider). */
+  setModel(sessionKey: string, modelId: string): void {
+    const session = this.sessions.get(sessionKey)
+    if (!session || session.proc.exitCode !== null) throw new Error(`no live acp session for ${sessionKey}`)
+    session.proc.stdin.write(JSON.stringify({ type: 'set_model', model_id: modelId }) + '\n')
+  }
+
   stopSession(sessionKey: string): void {
     // Deleting a tab wipes the conversation from the server registry too, so it stops appearing on
     // every device (matches the 'a conversation lives until I delete the tab' rule).

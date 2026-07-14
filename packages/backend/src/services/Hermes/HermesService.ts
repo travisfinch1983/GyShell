@@ -192,6 +192,11 @@ export class HermesService {
     this.bridge.cancel(sessionKey)
   }
 
+  /** Swap the model for a live conversation (per-conversation override; survives reconnect). */
+  setSessionModel(sessionKey: string, modelId: string): void {
+    this.bridge.setModel(sessionKey, modelId)
+  }
+
   listConversations(): Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }> {
     return this.bridge.listConversations()
   }

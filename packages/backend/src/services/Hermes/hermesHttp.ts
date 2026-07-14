@@ -513,5 +513,18 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
 
+  // Per-conversation model swap: change the model the agent uses for THIS conversation's live
+  // session (ACP session/set_model). conversationId scopes it; modelId is a proxy catalog id.
+  router.post('/api/hermes/agents/:id/model', json, (req: Req, res: Res) => {
+    try {
+      const b = (req.body ?? {}) as { conversationId?: unknown; modelId?: unknown }
+      const modelId = typeof b.modelId === 'string' ? b.modelId : null
+      if (!modelId) return res.status(400).json({ error: 'body needs { modelId: string }' })
+      const key = typeof b.conversationId === 'string' ? b.conversationId : req.params.id
+      hermes.setSessionModel(key, modelId)
+      res.json({ ok: true, modelId })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
   return router
 }
