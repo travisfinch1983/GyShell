@@ -106,6 +106,8 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
     modelId: initialSpec?.tts?.modelId ?? '',
   })
   const [fallback, setFallback] = useState<string[]>(initialSpec?.fallback ?? [])
+  // String state so blank ("use the model default") is distinct from any number.
+  const [maxTokens, setMaxTokens] = useState<string>(initialSpec?.maxTokens ? String(initialSpec.maxTokens) : '')
   const [enabled, setEnabled] = useState(initialSpec?.enabled ?? true)
   const [dirty, setDirty] = useState(!editing)
   const [msg, setMsg] = useState<string | null>(null)
@@ -167,6 +169,7 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
     })
     setTts({ provider: initialSpec?.tts?.provider ?? '', voiceId: initialSpec?.tts?.voiceId ?? '', modelId: initialSpec?.tts?.modelId ?? '' })
     setFallback(initialSpec?.fallback ?? [])
+    setMaxTokens(initialSpec?.maxTokens ? String(initialSpec.maxTokens) : '')
     setEnabled(initialSpec?.enabled ?? true)
     setDirty(false)
     setMsg(null)
@@ -182,6 +185,7 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
       toolsets,
       mode,
       fallback,
+      maxTokens: /^[0-9]+$/.test(maxTokens) && Number(maxTokens) > 0 ? Number(maxTokens) : undefined,
       subAgents:
         sub.model || sub.reasoningEffort || sub.maxConcurrent > 0 || sub.maxSpawnDepth > 0 || sub.autoApproveDangerous
           ? {
@@ -390,6 +394,17 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
                   <option value="default">default — ask before edits</option>
                   <option value="accept_edits">accept_edits — auto-allow workspace/tmp</option>
                 </select>
+              </div>
+              <div className={styles.fieldCol}>
+                <label className={styles.label}>Max generation length</label>
+                <input
+                  className={`${styles.input} ${styles.mono}`}
+                  inputMode="numeric"
+                  value={maxTokens}
+                  placeholder="blank = model default"
+                  title="Caps how many tokens the agent can output in a single turn — prevents runaway generations. Leave blank for the model default; 4096–8192 is plenty for tool-driven agents."
+                  onChange={(e) => { setMaxTokens(e.target.value.replace(/[^0-9]/g, '')); touch() }}
+                />
               </div>
             </div>,
           )}
