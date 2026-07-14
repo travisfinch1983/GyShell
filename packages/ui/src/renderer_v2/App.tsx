@@ -24,6 +24,7 @@ import { ServicesPanel } from './components/Services/ServicesPanel'
 import { ScriptsTabPanel } from './components/Scripts/ScriptsTabPanel'
 import { HomePanel } from './components/Home/HomePanel'
 import { FilesPanel } from './components/FileManager/FilesPanel'
+import { RoadmapPanel } from './components/Roadmap/RoadmapPanel'
 import { AiServicesPanel } from './components/AiServices/AiServicesPanel'
 import { ServicesDrawer } from './components/AiServices/ServicesDrawer'
 import { GpuFleetPanel } from './components/GpuFleet/GpuFleetPanel'
@@ -82,10 +83,15 @@ export const App: React.FC = observer(() => {
   // brand-new tabs (and first load after this deploy) with the last position,
   // but a refresh never snaps existing tabs to it.
   const [primaryTab, setPrimaryTab] = useState<PrimaryTab>(
-    () =>
-      (sessionStorage.getItem('ai-lab-primary-tab') as PrimaryTab) ||
-      (localStorage.getItem('ai-lab-primary-tab') as PrimaryTab) ||
-      'terminal'
+    () => {
+      const stored =
+        sessionStorage.getItem('ai-lab-primary-tab') ||
+        localStorage.getItem('ai-lab-primary-tab') ||
+        'terminal'
+      // 2026-07-14: the 'monitor' primary tab became 'roadmap' — migrate
+      // persisted positions so old tabs don't land on a nonexistent id.
+      return (stored === 'monitor' ? 'roadmap' : stored) as PrimaryTab
+    }
   )
   const handlePrimaryTabChange = useCallback((id: PrimaryTab) => {
     setPrimaryTab(id)
@@ -261,12 +267,7 @@ export const App: React.FC = observer(() => {
 
           {primaryTab === 'flowchart' && <FlowchartPanel />}
           {primaryTab === 'files' && <FilesPanel />}
-          {primaryTab === 'monitor' && (
-            <PlaceholderPanel
-              title="Monitor"
-              body="The Monitor panel will be extracted from the multi-panel terminal layout and rendered here as a top-level workspace tab."
-            />
-          )}
+          {primaryTab === 'roadmap' && <RoadmapPanel />}
 
           {/* Global chat overlay — toggled independently from the model sidebar. */}
           <GlobalChat store={store} visible={chatOpen} />
@@ -295,19 +296,3 @@ export const App: React.FC = observer(() => {
   )
 })
 
-const PlaceholderPanel: React.FC<{ title: string; body: string }> = ({ title, body }) => (
-  <div style={{
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: '100%',
-    color: 'var(--fg-muted)',
-    gap: 12,
-    padding: 32,
-    textAlign: 'center',
-  }}>
-    <h2 style={{ margin: 0, color: 'var(--fg)', fontWeight: 500 }}>{title}</h2>
-    <p style={{ margin: 0, maxWidth: 480, lineHeight: 1.5 }}>{body}</p>
-  </div>
-)

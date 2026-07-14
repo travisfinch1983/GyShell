@@ -5,7 +5,7 @@ import {
   LayoutDashboard,
   Workflow,
   FolderOpen,
-  Activity,
+  Map as MapIcon,
   Server,
   Radar,
   Package,
@@ -30,7 +30,7 @@ import {
 import { uiPrefsStore } from '../../stores/uiPrefsStore'
 import styles from './PrimarySidebar.module.scss'
 
-export type PrimaryTab = 'home' | 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'monitor' | 'fleet' | 'addons' | 'chat'
+export type PrimaryTab = 'home' | 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'roadmap' | 'fleet' | 'addons' | 'chat'
 
 interface TabDef {
   id: PrimaryTab
@@ -57,7 +57,7 @@ const TABS: TabDef[] = [
   { id: 'flowchart', label: 'Flowchart', Icon: Workflow },
   { id: 'files',     label: 'Files',     Icon: FolderOpen },
   { id: 'logs',      label: 'Logs',      Icon: ScrollText },
-  { id: 'monitor',   label: 'Monitor',   Icon: Activity },
+  { id: 'roadmap',   label: 'Roadmap',   Icon: MapIcon },
 ]
 
 interface Props {
