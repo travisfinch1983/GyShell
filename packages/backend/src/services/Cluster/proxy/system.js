@@ -78,8 +78,13 @@ export function createSystemRouter(sshService) {
 
   /**
    * GET /logs/:serviceId
-   * Reads the persistent log file for a service. Falls back to tmux
-   * capture-pane for active services without a log file (pre-pipe-pane).
+   * Reads the persistent log for a service, ROTATION-AWARE: since logrotate
+   * (copytruncate, keep 7, compress) landed on /var/log/proxlab, the newest
+   * lines live in name.log but recent history continues in name.log.1 and
+   * name.log.N.gz. The read concatenates the family oldest→newest and tails
+   * the requested count, so a just-rotated service still shows full history.
+   * Falls back to tmux capture-pane only for active NON-systemd services
+   * (systemd launches have no tmux session — an empty file is still 'logfile').
    * Query params: lines (default 1000, max 5000)
    */
   router.get('/logs/:serviceId', async (req, res) => {
@@ -97,24 +102,34 @@ export function createSystemRouter(sshService) {
     const isActive = !!active[req.params.serviceId];
     const lines = Math.min(Math.max(parseInt(req.query.lines, 10) || 1000, 1), 5000);
     const { pveHostIp, vmid, tmuxSession } = svc;
+    // svc.logFile is authoritative (every launcher registers it); the session
+    // fallback matches the launchers' <providerId>-<port>.log naming.
     const logFile = svc.logFile || `/var/log/proxlab/${tmuxSession}.log`;
 
     try {
-      // Try the persistent log file first
-      const tailCmd = `pct exec ${vmid} -- tail -n ${lines} "${logFile}" 2>/dev/null`;
-      const result = await sshService.exec(pveHostIp, tailCmd, { timeout: 15000 });
+      // Read the whole rotation family oldest→newest, then tail. A sentinel
+      // line distinguishes "family exists but is empty" (fresh rotation /
+      // brand-new service) from "no such log at all". Suffix ordering:
+      // higher N = older, so ls -1v ascending is newest→oldest → tac flips it.
+      const SENTINEL = '__PROXLAB_LOG_EXISTS__';
+      const readCmd = `pct exec ${vmid} -- sh -c 'if ls -- "${logFile}"* >/dev/null 2>&1; then echo ${SENTINEL}; { for f in $(ls -1v -- "${logFile}".*.gz 2>/dev/null | tac); do zcat -f -- "$f" 2>/dev/null; done; for f in $(ls -1v -- "${logFile}".[0-9] "${logFile}".[0-9][0-9] 2>/dev/null | tac); do cat -- "$f" 2>/dev/null; done; cat -- "${logFile}" 2>/dev/null; } | tail -n ${lines}; fi'`;
+      const result = await sshService.exec(pveHostIp, readCmd, { timeout: 20000 });
+      const hasFamily = result.code === 0 && result.stdout.startsWith(SENTINEL);
+      const output = hasFamily ? result.stdout.slice(SENTINEL.length).replace(/^\n/, '') : '';
 
-      if (result.code === 0 && result.stdout.length > 0) {
+      if (hasFamily && output.length > 0) {
         return res.json({
           alive: isActive,
-          output: result.stdout,
+          output,
           source: 'logfile',
           capturedAt: new Date().toISOString(),
         });
       }
 
-      // Fallback: tmux capture-pane (only works for active services with a live session)
-      if (isActive) {
+      // Fallback: tmux capture-pane — only meaningful for tmux launches;
+      // systemd services have no session, so don't turn "empty log" into
+      // a spurious "not found" for them.
+      if (isActive && !svc.isSystemService) {
         const captureCmd = `pct exec ${vmid} -- tmux capture-pane -t "${tmuxSession}" -e -p -S -${lines}`;
         const captureResult = await sshService.exec(pveHostIp, captureCmd, { timeout: 15000 });
 
@@ -128,7 +143,17 @@ export function createSystemRouter(sshService) {
         }
       }
 
-      // No log file and no tmux session
+      if (hasFamily) {
+        // The log family exists but holds nothing yet — truthful empty, not an error.
+        return res.json({
+          alive: isActive,
+          output: '',
+          source: 'logfile',
+          capturedAt: new Date().toISOString(),
+        });
+      }
+
+      // No log family and no tmux session
       res.json({
         alive: false,
         output: '',
