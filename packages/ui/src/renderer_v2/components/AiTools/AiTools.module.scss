@@ -132,3 +132,42 @@
 .cacheEntry { display: flex; flex-direction: column; gap: 3px; padding: 2px 0; }
 .capIndeterminate { height: 100%; width: 35%; border-radius: 4px; background: var(--accent); animation: cacheSlide 1.2s ease-in-out infinite; }
 @keyframes cacheSlide { 0% { margin-left: 0; } 50% { margin-left: 65%; } 100% { margin-left: 0; } }
+
+/* ── Doc-RAG: server-file browse ─────────────────────────────────────────── */
+.orBrowse { display: flex; align-items: center; gap: 10px; margin: 10px 0 2px; }
+.orLine { flex: 1; height: 1px; background: var(--border); }
+.btnBrowseServer {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 6px 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--control-bg); color: var(--fg);
+  &:hover { background: var(--control-bg-hover); border-color: var(--accent); color: var(--fg); }
+}
+.accentIco { color: var(--accent); flex: 0 0 auto; }
+.ellip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spin { animation: dr-spin 0.9s linear infinite; }
+@keyframes dr-spin { to { transform: rotate(360deg); } }
+
+.modalOverlay {
+  position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, #000 55%, transparent); padding: 24px;
+}
+.modal {
+  display: flex; flex-direction: column; width: min(600px, 100%); max-height: min(74vh, 680px);
+  border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg);
+  box-shadow: 0 12px 40px color-mix(in srgb, #000 45%, transparent); overflow: hidden;
+}
+.modalHead { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); color: var(--fg-muted); }
+.modalTitle { font-weight: 600; font-size: 13px; color: var(--fg); }
+.pathBar { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-bottom: 1px solid var(--border); background: var(--app-bg); }
+.pathText { font-family: var(--font-mono); font-size: 12px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.linkBtn { flex: 0 0 auto; font-size: 11px; color: var(--accent); background: none; border: none; cursor: pointer; padding: 2px 4px; &:hover { text-decoration: underline; } }
+.browseList { flex: 1; overflow: auto; padding: 8px; display: flex; flex-direction: column; gap: 2px; min-height: 160px; }
+.dirRow, .fileSelRow {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; padding: 7px 10px;
+  border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--fg); font-size: 13px; cursor: pointer;
+  &:hover { background: var(--control-bg-hover); border-color: var(--border); }
+}
+.fileSelOn { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.browseMuted { display: flex; align-items: center; gap: 8px; padding: 16px 10px; color: var(--fg-faint); font-size: 12px; }
+.modalFoot { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-top: 1px solid var(--border); background: var(--panel-bg-2, var(--app-bg)); }
+
+.error { margin: 8px 0; padding: 8px 10px; border-radius: 6px; font-size: 12px; color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); background: color-mix(in srgb, var(--danger) 10%, transparent); }

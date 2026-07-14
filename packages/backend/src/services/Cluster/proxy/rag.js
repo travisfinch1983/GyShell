@@ -5,8 +5,8 @@
 // @ts-nocheck
 import express from 'express'
 import multer from 'multer'
-import { readFile as readFileAsync } from 'node:fs/promises'
-import { extname, join } from 'node:path'
+import { readFile as readFileAsync, readdir, stat } from 'node:fs/promises'
+import { extname, join, resolve as pathResolve, dirname, basename } from 'node:path'
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
@@ -42,6 +42,50 @@ export function registerRagRoutes(app, { exec, selfPort }) {
       res.status(500).json({ error: e.message })
     }
   })
+
+// ─── Document RAG: browse the AI-Lab container's filesystem + index in place ──
+// The backend runs INSIDE CT152 where the NAS pools are mounted, so it lists and reads
+// files directly — no upload round-trip from the user's machine.
+app.get('/api/ai/docrag/browse', async (req, res) => {
+  const DOC_EXT_RE = /\.(pdf|docx|xlsx|txt|md|csv|json|ya?ml|xml|html?|png|jpe?g|webp|gif|bmp)$/i;
+  let dir = (typeof req.query.path === 'string' && req.query.path) ? req.query.path : '/nas';
+  try {
+    dir = pathResolve(dir);
+    const ents = await readdir(dir, { withFileTypes: true });
+    const dirs = ents
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .map((e) => ({ name: e.name, path: join(dir, e.name) }))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    const files = [];
+    for (const e of ents) {
+      if (e.isFile() && !e.name.startsWith('.') && DOC_EXT_RE.test(e.name)) {
+        let size = 0; try { size = (await stat(join(dir, e.name))).size; } catch {}
+        files.push({ name: e.name, path: join(dir, e.name), size });
+      }
+    }
+    files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    res.json({ path: dir, parent: dir === '/' ? null : dirname(dir), dirs, files });
+  } catch (err) {
+    const msg = err.code === 'ENOENT' ? 'Folder not found'
+      : err.code === 'EACCES' ? 'Permission denied' : err.message;
+    res.status(400).json({ error: msg, path: dir });
+  }
+});
+
+// Index files that already live on the container (selected via /docrag/browse). Reads them
+// in place; keepSource:true so the shared cleanup never unlinks the user's real files.
+app.post('/api/ai/docrag/index-paths', express.json({ limit: '2mb' }), async (req, res) => {
+  const { collection, description, paths } = req.body || {};
+  if (!collection || !Array.isArray(paths) || !paths.length) return res.status(400).json({ error: 'collection and paths are required' });
+  if (docRagJob.active) return res.status(409).json({ error: 'A document indexing job is already running.' });
+  const files = [];
+  for (const p of paths) {
+    try { const s = await stat(p); if (s.isFile()) files.push({ path: p, originalname: basename(p) }); } catch {}
+  }
+  if (!files.length) return res.status(400).json({ error: 'none of the given paths are readable files on the container' });
+  runDocRagIndexing(files, collection, description, { keepSource: true });
+  res.json({ started: true, collection, fileCount: files.length });
+});
 
 // ─── Codebase RAG (async indexing with progress) ────────────────────────────
 
@@ -730,7 +774,7 @@ async function extractDocContent(filePath, originalName) {
   return [];
 }
 
-async function runDocRagIndexing(files, collection, description) {
+async function runDocRagIndexing(files, collection, description, opts = {}) {
   const colName = sanitizeDocCollectionName(collection);
   const port = selfPort;
   docRagJob.active = true;
@@ -931,8 +975,8 @@ async function runDocRagIndexing(files, collection, description) {
     } catch {}
   } finally {
     docRagJob.active = false;
-    // Clean up temp uploaded files
-    for (const file of files) {
+    // Clean up temp uploaded files — but NEVER server-browsed source files (keepSource).
+    if (!opts.keepSource) for (const file of files) {
       try { await rmAsync(file.path, { force: true }); } catch {}
     }
   }
