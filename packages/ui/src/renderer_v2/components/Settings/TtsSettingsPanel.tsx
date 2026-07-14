@@ -4,20 +4,23 @@
  * Configures the models that support the agents rather than being agents:
  * - Vision Description model (global Hermes role — describes images to
  *   text-only agents; vision-capable agents see images natively and ignore it)
+ * - Compaction model (global Hermes role — summarizes long agent contexts;
+ *   full catalog, no vision filter)
  * - STT provider and model selection
  * - TTS provider and model selection
  * - Single/dual pipeline toggle
  * - RVC voice conversion toggle
  *
  * TTS/STT settings stored in settings.ttsConfig / settings.sttConfig;
- * Vision Description lives backend-side (GET/PUT /api/hermes/support-models).
+ * the Hermes roles live backend-side (GET/PUT /api/hermes/support-models,
+ * merge semantics — each section PUTs only its own key).
  */
 
 import React, { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { observer } from 'mobx-react-lite'
 import {
-  Volume2, Mic, RefreshCw, CircleDot, Eye,
+  Volume2, Mic, RefreshCw, CircleDot, Eye, Archive,
 } from 'lucide-react'
 import {
   getTtsProviders,
@@ -64,12 +67,26 @@ const DEFAULT_STT_CONFIG: SttConfig = {
   model: 'large-v3-turbo',
 }
 
-// ─── Vision Description Section ───────────────────────────────────────────────
-// Global Hermes role: the model that describes images to TEXT-ONLY agents.
-// Vision-capable agents see images natively and ignore this setting entirely.
+// ─── Support-Model Role Sections ──────────────────────────────────────────────
+// Global Hermes roles (GET/PUT /api/hermes/support-models, merge semantics —
+// each section PUTs only its own key). One reusable section per role.
 
-const VisionDescriptionSection: React.FC = () => {
-  const [visionModels, setVisionModels] = useState<CatalogModelWithCaps[]>([])
+interface SupportRoleSectionProps {
+  roleKey: 'visionDescription' | 'compaction'
+  title: string
+  icon: React.ReactNode
+  selectLabel: string
+  /** Catalog filter for the options list (identity = full catalog). */
+  filterModels: (m: CatalogModelWithCaps) => boolean
+  clearOptionLabel: string
+  clearedStatus: string
+  helperCopy: string
+}
+
+const SupportRoleSection: React.FC<SupportRoleSectionProps> = ({
+  roleKey, title, icon, selectLabel, filterModels, clearOptionLabel, clearedStatus, helperCopy,
+}) => {
+  const [models, setModels] = useState<CatalogModelWithCaps[]>([])
   const [role, setRole] = useState<SupportModelRole | null>(null)
   // Wipe guard: the selector only renders after a successful GET, so a failed
   // load can never turn into a blind PUT over live config.
@@ -81,8 +98,8 @@ const VisionDescriptionSection: React.FC = () => {
     setState('loading')
     const [roles, catalog] = await Promise.all([hermesApi.getSupportModels(), hermesApi.listCatalog()])
     if (roles === null) { setState('error'); return }
-    setRole(roles.visionDescription)
-    setVisionModels(catalog.filter((m) => m.capabilities?.vision === true))
+    setRole(roles[roleKey])
+    setModels(catalog.filter(filterModels))
     setState('ready')
   }
 
@@ -94,7 +111,7 @@ const VisionDescriptionSection: React.FC = () => {
     setRole(next)
     setSaving(true)
     setStatus('')
-    const r = await hermesApi.setSupportModels(next)
+    const r = await hermesApi.setSupportModels({ [roleKey]: next })
     setSaving(false)
     if (!r.ok) {
       setRole(prev)
@@ -104,20 +121,20 @@ const VisionDescriptionSection: React.FC = () => {
     setStatus(
       next
         ? `saved${typeof r.agentsUpdated === 'number' ? ` — ${r.agentsUpdated} agent${r.agentsUpdated === 1 ? '' : 's'} updated` : ''}`
-        : 'cleared — text-only agents get no image descriptions',
+        : clearedStatus,
     )
   }
 
   // Current value may reference a model missing from the catalog (renamed,
   // unloaded) — keep it selectable rather than silently showing something else.
-  const options = visionModels.map((m) => m.id)
+  const options = models.map((m) => m.id)
   if (role?.model && !options.includes(role.model)) options.unshift(role.model)
 
   return (
     <div className="tts-section">
       <div className="tts-section-header">
-        <Eye size={13} />
-        <span>Vision Description</span>
+        {icon}
+        <span>{title}</span>
       </div>
       <div className="tts-section-body">
         {state === 'loading' ? (
@@ -130,31 +147,61 @@ const VisionDescriptionSection: React.FC = () => {
         ) : (
           <>
             <div className="tts-field">
-              <label>Describer Model{saving ? ' (saving…)' : ''}</label>
+              <label>{selectLabel}{saving ? ' (saving…)' : ''}</label>
               <select
                 value={role?.model || ''}
                 onChange={(e) => apply(e.target.value)}
                 className="tts-select"
                 disabled={saving}
               >
-                <option value="">(None — text-only agents get no image descriptions)</option>
+                <option value="">{clearOptionLabel}</option>
                 {options.map((id) => (
                   <option key={id} value={id}>{id}</option>
                 ))}
               </select>
               {status && <span className="tts-hint">{status}</span>}
             </div>
-            <span className="tts-hint">
-              Only used for text-only agents: a non-vision model can't see pixels, so incoming
-              images are described to it by this model. Vision-capable agents ignore it — they
-              see images natively.
-            </span>
+            <span className="tts-hint">{helperCopy}</span>
           </>
         )}
       </div>
     </div>
   )
 }
+
+const VisionDescriptionSection: React.FC = () => (
+  <SupportRoleSection
+    roleKey="visionDescription"
+    title="Vision Description"
+    icon={<Eye size={13} />}
+    selectLabel="Describer Model"
+    filterModels={(m) => m.capabilities?.vision === true}
+    clearOptionLabel="(None — text-only agents get no image descriptions)"
+    clearedStatus="cleared — text-only agents get no image descriptions"
+    helperCopy={
+      "Only used for text-only agents: a non-vision model can't see pixels, so incoming "
+      + 'images are described to it by this model. Vision-capable agents ignore it — they '
+      + 'see images natively.'
+    }
+  />
+)
+
+const CompactionSection: React.FC = () => (
+  <SupportRoleSection
+    roleKey="compaction"
+    title="Compaction"
+    icon={<Archive size={13} />}
+    selectLabel="Compaction Model"
+    filterModels={() => true}
+    clearOptionLabel="(None — agents compact with their own model)"
+    clearedStatus="cleared — agents compact with their own model"
+    helperCopy={
+      'Model that summarizes long agent contexts when they fill up (trajectory compaction). '
+      + 'A fast, always-warm local model (e.g. Qwen 9B) is ideal — keeps compaction off your '
+      + 'main model and off cloud credits. Applies to all agents.'
+    }
+  />
+)
 
 export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) => {
   const [ttsProviders, setTtsProviders] = useState<TtsProvider[]>([])
@@ -221,6 +268,9 @@ export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) =
 
       {/* ─── Vision Description Section ───────────────────────────── */}
       <VisionDescriptionSection />
+
+      {/* ─── Compaction Section ───────────────────────────────────── */}
+      <CompactionSection />
 
       {/* ─── STT Section ──────────────────────────────────────────── */}
       <div className="tts-section">

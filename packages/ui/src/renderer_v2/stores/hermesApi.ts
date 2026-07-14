@@ -29,7 +29,10 @@ export interface HermesApplyResult {
 
 /** One global support-model role assignment (Support Models tab). */
 export interface SupportModelRole { provider: string; model: string }
-export interface SupportModels { visionDescription: SupportModelRole | null }
+export interface SupportModels {
+  visionDescription: SupportModelRole | null
+  compaction: SupportModelRole | null
+}
 
 export interface HermesPromptResult {
   ok: boolean
@@ -500,21 +503,26 @@ export const hermesApi = {
       const r = await bridge().request('GET', '/api/hermes/support-models')
       const roles = r?.roles
       if (!roles || typeof roles !== 'object') return null
-      const vd = roles.visionDescription
+      const parse = (v: any): SupportModelRole | null =>
+        v && typeof v.model === 'string' && v.model
+          ? { provider: String(v.provider || 'ailab'), model: v.model }
+          : null
       return {
-        visionDescription: vd && typeof vd.model === 'string' && vd.model
-          ? { provider: String(vd.provider || 'ailab'), model: vd.model }
-          : null,
+        visionDescription: parse(roles.visionDescription),
+        compaction: parse(roles.compaction),
       }
     } catch {
       return null
     }
   },
 
-  /** PUT /api/hermes/support-models — applies globally; null clears the role. */
-  async setSupportModels(visionDescription: SupportModelRole | null): Promise<{ ok: boolean; agentsUpdated?: number; error?: string }> {
+  /**
+   * PUT /api/hermes/support-models — MERGE semantics: only the keys present in
+   * the patch are touched; a key set to null clears that role. Applies globally.
+   */
+  async setSupportModels(patch: Partial<SupportModels>): Promise<{ ok: boolean; agentsUpdated?: number; error?: string }> {
     try {
-      const r = await bridge().request('PUT', '/api/hermes/support-models', { visionDescription })
+      const r = await bridge().request('PUT', '/api/hermes/support-models', patch)
       if (r?.error) return { ok: false, error: String(r.error) }
       return { ok: r?.ok !== false, agentsUpdated: typeof r?.agentsUpdated === 'number' ? r.agentsUpdated : undefined }
     } catch (e) {
