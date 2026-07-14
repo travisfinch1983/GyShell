@@ -1,5 +1,7 @@
 // @ts-expect-error — express ships untyped in this repo (same pre-existing gap as UniversalProxyService)
 import express from 'express'
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { dirname } from 'path'
 import { hermesAgentSpecSchema, providerServiceSchema } from '@gyshell/shared'
 // @ts-expect-error — proxy capability resolver ships as untyped JS (same pattern as the other proxy/*.js imports)
 import { resolveModelCapabilities } from '../Cluster/proxy/model-capabilities.js'
@@ -15,7 +17,7 @@ type Res = express.Response
  * pure OBSERVER — disconnecting only detaches, it never stops the backend-owned session
  * (headless invariant, see /claude/plans/ailab-hermes-integration.md).
  */
-export function createHermesRouter(hermes: HermesService): express.Router {
+export function createHermesRouter(hermes: HermesService, roadmapFile?: string): express.Router {
   const router = express.Router()
   // 12mb: prompt bodies can carry a base64 screenshot (Feature A page-aware chat).
   const json = express.json({ limit: '12mb' })
@@ -474,6 +476,26 @@ export function createHermesRouter(hermes: HermesService): express.Router {
       const r = await hermes.setSupportModels(roles)
       res.json({ ok: true, ...r })
     } catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
+  })
+
+  // Roadmap — one live-editable markdown doc (buildout plan + completed/outstanding checklist).
+  // GET returns it; PUT overwrites it. Backs the Roadmap tab (rendered client-side with GFM task lists).
+  router.get('/api/roadmap', (_req: Req, res: Res) => {
+    try {
+      const markdown = roadmapFile && existsSync(roadmapFile) ? readFileSync(roadmapFile, 'utf8') : ''
+      res.json({ markdown })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.put('/api/roadmap', json, (req: Req, res: Res) => {
+    try {
+      if (!roadmapFile) return res.status(503).json({ error: 'roadmap storage not configured' })
+      const md = (req.body as { markdown?: unknown })?.markdown
+      if (typeof md !== 'string') return res.status(400).json({ error: 'body needs { markdown: string }' })
+      const dir = dirname(roadmapFile)
+      if (dir && !existsSync(dir)) mkdirSync(dir, { recursive: true })
+      writeFileSync(roadmapFile, md, 'utf8')
+      res.json({ ok: true, bytes: Buffer.byteLength(md) })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
 
   return router

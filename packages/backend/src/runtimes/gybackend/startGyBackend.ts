@@ -202,7 +202,7 @@ export async function startGyBackend(): Promise<void> {
     .start({
       dataDir,
       fleetRouter: createFleetRouter(conversationBus),
-      hermesRouter: createHermesRouter(hermesService),
+      hermesRouter: createHermesRouter(hermesService, path.join(dataDir, 'roadmap.md')),
       agentToolsRouter: createAgentToolsRouter({ settingsService, agentService }),
     })
     .catch((e) => console.warn('[gybackend] universal proxy failed to start:', e))
