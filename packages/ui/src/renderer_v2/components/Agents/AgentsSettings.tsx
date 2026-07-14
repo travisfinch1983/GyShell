@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Bot, FileText, Plus } from 'lucide-react'
+import { Bot, FileText, Plus, Save, Undo2, UserRound, X } from 'lucide-react'
 import { hermesAgentsStore as store } from '../../stores/HermesAgentsStore'
+import { hermesApi } from '../../stores/hermesApi'
 import { AgentEditor } from './AgentEditor'
 import { AgentDocs, InlineDocEditor } from './AgentDocs'
 import styles from './Agents.module.scss'
@@ -21,6 +22,85 @@ const TEMPLATE_AGENT = 'default'
  * no Persona tab owns it here). New templates: name a file and PUT it via the
  * missing-file-creates-on-save path.
  */
+/**
+ * Canonical shared USER doc ("About Your Human") — /root/.hermes/global/USER.md
+ * via GET/PUT /api/hermes/doc-templates/user, NOT a per-agent file. Saving
+ * re-propagates the content into every agent's AGENTS.md user section (doc
+ * consolidation 54a0c55), so the save readout surfaces agentsUpdated.
+ * Wipe-guarded like every doc editor: only opens on a successful GET.
+ */
+const GlobalUserEditor: React.FC = () => {
+  const [open, setOpen] = useState<{ content: string; base: string } | null>(null)
+  const [opening, setOpening] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  const openDoc = async () => {
+    setOpening(true); setMsg('')
+    const content = await hermesApi.getUserTemplate()
+    setOpening(false)
+    if (content === null) { setMsg("Couldn't read the canonical USER doc — not opening an empty editor over it."); return }
+    setOpen({ content, base: content })
+  }
+
+  const save = async () => {
+    if (!open || open.content === open.base) return
+    setSaving(true); setMsg('')
+    const r = await hermesApi.putUserTemplate(open.content)
+    setSaving(false)
+    if (!r.ok) { setMsg(`Save failed: ${r.error ?? 'unknown'}`); return }
+    setOpen({ ...open, base: open.content })
+    setMsg(`Saved ✓${typeof r.agentsUpdated === 'number' ? ` — re-propagated into ${r.agentsUpdated} agent${r.agentsUpdated === 1 ? '' : 's'}` : ''}`)
+  }
+
+  const dirty = !!open && open.content !== open.base
+  return (
+    <div className={styles.card}>
+      <div className={styles.summaryRow}>
+        <UserRound size={15} />
+        <div>
+          <strong className={styles.mono}>USER — About Your Human</strong>
+          <div className={styles.dim}>
+            The one shared file about Travis. Saving rewrites the canonical global USER doc and
+            re-propagates it into every agent's AGENTS.md — not a per-agent copy.
+          </div>
+        </div>
+        <span className={styles.spacer} />
+        {!open ? (
+          <button className={styles.btn} disabled={opening} onClick={() => void openDoc()}>
+            {opening ? 'Opening…' : 'Open editor →'}
+          </button>
+        ) : (
+          <>
+            <button className={styles.btn} disabled={saving || !dirty} title="Discard changes" onClick={() => setOpen({ ...open, content: open.base })}>
+              <Undo2 size={13} /> Revert
+            </button>
+            <button className={styles.btnPrimary} disabled={saving || !dirty} onClick={() => void save()}>
+              <Save size={13} /> {saving ? 'Saving…' : 'Save & propagate'}
+            </button>
+            <button
+              className={styles.btn}
+              title="Close editor"
+              onClick={() => { if (!dirty || window.confirm('Discard unsaved changes to the USER doc?')) { setOpen(null); setMsg('') } }}
+            >
+              <X size={13} />
+            </button>
+          </>
+        )}
+      </div>
+      {msg && <div className={styles.dim} style={{ marginTop: 6 }}>{msg}</div>}
+      {open && (
+        <textarea
+          className={`${styles.soul} ${styles.mono}`}
+          value={open.content}
+          onChange={(e) => setOpen({ ...open, content: e.target.value })}
+          spellCheck={false}
+        />
+      )}
+    </div>
+  )
+}
+
 const DocTemplatesView: React.FC = () => {
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState<string | null>(null)
@@ -39,8 +119,9 @@ const DocTemplatesView: React.FC = () => {
         <div className={styles.sectionSub}>
           The default operating docs every NEW agent is created from (the Hermes “default” profile).
           Edits here change the templates only — existing agents keep their own copies.
-          bootstrap.md and USER.md live here as the shared baseline.
+          The shared USER doc is global (propagated into every agent's AGENTS.md), edited below.
         </div>
+        <GlobalUserEditor />
         <div className={styles.card}>
           <div className={styles.summaryRow}>
             <FileText size={15} />

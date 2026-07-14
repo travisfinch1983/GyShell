@@ -494,6 +494,35 @@ export const hermesApi = {
   },
 
   /**
+   * GET /api/hermes/doc-templates/user → the canonical shared USER doc
+   * (/root/.hermes/global/USER.md — "About Your Human"). Null on failure so
+   * the editor never opens empty over the real file.
+   */
+  async getUserTemplate(): Promise<string | null> {
+    try {
+      const r = await bridge().request('GET', '/api/hermes/doc-templates/user')
+      return typeof r?.markdown === 'string' ? r.markdown : null
+    } catch {
+      return null
+    }
+  },
+
+  /**
+   * PUT /api/hermes/doc-templates/user — writes the canonical USER doc and
+   * re-propagates its content into every agent's AGENTS.md "About Your Human"
+   * section (doc consolidation 54a0c55). Returns agentsUpdated.
+   */
+  async putUserTemplate(markdown: string): Promise<{ ok: boolean; agentsUpdated?: number; error?: string }> {
+    try {
+      const r = await bridge().request('PUT', '/api/hermes/doc-templates/user', { markdown })
+      if (r?.error) return { ok: false, error: String(r.error) }
+      return { ok: r?.ok !== false, agentsUpdated: typeof r?.agentsUpdated === 'number' ? r.agentsUpdated : undefined }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
+  /**
    * GET /api/hermes/support-models → global role assignments. Returns null on
    * transport failure (distinct from a legitimately unset role) so the editor
    * can stay closed instead of blind-saving over live config.

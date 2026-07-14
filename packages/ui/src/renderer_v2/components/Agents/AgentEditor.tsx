@@ -352,7 +352,6 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
               </div>
             </div>,
           )}
-          {inlineDoc('workspace/IDENTITY.md', 'Who the agent is — the identity operating doc on the Hermes host.')}
         </section>
       )}
 
@@ -553,8 +552,8 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
         <section>
           <div className={styles.sectionTitle}>Config docs</div>
           <div className={styles.sectionSub}>
-            The agent's operating .md files on the Hermes host (IDENTITY, USER, MEMORY, TOOLS, library guides…).
-            SOUL.md is edited in the Persona section.
+            The agent's operating .md files on the Hermes host (AGENTS, MEMORY, HEARTBEAT, library guides…).
+            SOUL.md is edited in the Persona section; AGENTS.md also has a dedicated editor on the Tools section.
           </div>
           {editing && (initialSpec?.agentId ?? editId) ? (
             <AgentDocs agentId={initialSpec?.agentId ?? editId ?? agentId} />
@@ -609,8 +608,7 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
               </div>
             </>,
           )}
-          {inlineDoc('workspace/TOOLS.md', 'What the agent may use and how — its tool operating doc.')}
-          {inlineDoc('workspace/EXECUTION.md', 'How the agent runs work — execution rules and conventions.')}
+          {inlineDoc('workspace/AGENTS.md', 'How the agent operates — rules, tool & action discipline, environment notes, and the propagated "About Your Human" section (doc consolidation 54a0c55).')}
         </section>
       )}
 
