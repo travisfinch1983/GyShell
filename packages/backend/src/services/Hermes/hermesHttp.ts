@@ -498,5 +498,20 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
 
+  // Global USER doc-template ("About Travis") — shared across agents. GET returns it; PUT writes it
+  // and re-propagates into every agent's AGENTS.md "About Your Human" section.
+  router.get('/api/hermes/doc-templates/user', async (_req: Req, res: Res) => {
+    try { res.json({ markdown: await hermes.getUserDoc() }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.put('/api/hermes/doc-templates/user', json, async (req: Req, res: Res) => {
+    try {
+      const md = (req.body as { markdown?: unknown })?.markdown
+      if (typeof md !== 'string') return res.status(400).json({ error: 'body needs { markdown: string }' })
+      const r = await hermes.setUserDoc(md)
+      res.json({ ok: true, ...r })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
   return router
 }

@@ -149,6 +149,9 @@ export class HermesService {
     return this.mgmt.applySpec(spec)
   }
 
+  getUserDoc(): Promise<string> { return this.mgmt.getUserDoc() }
+  setUserDoc(markdown: string): Promise<{ agentsUpdated: number }> { return this.mgmt.setUserDoc(markdown) }
+
   getSupportModels(): ReturnType<HermesManagementService['getSupportModels']> {
     return this.mgmt.getSupportModels()
   }

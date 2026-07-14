@@ -296,6 +296,47 @@ export class HermesManagementService {
     try { return Buffer.from(b64, 'base64').toString('utf8') } catch { return '' }
   }
 
+  // ── Global USER doc ("About Travis") — shared; inlined into every agent's AGENTS.md ──
+  private static readonly GLOBAL_USER_PATH = '/root/.hermes/global/USER.md'
+
+  /** The canonical shared USER doc (markdown). '' if none. */
+  async getUserDoc(): Promise<string> {
+    return (await this.ssh(`cat ${shq(HermesManagementService.GLOBAL_USER_PATH)} 2>/dev/null || true`))
+  }
+
+  private static readonly USER_DOC_MARKER = '<!-- doc:user -->'
+
+  /** Write the canonical USER doc + re-propagate its content into every agent's AGENTS.md
+   *  "About Your Human" section (everything from the USER_DOC_MARKER to EOF; appended if absent).
+   *  Returns how many agents were rewritten. (No regex/backslashes in the embedded python — uses a
+   *  plain marker + chr(10) so it survives the SSH/TS layers cleanly.) */
+  async setUserDoc(markdown: string): Promise<{ agentsUpdated: number }> {
+    await this.writeRemoteFile(HermesManagementService.GLOBAL_USER_PATH, markdown)
+    const py = [
+      'import os, glob, base64',
+      'user = base64.b64decode(os.environ["USER_B64"]).decode("utf-8").strip()',
+      'base = "' + this.profileHomeBase + '"',
+      'M = "' + HermesManagementService.USER_DOC_MARKER + '"',
+      'nl = chr(10)',
+      'n = 0',
+      'for ag in glob.glob(base + "/*/workspace/AGENTS.md"):',
+      '    try:',
+      '        t = open(ag, encoding="utf-8").read()',
+      '    except Exception:',
+      '        continue',
+      '    idx = t.find(M)',
+      '    head = (t[:idx].rstrip() if idx >= 0 else t.rstrip())',
+      '    new = head + nl + nl + M + nl + user + nl',
+      '    if new != t:',
+      '        open(ag, "w", encoding="utf-8").write(new); n += 1',
+      'print(n)',
+    ].join('\n')
+    const b64 = Buffer.from(py, 'utf8').toString('base64')
+    const userB64 = Buffer.from(markdown, 'utf8').toString('base64')
+    const out = await this.ssh(`printf %s ${shq(b64)} | base64 -d | USER_B64=${shq(userB64)} ${HermesManagementService.HERMES_PY} -`)
+    return { agentsUpdated: parseInt(out.trim(), 10) || 0 }
+  }
+
   /** Write the SOUL.md persona file for an agent on the Hermes host. */
   async writeSoul(agentId: string, content: string): Promise<void> {
     await this.writeRemoteFile(`${this.profileHome(agentId)}/SOUL.md`, content)
@@ -570,8 +611,9 @@ export class HermesManagementService {
 
   /** The standard/default docs every agent has — protected from deletion (basename match). */
   private static readonly PROTECTED_DOC_BASENAMES = new Set([
-    'SOUL.md', 'AGENTS.md', 'BOOT.md', 'BOOTSTRAP.md', 'EXECUTION.md',
-    'HEARTBEAT.md', 'IDENTITY.md', 'TOOLS.md', 'USER.md', 'MEMORY.md',
+    // Consolidated (2026-07): SOUL + AGENTS are the two Hermes-injected docs; MEMORY is dynamic;
+    // HEARTBEAT/BOOT are functional. IDENTITY/EXECUTION/TOOLS/USER/BOOTSTRAP were folded in + retired.
+    'SOUL.md', 'AGENTS.md', 'MEMORY.md', 'HEARTBEAT.md', 'BOOT.md',
   ])
   private isProtectedDoc(rel: string): boolean {
     const base = rel.split('/').pop() || rel
