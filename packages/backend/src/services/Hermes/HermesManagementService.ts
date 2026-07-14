@@ -1137,6 +1137,9 @@ export class HermesManagementService {
     await this.hermes(['-p', id, 'config', 'set', 'model.provider', 'ailab'])
     await this.hermes(['-p', id, 'config', 'set', 'model.default', spec.model])
 
+    // Max output tokens per turn (bounds runaway generations). Unset -> model default.
+    await this.hermes(['-p', id, 'config', 'set', 'model.max_tokens', spec.maxTokens ? String(spec.maxTokens) : ''])
+
     // Native-vision routing keyed on the model's capability (supports_vision + describe backend).
     await this.applyVisionConfig(id, spec.model)
     // Context-compaction model (global Compaction support-model role).

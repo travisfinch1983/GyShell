@@ -112,6 +112,9 @@ export const hermesAgentSpecSchema = z.object({
   description: z.string().optional(),
   /** catalog model id (tag-prefixed) this agent runs on — routed through the proxy. */
   model: z.string().min(1),
+  /** Max output tokens per turn -> Hermes `model.max_tokens`. Bounds a runaway generation;
+   *  omit for the model default. */
+  maxTokens: z.number().int().positive().max(1000000).optional(),
   /** Ordered fallback model chain — catalog ids tried, in order, when the primary model fails
    *  with rate-limit/overload/connection errors (Hermes-native failover via `hermes fallback`,
    *  NOT quality switching). Each routes through the `ailab` proxy, same as `model`; persisted to
