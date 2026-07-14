@@ -8,7 +8,6 @@ import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
 import { hermesChatStore as chat, type ChatItem } from '../../stores/HermesChatStore'
 import { hermesConversationsStore, type ConvMeta } from '../../stores/hermesConversationsStore'
 import styles from './AgentChat.module.scss'
-import { newUuid } from '../../lib/uuid'
 
 /** Collapsible reasoning block. */
 const ThoughtRow: React.FC<{ item: ChatItem }> = ({ item }) => {
@@ -130,7 +129,9 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
   }
 
   const spec = hermesAgentsStore.specs.get(agentId)
-  const pct = s.usage ? Math.min(100, Math.round((s.usage.used / s.usage.size) * 100)) : null
+  // size can be 0 before the backend knows the model's window — treat as "no meter"
+  const pct = s.usage && s.usage.size > 0 ? Math.min(100, Math.round((s.usage.used / s.usage.size) * 100)) : null
+  const fmtK = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k` : String(n))
 
   return (
     <div className={styles.conv}>
@@ -147,7 +148,7 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
         {pct !== null && s.usage && (
           <span className={styles.usage} title={`context: ${s.usage.used.toLocaleString()} / ${s.usage.size.toLocaleString()} tokens`}>
             <span className={styles.usageBar}><span className={styles.usageFill} style={{ width: `${pct}%` }} /></span>
-            {pct}%
+            {fmtK(s.usage.used)} / {fmtK(s.usage.size)} · {pct}%
           </span>
         )}
       </div>
