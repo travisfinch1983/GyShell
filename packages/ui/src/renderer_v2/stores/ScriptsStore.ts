@@ -44,6 +44,16 @@ interface PickerState {
   localVmid: number | null
 }
 
+/** POSIX single-quote a path so it survives the backend's `bash -s -- <args>` word-splitting. */
+function shellQuotePath(p: string): string {
+  return `'${p.replace(/'/g, `'\\''`)}'`
+}
+/** Undo shellQuotePath so a previously-selected value can seed the picker start dir. */
+function stripShellQuote(s: string): string {
+  const m = s.match(/^'([\s\S]*)'$/)
+  return m ? m[1].replace(/'\\''/g, `'`) : s
+}
+
 export class ScriptsStore {
   scripts: ScriptDef[] = []
   targets: Target[] = []
@@ -112,7 +122,7 @@ export class ScriptsStore {
       this.picker.scriptName = scriptName
       this.picker.error = null
     })
-    const start = this.argsByScript[scriptName]?.trim() || this.picker.path || '/nas'
+    const start = stripShellQuote(this.argsByScript[scriptName]?.trim() || '') || this.picker.path || '/nas'
     void this.browseTo(start)
   }
 
@@ -155,7 +165,7 @@ export class ScriptsStore {
 
   chooseCurrentFolder(): void {
     runInAction(() => {
-      this.argsByScript[this.picker.scriptName] = this.picker.path
+      this.argsByScript[this.picker.scriptName] = shellQuotePath(this.picker.path)
       // Pin the run target to the container we browsed (the fs this path lives on),
       // so the script never executes against a guest where the path doesn't exist.
       if (this.picker.localVmid != null) this.selectedTarget = String(this.picker.localVmid)
