@@ -53,6 +53,7 @@ export class ModelDownloadsStore {
   hfBrowsing = false
   hfError: string | null = null
   hfSuggestedSubfolder = ''
+  hfDestTypeOverride = '' // user-picked model type (dropdown); overrides the auto-derived default
   hfFamilies: string[] = []                       // existing family folders under the category root
   hfHiddenQuants: Record<string, boolean> = {}    // quant badge → hidden (filter the file list)
 
@@ -137,7 +138,7 @@ export class ModelDownloadsStore {
         this.hfRepo = repo
         this.hfAnalysis = r?.analysis ?? null
         this.hfBranches = r?.branches ?? []
-        this.hfSuggestedSubfolder = r?.suggestedFamily ? `${r.suggestedFamily}${r.suggestedVariant ? '/' + r.suggestedVariant : ''}` : r?.analysis?.suggestedName || ''
+        this.hfDestTypeOverride = ''; this.hfSuggestedSubfolder = r?.suggestedFamily ? `${r.suggestedFamily}${r.suggestedVariant ? '/' + r.suggestedVariant : ''}` : r?.analysis?.suggestedName || ''
         this.hfSelected = {}
         this.hfHiddenQuants = {}
         // preselect GGUF quants + diffusers components by default
@@ -166,8 +167,8 @@ export class ModelDownloadsStore {
       runInAction(() => { this.hfFamilies = Array.isArray(r?.families) ? r.families : [] })
     } catch { /* non-fatal — picker just stays empty */ }
   }
-  /** Destination type expected by /hf/download's resolveSmartDest, derived from the detected repo type. */
-  get hfDestType(): string {
+  /** Auto-derived destination type from the detected repo type (the default suggestion). */
+  get hfDefaultDestType(): string {
     const rt = this.hfAnalysis?.repoType || ''
     if (this.hfCategory === 'llm') return /gguf/.test(rt) ? 'gguf' : 'full-weights'
     if (this.hfCategory === 'tts') return 'tts-model'
@@ -176,6 +177,30 @@ export class ModelDownloadsStore {
       vae: 'vae', 'text-encoder': 'text-encoder', unet: 'diffusion-model', safetensors: 'checkpoint',
     }
     return map[rt] || 'checkpoint'
+  }
+  /** Effective destination type sent to /hf/download: user dropdown override wins, else the default. */
+  get hfDestType(): string { return this.hfDestTypeOverride || this.hfDefaultDestType }
+  /** Selectable model-type options for the current category (each maps to a resolveSmartDest folder). */
+  get hfDestTypeOptions(): Array<{ value: string; label: string }> {
+    if (this.hfCategory === 'llm') return [
+      { value: 'full-weights', label: 'Full weights \u2192 family folder' },
+      { value: 'gguf', label: 'GGUF \u2192 family folder' },
+      { value: 'lora', label: 'LoRA \u2192 loras/' },
+    ]
+    if (this.hfCategory === 'tts') return [
+      { value: 'tts-model', label: 'TTS model' }, { value: 'rvc-model', label: 'RVC model' }, { value: 'whisper', label: 'Whisper' },
+    ]
+    return [
+      { value: 'checkpoint', label: 'Checkpoint \u2192 checkpoints/' },
+      { value: 'diffusion-model', label: 'Diffusion model / UNET \u2192 diffusion-models/' },
+      { value: 'diffusers', label: 'Diffusers pipeline \u2192 diffusers/' },
+      { value: 'lora', label: 'LoRA \u2192 loras/' },
+      { value: 'vae', label: 'VAE \u2192 vae/' },
+      { value: 'text-encoder', label: 'Text encoder \u2192 text-encoders/' },
+      { value: 'controlnet', label: 'ControlNet \u2192 controlnet/' },
+      { value: 'upscaler', label: 'Upscaler \u2192 upscale-models/' },
+      { value: 'embedding', label: 'Embedding \u2192 embeddings/' },
+    ]
   }
   get hfSelectedFiles(): HFFile[] {
     const a = this.hfAnalysis

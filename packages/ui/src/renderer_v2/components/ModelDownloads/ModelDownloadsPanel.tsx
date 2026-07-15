@@ -209,6 +209,12 @@ const HFView: React.FC = observer(() => {
 
           <div className={styles.destBlock}>
             <label className={styles.destLabel}>Save location</label>
+            <div className={styles.famRow}>
+              <span className={styles.famLabel}>Model type</span>
+              <select className={styles.select} value={store.hfDestType} onChange={(e) => (store.hfDestTypeOverride = e.target.value)}>
+                {store.hfDestTypeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
             {store.hfFamilies.length > 0 && (
               <div className={styles.famRow}>
                 <span className={styles.famLabel}>Family</span>
