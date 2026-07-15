@@ -77,11 +77,18 @@ export class HermesService {
   }
 
   syncAgentTools(agentId: string, treeNames: string[]): Promise<{ endpoint: string; toolCount: number }> {
-    return this.mgmt.syncAgentTools(agentId, treeNames)
+    // After the toolset is synced, reload the agent's live sessions so the change takes effect
+    // immediately (via --resume: new tools, same history) with no manual restart.
+    return this.mgmt.syncAgentTools(agentId, treeNames).then((r) => { this.bridge.reloadAgentSessions(agentId); return r })
   }
 
   resetAgentTools(agentId: string): Promise<void> {
-    return this.mgmt.resetAgentTools(agentId)
+    return this.mgmt.resetAgentTools(agentId).then(() => { this.bridge.reloadAgentSessions(agentId) })
+  }
+
+  /** Reload an agent's live sessions to pick up config/tool changes (new tools, same history). */
+  reloadAgentSessions(agentId: string): { reloaded: number; deferred: number } {
+    return this.bridge.reloadAgentSessions(agentId)
   }
 
   nativeToolCatalog(): Promise<Array<{ name: string; category: string }>> {

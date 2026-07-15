@@ -77,6 +77,9 @@ export class HermesAcpBridge extends EventEmitter {
   /** conversationId (sessionKey) -> hermes session id, persisted so each tab's session survives an
    *  ai-lab restart (resumed on respawn). Per-conversation, so multiple tabs on one agent stay distinct. */
   private persistedSessions: Record<string, ConversationMeta> = {}
+  /** conversationIds whose post-toolset-change reload was deferred because the session was
+   *  mid-turn; reloaded when they next go idle. */
+  private pendingReload = new Set<string>()
   private sessionMapFile(): string {
     return this.cfg.sessionMapPath
       ?? (process.env.AILAB_PROXY_DATA_DIR ? `${process.env.AILAB_PROXY_DATA_DIR}/hermes-sessions.json` : '/opt/ai-lab/.gybackend-data/hermes-sessions.json')
@@ -178,6 +181,7 @@ export class HermesAcpBridge extends EventEmitter {
     proc.stderr.on('data', (d: Buffer) => this.emit('stderr', { agentId, text: d.toString('utf8') }))
 
     proc.on('exit', (code) => {
+      this.pendingReload.delete(sessionKey) // a dead session doesn't need a deferred reload
       this.setStatus(sessionKey, 'idle') // a crashed/exited turn is no longer running
       this.sessions.delete(sessionKey)
       if (!session.readyResolved) { try { rejectReady(new Error(`acp-bridge for ${agentId} exited (code ${code}) before ready`)) } catch { /* noop */ } }
@@ -251,6 +255,11 @@ export class HermesAcpBridge extends EventEmitter {
     if (session.history.length > cap) { session.history.splice(0, session.history.length - cap); session.truncated = true }
     session.emitter.emit('event', ev)
     this.emit('event', { agentId: session.agentId, event: ev })
+    // A toolset-change reload deferred while this session was mid-turn now runs (session idle).
+    if (status === 'idle' && this.pendingReload.has(sessionKey)) {
+      this.pendingReload.delete(sessionKey)
+      setTimeout(() => this.reloadSession(sessionKey), 100)
+    }
   }
 
   /** Stop the in-flight turn: forward an ACP session/cancel to the bridge. The turn ends with
@@ -318,6 +327,35 @@ export class HermesAcpBridge extends EventEmitter {
     const session = this.sessions.get(sessionKey)
     if (!session || session.proc.exitCode !== null) throw new Error(`no live acp session for ${sessionKey}`)
     session.proc.stdin.write(JSON.stringify({ type: 'set_model', model_id: modelId }) + '\n')
+  }
+
+  /** Restart a live session's PROCESS while KEEPING its resume state, so it respawns via
+   *  --resume (ACP session/load): Hermes recreates the agent — loading the CURRENT tools/config —
+   *  and replays history. Unlike stopSession, does NOT wipe persistedSessions. */
+  reloadSession(sessionKey: string): void {
+    const s = this.sessions.get(sessionKey)
+    if (!s) return
+    const agentId = s.agentId
+    this.pendingReload.delete(sessionKey)
+    // Respawn once the current proc exits (its exit handler removes it from the live map;
+    // persistedSessions is left intact, so startSession resumes via --resume).
+    s.proc.once('exit', () => { try { this.startSession(sessionKey, agentId) } catch { /* noop */ } })
+    try { s.proc.stdin.write(JSON.stringify({ type: 'close' }) + '\n') } catch { /* noop */ }
+    setTimeout(() => { try { s.proc.kill('SIGTERM') } catch { /* noop */ } }, 2500)
+  }
+
+  /** Reload every live session of an agent (after its toolset changes): idle sessions reload
+   *  now; busy (mid-turn) sessions are deferred until their turn completes. */
+  reloadAgentSessions(agentId: string): { reloaded: number; deferred: number } {
+    let reloaded = 0
+    let deferred = 0
+    for (const [key, s] of this.sessions.entries()) {
+      if (s.agentId !== agentId) continue
+      if (s.status === 'busy') { this.pendingReload.add(key); deferred++ }
+      else { this.reloadSession(key); reloaded++ }
+    }
+    if (reloaded || deferred) console.log(`[hermes-acp] toolset changed for ${agentId}: reloaded ${reloaded} live session(s), deferred ${deferred} busy`)
+    return { reloaded, deferred }
   }
 
   stopSession(sessionKey: string): void {
