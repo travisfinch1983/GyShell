@@ -290,7 +290,13 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
       const q = req.query as { since?: unknown; conversationId?: unknown }
       const since = Number(q.since ?? 0) || 0
       const key = typeof q.conversationId === 'string' ? q.conversationId : req.params.id
-      const h = hermes.getHistory(key, since)
+      let h = hermes.getHistory(key, since)
+      if (!h) {
+        // Not live yet: start/resume so the persisted conversation reloads its transcript (Hermes
+        // replays prior turns via session/load as t:history events) instead of returning blank.
+        try { await hermes.ensureReady(req.params.id, key) } catch { /* fall through to 404 below */ }
+        h = hermes.getHistory(key, since)
+      }
       if (!h) return res.status(404).json({ error: 'no live session for conversation' })
       res.json(h)
     } catch (e) {
@@ -424,8 +430,11 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
       }
       if (!lastWritten) lastWritten = since
     } else {
-      res.write(`data: ${JSON.stringify(ready)}\n\n`)
-      lastWritten = ready.seq ?? 0
+      // First open (no prior /history cursor): replay the FULL restored transcript. After ensureReady
+      // a resumed session has already buffered its prior turns as t:history events, so render the
+      // whole conversation rather than only the ready banner (fixes blank-history-on-open).
+      const full = hermes.getHistory(key, 0)?.events ?? [ready]
+      for (const ev of full) { res.write(`data: ${JSON.stringify(ev)}\n\n`); lastWritten = ev.seq ?? lastWritten }
     }
 
     // Always (re)assert the authoritative turn state on connect so a reconnecting or new client can

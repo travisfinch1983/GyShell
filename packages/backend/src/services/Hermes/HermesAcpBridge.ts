@@ -167,7 +167,10 @@ export class HermesAcpBridge extends EventEmitter {
           session.readyResolved = true
           session.lastReady = ev
           const sid = (ev as { session_id?: string }).session_id
-          if (sid && sessionKey) { const prev = this.persistedSessions[sessionKey]; this.persistedSessions[sessionKey] = { sessionId: sid, agentId, title: prev?.title, lastActive: Date.now() }; this.saveSessionMap() }
+          // Guard: only (re)persist if THIS session is still the registered one for the key. A
+          // stopSession() (tab delete) removes it from this.sessions, so a delete that races a slow
+          // ACP spawn can no longer be undone by the late ready event re-adding the entry.
+          if (sid && sessionKey && this.sessions.get(sessionKey) === session) { const prev = this.persistedSessions[sessionKey]; this.persistedSessions[sessionKey] = { sessionId: sid, agentId, title: prev?.title, lastActive: Date.now() }; this.saveSessionMap() }
           resolveReady(ev)
         }
         emitter.emit('event', ev)
@@ -493,7 +496,7 @@ export class HermesAcpBridge extends EventEmitter {
    *  newest first. Powers the tab list so conversations follow the user to any browser/device. */
   listConversations(): Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }> {
     return Object.entries(this.persistedSessions)
-      .filter(([, m]) => !!m.agentId)
+      .filter(([, m]) => !!m.agentId && !!(m.title && m.title.trim()))
       .map(([conversationId, m]) => ({ conversationId, agentId: m.agentId, title: m.title, lastActive: m.lastActive }))
       .sort((a, b) => b.lastActive - a.lastActive)
   }
