@@ -327,3 +327,19 @@
 .profile-voice-btn.disabled:hover {
   background: transparent;
 }
+
+/* Manual support-model cards have varied heights (RAG/STT/TTS/shared roles); a fixed 2-col grid
+   leaves ragged gaps, so lay them out as CSS multi-column masonry. .tts-section already carries
+   margin-bottom:12px for row spacing; break-inside:avoid keeps a card from splitting across columns. */
+.support-masonry {
+  column-count: 2;
+  column-gap: 12px;
+  > * {
+    break-inside: avoid;
+    -webkit-column-break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}
+@media (max-width: 720px) {
+  .support-masonry { column-count: 1; }
+}

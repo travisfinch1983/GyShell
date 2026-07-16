@@ -524,8 +524,8 @@ export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) =
         </button>
       </div>
 
-      {/* ─── Manual entries (TTS/STT + RAG + universal support models) — 2-column grid ─── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12, alignItems: 'start' }}>
+      {/* ─── Manual entries (TTS/STT + RAG + universal support models) — masonry (varied panel heights) ─── */}
+      <div className="support-masonry">
       <RagModelSection kind="embed" />
       <RagModelSection kind="rerank" />
       {/* ─── STT Section ──────────────────────────────────────────── */}
