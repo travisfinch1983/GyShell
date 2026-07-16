@@ -5,7 +5,10 @@
 }
 
 .tts-section {
-  border: 1px solid var(--border);
+  /* Derive the border from --fg (text colour) not --border: --border is a fixed white-alpha that
+     vanishes on light/custom-bg themes. --fg is always high-contrast vs the bg, so this stays a
+     clearly-defined, theme-abiding outline on every theme. */
+  border: 1px solid color-mix(in srgb, var(--fg) 24%, transparent);
   border-radius: 4px;
   margin-bottom: 12px;
   overflow: hidden;
