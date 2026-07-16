@@ -85,6 +85,17 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
 
+  // Migration resilience: preview / reconcile the fleet's AI-Lab-facing addresses (LLM proxy +
+  // MCP gateway) so they follow AI-Lab's resolved self-identity across a migration or override edit.
+  router.get('/api/hermes/fleet-addresses', async (_req: Req, res: Res) => {
+    try { res.json(await hermes.previewFleetAddresses()) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.post('/api/hermes/fleet-addresses/reconcile', async (_req: Req, res: Res) => {
+    try { res.json({ ok: true, ...(await hermes.reconcileFleetAddresses()) }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
   // Native (built-in Hermes) tool on/off for the ACP chat agent — backs the acp-tool-override
   // plugin (native browser tools etc. can't be toggled via Hermes config on the ACP runtime).
   // GET catalog = the pristine native tool list; GET per-agent = catalog + current enabled state;

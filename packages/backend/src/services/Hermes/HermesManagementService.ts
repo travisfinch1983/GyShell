@@ -6,6 +6,7 @@ import type { HermesAgentSpec, ProviderService } from '@gyshell/shared'
 import { PROVIDER_SERVICE_CAPS } from '@gyshell/shared'
 // @ts-expect-error — proxy capability resolver ships as untyped JS (same pattern as the other proxy/*.js imports)
 import { resolveModelCapabilities } from '../Cluster/proxy/model-capabilities.js'
+import { clusterSettingsService } from '../Cluster/ClusterSettingsService'
 
 const execFileAsync = promisify(execFile)
 
@@ -783,6 +784,18 @@ export class HermesManagementService {
     return (process.env.MCPJUNGLE_URL || 'http://127.0.0.1:8080').replace(/\/+$/, '')
   }
 
+  /** AI-Lab's OWN resolved LAN IP (self-identity resolver + Settings override). This is the address
+   *  the fleet on OTHER hosts (CT158) must use to reach AI-Lab; loopback is WRONG cross-host. */
+  private selfIp(): string {
+    return clusterSettingsService.getSelfIdentity().ip
+  }
+
+  /** The gateway base as an agent on the Hermes host must dial it (resolved LAN IP, never loopback).
+   *  Distinct from gatewayBase(), which is loopback for AI-Lab-side same-host gateway calls. */
+  private agentGatewayBase(): string {
+    return `http://${this.selfIp()}:8080`
+  }
+
   /** Read an agent's curated tool selection from its gateway group. `scoped:false` means the agent
    *  has no group yet (it points at the FULL gateway = all tools). */
   async getAgentTools(agentId: string): Promise<{ selected: string[]; scoped: boolean; endpoint: string | null }> {
@@ -794,7 +807,7 @@ export class HermesManagementService {
       return {
         selected: Array.isArray(g?.included_tools) ? g.included_tools : [],
         scoped: true,
-        endpoint: `${gw}/v0/groups/agent-${agentId}/mcp`,
+        endpoint: `${this.agentGatewayBase()}/v0/groups/agent-${agentId}/mcp`,
       }
     } catch {
       return { selected: [], scoped: false, endpoint: null }
@@ -813,7 +826,7 @@ export class HermesManagementService {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: AbortSignal.timeout(8000),
     })
     if (!r.ok) throw new Error(`group upsert -> ${r.status}: ${await r.text().catch(() => '')}`)
-    const endpoint = `${gw}/v0/groups/${group}/mcp`
+    const endpoint = `${this.agentGatewayBase()}/v0/groups/${group}/mcp`
     await this.repointGatewayServer(agentId, endpoint)
     return { endpoint, toolCount: treeNames.length }
   }
@@ -821,8 +834,69 @@ export class HermesManagementService {
   /** Revert an agent to the FULL gateway (remove its group + repoint the MCP server at /mcp). */
   async resetAgentTools(agentId: string): Promise<void> {
     const gw = this.gatewayBase()
-    await this.repointGatewayServer(agentId, `${gw}/mcp`)
+    await this.repointGatewayServer(agentId, `${this.agentGatewayBase()}/mcp`)
     await fetch(`${gw}/api/v0/tool-groups/agent-${agentId}`, { method: 'DELETE', signal: AbortSignal.timeout(8000) }).catch(() => undefined)
+  }
+
+  /** Rewrite the AI-Lab-facing `api:` (LLM proxy) and `url:` (MCP group) hosts in EVERY Hermes
+   *  profile + the global config to AI-Lab's current resolved LAN IP, so the fleet follows AI-Lab
+   *  across an IP/VLAN migration OR a Settings override edit. Host-only (port/path preserved),
+   *  idempotent (no-op when already correct). Backs up each file (.bak-reconcile). Never touches
+   *  Hermes source — only the user config YAML Hermes owns. Returns which files changed + which
+   *  per-profile gateways are running (they loaded config at start -> need a restart to pick it up). */
+  async reconcileFleetAddresses(): Promise<{ ip: string; changed: string[]; unchanged: string[]; runningGateways: string[] }> {
+    const ip = this.selfIp()
+    if (!/^[0-9A-Za-z._:-]+$/.test(ip)) throw new Error(`refusing to reconcile with suspicious ip '${ip}'`)
+    const profGlob = `${this.profileHomeBase}/*/config.yaml`
+    const globalCfg = this.profileHomeBase.replace(/\/profiles\/?$/, '') + '/config.yaml'
+    const script = [
+      `IP=${shq(ip)}`,
+      `CH=""; UN=""`,
+      `for f in ${shq(globalCfg)} ${profGlob}; do`,
+      `  [ -f "$f" ] || continue`,
+      `  b=$(md5sum "$f" | cut -d' ' -f1)`,
+      `  sed -E -i".bak-reconcile" \\`,
+      `    -e "s#(https?://)[^:/]+(:17890/api/proxy/llm/v1)#\\1$IP\\2#g" \\`,
+      `    -e "s#(https?://)[^:/]+(:8080/v0/groups/)#\\1$IP\\2#g" "$f"`,
+      `  a=$(md5sum "$f" | cut -d' ' -f1)`,
+      `  if [ "$b" = "$a" ]; then UN="$UN $f"; else CH="$CH $f"; fi`,
+      `done`,
+      `echo "CHANGED:$CH"`,
+      `echo "UNCHANGED:$UN"`,
+      `echo "GATEWAYS:$(pgrep -af '[h]ermes_cli.main --profile' 2>/dev/null | grep -oE -- '--profile [^ ]+' | awk '{print $2}' | sort -u | tr '\n' ' ')"`,
+    ].join('\n')
+    const out = await this.ssh(script)
+    const pick = (k: string) => { const l = out.split('\n').find((x) => x.startsWith(k)); return l ? l.slice(k.length).trim() : '' }
+    const toList = (s: string) => s.split(/\s+/).map((x) => x.trim()).filter(Boolean)
+    return { ip, changed: toList(pick('CHANGED:')), unchanged: toList(pick('UNCHANGED:')), runningGateways: toList(pick('GATEWAYS:')) }
+  }
+
+  /** Read-only preview for the UI: each config file's current AI-Lab-facing host(s) + whether it
+   *  already matches the resolved ip, plus which per-profile gateways are live. No changes made. */
+  async previewFleetAddresses(): Promise<{ ip: string; files: Array<{ profile: string; path: string; hosts: string[]; matches: boolean }>; runningGateways: string[] }> {
+    const ip = this.selfIp()
+    const profGlob = `${this.profileHomeBase}/*/config.yaml`
+    const globalCfg = this.profileHomeBase.replace(/\/profiles\/?$/, '') + '/config.yaml'
+    const script = [
+      `for f in ${shq(globalCfg)} ${profGlob}; do`,
+      `  [ -f "$f" ] || continue`,
+      `  h=$(grep -oE 'https?://[^:/]+:(17890|8080)' "$f" | sed -E 's#https?://##; s#:(17890|8080)##' | sort -u | tr '\n' ',')`,
+      `  echo "F|$f|$h"`,
+      `done`,
+      `echo "GATEWAYS:$(pgrep -af '[h]ermes_cli.main --profile' 2>/dev/null | grep -oE -- '--profile [^ ]+' | awk '{print $2}' | sort -u | tr '\n' ' ')"`,
+    ].join('\n')
+    const out = await this.ssh(script)
+    const files = out.split('\n').filter((l) => l.startsWith('F|')).map((l) => {
+      const parts = l.split('|')
+      const path = parts[1] || ''
+      const hosts = (parts[2] || '').split(',').map((x) => x.trim()).filter(Boolean)
+      const m = path.match(/profiles\/([^/]+)\/config\.yaml$/)
+      const profile = m ? m[1] : (path.endsWith('/config.yaml') ? 'global' : path)
+      return { profile, path, hosts, matches: hosts.length === 0 || hosts.every((x) => x === ip) }
+    })
+    const gwl = out.split('\n').find((l) => l.startsWith('GATEWAYS:'))
+    const runningGateways = (gwl ? gwl.slice('GATEWAYS:'.length) : '').trim().split(/\s+/).filter(Boolean)
+    return { ip, files, runningGateways }
   }
 
   /** Seed a newly-created agent's workspace with the template operating docs from the

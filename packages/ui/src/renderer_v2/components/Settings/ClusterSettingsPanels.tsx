@@ -209,6 +209,64 @@ export const ClusterUiPanel: React.FC = () => {
   )
 }
 
+// ─── Fleet addresses (Hermes agents that reach AI-Lab by IP) — preview + reconcile ─────────────
+const FleetAddressesSection: React.FC<{ targetIp: string }> = ({ targetIp }) => {
+  const [data, setData] = useState<any>(null)
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<string | null>(null)
+  const req = () => (window as any).gyshell?.cluster
+  const load = async () => {
+    try { setData(await req()?.request?.('GET', '/api/hermes/fleet-addresses')) } catch { setData({ error: true }) }
+  }
+  useEffect(() => { void load() }, [])
+  const reconcile = async () => {
+    setBusy(true); setResult(null)
+    try {
+      const r = await req()?.request?.('POST', '/api/hermes/fleet-addresses/reconcile')
+      const ch = (r?.changed || []).length
+      const gw = r?.runningGateways || []
+      setResult((ch ? `Updated ${ch} config${ch === 1 ? '' : 's'} → ${r.ip}.` : `Already current (${r?.ip}).`) +
+        (ch && gw.length ? ` Restart to apply: ${gw.join(', ')}.` : ''))
+      await load()
+    } catch (e) { setResult(`Failed: ${e instanceof Error ? e.message : String(e)}`) } finally { setBusy(false) }
+  }
+  if (data === null) return <div style={{ ...sub, marginTop: 16, marginBottom: 0 }}>Loading fleet addresses…</div>
+  if (data.error) return <div style={{ ...sub, marginTop: 16, marginBottom: 0 }}>Fleet (Hermes) address info unavailable.</div>
+  const files: any[] = data.files || []
+  const mism = files.filter((f) => f.hosts?.length && !f.matches)
+  return (
+    <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Fleet addresses (Hermes agents)</div>
+      <div style={{ ...sub, marginBottom: 10 }}>
+        Agents on other hosts reach AI-Lab's LLM proxy + MCP gateway by IP. Reconcile rewrites every agent's
+        <code> api:</code>/<code>url:</code> to the effective identity above — run it after changing the IP or
+        an override so the fleet follows AI-Lab.
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', columnGap: 16, rowGap: 3, fontSize: 12, marginBottom: 12 }}>
+        {files.map((f) => (
+          <div key={f.path} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, minWidth: 0 }}>
+            <span style={{ color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.profile}</span>
+            <span style={{ flex: '0 0 auto', color: !f.hosts?.length ? 'var(--fg-muted)' : f.matches ? 'var(--success)' : '#d08a3e' }}>
+              {!f.hosts?.length ? '—' : f.matches ? `✓ ${targetIp}` : `⚠ ${f.hosts.join(', ')}`}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div style={{ ...row, marginBottom: 4 }}>
+        <button style={mism.length ? primaryBtn : btn} disabled={busy} onClick={() => void reconcile()}>
+          {busy ? 'Reconciling…' : mism.length ? `Reconcile ${mism.length} agent${mism.length === 1 ? '' : 's'} → ${targetIp}` : 'Reconcile (all current)'}
+        </button>
+        {result && <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{result}</span>}
+      </div>
+      {(data.runningGateways || []).length > 0 && (
+        <div style={{ ...sub, marginTop: 6, marginBottom: 0 }}>
+          Live gateways (need a restart to pick up a change): {data.runningGateways.join(', ')}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Container Identity (self IP/hostname resolver + manual overrides) ──────────
 export const ContainerIdentityPanel: React.FC = () => {
   const { s, busy, msg, save } = useClusterSettings()
@@ -243,10 +301,7 @@ export const ContainerIdentityPanel: React.FC = () => {
         <button style={primaryBtn} disabled={busy} onClick={() => void save({ selfIdentity: { ipOverride: ipOv.trim(), hostnameOverride: hnOv.trim() } })}>Save</button>
         {msg && <span style={{ fontSize: 12, color: 'var(--success)' }}>{msg}</span>}
       </div>
-      <div style={{ ...sub, marginTop: 10, marginBottom: 0 }}>
-        Reconciling dependent fleet configs (Hermes / MCP endpoints that point at AI-Lab) when this
-        changes is a follow-up step.
-      </div>
+      <FleetAddressesSection targetIp={effIp} />
     </div>
   )
 }

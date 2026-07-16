@@ -76,6 +76,14 @@ export class HermesService {
     return this.mgmt.getAgentTools(agentId)
   }
 
+  previewFleetAddresses() {
+    return this.mgmt.previewFleetAddresses()
+  }
+
+  reconcileFleetAddresses() {
+    return this.mgmt.reconcileFleetAddresses()
+  }
+
   syncAgentTools(agentId: string, treeNames: string[]): Promise<{ endpoint: string; toolCount: number }> {
     // After the toolset is synced, reload the agent's live sessions so the change takes effect
     // immediately (via --resume: new tools, same history) with no manual restart.
