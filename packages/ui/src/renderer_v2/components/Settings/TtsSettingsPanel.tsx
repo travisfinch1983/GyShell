@@ -392,28 +392,48 @@ const SupportModelSection: React.FC<{
 // Module-level cache so switching to/from the Support Models tab doesn't re-fetch + flash
 // "loading" each time. The backend already version-caches the aux list; this keeps it warm on the
 // client for the page session (a full page reload re-fetches once).
-let smCache: { tasks: AuxTask[]; roles: Record<string, SupportModelRole>; catalog: CatalogModelWithCaps[] } | null = null
-let smInflight: Promise<void> | null = null
+type SmData = { tasks: AuxTask[]; roles: Record<string, SupportModelRole>; catalog: CatalogModelWithCaps[] }
+const SM_LS_KEY = 'ai-lab-support-models-cache-v1'
+function smLoadPersisted(): SmData | null {
+  try { const s = localStorage.getItem(SM_LS_KEY); return s ? (JSON.parse(s) as SmData) : null } catch { return null }
+}
+function smPersist(d: SmData): void { try { localStorage.setItem(SM_LS_KEY, JSON.stringify(d)) } catch {} }
+// Seeded SYNCHRONOUSLY from localStorage so the tab paints the (Hermes-version-stable) aux list
+// instantly on first render — even across a full page reload — instead of the ssh+python cold pull.
+let smCache: SmData | null = smLoadPersisted()
+let smInflight: Promise<boolean> | null = null
+let smRevalidated = false // one background revalidation per page session (stale-while-revalidate)
 
 function useSupportModels() {
   const [, force] = useState(0)
   const [err, setErr] = useState(false)
   useEffect(() => {
     let alive = true
-    if (smCache) return
+    // Have data AND already revalidated this session -> nothing to do (no query on tab re-visit).
+    if (smCache && smRevalidated) return
+    const hadCache = !!smCache
     if (!smInflight) {
       smInflight = (async () => {
         const [t, r, c] = await Promise.all([hermesApi.getAuxTasks(), hermesApi.getSupportModels(), hermesApi.listCatalog()])
-        if (t && r) smCache = { tasks: t, roles: r, catalog: c }
+        if (t && r) {
+          const next: SmData = { tasks: t, roles: r, catalog: c }
+          const changed = JSON.stringify(next) !== JSON.stringify(smCache)
+          smCache = next; smPersist(next); smRevalidated = true
+          return changed
+        }
+        return false
       })().finally(() => { smInflight = null })
     }
-    void smInflight.then(() => { if (alive) { if (!smCache) setErr(true); force((n) => n + 1) } })
+    // Re-render only when the data actually changed (Hermes updated / edited elsewhere) or when we
+    // had nothing cached to show — a matching revalidation leaves the rendered list untouched.
+    void smInflight.then((changed) => { if (alive) { if (!smCache) setErr(true); else if (changed || !hadCache) force((n) => n + 1) } })
     return () => { alive = false }
   }, [])
   const onSave = async (key: string, patch: { model?: string; description?: string; recommendation?: string }) => {
     const res = await hermesApi.setSupportModels({ [key]: patch })
     if (res.ok && smCache) {
       smCache = { ...smCache, roles: { ...smCache.roles, [key]: { ...(smCache.roles[key] || { provider: 'ailab', model: '' }), ...patch } } }
+      smPersist(smCache)
       force((n) => n + 1)
     }
     return res
