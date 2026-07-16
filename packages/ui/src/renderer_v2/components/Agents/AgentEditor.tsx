@@ -641,9 +641,12 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
         <section>
           <div className={styles.sectionTitle}>Memory</div>
           <div className={styles.sectionSub}>
-            The agent's memory operating doc plus its daily logs (workspace/memory/*.md) — view, edit, or clear old logs.
+            The durable memory Hermes auto-maintains and injects into the agent every turn: MEMORY.md
+            (the agent's own long-lived notes) and USER.md (auto-extracted facts about you), plus any
+            extra memory files (memories/*.md).
           </div>
-          {inlineDoc('workspace/MEMORY.md', 'Memory rules and long-lived notes on the Hermes host.')}
+          {inlineDoc('memories/MEMORY.md', "The agent's long-lived memory — Hermes auto-updates it and injects it every turn (memories/MEMORY.md).")}
+          {inlineDoc('memories/USER.md', 'Auto-extracted facts about you that Hermes injects every turn — distinct from the shared \u201cAbout Your Human\u201d doc (memories/USER.md).')}
           {liveDocId && <AgentDocs agentId={liveDocId} mode="memory" />}
         </section>
       )}

@@ -28,11 +28,10 @@ export interface HermesApplyResult {
 }
 
 /** One global support-model role assignment (Support Models tab). */
-export interface SupportModelRole { provider: string; model: string }
-export interface SupportModels {
-  visionDescription: SupportModelRole | null
-  compaction: SupportModelRole | null
-}
+export interface SupportModelRole { provider: string; model: string; description?: string; recommendation?: string }
+export type SupportModels = Record<string, SupportModelRole | undefined>
+/** A Hermes auxiliary role from the self-populating catalog (GET /api/hermes/aux-tasks). */
+export interface AuxTask { key: string; label: string; description: string; recommendation: string; shared: boolean }
 
 export interface HermesPromptResult {
   ok: boolean
@@ -474,6 +473,11 @@ export const hermesApi = {
     return bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/history?conversationId=${encodeURIComponent(conversationId)}${since != null ? `&since=${since}` : ''}`)
   },
 
+  /** POST /rewind — Edit / Regenerate / Delete the tail turn (native SessionDB rewind). */
+  async rewind(id: string, conversationId: string, mode: 'edit' | 'regenerate' | 'delete', text?: string): Promise<any> {
+    return bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/rewind`, { conversationId, mode, ...(text != null ? { text } : {}) })
+  },
+
   /** POST /cancel — Stop button: cancel the in-flight turn (server forwards ACP session/cancel to
    *  the model). Fire-and-forget; the authoritative idle status arrives back over /stream. */
   async stop(agentId: string, conversationId: string): Promise<void> {
@@ -556,19 +560,33 @@ export const hermesApi = {
    * transport failure (distinct from a legitimately unset role) so the editor
    * can stay closed instead of blind-saving over live config.
    */
-  async getSupportModels(): Promise<SupportModels | null> {
+  async getSupportModels(): Promise<Record<string, SupportModelRole> | null> {
     try {
       const r = await bridge().request('GET', '/api/hermes/support-models')
       const roles = r?.roles
       if (!roles || typeof roles !== 'object') return null
-      const parse = (v: any): SupportModelRole | null =>
-        v && typeof v.model === 'string' && v.model
-          ? { provider: String(v.provider || 'ailab'), model: v.model }
-          : null
-      return {
-        visionDescription: parse(roles.visionDescription),
-        compaction: parse(roles.compaction),
+      const out: Record<string, SupportModelRole> = {}
+      for (const [k, v] of Object.entries(roles as Record<string, any>)) {
+        if (v && typeof v === 'object') {
+          out[k] = {
+            provider: String(v.provider || 'ailab'),
+            model: typeof v.model === 'string' ? v.model : '',
+            ...(typeof v.description === 'string' ? { description: v.description } : {}),
+            ...(typeof v.recommendation === 'string' ? { recommendation: v.recommendation } : {}),
+          }
+        }
       }
+      return out
+    } catch {
+      return null
+    }
+  },
+
+  /** GET /api/hermes/aux-tasks — self-populating catalog of Hermes auxiliary roles. */
+  async getAuxTasks(): Promise<AuxTask[] | null> {
+    try {
+      const r = await bridge().request('GET', '/api/hermes/aux-tasks')
+      return Array.isArray(r?.tasks) ? (r.tasks as AuxTask[]) : null
     } catch {
       return null
     }
@@ -578,7 +596,7 @@ export const hermesApi = {
    * PUT /api/hermes/support-models — MERGE semantics: only the keys present in
    * the patch are touched; a key set to null clears that role. Applies globally.
    */
-  async setSupportModels(patch: Partial<SupportModels>): Promise<{ ok: boolean; agentsUpdated?: number; error?: string }> {
+  async setSupportModels(patch: Record<string, { model?: string; provider?: string; description?: string; recommendation?: string } | null>): Promise<{ ok: boolean; agentsUpdated?: number; error?: string }> {
     try {
       const r = await bridge().request('PUT', '/api/hermes/support-models', patch)
       if (r?.error) return { ok: false, error: String(r.error) }

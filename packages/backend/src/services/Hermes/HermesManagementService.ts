@@ -41,14 +41,40 @@ export interface HermesManagementConfig {
   supportModelsFile?: string
 }
 
-/** Global "Support Models" role assignments — models wired to non-primary roles. */
-export interface SupportModelRoles {
-  /** The model that DESCRIBES images for TEXT-ONLY agents (vision agents see pixels natively
-   *  and ignore this). Applied to each text-only agent's `auxiliary.vision`. */
-  visionDescription?: { provider: string; model: string }
-  /** The model that runs context COMPACTION (trajectory summarization) for every agent, via
-   *  `auxiliary.compression`. Unset → `auto` (the agent's own main model). */
-  compaction?: { provider: string; model: string }
+/** One Support-Models assignment (a model wired to a Hermes `auxiliary.<key>` role).
+ *  `description`/`recommendation` are AI-Lab-side UI metadata (NOT sent to Hermes). */
+export interface SupportModelRole { provider?: string; model?: string; description?: string; recommendation?: string }
+/** Global "Support Models" assignments keyed by Hermes auxiliary task key (vision, compression,
+ *  web_extract, ...). Legacy visionDescription/compaction keys are migrated on read. */
+export type SupportModelRoles = Record<string, SupportModelRole>
+
+/** Roles usable beyond Hermes → NO "Hermes-specific" badge in the UI. */
+export const SHARED_SUPPORT_ROLES = new Set<string>(['vision', 'compression', 'tts_audio_tags'])
+/** Roles Hermes READS (auxiliary.<key>) but does NOT advertise via _all_aux_tasks() — supplied here. */
+const AUX_TASK_SUPPLEMENT: Array<{ key: string; label: string; description: string }> = [
+  { key: 'background_review', label: 'Background Review', description: 'Memory auto-extraction reviewer — every ~10 turns it reviews the conversation and saves worthwhile facts to MEMORY.md / USER.md.' },
+  { key: 'goal_judge', label: 'Goal Judge', description: 'Judges progress in the /goal tracking loop.' },
+  { key: 'session_search', label: 'Session Search', description: 'Searches and ranks your past sessions.' },
+  { key: 'monitor', label: 'Monitor', description: 'Classifies items for cron monitors and alerts.' },
+]
+/** AI-Lab-authored per-role defaults. Precedence: user override (stored) > this default > Hermes short desc. */
+const AUX_ROLE_DEFAULTS: Record<string, { description?: string; recommendation?: string }> = {
+  vision: { recommendation: 'Vision-capable model (or a strong describer). Context \u2265 32k. Only used by text-only agents that need images described.' },
+  compression: { recommendation: 'Strong summarizer; long context ideal (\u2265 128k) since it reads large transcripts. A fast, always-warm local model works well.' },
+  web_extract: { recommendation: 'Small\u2013mid, fast. Longer context helps for large pages (\u2265 32k).' },
+  approval: { recommendation: 'Small, fast, low-latency. Context \u2265 16k.' },
+  mcp: { recommendation: 'Small\u2013mid, fast. Context \u2265 32k.' },
+  title_generation: { recommendation: 'Tiny, fast. Context \u2265 8k.' },
+  tts_audio_tags: { recommendation: 'Small, fast. Context \u2265 8k.' },
+  skills_hub: { recommendation: 'Small, fast. Context \u2265 32k.' },
+  triage_specifier: { recommendation: 'Small\u2013mid. Context \u2265 32k.' },
+  kanban_decomposer: { recommendation: 'Mid-size with good reasoning. Context \u2265 32k.' },
+  profile_describer: { recommendation: 'Small\u2013mid. Context \u2265 16k.' },
+  curator: { recommendation: 'Mid-size. Context \u2265 32k.' },
+  background_review: { recommendation: 'Mid-size with good comprehension; long context (\u2265 128k). Leave on Auto to reuse the agent\u2019s own main model (warm cache = cheap).' },
+  goal_judge: { recommendation: 'Tiny\u2013small, fast, cheap. Context \u2265 8k.' },
+  session_search: { recommendation: 'Small, fast. Context \u2265 32k.' },
+  monitor: { recommendation: 'Small, fast. Context \u2265 16k.' },
 }
 
 /** Single-quote a string for safe embedding in a remote shell command. */
@@ -69,6 +95,10 @@ export class HermesManagementService {
   private readonly user: string
   private readonly hermesBin: string
   private readonly profileHomeBase: string
+  /** Cache of Hermes' live _all_aux_tasks() list — the expensive ssh+python pull. Keyed by the
+   *  Hermes version so it only recomputes across a Hermes upgrade; 5-min TTL skips even the version
+   *  check on rapid opens. (Stored description/recommendation overrides are merged fresh each call.) */
+  private auxLiveCache: { version: string; live: Array<[string, string, string]>; checkedAt: number } | null = null
 
   constructor(private readonly cfg: HermesManagementConfig) {
     this.user = cfg.user ?? 'root'
@@ -117,7 +147,12 @@ export class HermesManagementService {
     if (!this.cfg.supportModelsFile || !existsSync(this.cfg.supportModelsFile)) return {}
     try {
       const o = JSON.parse(readFileSync(this.cfg.supportModelsFile, 'utf8'))
-      return o && typeof o === 'object' ? (o as SupportModelRoles) : {}
+      if (!o || typeof o !== 'object') return {}
+      const roles = o as SupportModelRoles
+      // Migrate legacy keys → aux keys (visionDescription→vision, compaction→compression).
+      if (roles.visionDescription && !roles.vision) { roles.vision = roles.visionDescription; delete roles.visionDescription }
+      if (roles.compaction && !roles.compression) { roles.compression = roles.compaction; delete roles.compaction }
+      return roles
     } catch {
       return {}
     }
@@ -129,23 +164,89 @@ export class HermesManagementService {
 
   /** Persist the global Support-Models roles and re-apply vision routing to EVERY agent, so a
    *  describer change propagates to all text-only agents at once (vision agents are unaffected). */
-  async setSupportModels(roles: SupportModelRoles): Promise<{ agentsUpdated: number }> {
-    const clean: SupportModelRoles = {}
-    if (roles.visionDescription?.model) {
-      clean.visionDescription = { provider: roles.visionDescription.provider || 'ailab', model: roles.visionDescription.model }
+  /** The merged Support-Models role catalog for the UI: Hermes' live _all_aux_tasks() (built-in +
+   *  plugin) + the un-advertised supplement, each with an effective description (user override >
+   *  authored default > Hermes short desc) + recommendation (user override > authored default). */
+  async getAuxTasks(): Promise<Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean }>> {
+    let live: Array<[string, string, string]> = []
+    const now = Date.now()
+    if (this.auxLiveCache && now - this.auxLiveCache.checkedAt < 300_000) {
+      live = this.auxLiveCache.live // fresh enough — skip even the version check
+    } else {
+      const version = await this.hermesVersion()
+      if (this.auxLiveCache && this.auxLiveCache.version === version) {
+        this.auxLiveCache.checkedAt = now // same Hermes version → keep the cached list
+        live = this.auxLiveCache.live
+      } else {
+        try {
+          const py = "import sys;sys.path.insert(0,'/usr/local/lib/hermes-agent');from hermes_cli.main import _all_aux_tasks;import json;print(json.dumps(_all_aux_tasks()))"
+          const out = await this.ssh(`/usr/local/lib/hermes-agent/venv/bin/python -c ${shq(py)}`)
+          const parsed = JSON.parse(out.trim())
+          if (Array.isArray(parsed)) live = parsed as Array<[string, string, string]>
+        } catch { /* Hermes unreachable → supplement only */ }
+        this.auxLiveCache = { version, live, checkedAt: now }
+      }
     }
-    if (roles.compaction?.model) {
-      clean.compaction = { provider: roles.compaction.provider || 'ailab', model: roles.compaction.model }
+    const stored = this.loadSupportModels()
+    const seen = new Set<string>()
+    const rows: Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean }> = []
+    const add = (key: string, label: string, hermesDesc: string) => {
+      if (seen.has(key)) return
+      seen.add(key)
+      const def = AUX_ROLE_DEFAULTS[key] || {}
+      const s = stored[key] || {}
+      rows.push({
+        key, label,
+        description: (s.description || def.description || hermesDesc || '').trim(),
+        recommendation: (s.recommendation || def.recommendation || '').trim(),
+        shared: SHARED_SUPPORT_ROLES.has(key),
+      })
+    }
+    for (const [key, label, desc] of live) add(key, label, desc)
+    for (const s of AUX_TASK_SUPPLEMENT) add(s.key, s.label, s.description)
+    return rows
+  }
+
+  /** Persist the full role map; apply the MODEL routing for `applyKeys` (changed model-bearing
+   *  roles) to every agent. description/recommendation are UI-only (never pushed to Hermes). */
+  async setSupportModels(roles: SupportModelRoles, applyKeys?: string[]): Promise<{ agentsUpdated: number }> {
+    const clean: SupportModelRoles = {}
+    for (const [key, r] of Object.entries(roles)) {
+      if (!r) continue
+      const entry: SupportModelRole = {}
+      if (r.model) { entry.provider = r.provider || 'ailab'; entry.model = r.model }
+      if (r.description) entry.description = r.description
+      if (r.recommendation) entry.recommendation = r.recommendation
+      if (Object.keys(entry).length) clean[key] = entry
     }
     if (this.cfg.supportModelsFile) atomicWriteJson(this.cfg.supportModelsFile, clean)
+    const keys = (applyKeys && applyKeys.length ? applyKeys : Object.keys(clean))
+    if (!keys.length) return { agentsUpdated: 0 }
     const agents = await this.listAgents()
     let n = 0
     for (const id of agents) {
-      const model = this.getSpec(id)?.model
-      if (!model) continue
-      try { await this.applyVisionConfig(id, model); await this.applyCompactionConfig(id); n++ } catch { /* skip unreachable/legacy */ }
+      try { for (const key of keys) await this.applyRoleConfig(id, key, clean[key]); n++ } catch { /* skip unreachable/legacy */ }
     }
     return { agentsUpdated: n }
+  }
+
+  /** Apply one support-model role to one agent. `vision` keeps its capability-aware special apply;
+   *  every other role is a plain `auxiliary.<key>` route through the AI-Lab proxy (provider=ailab),
+   *  or `auto` (→ the agent's own main model) when unassigned. This also clears any dead base_url. */
+  private async applyRoleConfig(agentId: string, key: string, role?: SupportModelRole): Promise<void> {
+    if (key === 'vision') {
+      const model = this.getSpec(agentId)?.model
+      if (model) await this.applyVisionConfig(agentId, model)
+      return
+    }
+    if (role?.model) {
+      await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.provider`, role.provider || 'ailab'])
+      await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.model`, role.model])
+      await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.base_url`, ''])
+    } else {
+      await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.provider`, 'auto'])
+      await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.model`, ''])
+    }
   }
 
   /** Reconcile native-vision routing for an agent, keyed on its model's vision capability.
@@ -164,7 +265,7 @@ export class HermesManagementService {
       await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.vision.model', ''])
     } else {
       await this.hermes(['-p', agentId, 'config', 'set', 'model.supports_vision', 'false'])
-      const d = this.loadSupportModels().visionDescription
+      const d = this.loadSupportModels().vision
       if (d?.model) {
         await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.vision.provider', d.provider || 'ailab'])
         await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.vision.model', d.model])
@@ -358,6 +459,15 @@ export class HermesManagementService {
     const path = `${this.profileHome(agentId)}/workspace/.screen.${ext}`
     await this.ssh(`printf %s ${shq(b64)} | base64 -d > ${shq(path)}`)
     return path
+  }
+
+  /** Read Hermes' __version__ cheaply (no python startup) so the aux-task cache invalidates on upgrade. */
+  private async hermesVersion(): Promise<string> {
+    try {
+      const out = await this.ssh("grep -m1 __version__ /usr/local/lib/hermes-agent/hermes_cli/__init__.py 2>/dev/null || true")
+      const m = out.match(/["']([^"']+)["']/)
+      return m ? m[1] : 'unknown'
+    } catch { return 'unknown' }
   }
 
   private profileHome(agentId: string): string {
@@ -613,7 +723,7 @@ export class HermesManagementService {
   private static readonly PROTECTED_DOC_BASENAMES = new Set([
     // Consolidated (2026-07): SOUL + AGENTS are the two Hermes-injected docs; MEMORY is dynamic;
     // HEARTBEAT/BOOT are functional. IDENTITY/EXECUTION/TOOLS/USER/BOOTSTRAP were folded in + retired.
-    'SOUL.md', 'AGENTS.md', 'MEMORY.md', 'HEARTBEAT.md', 'BOOT.md',
+    'SOUL.md', 'AGENTS.md', 'MEMORY.md', 'USER.md', 'HEARTBEAT.md', 'BOOT.md',
   ])
   private isProtectedDoc(rel: string): boolean {
     const base = rel.split('/').pop() || rel
@@ -747,12 +857,12 @@ export class HermesManagementService {
     await this.ssh(`rm -f ${shq(`${this.profileHome(agentId)}/${rel}`)}`)
   }
 
-  /** List the agent's memory docs for the Memory tab: workspace/MEMORY.md (the durable
-   *  memory) + the workspace/memory/*.md daily logs. Same rel-path shape as listDocs, so the
-   *  existing GET/PUT/DELETE /doc endpoints edit + delete them (MEMORY.md is protected). */
+  /** List EXTRA memory docs for the Memory tab — any memories/*.md beyond MEMORY.md + USER.md
+   *  (which are shown inline). Hermes' built-in memory lives in memories/, not workspace/. Same
+   *  rel-path shape as listDocs, so GET/PUT/DELETE /doc edit + delete them (MEMORY.md protected). */
   async listMemoryDocs(agentId: string): Promise<Array<{ path: string; bytes: number; protected: boolean }>> {
     const home = this.profileHome(agentId)
-    const cmd = `cd ${shq(home)} 2>/dev/null && find -L workspace/memory -maxdepth 2 -type f -name '*.md' -printf 'workspace/memory/%f\t%s\n' 2>/dev/null`
+    const cmd = `cd ${shq(home)} 2>/dev/null && find -L memories -maxdepth 2 -type f -name '*.md' ! -name 'MEMORY.md' ! -name 'USER.md' -printf 'memories/%f\t%s\n' 2>/dev/null`
     let out = ''
     try { out = await this.ssh(cmd) } catch { return [] }
     const docs: Array<{ path: string; bytes: number; protected: boolean }> = []

@@ -287,6 +287,26 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     }
   })
 
+  // Edit / Regenerate / Delete the tail turn — reflected in the agent's REAL context via native rewind.
+  //   body: { conversationId, mode: 'edit'|'regenerate'|'delete', text? }
+  router.post('/api/hermes/agents/:id/rewind', json, async (req: Req, res: Res) => {
+    try {
+      const q = req.query as { conversationId?: unknown }
+      const b = (req.body ?? {}) as { conversationId?: unknown; mode?: unknown; text?: unknown }
+      const key = typeof b.conversationId === 'string' ? b.conversationId
+        : typeof q.conversationId === 'string' ? q.conversationId : req.params.id
+      const mode = b.mode
+      if (mode !== 'edit' && mode !== 'regenerate' && mode !== 'delete') {
+        return res.status(400).json({ error: 'mode must be edit|regenerate|delete' })
+      }
+      const text = typeof b.text === 'string' ? b.text : undefined
+      const out = await hermes.rewindTail(key, mode, text)
+      res.json(out)
+    } catch (e) {
+      res.status(500).json({ error: String((e as Error).message) })
+    }
+  })
+
   // Server-side conversation list — the tab list, so conversations follow the user to ANY device.
   router.get('/api/hermes/conversations', (_req: Req, res: Res) => {
     try { res.json({ conversations: hermes.listConversations() }) }
@@ -459,21 +479,32 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     try { res.json({ roles: hermes.getSupportModels() }) }
     catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
+  // Live catalog of Hermes auxiliary roles (self-populating): _all_aux_tasks() + supplement + defaults.
+  router.get('/api/hermes/aux-tasks', async (_req: Req, res: Res) => {
+    try { res.json({ tasks: await hermes.getAuxTasks() }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
   router.put('/api/hermes/support-models', json, async (req: Req, res: Res) => {
     try {
-      const b = (req.body ?? {}) as Record<string, unknown>
-      const parseRole = (v: unknown): { provider: string; model: string } | undefined => {
-        const o = v as { provider?: unknown; model?: unknown } | null
-        return o && typeof o.model === 'string' && o.model
-          ? { provider: typeof o.provider === 'string' ? o.provider : 'ailab', model: o.model }
-          : undefined
+      const b = (req.body ?? {}) as Record<string, Record<string, unknown> | null>
+      const roles: Record<string, Record<string, unknown>> = { ...(hermes.getSupportModels() as Record<string, Record<string, unknown>>) }
+      const applyKeys: string[] = []
+      // Field-level merge per role key present in the body; model changes trigger a re-apply.
+      for (const key of Object.keys(b)) {
+        const patch = (b[key] ?? {}) as Record<string, unknown>
+        const cur: Record<string, unknown> = { ...(roles[key] || {}) }
+        if ('model' in patch) {
+          applyKeys.push(key)
+          if (typeof patch.model === 'string' && patch.model) {
+            cur.model = patch.model
+            cur.provider = typeof patch.provider === 'string' && patch.provider ? patch.provider : (cur.provider || 'ailab')
+          } else { delete cur.model; delete cur.provider }
+        }
+        if ('description' in patch) { const d = patch.description; if (typeof d === 'string' && d.trim()) cur.description = d; else delete cur.description }
+        if ('recommendation' in patch) { const rc = patch.recommendation; if (typeof rc === 'string' && rc.trim()) cur.recommendation = rc; else delete cur.recommendation }
+        if (Object.keys(cur).length) roles[key] = cur; else delete roles[key]
       }
-      // Merge: only role keys PRESENT in the body change (null/empty clears; absent = preserved).
-      const roles: Record<string, { provider: string; model: string }> = { ...(hermes.getSupportModels() as Record<string, { provider: string; model: string }>) }
-      for (const key of ['visionDescription', 'compaction']) {
-        if (key in b) { const r = parseRole(b[key]); if (r) roles[key] = r; else delete roles[key] }
-      }
-      const r = await hermes.setSupportModels(roles)
+      const r = await hermes.setSupportModels(roles as Record<string, { provider?: string; model?: string; description?: string; recommendation?: string }>, applyKeys)
       res.json({ ok: true, ...r })
     } catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
   })

@@ -194,7 +194,7 @@ export const AgentDocs: React.FC<{
   }, [docs, mode])
 
   const deleteDoc = async (d: DocEntry) => {
-    const isMemoryLog = d.path.startsWith('workspace/memory/')
+    const isMemoryLog = d.path.startsWith('memories/')
     const sure = await confirmStore.confirm({
       title: 'Delete doc',
       message: isMemoryLog

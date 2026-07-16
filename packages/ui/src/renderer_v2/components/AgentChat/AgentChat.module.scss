@@ -349,6 +349,7 @@
 
 .composer {
   display: flex;
+  align-items: flex-end;
   gap: 8px;
 }
 
@@ -360,6 +361,12 @@
   background: var(--control-bg);
   color: var(--fg);
   font-size: 13px;
+  font-family: inherit;
+  line-height: 1.45;
+  resize: none;
+  overflow-y: auto;
+  min-height: 38px;
+  max-height: 220px;
 }
 
 .btnPrimary {
@@ -405,3 +412,15 @@
   vertical-align: middle;
   opacity: 0.85;
 }
+
+
+/* Tail edit/regenerate/delete controls (chat rewind) */
+.msgActions { display: flex; align-items: center; gap: 6px; padding: 4px 10px 0; flex-wrap: wrap; }
+.msgActBtn {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 1;
+  padding: 3px 8px; border-radius: 6px; cursor: pointer; color: inherit;
+  background: rgba(127, 127, 127, 0.12); border: 1px solid rgba(127, 127, 127, 0.28);
+}
+.msgActBtn:hover:not(:disabled) { background: rgba(127, 127, 127, 0.22); }
+.msgActBtn:disabled { opacity: 0.5; cursor: default; }
+.msgActErr { font-size: 10px; color: #e66; }

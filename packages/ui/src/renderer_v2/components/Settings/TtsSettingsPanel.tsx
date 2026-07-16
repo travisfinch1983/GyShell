@@ -20,7 +20,7 @@ import React, { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { observer } from 'mobx-react-lite'
 import {
-  Volume2, Mic, RefreshCw, CircleDot, Eye, Archive,
+  Volume2, Mic, RefreshCw, CircleDot, Eye, Archive, Pencil,
 } from 'lucide-react'
 import {
   getTtsProviders,
@@ -31,7 +31,7 @@ import {
   type SttProvider,
   type RvcModel,
 } from '../../services/ProxlabDiscovery'
-import { hermesApi, type SupportModelRole, type CatalogModelWithCaps } from '../../stores/hermesApi'
+import { hermesApi, type SupportModelRole, type CatalogModelWithCaps, type AuxTask } from '../../stores/hermesApi'
 
 interface TtsConfig {
   enabled: boolean
@@ -203,6 +203,177 @@ const CompactionSection: React.FC = () => (
   />
 )
 
+// ─── Self-populating Support-Model roles (all Hermes auxiliary tasks) ─────────
+// Role list + base descriptions come LIVE from Hermes (_all_aux_tasks() via
+// GET /aux-tasks) so new/removed roles reflect automatically; recommendations +
+// description enrichments are user-editable (stored AI-Lab-side). Each role is a
+// model dropdown from the AI-Lab proxy catalog — assigning also clears any dead
+// upstream URL. Shared roles (vision/compaction/tts tags) get no Hermes badge.
+
+const EditableLine: React.FC<{
+  label: string
+  value: string
+  placeholder: string
+  saving: boolean
+  onSave: (v: string) => void
+}> = ({ label, value, placeholder, saving, onSave }) => {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(value)
+  useEffect(() => { setDraft(value) }, [value])
+  const commit = () => { setEditing(false); if (draft !== value) onSave(draft) }
+  return (
+    <div style={{ marginBottom: 7 }}>
+      <span style={{ fontSize: 10, fontWeight: 600, opacity: 0.6, textTransform: 'uppercase', letterSpacing: '.03em' }}>{label}{saving ? ' · saving…' : ''}</span>
+      {editing ? (
+        <textarea
+          autoFocus
+          rows={2}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') { setDraft(value); setEditing(false) }
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) commit()
+          }}
+          style={{ width: '100%', resize: 'vertical', fontSize: 12, lineHeight: 1.4, fontFamily: 'inherit', padding: '4px 7px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--control-bg)', color: 'var(--fg)', marginTop: 3 }}
+        />
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 1 }}>
+          <span style={{ fontSize: 12, lineHeight: 1.4, flex: 1, opacity: value ? 0.85 : 0.45, fontStyle: value ? 'normal' : 'italic' }}>
+            {value || placeholder}
+          </span>
+          <button
+            onClick={() => { setDraft(value); setEditing(true) }}
+            title={`Edit ${label.toLowerCase()}`}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', padding: 2, lineHeight: 0, opacity: 0.5, flexShrink: 0 }}
+          >
+            <Pencil size={11} />
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const SupportModelSection: React.FC<{
+  task: AuxTask
+  role?: SupportModelRole
+  catalog: CatalogModelWithCaps[]
+  onSave: (key: string, patch: { model?: string; description?: string; recommendation?: string }) => Promise<{ ok: boolean; agentsUpdated?: number; error?: string }>
+}> = ({ task, role, catalog, onSave }) => {
+  const [model, setModel] = useState(role?.model || '')
+  const [desc, setDesc] = useState(task.description)
+  const [rec, setRec] = useState(task.recommendation)
+  const [saving, setSaving] = useState('')
+  const [status, setStatus] = useState('')
+
+  const models = task.key === 'vision' ? catalog.filter((m) => m.capabilities?.vision === true) : catalog
+  const options = models.map((m) => m.id)
+  if (model && !options.includes(model)) options.unshift(model)
+
+  const saveModel = async (m: string) => {
+    setModel(m); setSaving('model'); setStatus('')
+    const r = await onSave(task.key, { model: m })
+    setSaving('')
+    setStatus(r.ok
+      ? (m ? `saved${typeof r.agentsUpdated === 'number' ? ` — ${r.agentsUpdated} agent${r.agentsUpdated === 1 ? '' : 's'}` : ''}` : 'cleared → Auto (main model)')
+      : `save failed${r.error ? ` — ${r.error}` : ''}`)
+  }
+  const saveMeta = async (field: 'description' | 'recommendation', val: string) => {
+    setSaving(field); await onSave(task.key, { [field]: val }); setSaving('')
+  }
+
+  const taBox: React.CSSProperties = { width: '100%', resize: 'vertical', fontSize: 12, lineHeight: 1.4, fontFamily: 'inherit', padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--control-bg)', color: 'var(--fg)', marginBottom: 8 }
+
+  return (
+    <div className="tts-section">
+      <div className="tts-section-header">
+        <CircleDot size={13} />
+        <span>{task.label}</span>
+        {!task.shared && (
+          <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: 'rgba(120,130,255,.18)', color: '#9aa6ff', letterSpacing: '.04em' }}>HERMES</span>
+        )}
+      </div>
+      <div className="tts-section-body">
+        <div className="tts-field">
+          <label>Model{saving === 'model' ? ' (saving…)' : ''}</label>
+          <select value={model} onChange={(e) => saveModel(e.target.value)} className="tts-select" disabled={saving === 'model'}>
+            <option value="">Auto — agent’s own main model</option>
+            {options.map((id) => <option key={id} value={id}>{id}</option>)}
+          </select>
+          {status && <span className="tts-hint">{status}</span>}
+        </div>
+        <EditableLine
+          label="What it does"
+          value={desc}
+          placeholder="No description"
+          saving={saving === 'description'}
+          onSave={(v) => { setDesc(v); void saveMeta('description', v) }}
+        />
+        <EditableLine
+          label="Recommended model"
+          value={rec}
+          placeholder="Add a recommendation…"
+          saving={saving === 'recommendation'}
+          onSave={(v) => { setRec(v); void saveMeta('recommendation', v) }}
+        />
+      </div>
+    </div>
+  )
+}
+
+// Module-level cache so switching to/from the Support Models tab doesn't re-fetch + flash
+// "loading" each time. The backend already version-caches the aux list; this keeps it warm on the
+// client for the page session (a full page reload re-fetches once).
+let smCache: { tasks: AuxTask[]; roles: Record<string, SupportModelRole>; catalog: CatalogModelWithCaps[] } | null = null
+let smInflight: Promise<void> | null = null
+
+function useSupportModels() {
+  const [, force] = useState(0)
+  const [err, setErr] = useState(false)
+  useEffect(() => {
+    let alive = true
+    if (smCache) return
+    if (!smInflight) {
+      smInflight = (async () => {
+        const [t, r, c] = await Promise.all([hermesApi.getAuxTasks(), hermesApi.getSupportModels(), hermesApi.listCatalog()])
+        if (t && r) smCache = { tasks: t, roles: r, catalog: c }
+      })().finally(() => { smInflight = null })
+    }
+    void smInflight.then(() => { if (alive) { if (!smCache) setErr(true); force((n) => n + 1) } })
+    return () => { alive = false }
+  }, [])
+  const onSave = async (key: string, patch: { model?: string; description?: string; recommendation?: string }) => {
+    const res = await hermesApi.setSupportModels({ [key]: patch })
+    if (res.ok && smCache) {
+      smCache = { ...smCache, roles: { ...smCache.roles, [key]: { ...(smCache.roles[key] || { provider: 'ailab', model: '' }), ...patch } } }
+      force((n) => n + 1)
+    }
+    return res
+  }
+  return { data: smCache, err, onSave }
+}
+
+/** Universally-usable support roles (shared: vision/compression/tts tags) — rendered as fragment
+ *  cards so they sit in the MANUAL grid at the top alongside TTS/STT. */
+const SharedAuxCards: React.FC = () => {
+  const { data, onSave } = useSupportModels()
+  if (!data) return null
+  return <>{data.tasks.filter((t) => t.shared).map((t) => (
+    <SupportModelSection key={t.key} task={t} role={data.roles[t.key]} catalog={data.catalog} onSave={onSave} />
+  ))}</>
+}
+
+/** Hermes-specific helper roles (badged) — fragment cards for the auto-generated grid. */
+const HermesAuxCards: React.FC = () => {
+  const { data, err, onSave } = useSupportModels()
+  if (err) return <div className="tts-section"><div className="tts-empty">Could not load helper models.</div></div>
+  if (!data) return <div className="tts-section"><div className="tts-empty">Loading helper models…</div></div>
+  return <>{data.tasks.filter((t) => !t.shared).map((t) => (
+    <SupportModelSection key={t.key} task={t} role={data.roles[t.key]} catalog={data.catalog} onSave={onSave} />
+  ))}</>
+}
+
 export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) => {
   const [ttsProviders, setTtsProviders] = useState<TtsProvider[]>([])
   const [sttProviders, setSttProviders] = useState<SttProvider[]>([])
@@ -266,12 +437,8 @@ export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) =
         </button>
       </div>
 
-      {/* ─── Vision Description Section ───────────────────────────── */}
-      <VisionDescriptionSection />
-
-      {/* ─── Compaction Section ───────────────────────────────────── */}
-      <CompactionSection />
-
+      {/* ─── Manual entries (TTS/STT + universal support models) — 2-column grid ─── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12, alignItems: 'start' }}>
       {/* ─── STT Section ──────────────────────────────────────────── */}
       <div className="tts-section">
         <div className="tts-section-header">
@@ -459,6 +626,18 @@ export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) =
             )}
           </div>
         )}
+      </div>
+      <SharedAuxCards />
+      </div>
+
+      {/* ─── divider: manual entries (above) vs auto-generated Hermes roles (below) ─── */}
+      <div style={{ borderTop: '1px solid var(--border)', margin: '16px 0 12px', paddingTop: 12 }}>
+        <div className="tts-hint" style={{ fontWeight: 700, opacity: 0.75, marginBottom: 10 }}>
+          Auto-generated helper models (from Hermes)
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12, alignItems: 'start' }}>
+          <HermesAuxCards />
+        </div>
       </div>
     </div>
   )

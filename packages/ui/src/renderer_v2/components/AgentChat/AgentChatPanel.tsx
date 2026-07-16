@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Plus, ScanEye, SendHorizonal, Settings2, Square, Trash2, Wrench } from 'lucide-react'
+import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Pencil, Plus, RefreshCw, ScanEye, SendHorizonal, Settings2, Square, Trash2, Wrench } from 'lucide-react'
 import type { HermesSlashCommand } from '@gyshell/shared'
 import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
 import { hermesApi } from '../../stores/hermesApi'
@@ -11,7 +11,7 @@ import { hermesConversationsStore, type ConvMeta } from '../../stores/hermesConv
 import styles from './AgentChat.module.scss'
 
 /** Collapsible reasoning block. */
-const ThoughtRow: React.FC<{ item: ChatItem }> = ({ item }) => {
+const ThoughtRow = observer(({ item }: { item: ChatItem }) => {
   const [open, setOpen] = useState(false)
   return (
     <div className={styles.thought}>
@@ -22,17 +22,17 @@ const ThoughtRow: React.FC<{ item: ChatItem }> = ({ item }) => {
       {open && <div className={styles.thoughtBody}>{item.text}</div>}
     </div>
   )
-}
+})
 
-const ToolCard: React.FC<{ item: ChatItem }> = ({ item }) => (
+const ToolCard = observer(({ item }: { item: ChatItem }) => (
   <div className={styles.toolCard}>
     <Wrench size={12} />
     <span className={styles.toolTitle}>{item.title || 'tool'}</span>
     <span className={`${styles.toolStatus} ${item.status === 'completed' ? styles.toolDone : ''}`}>{item.status ?? '…'}</span>
   </div>
-)
+))
 
-const PlanCard: React.FC<{ item: ChatItem }> = ({ item }) => (
+const PlanCard = observer(({ item }: { item: ChatItem }) => (
   <div className={styles.planCard}>
     <div className={styles.planHead}><ListChecks size={12} /> plan</div>
     {(item.plan ?? []).map((e, i) => (
@@ -42,9 +42,9 @@ const PlanCard: React.FC<{ item: ChatItem }> = ({ item }) => (
       </div>
     ))}
   </div>
-)
+))
 
-const Row: React.FC<{ item: ChatItem }> = ({ item }) => {
+const Row = observer(({ item }: { item: ChatItem }) => {
   switch (item.kind) {
     case 'user':
       return (
@@ -86,7 +86,24 @@ const Row: React.FC<{ item: ChatItem }> = ({ item }) => {
       )
     default: return <div className={styles.sysRow}>{item.text}</div>
   }
-}
+})
+
+/** Null-rendering auto-scroll anchor. Reads the last item's text length REACTIVELY here (inside its
+ *  own observer) so streaming keeps the log pinned to the bottom WITHOUT forcing the whole
+ *  conversation to re-render on every token — the killer of chat performance on long transcripts. */
+const ScrollAnchor = observer(({ items, logRef, nearBottomRef }: {
+  items: ChatItem[]
+  logRef: React.RefObject<HTMLDivElement | null>
+  nearBottomRef: React.MutableRefObject<boolean>
+}) => {
+  const n = items.length
+  const tailLen = items[items.length - 1]?.text.length ?? 0
+  useEffect(() => {
+    const el = logRef.current
+    if (el && nearBottomRef.current) el.scrollTop = el.scrollHeight
+  }, [n, tailLen, logRef, nearBottomRef])
+  return null
+})
 
 /**
  * Live conversation with one Hermes agent. Pure OBSERVER of the backend-owned
@@ -95,7 +112,10 @@ const Row: React.FC<{ item: ChatItem }> = ({ item }) => {
  */
 export const AgentConversation: React.FC<{ agentId: string; conversationId: string }> = observer(({ agentId, conversationId }) => {
   const s = chat.state(conversationId)
-  const [text, setText] = useState('')
+  // Unsent draft is saved PER CONVERSATION (keyed by conversationId) so a page reload never wipes
+  // what you were typing, and each chat keeps its own in-progress message.
+  const draftKey = `ai-lab-draft-${conversationId}`
+  const [text, setText] = useState<string>(() => { try { return localStorage.getItem(draftKey) ?? '' } catch { return '' } })
   const [slashOpen, setSlashOpen] = useState(false)
   const logRef = useRef<HTMLDivElement | null>(null)
   // Per-conversation model swap (backend 2ce0aa1): raw catalog ids verbatim.
@@ -131,10 +151,7 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
   // Stick to the bottom on new content ONLY when the user is already there —
   // scrolling up to read must not get yanked back down by streaming chunks.
   const nearBottomRef = useRef(true)
-  useEffect(() => {
-    const el = logRef.current
-    if (el && nearBottomRef.current) el.scrollTop = el.scrollHeight
-  }, [s.items.length, s.items[s.items.length - 1]?.text.length])
+  // (auto-scroll moved into <ScrollAnchor/> so a streamed token no longer re-renders the parent)
 
   const slashMatches = useMemo<HermesSlashCommand[]>(() => {
     if (!text.startsWith('/')) return []
@@ -144,8 +161,52 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
 
   useEffect(() => setSlashOpen(slashMatches.length > 0 && text.startsWith('/') && !text.includes(' ')), [slashMatches, text])
 
+  // Tail edit/regenerate/delete (native Hermes rewind). Acts on the last turn; deleting exposes
+  // the one before it. Edit reuses the composer — Send replaces the last user message + re-runs.
+  const [editing, setEditing] = useState(false)
+  const [rwPending, setRwPending] = useState<string | null>(null)
+  const [rwMsg, setRwMsg] = useState('')
+  const lastUserText = useMemo(() => {
+    for (let i = s.items.length - 1; i >= 0; i--) if (s.items[i].kind === 'user') return s.items[i].text
+    return ''
+  }, [s.items])
+  // Scope: only offer rewind on a CLEAN tail — a plain question->answer turn (no tool calls after
+  // the last user message). Tool-heavy turns span many messages and don't map to 'the last message'.
+  const tailClean = useMemo(() => {
+    let lastUser = -1
+    for (let i = s.items.length - 1; i >= 0; i--) if (s.items[i].kind === 'user') { lastUser = i; break }
+    if (lastUser === -1) return false
+    const after = s.items.slice(lastUser + 1)
+    return !after.some((i) => i.kind === 'tool' || i.kind === 'plan')
+  }, [s.items])
+  const canAct = !s.busy && !rwPending && tailClean
+  const doRewind = async (mode: 'edit' | 'regenerate' | 'delete') => {
+    if (rwPending) return
+    setRwPending(mode); setRwMsg('')
+    try {
+      await chat.rewindTail(agentId, conversationId, mode, mode === 'edit' ? text : undefined)
+      if (mode === 'edit') { setEditing(false); setText('') }
+    } catch (e) { setRwMsg(e instanceof Error ? e.message : String(e)) }
+    finally { setRwPending(null) }
+  }
+  const startEdit = () => { setRwMsg(''); setEditing(true); setText(lastUserText); setTimeout(() => taRef.current?.focus(), 0) }
+  const cancelEdit = () => { setEditing(false); setText('') }
+  // Auto-grow the composer textarea with its content (up to a cap, then it scrolls).
+  const taRef = useRef<HTMLTextAreaElement | null>(null)
+  useEffect(() => {
+    const el = taRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 220)}px`
+  }, [text])
+  // Save/clear the per-conversation draft as it changes.
+  useEffect(() => {
+    try { if (text) localStorage.setItem(draftKey, text); else localStorage.removeItem(draftKey) } catch { /* private mode */ }
+  }, [text, draftKey])
+
   const send = () => {
     setSlashOpen(false)
+    if (editing) { void doRewind('edit'); return }
     const t = text
     setText('')
     void chat.send(agentId, conversationId, t)
@@ -203,9 +264,27 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
           </div>
         )}
         {s.items.map((i) => <Row key={i.id} item={i} />)}
+        <ScrollAnchor items={s.items} logRef={logRef} nearBottomRef={nearBottomRef} />
         {s.busy && <div className={styles.sysRow}>thinking…</div>}
       </div>
 
+      {(canAct || editing) && (
+        <div className={styles.msgActions}>
+          {editing ? (
+            <>
+              <span className={styles.dim} style={{ fontSize: 11 }}>Editing your last message — Send to replace &amp; re-run.</span>
+              <button className={styles.msgActBtn} onClick={cancelEdit} disabled={!!rwPending}>Cancel</button>
+            </>
+          ) : (
+            <>
+              <button className={styles.msgActBtn} onClick={startEdit} disabled={!!rwPending} title="Edit your last message and re-run"><Pencil size={12} /> Edit</button>
+              <button className={styles.msgActBtn} onClick={() => void doRewind('regenerate')} disabled={!!rwPending} title="Discard the last reply and generate a new one"><RefreshCw size={12} /> {rwPending === 'regenerate' ? 'working…' : 'Regenerate'}</button>
+              <button className={styles.msgActBtn} onClick={() => void doRewind('delete')} disabled={!!rwPending} title="Delete the last turn — the one before it becomes editable"><Trash2 size={12} /> {rwPending === 'delete' ? 'working…' : 'Delete'}</button>
+            </>
+          )}
+          {rwMsg && <span className={styles.msgActErr}>{rwMsg}</span>}
+        </div>
+      )}
       <div className={styles.composerWrap}>
         {slashOpen && (
           <div className={styles.slashMenu}>
@@ -223,13 +302,18 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
           </div>
         )}
         <div className={styles.composer}>
-          <input
+          <textarea
+            ref={taRef}
             className={styles.input}
+            rows={1}
             value={text}
-            placeholder={s.commands.length ? `message ${agentId} — / for commands` : `message ${agentId}…`}
+            placeholder={s.commands.length ? `message ${agentId} — / for commands (Shift+Enter = newline)` : `message ${agentId}… (Shift+Enter = newline)`}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !slashOpen) send()
+              if (e.key === 'Enter' && !e.shiftKey) {
+                if (slashOpen && slashMatches[0]) { e.preventDefault(); setText(`/${slashMatches[0].name} `); setSlashOpen(false); return }
+                e.preventDefault(); send(); return
+              }
               if (e.key === 'Escape') setSlashOpen(false)
               if (e.key === 'Tab' && slashOpen && slashMatches[0]) { e.preventDefault(); setText(`/${slashMatches[0].name} `); setSlashOpen(false) }
             }}

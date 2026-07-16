@@ -91,6 +91,11 @@ export class HermesService {
     return this.bridge.reloadAgentSessions(agentId)
   }
 
+  /** Edit / Regenerate / Delete the tail turn of a conversation (native rewind + session reload). */
+  rewindTail(sessionKey: string, mode: 'edit' | 'regenerate' | 'delete', editedText?: string): Promise<{ ok: true; mode: string; rewound: number; targetText: string }> {
+    return this.bridge.rewindTail(sessionKey, mode, editedText)
+  }
+
   nativeToolCatalog(): Promise<Array<{ name: string; category: string }>> {
     return this.mgmt.nativeToolCatalog()
   }
@@ -162,8 +167,11 @@ export class HermesService {
   getSupportModels(): ReturnType<HermesManagementService['getSupportModels']> {
     return this.mgmt.getSupportModels()
   }
-  setSupportModels(roles: Parameters<HermesManagementService['setSupportModels']>[0]): Promise<{ agentsUpdated: number }> {
-    return this.mgmt.setSupportModels(roles)
+  setSupportModels(roles: Parameters<HermesManagementService['setSupportModels']>[0], applyKeys?: string[]): Promise<{ agentsUpdated: number }> {
+    return this.mgmt.setSupportModels(roles, applyKeys)
+  }
+  getAuxTasks(): ReturnType<HermesManagementService['getAuxTasks']> {
+    return this.mgmt.getAuxTasks()
   }
 
   async deleteAgent(agentId: string): Promise<void> {

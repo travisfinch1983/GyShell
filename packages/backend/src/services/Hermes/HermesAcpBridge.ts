@@ -26,6 +26,7 @@ export interface HermesAcpConfig {
   sshKeyPath: string // AI-Lab's key authorized on CT158
   user?: string // default root
   bridgePath?: string // default /opt/acp-bridge/acp-bridge.py
+  profilesDir?: string // default /root/.hermes/profiles (<agentId>/state.db lives here on CT158)
   pythonBin?: string // default the hermes venv python (has the `acp` lib)
   readyTimeoutMs?: number // default 30000
   historyCap?: number // max events buffered per session (ring); default 5000
@@ -327,6 +328,118 @@ export class HermesAcpBridge extends EventEmitter {
     const session = this.sessions.get(sessionKey)
     if (!session || session.proc.exitCode !== null) throw new Error(`no live acp session for ${sessionKey}`)
     session.proc.stdin.write(JSON.stringify({ type: 'set_model', model_id: modelId }) + '\n')
+  }
+
+  /** Run the NATIVE Hermes tail-rewind helper on CT158 (drives SessionDB.rewind_to_message /
+   *  get_messages — no source patching). Resolves the parsed JSON result (last stdout line). */
+  private runRewindHelper(agentId: string, sessionId: string, action: 'peek' | 'rewind'): Promise<Record<string, unknown>> {
+    const user = this.cfg.user ?? 'root'
+    const py = this.cfg.pythonBin ?? '/usr/local/lib/hermes-agent/venv/bin/python'
+    const helper = (this.cfg.bridgePath ?? '/opt/acp-bridge/acp-bridge.py').replace(/[^/]+$/, 'hermes_rewind.py')
+    const db = `${this.cfg.profilesDir ?? '/root/.hermes/profiles'}/${agentId}/state.db`
+    const args = [
+      '-i', this.cfg.sshKeyPath, '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
+      `${user}@${this.cfg.host}`, py, helper, '--db', db, '--session', sessionId, '--action', action,
+    ]
+    return new Promise((resolve, reject) => {
+      const p = spawn('ssh', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+      let out = ''; let err = ''
+      p.stdout.on('data', (d: Buffer) => { out += d.toString('utf8') })
+      p.stderr.on('data', (d: Buffer) => { err += d.toString('utf8') })
+      p.on('error', reject)
+      p.on('close', (code) => {
+        const line = out.trim().split('\n').filter(Boolean).pop() ?? ''
+        try { resolve(JSON.parse(line) as Record<string, unknown>) }
+        catch { reject(new Error(`rewind helper bad output (code ${code}): ${(err || out).slice(0, 300)}`)) }
+      })
+    })
+  }
+
+  /** Edit / Regenerate / Delete the TAIL user turn of a conversation, reflected in the agent's
+   *  REAL context. Uses Hermes' native SessionDB.rewind_to_message to soft-delete (active=0) the
+   *  last user message + everything after it, then resumes the session so session/load rebuilds
+   *  context from active=1 rows. 'delete' stops there (the previous turn becomes the new tail);
+   *  'regenerate' re-sends the original user text; 'edit' sends editedText. Refuses mid-turn. */
+  /** Fully stop a session's LOCAL child (graceful close then SIGTERM), waiting for its exit. */
+  private async hardStopLocal(sessionKey: string): Promise<void> {
+    const live = this.sessions.get(sessionKey)
+    if (!live || live.proc.exitCode !== null) return
+    this.pendingReload.delete(sessionKey)
+    const exited = new Promise<void>((res) => {
+      const t = setTimeout(res, 4000)
+      live.proc.once('exit', () => { clearTimeout(t); res() })
+    })
+    try { live.proc.stdin.write(JSON.stringify({ type: 'close' }) + '\n') } catch { /* noop */ }
+    const killTimer = setTimeout(() => { try { live.proc.kill('SIGTERM') } catch { /* noop */ } }, 1000)
+    await exited
+    clearTimeout(killTimer)
+  }
+
+  /** Deterministically kill the REMOTE acp-bridge (+ its hermes child) driving a session on CT158
+   *  and verify it's gone. Killing the local ssh does NOT reliably kill the remote, and a surviving
+   *  process re-persists stale rows over our rewind (the clobber bug). Rejects if it can't confirm. */
+  private remoteKillSession(sessionId: string): Promise<void> {
+    const user = this.cfg.user ?? 'root'
+    const script = (this.cfg.bridgePath ?? '/opt/acp-bridge/acp-bridge.py').replace(/[^/]+$/, 'hard_stop.sh')
+    const args = [
+      '-i', this.cfg.sshKeyPath, '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
+      `${user}@${this.cfg.host}`, 'bash', script, sessionId,
+    ]
+    return new Promise((resolve, reject) => {
+      const p = spawn('ssh', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+      let err = ''
+      p.stderr.on('data', (d: Buffer) => { err += d.toString('utf8') })
+      p.on('error', reject)
+      p.on('close', (code) => code === 0 ? resolve() : reject(new Error(`could not stop the live Hermes process before rewind: ${err.slice(0, 200)}`)))
+    })
+  }
+
+  /** Edit / Regenerate / Delete the TAIL user turn — reflected in the agent's REAL context via
+   *  Hermes' native SessionDB.rewind_to_message. ROBUST: fully stops the live session (local +
+   *  remote, verified dead) BEFORE mutating so the write can't be clobbered; VERIFIES the
+   *  soft-delete persisted (fail-loud, never a silent no-op); then resumes via --resume. On any
+   *  failure it brings the session back so the conversation stays usable. */
+  async rewindTail(sessionKey: string, mode: 'edit' | 'regenerate' | 'delete', editedText?: string): Promise<{ ok: true; mode: string; rewound: number; targetText: string }> {
+    const live = this.sessions.get(sessionKey)
+    const agentId = live?.agentId ?? this.persistedSessions[sessionKey]?.agentId
+    if (!agentId) throw new Error('no such conversation')
+    if (live && live.status === 'busy') throw new Error('the agent is mid-response — stop it or wait, then retry')
+    const sessionId = this.persistedSessions[sessionKey]?.sessionId
+    if (!sessionId) throw new Error('this conversation has no saved Hermes session yet')
+    if (mode === 'edit' && !(editedText ?? '').trim()) throw new Error('edit needs non-empty text')
+
+    // 1) Fully stop the session (local child + remote acp-bridge/hermes, verified dead) so the DB
+    //    is quiescent and the rewind can't be re-persisted over.
+    await this.hardStopLocal(sessionKey)
+    let res: Record<string, unknown>
+    try {
+      await this.remoteKillSession(sessionId)
+      // 2) Baseline -> native tail rewind -> VERIFY it stuck.
+      const before = await this.runRewindHelper(agentId, sessionId, 'peek')
+      res = await this.runRewindHelper(agentId, sessionId, 'rewind')
+      if (!res || res.ok !== true) throw new Error(`rewind failed: ${(res && (res.error as string)) ?? 'unknown'}`)
+      const beforeN = typeof before?.active_count === 'number' ? (before.active_count as number) : undefined
+      const afterN = typeof res.active_count_after === 'number' ? (res.active_count_after as number) : undefined
+      if (beforeN !== undefined && afterN !== undefined && afterN >= beforeN) {
+        throw new Error('rewind did not persist (write was clobbered) — nothing changed')
+      }
+    } catch (e) {
+      // Recover: bring the session back so the conversation stays usable, then surface the failure.
+      await this.ensureReady(sessionKey, agentId).catch(() => { /* noop */ })
+      throw e
+    }
+    const targetText = typeof res.target_text === 'string' ? res.target_text : ''
+    const rewound = typeof res.rewound === 'number' ? res.rewound : 0
+
+    // 3) Resume — session/load rebuilds context from active=1 and replays the trimmed transcript.
+    await this.ensureReady(sessionKey, agentId)
+
+    // 4) After-action: edit/regenerate re-prompt; delete leaves the conversation trimmed.
+    const text = mode === 'edit' ? (editedText as string) : targetText
+    if (mode !== 'delete' && text.trim()) this.prompt(sessionKey, text)
+
+    console.log(`[hermes-acp] rewindTail ${mode} on ${sessionKey}: soft-deleted ${rewound} row(s), active ${res.active_count_before}->${res.active_count_after}`)
+    return { ok: true, mode, rewound, targetText }
   }
 
   /** Restart a live session's PROCESS while KEEPING its resume state, so it respawns via

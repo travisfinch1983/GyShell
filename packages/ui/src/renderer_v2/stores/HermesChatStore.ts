@@ -164,6 +164,24 @@ class HermesChatStore {
     await hermesApi.endConversation(agentId, conversationId)
   }
 
+  /** Edit / Regenerate / Delete the tail turn, then rebuild the transcript from the server's
+   *  post-rewind state. The backend soft-deletes (active=0) via Hermes' native rewind and, for
+   *  edit/regenerate, re-prompts — so the streamed reply arrives over the re-attached stream. */
+  async rewindTail(agentId: string, conversationId: string, mode: 'edit' | 'regenerate' | 'delete', editedText?: string): Promise<void> {
+    const r = await hermesApi.rewind(agentId, conversationId, mode, editedText)
+    if (r?.error) throw new Error(String(r.error))
+    // Rebuild the view: drop the stream, clear items, re-restore from the server (attach re-runs
+    // restoreThenStream because items are empty + not in `restored`).
+    this.detach(conversationId)
+    runInAction(() => {
+      const s = this.state(conversationId)
+      s.items.splice(0, s.items.length)
+      s.error = null
+    })
+    this.restored.delete(conversationId)
+    this.attach(agentId, conversationId)
+  }
+
   /** Fold one wire event into the transcript. Exported for the spec. */
   reduce(conversationId: string, ev: HermesStreamEvent): void {
     const s = this.state(conversationId)
