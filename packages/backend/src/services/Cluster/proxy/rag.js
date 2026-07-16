@@ -65,7 +65,7 @@ async function classifyRagServices() {
 }
 
 export function registerRagRoutes(app, { exec, selfPort }) {
-  const MCPJUNGLE_HOST = process.env.MCPJUNGLE_HOST || '10.0.0.52'
+  const MCPJUNGLE_HOST = process.env.MCPJUNGLE_HOST || '127.0.0.1'
   // JSON body parsing for the codebase-RAG POST routes (docrag/index uses multer instead).
   app.use('/api/ai/rag', express.json({ limit: '10mb' }))
 

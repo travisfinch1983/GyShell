@@ -117,7 +117,7 @@ const activeServicesFile = join(PROXY_DATA_DIR, 'active-services.json');
 const voicePresetsFile = join(PROXY_DATA_DIR, 'voice-presets.json');
 
 // ─── MCP Tool Integration ──────────────────────────────────────────────────
-const MCPJUNGLE_URL = process.env.MCPJUNGLE_URL || 'http://10.0.0.52:8080';
+const MCPJUNGLE_URL = process.env.MCPJUNGLE_URL || 'http://127.0.0.1:8080';
 const MCP_TOOL_CACHE_TTL = 60_000; // 60 seconds
 const mcpSettingsFile = join(PROXY_DATA_DIR, 'mcp-settings.json');
 
