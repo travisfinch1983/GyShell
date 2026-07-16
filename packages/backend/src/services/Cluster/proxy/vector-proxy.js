@@ -147,13 +147,26 @@ export function createVectorProxyRouter() {
   const RERANKER_URL = process.env.RERANKER_URL || 'http://127.0.0.1:7777/api/proxy/rerank/v2/rerank';
   const RERANKER_MODEL = process.env.RERANKER_MODEL || 'nvidia/llama-nemotron-rerank-vl-1b-v2';
 
+  // Live-read the selected embed/reranker models (Support Models tab -> rag-models.json); the loopback
+  // /embed //rerank proxy routes are kept (migration-safe). Fallback to env/default. Cached ~15s.
+  const RAG_MODELS_FILE = join(process.env.AILAB_PROXY_DATA_DIR || '/opt/ai-lab/.gybackend-data', 'rag-models.json');
+  let _ragCache = { cfg: null, ts: 0 };
+  function ragModelCfg() {
+    const now = Date.now();
+    if (_ragCache.cfg && now - _ragCache.ts < 15000) return _ragCache.cfg;
+    let c = {};
+    try { if (existsSync(RAG_MODELS_FILE)) c = JSON.parse(readFileSync(RAG_MODELS_FILE, 'utf-8')); } catch {}
+    _ragCache = { cfg: { embedModel: c.embedModel || EMBED_MODEL, rerankModel: c.rerankModel || RERANKER_MODEL }, ts: now };
+    return _ragCache.cfg;
+  }
+
   /** Rerank documents using the cross-encoder reranker. Fails gracefully. */
   async function rerank(query, documents) {
     try {
       const resp = await fetch(RERANKER_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: RERANKER_MODEL, query, documents }),
+        body: JSON.stringify({ model: ragModelCfg().rerankModel, query, documents }),
         signal: AbortSignal.timeout(15000),
       });
       if (!resp.ok) return null;
@@ -176,7 +189,7 @@ export function createVectorProxyRouter() {
     const resp = await fetch(EMBED_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: EMBED_MODEL, input }),
+      body: JSON.stringify({ model: ragModelCfg().embedModel, input }),
       signal: AbortSignal.timeout(60000),
     });
     if (!resp.ok) throw new Error(`Embedding failed: ${resp.status}`);

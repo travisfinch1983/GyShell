@@ -592,6 +592,15 @@ export const hermesApi = {
     }
   },
 
+  /** GET /api/ai/rag/models — RAG embed/reranker selection + probe-classified service lists. */
+  async getRagModels(): Promise<any | null> {
+    try { return await bridge().request('GET', '/api/ai/rag/models') } catch { return null }
+  },
+  /** PUT /api/ai/rag/models — set the embed/reranker model selection (loopback route + model). */
+  async setRagModels(patch: { embedModel?: string; embedUrl?: string; rerankModel?: string; rerankUrl?: string }): Promise<{ ok: boolean; error?: string }> {
+    try { const r = await bridge().request('PUT', '/api/ai/rag/models', patch); return { ok: r?.ok !== false, error: r?.error ? String(r.error) : undefined } } catch (e) { return { ok: false, error: String((e as Error)?.message ?? e) } }
+  },
+
   /**
    * PUT /api/hermes/support-models — MERGE semantics: only the keys present in
    * the patch are touched; a key set to null clears that role. Applies globally.

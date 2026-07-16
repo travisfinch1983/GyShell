@@ -20,7 +20,7 @@ import React, { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { observer } from 'mobx-react-lite'
 import {
-  Volume2, Mic, RefreshCw, CircleDot, Eye, Archive, Pencil,
+  Volume2, Mic, RefreshCw, CircleDot, Eye, Archive, Pencil, Database, ListOrdered,
 } from 'lucide-react'
 import {
   getTtsProviders,
@@ -209,6 +209,73 @@ const CompactionSection: React.FC = () => (
 // description enrichments are user-editable (stored AI-Lab-side). Each role is a
 // model dropdown from the AI-Lab proxy catalog — assigning also clears any dead
 // upstream URL. Shared roles (vision/compaction/tts tags) get no Hermes badge.
+
+// ─── Embeddings + Reranker (RAG support models) — probe-classified service picker ─────────────
+const RagModelSection: React.FC<{ kind: 'embed' | 'rerank' }> = ({ kind }) => {
+  const [data, setData] = useState<any>(null)
+  const [saving, setSaving] = useState(false)
+  const [status, setStatus] = useState('')
+  const [pending, setPending] = useState<string | null>(null)
+  const load = async () => { const d = await hermesApi.getRagModels(); setData(d) }
+  useEffect(() => { void load() }, [])
+
+  const cur = data ? (kind === 'embed' ? data.embed : data.rerank) : null
+  const services: Array<{ model: string; url: string }> = data ? (kind === 'embed' ? data.embedServices : data.rerankServices) || [] : []
+  const inList = !!cur && services.some((s) => s.model === cur.model)
+
+  const doSave = async (model: string, url: string) => {
+    setSaving(true); setStatus('')
+    const patch = kind === 'embed' ? { embedModel: model, embedUrl: url } : { rerankModel: model, rerankUrl: url }
+    const r = await hermesApi.setRagModels(patch)
+    setSaving(false)
+    if (r.ok) { setStatus('saved'); await load() } else setStatus(`save failed${r.error ? ` — ${r.error}` : ''}`)
+  }
+  const onSelect = (model: string) => {
+    const url = services.find((s) => s.model === model)?.url || ''
+    if (kind === 'embed' && cur && model !== cur.model) setPending(model) // require confirm — invalidates collections
+    else void doSave(model, url)
+  }
+
+  return (
+    <div className="tts-section">
+      <div className="tts-section-header">
+        {kind === 'embed' ? <Database size={13} /> : <ListOrdered size={13} />}
+        <span>{kind === 'embed' ? 'Embeddings' : 'Reranker'}</span>
+      </div>
+      <div className="tts-section-body">
+        {!data ? (
+          <div className="tts-empty">Loading…</div>
+        ) : (
+          <>
+            <div className="tts-field">
+              <label>Model{saving ? ' (saving…)' : ''}</label>
+              <select value={cur?.model || ''} onChange={(e) => onSelect(e.target.value)} className="tts-select" disabled={saving || !!pending}>
+                {!inList && cur?.model && <option value={cur.model}>{cur.model}{cur.isDefault ? ' (default)' : ''}</option>}
+                {services.map((s) => <option key={s.model} value={s.model}>{s.model}</option>)}
+              </select>
+              {status && <span className="tts-hint">{status}</span>}
+            </div>
+            {pending && (
+              <div style={{ margin: '4px 0 6px', padding: '8px 10px', borderRadius: 6, border: '1px solid #c96', background: 'rgba(200,150,60,.12)', fontSize: 12, lineHeight: 1.4 }}>
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>⚠️ This invalidates existing collections</div>
+                All RAG collections were vectorized with <b>{cur?.model}</b> and won’t be searchable with a different embeddings model until re-embedded. Each collection is stamped with the model that built it; an auto-re-embed pipeline is on the roadmap. Switch to <b>{pending}</b>?
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button className="tts-retry" style={{ cursor: 'pointer' }} onClick={() => { const url = services.find((s) => s.model === pending)?.url || ''; void doSave(pending, url); setPending(null) }}>Switch anyway</button>
+                  <button className="tts-retry" style={{ cursor: 'pointer' }} onClick={() => setPending(null)}>Cancel</button>
+                </div>
+              </div>
+            )}
+            <span className="tts-hint">
+              {kind === 'embed'
+                ? 'Vectorizes + searches all RAG collections. Changing it requires re-embedding existing collections.'
+                : 'Re-ranks RAG search results. Safe to change anytime — no re-embedding needed.'}
+            </span>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
 
 const EditableLine: React.FC<{
   label: string
@@ -437,8 +504,10 @@ export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) =
         </button>
       </div>
 
-      {/* ─── Manual entries (TTS/STT + universal support models) — 2-column grid ─── */}
+      {/* ─── Manual entries (TTS/STT + RAG + universal support models) — 2-column grid ─── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12, alignItems: 'start' }}>
+      <RagModelSection kind="embed" />
+      <RagModelSection kind="rerank" />
       {/* ─── STT Section ──────────────────────────────────────────── */}
       <div className="tts-section">
         <div className="tts-section-header">

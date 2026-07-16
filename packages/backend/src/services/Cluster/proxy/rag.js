@@ -16,10 +16,86 @@ try { pdfParse = (await import('pdf-parse')).default } catch { pdfParse = async 
 try { mammoth = await import('mammoth') } catch { mammoth = { extractRawText: async () => { throw new Error('mammoth not installed') } } }
 try { const _x = await import('xlsx'); XLSX = _x.default || _x } catch { XLSX = { read: () => { throw new Error('xlsx not installed') }, utils: { sheet_to_csv: () => '' } } }
 
+// ─── RAG embed/reranker model selection (Support Models tab) ──────────────────
+const RAG_DATA_DIR = process.env.AILAB_PROXY_DATA_DIR || '/opt/ai-lab/.gybackend-data'
+const RAG_MODELS_FILE = join(RAG_DATA_DIR, 'rag-models.json')
+const ACTIVE_SERVICES_FILE = join(RAG_DATA_DIR, 'active-services.json')
+const RAG_DEFAULT_EMBED_MODEL = 'Qwen3-VL-Embedding-8B'
+const RAG_DEFAULT_RERANK_MODEL = 'nvidia/llama-nemotron-rerank-vl-1b-v2'
+
+function readRagModels() {
+  try { return existsSync(RAG_MODELS_FILE) ? JSON.parse(readFileSync(RAG_MODELS_FILE, 'utf-8')) : {} } catch { return {} }
+}
+function writeRagModels(cfg) { try { writeFileSync(RAG_MODELS_FILE, JSON.stringify(cfg, null, 2)) } catch {} }
+function effEmbedModel() { return readRagModels().embedModel || RAG_DEFAULT_EMBED_MODEL }
+
+// Probe-based service-type classification (resilient — NO name heuristics; open-source-safe). Cached.
+const _svcTypeCache = new Map() // endpoint -> { type, ts }
+const _SVC_TTL = 300000
+async function probeServiceType(endpoint) {
+  const hit = _svcTypeCache.get(endpoint)
+  if (hit && Date.now() - hit.ts < _SVC_TTL) return hit.type
+  const v1 = endpoint.replace(/\/+$/, '')
+  const root = v1.replace(/\/v1$/, '')
+  const postOk = async (url, body) => { try { const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(3500) }); return r.ok } catch { return false } }
+  const getJson = async (url) => { try { const r = await fetch(url, { signal: AbortSignal.timeout(3500) }); return r.ok ? await r.json() : null } catch { return null } }
+  const models = await getJson(`${v1}/models`)
+  const model = models?.data?.[0]?.id || 'model'
+  let type = 'llm'
+  // Embedders answer /v1/embeddings; cross-encoder rerankers 404 that but answer /rerank|/score. Embed wins first.
+  if (await postOk(`${v1}/embeddings`, { model, input: 'probe' })) type = 'embed'
+  else if (await postOk(`${root}/rerank`, { model, query: 'q', documents: ['a'] })
+        || await postOk(`${v1}/rerank`, { model, query: 'q', documents: ['a'] })
+        || await postOk(`${root}/v2/rerank`, { model, query: 'q', documents: ['a'] })
+        || await postOk(`${v1}/score`, { model, text_1: 'a', text_2: 'b' })) type = 'rerank'
+  _svcTypeCache.set(endpoint, { type, ts: Date.now() })
+  return type
+}
+async function classifyRagServices() {
+  let state = {}
+  try { state = existsSync(ACTIVE_SERVICES_FILE) ? JSON.parse(readFileSync(ACTIVE_SERVICES_FILE, 'utf-8')) : {} } catch { state = {} }
+  const items = Object.values(state.services || state || {}).filter((s) => s && typeof s === 'object' && s.containerIp && s.port)
+  const results = await Promise.all(items.map(async (s) => {
+    const endpoint = `http://${s.containerIp}:${s.port}/v1`
+    let type = 'llm'
+    try { type = await probeServiceType(endpoint) } catch {}
+    return { model: s.model || s.name, url: endpoint, containerIp: s.containerIp, port: s.port, type }
+  }))
+  return { embed: results.filter((r) => r.type === 'embed'), rerank: results.filter((r) => r.type === 'rerank') }
+}
+
 export function registerRagRoutes(app, { exec, selfPort }) {
   const MCPJUNGLE_HOST = process.env.MCPJUNGLE_HOST || '10.0.0.52'
   // JSON body parsing for the codebase-RAG POST routes (docrag/index uses multer instead).
   app.use('/api/ai/rag', express.json({ limit: '10mb' }))
+
+  // ─── RAG support models: Embeddings + Reranker (probe-classified service picker) ───
+  app.get('/api/ai/rag/models', async (_req, res) => {
+    try {
+      const cfg = readRagModels()
+      const { embed, rerank } = await classifyRagServices()
+      res.json({
+        embed: { model: cfg.embedModel || RAG_DEFAULT_EMBED_MODEL, url: cfg.embedUrl || '', isDefault: !cfg.embedModel },
+        rerank: { model: cfg.rerankModel || RAG_DEFAULT_RERANK_MODEL, url: cfg.rerankUrl || '', isDefault: !cfg.rerankModel },
+        embedServices: embed,
+        rerankServices: rerank,
+      })
+    } catch (e) { res.status(500).json({ error: String((e && e.message) || e) }) }
+  })
+  app.put('/api/ai/rag/models', express.json(), (req, res) => {
+    try {
+      const b = req.body || {}
+      const cfg = readRagModels()
+      for (const [mk, uk] of [['embedModel', 'embedUrl'], ['rerankModel', 'rerankUrl']]) {
+        if (mk in b) {
+          if (b[mk]) { cfg[mk] = String(b[mk]); if (b[uk]) cfg[uk] = String(b[uk]) }
+          else { delete cfg[mk]; delete cfg[uk] } // cleared -> back to the built-in default
+        }
+      }
+      writeRagModels(cfg)
+      res.json({ ok: true, ...cfg })
+    } catch (e) { res.status(400).json({ error: String((e && e.message) || e) }) }
+  })
 
   // Bridge-friendly doc upload: AI-Lab's browser reaches the backend over the WS bridge (JSON only),
   // so doc files arrive base64-encoded here, get written to temp files, then handed to runDocRagIndexing
@@ -429,7 +505,7 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
           const embedResp = await fetch(`http://127.0.0.1:${selfPort}/api/proxy/embed/v1/embeddings`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: 'Qwen3-VL-Embedding-8B', input: truncatedTexts }),
+            body: JSON.stringify({ model: effEmbedModel(), input: truncatedTexts }),
             signal: AbortSignal.timeout(120000),
           });
 
@@ -505,7 +581,7 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
     ragJob.detail = 'Updating collection manifest...';
     const manifestData = {
       name: colName, display_name: collection, description: description || '',
-      repo_url: url, branch: branch || 'default', files_indexed: filesRead,
+      embed_model: effEmbedModel(), repo_url: url, branch: branch || 'default', files_indexed: filesRead,
       chunks_created: upsertedCount, languages: languageCounts,
       indexed_at: new Date().toISOString(),
     };
@@ -830,7 +906,7 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  model: 'Qwen3-VL-Embedding-8B',
+                  model: effEmbedModel(),
                   messages: [{ role: 'user', content: [
                     { type: 'image_url', image_url: { url: `data:${mime};base64,${b64}` } },
                   ] }],
@@ -877,7 +953,7 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
             const embedResp = await fetch(`http://127.0.0.1:${port}/api/proxy/embed/v1/embeddings`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ model: 'Qwen3-VL-Embedding-8B', input: truncated }),
+              body: JSON.stringify({ model: effEmbedModel(), input: truncated }),
               signal: AbortSignal.timeout(120000),
             });
 
@@ -934,7 +1010,7 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
     docRagJob.detail = 'Updating collection manifest...';
     const manifestData = {
       name: colName, display_name: collection, description: description || '',
-      files_indexed: filesProcessed, chunks_created: upsertedCount, file_types: fileTypes,
+      embed_model: effEmbedModel(), files_indexed: filesProcessed, chunks_created: upsertedCount, file_types: fileTypes,
       indexed_at: new Date().toISOString(),
     };
     const manifestB64 = Buffer.from(JSON.stringify(manifestData)).toString('base64');
