@@ -209,6 +209,48 @@ export const ClusterUiPanel: React.FC = () => {
   )
 }
 
+// ─── Container Identity (self IP/hostname resolver + manual overrides) ──────────
+export const ContainerIdentityPanel: React.FC = () => {
+  const { s, busy, msg, save } = useClusterSettings()
+  const [ipOv, setIpOv] = useState('')
+  const [hnOv, setHnOv] = useState('')
+  useEffect(() => {
+    if (s) {
+      setIpOv((s as any).selfIdentity?.ipOverride ?? '')
+      setHnOv((s as any).selfIdentity?.hostnameOverride ?? '')
+    }
+  }, [s])
+  if (!s) return <div style={sub}>Loading…</div>
+  const r = (s as any).selfIdentityResolved || {}
+  const effIp = (ipOv.trim() || r.detectedIp || '')
+  const effUrl = effIp ? `http://${effIp}:${r.port ?? 17890}` : ''
+  const ro: React.CSSProperties = { ...inp, opacity: 0.6, cursor: 'default' }
+  return (
+    <div style={wrap}>
+      <div style={h}>Container Identity</div>
+      <div style={sub}>
+        How AI-Lab addresses itself so agents, MCP servers, and fleet configs can reach it. Detected
+        automatically from the container at runtime — override only if needed (multiple NICs, or a
+        custom LAN hostname). These feed everything that points at AI-Lab, so a migration to a new
+        IP/VLAN — or a fresh install on another host — just works.
+      </div>
+      <Field label="Detected IP"><input style={ro} value={r.detectedIp ?? ''} readOnly /></Field>
+      <Field label="Detected hostname"><input style={ro} value={r.detectedHostname ?? ''} readOnly /></Field>
+      <Field label="IP override"><input style={inp} value={ipOv} onChange={(e) => setIpOv(e.target.value)} placeholder={`auto — ${r.detectedIp ?? ''}`} /></Field>
+      <Field label="Hostname override"><input style={inp} value={hnOv} onChange={(e) => setHnOv(e.target.value)} placeholder={`auto — ${r.detectedHostname ?? ''}`} /></Field>
+      <Field label="Effective base URL"><input style={ro} value={effUrl} readOnly /></Field>
+      <div style={{ ...row, marginTop: 18 }}>
+        <button style={primaryBtn} disabled={busy} onClick={() => void save({ selfIdentity: { ipOverride: ipOv.trim(), hostnameOverride: hnOv.trim() } })}>Save</button>
+        {msg && <span style={{ fontSize: 12, color: 'var(--success)' }}>{msg}</span>}
+      </div>
+      <div style={{ ...sub, marginTop: 10, marginBottom: 0 }}>
+        Reconciling dependent fleet configs (Hermes / MCP endpoints that point at AI-Lab) when this
+        changes is a follow-up step.
+      </div>
+    </div>
+  )
+}
+
 // ─── External Services (model API sources + catalog + vector DBs) ───────────────
 const VDB_TYPES = ['milvus', 'weaviate', 'chromadb', 'qdrant', 'hippocampai']
 const smallInp: React.CSSProperties = { ...inp, flex: 'unset', padding: '5px 8px', fontSize: 12 }

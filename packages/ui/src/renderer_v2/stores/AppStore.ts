@@ -100,6 +100,7 @@ export type SettingsSection =
   | 'cluster-proxmox'
   | 'cluster-tokens'
   | 'cluster-ui'
+  | 'cluster-identity'
   | 'cluster-services'
   | 'cluster-servicenames'
   | 'cluster-gpu'

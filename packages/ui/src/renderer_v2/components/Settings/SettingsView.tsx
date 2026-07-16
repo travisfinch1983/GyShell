@@ -26,11 +26,12 @@ import {
   KeyRound,
   SlidersHorizontal,
   Activity,
+  Network,
 } from "lucide-react";
 import { observer } from "mobx-react-lite";
 import type { AppStore } from "../../stores/AppStore";
 import { BUILTIN_THEMES } from "../../theme/themes";
-import { ProxmoxSettingsPanel, ClusterTokensPanel, ClusterUiPanel, ExternalServicesPanel, ServiceNamesPanel, GpuPoolsPanel, SharedFoldersPanel } from "./ClusterSettingsPanels";
+import { ProxmoxSettingsPanel, ClusterTokensPanel, ClusterUiPanel, ContainerIdentityPanel, ExternalServicesPanel, ServiceNamesPanel, GpuPoolsPanel, SharedFoldersPanel } from "./ClusterSettingsPanels";
 import type { AppTheme } from "../../theme/themes";
 import "./settings.scss";
 import { ConfirmDialog } from "../Common/ConfirmDialog";
@@ -640,6 +641,15 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
           >
             <span className="icon"><SlidersHorizontal size={16} strokeWidth={2} /></span>
             <span>Cluster UI</span>
+          </div>
+          <div
+            className={store.settingsSection === "cluster-identity" ? "settings-nav-item is-active" : "settings-nav-item"}
+            onClick={() => store.setSettingsSection("cluster-identity")}
+            role="button"
+            tabIndex={0}
+          >
+            <span className="icon"><Network size={16} strokeWidth={2} /></span>
+            <span>Container Identity</span>
           </div>
           <div
             className={store.settingsSection === "cluster-services" ? "settings-nav-item is-active" : "settings-nav-item"}
@@ -2240,6 +2250,7 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
           {store.settingsSection === "cluster-proxmox" ? <ProxmoxSettingsPanel /> : null}
           {store.settingsSection === "cluster-tokens" ? <ClusterTokensPanel /> : null}
           {store.settingsSection === "cluster-ui" ? <ClusterUiPanel /> : null}
+          {store.settingsSection === "cluster-identity" ? <ContainerIdentityPanel /> : null}
           {store.settingsSection === "cluster-services" ? <ExternalServicesPanel /> : null}
           {store.settingsSection === "cluster-servicenames" ? <ServiceNamesPanel /> : null}
           {store.settingsSection === "cluster-gpu" ? <GpuPoolsPanel /> : null}

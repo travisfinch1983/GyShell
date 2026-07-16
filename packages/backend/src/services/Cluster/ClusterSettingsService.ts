@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 
 /**
  * ClusterSettingsService — NATIVE settings storage for the ProxLab-replacement domain
@@ -63,6 +64,27 @@ export interface SharedFolders {
   containerMountParent: string
   groups: SharedFolderGroup[]
 }
+export interface SelfIdentityOverrides { ipOverride: string; hostnameOverride: string }
+export interface SelfIdentityResolved {
+  detectedIp: string; detectedHostname: string
+  ipOverride: string; hostnameOverride: string
+  ip: string; hostname: string; port: number; baseUrl: string
+}
+/** The container's own LAN IP, detected at runtime — first non-internal 10.x, else first non-internal. */
+function detectLanIp(): string {
+  const ifaces = os.networkInterfaces()
+  let firstNonInternal = '127.0.0.1'
+  for (const list of Object.values(ifaces)) {
+    for (const ni of list || []) {
+      if (ni.family === 'IPv4' && !ni.internal) {
+        if (ni.address.startsWith('10.')) return ni.address
+        if (firstNonInternal === '127.0.0.1') firstNonInternal = ni.address
+      }
+    }
+  }
+  return firstNonInternal
+}
+
 export interface ClusterSettings {
   pve: PveSettings
   tokens: { hfToken: string; civitaiToken: string }
@@ -74,6 +96,7 @@ export interface ClusterSettings {
   gpuConfig: Record<string, GpuConfigEntry> // keyed "node:pciId"
   agents: Record<string, number> // node -> vmid
   sharedFolders: SharedFolders
+  selfIdentity: SelfIdentityOverrides
 }
 
 const DEFAULTS: ClusterSettings = {
@@ -97,6 +120,7 @@ const DEFAULTS: ClusterSettings = {
       { name: 'image-gen', enabled: false, basePath: '', categories: [] },
     ],
   },
+  selfIdentity: { ipOverride: '', hostnameOverride: '' },
 }
 
 const SECRET_PATHS = ['pve.tokenSecret', 'tokens.hfToken', 'tokens.civitaiToken']
@@ -134,6 +158,7 @@ export class ClusterSettingsService {
       gpuConfig: parsed.gpuConfig ?? {},
       agents: parsed.agents ?? {},
       sharedFolders: parsed.sharedFolders ?? DEFAULTS.sharedFolders,
+      selfIdentity: { ...DEFAULTS.selfIdentity, ...(parsed.selfIdentity ?? {}) },
     }
     return this.cache
   }
@@ -167,7 +192,25 @@ export class ClusterSettingsService {
       gpuConfig: s.gpuConfig,
       agents: s.agents,
       sharedFolders: s.sharedFolders,
+      selfIdentity: s.selfIdentity,
+      selfIdentityResolved: this.getSelfIdentity(),
     }
+  }
+
+  /** The AI-Lab container's OWN identity for building addresses — detected at runtime (os), with
+   *  Settings overrides winning. Everything referencing AI-Lab's address should resolve through this
+   *  so an IP/VLAN migration (or a fresh open-source install on any host/IP) just works (rule #6). */
+  getSelfIdentity(): SelfIdentityResolved {
+    const s = this.load()
+    const ov = s.selfIdentity || { ipOverride: '', hostnameOverride: '' }
+    const detectedIp = detectLanIp()
+    const detectedHostname = os.hostname()
+    const ipOverride = (ov.ipOverride || '').trim()
+    const hostnameOverride = (ov.hostnameOverride || '').trim()
+    const ip = ipOverride || detectedIp
+    const hostname = hostnameOverride || detectedHostname
+    const port = Number(process.env.AILAB_PROXY_PORT || 17890)
+    return { detectedIp, detectedHostname, ipOverride, hostnameOverride, ip, hostname, port, baseUrl: `http://${ip}:${port}` }
   }
 
   /** Deep-merge a partial update; blank secret values are ignored (keep existing). */
@@ -185,6 +228,7 @@ export class ClusterSettingsService {
       gpuConfig: patch?.gpuConfig ?? cur.gpuConfig,
       agents: patch?.agents ?? cur.agents,
       sharedFolders: patch?.sharedFolders ?? cur.sharedFolders,
+      selfIdentity: patch?.selfIdentity ? { ...cur.selfIdentity, ...patch.selfIdentity } : cur.selfIdentity,
     }
     // Don't wipe secrets when the caller sends blank/undefined.
     for (const p of SECRET_PATHS) {
