@@ -66,6 +66,10 @@ async function classifyRagServices() {
 
 export function registerRagRoutes(app, { exec, selfPort }) {
   const MCPJUNGLE_HOST = process.env.MCPJUNGLE_HOST || '127.0.0.1'
+  // Bundled AI-Lab MCP Gateway CLI (co-located on this host): dir + binary. Env-overridable.
+  // (Was the stale /opt/mcpjungle + PATH=/usr/local/bin from the decommissioned 10.0.0.52 host.)
+  const MCPJUNGLE_DIR = process.env.MCPJUNGLE_DIR || '/opt/ai-lab-mcp'
+  const MCPJUNGLE_BIN = process.env.MCPJUNGLE_BIN || '/opt/ai-lab-mcp/mcpjungle'
   // JSON body parsing for the codebase-RAG POST routes (docrag/index uses multer instead).
   app.use('/api/ai/rag', express.json({ limit: '10mb' }))
 
@@ -167,7 +171,7 @@ app.post('/api/ai/docrag/index-paths', express.json({ limit: '2mb' }), async (re
 
 /** Run mcpjungle CLI with a custom timeout */
 async function mcpjungleCliLong(cmd, timeout = 60000) {
-  const result = await exec(MCPJUNGLE_HOST, `cd /opt/mcpjungle && PATH=/usr/local/bin:$PATH mcpjungle ${cmd} 2>&1`, { timeout });
+  const result = await exec(MCPJUNGLE_HOST, `cd ${MCPJUNGLE_DIR} && ${MCPJUNGLE_BIN} ${cmd} 2>&1`, { timeout });
   return (result.stdout || '') + (result.stderr || '');
 }
 
