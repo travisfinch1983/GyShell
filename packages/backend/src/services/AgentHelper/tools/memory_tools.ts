@@ -18,7 +18,7 @@ import { z } from 'zod'
  * still see context Claude has saved.
  */
 
-const PROXLAB_URL = (process.env.PROXLAB_URL || 'http://10.0.0.140:7777').replace(/\/+$/, '')
+const PROXLAB_URL = (process.env.PROXLAB_URL || `http://127.0.0.1:${process.env.AILAB_PROXY_PORT || 17890}`).replace(/\/+$/, '')
 const VECTOR_API = `${PROXLAB_URL}/api/proxy/vector/all`
 const AI_LAB_PREFIX = 'ai-lab_'
 const DEFAULT_COLLECTION = 'ai-lab_general'

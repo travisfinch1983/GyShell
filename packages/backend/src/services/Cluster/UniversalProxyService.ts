@@ -281,7 +281,7 @@ export class UniversalProxyService {
         adminPass: process.env.SFTPGO_ADMIN_PASS || '',
         sftpPort: Number(process.env.FTP_SFTP_PORT || 2022),
         ftpPort: Number(process.env.FTP_FTP_PORT || 2121),
-        publicHost: process.env.FTP_PUBLIC_HOST || '10.0.0.219',
+        publicHost: process.env.FTP_PUBLIC_HOST || this.lanIp,
       })
       app.use(createFtpRouter(ftp))
     }

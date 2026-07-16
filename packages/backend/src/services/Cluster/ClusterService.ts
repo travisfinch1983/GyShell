@@ -13,7 +13,7 @@
  *
  * Configure the upstream with PROXLAB_API_BASE (default http://10.0.0.140:7777).
  */
-const DEFAULT_BASE = process.env.PROXLAB_API_BASE || 'http://10.0.0.140:7777'
+const DEFAULT_BASE = process.env.PROXLAB_API_BASE || `http://127.0.0.1:${process.env.AILAB_PROXY_PORT || 17890}`
 
 export interface ClusterServiceOptions {
   proxlabBase?: string
