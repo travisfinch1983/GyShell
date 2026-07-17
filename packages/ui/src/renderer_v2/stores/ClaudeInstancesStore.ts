@@ -32,38 +32,54 @@ class ClaudeInstancesStore {
     return this.loading
   }
 
+  /** Cap a probe so a stuck WS reconnect (flaky link) can never leave reload() pending forever. */
+  private withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+    return Promise.race([
+      p,
+      new Promise<T>((_, reject) => setTimeout(() => reject(new Error('instance probe timeout')), ms)),
+    ])
+  }
+
   async reload(): Promise<void> {
+    let real = false
     try {
-      // Re-probe whenever we're on the mock: a tab that loads during a backend
-      // restart window used to get the mock FOREVER (`??=` probed once) — the
-      // "stale old version" Travis saw was this banner stuck until a lucky
-      // manual reload. Now the mock is a transparent stand-in that self-heals.
-      if (!this.api || this.api.mocked) this.api = await resolveInstanceManagerApi()
-      const instances = await this.api.list()
+      // Re-probe whenever we're on the mock. The probe + list are time-capped: on a flaky link the
+      // underlying WS reconnect (ensureConnected) could otherwise stay pending, so reload() never
+      // reached the retry scheduler below and the mock banner got stuck until a manual page refresh
+      // (the "stale old version / still in development" state Travis saw). Now it always settles.
+      if (!this.api || this.api.mocked) this.api = await this.withTimeout(resolveInstanceManagerApi(), 6000)
+      const instances = await this.withTimeout(this.api.list(), 6000)
+      real = !this.api.mocked
       runInAction(() => {
         this.instances = instances
         this.mocked = this.api!.mocked
         this.loaded = true
         this.err = ''
       })
-      if (this.api.mocked) this.scheduleMockRetry()
     } catch (e: any) {
+      // Probe/list failed or timed out (backend mid-restart, or a lost response over packet loss).
+      // Stay in degraded/mock mode so the UI is usable, and KEEP RETRYING (rescheduled in finally).
       runInAction(() => {
         this.err = e?.message || 'instance list failed'
         this.loaded = true
+        if (!this.api || this.api.mocked) this.mocked = true
       })
+    } finally {
+      // ALWAYS reschedule until we reach the real backend — in a finally so a hung/failed probe
+      // can never kill the retry loop (that was the "never recovers" bug).
+      if (!real) this.scheduleMockRetry()
     }
   }
 
   private mockRetryTimer: ReturnType<typeof setTimeout> | null = null
-  /** While on the mock, quietly re-probe the real API every 8s so a tab that
-   *  loaded mid-restart recovers by itself once the backend is back. */
+  /** While degraded/on the mock, quietly re-probe the real API every 3s so a tab that loaded during
+   *  a backend restart or a connection blip recovers by itself within a few seconds. */
   private scheduleMockRetry(): void {
     if (this.mockRetryTimer) return
     this.mockRetryTimer = setTimeout(() => {
       this.mockRetryTimer = null
       void this.reload()
-    }, 8000)
+    }, 3000)
   }
 
   private async withBusy<T>(id: string, fn: () => Promise<T>): Promise<T> {
