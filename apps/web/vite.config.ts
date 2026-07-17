@@ -2,7 +2,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { resolve } from 'path'
 
-export default defineConfig({
+const cfg = defineConfig({
   root: __dirname,
   plugins: [react()],
   resolve: {
@@ -124,3 +124,15 @@ export default defineConfig({
     },
   }
 })
+
+// Production serving (vite preview) mirrors the dev proxy/host but omits the HMR client
+// entirely, so a momentary connection drop can't trigger Vite's reload-on-reconnect (which
+// turned a 1s stutter into a full page reload -> Cloudflare error page over the tunnel).
+;(cfg as any).preview = {
+  host: '0.0.0.0',
+  port: 17889,
+  allowedHosts: (cfg as any).server?.allowedHosts,
+  proxy: (cfg as any).server?.proxy,
+}
+
+export default cfg
