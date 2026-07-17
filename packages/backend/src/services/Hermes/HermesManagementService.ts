@@ -1395,6 +1395,9 @@ export class HermesManagementService {
     // provider. `hermes profile create --clone` doesn't carry plugins and leaves provider empty,
     // so this is what actually makes composite the default. Shared OpenViking key is global .env.
     await this.ensureCompositeMemory(id)
+    // Per-agent OpenViking memory key (isolation): provision/rotate the agent's key, wire it into
+    // the profile .env (capture) and the recall key-map (recall). No-op if OV admin creds unset.
+    await this.ensureOpenVikingKey(id)
 
     // Enabled toolsets — additive: enable what the spec requests. (Does not disable others; a
     // full enable/disable sync would risk stripping Hermes defaults the profile relies on.)
@@ -1412,9 +1415,100 @@ export class HermesManagementService {
     return { created, home }
   }
 
+  // ── Per-agent OpenViking memory key (isolation) ──────────────────────────────
+  private ovAdmin(): { url: string; rootKey: string; account: string } {
+    return {
+      url: (process.env.OPENVIKING_ADMIN_URL || process.env.OPENVIKING_ENDPOINT || '').replace(/\/+$/, ''),
+      rootKey: process.env.OPENVIKING_ROOT_API_KEY || '',
+      account: process.env.OPENVIKING_ACCOUNT || 'hermes',
+    }
+  }
+  private ovRecallMapPath(): string {
+    return process.env.OPENVIKING_AGENT_KEYS_FILE || '/opt/mcp-unified-memory/ov_agent_keys.json'
+  }
+
+  /** Provision (or rotate) the agent's OWN OpenViking memory key so its memories are isolated:
+   *  mints a user under the OpenViking `hermes` account, writes the key into the profile .env (the
+   *  capture lane uses it -> writes to viking://user/<agent>) and registers it in the recall key-map
+   *  the unified memory MCP hot-reloads (-> recall scoped to the same space). No-ops when the admin
+   *  creds aren't configured (agent falls back to the shared key — still works, just not isolated).
+   *  `main` and the memory-template profile stay on the account's own scope. */
+  private async ensureOpenVikingKey(agentId: string): Promise<void> {
+    const { url, rootKey, account } = this.ovAdmin()
+    if (!url || !rootKey) return
+    if (agentId === 'main' || agentId === HermesManagementService.MEMORY_TEMPLATE_PROFILE) return
+    let key = ''
+    try {
+      const post = async (path: string, body?: unknown): Promise<string> => {
+        const r = await fetch(`${url}${path}`, {
+          method: 'POST',
+          headers: { 'X-API-Key': rootKey, 'Content-Type': 'application/json' },
+          body: body ? JSON.stringify(body) : undefined,
+          signal: AbortSignal.timeout(8000),
+        })
+        const j = (await r.json().catch(() => ({}))) as any
+        return j?.result?.user_key || ''
+      }
+      key = await post(`/api/v1/admin/accounts/${account}/users`, { user_id: agentId, role: 'user' })
+      if (!key) key = await post(`/api/v1/admin/accounts/${account}/users/${encodeURIComponent(agentId)}/key`)
+    } catch (e) {
+      console.warn(`[hermes-mgmt] OpenViking key provisioning skipped for ${agentId}: ${String((e as Error)?.message ?? e)}`)
+      return
+    }
+    if (!key) return
+    // 1) capture: upsert OPENVIKING_API_KEY in the profile .env (base64'd python write -> no quoting)
+    const py = [
+      'import sys, re, base64',
+      'p = sys.argv[1]; line = "OPENVIKING_API_KEY=" + base64.b64decode(sys.argv[2]).decode()',
+      'try: t = open(p).read()',
+      'except FileNotFoundError: t = ""',
+      "if re.search(r'^OPENVIKING_API_KEY=', t, flags=re.M): t = re.sub(r'^OPENVIKING_API_KEY=.*$', line, t, flags=re.M)",
+      'else: t = (t if (not t or t.endswith(chr(10))) else t + chr(10)) + line + chr(10)',
+      'open(p, "w").write(t)',
+    ].join('\n')
+    const pyB64 = Buffer.from(py, 'utf8').toString('base64')
+    const keyB64 = Buffer.from(key, 'utf8').toString('base64')
+    await this.ssh(`printf %s ${shq(pyB64)} | base64 -d | python3 - ${shq(`${this.profileHome(agentId)}/.env`)} ${shq(keyB64)}`)
+    // 2) recall: register agent -> key in the map the unified memory MCP hot-reloads (15s TTL)
+    this.registerOpenVikingRecallKey(agentId, key)
+  }
+
+  private registerOpenVikingRecallKey(agentId: string, key: string): void {
+    const path = this.ovRecallMapPath()
+    try {
+      let map: Record<string, string> = {}
+      if (existsSync(path)) { try { map = JSON.parse(readFileSync(path, 'utf8')) || {} } catch { map = {} } }
+      map[agentId] = key
+      mkdirSync(dirname(path), { recursive: true })
+      writeFileSync(path, JSON.stringify(map))
+    } catch (e) {
+      console.warn(`[hermes-mgmt] failed to register OpenViking recall key for ${agentId}: ${String((e as Error)?.message ?? e)}`)
+    }
+  }
+
+  /** Best-effort teardown of an agent's OpenViking user + recall-map entry on delete. */
+  private async deleteOpenVikingKey(agentId: string): Promise<void> {
+    const { url, rootKey, account } = this.ovAdmin()
+    if (url && rootKey && agentId !== 'main') {
+      try {
+        await fetch(`${url}/api/v1/admin/accounts/${account}/users/${encodeURIComponent(agentId)}`, {
+          method: 'DELETE', headers: { 'X-API-Key': rootKey }, signal: AbortSignal.timeout(8000),
+        })
+      } catch { /* best-effort */ }
+    }
+    try {
+      const path = this.ovRecallMapPath()
+      if (existsSync(path)) {
+        const map = JSON.parse(readFileSync(path, 'utf8')) as Record<string, string>
+        if (agentId in map) { delete map[agentId]; writeFileSync(path, JSON.stringify(map)) }
+      }
+    } catch { /* best-effort */ }
+  }
+
   /** Delete an agent profile (and its per-profile state). */
   async deleteAgent(agentId: string): Promise<void> {
     await this.hermes(['profile', 'delete', agentId, '--yes'])
+    await this.deleteOpenVikingKey(agentId)
     if (this.cfg.specsFile) {
       const specs = this.loadSpecs()
       if (agentId in specs) {
