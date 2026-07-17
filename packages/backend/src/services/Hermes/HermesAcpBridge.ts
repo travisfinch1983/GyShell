@@ -481,8 +481,17 @@ export class HermesAcpBridge extends EventEmitter {
     const session = this.sessions.get(sessionKey)
     if (!session) return
     this.sessions.delete(sessionKey)
+    // Graceful close so the OpenViking memory lane can COMMIT this conversation before the process
+    // dies: `close` makes the bridge break its loop -> spawn_agent_process closes the ACP conn ->
+    // the Hermes child hits EOF and exits cleanly -> its atexit/on_session_end fires -> the lane
+    // archives + extracts the turns (a VLM call — seconds). Closing stdin reinforces the EOF. The
+    // old 2.5s SIGTERM killed that mid-extract; give it a long grace window and only force-kill if
+    // it truly hangs. Runs in the background — the delete response already went out.
     try { session.proc.stdin.write(JSON.stringify({ type: 'close' }) + '\n') } catch { /* noop */ }
-    setTimeout(() => { try { if (session.proc.exitCode === null) session.proc.kill('SIGTERM') } catch { /* noop */ } }, 2500)
+    try { session.proc.stdin.end() } catch { /* noop */ }
+    const graceMs = Number(process.env.HERMES_COMMIT_GRACE_MS) || 60000
+    setTimeout(() => { try { if (session.proc.exitCode === null) session.proc.kill('SIGTERM') } catch { /* noop */ } }, graceMs)
+    setTimeout(() => { try { if (session.proc.exitCode === null) session.proc.kill('SIGKILL') } catch { /* noop */ } }, graceMs + 5000)
   }
 
   listSessions(): Array<{ agentId: string; startedAt: number; lastActivity: number; model?: unknown }> {
