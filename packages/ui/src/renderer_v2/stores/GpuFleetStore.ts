@@ -16,6 +16,7 @@ export interface FleetGpu {
   node: string
   index: number
   name: string
+  friendlyName?: string
   pciBusId?: string
   gpuUtil: number | null // %
   memUtil: number | null // %
@@ -59,6 +60,8 @@ class GpuFleetStore {
   error: string | null = null
   loading = false
   updatedAt = 0
+  gpuConfig: Record<string, any> = {}
+  private gpuConfigAt = 0
 
   private timer: ReturnType<typeof setInterval> | null = null
 
@@ -87,6 +90,18 @@ class GpuFleetStore {
 
   private metrics(): any {
     return (window as any).gyshell?.metrics
+  }
+
+  /** Fetch per-GPU config (friendly names + showInFleet curation) from cluster settings.
+   *  Cached ~8s so the panel reflects Settings changes within a couple polls without spamming RPC. */
+  private async loadGpuConfig(): Promise<void> {
+    const now = Date.now()
+    if (this.gpuConfigAt && now - this.gpuConfigAt < 8000) return
+    try {
+      const s = await (window as any).gyshell?.clusterSettings?.get?.()
+      const gc = (s?.gpuConfig ?? s?.settings?.gpuConfig ?? {}) as Record<string, any>
+      runInAction(() => { this.gpuConfig = gc; this.gpuConfigAt = now })
+    } catch { /* keep last-known config */ }
   }
 
   toggle(): void {
@@ -120,6 +135,7 @@ class GpuFleetStore {
       return
     }
     this.loading = true
+    await this.loadGpuConfig()
     try {
       let rows: MetricRow[] = []
       if (api.query) {
@@ -187,8 +203,28 @@ class GpuFleetStore {
         }
       }
 
+      // Join per-GPU config. Config is keyed `node:pciId` (e.g. px-gpu:0000:8a:00.0) while
+      // Prometheus gives host + pci_bus_id (00000000:8A:00.0) — match on host + the lowercased
+      // bus:dev.func tail. friendlyName overrides the card label; showInFleet curates the panel.
+      const cfg = this.gpuConfig || {}
+      const normPci = (p: string) => (p || '').toLowerCase().split(':').slice(-2).join(':')
+      const cfgByNorm: Record<string, any> = {}
+      for (const [k, v] of Object.entries(cfg)) {
+        const i = k.indexOf(':')
+        if (i < 0) continue
+        cfgByNorm[`${k.slice(0, i)}:${normPci(k.slice(i + 1))}`] = v
+      }
+      const anyOptIn = Object.values(cfg).some((c: any) => c && c.showInFleet === true)
+      let list = Object.values(byUuid)
+      for (const g of list) {
+        const c = cfgByNorm[`${g.node}:${normPci(g.pciBusId || '')}`]
+        if (c?.friendlyName) { g.friendlyName = c.friendlyName; g.name = c.friendlyName }
+        ;(g as any)._inFleet = !!c?.showInFleet
+      }
+      // If the user has opted any GPU into the fleet, show ONLY those; otherwise show all.
+      if (anyOptIn) list = list.filter((g) => (g as any)._inFleet)
       const nodesMap: Record<string, FleetGpu[]> = {}
-      for (const g of Object.values(byUuid)) {
+      for (const g of list) {
         ;(nodesMap[g.node] = nodesMap[g.node] || []).push(g)
       }
       const nodes = Object.entries(nodesMap)
