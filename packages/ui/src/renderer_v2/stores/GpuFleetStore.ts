@@ -34,6 +34,7 @@ export interface FleetNode {
 
 const OPEN_KEY = 'ai-lab-gpu-fleet-open'
 const HEIGHT_KEY = 'ai-lab-gpu-fleet-height'
+const ORDER_KEY = 'ai-lab-gpu-fleet-order'
 const MIN_HEIGHT = 120
 
 // Single instant query returning gpu_info (metadata) + all live gauges for the `gpu` scrape job.
@@ -57,6 +58,7 @@ class GpuFleetStore {
   // Panel height in px (persisted). null → fall back to the CSS default (46vh).
   heightPx: number | null = null
   nodes: FleetNode[] = []
+  order: string[] = []
   error: string | null = null
   loading = false
   updatedAt = 0
@@ -71,6 +73,10 @@ class GpuFleetStore {
       this.open = localStorage.getItem(OPEN_KEY) === '1'
       const h = parseInt(localStorage.getItem(HEIGHT_KEY) || '', 10)
       if (Number.isFinite(h) && h >= MIN_HEIGHT) this.heightPx = h
+      try {
+        const o = JSON.parse(localStorage.getItem(ORDER_KEY) || '[]')
+        if (Array.isArray(o)) this.order = o.filter((x: unknown) => typeof x === 'string')
+      } catch { /* ignore */ }
     } catch {
       /* localStorage may be unavailable */
     }
@@ -247,6 +253,30 @@ class GpuFleetStore {
 
   get totalGpus(): number {
     return this.nodes.reduce((n, x) => n + x.gpus.length, 0)
+  }
+
+  /** All GPUs as one flat list, ordered by the user's saved drag order (unknown -> end). */
+  get flatGpus(): FleetGpu[] {
+    const all = this.nodes.flatMap((n) => n.gpus)
+    const idx = new Map(this.order.map((u, i) => [u, i] as const))
+    const BIG = Number.MAX_SAFE_INTEGER
+    return all.slice().sort((a, b) => {
+      const ia = idx.has(a.uuid) ? (idx.get(a.uuid) as number) : BIG
+      const ib = idx.has(b.uuid) ? (idx.get(b.uuid) as number) : BIG
+      if (ia !== ib) return ia - ib
+      return a.node.localeCompare(b.node) || a.index - b.index
+    })
+  }
+
+  /** Reorder: move dragUuid to dropUuid's slot, persist the full order. */
+  moveCard(dragUuid: string, dropUuid: string): void {
+    const cur = this.flatGpus.map((g) => g.uuid)
+    const from = cur.indexOf(dragUuid)
+    const to = cur.indexOf(dropUuid)
+    if (from < 0 || to < 0 || from === to) return
+    cur.splice(to, 0, cur.splice(from, 1)[0])
+    this.order = cur
+    try { localStorage.setItem(ORDER_KEY, JSON.stringify(cur)) } catch { /* ignore */ }
   }
 
   get avgUtil(): number {

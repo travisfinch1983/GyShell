@@ -169,12 +169,12 @@ const SparkRow: React.FC<{ label: string; series: Array<number | null>; latest: 
   </div>
 )
 
-const GpuCard: React.FC<{ gpu: FleetGpu }> = ({ gpu }) => {
+const GpuCard: React.FC<{ gpu: FleetGpu; dnd?: React.HTMLAttributes<HTMLDivElement> & { draggable?: boolean } }> = ({ gpu, dnd }) => {
   const memPct =
     gpu.memUsedBytes != null && gpu.memTotalBytes ? (gpu.memUsedBytes / gpu.memTotalBytes) * 100 : null
   const buf = sparkBuffers.get(gpu.uuid) ?? { util: [], mem: [] }
   return (
-    <div className={styles.gpuCard}>
+    <div className={styles.gpuCard} {...dnd}>
       <div className={styles.gpuTop}>
         <span className={styles.gpuIdx}>#{gpu.index >= 0 ? gpu.index : '?'}</span>
         <span className={styles.gpuName} title={gpu.name}>
@@ -203,6 +203,7 @@ export const GpuFleetPanel = observer(() => {
   const s = gpuFleetStore
   const open = s.open
   const panelRef = useRef<HTMLDivElement>(null)
+  const dragUuid = useRef<string | null>(null)
 
   useEffect(() => { void uiPrefsStore.ensureLoaded() }, [])
   const [, forceRepaint] = React.useState(0)
@@ -266,24 +267,38 @@ export const GpuFleetPanel = observer(() => {
         {s.error && <span className={styles.handleErr}>⚠ {s.error}</span>}
       </button>
       <div className={styles.body}>
-        {s.nodes.length === 0 && !s.error && (
+        {s.flatGpus.length === 0 && !s.error && (
           <div className={styles.empty}>Waiting for GPU metrics from Prometheus…</div>
         )}
-        {s.nodes.map((node) => (
-          <div key={node.node} className={styles.nodeGroup}>
-            <div className={styles.nodeHeader}>
-              <span className={styles.nodeName}>{node.node}</span>
-              <span className={styles.nodeCount}>
-                {node.gpus.length} GPU{node.gpus.length !== 1 ? 's' : ''}
-              </span>
-            </div>
-            <div className={styles.gpuGrid}>
-              {node.gpus.map((g) => (
-                <GpuCard key={g.uuid} gpu={g} />
-              ))}
-            </div>
-          </div>
-        ))}
+        <div className={styles.gpuGrid}>
+          {s.flatGpus.map((g) => (
+            <GpuCard
+              key={g.uuid}
+              gpu={g}
+              dnd={{
+                draggable: true,
+                style: { cursor: 'grab' },
+                onDragStart: (e) => {
+                  dragUuid.current = g.uuid
+                  e.dataTransfer.effectAllowed = 'move'
+                },
+                onDragOver: (e) => {
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                },
+                onDrop: (e) => {
+                  e.preventDefault()
+                  const from = dragUuid.current
+                  if (from && from !== g.uuid) s.moveCard(from, g.uuid)
+                  dragUuid.current = null
+                },
+                onDragEnd: () => {
+                  dragUuid.current = null
+                },
+              }}
+            />
+          ))}
+        </div>
       </div>
     </div>
   )
