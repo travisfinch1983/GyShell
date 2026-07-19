@@ -34,6 +34,15 @@ const cfg = defineConfig({
     port: 17889,
     allowedHosts: ['ai-lab.deeveeyant.com', 'gyshell.deeveeyant.com'],
     proxy: {
+      // Cluster WS gateway (:17888) — served SAME-ORIGIN as the app so it rides the exact
+      // proven HTTP chain (CF tunnel -> [NPM] -> :17889) instead of a separate ai-lab-ws host
+      // that has no proxy route. The client points __GYSHELL_GATEWAY_URL__ at wss://<host>/gateway.
+      '/gateway': {
+        target: 'http://127.0.0.1:17888',
+        changeOrigin: true,
+        ws: true,
+        rewrite: (path) => path.replace(/^\/gateway/, '') || '/',
+      },
       // Native universal proxy (AI-Lab's own backend on :17890). Lets the browser make same-origin
       // direct HTTP requests for things the WS RPC bridge can't carry: binary audio (TTS/RVC blobs),
       // <audio> element src (workspace playback), SSE streaming (multi-tts/stream), and large uploads.
