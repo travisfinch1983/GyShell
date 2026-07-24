@@ -29,6 +29,7 @@ import { isAuthenticated, getAuthStatus, CLAUDE_MODELS } from './anthropic-proxy
 import { extractToolCalls, recordToolUsage } from './tool-call-metrics.js';
 import { createBalanceHistory } from './balance-history.js';
 import { resolveModelCapabilities } from './model-capabilities.js';
+import { isKvEligible, getOrchestrator, getKvSettings, saveKvSettings, getAllKvStats, getKvIndexStats, reapNow, resetOrchestratorCache } from './kvcache/integration.js';
 
 // ─── kvcache-proxy companion detection ──────────────────────────────────
 // Convention: each LLM service that has a kvcache-proxy companion listens
@@ -65,7 +66,9 @@ async function getKvcacheProxyPort(svc) {
 }
 
 async function getForwardPort(svc) {
-  return (await getKvcacheProxyPort(svc)) ?? svc.port;
+  const _p = await getKvcacheProxyPort(svc);
+  console.log('[kvcache-route]', (svc && svc.containerIp) + ':' + (svc && svc.port), '->', _p ? (_p + ' SHIM') : ((svc && svc.port) + ' direct'));
+  return _p ?? svc.port;
 }
 // ────────────────────────────────────────────────────────────────────────
 
@@ -956,7 +959,9 @@ function bufferBody(req) {
 /**
  * Proxy a buffered request body to a target service.
  */
-function proxyBuffered(req, res, targetHost, targetPort, targetPath, body, capture) {
+function proxyBuffered(req, res, targetHost, targetPort, targetPath, body, capture, onDone) {
+  let doneFired = false;
+  const fireDone = (ok) => { if (!doneFired) { doneFired = true; try { onDone && onDone({ completed: ok }); } catch {} } };
   const proxyReq = http.request(
     {
       hostname: targetHost,
@@ -1009,15 +1014,19 @@ function proxyBuffered(req, res, targetHost, targetPort, targetPath, body, captu
 
         scheduleHeartbeat();
         proxyRes.on('data', (chunk) => { res.write(chunk); capAppend(chunk); scheduleHeartbeat(); });
-        proxyRes.on('end', () => { clearHeartbeat(); res.end(); capDone(); });
-        proxyRes.on('error', () => { clearHeartbeat(); if (!res.writableEnded) res.end(); });
-        res.on('close', clearHeartbeat);
+        proxyRes.on('end', () => { clearHeartbeat(); res.end(); capDone(); fireDone(true); });
+        proxyRes.on('error', () => { clearHeartbeat(); if (!res.writableEnded) res.end(); fireDone(false); });
+        res.on('close', () => { clearHeartbeat(); fireDone(false); });
       } else if (capture) {
         proxyRes.on('data', (chunk) => { res.write(chunk); capAppend(chunk); });
-        proxyRes.on('end', () => { res.end(); capDone(); });
-        proxyRes.on('error', () => { if (!res.writableEnded) res.end(); });
+        proxyRes.on('end', () => { res.end(); capDone(); fireDone(true); });
+        proxyRes.on('error', () => { if (!res.writableEnded) res.end(); fireDone(false); });
+        res.on('close', () => fireDone(false));
       } else {
         proxyRes.pipe(res);
+        proxyRes.on('end', () => fireDone(true));
+        proxyRes.on('error', () => fireDone(false));
+        res.on('close', () => fireDone(false));
       }
     }
   );
@@ -1025,6 +1034,7 @@ function proxyBuffered(req, res, targetHost, targetPort, targetPath, body, captu
     if (!res.headersSent) {
       res.status(502).json({ error: `Proxy error: ${err.message}` });
     }
+    fireDone(false);
   });
   proxyReq.end(body);
 }
@@ -1069,12 +1079,21 @@ async function handleModelRouting(req, res, path) {
   }
 
   // Fall back to slot 1
-  if (!svc) {
+  // Only fall back to an arbitrary LLM service when NO model was requested. If a model WAS
+  // named but is unreachable, do NOT silently reroute to the wrong model (see error below).
+  if (!svc && !modelId) {
     const services = findServicesByType('llm');
     svc = services[0];
   }
 
   if (!svc) {
+    if (modelId) {
+      return res.status(503).json({
+        error: `Assigned model '${modelId}' is not reachable — it is offline or not loaded, and no reachable fallback is available.`,
+        hint: 'Launch the assigned model, or assign an online fallback model. The agent was NOT silently rerouted to another model.',
+        requestedModel: modelId,
+      });
+    }
     return res.status(503).json({
       error: 'No active LLM service available',
       hint: 'Start an LLM service in ProxLab to enable proxying',
@@ -1125,11 +1144,20 @@ async function handleChatWithTools(req, res) {
       parsed.model = parsed.model.replace(/@\d+$/, "");
     }
   }
-  if (!svc) {
+  // Only fall back to an arbitrary LLM service when NO model was requested. A named-but-
+  // unreachable model must error, not silently reroute (lets Hermes' fallback chain react).
+  if (!svc && !parsed.model) {
     const services = findServicesByType("llm");
     svc = services[0];
   }
   if (!svc) {
+    if (parsed.model) {
+      return res.status(503).json({
+        error: `Assigned model '${parsed.model}' is not reachable — it is offline or not loaded, and no reachable fallback is available.`,
+        hint: "Launch the assigned model, or assign an online fallback model. The agent was NOT silently rerouted to another model.",
+        requestedModel: parsed.model,
+      });
+    }
     return res.status(503).json({
       error: "No active LLM service available",
       hint: "Start an LLM service in ProxLab to enable proxying",
@@ -1139,6 +1167,19 @@ async function handleChatWithTools(req, res) {
   // Strip @N suffix if present
   if (parsed.model && parsed.model.includes("@")) {
     parsed.model = parsed.model.replace(/@\d+$/, "");
+  }
+
+  // ─── Native Optane KV-cache (llama.cpp only, per-service toggle, default OFF) ───
+  // When active we ARE the KV layer, so forward DIRECT to llama (bypass the +1000 shim).
+  let _kvOrch = null, _kvTicket = null;
+  if (isKvEligible(svc)) {
+    try {
+      _kvOrch = await getOrchestrator(svc);
+      _kvTicket = await _kvOrch.prepare(parsed);   // mutates parsed: id_slot + cache_prompt
+    } catch (e) {
+      console.warn('[kv] prepare skipped:', e?.message || e);
+      _kvOrch = null; _kvTicket = null;
+    }
   }
 
   const body = Buffer.from(JSON.stringify(parsed));
@@ -1157,7 +1198,7 @@ async function handleChatWithTools(req, res) {
     } catch (e) { console.error('[proxlab-debug-prompts]', e.message); }
   }
 
-  const forwardPort = await getForwardPort(svc);
+  const forwardPort = _kvOrch ? svc.port : await getForwardPort(svc);
   // Tool-call metrics: only capture the response when the request actually offered tools (cheap no-op otherwise).
   const requestTools = Array.isArray(parsed.tools) ? parsed.tools : null;
   const capture = requestTools
@@ -1165,7 +1206,10 @@ async function handleChatWithTools(req, res) {
         try { recordToolUsage({ svc, requestTools, toolCalls: extractToolCalls(text, isSSE) }); } catch {}
       }
     : undefined;
-  proxyBuffered(req, res, svc.containerIp, forwardPort, "/v1/chat/completions", body, capture);
+  const _kvOnDone = _kvTicket
+    ? ({ completed }) => { try { _kvOrch.release(_kvTicket, { completed }); } catch {} }
+    : undefined;
+  proxyBuffered(req, res, svc.containerIp, forwardPort, "/v1/chat/completions", body, capture, _kvOnDone);
 }
 
 /**
@@ -1221,6 +1265,43 @@ export function createProxyRouter(sshService) {
 
   // Start the credit-tracker snapshotter (idempotent — guarded internally).
   balanceHistory.start();
+
+  // ─── Native Optane KV-cache: stats + settings + reaper (step 6) ───────────
+  router.get('/kvcache/stats', async (_req, res) => {
+    try {
+      const eligible = findServicesByType('llm')
+        .filter((svc) => svc.providerId === 'llama-server' && svc.containerIp && svc.port)
+        .map((svc) => ({
+          id: svc.id, name: svc.aliasOverride || svc.model || svc.id, model: svc.model,
+          port: svc.port, containerIp: svc.containerIp, node: svc.node, slots: svc.slots,
+        }));
+      res.json({ eligible, services: await getAllKvStats(), pools: getKvIndexStats(), settings: getKvSettings() });
+    } catch (e) { res.status(500).json({ error: e?.message || String(e) }); }
+  });
+  router.get('/kvcache/settings', (_req, res) => res.json(getKvSettings()));
+  router.post('/kvcache/settings', async (req, res) => {
+    try {
+      const updates = JSON.parse((await bufferBody(req)).toString());
+      const cur = getKvSettings();
+      if (typeof updates.defaultEnabled === 'boolean') cur.defaultEnabled = updates.defaultEnabled;
+      if (updates.perService && typeof updates.perService === 'object') {
+        cur.perService = cur.perService || {};
+        for (const [id, v] of Object.entries(updates.perService)) {
+          const prev = cur.perService[id] || {};
+          const merged = { ...prev, ...v };
+          if (v.config || prev.config) merged.config = { ...(prev.config || {}), ...(v.config || {}) };  // deep-merge tunables
+          cur.perService[id] = merged;
+        }
+      }
+      saveKvSettings(cur);
+      resetOrchestratorCache();   // rebuild orchestrators so config/enable changes take effect
+      res.json(cur);
+    } catch (e) { res.status(400).json({ error: e?.message || String(e) }); }
+  });
+  router.post('/kvcache/reap/:fp', async (req, res) => {
+    try { res.json(await reapNow(req.params.fp)); }
+    catch (e) { res.status(500).json({ error: e?.message || String(e) }); }
+  });
 
   // GET /services — Return current routing targets for diagnostics
   router.get('/services', async (req, res) => {
