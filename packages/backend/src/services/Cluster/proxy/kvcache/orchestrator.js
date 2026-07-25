@@ -35,6 +35,13 @@ export const DEFAULT_CONFIG = {
   staleReleaseSec: 300,        // safety sweep: force-release a slot held longer than this
   // Background clone worker (step 4): materialize shared boundaries as exact snapshots.
   cloneEnabled: true,          // master switch for the clone worker (KV-on implies this)
+  gridCloneEnabled: false,     // RETIRED 2026-07-25: the opportunistic 8192-GRID clone path
+                               // (observe()) is off. The rearchitecture stores only TWO snapshot
+                               // classes — 'initial' (eager, via ensureInitial) and 'running'
+                               // (per-turn live save). Mid-sequence grid boundaries are never
+                               // matched by that design, so materializing them just burned
+                               // re-primes and filled the 'running' eviction quota with rows
+                               // nothing queries. Set true to resurrect the old behavior.
   cloneMinShareCount: 2,       // materialize a boundary once seen in ≥ this many requests
   cloneStride: 8192,           // ONLY materialize boundaries whose token-count is a multiple of this (coarse; kills the 256-tok cascade). 0/falsy = every chunk.
   cloneMinTokens: 2048,        // ...only if it's a substantial prefix (align w/ minMatchTokens)

@@ -55,6 +55,9 @@ export class CloneWorker {
    * Counts frequency and enqueues a materialization job once a boundary is shared enough.
    */
   observe(tokens, boundaries) {
+    // RETIRED: opportunistic grid materialization. ensureInitial() (the eager initial-prefix
+    // path) is UNAFFECTED and still runs. See cfg.gridCloneEnabled in orchestrator.js.
+    if (!this.cfg.gridCloneEnabled) return;
     if (this._stopped || !this.cfg.cloneEnabled || !boundaries || !boundaries.length) return;
     const minTok = this.cfg.cloneMinTokens;
     for (const [n, hash] of boundaries) {
