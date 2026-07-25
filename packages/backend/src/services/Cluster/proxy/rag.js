@@ -51,6 +51,42 @@ async function probeServiceType(endpoint) {
   _svcTypeCache.set(endpoint, { type, ts: Date.now() })
   return type
 }
+/**
+ * One row per MODEL from a universal endpoint's deduplicated pool, not one row per instance.
+ *
+ * The pickers previously listed every service separately using the registry `model` field, which
+ * is the on-disk PATH and therefore identical for every replica of a model -- five embedders
+ * rendered as five indistinguishable rows, and choosing one pinned that single instance instead
+ * of using the pool. These rows carry the SERVED model id (what actually goes in an API `model`
+ * field), the instance count, and the universal URL so the selection load-balances.
+ */
+async function poolModels(selfPort, kind) {
+  const url = `http://127.0.0.1:${selfPort}/api/proxy/${kind}/v1/models`
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 8000)
+  try {
+    const r = await fetch(url, { signal: ctrl.signal })
+    if (!r.ok) return null
+    const d = await r.json()
+    return (d.data || [])
+      // Skip the @N pins -- those address one instance, which is the opposite of what the
+      // default-model picker wants. They stay available for anyone who needs to target one.
+      .filter((m) => !/@\d+$/.test(m.id))
+      .map((m) => ({
+        model: m.id,
+        url: `http://127.0.0.1:${selfPort}/api/proxy/${kind}/v1`,
+        instances: m._proxlab_instances || 1,
+        type: kind === 'embed' ? 'embed' : 'rerank',
+      }))
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** Legacy per-instance probe. Retained as the fallback when the proxy cannot be reached, so the
+ *  picker degrades to something usable instead of going empty. */
 async function classifyRagServices() {
   let state = {}
   try { state = existsSync(ACTIVE_SERVICES_FILE) ? JSON.parse(readFileSync(ACTIVE_SERVICES_FILE, 'utf-8')) : {} } catch { state = {} }
@@ -77,7 +113,15 @@ export function registerRagRoutes(app, { exec, selfPort }) {
   app.get('/api/ai/rag/models', async (_req, res) => {
     try {
       const cfg = readRagModels()
-      const { embed, rerank } = await classifyRagServices()
+      // Prefer the pool view (one row per model, load-balanced); fall back to the per-instance
+      // probe only if the proxy is unreachable.
+      let embed = await poolModels(selfPort, 'embed')
+      let rerank = await poolModels(selfPort, 'rerank')
+      if (!embed || !rerank) {
+        const legacy = await classifyRagServices()
+        if (!embed) embed = legacy.embed
+        if (!rerank) rerank = legacy.rerank
+      }
       res.json({
         embed: { model: cfg.embedModel || RAG_DEFAULT_EMBED_MODEL, url: cfg.embedUrl || '', isDefault: !cfg.embedModel },
         rerank: { model: cfg.rerankModel || RAG_DEFAULT_RERANK_MODEL, url: cfg.rerankUrl || '', isDefault: !cfg.rerankModel },
