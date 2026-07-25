@@ -7,6 +7,7 @@ import { PROVIDER_SERVICE_CAPS } from '@gyshell/shared'
 // @ts-expect-error — proxy capability resolver ships as untyped JS (same pattern as the other proxy/*.js imports)
 import { resolveModelCapabilities } from '../Cluster/proxy/model-capabilities.js'
 import { clusterSettingsService } from '../Cluster/ClusterSettingsService'
+import { loadToolRegistry, resolveSelection, unknownToolsError, readToolGroup, writeToolGroup } from '../mcp/toolGroups.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -861,78 +862,22 @@ export class HermesManagementService {
     const gw = this.gatewayBase()
     const group = `agent-${agentId}`
 
-    // 1. Read the live registry (enabled tools only). If the gateway is unreachable we must NOT
-    //    proceed — deleting on a guess is exactly how the tools got destroyed.
-    const valid = new Set<string>()
-    const serverTools = new Map<string, string[]>()
-    let servers: Array<{ name: string; enabled?: boolean }>
-    try {
-      servers = await (await fetch(`${gw}/api/v0/servers`, { signal: AbortSignal.timeout(8000) })).json() as Array<{ name: string; enabled?: boolean }>
-    } catch (e) {
-      throw new Error(`cannot reach the MCP gateway to validate tools - refusing to modify ${group} (existing tools left untouched): ${(e as Error).message}`)
-    }
-    for (const s of servers) {
-      if (s.enabled === false) continue
-      try {
-        const tools = await (await fetch(`${gw}/api/v0/tools?server=${encodeURIComponent(s.name)}`, { signal: AbortSignal.timeout(8000) })).json() as Array<{ name: string; enabled?: boolean }>
-        const live = tools.filter((t) => t.enabled !== false).map((t) => t.name)
-        serverTools.set(s.name, live)
-        for (const n of live) valid.add(n)
-      } catch { /* a server that won't enumerate contributes nothing */ }
-    }
+    // Validate + expand + write via the SHARED helper (services/mcp/toolGroups.ts), the single
+    // implementation both this and the AI-Lab-agent path use. It refuses if the gateway is
+    // unreachable, expands a bare server name (a whole-toolset selection) into its tools, rejects
+    // unknown names before anything is written, and PUTs in place — MCPJungle's PUT is atomic, so
+    // a rejected payload leaves the previous membership intact. No DELETE is involved: the old
+    // delete-then-create is what destroyed Wren's entire toolset on 2026-07-25.
+    const reg = await loadToolRegistry(gw)
+    const { included, unknown } = resolveSelection(treeNames, reg)
+    if (unknown.length) throw unknownToolsError(group, unknown)
 
-    // 2. Normalise the selection: keep known-good tools, EXPAND a bare server name into that
-    //    server's enabled tools (selecting a whole toolset sends the server node), and treat
-    //    anything left as a hard error BEFORE we touch the existing group.
-    const resolved = new Set<string>()
-    const unknown: string[] = []
-    for (const name of treeNames) {
-      if (valid.has(name)) { resolved.add(name); continue }
-      const expand = serverTools.get(name)
-      if (expand && expand.length) { for (const n of expand) resolved.add(n); continue }
-      unknown.push(name)
-    }
-    if (unknown.length) {
-      const shown = unknown.slice(0, 12).join(', ')
-      const more = unknown.length > 12 ? ` (+${unknown.length - 12} more)` : ''
-      throw new Error(`refusing to modify ${group} - ${unknown.length} selected item(s) are not live, enabled gateway tools: ${shown}${more}. Existing tools left untouched.`)
-    }
-    const included = [...resolved]
-
-    // 3. Snapshot current membership so a failed create can be undone, and persist it to disk.
-    //    Wren's group was only recoverable in the 2026-07-25 incident because Hermes happens to
-    //    log its full registration line — that was luck. This makes recovery by design.
-    let previous: string[] | null = null
-    try {
-      const cur = await fetch(`${gw}/api/v0/tool-groups/${group}`, { signal: AbortSignal.timeout(8000) })
-      if (cur.ok) previous = ((await cur.json()) as { included_tools?: string[] })?.included_tools ?? null
-    } catch { /* no existing group -> nothing to roll back to */ }
+    // Snapshot the previous membership to disk first. Recovering Wren's group was only possible
+    // because Hermes happens to log its registration line — luck, not design. This fixes that.
+    const previous = await readToolGroup(gw, group)
     if (previous && previous.length) this.backupToolGroup(agentId, previous)
 
-    // 4. Write it. PUT is a real in-place update on MCPJungle >=0.4.5 and is ATOMIC: a rejected
-    //    payload returns 400 and leaves the existing membership untouched. That is why there is
-    //    no longer a DELETE here -- the old delete-then-create was what allowed a single bad tool
-    //    name to destroy an agent's entire toolset (2026-07-25, Wren). PUT 404s when the group
-    //    does not exist yet, so POST remains the create path.
-    const body = (tools: string[]) => JSON.stringify({
-      name: group, description: `AI-Lab tool set for ${agentId}`,
-      included_servers: [], included_tools: tools, excluded_tools: [],
-    })
-    const headers = { 'Content-Type': 'application/json' }
-    let r = await fetch(`${gw}/api/v0/tool-groups/${group}`, {
-      method: 'PUT', headers, body: body(included), signal: AbortSignal.timeout(8000),
-    })
-    if (r.status === 404) {
-      r = await fetch(`${gw}/api/v0/tool-groups`, {
-        method: 'POST', headers, body: body(included), signal: AbortSignal.timeout(8000),
-      })
-    }
-    if (!r.ok) {
-      const detail = await r.text().catch(() => '')
-      // Nothing to roll back: PUT leaves the previous membership in place on failure, and a
-      // failed POST means there was no group to begin with.
-      throw new Error(`group update -> ${r.status}: ${detail} (existing tools left untouched)`)
-    }
+    await writeToolGroup(gw, group, `AI-Lab tool set for ${agentId}`, included)
 
     const endpoint = `${this.agentGatewayBase()}/v0/groups/${group}/mcp`
     await this.repointGatewayServer(agentId, endpoint)

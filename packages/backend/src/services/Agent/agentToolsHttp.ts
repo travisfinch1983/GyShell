@@ -1,6 +1,8 @@
 // @ts-expect-error — express ships untyped in this repo (same pattern as hermesHttp/ftpHttp)
 import express from 'express'
 
+import { syncToolGroup } from '../mcp/toolGroups.js'
+
 type Req = express.Request
 type Res = express.Response
 
@@ -49,21 +51,12 @@ async function fetchEnabledMap(): Promise<Record<string, boolean>> {
   return map
 }
 
+// Group writes go through the SHARED helper (services/mcp/toolGroups.ts) so this path and the
+// Hermes one cannot drift again. It validates every name against the live registry, expands a
+// bare server name into its tools, and PUTs in place — this function used to be POST-only, which
+// meant it silently could not update an existing group and 400'd on a whole-toolset selection.
 async function syncGroup(agentId: string, treeNames: string[], description: string): Promise<string> {
-  const payload = {
-    name: `agent-${agentId}`,
-    description: description || `Tool set for agent ${agentId}`,
-    included_servers: [] as string[],
-    included_tools: treeNames,
-    excluded_tools: [] as string[],
-  }
-  const r = await fetch(`${MCPJUNGLE_URL}/api/v0/tool-groups`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(8000),
-  })
-  if (!r.ok) throw new Error(`group sync -> ${r.status}: ${await r.text().catch(() => '')}`)
+  await syncToolGroup(MCPJUNGLE_URL, `agent-${agentId}`, description || `Tool set for agent ${agentId}`, treeNames)
   return `${MCPJUNGLE_URL}/v0/groups/agent-${agentId}/mcp`
 }
 
