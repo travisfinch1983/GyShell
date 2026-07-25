@@ -29,6 +29,7 @@ import { isAuthenticated, getAuthStatus, CLAUDE_MODELS } from './anthropic-proxy
 import { extractToolCalls, recordToolUsage } from './tool-call-metrics.js';
 import { createBalanceHistory } from './balance-history.js';
 import { resolveModelCapabilities } from './model-capabilities.js';
+import { refreshPool, pickInstance, markFailure, markSuccess, invalidatePools } from './servicePools.js';
 import { isKvEligible, getOrchestrator, getKvSettings, saveKvSettings, getAllKvStats, getKvIndexStats, reapNow, resetOrchestratorCache } from './kvcache/integration.js';
 
 // ─── kvcache-proxy companion detection ──────────────────────────────────
@@ -760,6 +761,9 @@ const MODEL_CACHE_TTL = 30_000; // 30 seconds
 export function invalidateModelCache() {
   modelCache.updatedAt = 0;
   embedModelCache.updatedAt = 0;
+  // Pools are rebuilt from the live registry, so a newly registered/removed embed or rerank
+  // instance joins or leaves the rotation immediately rather than after the 30s TTL.
+  invalidatePools();
 }
 
 /**
@@ -1567,7 +1571,7 @@ export function createProxyRouter(sshService) {
 
   router.get('/embed/v1/models', async (req, res) => {
     try {
-      const cache = await refreshEmbedModelCache();
+      const cache = await refreshPool('embed', findServicesByType);
       res.json({ object: 'list', data: cache.models });
     } catch (err) {
       res.status(500).json({ error: `Failed to aggregate embed models: ${err.message}` });
@@ -1577,14 +1581,6 @@ export function createProxyRouter(sshService) {
   router.all('/embed/v1/{*rest}', async (req, res) => {
     const downstreamPath = '/v1/' + joinRestParam(req.params.rest);
 
-    // TEMP: trace who's calling embeddings — remove after diagnosis
-    if (downstreamPath === '/v1/embeddings' && req.method === 'POST') {
-      const xfwd = req.headers['x-forwarded-for'] || '';
-      const ua = (req.headers['user-agent'] || '').slice(0, 80);
-      const ref = (req.headers['referer'] || req.headers['origin'] || '').slice(0, 80);
-      console.log(`[embed-trace] from=${req.socket.remoteAddress} xfwd=${xfwd} ua=${ua} ref=${ref}`);
-    }
-
     if (req.method === 'GET' || req.method === 'HEAD') {
       const { svc } = findServiceOrExternal('embed');
       if (!svc) return res.status(503).json({ error: 'No active embedding service', hint: 'Start an embeddings model or add an external embedding service' });
@@ -1592,48 +1588,88 @@ export function createProxyRouter(sshService) {
       return;
     }
 
-    // POST — parse body to extract model for routing
     const body = await bufferBody(req);
     let modelId = null;
     try { modelId = JSON.parse(body.toString()).model; } catch {}
 
-    let svc = null;
+    // A BARE model id round-robins across every healthy instance serving it; a decorated
+    // `model@2` pins that one instance (which is the whole point of the alias).
+    let svc = null, baseId = null;
     if (modelId) {
-      const cache = await refreshEmbedModelCache();
-      svc = cache.byModel.get(modelId) || null;
-      // If a decorated ID was used, rewrite the model field back to the base ID
-      // so the downstream backend recognizes it
-      if (svc && modelId.includes('@')) {
-        try {
-          const parsed = JSON.parse(body.toString());
-          const baseId = modelId.replace(/@\d+$/, '');
-          parsed.model = baseId;
-          const rewritten = Buffer.from(JSON.stringify(parsed));
-          return proxyBuffered(req, res, svc.containerIp, svc.port, downstreamPath, rewritten);
-        } catch {}
-      }
+      const cache = await refreshPool('embed', findServicesByType);
+      ({ svc, baseId } = pickInstance('embed', cache, modelId));
     }
     if (!svc) {
       const { svc: fallback } = findServiceOrExternal('embed');
       svc = fallback;
     }
     if (!svc) return res.status(503).json({ error: 'No active embedding service', hint: 'Start an embeddings model or add an external embedding service' });
-    proxyBuffered(req, res, svc.containerIp, svc.port, downstreamPath, body);
+
+    // Downstream backends only know their own undecorated model id.
+    let out = body;
+    if (modelId && baseId && modelId !== baseId) {
+      try {
+        const parsed = JSON.parse(body.toString());
+        parsed.model = baseId;
+        out = Buffer.from(JSON.stringify(parsed));
+      } catch {}
+    }
+    proxyBuffered(req, res, svc.containerIp, svc.port, downstreamPath, out, undefined,
+      ({ completed }) => { if (completed) markSuccess(svc); else markFailure(svc); });
   });
 
   // ─── Universal Rerank Endpoint: /rerank/v1/* & /rerank/v2/* ─────────
+  // Aggregated reranker model list, same shape as /embed/v1/models (this did not exist before —
+  // there was no way to see which rerankers the proxy could reach).
   for (const ver of ['v1', 'v2']) {
-    router.all(`/rerank/${ver}/{*rest}`, (req, res) => {
-      const downstreamPath = `/${ver}/` + joinRestParam(req.params.rest);
-      const { svc } = findServiceOrExternal('rerank');
-      if (!svc) return res.status(503).json({ error: 'No active reranker service', hint: 'Add a reranker model or external reranker service' });
-      if (req.method === 'GET' || req.method === 'HEAD') {
-        proxyRequest(req, res, svc.containerIp, svc.port, downstreamPath);
-      } else {
-        const body = [];
-        req.on('data', c => body.push(c));
-        req.on('end', () => proxyBuffered(req, res, svc.containerIp, svc.port, downstreamPath, Buffer.concat(body)));
+    router.get(`/rerank/${ver}/models`, async (req, res) => {
+      try {
+        const cache = await refreshPool('rerank', findServicesByType);
+        res.json({ object: 'list', data: cache.models });
+      } catch (err) {
+        res.status(500).json({ error: `Failed to aggregate rerank models: ${err.message}` });
       }
+    });
+  }
+
+  for (const ver of ['v1', 'v2']) {
+    router.all(`/rerank/${ver}/{*rest}`, async (req, res) => {
+      const downstreamPath = `/${ver}/` + joinRestParam(req.params.rest);
+
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        const { svc } = findServiceOrExternal('rerank');
+        if (!svc) return res.status(503).json({ error: 'No active reranker service', hint: 'Add a reranker model or external reranker service' });
+        return proxyRequest(req, res, svc.containerIp, svc.port, downstreamPath);
+      }
+
+      // Rerankers previously ignored the requested model entirely and used whichever service
+      // sorted first. Now they route by model and load-balance across its instances, exactly
+      // like embeddings.
+      const body = await bufferBody(req);
+      let modelId = null;
+      try { modelId = JSON.parse(body.toString()).model; } catch {}
+
+      let svc = null, baseId = null;
+      if (modelId) {
+        const cache = await refreshPool('rerank', findServicesByType);
+        ({ svc, baseId } = pickInstance('rerank', cache, modelId));
+      }
+      if (!svc) {
+        const { svc: fallback } = findServiceOrExternal('rerank');
+        svc = fallback;
+      }
+      if (!svc) return res.status(503).json({ error: 'No active reranker service', hint: 'Add a reranker model or external reranker service' });
+
+      let out = body;
+      if (modelId && baseId && modelId !== baseId) {
+        try {
+          const parsed = JSON.parse(body.toString());
+          parsed.model = baseId;
+          out = Buffer.from(JSON.stringify(parsed));
+        } catch {}
+      }
+      proxyBuffered(req, res, svc.containerIp, svc.port, downstreamPath, out, undefined,
+        ({ completed }) => { if (completed) markSuccess(svc); else markFailure(svc); });
     });
   }
 

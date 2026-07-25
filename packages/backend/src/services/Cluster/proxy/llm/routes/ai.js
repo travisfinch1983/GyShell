@@ -13,6 +13,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSy
 import { join, dirname, extname, resolve as pathResolve, basename } from 'path';
 import { spawn, execSync } from 'child_process';
 import { randomUUID, createHash } from 'crypto';
+import { computeKvFingerprint } from '../../kvcache/fingerprint.js';
 import multer from 'multer';
 import { fileURLToPath } from 'url';
 import { getClusterGpus, getGpuVramUsage, getAllGpuSpecs } from '../services/gpu-specs.js';
@@ -2157,24 +2158,22 @@ if out: print(json.dumps(out))
     if (/^llama-server/.test(providerId)) {
       // Extract the real model file name for the content fingerprint. Unwrap the model-cache helper
       // (--model $(mc '/models/.../file.gguf')) so different models don't collide on the literal "$(mc" token.
-      const mcMatch = finalCommand.match(/--model[ =]+\$\(mc\s+'([^']+)'\)/);
-      const plainMatch = finalCommand.match(/--model[ =]+"?([^"\s\\]+)"?/);
-      const modelPath = mcMatch ? mcMatch[1] : (plainMatch ? plainMatch[1] : '');
-      const modelName = modelPath.split('/').filter(Boolean).pop() || '';
-      const ctx = (finalCommand.match(/--ctx-size[ =]+(\d+)/) || [])[1] || '';
-      const ck = (finalCommand.match(/--cache-type-k[ =]+(\S+)/) || [])[1] || '';
-      const cv = (finalCommand.match(/--cache-type-v[ =]+(\S+)/) || [])[1] || '';
-      const par = (finalCommand.match(/--parallel[ =]+(\d+)/) || [])[1] || '';
-      const fp = createHash('sha1').update([modelName, ctx, ck, cv].join('|')).digest('hex').slice(0, 8);
-      const slotName = slug(modelName) ? `${slug(modelName)}-${fp}` : `svc-${port || 'x'}-${fp}`;
-      const optanePath = `/optane-sock0/kvcache/${slotName}`;
+      // Stable KV fingerprint (kvcache/fingerprint.js) — the SAME fp the native KV layer keys its
+      // Optane index on, so the launch --slot-save-path == the index's shared pool dir. Hashes model
+      // identity + KV-layout params (cache dtypes, flash-attn, rope/yarn), EXCLUDES ctx (restore is
+      // ctx-agnostic), port and GPUs. Replaces the old inline fp that hashed ctx (churn) and missed
+      // rope/yarn (silent cross-run corruption risk).
+      const { slotName, optanePath } = computeKvFingerprint(finalCommand, { port });
       if (/--slot-save-path[ =]/.test(finalCommand)) {
         finalCommand = finalCommand.replace(/--slot-save-path[ =]"?[^"\s\\]+"?/, `--slot-save-path ${optanePath}`);
       } else {
         finalCommand = finalCommand.replace(/\s+$/, '') + ` --slot-save-path ${optanePath}`;
       }
-      console.log(`[svc-launch] Optane KV slot-save -> ${optanePath} (content fingerprint, always)`);
-      if (port) kvShim = { port: Number(port), shimPort: Number(port) + 1000, cacheDir: optanePath, fingerprint: slotName, slotCount: Number(par) || 0 };
+      console.log(`[svc-launch] Optane KV slot-save -> ${optanePath} (stable fingerprint; native KV layer)`);
+      // Standalone kvcache-proxy shim RETIRED 2026-07-23 — the proxy's native Optane KV layer
+      // (services/Cluster/proxy/kvcache/) handles this backend directly, so no shim is provisioned.
+      // kvShim stays null → the provisioning block below is inert. Teardown cleanup still removes any
+      // pre-existing kvcache-proxy@ units.
     }
 
     // kcpps runtime NAS fallback: koboldcpp loads a base64 config whose model paths live INSIDE the
@@ -3373,6 +3372,12 @@ WantedBy=multi-user.target
     pendingPorts.delete(port);
 
     saveActiveServices(state);
+    // A new instance must join its load-balance pool NOW, not after the 30s model-cache TTL.
+    // Best-effort: never let a cache-invalidation hiccup fail the registration itself.
+    try {
+      const pm = await import('../../proxy.js');
+      pm.invalidateModelCache?.();
+    } catch { /* noop */ }
     broadcast({ type: 'service-added', service: state.services[id] });
 
     res.json({ ok: true, service: state.services[id] });
@@ -3393,7 +3398,7 @@ WantedBy=multi-user.target
     let failed = 0;
     const results = [];
     for (const svc of Object.values(state.services)) {
-      if (svc.providerId !== 'llama-server' && svc.providerId !== 'llama-server-mtp' && svc.providerId !== 'koboldcpp') {
+      if (svc.providerId !== 'llama-server' && svc.providerId !== 'koboldcpp') {
         skipped += 1;
         continue;
       }
@@ -3406,7 +3411,7 @@ WantedBy=multi-user.target
         const out = await sshService.exec(svc.pveHostIp, cmd, { timeout: 5000 });
         const text = out.stdout || '';
         let n = 1;
-        if (svc.providerId === 'llama-server' || svc.providerId === 'llama-server-mtp') {
+        if (svc.providerId === 'llama-server') {
           const m = text.match(/--parallel[\s=]+(\d+)/);
           if (m) n = parseInt(m[1], 10);
         } else if (svc.providerId === 'koboldcpp') {
@@ -3429,7 +3434,7 @@ WantedBy=multi-user.target
     if (updated > 0) {
       saveActiveServices(state);
       try {
-        const proxyMod = await import('./proxy.js');
+        const proxyMod = await import('../../proxy.js');
         proxyMod.invalidateModelCache?.();
       } catch {}
     }
@@ -3487,7 +3492,7 @@ WantedBy=multi-user.target
     }
     saveActiveServices(state);
     try {
-      const proxyMod = await import('./proxy.js');
+      const proxyMod = await import('../../proxy.js');
       proxyMod.invalidateModelCache?.();
     } catch {}
     broadcast({ type: 'service-updated', serviceId: req.params.id, aliasOverride: svc.aliasOverride || null });
@@ -3509,44 +3514,51 @@ WantedBy=multi-user.target
   /**
    * POST /active-services/:id/kill — Kill tmux session (or systemd service) via SSH, then unregister.
    */
+  // Removals are SERIALIZED: rapid successive Stop/Remove clicks otherwise fire parallel pct-exec
+  // cleanups that time out under host load (leaving orphan units) and race the active-services.json
+  // read-modify-write (lost updates). Each removal now runs to completion before the next begins.
+  let __removalChain = Promise.resolve();
+  const serializeRemoval = (fn) => { const run = __removalChain.then(fn, fn); __removalChain = run.then(() => {}, () => {}); return run; };
+
   router.post('/active-services/:id/kill', async (req, res) => {
-    const state = loadActiveServices();
-    const svc = state.services[req.params.id];
-    if (!svc) return res.status(404).json({ error: 'Service not found' });
-
+    const id = req.params.id;
     try {
-      if (svc.isSystemService) {
-        // Stop + disable + remove unit file + launch script + reset-failed + daemon-reload.
-        // ALSO tear down the paired Optane kvcache-proxy@<port> companion (unit + config) so a
-        // Stop/Remove leaves NO leftovers that re-arm on boot and fight for the GPU.
-        const kvPort = svc.port || ((svc.systemdUnit || '').match(/-(\d+)$/) || [])[1];
-        const kvUnit = kvPort ? `kvcache-proxy@${kvPort}` : '';
-        const cleanupCmd = [
-          `pct exec ${svc.vmid} -- bash -c '`,
-          `systemctl stop ${svc.systemdUnit} 2>/dev/null;`,
-          ` systemctl disable ${svc.systemdUnit} 2>/dev/null;`,
-          kvUnit ? ` systemctl stop ${kvUnit} 2>/dev/null; systemctl disable ${kvUnit} 2>/dev/null;` : ``,
-          ` rm -f /etc/systemd/system/${svc.systemdUnit}.service;`,
-          ` rm -f ${svc.scriptPath};`,
-          kvPort ? ` rm -f /opt/kvcache-proxy/configs/${kvPort}.json;` : ``,
-          ` systemctl reset-failed ${svc.systemdUnit}${kvUnit ? ` ${kvUnit}` : ``} 2>/dev/null;`,
-          ` systemctl daemon-reload`,
-          `'`,
-        ].join('');
-        await sshService.exec(svc.pveHostIp, cleanupCmd, { timeout: 15000 });
-      } else {
-        const killCmd = `pct exec ${svc.vmid} -- tmux kill-session -t '${svc.tmuxSession.replace(/'/g, "'\\''")}'`;
-        await sshService.exec(svc.pveHostIp, killCmd, { timeout: 10000 });
-      }
-    } catch (err) {
-      console.log(`${svc.isSystemService ? 'systemd' : 'tmux'} kill for ${svc.tmuxSession}: ${err.message}`);
-    }
+      await serializeRemoval(async () => {
+        const pre = loadActiveServices();
+        const svc = pre.services[id];
+        if (!svc) { res.json({ ok: true, alreadyGone: true }); return; }
 
-    archiveService(svc, 'stopped');
-    delete state.services[req.params.id];
-    saveActiveServices(state);
-    broadcast({ type: 'service-removed', serviceId: req.params.id });
-    res.json({ ok: true });
+        let cleanup = 'clean', warning;
+        try {
+          if (svc.isSystemService) {
+            // Stop+disable+remove unit/script + kv companion, RETRY up to 3x, then VERIFY the unit is
+            // truly gone. A leftover Restart=always unit is exactly what becomes an invisible orphan.
+            const kvPort = svc.port || ((svc.systemdUnit || '').match(/-(\d+)$/) || [])[1];
+            const kvUnit = kvPort ? `kvcache-proxy@${kvPort}` : '';
+            const cleanupCmd = `pct exec ${svc.vmid} -- bash -c 'u="${svc.systemdUnit}"; kv="${kvUnit}"; for i in 1 2 3; do systemctl stop "$u" 2>/dev/null; systemctl disable "$u" 2>/dev/null; [ -n "$kv" ] && { systemctl stop "$kv" 2>/dev/null; systemctl disable "$kv" 2>/dev/null; }; rm -f /etc/systemd/system/"$u".service;${svc.scriptPath ? ` rm -f ${svc.scriptPath};` : ``}${kvPort ? ` rm -f /opt/kvcache-proxy/configs/${kvPort}.json;` : ``} systemctl reset-failed "$u" 2>/dev/null; [ -n "$kv" ] && systemctl reset-failed "$kv" 2>/dev/null; systemctl daemon-reload; systemctl is-active --quiet "$u" || break; sleep 1; done; if systemctl is-active --quiet "$u"; then echo STILL_ACTIVE; else echo CLEAN; fi'`;
+            const r = await sshService.exec(svc.pveHostIp, cleanupCmd, { timeout: 45000 });
+            if (/STILL_ACTIVE/.test((r && r.stdout) || '')) { cleanup = 'failed'; warning = 'unit still active after 3 cleanup attempts'; }
+          } else {
+            const killCmd = `pct exec ${svc.vmid} -- tmux kill-session -t '${(svc.tmuxSession || '').replace(/'/g, "'\\''")}'`;
+            await sshService.exec(svc.pveHostIp, killCmd, { timeout: 10000 });
+          }
+        } catch (err) {
+          cleanup = 'failed'; warning = err.message;
+          console.warn(`[service-kill] remote cleanup for ${svc.systemdUnit || svc.tmuxSession} FAILED: ${err.message} — orphan sweep will retry`);
+        }
+
+        // Atomic state mutation: reload FRESH, delete, save with NO await in between, so a concurrent
+        // launch/suspend cannot lose this deletion (the fast-succession race).
+        const fresh = loadActiveServices();
+        const target = fresh.services[id];
+        if (target) { archiveService(target, 'stopped'); delete fresh.services[id]; saveActiveServices(fresh); }
+        delete watchdogFailCounts[id];
+        broadcast({ type: 'service-removed', serviceId: id });
+        res.json({ ok: true, cleanup, ...(warning ? { warning } : {}) });
+      });
+    } catch (e) {
+      if (!res.headersSent) res.status(500).json({ error: String((e && e.message) || e) });
+    }
   });
 
   /**
@@ -4033,7 +4045,7 @@ WantedBy=multi-user.target
           }
           if (data.idle) result.idle = true;
         }
-      } else if (svc.providerId === 'llama-server' || svc.providerId === 'llama-server-mtp') {
+      } else if (svc.providerId === 'llama-server') {
         // llama.cpp exposes Prometheus metrics at /metrics when launched with --metrics.
         // Fall back to /health (always available) if metrics are off.
         let metricsOk = false;
@@ -6741,7 +6753,6 @@ WantedBy=multi-user.target
     vllm:      120,  // 2 min — model loading
     koboldcpp: 90,
     'llama-server': 90,
-    'llama-server-mtp': 90,
     default:   60,   // 1 min for everything else
   };
 
@@ -6757,7 +6768,6 @@ WantedBy=multi-user.target
   const HEALTH_PATHS = {
     koboldcpp: '/api/v1/info/version',
     'llama-server': '/health',
-    'llama-server-mtp': '/health',
     vllm: '/health',
     tabbyapi: '/health',
     lmdeploy: '/health',
@@ -7202,6 +7212,30 @@ WantedBy=multi-user.target
     const ok = metricsPoller?.deleteRow(req.params.fp);
     res.json({ ok: !!ok });
   });
+  // POST reset ONE config's accumulated metrics to zero (keeps the row + identity; clears outliers).
+  router.post('/llm-metrics/:fp/reset', (req, res) => {
+    res.json({ ok: !!metricsPoller?.resetRow(req.params.fp) });
+  });
+  // GET / PUT the live rolling-window size (seconds) for the live decode/prefill rates (5-600s).
+  router.get('/llm-metrics/live-window', (req, res) => {
+    res.json({ seconds: metricsPoller?.getLiveWindowSec?.() ?? 60 });
+  });
+  router.put('/llm-metrics/live-window', (req, res) => {
+    const v = metricsPoller?.setLiveWindowSec?.(req.body?.seconds);
+    res.json({ ok: v != null, seconds: v ?? null });
+  });
+  // GET the FULL launch command for a RUNNING config (reads the actual launch script on the host,
+  // so the settings modal can show EVERY flag — not just the curated snapshot).
+  router.get('/llm-metrics/:fp/launch-command', async (req, res) => {
+    try {
+      const row = (metricsPoller?.getRows() || []).find((r) => r.fingerprint === req.params.fp);
+      if (!row || !row.running || !row.currentServiceId) return res.json({ ok: false, reason: 'not-running', settings: row?.settings || null });
+      const svc = loadActiveServices().services[row.currentServiceId];
+      if (!svc || !svc.scriptPath) return res.json({ ok: false, reason: 'no-script', settings: row.settings || null });
+      const out = await sshService.exec(svc.pveHostIp, `pct exec ${svc.vmid} -- cat ${svc.scriptPath}`, { timeout: 10000 });
+      res.json({ ok: true, scriptPath: svc.scriptPath, script: (out.stdout || '').slice(0, 20000), settings: row.settings || null });
+    } catch (e) { res.status(500).json({ ok: false, error: String((e && e.message) || e) }); }
+  });
 
   // Lean per-(model+config) tool-call metrics for external consumers (e.g. openclaw-claude).
   // API-level, authoritative; structure = malformed/schema-invalid args, hallucination = tool name not offered.
@@ -7243,12 +7277,21 @@ WantedBy=multi-user.target
         const hostIp = nodeMap[node]?.ip || agent.hostIp;
         const vmid = agent.vmid;
         if (!hostIp || !vmid) continue;
-        const listCmd = `pct exec ${vmid} -- bash -c "systemctl list-units 'proxlab-*' --state=failed --no-legend --no-pager --plain 2>/dev/null | awk '{print \\$1}'"`;
+        // List ALL proxlab-* units with active+sub state (not just --state=failed): a Restart=always
+        // crash-looper sits in 'activating (auto-restart)', never 'failed', so the old failed-only
+        // filter never caught orphans like a removed service that keeps bouncing on no free GPU.
+        const listCmd = `pct exec ${vmid} -- bash -c "systemctl list-units 'proxlab-*' --all --no-legend --no-pager --plain 2>/dev/null | awk '{print \\$1 \\"|\\" \\$3 \\"|\\" \\$4}'"`;
         let out;
         try { out = (await sshService.exec(hostIp, listCmd, { timeout: 10000 })).stdout || ''; } catch { continue; }
-        for (const unitFile of out.split('\n').map((l) => l.trim()).filter((l) => l.endsWith('.service'))) {
+        for (const line of out.split('\n').map((l) => l.trim()).filter(Boolean)) {
+          const [unitFile, active = '', sub = ''] = line.split('|');
+          if (!unitFile || !unitFile.endsWith('.service')) continue;
           const unitName = unitFile.replace(/\.service$/, '');
           if (registered.has(unitName)) continue;
+          // Reap ONLY unambiguously broken/crash-looping orphans (failed, or Restart=always
+          // auto-restart). Never touch an 'active'/'start'ing unit — it may be a legit service
+          // mid-launch not yet written to active-services.json.
+          if (active !== 'failed' && sub !== 'auto-restart') continue;
           const port = ((unitName.match(/-(\d+)$/) || [])[1]) || '';
           const script = `/opt/proxlab/services/${unitName.replace(/^proxlab-/, '')}.sh`;
           const kv = port ? `kvcache-proxy@${port}` : '';
