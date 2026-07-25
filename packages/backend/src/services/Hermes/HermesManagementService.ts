@@ -44,7 +44,7 @@ export interface HermesManagementConfig {
 
 /** One Support-Models assignment (a model wired to a Hermes `auxiliary.<key>` role).
  *  `description`/`recommendation` are AI-Lab-side UI metadata (NOT sent to Hermes). */
-export interface SupportModelRole { provider?: string; model?: string; description?: string; recommendation?: string }
+export interface SupportModelRole { provider?: string; model?: string; description?: string; recommendation?: string; timeout?: number; noThink?: boolean }
 /** Global "Support Models" assignments keyed by Hermes auxiliary task key (vision, compression,
  *  web_extract, ...). Legacy visionDescription/compaction keys are migrated on read. */
 export type SupportModelRoles = Record<string, SupportModelRole>
@@ -218,6 +218,8 @@ export class HermesManagementService {
       if (r.model) { entry.provider = r.provider || 'ailab'; entry.model = r.model }
       if (r.description) entry.description = r.description
       if (r.recommendation) entry.recommendation = r.recommendation
+      if (typeof r.timeout === 'number' && r.timeout > 0) entry.timeout = r.timeout
+      if (r.noThink !== undefined) entry.noThink = !!r.noThink
       if (Object.keys(entry).length) clean[key] = entry
     }
     if (this.cfg.supportModelsFile) atomicWriteJson(this.cfg.supportModelsFile, clean)
@@ -235,6 +237,13 @@ export class HermesManagementService {
    *  every other role is a plain `auxiliary.<key>` route through the AI-Lab proxy (provider=ailab),
    *  or `auto` (→ the agent's own main model) when unassigned. This also clears any dead base_url. */
   private async applyRoleConfig(agentId: string, key: string, role?: SupportModelRole): Promise<void> {
+    // Aux timeout (scalar -> config set) + no-think (dict extra_body -> yaml write). Orthogonal to routing.
+    if (role && typeof role.timeout === 'number' && role.timeout > 0) {
+      await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.timeout`, String(role.timeout)])
+    }
+    if (role && role.noThink !== undefined) {
+      await this.setAuxExtraBody(agentId, key, !!role.noThink)
+    }
     if (key === 'vision') {
       const model = this.getSpec(agentId)?.model
       if (model) await this.applyVisionConfig(agentId, model)
@@ -248,6 +257,35 @@ export class HermesManagementService {
       await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.provider`, 'auto'])
       await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.model`, ''])
     }
+  }
+
+  /** Set (or clear) an aux role's `extra_body` as a real DICT via a PyYAML config.yaml write.
+   *  `hermes config set` stores a dict as a literal STRING (see applyFallback), which Hermes can't
+   *  use — so we edit the yaml directly. noThink=true writes
+   *  {chat_template_kwargs:{enable_thinking:false}} (the request-body equivalent of /no_think for
+   *  local llama.cpp Qwen support models); false clears it to {}. Local op (Hermes is co-located). */
+  private async setAuxExtraBody(agentId: string, key: string, noThink: boolean): Promise<void> {
+    const home = this.profileHome(agentId)
+    const eb = noThink ? '{"chat_template_kwargs": {"enable_thinking": false}}' : '{}'
+    const ebB64 = Buffer.from(eb, 'utf8').toString('base64')
+    const script = [
+      'import sys, yaml, base64',
+      'p, key = sys.argv[1], sys.argv[2]',
+      'eb = yaml.safe_load(base64.b64decode(sys.argv[3]).decode()) or {}',
+      'try:',
+      '    with open(p) as f: cfg = yaml.safe_load(f) or {}',
+      'except FileNotFoundError:',
+      '    cfg = {}',
+      'aux = cfg.setdefault("auxiliary", {})',
+      'if not isinstance(aux, dict): aux = cfg["auxiliary"] = {}',
+      'role = aux.setdefault(key, {})',
+      'if not isinstance(role, dict): role = aux[key] = {}',
+      'role["extra_body"] = eb',
+      'with open(p, "w") as f:',
+      '    yaml.safe_dump(cfg, f, sort_keys=False, default_flow_style=False, allow_unicode=True)',
+    ].join('\n')
+    const scriptB64 = Buffer.from(script, 'utf8').toString('base64')
+    await this.ssh(`printf %s ${shq(scriptB64)} | base64 -d | python3 - ${shq(`${home}/config.yaml`)} ${shq(key)} ${shq(ebB64)}`)
   }
 
   /** Reconcile native-vision routing for an agent, keyed on its model's vision capability.
@@ -344,18 +382,13 @@ export class HermesManagementService {
 
   /** Run a single remote command string over SSH (async execFile has no stdin — see writeRemoteFile). */
   private async ssh(remoteCmd: string): Promise<string> {
-    const args = [
-      '-i', this.cfg.sshKeyPath,
-      '-o', 'StrictHostKeyChecking=accept-new',
-      '-o', 'BatchMode=yes',
-      '-o', `ConnectTimeout=${this.cfg.connectTimeoutSec ?? 8}`,
-      `${this.user}@${this.cfg.host}`,
-      remoteCmd,
-    ]
+    // Hermes is co-located in THIS container — run the command LOCALLY instead of over SSH.
+    // (Method name kept as `ssh` so the ~60 call sites that build a shell-command string are untouched.)
     try {
-      const { stdout } = await execFileAsync('ssh', args, {
+      const { stdout } = await execFileAsync('bash', ['-c', remoteCmd], {
         timeout: 90_000,
         maxBuffer: 8 * 1024 * 1024,
+        env: { ...process.env, HOME: '/root' },
       })
       return stdout
     } catch (e) {
@@ -366,7 +399,7 @@ export class HermesManagementService {
       const err = e as { stderr?: string; stdout?: string; code?: unknown; signal?: unknown }
       const stderr = String(err?.stderr ?? '').trim()
       const code = err?.code ?? err?.signal ?? '?'
-      throw new Error(`ssh command failed (exit ${code})${stderr ? `: ${stderr.slice(0, 400)}` : ''}`)
+      throw new Error(`hermes command failed (exit ${code})${stderr ? `: ${stderr.slice(0, 400)}` : ''}`)
     }
   }
 
@@ -815,20 +848,88 @@ export class HermesManagementService {
   }
 
   /** Scope an agent to a curated tool set: upsert its gateway group, then repoint the agent's
-   *  native MCP server at the group endpoint (idempotent remove+add, same server name). */
+   *  native MCP server at the group endpoint (idempotent remove+add, same server name).
+   *
+   *  DESTRUCTIVE-SAVE GUARD (2026-07-25): MCPJungle's POST /tool-groups is create-only, so a
+   *  re-scope must delete first — which made this path capable of destroying the agent's tools.
+   *  MCPJungle rejects the ENTIRE request if any single included_tools entry is not a live,
+   *  ENABLED tool ("tool X does not exist or is disabled"), and a whole-toolset selection (which
+   *  sends a bare server name) or a momentarily-down server is enough to trigger it. Observed:
+   *  DELETE 204 -> POST 400 left Wren with no group and no tools, and her Hermes agent then gave
+   *  up reconnecting entirely. So now: validate first, expand server names, and roll back. */
   async syncAgentTools(agentId: string, treeNames: string[]): Promise<{ endpoint: string; toolCount: number }> {
     const gw = this.gatewayBase()
     const group = `agent-${agentId}`
-    const payload = { name: group, description: `AI-Lab tool set for ${agentId}`, included_servers: [], included_tools: treeNames, excluded_tools: [] }
+
+    // 1. Read the live registry (enabled tools only). If the gateway is unreachable we must NOT
+    //    proceed — deleting on a guess is exactly how the tools got destroyed.
+    const valid = new Set<string>()
+    const serverTools = new Map<string, string[]>()
+    let servers: Array<{ name: string; enabled?: boolean }>
+    try {
+      servers = await (await fetch(`${gw}/api/v0/servers`, { signal: AbortSignal.timeout(8000) })).json() as Array<{ name: string; enabled?: boolean }>
+    } catch (e) {
+      throw new Error(`cannot reach the MCP gateway to validate tools - refusing to modify ${group} (existing tools left untouched): ${(e as Error).message}`)
+    }
+    for (const s of servers) {
+      if (s.enabled === false) continue
+      try {
+        const tools = await (await fetch(`${gw}/api/v0/tools?server=${encodeURIComponent(s.name)}`, { signal: AbortSignal.timeout(8000) })).json() as Array<{ name: string; enabled?: boolean }>
+        const live = tools.filter((t) => t.enabled !== false).map((t) => t.name)
+        serverTools.set(s.name, live)
+        for (const n of live) valid.add(n)
+      } catch { /* a server that won't enumerate contributes nothing */ }
+    }
+
+    // 2. Normalise the selection: keep known-good tools, EXPAND a bare server name into that
+    //    server's enabled tools (selecting a whole toolset sends the server node), and treat
+    //    anything left as a hard error BEFORE we touch the existing group.
+    const resolved = new Set<string>()
+    const unknown: string[] = []
+    for (const name of treeNames) {
+      if (valid.has(name)) { resolved.add(name); continue }
+      const expand = serverTools.get(name)
+      if (expand && expand.length) { for (const n of expand) resolved.add(n); continue }
+      unknown.push(name)
+    }
+    if (unknown.length) {
+      const shown = unknown.slice(0, 12).join(', ')
+      const more = unknown.length > 12 ? ` (+${unknown.length - 12} more)` : ''
+      throw new Error(`refusing to modify ${group} - ${unknown.length} selected item(s) are not live, enabled gateway tools: ${shown}${more}. Existing tools left untouched.`)
+    }
+    const included = [...resolved]
+
+    // 3. Snapshot current membership so a failed create can be undone.
+    let previous: string[] | null = null
+    try {
+      const cur = await fetch(`${gw}/api/v0/tool-groups/${group}`, { signal: AbortSignal.timeout(8000) })
+      if (cur.ok) previous = ((await cur.json()) as { included_tools?: string[] })?.included_tools ?? null
+    } catch { /* no existing group -> nothing to roll back to */ }
+
+    const post = (tools: string[]) => fetch(`${gw}/api/v0/tool-groups`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: group, description: `AI-Lab tool set for ${agentId}`, included_servers: [], included_tools: tools, excluded_tools: [] }),
+      signal: AbortSignal.timeout(8000),
+    })
+
     // POST is create-only (UNIQUE constraint), so delete-then-create = true upsert on re-scope.
     await fetch(`${gw}/api/v0/tool-groups/${group}`, { method: 'DELETE', signal: AbortSignal.timeout(8000) }).catch(() => undefined)
-    const r = await fetch(`${gw}/api/v0/tool-groups`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: AbortSignal.timeout(8000),
-    })
-    if (!r.ok) throw new Error(`group upsert -> ${r.status}: ${await r.text().catch(() => '')}`)
+    const r = await post(included)
+    if (!r.ok) {
+      const detail = await r.text().catch(() => '')
+      // 4. ROLL BACK - never leave the agent with no group.
+      let note = ''
+      if (previous && previous.length) {
+        const back = await post(previous).then((x) => x.ok).catch(() => false)
+        note = back ? ' [previous tool set restored]' : ' [WARNING: rollback FAILED - group is now empty]'
+      }
+      throw new Error(`group upsert -> ${r.status}: ${detail}${note}`)
+    }
+
     const endpoint = `${this.agentGatewayBase()}/v0/groups/${group}/mcp`
     await this.repointGatewayServer(agentId, endpoint)
-    return { endpoint, toolCount: treeNames.length }
+    return { endpoint, toolCount: included.length }
   }
 
   /** Revert an agent to the FULL gateway (remove its group + repoint the MCP server at /mcp). */
