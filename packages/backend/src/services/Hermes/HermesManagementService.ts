@@ -909,25 +909,29 @@ export class HermesManagementService {
     } catch { /* no existing group -> nothing to roll back to */ }
     if (previous && previous.length) this.backupToolGroup(agentId, previous)
 
-    const post = (tools: string[]) => fetch(`${gw}/api/v0/tool-groups`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: group, description: `AI-Lab tool set for ${agentId}`, included_servers: [], included_tools: tools, excluded_tools: [] }),
-      signal: AbortSignal.timeout(8000),
+    // 4. Write it. PUT is a real in-place update on MCPJungle >=0.4.5 and is ATOMIC: a rejected
+    //    payload returns 400 and leaves the existing membership untouched. That is why there is
+    //    no longer a DELETE here -- the old delete-then-create was what allowed a single bad tool
+    //    name to destroy an agent's entire toolset (2026-07-25, Wren). PUT 404s when the group
+    //    does not exist yet, so POST remains the create path.
+    const body = (tools: string[]) => JSON.stringify({
+      name: group, description: `AI-Lab tool set for ${agentId}`,
+      included_servers: [], included_tools: tools, excluded_tools: [],
     })
-
-    // POST is create-only (UNIQUE constraint), so delete-then-create = true upsert on re-scope.
-    await fetch(`${gw}/api/v0/tool-groups/${group}`, { method: 'DELETE', signal: AbortSignal.timeout(8000) }).catch(() => undefined)
-    const r = await post(included)
+    const headers = { 'Content-Type': 'application/json' }
+    let r = await fetch(`${gw}/api/v0/tool-groups/${group}`, {
+      method: 'PUT', headers, body: body(included), signal: AbortSignal.timeout(8000),
+    })
+    if (r.status === 404) {
+      r = await fetch(`${gw}/api/v0/tool-groups`, {
+        method: 'POST', headers, body: body(included), signal: AbortSignal.timeout(8000),
+      })
+    }
     if (!r.ok) {
       const detail = await r.text().catch(() => '')
-      // 4. ROLL BACK - never leave the agent with no group.
-      let note = ''
-      if (previous && previous.length) {
-        const back = await post(previous).then((x) => x.ok).catch(() => false)
-        note = back ? ' [previous tool set restored]' : ' [WARNING: rollback FAILED - group is now empty]'
-      }
-      throw new Error(`group upsert -> ${r.status}: ${detail}${note}`)
+      // Nothing to roll back: PUT leaves the previous membership in place on failure, and a
+      // failed POST means there was no group to begin with.
+      throw new Error(`group update -> ${r.status}: ${detail} (existing tools left untouched)`)
     }
 
     const endpoint = `${this.agentGatewayBase()}/v0/groups/${group}/mcp`
