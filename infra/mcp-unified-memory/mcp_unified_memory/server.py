@@ -10,6 +10,7 @@ Graceful degradation: if any DB is down, operations continue with the rest.
 A write-ahead log tracks writes so offline DBs can be synced when they recover.
 """
 
+import hashlib
 import json
 import os
 import time
@@ -163,10 +164,20 @@ def vectorize(texts: list[str]) -> list[list[float]]:
 
 # ─── Vector DB Writers ───────────────────────────────────────────────────────
 
+def stable_point_id(memory_id: str) -> int:
+    """Stable integer point id for a memory_id.
+
+    MUST NOT use hash(): Python randomizes str hashing per process (no
+    PYTHONHASHSEED here), so the same doc_id would land on a different point
+    after each restart and a rewrite would append a duplicate instead of
+    replacing. blake2b is stable across processes and versions.
+    """
+    return int.from_bytes(hashlib.blake2b(memory_id.encode("utf-8"), digest_size=8).digest(), "big") % (2**63)
+
+
 def write_to_qdrant(client: httpx.Client, db: dict, memory_id: str, vector: list, payload: dict) -> bool:
     try:
-        # Use a hash of the UUID as integer ID
-        int_id = abs(hash(memory_id)) % (2**63)
+        int_id = stable_point_id(memory_id)
         resp = client.put(
             f"http://{db['host']}:{db['port']}/collections/{COLLECTION_NAME}/points",
             json={"points": [{"id": int_id, "vector": vector, "payload": {**payload, "_memory_id": memory_id}}]},
@@ -194,18 +205,31 @@ def write_to_milvus(client: httpx.Client, db: dict, memory_id: str, vector: list
         return False
 
 
+def _weaviate_object_uuid(weaviate_class: str, memory_id: str) -> str:
+    """Deterministic object UUID for a (class, memory_id) pair.
+
+    Weaviate has no upsert-by-arbitrary-key. Deriving the object UUID from the
+    memory_id is what makes a repeat write REPLACE the object instead of adding
+    a second copy of the same doc.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{weaviate_class}:{memory_id}"))
+
+
 def write_to_weaviate(client: httpx.Client, db: dict, memory_id: str, vector: list, payload: dict) -> bool:
     try:
         weaviate_class = COLLECTION_NAME[0].upper() + COLLECTION_NAME[1:]
-        resp = client.post(
-            f"http://{db['host']}:{db['port']}/v1/objects",
-            json={
-                "class": weaviate_class,
-                "vector": vector,
-                "properties": {"text": payload.get("text", ""), "metadata": json.dumps(payload), "memory_id": memory_id},
-            },
-            timeout=10.0,
-        )
+        obj_id = _weaviate_object_uuid(weaviate_class, memory_id)
+        body = {
+            "class": weaviate_class,
+            "id": obj_id,
+            "vector": vector,
+            "properties": {"text": payload.get("text", ""), "metadata": json.dumps(payload), "memory_id": memory_id},
+        }
+        base = f"http://{db['host']}:{db['port']}/v1/objects"
+        resp = client.post(base, json=body, timeout=10.0)
+        # POST refuses an id that already exists (422/409) -> PUT replaces in place.
+        if resp.status_code in (409, 422):
+            resp = client.put(f"{base}/{weaviate_class}/{obj_id}", json=body, timeout=10.0)
         return resp.status_code < 400
     except Exception as e:
         print(f"[unified-memory] Weaviate write failed: {e}")
@@ -224,7 +248,7 @@ def write_to_chromadb(client: httpx.Client, db: dict, memory_id: str, vector: li
         if not col:
             return False
         resp = client.post(
-            f"http://{db['host']}:{db['port']}/api/v2/tenants/default_tenant/databases/default_database/collections/{col['id']}/add",
+            f"http://{db['host']}:{db['port']}/api/v2/tenants/default_tenant/databases/default_database/collections/{col['id']}/upsert",
             json={
                 "ids": [memory_id],
                 "embeddings": [vector],
