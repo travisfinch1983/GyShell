@@ -3828,9 +3828,11 @@ WantedBy=multi-user.target
     const state = loadActiveServices();
 
     // Build set of registered systemd unit names
+    // Unit names are unique only WITHIN a container -- two containers can both run
+    // proxlab-vllm-5010. Keying on the bare name made the adopter skip the second one forever.
     const registeredUnits = new Set();
     for (const svc of Object.values(state.services)) {
-      if (svc.systemdUnit) registeredUnits.add(svc.systemdUnit);
+      if (svc.systemdUnit) registeredUnits.add(`${svc.vmid}:${svc.systemdUnit}`);
     }
 
     const orphans = [];
@@ -3863,7 +3865,7 @@ WantedBy=multi-user.target
 
         for (const unitFile of units) {
           const unitName = unitFile.replace(/\.service$/, '');
-          if (registeredUnits.has(unitName)) continue;
+          if (registeredUnits.has(`${vmid}:${unitName}`)) continue;
 
           const parsed = parseOrphanUnit(unitName);
           if (!parsed) continue;
