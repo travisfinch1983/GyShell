@@ -29,33 +29,120 @@ const GATEWAY_URL = GATEWAY_TOKEN
   : baseGatewayUrl
 
 let connected = false
-let connectPromise: Promise<void> | null = null
+let connecting = false
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+let backoffMs = 2000
+const MAX_BACKOFF_MS = 30000
+const CONNECT_WAIT_MS = 12000
+// Callers awaiting the socket (RPCs issued on load or during a reconnect). Resolved on connect.
+let connectedWaiters: Array<() => void> = []
+function resolveConnectedWaiters(): void {
+  const w = connectedWaiters
+  connectedWaiters = []
+  for (const r of w) { try { r() } catch { /* noop */ } }
+}
 
+// The ONLY function that opens a socket. Single-flighted: never runs two at once; a failure
+// schedules exactly ONE backoff retry. (Multiple reconnect drivers previously MULTIPLIED into
+// a 30k/s storm on a persistent failure — this keeps it to one attempt at a time.)
+async function connectOnce(): Promise<void> {
+  if (connected || connecting) return
+  connecting = true
+  try {
+    await client.connect(GATEWAY_URL, 5000)
+    connected = true
+    backoffMs = 2000
+    resolveConnectedWaiters()
+  } catch {
+    connected = false
+  } finally {
+    connecting = false
+  }
+  if (!connected) scheduleReconnect()
+}
+
+function scheduleReconnect(): void {
+  if (reconnectTimer || connected || connecting) return
+  console.warn(`[gyshell-web] gateway offline — retrying in ${Math.round(backoffMs / 1000)}s`)
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    void connectOnce()
+  }, backoffMs)
+  backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS)
+}
+
+// RPC callers use this. Kicks a single background connect when idle, then WAITS (bounded) for
+// the socket — so RPCs issued on load or mid-reconnect don't fire before it's open (that race
+// caused the "Gateway socket is not connected" bootstrap failures). Never spawns parallel
+// connects: many concurrent callers all await the one shared connection.
 async function ensureConnected(): Promise<void> {
   if (connected) return
-  if (connectPromise) return connectPromise
-  connectPromise = (async () => {
-    try {
-      await client.connect(GATEWAY_URL, 5000)
-      connected = true
-    } catch (e) {
-      console.warn('[gyshell-web] Connection failed, retrying in 2s...')
-      await new Promise((r) => setTimeout(r, 2000))
-      connectPromise = null
-      return ensureConnected()
-    } finally {
-      connectPromise = null
-    }
-  })()
-  return connectPromise
+  if (!connecting && !reconnectTimer) void connectOnce()
+  if (connected) return
+  await new Promise<void>((resolve) => {
+    let done = false
+    const finish = () => { if (!done) { done = true; resolve() } }
+    connectedWaiters.push(finish)
+    setTimeout(finish, CONNECT_WAIT_MS)
+  })
 }
 
 client.on('status', (status) => {
-  connected = status === 'connected'
-  if (status === 'disconnected') {
-    setTimeout(() => ensureConnected().catch(() => {}), 2000)
+  if (status === 'connected') {
+    connected = true
+    backoffMs = 2000
+    resolveConnectedWaiters()
+  } else if (status === 'disconnected') {
+    connected = false
+    scheduleReconnect()
   }
 })
+
+// ─── Wake-from-sleep liveness ────────────────────────────────────────────────
+// A laptop sleep (or a dropped tunnel/VPN) leaves the socket HALF-OPEN: dead, but no close
+// event ever fires. `connected` therefore stays true, ensureConnected() returns immediately,
+// and every RPC fires into a void socket until it times out -- the "everything errors until I
+// refresh the page" behaviour. GatewayClient's own gateway:ping heartbeat is supposed to catch
+// this, but it is a setInterval (SUSPENDED while asleep, throttled in background tabs) and it
+// silently no-ops whenever readyState is anything other than OPEN. So probe explicitly at the
+// moments the user actually returns.
+const LIVE_PROBE_TIMEOUT_MS = 5000
+let probing = false
+
+function forceReconnect(reason: string): void {
+  console.warn(`[gyshell-web] gateway ${reason} — forcing reconnect`)
+  connected = false
+  try { client.disconnect() } catch { /* noop */ }
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+  backoffMs = 2000
+  void connectOnce()
+}
+
+/** Bounded probe: does the socket ACTUALLY answer, regardless of what readyState claims? */
+async function verifyGatewayLive(): Promise<void> {
+  if (probing) return
+  probing = true
+  try {
+    if (!connected) { void connectOnce(); return }
+    try {
+      await client.request('gateway:ping', {}, LIVE_PROBE_TIMEOUT_MS)
+    } catch {
+      forceReconnect('did not answer after wake')
+    }
+  } finally {
+    probing = false
+  }
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') void verifyGatewayLive()
+  })
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('focus', () => { void verifyGatewayLive() })
+  window.addEventListener('online', () => { void verifyGatewayLive() })
+}
 
 // ─── RPC Helper ──────────────────────────────────────────────────────────────
 
@@ -101,6 +188,13 @@ const gyshellApi = {
     getStatus: () => rpc('cluster:getStatus'),
     request: (method: string, path: string, body?: unknown) =>
       rpc('cluster:request', { method, path, body }),
+  },
+
+  discovery: {
+    // Server-side model/service discovery (rule #1): the backend runs the loop + owns
+    // connection status; the browser just reads the cached snapshot on demand over the
+    // gateway. ZERO browser fetches to any model/service.
+    get: () => rpc('discovery:get'),
   },
 
   // Helper-Scripts installer stream (backend relays to ProxLab's node PTY; rule #1).
@@ -193,16 +287,11 @@ const gyshellApi = {
   },
 
   uiSettings: {
-    get: async () => {
-      // ui-settings not exposed via WebSocket — return defaults from localStorage
-      try {
-        const stored = localStorage.getItem('gyshell-ui-settings')
-        return stored ? JSON.parse(stored) : {}
-      } catch { return {} }
-    },
-    set: async (settings: any) => {
-      localStorage.setItem('gyshell-ui-settings', JSON.stringify(settings))
-    },
+    // Server-side + shared across all browsers/machines (rule #1 / single-user). Theme,
+    // language, terminal, panel tabs, chat prefs, etc. persist on the backend and are served
+    // to every UI. set() sends a partial patch that the server MERGES (never clobbers others).
+    get: () => rpc('uiSettings:get'),
+    set: (patch: any) => rpc('uiSettings:set', { patch }),
   },
 
   terminal: {
