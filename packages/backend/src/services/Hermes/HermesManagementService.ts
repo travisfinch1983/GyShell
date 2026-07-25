@@ -1,6 +1,6 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, rmSync } from 'fs'
 import { dirname } from 'path'
 import type { HermesAgentSpec, ProviderService } from '@gyshell/shared'
 import { PROVIDER_SERVICE_CAPS } from '@gyshell/shared'
@@ -857,7 +857,7 @@ export class HermesManagementService {
    *  sends a bare server name) or a momentarily-down server is enough to trigger it. Observed:
    *  DELETE 204 -> POST 400 left Wren with no group and no tools, and her Hermes agent then gave
    *  up reconnecting entirely. So now: validate first, expand server names, and roll back. */
-  async syncAgentTools(agentId: string, treeNames: string[]): Promise<{ endpoint: string; toolCount: number }> {
+  async syncAgentTools(agentId: string, treeNames: string[]): Promise<{ endpoint: string; toolCount: number; gatewayRestarted?: boolean }> {
     const gw = this.gatewayBase()
     const group = `agent-${agentId}`
 
@@ -899,12 +899,15 @@ export class HermesManagementService {
     }
     const included = [...resolved]
 
-    // 3. Snapshot current membership so a failed create can be undone.
+    // 3. Snapshot current membership so a failed create can be undone, and persist it to disk.
+    //    Wren's group was only recoverable in the 2026-07-25 incident because Hermes happens to
+    //    log its full registration line — that was luck. This makes recovery by design.
     let previous: string[] | null = null
     try {
       const cur = await fetch(`${gw}/api/v0/tool-groups/${group}`, { signal: AbortSignal.timeout(8000) })
       if (cur.ok) previous = ((await cur.json()) as { included_tools?: string[] })?.included_tools ?? null
     } catch { /* no existing group -> nothing to roll back to */ }
+    if (previous && previous.length) this.backupToolGroup(agentId, previous)
 
     const post = (tools: string[]) => fetch(`${gw}/api/v0/tool-groups`, {
       method: 'POST',
@@ -929,7 +932,44 @@ export class HermesManagementService {
 
     const endpoint = `${this.agentGatewayBase()}/v0/groups/${group}/mcp`
     await this.repointGatewayServer(agentId, endpoint)
-    return { endpoint, toolCount: included.length }
+    // ACP chat sessions reload themselves (HermesAcpBridge.reloadAgentSessions respawns them with
+    // --resume). The messaging gateway does NOT — it is a long-lived process that read its MCP
+    // config at startup, so without this the Chat tab and Telegram disagree about which tools the
+    // agent has until someone restarts the unit by hand.
+    const gatewayRestarted = await this.restartAgentGateway(agentId)
+    return { endpoint, toolCount: included.length, gatewayRestarted }
+  }
+
+  /** Persist an agent's tool-group membership before we change it, so a botched save is always
+   *  recoverable from disk. Keeps the last 10 snapshots per agent. Best-effort: never throws. */
+  private backupToolGroup(agentId: string, tools: string[]): void {
+    try {
+      if (!this.cfg.specsFile) return // no persistence root configured -> nothing to write beside
+      const dir = `${dirname(this.cfg.specsFile)}/agent-tool-backups`
+      mkdirSync(dir, { recursive: true })
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      writeFileSync(`${dir}/${agentId}-${stamp}.json`,
+        JSON.stringify({ agentId, savedAt: new Date().toISOString(), included_tools: tools }, null, 2))
+      const mine = readdirSync(dir).filter((f) => f.startsWith(`${agentId}-`) && f.endsWith('.json')).sort()
+      for (const old of mine.slice(0, Math.max(0, mine.length - 10))) {
+        try { rmSync(`${dir}/${old}`) } catch { /* noop */ }
+      }
+    } catch { /* backups must never block a legitimate save */ }
+  }
+
+  /** Restart an agent's messaging gateway so it picks up a toolset change, but only if it is
+   *  actually running. Returns true if a restart was issued. Never throws — a failed restart
+   *  must not fail the save, it just means Telegram lags until the unit cycles. */
+  private async restartAgentGateway(agentId: string): Promise<boolean> {
+    const unit = `hermes-gateway-${agentId}`
+    try {
+      const active = (await this.ssh(`systemctl is-active ${shq(unit)} 2>/dev/null || true`)).trim()
+      if (active !== 'active') return false
+      await this.ssh(`systemctl restart ${shq(unit)} >/dev/null 2>&1 || true`)
+      return true
+    } catch {
+      return false
+    }
   }
 
   /** Revert an agent to the FULL gateway (remove its group + repoint the MCP server at /mcp). */
