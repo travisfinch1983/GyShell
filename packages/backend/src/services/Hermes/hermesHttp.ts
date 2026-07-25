@@ -2,6 +2,8 @@
 import express from 'express'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
+// @ts-expect-error — roadmapStore is TS resolved by tsx at runtime
+import * as rmStore from '../Roadmap/roadmapStore.js'
 import { hermesAgentSpecSchema, providerServiceSchema } from '@gyshell/shared'
 // @ts-expect-error — proxy capability resolver ships as untyped JS (same pattern as the other proxy/*.js imports)
 import { resolveModelCapabilities } from '../Cluster/proxy/model-capabilities.js'
@@ -80,6 +82,31 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
       res.json({ ok: true, ...(await hermes.syncAgentTools(req.params.id, selected)) })
     } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
+  // Tool HEALTH: the group can be perfectly healthy while the agent serves nothing, because
+  // Hermes stops retrying its MCP connection after 5 failures and never resumes on its own.
+  // Surface that instead of leaving the user to wonder why an agent has no tools.
+  router.get('/api/hermes/agents/:id/tool-health', async (req: Req, res: Res) => {
+    try { res.json(await hermes.getToolHealth(req.params.id)) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.post('/api/hermes/agents/:id/tool-reconnect', async (req: Req, res: Res) => {
+    try { res.json({ ok: true, ...(await hermes.reconnectAgentTools(req.params.id)) }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
+  // Snapshots taken before every tool change, so a bad save is recoverable without a shell.
+  router.get('/api/hermes/agents/:id/tool-backups', async (req: Req, res: Res) => {
+    try { res.json({ backups: await hermes.listToolBackups(req.params.id) }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.post('/api/hermes/agents/:id/tool-backups/restore', json, async (req: Req, res: Res) => {
+    try {
+      const file = String((req.body as any)?.file ?? '')
+      if (!file) return res.status(400).json({ error: 'body needs { file }' })
+      res.json({ ok: true, ...(await hermes.restoreToolBackup(req.params.id, file)) })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
   router.delete('/api/hermes/agents/:id/tools', async (req: Req, res: Res) => {
     try { await hermes.resetAgentTools(req.params.id); res.json({ ok: true }) }
     catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
@@ -421,6 +448,16 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     })
     // Detach ONLY the observer on disconnect — the backend-owned session keeps running.
     req.on('close', () => off())
+    // SSE keepalive: an IDLE stream (e.g. the user composing a long message with no events
+    // flowing) gets silently dropped or half-opened by intermediary proxies (CF tunnel, vite
+    // preview) after their idle timeout — the client then sits "connected" receiving nothing
+    // until a manual reload. A 15s heartbeat keeps the connection warm AND gives the client's
+    // liveness watchdog a signal to detect a truly dead socket. Sent as a real event so the
+    // browser delivers bytes to onmessage; the client ignores the unknown t:ping variant.
+    const keepAlive = setInterval(() => {
+      try { res.write(`data: ${JSON.stringify({ t: 'ping' })}\n\n`) } catch { /* client gone */ }
+    }, 15000)
+    req.on('close', () => clearInterval(keepAlive))
 
     let lastWritten = 0
     if (since > 0) {
@@ -522,9 +559,11 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
         }
         if ('description' in patch) { const d = patch.description; if (typeof d === 'string' && d.trim()) cur.description = d; else delete cur.description }
         if ('recommendation' in patch) { const rc = patch.recommendation; if (typeof rc === 'string' && rc.trim()) cur.recommendation = rc; else delete cur.recommendation }
+        if ('timeout' in patch) { applyKeys.push(key); const t = Number(patch.timeout); if (Number.isFinite(t) && t > 0) cur.timeout = t; else delete cur.timeout }
+        if ('noThink' in patch) { applyKeys.push(key); cur.noThink = !!patch.noThink }
         if (Object.keys(cur).length) roles[key] = cur; else delete roles[key]
       }
-      const r = await hermes.setSupportModels(roles as Record<string, { provider?: string; model?: string; description?: string; recommendation?: string }>, applyKeys)
+      const r = await hermes.setSupportModels(roles as Record<string, { provider?: string; model?: string; description?: string; recommendation?: string; timeout?: number; noThink?: boolean }>, [...new Set(applyKeys)])
       res.json({ ok: true, ...r })
     } catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
   })
@@ -547,6 +586,53 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
       writeFileSync(roadmapFile, md, 'utf8')
       res.json({ ok: true, bytes: Buffer.byteLength(md) })
     } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
+  // ---- Multi-project structured roadmaps (project sub-tabs + roadmap_* MCP tools) ----
+  const rmDir = (): string => (roadmapFile ? dirname(roadmapFile) : '')
+  const rmLoad = (): rmStore.RoadmapData => rmStore.ensureSeeded(rmDir(), roadmapFile)
+  const rmSave = (d: rmStore.RoadmapData): void => rmStore.saveRoadmaps(rmDir(), d)
+  const rmCount = (nodes: rmStore.RoadmapNode[]): number => nodes.reduce((s, n) => s + 1 + rmCount(n.children || []), 0)
+
+  router.get('/api/roadmap/projects', (_req: Req, res: Res) => {
+    try {
+      const d = rmLoad()
+      const projects = d.projects.slice().sort((a, b) => (a.order || 0) - (b.order || 0))
+        .map(p => ({ id: p.id, name: p.name, order: p.order, updatedAt: p.updatedAt, nodeCount: rmCount(p.nodes) }))
+      res.json({ projects })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.post('/api/roadmap/projects', json, (req: Req, res: Res) => {
+    try { const d = rmLoad(); const p = rmStore.createProject(d, String((req.body as { name?: unknown })?.name ?? 'Untitled')); rmSave(d); res.json({ project: p }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.get('/api/roadmap/projects/:pid', (req: Req, res: Res) => {
+    try { const d = rmLoad(); const p = rmStore.getProject(d, req.params.pid); if (!p) return res.status(404).json({ error: 'project not found' }); res.json({ project: p }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.patch('/api/roadmap/projects/:pid', json, (req: Req, res: Res) => {
+    try { const d = rmLoad(); if (!rmStore.renameProject(d, req.params.pid, String((req.body as { name?: unknown })?.name ?? ''))) return res.status(404).json({ error: 'project not found' }); rmSave(d); res.json({ ok: true }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.delete('/api/roadmap/projects/:pid', (req: Req, res: Res) => {
+    try { const d = rmLoad(); if (!rmStore.deleteProject(d, req.params.pid)) return res.status(404).json({ error: 'project not found' }); rmSave(d); res.json({ ok: true }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.post('/api/roadmap/projects/:pid/nodes', json, (req: Req, res: Res) => {
+    try { const d = rmLoad(); const n = rmStore.addNode(d, req.params.pid, (req.body as Record<string, unknown>) || {} as any); if (!n) return res.status(404).json({ error: 'project or parent not found' }); rmSave(d); res.json({ node: n }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.patch('/api/roadmap/projects/:pid/nodes/:nid', json, (req: Req, res: Res) => {
+    try { const d = rmLoad(); const n = rmStore.editNode(d, req.params.pid, req.params.nid, (req.body as any) || {}); if (!n) return res.status(404).json({ error: 'node not found' }); rmSave(d); res.json({ node: n }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.delete('/api/roadmap/projects/:pid/nodes/:nid', (req: Req, res: Res) => {
+    try { const d = rmLoad(); if (!rmStore.removeNode(d, req.params.pid, req.params.nid)) return res.status(404).json({ error: 'node not found' }); rmSave(d); res.json({ ok: true }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.post('/api/roadmap/projects/:pid/nodes/:nid/move', json, (req: Req, res: Res) => {
+    try { const d = rmLoad(); const b = (req.body as { parentId?: string | null; position?: number }) || {}; if (!rmStore.moveNode(d, req.params.pid, req.params.nid, b.parentId ?? null, b.position)) return res.status(400).json({ error: 'move failed (not found or invalid target)' }); rmSave(d); res.json({ ok: true }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
 
   // Global USER doc-template ("About Travis") — shared across agents. GET returns it; PUT writes it

@@ -30,11 +30,15 @@ function formatCloseDetail(event: CloseEvent): string {
   return reason ? `code=${code}${cleanSuffix}, reason=${reason}` : `code=${code}${cleanSuffix}`
 }
 
+const HEARTBEAT_INTERVAL_MS = 20_000
+const HEARTBEAT_TIMEOUT_MS = 8_000
+
 export class GatewayClient {
   private socket: WebSocket | null = null
   private nextRequestId = 1
   private pending = new Map<string, PendingRequest>()
   private manualClose = false
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
   private listeners: {
     [K in keyof GatewayClientEventMap]: Set<GatewayClientEventMap[K]>
@@ -95,6 +99,7 @@ export class GatewayClient {
         settled = true
         clearTimeout(timer)
         this.emit('status', 'connected')
+        this.startHeartbeat()
         resolve()
       }
 
@@ -104,6 +109,7 @@ export class GatewayClient {
 
       socket.onclose = (event) => {
         clearTimeout(timer)
+        this.stopHeartbeat()
         this.rejectAllPending(new Error(`Socket closed (${event.code})`))
         this.socket = null
         if (!this.manualClose && !settled) {
@@ -120,8 +126,47 @@ export class GatewayClient {
     })
   }
 
+  private startHeartbeat(): void {
+    this.stopHeartbeat()
+    // Client-side liveness: on a half-open/flaky link the browser never fires onclose,
+    // so RPCs would silently time out forever (zombie socket). Ping the gateway; if it
+    // doesn't answer in time, force-close to trigger the shim's reconnect.
+    this.heartbeatTimer = setInterval(() => {
+      const s = this.socket
+      // A missing socket, or one stuck mid-teardown that never fired onclose, is a zombie
+      // socket. Returning here (as this used to) meant the one mechanism designed to catch a
+      // dead link silently did nothing in precisely the case it exists for. Escalate so the
+      // consumer's reconnect driver actually runs. CONNECTING is legitimately transient.
+      if (!s) {
+        this.stopHeartbeat()
+        this.emit('status', 'disconnected', 'heartbeat: no socket')
+        return
+      }
+      if (s.readyState === WebSocket.CONNECTING) return
+      if (s.readyState !== WebSocket.OPEN) {
+        this.stopHeartbeat()
+        try { s.close() } catch { /* noop */ }
+        this.rejectAllPending(new Error('Socket not open (heartbeat)'))
+        this.socket = null
+        this.emit('status', 'disconnected', `heartbeat: readyState=${s.readyState}`)
+        return
+      }
+      this.request('gateway:ping', {}, HEARTBEAT_TIMEOUT_MS).catch(() => {
+        try { s.close() } catch { /* noop */ }
+      })
+    }, HEARTBEAT_INTERVAL_MS)
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
+    }
+  }
+
   disconnect(): void {
     this.manualClose = true
+    this.stopHeartbeat()
     if (!this.socket) return
     try {
       this.socket.close()

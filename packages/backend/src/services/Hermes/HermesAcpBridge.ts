@@ -106,17 +106,12 @@ export class HermesAcpBridge extends EventEmitter {
     this.loadSessionMap()
   }
 
-  private sshArgs(agentId: string, resumeId?: string): string[] {
-    const py = this.cfg.pythonBin ?? '/usr/local/lib/hermes-agent/venv/bin/python'
+  private bridgeArgs(agentId: string, resumeId?: string): string[] {
+    // Hermes is co-located — spawn the bridge LOCALLY (no ssh). The python binary is the spawn
+    // target (see startSession); these are its args.
     const bridge = this.cfg.bridgePath ?? '/opt/acp-bridge/acp-bridge.py'
     return [
-      '-i', this.cfg.sshKeyPath,
-      '-o', 'StrictHostKeyChecking=accept-new',
-      '-o', 'BatchMode=yes',
-      '-o', 'ServerAliveInterval=20',
-      '-o', 'ServerAliveCountMax=3',
-      `${this.cfg.user ?? 'root'}@${this.cfg.host}`,
-      py, bridge, '--profile', agentId,
+      bridge, '--profile', agentId,
       ...(resumeId ? ['--resume', resumeId] : []),
     ]
   }
@@ -129,7 +124,8 @@ export class HermesAcpBridge extends EventEmitter {
     if (existing && existing.proc.exitCode === null) return existing
 
     const resumeId = sessionKey ? this.persistedSessions[sessionKey]?.sessionId : undefined
-    const proc = spawn('ssh', this.sshArgs(agentId, resumeId), { stdio: ['pipe', 'pipe', 'pipe'] })
+    const py = this.cfg.pythonBin ?? '/usr/local/lib/hermes-agent/venv/bin/python'
+    const proc = spawn(py, this.bridgeArgs(agentId, resumeId), { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, HOME: '/root' } })
     const emitter = new EventEmitter()
     emitter.setMaxListeners(0)
 
@@ -336,16 +332,13 @@ export class HermesAcpBridge extends EventEmitter {
   /** Run the NATIVE Hermes tail-rewind helper on CT158 (drives SessionDB.rewind_to_message /
    *  get_messages — no source patching). Resolves the parsed JSON result (last stdout line). */
   private runRewindHelper(agentId: string, sessionId: string, action: 'peek' | 'rewind'): Promise<Record<string, unknown>> {
-    const user = this.cfg.user ?? 'root'
     const py = this.cfg.pythonBin ?? '/usr/local/lib/hermes-agent/venv/bin/python'
     const helper = (this.cfg.bridgePath ?? '/opt/acp-bridge/acp-bridge.py').replace(/[^/]+$/, 'hermes_rewind.py')
     const db = `${this.cfg.profilesDir ?? '/root/.hermes/profiles'}/${agentId}/state.db`
-    const args = [
-      '-i', this.cfg.sshKeyPath, '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
-      `${user}@${this.cfg.host}`, py, helper, '--db', db, '--session', sessionId, '--action', action,
-    ]
+    // Co-located: run the rewind helper LOCALLY (no ssh).
+    const args = [helper, '--db', db, '--session', sessionId, '--action', action]
     return new Promise((resolve, reject) => {
-      const p = spawn('ssh', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+      const p = spawn(py, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, HOME: '/root' } })
       let out = ''; let err = ''
       p.stdout.on('data', (d: Buffer) => { out += d.toString('utf8') })
       p.stderr.on('data', (d: Buffer) => { err += d.toString('utf8') })
@@ -382,14 +375,11 @@ export class HermesAcpBridge extends EventEmitter {
    *  and verify it's gone. Killing the local ssh does NOT reliably kill the remote, and a surviving
    *  process re-persists stale rows over our rewind (the clobber bug). Rejects if it can't confirm. */
   private remoteKillSession(sessionId: string): Promise<void> {
-    const user = this.cfg.user ?? 'root'
     const script = (this.cfg.bridgePath ?? '/opt/acp-bridge/acp-bridge.py').replace(/[^/]+$/, 'hard_stop.sh')
-    const args = [
-      '-i', this.cfg.sshKeyPath, '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
-      `${user}@${this.cfg.host}`, 'bash', script, sessionId,
-    ]
+    // Co-located: hermes runs LOCALLY, so hard_stop.sh kills the local hermes child by session id.
+    const args = [script, sessionId]
     return new Promise((resolve, reject) => {
-      const p = spawn('ssh', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+      const p = spawn('bash', args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, HOME: '/root' } })
       let err = ''
       p.stderr.on('data', (d: Buffer) => { err += d.toString('utf8') })
       p.on('error', reject)

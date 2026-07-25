@@ -889,6 +889,102 @@ export class HermesManagementService {
     return { endpoint, toolCount: included.length, gatewayRestarted }
   }
 
+  /** Where this agent's tool-group snapshots live. */
+  private toolBackupDir(): string | null {
+    return this.cfg.specsFile ? `${dirname(this.cfg.specsFile)}/agent-tool-backups` : null
+  }
+
+  /** Is the agent actually SERVING the tools its group says it has?
+   *
+   *  Hermes gives up permanently after 5 failed MCP reconnects ("failed after N reconnection
+   *  attempts, giving up") and then runs with no tools until its gateway is restarted — even
+   *  after the group is healthy again. That is invisible from the group alone, so compare the
+   *  group against the agent's own last registration and look for a give-up AFTER it. */
+  async getToolHealth(agentId: string): Promise<{
+    groupTools: number; registeredTools: number | null; gaveUp: boolean
+    gatewayActive: boolean; healthy: boolean; detail: string
+  }> {
+    const group = `agent-${agentId}`
+    const tools = (await readToolGroup(this.gatewayBase(), group)) ?? []
+    const groupTools = tools.length
+
+    const log = `${this.profileHome(agentId)}/logs/agent.log`
+    // Last registration line, and anything after it, in one hop.
+    const raw = await this.ssh(
+      `tail -n 4000 ${shq(log)} 2>/dev/null | grep -aE 'registered [0-9]+ tool\\(s\\) from|reconnection attempts, giving up' | tail -n 20 || true`,
+    ).catch(() => '')
+    let registeredTools: number | null = null
+    let gaveUp = false
+    for (const line of raw.split('\n')) {
+      const m = line.match(/registered (\d+) tool\(s\) from/)
+      if (m) { registeredTools = parseInt(m[1], 10); gaveUp = false; continue }
+      if (/reconnection attempts, giving up/.test(line)) gaveUp = true
+    }
+
+    const unit = `hermes-gateway-${agentId}`
+    const gatewayActive = (await this.ssh(`systemctl is-active ${shq(unit)} 2>/dev/null || true`).catch(() => '')).trim() === 'active'
+
+    // The agent's registration count includes MCP protocol built-ins (list_resources,
+    // read_resource, list_prompts, get_prompt) on top of the group's tools, so compare with
+    // that allowance rather than demanding equality.
+    const PROTOCOL_EXTRAS = 4
+    const matches = registeredTools !== null && registeredTools >= groupTools && registeredTools <= groupTools + PROTOCOL_EXTRAS
+    const healthy = !gaveUp && (registeredTools === null || matches)
+    const detail = gaveUp
+      ? 'Hermes stopped retrying its MCP connection and is running with no tools. Reconnect to restore them.'
+      : registeredTools === null
+        ? 'No registration seen in the agent log yet.'
+        : matches
+          ? `Serving ${registeredTools} tools for a group of ${groupTools}.`
+          : `Group has ${groupTools} tools but the agent last registered ${registeredTools} — it is out of date. Reconnect to resync.`
+    return { groupTools, registeredTools, gaveUp, gatewayActive, healthy, detail }
+  }
+
+  /** Restart the agent's messaging gateway so it re-reads config and reconnects its MCP link.
+   *  This is the ONLY way back from Hermes' permanent give-up without patching Hermes. */
+  async reconnectAgentTools(agentId: string): Promise<{ restarted: boolean }> {
+    return { restarted: await this.restartAgentGateway(agentId) }
+  }
+
+  /** Snapshots of this agent's tool group, newest first. */
+  async listToolBackups(agentId: string): Promise<Array<{ file: string; savedAt: string; toolCount: number }>> {
+    const dir = this.toolBackupDir()
+    if (!dir || !existsSync(dir)) return []
+    const out: Array<{ file: string; savedAt: string; toolCount: number }> = []
+    for (const f of readdirSync(dir)) {
+      if (!f.startsWith(`${agentId}-`) || !f.endsWith('.json')) continue
+      try {
+        const d = JSON.parse(readFileSync(`${dir}/${f}`, 'utf8')) as { savedAt?: string; included_tools?: string[] }
+        out.push({ file: f, savedAt: d.savedAt ?? '', toolCount: (d.included_tools ?? []).length })
+      } catch { /* skip an unreadable snapshot */ }
+    }
+    return out.sort((a, b) => b.file.localeCompare(a.file))
+  }
+
+  /** Restore a snapshot: rewrite the group, repoint, and reconnect the gateway. */
+  async restoreToolBackup(agentId: string, file: string): Promise<{ toolCount: number; gatewayRestarted: boolean }> {
+    if (!/^[A-Za-z0-9._-]+\.json$/.test(file)) throw new Error('bad snapshot name')
+    const dir = this.toolBackupDir()
+    if (!dir) throw new Error('no snapshot directory configured')
+    const path = `${dir}/${file}`
+    if (!existsSync(path)) throw new Error(`snapshot not found: ${file}`)
+    const snap = JSON.parse(readFileSync(path, 'utf8')) as { included_tools?: string[] }
+    const tools = snap.included_tools ?? []
+    if (!tools.length) throw new Error('snapshot is empty')
+    // Route through the same validated writer: a tool that has since been removed or disabled
+    // must not silently poison the restore.
+    const { included } = await (async () => {
+      const reg = await loadToolRegistry(this.gatewayBase())
+      const res = resolveSelection(tools, reg)
+      if (res.unknown.length) throw unknownToolsError(`agent-${agentId}`, res.unknown)
+      return res
+    })()
+    await writeToolGroup(this.gatewayBase(), `agent-${agentId}`, `AI-Lab tool set for ${agentId}`, included)
+    await this.repointGatewayServer(agentId, `${this.agentGatewayBase()}/v0/groups/agent-${agentId}/mcp`)
+    const gatewayRestarted = await this.restartAgentGateway(agentId)
+    return { toolCount: included.length, gatewayRestarted }
+  }
+
   /** Persist an agent's tool-group membership before we change it, so a botched save is always
    *  recoverable from disk. Keeps the last 10 snapshots per agent. Best-effort: never throws. */
   private backupToolGroup(agentId: string, tools: string[]): void {

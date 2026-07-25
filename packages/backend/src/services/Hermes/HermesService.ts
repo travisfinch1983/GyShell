@@ -94,6 +94,27 @@ export class HermesService {
     return this.mgmt.resetAgentTools(agentId).then(() => { this.bridge.reloadAgentSessions(agentId) })
   }
 
+  /** Is the agent actually serving the tools its group holds? (Hermes gives up on MCP
+   *  reconnect after 5 failures and then runs toolless until its gateway restarts.) */
+  getToolHealth(agentId: string) {
+    return this.mgmt.getToolHealth(agentId)
+  }
+
+  /** Restart the agent's gateway so it re-reads config and reconnects its MCP link. */
+  reconnectAgentTools(agentId: string) {
+    return this.mgmt.reconnectAgentTools(agentId).then((r) => { this.bridge.reloadAgentSessions(agentId); return r })
+  }
+
+  /** Tool-group snapshots taken before each change, newest first. */
+  listToolBackups(agentId: string) {
+    return this.mgmt.listToolBackups(agentId)
+  }
+
+  /** Restore a snapshot (revalidated against the live registry) and reconnect. */
+  restoreToolBackup(agentId: string, file: string) {
+    return this.mgmt.restoreToolBackup(agentId, file).then((r) => { this.bridge.reloadAgentSessions(agentId); return r })
+  }
+
   /** Reload an agent's live sessions to pick up config/tool changes (new tools, same history). */
   reloadAgentSessions(agentId: string): { reloaded: number; deferred: number } {
     return this.bridge.reloadAgentSessions(agentId)
