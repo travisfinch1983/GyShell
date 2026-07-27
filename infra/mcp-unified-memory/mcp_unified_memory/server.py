@@ -226,6 +226,117 @@ class WriteAheadLog:
 wal = WriteAheadLog(WAL_DIR)
 
 
+# ─── Embedding-model fingerprint → collection routing ────────────────────────
+# The SAME served model name can cover multiple quantisations (Qwen3-VL-Embedding-8B
+# is both the 4-bit and the FP8 build), and vectors from different builds are only
+# ~0.96 apart — close enough to look plausible while silently degrading ranking.
+# So we fingerprint on model_id + the weights `root` path the endpoint reports,
+# and route to the collections produced by THAT encoder.
+#
+# Resolution happens at CALL TIME from the endpoint actually in use, NOT from the
+# Support Models default — a tool pointed at a different embedder reaches its own
+# collections. Callers pass base_url/model_id; omitting them uses the default.
+#
+# ONLY QDRANT is suffixed. weaviate/chroma were never re-embedded, so they still
+# hold the original encoder's vectors natively and must be queried unsuffixed.
+FINGERPRINT_FILE = os.environ.get(
+    "FINGERPRINT_FILE",
+    os.path.join(os.environ.get("AILAB_PROXY_DATA_DIR", "/opt/ai-lab/.gybackend-data"),
+                 "collection-fingerprints.json"))
+_FP_TTL = 60.0
+_fp_cache: dict = {}
+_manifest_cache: tuple = (0.0, {})
+
+
+def fingerprint_manifest() -> dict:
+    """Live-read the fingerprint manifest. Never raises."""
+    global _manifest_cache
+    ts, data = _manifest_cache
+    now = time.time()
+    if now - ts < _FP_TTL and data:
+        return data
+    try:
+        with open(FINGERPRINT_FILE) as fh:
+            data = json.load(fh)
+    except Exception:
+        data = {}
+    _manifest_cache = (now, data)
+    return data
+
+
+def embed_fingerprint(base_url: str = "", model_id: str = "") -> str:
+    """sha1(model_id|root)[:12] for the embedder actually serving base_url.
+
+    The `root` (weights path) is what distinguishes quantisations of the same
+    served name. Returns "" if the endpoint cannot be interrogated — callers
+    then fall back to the default suffix rather than guessing wrong.
+    """
+    cfg = rag_model_cfg()
+    base = (base_url or cfg["embed_url"]).rstrip("/")
+    if base.endswith("/embeddings"):
+        base = base[: -len("/embeddings")]
+    mid = model_id or cfg["embed_model"]
+    key = f"{base}|{mid}"
+    now = time.time()
+    hit = _fp_cache.get(key)
+    if hit and hit[1] > now:
+        return hit[0]
+    fp = ""
+    try:
+        resp = get_client().get(f"{base}/models", timeout=8.0)
+        entry = next((m for m in (resp.json().get("data") or []) if m.get("id") == mid), None)
+        if entry is not None:
+            fp = hashlib.sha1(f"{mid}|{entry.get('root','')}".encode()).hexdigest()[:12]
+    except Exception as e:
+        print(f"[unified-memory] fingerprint probe failed for {base}: {e}")
+    _fp_cache[key] = (fp, now + _FP_TTL)
+    return fp
+
+
+def collection_suffix(base_url: str = "", model_id: str = "") -> str:
+    """Collection suffix for the embedder in use ('' = the default set)."""
+    man = fingerprint_manifest()
+    fp = embed_fingerprint(base_url, model_id)
+    entry = (man.get("by_fingerprint") or {}).get(fp)
+    if entry:
+        return entry.get("suffix", "") or ""
+    if fp:
+        print(f"[unified-memory] WARNING: embed fingerprint {fp} is not in "
+              f"{FINGERPRINT_FILE}; using the default collection set. Vectors may "
+              f"not match the query encoder.")
+    return man.get("default_suffix", "") or ""
+
+
+_qdrant_exists_cache: dict = {}
+
+
+def qdrant_collection(db: dict, name: str = "") -> str:
+    """Qdrant collection name for the ACTIVE embedder.
+
+    Falls back to the unsuffixed name if the fingerprinted twin does not exist
+    (e.g. a collection created after the fingerprinting was introduced), so a
+    missing twin degrades to today's behaviour instead of 404-ing.
+    """
+    base = name or COLLECTION_NAME
+    sfx = collection_suffix()
+    if not sfx:
+        return base
+    cand = f"{base}{sfx}"
+    key = f"{db['host']}:{db['port']}/{cand}"
+    now = time.time()
+    hit = _qdrant_exists_cache.get(key)
+    if hit and hit[1] > now:
+        return cand if hit[0] else base
+    ok = False
+    try:
+        r = get_client().get(f"http://{db['host']}:{db['port']}/collections/{cand}", timeout=6.0)
+        ok = r.status_code == 200
+    except Exception:
+        ok = False
+    _qdrant_exists_cache[key] = (ok, now + _FP_TTL)
+    return cand if ok else base
+
+
 # ─── Embedding ───────────────────────────────────────────────────────────────
 
 def vectorize(texts: list[str]) -> list[list[float]]:
@@ -271,7 +382,7 @@ def write_to_qdrant(client: httpx.Client, db: dict, memory_id: str, vector: list
     try:
         int_id = stable_point_id(memory_id)
         resp = client.put(
-            f"http://{db['host']}:{db['port']}/collections/{COLLECTION_NAME}/points",
+            f"http://{db['host']}:{db['port']}/collections/{qdrant_collection(db)}/points",
             json={"points": [{"id": int_id, "vector": vector, "payload": {**payload, "_memory_id": memory_id}}]},
             timeout=10.0,
         )
@@ -593,7 +704,7 @@ def search_openviking(query: str, k: int, user_id: str) -> list:
 def search_qdrant(client: httpx.Client, db: dict, query_vector: list, k: int) -> list:
     try:
         resp = client.post(
-            f"http://{db['host']}:{db['port']}/collections/{COLLECTION_NAME}/points/query",
+            f"http://{db['host']}:{db['port']}/collections/{qdrant_collection(db)}/points/query",
             json={"query": query_vector, "limit": k, "with_payload": True},
             timeout=15.0,
         )

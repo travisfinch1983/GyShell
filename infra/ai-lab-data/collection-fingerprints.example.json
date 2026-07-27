@@ -1,0 +1,26 @@
+{
+  "_comment": "Maps an embedding model's FINGERPRINT to the qdrant collection suffix holding vectors produced by it. Resolve at CALL TIME from the endpoint actually being used \u2014 NOT from the Support Models default \u2014 so a tool using a different model reaches its own collections.",
+  "_fingerprint_algorithm": "sha1(f'{model_id}|{root}')[:12], where model_id and root come from GET <embed_base>/models. The served NAME alone is insufficient \u2014 the same name covers multiple quants; the weights `root` path is what distinguishes them. NOTE the root path is a stable IDENTIFIER, not a trustworthy DESCRIPTION (the downloader files INT8 models under BF16-Safetensors/), so human labels below are assigned deliberately, never parsed from the path.",
+  "_id_warning": "Point IDs are NOT comparable across suffixes \u2014 1022 docs were re-keyed by the dedup fix 2026-07-25. Match on payload doc_id.",
+  "dimension": 4096,
+  "default_suffix": "",
+  "by_fingerprint": {
+    "58e89b948314": {
+      "suffix": "__bnb4",
+      "model": "Qwen3-VL-Embedding-8B",
+      "root": "/models/Qwen-3/8B-Embedding-VL/FP16-Safetensors",
+      "label": "V100 bnb-4bit (the ORIGINAL encoder)",
+      "verified": "2026-07-27: cosine 1.0000 against the __bnb4 collections, 0.956-0.962 against the un-suffixed set",
+      "collections": 74
+    }
+  },
+  "unresolved": {
+    "": {
+      "suffix": "",
+      "label": "5060 Ti FP8 re-embed of 2026-07-25",
+      "fingerprint": "UNKNOWN \u2014 its producer is not currently served; record it when the FP8 pool is next up",
+      "collections": 74,
+      "note": "Un-suffixed collections. Do NOT assume these match the active query encoder \u2014 as of 2026-07-27 they do not."
+    }
+  }
+}
