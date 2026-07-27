@@ -6320,7 +6320,7 @@ WantedBy=multi-user.target
         const fileName = f.path.split('/').pop();
 
         // README is handled separately below (copied into every quant subfolder), not placed at base.
-        if (category === 'llm' && !preserveStructure && fileName.toLowerCase() === 'readme.md') continue;
+        if (!preserveStructure && fileName.toLowerCase() === 'readme.md') continue;
 
         // Build filter for this specific file
         let hfFilter = fileName;
@@ -6356,7 +6356,14 @@ WantedBy=multi-user.target
           targetDir = hfDir ? `${base}/${hfDir}` : base;
         }
 
-        if (category === 'llm' && !preserveStructure) modelDirs.add(targetDir);
+        // Track every distinct folder that actually receives a model file, for ANY
+        // category — the README fans out into each of them below. Previously this was
+        // llm-only, so a multi-quant TTS/image-gen repo got no README in its quant
+        // folders even though the same self-contained-folder rule applies.
+        if (!preserveStructure && !fileName.toLowerCase().endsWith('.json')
+            && !fileName.toLowerCase().endsWith('.txt') && !fileName.toLowerCase().endsWith('.md')) {
+          modelDirs.add(targetDir);
+        }
         const entry = mkEntry(f, targetDir, fileName, hfFilter);
         manifest.downloads.push(entry);
         queued.push(entry);
@@ -6366,7 +6373,7 @@ WantedBy=multi-user.target
       // 4.00bpw, mmproj, ...) so each downloaded folder is self-contained — overwriting any existing
       // copy so README updates are captured. The README is never in hfSelectedFiles (the picker only
       // sends model files), so backfill it from the repo tree.
-      if (category === 'llm' && !preserveStructure && modelDirs.size) {
+      if (!preserveStructure && modelDirs.size) {
         let readme = (files || []).find(f => (f.path || '').split('/').pop().toLowerCase() === 'readme.md');
         if (!readme) {
           try {
