@@ -6331,21 +6331,29 @@ WantedBy=multi-user.target
 
         // Determine target directory based on category and file type
         let targetDir;
+        // The file's own directory INSIDE the HF repo, if it has one. Repos that ship
+        // several quants as sibling folders reuse identical filenames across them, so
+        // dropping this is silently destructive — each quant overwrites the last.
+        const hfDir = f.path.includes('/') ? f.path.substring(0, f.path.lastIndexOf('/')) : '';
         if (preserveStructure) {
-          const hfDir = f.path.includes('/') ? f.path.substring(0, f.path.lastIndexOf('/')) : '';
           targetDir = hfDir ? `${base}/${hfDir}` : base;
         } else if (category === 'llm') {
           if (fileName.toLowerCase().endsWith('.gguf')) {
             // GGUF: each quant level is its own subfolder (resolved per-file)
             targetDir = resolveLlmSubfolder(base, fileName, repo);
           } else if (llmWeightDir) {
-            // weights + their config/tokenizer sidecars co-locate in one folder
-            targetDir = llmWeightDir;
+            // Weights + their config/tokenizer sidecars co-locate in one folder, but KEEP
+            // the repo's own subfolder when it has one — otherwise a repo with several
+            // safetensors quants in sibling folders collapses into a single directory.
+            targetDir = hfDir ? `${llmWeightDir}/${hfDir}` : llmWeightDir;
           } else {
             targetDir = resolveLlmSubfolder(base, fileName, repo);
           }
         } else {
-          targetDir = base;
+          // Non-LLM (TTS, image-gen, ...): MIRROR the repo layout. Flattening to `base`
+          // here is what dumped a multi-quant TTS repo into one folder and overwrote each
+          // quant with the next. Mirroring can never collide; flattening can.
+          targetDir = hfDir ? `${base}/${hfDir}` : base;
         }
 
         if (category === 'llm' && !preserveStructure) modelDirs.add(targetDir);
