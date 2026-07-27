@@ -1,0 +1,60 @@
+# AI-Lab colocated memory stack — CT152.
+# Volumes live on the NAS (/zpoolgamma/docker-volume/ai-lab) so bulk data stays
+# out of the container backup, and the stack can be re-created anywhere that
+# mounts the same path. Versions PINNED to what is running today — do not bump
+# without checking on-disk format compatibility first.
+#
+# NOT STARTED YET: migrate each service's data in before `docker compose up`.
+# Volume dirs are chmod 0777 on purpose: this is an unprivileged LXC, so a
+# container's non-root uid maps to a host uid that owns nothing (verified —
+# uid 1000 got EPERM until 0777).
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.17.0
+    container_name: ailab-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"      # REST
+      - "6334:6334"      # gRPC
+    volumes:
+      - /zpoolgamma/docker-volume/ai-lab/qdrant:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  weaviate:
+    # NOTE: pin the tag to the CURRENTLY RUNNING weaviate version before first start.
+    image: cr.weaviate.io/semitechnologies/weaviate:1.28.4
+    container_name: ailab-weaviate
+    restart: unless-stopped
+    ports:
+      - "8087:8080"      # 8080 on the host is the AI-Lab MCP gateway — do NOT use it
+      - "50051:50051"    # gRPC
+    environment:
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      DEFAULT_VECTORIZER_MODULE: none
+      ENABLE_MODULES: ""
+      QUERY_MAXIMUM_RESULTS: "100000"
+    volumes:
+      - /zpoolgamma/docker-volume/ai-lab/weaviate:/var/lib/weaviate
+
+  chroma:
+    image: chromadb/chroma:1.0.0
+    container_name: ailab-chroma
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - /zpoolgamma/docker-volume/ai-lab/chroma:/data
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    # chromadb OOM-killed at 2GB during bulk ops and needed 8GB — see memory note.
+    deploy:
+      resources:
+        limits:
+          memory: 8G

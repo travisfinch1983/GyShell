@@ -1,0 +1,66 @@
+--- /opt/openviking/venv/lib/python3.13/site-packages/openviking/server/routers/search.py.bak-ovrecall-compact	2026-06-13 01:22:16.806047730 +0000
++++ /opt/openviking/venv/lib/python3.13/site-packages/openviking/server/routers/search.py	2026-06-13 01:22:16.983051075 +0000
+@@ -34,6 +34,47 @@
+     return obj
+ 
+ 
++# PATCH(ov-recall-compact 2026-06-13): recalled-memory abstracts are stored as
++# "Summary: <one-liner>\n<date> ChatLog: <full transcript>". Injecting the whole
++# abstract inflates the prompt ~80% (the consumer re-parses the ChatLog into 30+
++# messages) and empty-summary memories add pure noise. Compact each abstract to
++# the text BEFORE the ChatLog line, and drop memories whose summary is empty.
++def _compact_memory_abstract(ab: Any) -> Any:
++    if not isinstance(ab, str) or not ab:
++        return ab
++    lines = []
++    for ln in ab.splitlines():
++        if "ChatLog:" in ln:
++            break
++        lines.append(ln)
++    return "\n".join(lines).strip()
++
++
++def _recall_abstract_is_empty(ab: Any) -> bool:
++    if not isinstance(ab, str):
++        return True
++    body = ab.strip()
++    if body.lower().startswith("summary:"):
++        body = body[len("summary:"):].strip()
++    return body == ""
++
++
++def _compact_recall_result(result: Any) -> Any:
++    if not isinstance(result, dict):
++        return result
++    mems = result.get("memories")
++    if isinstance(mems, list):
++        kept = []
++        for m in mems:
++            if isinstance(m, dict) and "abstract" in m:
++                m["abstract"] = _compact_memory_abstract(m.get("abstract"))
++                if _recall_abstract_is_empty(m["abstract"]):
++                    continue  # drop empty-summary memory from recall injection
++            kept.append(m)
++        result["memories"] = kept
++    return result
++
++
+ router = APIRouter(prefix="/api/v1/search", tags=["search"])
+ TimeField = Literal["updated_at", "created_at"]
+ 
+@@ -153,6 +194,7 @@
+     if hasattr(result, "to_dict"):
+         result = result.to_dict(include_provenance=request.include_provenance)
+     result = _sanitize_floats(result)
++    result = _compact_recall_result(result)
+     return Response(
+         status="ok",
+         result=result,
+@@ -201,6 +243,7 @@
+     if hasattr(result, "to_dict"):
+         result = result.to_dict(include_provenance=request.include_provenance)
+     result = _sanitize_floats(result)
++    result = _compact_recall_result(result)
+     return Response(
+         status="ok",
+         result=result,

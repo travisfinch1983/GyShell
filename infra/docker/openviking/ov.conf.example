@@ -1,0 +1,36 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 1933,
+    "workers": 1,
+    "root_api_key": "CHANGEME_FROM_VAULT",
+    "cors_origins": ["*"]
+  },
+  "storage": {
+    "workspace": "/opt/openviking/workspace"
+  },
+  "embedding": {
+    "dense": {
+      "provider": "openai",
+      "model": "Qwen3-VL-Embedding-8B",
+      "api_base": "http://ai-lab:17890/api/proxy/embed/v1",
+      "api_key": "none",
+      "dimension": 4096,
+      "input": "multimodal"
+    },
+    "max_concurrent": 4,
+    "max_retries": 2,
+    "text_source": "content_only"
+  },
+  "vlm": {
+    "provider": "openai",
+    "_comment": "TODO derive from AI-Lab Support Models. The live value on CT156 pointed at Qwen3.6-35B-A3B-Uncen-...-AgentMode which was NOT SERVED as of 2026-07-27 — a third hardcoded-offline-model instance (see task #77).",
+    "model": "CHANGEME",
+    "api_base": "http://ai-lab:17890/api/proxy/llm/v1",
+    "api_key": "none",
+    "temperature": 0.0,
+    "timeout": 300.0,
+    "max_concurrent": 2
+  },
+  "log": { "level": "INFO" }
+}
