@@ -497,13 +497,13 @@ proxlab_log "Restoring \${PROXLAB_CACHE_COUNT} cached model dir(s) on host ..."
 
 # Run sequential copies in a background subshell so hookscript returns quickly
 (
-  for i in \\$(seq 0 \\$((\${PROXLAB_CACHE_COUNT} - 1))); do
+  for i in $(seq 0 $((\${PROXLAB_CACHE_COUNT} - 1))); do
     eval src="\\$PROXLAB_CACHE_\${i}_SRC"
     eval dst="\\$PROXLAB_CACHE_\${i}_DST"
-    [ -z "\\$src" ] || [ -z "\\$dst" ] && continue
-    proxlab_log "  Copying: \\$src -> \\$dst"
-    mkdir -p "\\$dst" && cp "\\$src"/*.gguf "\\$dst/"
-    proxlab_log "  Done: \\$dst"
+    [ -z "$src" ] || [ -z "$dst" ] && continue
+    proxlab_log "  Copying: $src -> $dst"
+    mkdir -p "$dst" && cp "$src"/*.gguf "$dst/"
+    proxlab_log "  Done: $dst"
   done
   proxlab_ok "All cache restores complete"
 ) &

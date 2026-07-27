@@ -348,13 +348,7 @@ export function createImagegenRouter(config) {
       : (ext === '.jpg' || ext === '.jpeg') ? 'image/jpeg' : 'application/octet-stream';
     // Optional downscale: ?maxdim=N caps the longest side (fit inside, no enlargement) and returns
     // webp. Used by the agent view_image tool to keep vision-token / KV cost sane on long runs.
-    // NB: only clamp when maxdim was ACTUALLY supplied. Folding the floor into the
-    // no-param case turns "serve the original" into Math.max(64, 0) === 64, i.e. every
-    // full-image request silently came back as a 64px thumbnail (smaller than /thumb).
-    const maxdimRaw = parseInt(String(req.query.maxdim || ''), 10);
-    const maxdim = Number.isFinite(maxdimRaw) && maxdimRaw > 0
-      ? Math.max(64, Math.min(4096, maxdimRaw))
-      : 0;
+    const maxdim = Math.max(64, Math.min(4096, parseInt(String(req.query.maxdim || ''), 10) || 0));
     if (maxdim) {
       try {
         const buf = await sharp(file).rotate()

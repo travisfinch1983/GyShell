@@ -22,6 +22,18 @@ const RENAMER_PATH = join(DATA_DIR, 'civitai-renamer.json');
 const HISTORY_PATH = join(DATA_DIR, 'civitai-history.json');
 const DOWNLOADS_PATH = join(DATA_DIR, 'civitai-downloads.json');
 
+// #3 Pause/resume the already-RUNNING curl processes for a source (SIGSTOP/SIGCONT).
+// The scheduler only gates NEW starts; without this, hitting Pause left active downloads running.
+function signalActiveDownloads(source, sig) {
+  const file = source === 'hf' ? join(DATA_DIR, 'hf-downloads.json') : DOWNLOADS_PATH;
+  try {
+    const m = JSON.parse(readFileSync(file, 'utf8'));
+    for (const d of (m.downloads || [])) {
+      if (d.status === 'downloading' && d.pid) { try { process.kill(d.pid, sig); } catch {} }
+    }
+  } catch {}
+}
+
 // ─── Download tracking (active downloads + temp session history) ──────────
 function loadDownloads() {
   try {
@@ -579,6 +591,12 @@ function processPendingDownloads() {
   for (const dl of manifest.downloads) {
     if (slots <= 0) break;
     if (dl.status !== 'pending') continue;
+    // #4 Skip files that already exist AND match the expected size (parity with HF fix #1).
+    if (dl.targetFile && existsSync(dl.targetFile) && dl.size > 0 && statSync(dl.targetFile).size === dl.size) {
+      dl.status = 'complete'; dl.skipped = true; dl.completedAt = new Date().toISOString();
+      console.log(`[civitai] Skip (already complete, ${dl.size}B): ${dl.targetFile}`);
+      continue;
+    }
     const pid = spawnCurl(dl.dlUrl, dl.targetFile, null);
     if (pid) {
       dl.pid = pid;
@@ -1480,7 +1498,12 @@ export function createCivitaiRouter(config, sshService) {
   // ─── Active Download Tracking ─────────────────────────────────────────
 
   /** GET /downloads — Poll active downloads with live progress */
-  router.get('/downloads', (req, res) => {
+  // Backend-driven reconciler (mirrors HF reconcileHfDownloads): reap finished civ downloads
+  // (dead-PID -> complete/failed/requeue) + advance the pending queue, on a setInterval below so the
+  // queue ALWAYS progresses with NO browser tab and across UI restarts (curl runs under systemd-run
+  // --scope). The GET /downloads route calls it too, so the live view stays authoritative.
+  function reconcileCivDownloads() {
+    try {
     const manifest = loadDownloads();
     let changed = false;
     const now = Date.now();
@@ -1582,6 +1605,19 @@ export function createCivitaiRouter(config, sshService) {
     // Start pending downloads if slots are available
     processPendingDownloads();
 
+      return manifest;
+    } catch (e) {
+      console.error('[civitai] reconcile error:', e.message);
+      return loadDownloads();
+    }
+  }
+  if (!globalThis.__civReconcileTimer) {
+    globalThis.__civReconcileTimer = setInterval(() => { reconcileCivDownloads(); }, 5000);
+    if (globalThis.__civReconcileTimer.unref) globalThis.__civReconcileTimer.unref();
+  }
+
+  router.get('/downloads', (req, res) => {
+    const manifest = reconcileCivDownloads();
     // Annotate pending/downloading items with extra UI info
     const enriched = manifest.downloads.map(dl => {
       const out = { ...dl };
@@ -2462,10 +2498,15 @@ export function createCivitaiRouter(config, sshService) {
     if (!['hf', 'civ'].includes(source)) return res.status(400).json({ error: 'source must be hf or civ' });
     const sched = loadScheduler();
     const { mode, manualState, schedule } = req.body;
+    const prevManual = sched[source].manualState;
     if (mode !== undefined) sched[source].mode = mode;
     if (manualState !== undefined) sched[source].manualState = manualState;
     if (schedule !== undefined) sched[source].schedule = schedule;
     saveScheduler(sched);
+    // #3 Also SIGSTOP/SIGCONT the already-running downloads (not just gate new starts).
+    if (manualState !== undefined && manualState !== prevManual) {
+      signalActiveDownloads(source, manualState === 'paused' ? 'SIGSTOP' : 'SIGCONT');
+    }
     res.json({ ok: true, allowed: isDownloadAllowed(source) });
   });
 

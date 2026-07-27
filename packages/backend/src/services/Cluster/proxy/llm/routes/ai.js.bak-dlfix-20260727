@@ -5954,20 +5954,6 @@ WantedBy=multi-user.target
       const url = `https://huggingface.co/${next.repo}/resolve/${revision}/${hfPath}`;
       const targetFile = join(next.targetDir, next.fileName);
 
-      // Skip files that are ALREADY COMPLETE — do not re-download or overwrite.
-      // Ported from the extracted-but-never-wired hf-download.js; the live path
-      // lost this in the ProxLab migration. Without it, re-queuing a repo
-      // re-fetches finished shards, which on a multi-TB repo is catastrophic.
-      if (existsSync(targetFile) && next.size > 0 && statSync(targetFile).size === next.size) {
-        next.status = 'complete';
-        next.completedAt = new Date().toISOString();
-        next.skipped = true;
-        next.pid = null;
-        console.log(`[hf-download] Skip (already complete, ${next.size}B): ${next.fileName}`);
-        saveHfDownloads(manifest);
-        continue;
-      }
-
       // curl: single-connection, resume-capable, reliable per-file download.
       // Download to .part file, resume with -C -, rename to final on success.
       const partFile = targetFile + '.part';
@@ -6033,152 +6019,6 @@ WantedBy=multi-user.target
       setTimeout(() => processHfQueue(node), 2000);
     }
   }
-
-  /** Reap finished/failed downloads and refresh progress. Extracted from the
-   *  GET /hf/downloads handler so the BACKEND can run it on a timer.
-   *
-   *  This was the missing half of the queue fix: the ticker started queued items,
-   *  but nothing marked finished ones complete, so their slots were never freed and
-   *  the queue still stalled without a poll. (An extracted-but-never-imported
-   *  proxy/hf-download.js already had exactly this as reconcileHfDownloads() — the
-   *  duplicate module meant the fix was written but never ran.)
-   *  The GET route calls it too, so a live view stays authoritative. */
-  async function reconcileHfDownloads() {
-    const manifest = loadHfDownloads();
-    // Check progress for active downloads
-    for (const dl of manifest.downloads) {
-      if (dl.status !== 'downloading' || !dl.pid) continue;
-
-      try {
-        // Check if process is still running (local)
-        let isRunning = false;
-        try {
-          process.kill(dl.pid, 0); // signal 0 = just check if alive
-          isRunning = true;
-        } catch { isRunning = false; }
-
-        // Get downloaded file size — check both .part (in-progress) and final path
-        let currentSize = 0;
-        const targetFile = join(dl.targetDir, dl.fileName);
-        const partFile = targetFile + '.part';
-        try {
-          if (existsSync(partFile)) {
-            currentSize = statSync(partFile).size;
-          } else if (existsSync(targetFile)) {
-            currentSize = statSync(targetFile).size;
-          }
-        } catch {}
-
-        // Track speed
-        const now = Date.now();
-        const lastPoll = dl._lastPollTime || now;
-        const lastSize = dl._lastPollSize || 0;
-        const elapsed = (now - lastPoll) / 1000;
-        if (elapsed > 0 && currentSize > lastSize) {
-          dl.speed = Math.round((currentSize - lastSize) / elapsed);
-        } else if (elapsed > 10) {
-          dl.speed = 0;
-        }
-        dl._lastPollTime = now;
-        dl._lastPollSize = currentSize;
-
-        if (!isRunning) {
-          // Process finished — check if curl succeeded (final file exists, .part gone)
-          const finalExists = existsSync(targetFile);
-          const partExists = existsSync(partFile);
-          let finalSize = 0;
-          try { if (finalExists) finalSize = statSync(targetFile).size; } catch {}
-
-          const expectedSize = dl.size || 0;
-          const isComplete = finalExists && !partExists && (
-            expectedSize > 0 ? (finalSize >= expectedSize * 0.95) : (finalSize > 1000)
-          );
-
-          let logContent = '';
-          try {
-            logContent = cleanCurlLog(readFileSync(`/tmp/hfdl-${dl.id}.log`, 'utf8'));
-          } catch {}
-
-          if (isComplete) {
-            dl.status = 'complete';
-            dl.progress = finalSize;
-            dl.completedAt = new Date().toISOString();
-            fixDownloadPermissions(dl.targetDir, dl.fileName);
-            // Parse format/quant from filename for history
-            const parsed = parseFileTarget(dl.fileName);
-            dl.format = parsed.format;
-            dl.quant = parsed.quant;
-            addToHfHistory(dl);
-            // Enrich with repo metadata in background (non-blocking)
-            enrichHfHistoryEntry({ repo: dl.repo, fileName: dl.fileName, completedAt: dl.completedAt }).catch(() => {});
-          } else if (partExists && currentSize > 0) {
-            // Incomplete but has partial data — auto-requeue for resume
-            dl.status = 'queued';
-            dl.pid = null;
-            dl.error = null;
-          } else if (logContent.includes('error') || logContent.includes('Error') || logContent.includes('failed') || currentSize === 0) {
-            dl.status = 'failed';
-            dl.error = logContent || 'Download failed — no output';
-          } else {
-            dl.status = 'failed';
-            const exp = expectedSize ? `${expectedSize}` : 'unknown';
-            dl.error = `Download incomplete: got ${finalSize || currentSize} of ${exp} bytes${logContent ? ` — ${logContent}` : ''}`;
-          }
-          dl.checkFailures = 0;
-          saveHfDownloads(manifest);
-          processHfQueue(dl.node);
-        } else {
-          dl.progress = currentSize;
-          dl.checkFailures = 0;
-          saveHfDownloads(manifest);
-        }
-      } catch (err) {
-        dl.checkFailures = (dl.checkFailures || 0) + 1;
-        if (dl.checkFailures >= 3) {
-          dl.status = 'failed';
-          dl.error = `Check failed: ${err.message}`;
-          saveHfDownloads(manifest);
-          processHfQueue(dl.node);
-        }
-      }
-    }
-
-  }
-
-  // ─── Backend-driven queue ticker ───
-  // The HF queue used to advance ONLY inside the GET /hf/downloads poll handler
-  // ("Process queue on every poll"), so queued files never started unless
-  // somebody had the Downloads page open — which is exactly the symptom of
-  // downloads that "wouldn't start until I navigated back to the page", and a
-  // violation of core rule #1 (the browser must not drive anything).
-  //
-  // Individual transfers were already safe: each runs under `systemd-run --scope`
-  // with `curl -C -`, so a started file survives a backend restart and resumes.
-  // It was only the QUEUE that stalled. This kicks it on boot and on a timer.
-  const HF_TICK_MS = Number(process.env.HF_QUEUE_TICK_MS || 15000);
-  let _hfTickBusy = false;
-  async function hfQueueTick() {
-    if (_hfTickBusy) return;
-    _hfTickBusy = true;
-    try {
-      // Reap finished/failed first so slots are freed, THEN start queued items.
-      try { await reconcileHfDownloads(); } catch (e) { console.warn(`[hf-download] reconcile failed: ${e.message}`); }
-      const manifest = loadHfDownloads();
-      const queued = (manifest.downloads || []).filter(d => d.status === 'queued');
-      if (queued.length) {
-        const nodes = [...new Set(queued.map(d => d.node || '_local'))];
-        for (const n of nodes) await processHfQueue(n);
-      }
-    } catch (e) {
-      console.warn(`[hf-download] queue tick failed: ${e.message}`);
-    } finally {
-      _hfTickBusy = false;
-    }
-  }
-  setTimeout(hfQueueTick, 5000);
-  const _hfTimer = setInterval(hfQueueTick, HF_TICK_MS);
-  if (typeof _hfTimer.unref === 'function') _hfTimer.unref();
-  console.log(`[hf-download] queue ticker armed (every ${HF_TICK_MS}ms) — downloads now progress with no page open`);
 
   /** Resolve a smart download destination from category + destType + file-manager config.
    *  Falls back to legacy /models/{family} path if file-manager config not available. */
@@ -6289,21 +6129,6 @@ WantedBy=multi-user.target
         return `${base}/NVFP4`;
       }
 
-      // Weight-only INT quants that are NOT gptq/awq-named: compressed-tensors
-      // (llm-compressor), AutoRound, Quark, W8A16/W4A16/W8A8 naming, plain INT8/INT4.
-      // MUST come before the FP16/BF16 default — otherwise these land in
-      // BF16-Safetensors and the model cacher reports them as full-precision BF16
-      // (wrong size + quant), which is why an INT8 W8A16 download filed itself as
-      // "BF16 / 0MB" and would not cache.
-      const wa = repoLower.match(/w(\d+)a(\d+)/) || lower.match(/w(\d+)a(\d+)/);
-      if (wa) return `${base}/W${wa[1]}A${wa[2]}`;
-      if (lower.includes('int8') || repoLower.includes('int8')
-          || repoLower.includes('compressed-tensors') || repoLower.includes('compressed_tensors')) {
-        return `${base}/INT8`;
-      }
-      if (lower.includes('int4') || repoLower.includes('int4')) return `${base}/INT4`;
-      if (repoLower.includes('autoround')) return `${base}/AutoRound`;
-
       // FP16 vs BF16 detection
       if (lower.includes('fp16') || repoLower.includes('fp16')) {
         return `${base}/FP16-Safetensors`;
@@ -6400,35 +6225,6 @@ WantedBy=multi-user.target
         }
       }
 
-      // ─── Auto-include EVERY small file (Travis's rule, 2026-07-27) ───
-      // Policy: anything <= HF_AUTO_MAX_BYTES is downloaded automatically and never
-      // needs picking; only files ABOVE that threshold require manual selection (and
-      // those are listed regardless of extension). This replaces the old
-      // extension-based "extras" guess, which bucketed required runtime metadata as
-      // optional and shipped unloadable models.
-      // Enforced HERE, at queue time, so it holds no matter what the UI sent.
-      const HF_AUTO_MAX_BYTES = Number(process.env.HF_AUTO_MAX_BYTES || 100 * 1024 * 1024);
-      try {
-        const tree = await walkHfTree(repo, revision, effectiveToken);
-        const havePaths = new Set((files || []).map(f => f.path));
-        let autoAdded = 0;
-        for (const t of tree) {
-          const sz = t.size || 0;
-          // GGUF is always a deliberate per-quant choice — never auto-pull it even if small.
-          if ((t.path || '').toLowerCase().endsWith('.gguf')) continue;
-          if (sz > 0 && sz <= HF_AUTO_MAX_BYTES && !havePaths.has(t.path)) {
-            files.push({ path: t.path, size: sz });
-            havePaths.add(t.path);
-            autoAdded++;
-          }
-        }
-        if (autoAdded) {
-          console.log(`[hf-download] auto-included ${autoAdded} file(s) <= ${(HF_AUTO_MAX_BYTES/1048576).toFixed(0)}MB for ${repo}`);
-        }
-      } catch (e) {
-        console.warn(`[hf-download] small-file auto-include skipped for ${repo}: ${e.message}`);
-      }
-
       const mkEntry = (f, targetDir, fileName, hfFilter) => ({
         id: Math.random().toString(16).slice(2, 10),
         repo, revision, fileName, hfPath: f.path, hfFilter,
@@ -6448,7 +6244,7 @@ WantedBy=multi-user.target
         const fileName = f.path.split('/').pop();
 
         // README is handled separately below (copied into every quant subfolder), not placed at base.
-        if (!preserveStructure && fileName.toLowerCase() === 'readme.md') continue;
+        if (category === 'llm' && !preserveStructure && fileName.toLowerCase() === 'readme.md') continue;
 
         // Build filter for this specific file
         let hfFilter = fileName;
@@ -6459,39 +6255,24 @@ WantedBy=multi-user.target
 
         // Determine target directory based on category and file type
         let targetDir;
-        // The file's own directory INSIDE the HF repo, if it has one. Repos that ship
-        // several quants as sibling folders reuse identical filenames across them, so
-        // dropping this is silently destructive — each quant overwrites the last.
-        const hfDir = f.path.includes('/') ? f.path.substring(0, f.path.lastIndexOf('/')) : '';
         if (preserveStructure) {
+          const hfDir = f.path.includes('/') ? f.path.substring(0, f.path.lastIndexOf('/')) : '';
           targetDir = hfDir ? `${base}/${hfDir}` : base;
         } else if (category === 'llm') {
           if (fileName.toLowerCase().endsWith('.gguf')) {
             // GGUF: each quant level is its own subfolder (resolved per-file)
             targetDir = resolveLlmSubfolder(base, fileName, repo);
           } else if (llmWeightDir) {
-            // Weights + their config/tokenizer sidecars co-locate in one folder, but KEEP
-            // the repo's own subfolder when it has one — otherwise a repo with several
-            // safetensors quants in sibling folders collapses into a single directory.
-            targetDir = hfDir ? `${llmWeightDir}/${hfDir}` : llmWeightDir;
+            // weights + their config/tokenizer sidecars co-locate in one folder
+            targetDir = llmWeightDir;
           } else {
             targetDir = resolveLlmSubfolder(base, fileName, repo);
           }
         } else {
-          // Non-LLM (TTS, image-gen, ...): MIRROR the repo layout. Flattening to `base`
-          // here is what dumped a multi-quant TTS repo into one folder and overwrote each
-          // quant with the next. Mirroring can never collide; flattening can.
-          targetDir = hfDir ? `${base}/${hfDir}` : base;
+          targetDir = base;
         }
 
-        // Track every distinct folder that actually receives a model file, for ANY
-        // category — the README fans out into each of them below. Previously this was
-        // llm-only, so a multi-quant TTS/image-gen repo got no README in its quant
-        // folders even though the same self-contained-folder rule applies.
-        if (!preserveStructure && !fileName.toLowerCase().endsWith('.json')
-            && !fileName.toLowerCase().endsWith('.txt') && !fileName.toLowerCase().endsWith('.md')) {
-          modelDirs.add(targetDir);
-        }
+        if (category === 'llm' && !preserveStructure) modelDirs.add(targetDir);
         const entry = mkEntry(f, targetDir, fileName, hfFilter);
         manifest.downloads.push(entry);
         queued.push(entry);
@@ -6501,7 +6282,7 @@ WantedBy=multi-user.target
       // 4.00bpw, mmproj, ...) so each downloaded folder is self-contained — overwriting any existing
       // copy so README updates are captured. The README is never in hfSelectedFiles (the picker only
       // sends model files), so backfill it from the repo tree.
-      if (!preserveStructure && modelDirs.size) {
+      if (category === 'llm' && !preserveStructure && modelDirs.size) {
         let readme = (files || []).find(f => (f.path || '').split('/').pop().toLowerCase() === 'readme.md');
         if (!readme) {
           try {
@@ -6532,12 +6313,105 @@ WantedBy=multi-user.target
   /** GET /hf/downloads — Poll download status with live progress */
   router.get('/hf/downloads', async (req, res) => {
     try {
-
-
-      // Reap finished/failed downloads + refresh progress. Same function the backend
-      // ticker runs, so the poll view and the headless path can never diverge.
-      await reconcileHfDownloads();
       const manifest = loadHfDownloads();
+
+      // Check progress for active downloads
+      for (const dl of manifest.downloads) {
+        if (dl.status !== 'downloading' || !dl.pid) continue;
+
+        try {
+          // Check if process is still running (local)
+          let isRunning = false;
+          try {
+            process.kill(dl.pid, 0); // signal 0 = just check if alive
+            isRunning = true;
+          } catch { isRunning = false; }
+
+          // Get downloaded file size — check both .part (in-progress) and final path
+          let currentSize = 0;
+          const targetFile = join(dl.targetDir, dl.fileName);
+          const partFile = targetFile + '.part';
+          try {
+            if (existsSync(partFile)) {
+              currentSize = statSync(partFile).size;
+            } else if (existsSync(targetFile)) {
+              currentSize = statSync(targetFile).size;
+            }
+          } catch {}
+
+          // Track speed
+          const now = Date.now();
+          const lastPoll = dl._lastPollTime || now;
+          const lastSize = dl._lastPollSize || 0;
+          const elapsed = (now - lastPoll) / 1000;
+          if (elapsed > 0 && currentSize > lastSize) {
+            dl.speed = Math.round((currentSize - lastSize) / elapsed);
+          } else if (elapsed > 10) {
+            dl.speed = 0;
+          }
+          dl._lastPollTime = now;
+          dl._lastPollSize = currentSize;
+
+          if (!isRunning) {
+            // Process finished — check if curl succeeded (final file exists, .part gone)
+            const finalExists = existsSync(targetFile);
+            const partExists = existsSync(partFile);
+            let finalSize = 0;
+            try { if (finalExists) finalSize = statSync(targetFile).size; } catch {}
+
+            const expectedSize = dl.size || 0;
+            const isComplete = finalExists && !partExists && (
+              expectedSize > 0 ? (finalSize >= expectedSize * 0.95) : (finalSize > 1000)
+            );
+
+            let logContent = '';
+            try {
+              logContent = cleanCurlLog(readFileSync(`/tmp/hfdl-${dl.id}.log`, 'utf8'));
+            } catch {}
+
+            if (isComplete) {
+              dl.status = 'complete';
+              dl.progress = finalSize;
+              dl.completedAt = new Date().toISOString();
+              fixDownloadPermissions(dl.targetDir, dl.fileName);
+              // Parse format/quant from filename for history
+              const parsed = parseFileTarget(dl.fileName);
+              dl.format = parsed.format;
+              dl.quant = parsed.quant;
+              addToHfHistory(dl);
+              // Enrich with repo metadata in background (non-blocking)
+              enrichHfHistoryEntry({ repo: dl.repo, fileName: dl.fileName, completedAt: dl.completedAt }).catch(() => {});
+            } else if (partExists && currentSize > 0) {
+              // Incomplete but has partial data — auto-requeue for resume
+              dl.status = 'queued';
+              dl.pid = null;
+              dl.error = null;
+            } else if (logContent.includes('error') || logContent.includes('Error') || logContent.includes('failed') || currentSize === 0) {
+              dl.status = 'failed';
+              dl.error = logContent || 'Download failed — no output';
+            } else {
+              dl.status = 'failed';
+              const exp = expectedSize ? `${expectedSize}` : 'unknown';
+              dl.error = `Download incomplete: got ${finalSize || currentSize} of ${exp} bytes${logContent ? ` — ${logContent}` : ''}`;
+            }
+            dl.checkFailures = 0;
+            saveHfDownloads(manifest);
+            processHfQueue(dl.node);
+          } else {
+            dl.progress = currentSize;
+            dl.checkFailures = 0;
+            saveHfDownloads(manifest);
+          }
+        } catch (err) {
+          dl.checkFailures = (dl.checkFailures || 0) + 1;
+          if (dl.checkFailures >= 3) {
+            dl.status = 'failed';
+            dl.error = `Check failed: ${err.message}`;
+            saveHfDownloads(manifest);
+            processHfQueue(dl.node);
+          }
+        }
+      }
 
       // Process queue on every poll — start queued items if slots available
       const hasQueued = manifest.downloads.some(d => d.status === 'queued');
