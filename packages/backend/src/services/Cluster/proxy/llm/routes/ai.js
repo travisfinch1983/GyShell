@@ -6272,6 +6272,35 @@ WantedBy=multi-user.target
         }
       }
 
+      // ─── Auto-include EVERY small file (Travis's rule, 2026-07-27) ───
+      // Policy: anything <= HF_AUTO_MAX_BYTES is downloaded automatically and never
+      // needs picking; only files ABOVE that threshold require manual selection (and
+      // those are listed regardless of extension). This replaces the old
+      // extension-based "extras" guess, which bucketed required runtime metadata as
+      // optional and shipped unloadable models.
+      // Enforced HERE, at queue time, so it holds no matter what the UI sent.
+      const HF_AUTO_MAX_BYTES = Number(process.env.HF_AUTO_MAX_BYTES || 100 * 1024 * 1024);
+      try {
+        const tree = await walkHfTree(repo, revision, effectiveToken);
+        const havePaths = new Set((files || []).map(f => f.path));
+        let autoAdded = 0;
+        for (const t of tree) {
+          const sz = t.size || 0;
+          // GGUF is always a deliberate per-quant choice — never auto-pull it even if small.
+          if ((t.path || '').toLowerCase().endsWith('.gguf')) continue;
+          if (sz > 0 && sz <= HF_AUTO_MAX_BYTES && !havePaths.has(t.path)) {
+            files.push({ path: t.path, size: sz });
+            havePaths.add(t.path);
+            autoAdded++;
+          }
+        }
+        if (autoAdded) {
+          console.log(`[hf-download] auto-included ${autoAdded} file(s) <= ${(HF_AUTO_MAX_BYTES/1048576).toFixed(0)}MB for ${repo}`);
+        }
+      } catch (e) {
+        console.warn(`[hf-download] small-file auto-include skipped for ${repo}: ${e.message}`);
+      }
+
       const mkEntry = (f, targetDir, fileName, hfFilter) => ({
         id: Math.random().toString(16).slice(2, 10),
         repo, revision, fileName, hfPath: f.path, hfFilter,
