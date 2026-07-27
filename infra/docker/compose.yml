@@ -100,7 +100,8 @@ services:
     ports:
       - "1933:1933"
     volumes:
-      - /zpoolgamma/docker-volume/ai-lab/openviking:/opt/openviking/workspace
+      # Mount the PARENT: the entrypoint picks <root>/<embed-fingerprint> at start.
+      - /zpoolgamma/docker-volume/ai-lab/openviking:/opt/openviking/workspaces
       # Config carries root_api_key — kept OUT of the repo, mounted read-only.
       - /opt/ai-lab-secrets/openviking/ov.conf:/root/.openviking/ov.conf:ro
 

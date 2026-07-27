@@ -40,6 +40,9 @@ RUN set -e; \
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 1933
-# storage.workspace in ov.conf must point at the mounted volume.
-VOLUME ["/opt/openviking/workspace"]
-CMD ["openviking-server", "--config", "/root/.openviking/ov.conf"]
+# storage.workspace is set AT RUNTIME by the entrypoint (per-fingerprint).
+VOLUME ["/opt/openviking/workspaces"]
+# Entrypoint resolves the workspace from the embedding model's fingerprint, so
+# each encoder gets its own index instead of contaminating a shared one.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
