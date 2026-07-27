@@ -293,18 +293,32 @@ def embed_fingerprint(base_url: str = "", model_id: str = "") -> str:
     return fp
 
 
-def collection_suffix(base_url: str = "", model_id: str = "") -> str:
-    """Collection suffix for the embedder in use ('' = the default set)."""
+def collection_suffix(backend: str = "qdrant", base_url: str = "", model_id: str = "") -> str:
+    """Collection suffix for the embedder in use, FOR A GIVEN BACKEND.
+
+    The suffix is per-backend because the same encoding can live under different
+    physical names in each store: qdrant's 4-bit set is suffixed (__bnb4) because
+    the FP8 re-embed took the un-suffixed names, while weaviate/chroma were never
+    re-embedded so their 4-bit data is still the base name. When weaviate/chroma
+    are re-embedded the mapping INVERTS for them — hence a map, not a scalar.
+    '' means "use the base name".
+    """
     man = fingerprint_manifest()
     fp = embed_fingerprint(base_url, model_id)
     entry = (man.get("by_fingerprint") or {}).get(fp)
     if entry:
-        return entry.get("suffix", "") or ""
+        sfx = entry.get("suffix", "")
+        if isinstance(sfx, dict):
+            return sfx.get(backend, "") or ""
+        return sfx or ""          # tolerate the older scalar form
     if fp:
         print(f"[unified-memory] WARNING: embed fingerprint {fp} is not in "
-              f"{FINGERPRINT_FILE}; using the default collection set. Vectors may "
-              f"not match the query encoder.")
-    return man.get("default_suffix", "") or ""
+              f"{FINGERPRINT_FILE}; using the base collection names for "
+              f"{backend}. Vectors may not match the query encoder.")
+    dflt = man.get("default_suffix", "")
+    if isinstance(dflt, dict):
+        return dflt.get(backend, "") or ""
+    return dflt or ""
 
 
 _qdrant_exists_cache: dict = {}
@@ -318,7 +332,7 @@ def qdrant_collection(db: dict, name: str = "") -> str:
     missing twin degrades to today's behaviour instead of 404-ing.
     """
     base = name or COLLECTION_NAME
-    sfx = collection_suffix()
+    sfx = collection_suffix("qdrant")
     if not sfx:
         return base
     cand = f"{base}{sfx}"

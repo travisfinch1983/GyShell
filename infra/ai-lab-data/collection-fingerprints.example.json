@@ -1,17 +1,29 @@
 {
-  "_comment": "Maps an embedding model's FINGERPRINT to the qdrant collection suffix holding vectors produced by it. Resolve at CALL TIME from the endpoint actually being used \u2014 NOT from the Support Models default \u2014 so a tool using a different model reaches its own collections.",
+  "_comment": "Maps an embedding model's FINGERPRINT to the collection suffix holding vectors produced by it, PER BACKEND. Resolve at CALL TIME from the endpoint actually in use, not from the Support Models default, so a tool using a different model reaches its own collections.",
   "_fingerprint_algorithm": "sha1(f'{model_id}|{root}')[:12], where model_id and root come from GET <embed_base>/models. The served NAME alone is insufficient \u2014 the same name covers multiple quants; the weights `root` path is what distinguishes them. NOTE the root path is a stable IDENTIFIER, not a trustworthy DESCRIPTION (the downloader files INT8 models under BF16-Safetensors/), so human labels below are assigned deliberately, never parsed from the path.",
   "_id_warning": "Point IDs are NOT comparable across suffixes \u2014 1022 docs were re-keyed by the dedup fix 2026-07-25. Match on payload doc_id.",
   "dimension": 4096,
-  "default_suffix": "",
+  "default_suffix": {
+    "qdrant": "",
+    "weaviate": "",
+    "chromadb": ""
+  },
   "by_fingerprint": {
     "58e89b948314": {
-      "suffix": "__bnb4",
+      "label": "V100 bnb-4bit (the ORIGINAL encoder)",
       "model": "Qwen3-VL-Embedding-8B",
       "root": "/models/Qwen-3/8B-Embedding-VL/FP16-Safetensors",
-      "label": "V100 bnb-4bit (the ORIGINAL encoder)",
       "verified": "2026-07-27: cosine 1.0000 against the __bnb4 collections, 0.956-0.962 against the un-suffixed set",
-      "collections": 74
+      "suffix": {
+        "qdrant": "__bnb4",
+        "weaviate": "",
+        "chromadb": ""
+      },
+      "collections": {
+        "qdrant": 74,
+        "weaviate": 64,
+        "chromadb": 67
+      }
     }
   },
   "unresolved": {
@@ -21,6 +33,19 @@
       "fingerprint": "UNKNOWN \u2014 its producer is not currently served; record it when the FP8 pool is next up",
       "collections": 74,
       "note": "Un-suffixed collections. Do NOT assume these match the active query encoder \u2014 as of 2026-07-27 they do not."
+    }
+  },
+  "_per_backend_note": "The suffix differs per backend because the same encoding can sit under different physical names. Right now qdrant's 4-bit set is SUFFIXED (__bnb4) because the FP8 re-embed took the un-suffixed names, whereas weaviate/chroma were never re-embedded so their 4-bit data is still the BASE name. Renaming to make them uniform is not worth it \u2014 weaviate classes cannot be renamed in place (you would copy 64 classes / ~6GB), so we encode the difference here instead.",
+  "planned": {
+    "_comment": "When the 5060 Ti FP8 embedder returns (next weekend) and weaviate/chroma get re-embedded, add its fingerprint here. Expected shape \u2014 note the INVERSION vs bnb4:",
+    "<fp8-fingerprint-TBD>": {
+      "label": "5060 Ti FP8",
+      "suffix": {
+        "qdrant": "",
+        "weaviate": "__fp8",
+        "chromadb": "__fp8"
+      },
+      "note": "qdrant's un-suffixed set ALREADY is FP8; weaviate/chroma will need the new data written under __fp8 so their existing 4-bit base names stay valid."
     }
   }
 }
