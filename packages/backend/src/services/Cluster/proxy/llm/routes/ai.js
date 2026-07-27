@@ -5954,6 +5954,20 @@ WantedBy=multi-user.target
       const url = `https://huggingface.co/${next.repo}/resolve/${revision}/${hfPath}`;
       const targetFile = join(next.targetDir, next.fileName);
 
+      // Skip files that are ALREADY COMPLETE — do not re-download or overwrite.
+      // Ported from the extracted-but-never-wired hf-download.js; the live path
+      // lost this in the ProxLab migration. Without it, re-queuing a repo
+      // re-fetches finished shards, which on a multi-TB repo is catastrophic.
+      if (existsSync(targetFile) && next.size > 0 && statSync(targetFile).size === next.size) {
+        next.status = 'complete';
+        next.completedAt = new Date().toISOString();
+        next.skipped = true;
+        next.pid = null;
+        console.log(`[hf-download] Skip (already complete, ${next.size}B): ${next.fileName}`);
+        saveHfDownloads(manifest);
+        continue;
+      }
+
       // curl: single-connection, resume-capable, reliable per-file download.
       // Download to .part file, resume with -C -, rename to final on success.
       const partFile = targetFile + '.part';
@@ -6019,6 +6033,39 @@ WantedBy=multi-user.target
       setTimeout(() => processHfQueue(node), 2000);
     }
   }
+
+  // ─── Backend-driven queue ticker ───
+  // The HF queue used to advance ONLY inside the GET /hf/downloads poll handler
+  // ("Process queue on every poll"), so queued files never started unless
+  // somebody had the Downloads page open — which is exactly the symptom of
+  // downloads that "wouldn't start until I navigated back to the page", and a
+  // violation of core rule #1 (the browser must not drive anything).
+  //
+  // Individual transfers were already safe: each runs under `systemd-run --scope`
+  // with `curl -C -`, so a started file survives a backend restart and resumes.
+  // It was only the QUEUE that stalled. This kicks it on boot and on a timer.
+  const HF_TICK_MS = Number(process.env.HF_QUEUE_TICK_MS || 15000);
+  let _hfTickBusy = false;
+  async function hfQueueTick() {
+    if (_hfTickBusy) return;
+    _hfTickBusy = true;
+    try {
+      const manifest = loadHfDownloads();
+      const queued = (manifest.downloads || []).filter(d => d.status === 'queued');
+      if (queued.length) {
+        const nodes = [...new Set(queued.map(d => d.node || '_local'))];
+        for (const n of nodes) await processHfQueue(n);
+      }
+    } catch (e) {
+      console.warn(`[hf-download] queue tick failed: ${e.message}`);
+    } finally {
+      _hfTickBusy = false;
+    }
+  }
+  setTimeout(hfQueueTick, 5000);
+  const _hfTimer = setInterval(hfQueueTick, HF_TICK_MS);
+  if (typeof _hfTimer.unref === 'function') _hfTimer.unref();
+  console.log(`[hf-download] queue ticker armed (every ${HF_TICK_MS}ms) — downloads now progress with no page open`);
 
   /** Resolve a smart download destination from category + destType + file-manager config.
    *  Falls back to legacy /models/{family} path if file-manager config not available. */
