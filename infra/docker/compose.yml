@@ -17,6 +17,15 @@ services:
     ports:
       - "6333:6333"      # REST
       - "6334:6334"      # gRPC
+    environment:
+      # matches /etc/qdrant/config.yaml on the CT166 original
+      QDRANT__STORAGE__ON_DISK_PAYLOAD: "true"
+    # 74 collections blow past the default 1024 fd limit:
+    # "Error while starting REST server: Too many open files (os error 24)"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     volumes:
       - /zpoolgamma/docker-volume/ai-lab/qdrant:/qdrant/storage
     healthcheck:
@@ -26,8 +35,14 @@ services:
       retries: 3
 
   weaviate:
-    # NOTE: pin the tag to the CURRENTLY RUNNING weaviate version before first start.
-    image: cr.weaviate.io/semitechnologies/weaviate:1.28.4
+    # Pinned to what CT187 was running. Env replicated FAITHFULLY from
+    # /etc/default/weaviate — in particular ENABLE_MODULES must stay, because 2 of
+    # the 64 classes declare vectorizer=text2vec-openai and will not load without
+    # that module present. (Both external endpoints below are DEAD — ollama
+    # 10.0.0.163 and the decommissioned ProxLab 10.0.0.233 — but the 62 classes we
+    # actually use are vectorizer=none, i.e. we supply vectors explicitly, so this
+    # only matters for those 2 legacy classes. Cleaning them up is separate work.)
+    image: cr.weaviate.io/semitechnologies/weaviate:1.36.5
     container_name: ailab-weaviate
     restart: unless-stopped
     ports:
@@ -35,15 +50,25 @@ services:
       - "50051:50051"    # gRPC
     environment:
       PERSISTENCE_DATA_PATH: /var/lib/weaviate
-      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
-      DEFAULT_VECTORIZER_MODULE: none
-      ENABLE_MODULES: ""
+      ENABLE_MODULES: "text2vec-ollama,generative-ollama,text2vec-openai,generative-openai"
+      DEFAULT_VECTORIZER_MODULE: text2vec-openai
+      CLUSTER_HOSTNAME: node1          # stored in the data dir — changing it breaks metadata
+      QUERY_DEFAULTS_LIMIT: "25"
       QUERY_MAXIMUM_RESULTS: "100000"
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      AUTHENTICATION_APIKEY_ENABLED: "false"
+      OLLAMA_API_ENDPOINT: "http://10.0.0.163:11434"
+      OPENAI_BASE_URL: "http://10.0.0.233:7777/api/proxy/llm/v1"
+      OPENAI_APIKEY: "proxlab-no-auth"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     volumes:
       - /zpoolgamma/docker-volume/ai-lab/weaviate:/var/lib/weaviate
 
   chroma:
-    image: chromadb/chroma:1.0.0
+    image: chromadb/chroma:1.5.5
     container_name: ailab-chroma
     restart: unless-stopped
     ports:
@@ -52,7 +77,12 @@ services:
       - /zpoolgamma/docker-volume/ai-lab/chroma:/data
     environment:
       IS_PERSISTENT: "TRUE"
+      PERSIST_DIRECTORY: /data
       ANONYMIZED_TELEMETRY: "FALSE"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     # chromadb OOM-killed at 2GB during bulk ops and needed 8GB — see memory note.
     deploy:
       resources:

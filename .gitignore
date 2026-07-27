@@ -25,3 +25,7 @@ demo.md
 .gybackend-data/
 apps/electron/cli-runtime/
 bun.lock
+apps/web/public/drawio/
+
+__pycache__/
+*.pyc

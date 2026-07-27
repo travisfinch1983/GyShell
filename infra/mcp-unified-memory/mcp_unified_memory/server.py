@@ -99,9 +99,20 @@ SYNC_BATCH = int(os.environ.get("SYNC_BATCH", "25"))
 
 # Vector DBs to write to (read from ProxLab config, or use defaults)
 VECTOR_DBS = [
-    {"name": "qdrant", "type": "qdrant", "host": "10.0.0.48", "port": 6333},
-    {"name": "weaviate", "type": "weaviate", "host": "10.0.0.73", "port": 8080},
-    {"name": "chromadb", "type": "chromadb", "host": "10.0.0.33", "port": 8000},
+    # Dockerised into CT152 alongside AI-Lab 2026-07-27 (was the standalone CT166
+    # at 10.0.0.48). Env-overridable so the next move does not need a code edit.
+    {"name": "qdrant", "type": "qdrant",
+     "host": os.environ.get("QDRANT_HOST", "127.0.0.1"),
+     "port": int(os.environ.get("QDRANT_PORT", "6333"))},
+    # Dockerised into CT152 2026-07-27 (was CT187 @10.0.0.73). Host port 8087 because
+    # 8080 on CT152 is the AI-Lab MCP gateway.
+    {"name": "weaviate", "type": "weaviate",
+     "host": os.environ.get("WEAVIATE_HOST", "127.0.0.1"),
+     "port": int(os.environ.get("WEAVIATE_PORT", "8087"))},
+    # Dockerised into CT152 2026-07-27 (was CT164 @10.0.0.33).
+    {"name": "chromadb", "type": "chromadb",
+     "host": os.environ.get("CHROMA_HOST", "127.0.0.1"),
+     "port": int(os.environ.get("CHROMA_PORT", "8000"))},
 ]
 
 # ─── HippocampAI async-write tuning ──────────────────────────────────────────
