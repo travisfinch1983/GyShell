@@ -21,13 +21,22 @@ RUN pip install --no-cache-dir "openviking==${OPENVIKING_VERSION}"
 #        pure noise. Compacts to the text before ChatLog:, drops empty ones.
 #   0002 session_extract_context_provider.py  — extraction context provider.
 COPY patches/ /tmp/patches/
-RUN SP="$(python -c 'import openviking,os;print(os.path.dirname(openviking.__file__))')" \
- && echo "site-packages: $SP" \
- && patch -p0 -d / --fuzz=0 < /tmp/patches/0001-search-recall-compact.patch \
- && patch -p0 -d / --fuzz=0 < /tmp/patches/0002-session-extract-context.patch \
- && rm -rf /tmp/patches
-# If the patches ever fuzz against a new upstream, patches/ also carries the FULL
-# patched files (search.py, session_extract_context_provider.py) to copy over instead.
+# The patch headers carry absolute paths from the ORIGINAL host install
+# (/opt/openviking/venv/lib/python3.13/site-packages/...), which do not exist in
+# this image. Strip those 7 leading components (-p7 — the leading slash counts) and apply relative to THIS
+# image's site-packages. --fuzz=0 + set -e means a future upstream bump FAILS THE
+# BUILD instead of silently shipping an unpatched image.
+RUN set -e; \
+    SP="$(python -c 'import openviking,os;print(os.path.dirname(os.path.dirname(openviking.__file__)))')"; \
+    echo "site-packages: $SP"; \
+    patch -p7 -d "$SP" --fuzz=0 < /tmp/patches/0001-search-recall-compact.patch; \
+    patch -p7 -d "$SP" --fuzz=0 < /tmp/patches/0002-session-extract-context.patch; \
+    grep -q 'ov-recall-compact' "$SP/openviking/server/routers/search.py" \
+      || { echo "PATCH VERIFY FAILED: marker missing from search.py"; exit 1; }; \
+    echo "patches applied and verified"; \
+    rm -rf /tmp/patches
+# patches/ also carries the FULL patched files (search.py,
+# session_extract_context_provider.py) as a fallback if the diffs ever stop applying.
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 1933

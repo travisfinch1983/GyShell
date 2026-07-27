@@ -1,0 +1,39 @@
+From 424e41d60af6004c3bcc3b5747e1697a72138e38 Mon Sep 17 00:00:00 2001
+From: claude <claude@deeveeyant.com>
+Date: Mon, 27 Jul 2026 16:59:45 +0000
+Subject: [PATCH 2/3] extractor: stop using str.format() on a prompt containing
+ literal JSON
+
+LLM_PROMPT embeds JSON examples like {"text": "User loves coffee", ...}. Passing
+that through str.format(conversation=...) makes Python read {"text"...} as a
+replacement field named '"text"', raising KeyError: '"text"' BEFORE the LLM is
+ever called. Extraction therefore fell through to the regex heuristic for every
+model and every input, silently, since the prompt was written.
+
+Use .replace("{conversation}", ...) so the JSON examples stay literal.
+---
+ src/hippocampai/pipeline/extractor.py | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/hippocampai/pipeline/extractor.py b/src/hippocampai/pipeline/extractor.py
+index 9a3b413..03db94d 100755
+--- a/src/hippocampai/pipeline/extractor.py
++++ b/src/hippocampai/pipeline/extractor.py
+@@ -115,7 +115,13 @@ Extract memories as JSON array:"""
+             return []
+ 
+         try:
+-            prompt = self.LLM_PROMPT.format(conversation=conversation[:2000])
++            # PATCH(prompt-format 2026-07-27): LLM_PROMPT contains literal JSON
++            # examples like {"text": ...}, which str.format() parses as a
++            # replacement field named '"text"' -> KeyError: '"text"'. That raised
++            # BEFORE the LLM was ever called, so extraction silently fell through
++            # to the heuristic for every model. Use a plain replace so the JSON
++            # examples in the prompt stay literal.
++            prompt = self.LLM_PROMPT.replace("{conversation}", conversation[:2000])
+             response = self.llm.generate(prompt, max_tokens=1024, temperature=0.0)
+ 
+             # Robust JSON extraction
+-- 
+2.47.3
+

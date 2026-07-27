@@ -26,17 +26,26 @@ RUN git init -q . \
 COPY patches/ /tmp/patches/
 RUN git apply --verbose /tmp/patches/*.patch && rm -rf /tmp/patches
 
-# NOTE ON TORCH (decided 2026-07-27): the stock install pulls sentence-transformers
-# -> torch, ~5.6 GB, purely for a LOCAL embedder + LOCAL cross-encoder reranker.
-# The embedder patch above already supports a REMOTE OpenAI-compatible endpoint
-# (EMBED_API_URL), and rag-models.json already selects a remote reranker
-# (nvidia/llama-nemotron-rerank-vl-1b-v2), so neither needs to run in-process.
-# Keeping torch out drops the image by orders of magnitude AND removes a second
-# reranker that could silently disagree with the unified MCP's.
-# VERIFY before first deploy: that hippo's rerank path can be pointed remote or
-# disabled. If it cannot, that is a code change, not a packaging one.
-RUN sed -i -E '/^(torch|sentence-transformers|transformers)([=<>~ ]|$)/d' requirements.txt 2>/dev/null || true
-RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir .
+# DEPENDENCIES: pinned from the KNOWN-WORKING venv on CT26 (`pip freeze`), not
+# from pyproject.toml. pyproject under-declares what the code actually imports —
+# resolving from it failed on python-socketio, then networkx, and would have kept
+# going. The frozen list is exact parity with the install that has been running.
+#
+# TORCH IS EXCLUDED (18 packages: torch, sentence-transformers, nvidia-*, triton).
+# Patch 0001 made the EMBEDDER remote; patch 0003 makes the RERANKER remote and
+# defers the sentence_transformers import into the local-only branch, so torch is
+# never imported. VERIFIED on the live install: 0 torch mappings in the running
+# process before and after a rerank. Bonus — hippo now shares the SAME reranker
+# the rest of the stack selects via rag-models.json, rather than a second
+# cross-encoder that could silently disagree with the unified memory MCP.
+COPY requirements-frozen.txt /tmp/requirements-frozen.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-frozen.txt
+# --no-deps so pip cannot re-resolve pyproject and drag sentence-transformers back.
+RUN pip install --no-cache-dir --no-deps .
+
+# Fail the build LOUDLY if anything still needs torch at import time, rather than
+# shipping an image that dies on first request.
+RUN python -c "import hippocampai.api.app; print('import OK - torch not required')"
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000

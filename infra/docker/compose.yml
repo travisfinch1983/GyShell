@@ -72,7 +72,7 @@ services:
     container_name: ailab-chroma
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8010:8000"   # 8000 on the host is chroma
     volumes:
       - /zpoolgamma/docker-volume/ai-lab/chroma:/data
     environment:
@@ -88,3 +88,53 @@ services:
       resources:
         limits:
           memory: 8G
+
+  openviking:
+    # Built from ./openviking — pip install 0.3.22 + our 2 local patches applied
+    # and VERIFIED at build time (see that Dockerfile; the patches live only in
+    # site-packages upstream, so a bare pip install would erase them silently).
+    image: ailab/openviking:0.3.22
+    build: ./openviking
+    container_name: ailab-openviking
+    restart: unless-stopped
+    ports:
+      - "1933:1933"
+    volumes:
+      - /zpoolgamma/docker-volume/ai-lab/openviking:/opt/openviking/workspace
+      # Config carries root_api_key — kept OUT of the repo, mounted read-only.
+      - /opt/ai-lab-secrets/openviking/ov.conf:/root/.openviking/ov.conf:ro
+
+  redis:
+    image: redis:7-alpine
+    container_name: ailab-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # Pure cache (REDIS_CACHE_TTL=300) — nothing to migrate, starts empty.
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ailab-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: hippocampai
+      POSTGRES_USER: hippocampai
+      POSTGRES_PASSWORD: hippocampai_pass
+    volumes:
+      - /zpoolgamma/docker-volume/ai-lab/postgres:/var/lib/postgresql/data
+    # NOTE: the source DB on CT26 had ZERO tables — hippo never actually used it
+    # despite the config and the unit's After=postgresql.service. Kept so hippo
+    # can connect if it ever wants to; nothing was migrated because there was
+    # nothing to migrate.
+
+  hippocampai:
+    image: ailab/hippocampai:ca24195
+    build: ./hippocampai
+    container_name: ailab-hippocampai
+    restart: unless-stopped
+    depends_on: [qdrant, redis, postgres]
+    ports:
+      - "8010:8000"   # 8000 on the host is chroma
+    env_file:
+      - /opt/ai-lab-secrets/hippocampai/.env
+    volumes:
+      - /zpoolgamma/docker-volume/ai-lab/hippocampai:/opt/HippocampAI/data
