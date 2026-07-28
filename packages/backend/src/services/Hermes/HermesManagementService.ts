@@ -1625,6 +1625,46 @@ async lintProfileDocs(agentId: string): Promise<Array<{ file: string; line: numb
     // Seed the new agent's workspace from the doc templates (default/workspace).
     if (created) await this.copyTemplateDocs(id)
 
+    // A brand-new profile arrives with the ENTIRE bundled skills library seeded
+    // into it (778 skills / ~2,690 md files) — that is how turing and mari ended
+    // up fully loaded when Travis only created them and named them. Worse,
+    // `hermes update` re-seeds EVERY profile (hermes_cli/main.py:9364), so
+    // without the opt-out marker each agent gets the whole library dumped on top
+    // of its curated set at the next Hermes upgrade.
+    //
+    // The marker CANNOT be inherited: verified 2026-07-28 that
+    // `hermes profile create --clone` does NOT copy dotfiles (only .env came
+    // across from a marked source), and `--no-skills` is mutually exclusive with
+    // `--clone` (profiles.py:861) so it cannot be passed in createArgs either.
+    // So: write the marker and clear what seeding just installed. New agents
+    // start with NO skills and get them assigned deliberately via the UI.
+    if (created) {
+      try {
+        const before = Number(
+          (await this.ssh(`find ${shq(`${home}/skills`)} -name SKILL.md 2>/dev/null | wc -l`)).trim() || '0',
+        )
+        await this.writeRemoteFile(
+          `${home}/.no-bundled-skills`,
+          'Opted out of bundled-skill seeding (written by AI-Lab at agent creation).\n' +
+            'Without this, `hermes update` re-seeds the entire bundled library into this profile.\n' +
+            'Assign skills deliberately via the AI-Lab Skills tab. Delete this file to opt back in.\n',
+        )
+        await this.ssh(`find ${shq(`${home}/skills`)} -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true`)
+        const after = Number(
+          (await this.ssh(`find ${shq(`${home}/skills`)} -name SKILL.md 2>/dev/null | wc -l`)).trim() || '0',
+        )
+        console.warn(
+          `[hermes] ${id}: cleared ${before - after} auto-seeded bundled skill(s) and wrote ` +
+            `.no-bundled-skills (was ${before}, now ${after}). Assign skills deliberately.`,
+        )
+      } catch (e) {
+        console.warn(
+          `[hermes] ${id}: FAILED to opt out of bundled skills (${(e as Error).message}) — ` +
+            `this agent will receive the full bundled library on the next \`hermes update\`.`,
+        )
+      }
+    }
+
     // Model → always via the ailab provider (the AI-Lab universal proxy).
     await this.hermes(['-p', id, 'config', 'set', 'model.provider', 'ailab'])
     await this.hermes(['-p', id, 'config', 'set', 'model.default', spec.model])

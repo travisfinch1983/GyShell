@@ -44,8 +44,24 @@ temp profile (unmarked) seed_profile_skills -> copied 71 skills                 
 ```
 The control run matters: it proves the MARKER is what stopped the seeding.
 
-## When adding a new agent
+## New agents — HANDLED IN CODE (verified, not assumed)
 
-AI-Lab's `applySpec` clones from `default`, which now carries the marker — but
-confirm `--clone` actually copies dotfiles. If a new profile lacks the marker,
-write it, or that agent gets the full library on the next `hermes update`.
+**`hermes profile create --clone` does NOT copy dotfiles.** Tested 2026-07-28 by
+creating an agent through AI-Lab from the marked `default` profile: only `.env`
+came across, the marker did not, and the new profile was seeded with **778
+skills**. The marker cannot be inherited, and `--no-skills` cannot be passed
+(mutually exclusive with `--clone`, profiles.py:861).
+
+So `HermesManagementService.applySpec` now does it explicitly on create: writes
+`.no-bundled-skills`, clears what seeding just installed, and logs the counts.
+Verified on a fresh agent:
+
+```
+[hermes] zzskilltest2: cleared 778 auto-seeded bundled skill(s) and wrote
+         .no-bundled-skills (was 778, now 0). Assign skills deliberately.
+```
+
+New agents therefore start with NO skills by design — assign them deliberately
+via the AI-Lab Skills tab. If the opt-out ever fails it logs loudly rather than
+failing silently, because the symptom otherwise only appears at the next
+`hermes update`, long after the cause.
