@@ -1547,6 +1547,10 @@ private static readonly FORBIDDEN_DOC_TOKENS: Array<[string, RegExp]> = [
   ['TOOLS.md (consolidated into AGENTS.md)', /\bTOOLS\.md\b/],
   ['IDENTITY.md (consolidated into SOUL.md)', /\bIDENTITY\.md\b/],
   ['EXECUTION.md (consolidated into AGENTS.md)', /\bEXECUTION\.md\b/],
+  // Flagged by Fable's audit; verified 2026-07-28 to have ZERO references anywhere
+  // (no profile, no hermes_cli/agent source, no live doc), so this is pure
+  // insurance against it being reintroduced by a future doc merge.
+  ['BOOTSTRAP.md (does not exist)', /\bBOOTSTRAP\.md\b/],
   ['OpenClaw (decommissioned 2026-07)', /openclaw/i],
   ['ask-claude (skill deleted; use fleet_send)', /\bask[-_]claude\b/i],
   ['CT 196 (OpenClaw container, gone)', /\bCT[ -]?196\b/i],
