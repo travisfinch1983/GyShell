@@ -1528,7 +1528,83 @@ export class HermesManagementService {
    * Create (if needed) + configure a Hermes profile from a spec. Idempotent: safe to
    * re-apply to update model/persona on an existing agent.
    */
-  async applySpec(spec: HermesAgentSpec): Promise<{ created: boolean; home: string }> {
+
+/**
+ * Tokens that must never appear as LIVE instructions in an agent's docs.
+ * Each entry is [label, matcher].
+ *
+ * Why this exists: the 2026-07-28 audit found every agent citing `TOOLS.md`
+ * ABSOLUTE RULE #1/#2/#4 and being told to read `IDENTITY.md` at session start
+ * — NEITHER FILE EXISTS for any agent. They were folded into SOUL.md + AGENTS.md
+ * by an earlier consolidation that never updated the references. Worse, the
+ * rot is in the profile TEMPLATE, so `hermes profile create --clone` gives every
+ * NEW agent the same dead pointers (turing + default proved it). Cleaning the
+ * artifacts is not enough; the provisioning path has to refuse to reproduce it.
+ * Same shape as the skills bug where Hermes auto-assigned all 778 bundled skills
+ * at profile creation.
+ */
+private static readonly FORBIDDEN_DOC_TOKENS: Array<[string, RegExp]> = [
+  ['TOOLS.md (consolidated into AGENTS.md)', /\bTOOLS\.md\b/],
+  ['IDENTITY.md (consolidated into SOUL.md)', /\bIDENTITY\.md\b/],
+  ['EXECUTION.md (consolidated into AGENTS.md)', /\bEXECUTION\.md\b/],
+  ['OpenClaw (decommissioned 2026-07)', /openclaw/i],
+  ['ask-claude (skill deleted; use fleet_send)', /\bask[-_]claude\b/i],
+  ['CT 196 (OpenClaw container, gone)', /\bCT[ -]?196\b/i],
+  ['claude-relay (service decommissioned)', /\bclaude-relay\b/i],
+  ['10.0.0.161:6277 (dead relay endpoint)', /10\.0\.0\.161:6277/],
+]
+
+/**
+ * A line that TELLS the agent something no longer exists is correct and must not
+ * trip the lint — e.g. "(There is no separate `TOOLS.md`; don't go looking.)" or
+ * a one-line "ask-claude is decommissioned" tombstone. Without this the lint
+ * fires on every well-maintained doc and gets ignored, which is worse than no
+ * lint at all. (I hit this exact false positive twice by hand before writing it.)
+ */
+private static readonly DOC_NEGATION_CONTEXT =
+  /(\bno separate\b|\bdoes ?n[o']t exist\b|\bno longer\b|decommission\w*|deprecat\w*|\bremoved\b|\bretired\b|\bdon'?t go looking\b|\bthere is no\b|\bgone\b|\bdo not use\b|\bdead\b|\breplaces? the old\b|\breplaced the old\b|\bformerly\b|\bused to be\b|\bthe old\b)/i
+
+/** Core docs only — dated memory notes are a historical record, not instructions. */
+private static readonly LINTED_DOCS = [
+  'SOUL.md',
+  'workspace/AGENTS.md',
+  'workspace/HEARTBEAT.md',
+  'workspace/MEMORY.md',
+  'memories/USER.md',
+  'memories/MEMORY.md',
+]
+
+/**
+ * Scan a profile's core docs for dead references. Reports; does NOT rewrite —
+ * a generator that silently edits an agent's persona is worse than one that
+ * complains. Never throws: a broken lint must not block agent creation.
+ */
+async lintProfileDocs(agentId: string): Promise<Array<{ file: string; line: number; token: string; text: string }>> {
+  const findings: Array<{ file: string; line: number; token: string; text: string }> = []
+  const home = this.profileHome(agentId)
+  for (const rel of HermesManagementService.LINTED_DOCS) {
+    let body = ''
+    try {
+      body = await this.ssh(`cat ${shq(`${home}/${rel}`)} 2>/dev/null || true`)
+    } catch {
+      continue
+    }
+    if (!body.trim()) continue
+    body.split('\n').forEach((text, i) => {
+      if (HermesManagementService.DOC_NEGATION_CONTEXT.test(text)) return
+      for (const [token, re] of HermesManagementService.FORBIDDEN_DOC_TOKENS) {
+        if (re.test(text)) findings.push({ file: rel, line: i + 1, token, text: text.trim().slice(0, 180) })
+      }
+    })
+  }
+  return findings
+}
+
+  async applySpec(spec: HermesAgentSpec): Promise<{
+    created: boolean
+    home: string
+    docIssues?: Array<{ file: string; line: number; token: string; text: string }>
+  }> {
     const id = spec.agentId // slug-validated by the zod schema
     const home = this.profileHome(id)
 
@@ -1598,7 +1674,32 @@ export class HermesManagementService {
       this.saveSpecs(specs)
     }
 
-    return { created, home }
+    // Doc-lint: refuse to SILENTLY reproduce the dead-reference rot. Runs on
+    // create AND edit, because the template is the source (a fresh --clone
+    // carries it in) and hand-edits can reintroduce it. Reported, never
+    // auto-rewritten, and never fatal — a lint that blocks agent creation, or
+    // that quietly edits someone's persona, would be worse than the bug.
+    let docIssues: Array<{ file: string; line: number; token: string; text: string }> = []
+    try {
+      docIssues = await this.lintProfileDocs(id)
+      if (docIssues.length) {
+        console.warn(
+          `[hermes] DOC-LINT: ${docIssues.length} dead reference(s) in ${id}'s core docs — ` +
+            `this agent will be told to use things that do not exist:`,
+        )
+        for (const f of docIssues) console.warn(`  ${id}/${f.file}:${f.line}  [${f.token}]  ${f.text}`)
+        if (created) {
+          console.warn(
+            `[hermes] ${id} was JUST CREATED with these — the profile TEMPLATE still carries them. ` +
+              `Fix the template or every new agent inherits the same dead pointers.`,
+          )
+        }
+      }
+    } catch (e) {
+      console.warn(`[hermes] doc-lint failed for ${id} (non-fatal):`, e)
+    }
+
+    return { created, home, docIssues }
   }
 
   // ── Per-agent OpenViking memory key (isolation) ──────────────────────────────
