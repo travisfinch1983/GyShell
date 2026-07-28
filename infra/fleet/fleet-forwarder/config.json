@@ -1,0 +1,16 @@
+{
+  "feed_base": "http://10.0.0.219:17890/api/fleet",
+  "poll_interval": 5,
+  "inject_cooldown": 8,
+  "instances": {
+    "claude1": "/tmp/claude.sock",
+    "fable-builder": "/tmp/claude-fable.sock",
+    "claude2": "/tmp/claude-claude2.sock",
+    "claude-dhb": "/tmp/claude-dhb.sock",
+    "dhb-fable": "/tmp/claude-dhb-fable.sock",
+    "claude-amp": "/tmp/claude-claude-amp.sock",
+    "claude-dhb-enterprise": "/tmp/claude-claude-dhb-enterprise.sock"
+  },
+  "quiet_seconds": 15,
+  "max_defer_seconds": 600
+}

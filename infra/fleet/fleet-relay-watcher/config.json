@@ -1,0 +1,13 @@
+{
+  "bus": "http://10.0.0.219:17890",
+  "poll": 4,
+  "instances": {
+    "claude1": "/root/.claude/projects",
+    "fable-builder": "/root/.claude-fable/projects",
+    "claude2": "/home/claude2/.claude/projects",
+    "claude-dhb": "/home/claude-dhb/.claude/projects",
+    "dhb-fable": "/home/dhb-fable/.claude/projects",
+    "claude-amp": "/home/claude-amp/.claude/projects",
+    "claude-dhb-enterprise": "/home/claude-dhb-enterprise/.claude/projects"
+  }
+}
