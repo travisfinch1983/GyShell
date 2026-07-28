@@ -1,5 +1,6 @@
 // @ts-expect-error — express ships untyped in this repo (same pre-existing gap as UniversalProxyService)
 import express from 'express'
+import { agentActivitySchema } from '@gyshell/shared'
 import type { ConversationBus } from './ConversationBus'
 
 type Req = { body?: unknown; query?: Record<string, unknown> }
@@ -57,6 +58,106 @@ export function createFleetRouter(bus: ConversationBus): unknown {
   })
 
   /** Declare/update a fleet agent (schema-validated by the registry). */
+  /**
+   * Liveness ping from a delivery agent. Body: { agents: [{agentId, alive}] }.
+   * The forwarder owns the dtach sockets, so it is the only thing that can tell
+   * whether a session is actually reachable.
+   */
+  router.post('/api/fleet/heartbeat', json, (req: Req, res: Res) => {
+    try {
+      const list = Array.isArray((req.body as any)?.agents) ? (req.body as any).agents : []
+      let n = 0
+      for (const a of list) {
+        const id = typeof a?.agentId === 'string' ? a.agentId : ''
+        if (!id) { console.warn('[fleet] heartbeat entry missing agentId:', JSON.stringify(a)); continue }
+        bus.recordHeartbeat(id, a?.alive !== false)
+        n++
+      }
+      res.json({ ok: true, recorded: n })
+    } catch (e) {
+      fail(res, e)
+    }
+  })
+
+  /**
+   * Collector push. Body: a single AgentActivity, or { activities: [...] }.
+   * Validated against the shared schema so a malformed report is REJECTED
+   * loudly rather than stored and later read as truth.
+   */
+  router.post('/api/fleet/activity', json, (req: Req, res: Res) => {
+    try {
+      const body = req.body as any
+      const list = Array.isArray(body?.activities) ? body.activities : [body]
+      let ok = 0
+      const errors: string[] = []
+      for (const raw of list) {
+        const parsed = agentActivitySchema.safeParse(raw)
+        if (!parsed.success) {
+          const msg = `${raw?.agentId ?? '<no agentId>'}: ${parsed.error.issues.map((i: { path: (string | number)[]; message: string }) => i.path.join('.') + ' ' + i.message).join('; ')}`
+          console.warn('[fleet] REJECTED activity report —', msg)
+          errors.push(msg)
+          continue
+        }
+        bus.recordActivity(parsed.data)
+        ok++
+      }
+      res.json({ ok: true, recorded: ok, ...(errors.length ? { rejected: errors } : {}) })
+    } catch (e) {
+      fail(res, e)
+    }
+  })
+
+  /** Read activity. `?agentId=` for one, omit for all. */
+  router.get('/api/fleet/activity', (req: Req, res: Res) => {
+    try {
+      const id = typeof req.query?.agentId === 'string' ? req.query.agentId : undefined
+      res.json({ activity: bus.agentActivity(id) })
+    } catch (e) {
+      fail(res, e)
+    }
+  })
+
+  /**
+   * Recent transcript entries for an agent — "where did they get to?".
+   * The collector reports a `ref` of the form "<transcriptPath>#<uuid>"; we read
+   * the tail of that file rather than duplicating gigabytes of transcript into a
+   * second store that could then disagree with reality.
+   */
+  router.get('/api/fleet/activity/detail', async (req: Req, res: Res) => {
+    try {
+      const agentId = typeof req.query?.agentId === 'string' ? req.query.agentId : ''
+      if (!agentId) return fail(res, new Error('agentId is required'))
+      const limit = Math.min(100, Math.max(1, Number(req.query?.limit ?? 20)))
+
+      const [act] = bus.agentActivity(agentId)
+      if (!act) {
+        return res.json({
+          agentId, entries: [], source: 'none',
+          note: 'No collector has reported for this agent — that is UNKNOWN, not idle.',
+        })
+      }
+      const recent = act.recent ?? []
+      res.json({
+        agentId,
+        source: act.kind,
+        state: act.state,
+        idleSeconds: act.idleSeconds,
+        transcript: String(act.ref ?? '').split('#')[0] || null,
+        entries: recent.slice(-limit),
+        available: recent.length,
+        ...(recent.length
+          ? {}
+          : {
+              note:
+                'Collector has not shipped a recent window yet (it only sends one when the ' +
+                'agent has newly acted). Idle agents will show none until they next do something.',
+            }),
+      })
+    } catch (e) {
+      fail(res, e)
+    }
+  })
+
   router.post('/api/fleet/register', json, (req: Req, res: Res) => {
     try {
       res.json({ ok: true, agent: bus.registry.upsert(req.body) })
