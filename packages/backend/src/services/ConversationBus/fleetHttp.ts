@@ -84,6 +84,27 @@ export function createFleetRouter(bus: ConversationBus): unknown {
    * Validated against the shared schema so a malformed report is REJECTED
    * loudly rather than stored and later read as truth.
    */
+  /**
+   * Flip fleet guard settings at runtime — notably `autonomousRoutingEnabled`,
+   * the kill switch HermesBusSubscriber waits on. The bus already persisted and
+   * announced changes; there was simply no way to reach setGuardConfig without
+   * editing code, so the switch was effectively welded off.
+   */
+  router.post('/api/fleet/guard', json, (req: Req, res: Res) => {
+    try {
+      const patch = (req.body ?? {}) as Record<string, unknown>
+      const before = bus.getGuardConfig()
+      const after = bus.setGuardConfig(patch)
+      const changed = Object.keys(after).filter(
+        (k) => (before as any)[k] !== (after as any)[k],
+      )
+      if (changed.length) console.warn('[fleet] guard config changed:', changed.map((k) => `${k}: ${(before as any)[k]} -> ${(after as any)[k]}`).join(', '))
+      res.json({ ok: true, guardConfig: after, changed })
+    } catch (e) {
+      fail(res, e)
+    }
+  })
+
   router.post('/api/fleet/activity', json, (req: Req, res: Res) => {
     try {
       const body = req.body as any

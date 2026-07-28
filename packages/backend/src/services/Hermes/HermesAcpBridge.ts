@@ -491,6 +491,84 @@ export class HermesAcpBridge extends EventEmitter {
     }))
   }
 
+  /**
+   * Per-AGENT activity, aggregated across that agent's sessions. Feeds the fleet
+   * activity collector so "is this agent actually working?" is answerable for
+   * Hermes agents the same way it is for Claude Code instances.
+   *
+   * We can answer this precisely — unlike the Claude Code side, which has to
+   * infer from a transcript that lags — because the bridge already keeps
+   * server-authoritative per-session `status` (set busy on prompt, idle on
+   * turn_done/exit) plus a seq-stamped event ring.
+   *
+   * An agent is `busy` if ANY of its sessions is mid-turn; lastActivity is the
+   * most recent across them.
+   */
+  listAgentActivity(): Array<{
+    agentId: string
+    status: 'idle' | 'busy'
+    lastActivity: number
+    lastEvent?: { t: string; summary: string; seq?: number }
+    recent: Array<{ role: string; ts: string | null; uuid: string | null; summary: string }>
+  }> {
+    const byAgent = new Map<string, ReturnType<HermesAcpBridge['listAgentActivity']>[number]>()
+    for (const sess of this.sessions.values()) {
+      const prev = byAgent.get(sess.agentId)
+      const busy = sess.status === 'busy' || prev?.status === 'busy'
+      const lastActivity = Math.max(sess.lastActivity ?? 0, prev?.lastActivity ?? 0)
+      // Only describe from the session that actually acted most recently.
+      const useThis = !prev || (sess.lastActivity ?? 0) >= (prev.lastActivity ?? 0)
+      byAgent.set(sess.agentId, {
+        agentId: sess.agentId,
+        status: busy ? 'busy' : 'idle',
+        lastActivity,
+        lastEvent: useThis ? HermesAcpBridge.describeEvents(sess.history).at(-1) : prev?.lastEvent,
+        recent: useThis ? HermesAcpBridge.recentEntries(sess.history) : (prev?.recent ?? []),
+      })
+    }
+    return [...byAgent.values()]
+  }
+
+  /** Collapse ACP events into human-readable one-liners; drops noise (ping/status/usage). */
+  private static describeEvents(history: AcpEvent[]): Array<{ t: string; summary: string; seq?: number }> {
+    const out: Array<{ t: string; summary: string; seq?: number }> = []
+    for (const e of history) {
+      const t = String(e.t ?? '')
+      let summary = ''
+      if (t === 'tool_start') summary = `Tool: ${String((e as any).title ?? (e as any).name ?? 'tool')}`
+      else if (t === 'tool_progress') continue
+      // Do NOT trim here: `message` events stream token-by-token and each token
+      // carries its own leading space. Trimming per-token welds the words
+      // together ("Received,claude1.I'mLoom—Icurate..."). Trim once at the end.
+      else if (t === 'message') summary = String((e as any).text ?? '')
+      else if (t === 'thought') continue
+      else if (t === 'turn_done') summary = `Turn ended (${String((e as any).stop_reason ?? 'done')})`
+      else if (t === 'error' || t === 'fatal') summary = `ERROR: ${String((e as any).message ?? t)}`
+      else continue
+      if (!summary || (t !== 'message' && !summary.trim())) continue
+      const last = out.at(-1)
+      // message events stream token-by-token — coalesce them into one line.
+      if (last && t === 'message' && last.t === 'message') {
+        last.summary = (last.summary + summary).slice(0, 400)
+        last.seq = e.seq
+        continue
+      }
+      out.push({ t, summary: (t === 'message' ? summary.trimStart() : summary).slice(0, 400), seq: e.seq })
+    }
+    return out
+  }
+
+  private static recentEntries(history: AcpEvent[], cap = 25) {
+    return HermesAcpBridge.describeEvents(history)
+      .slice(-cap)
+      .map((d) => ({
+        role: d.t === 'message' ? 'assistant' : d.t,
+        ts: null as string | null,
+        uuid: d.seq != null ? String(d.seq) : null,
+        summary: d.summary,
+      }))
+  }
+
   /** Server-side conversation list (cross-device): every persisted conversation with a known agent,
    *  newest first. Powers the tab list so conversations follow the user to any browser/device. */
   listConversations(): Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }> {
