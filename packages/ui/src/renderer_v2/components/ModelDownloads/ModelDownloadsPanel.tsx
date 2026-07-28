@@ -94,7 +94,7 @@ const QueueItem: React.FC<{ source: 'hf' | 'civ'; item: DLItem }> = observer(({ 
         {active ? <span>{pct(item)}% · {gb(item.progress)} / {gb(item.size)}{item.speed ? ` · ${gb(item.speed)}/s` : ''}</span> : <span>{gb(item.size)}</span>}
         <div className={styles.spacer} />
         {active && <button className={styles.qAct} title="Stop" onClick={() => void store.action(source, item.id, 'stop')}><Square size={12} /></button>}
-        {(st === 'queued' || st === 'pending' || st === 'failed') && <button className={styles.qAct} title="Force start" onClick={() => void store.action(source, item.id, 'force')}><Play size={12} /></button>}
+        {(st === 'queued' || st === 'pending' || st === 'failed' || st === 'stopped') && <button className={styles.qAct} title="Force start" onClick={() => void store.action(source, item.id, 'force')}><Play size={12} /></button>}
         <button className={`${styles.qAct} ${styles.danger}`} title="Cancel / remove" onClick={() => void store.action(source, item.id, 'cancel')}><X size={12} /></button>
       </div>
       {item.error && <div className={styles.qErrFull}>{item.error}</div>}
@@ -138,6 +138,21 @@ const HFFileRow: React.FC<{ f: HFFile }> = observer(({ f }) => (
   </label>
 ))
 
+/** All/None for a group of rows. Hidden for a lone file — nothing to bulk. */
+const SelBtns: React.FC<{ files: HFFile[] }> = observer(({ files }) => {
+  if (files.length < 2) return null
+  const sel = files.filter((f) => store.hfSelected[f.path]).length
+  const paths = files.map((f) => f.path)
+  return (
+    <span className={styles.selBtns}>
+      <button className={styles.selBtn} disabled={sel === files.length} onClick={() => store.setHfFiles(paths, true)}
+        title={`Select all ${files.length} files`}>All</button>
+      <button className={styles.selBtn} disabled={sel === 0} onClick={() => store.setHfFiles(paths, false)}
+        title="Deselect these">None</button>
+    </span>
+  )
+})
+
 const HFView: React.FC = observer(() => {
   const a = store.hfAnalysis
   return (
@@ -170,37 +185,48 @@ const HFView: React.FC = observer(() => {
             {a.analysisLabel && <span className={styles.destDesc}>{a.analysisLabel}</span>}
           </div>
 
-          {(a.ggufQuants?.length ?? 0) > 0 && (
-            <div className={styles.fileSection}>
-              <div className={styles.sectionLabel}>GGUF quants</div>
-              {(() => {
-                const quants = Array.from(new Set(a.ggufQuants!.map((f) => f.quant || 'other')))
-                return quants.length > 1 ? (
+          {(a.ggufQuants?.length ?? 0) > 0 && (() => {
+            const quants = Array.from(new Set(a.ggufQuants!.map((f) => f.quant || 'other')))
+            const shown = a.ggufQuants!.filter((f) => !store.hfHiddenQuants[f.quant || 'other'])
+            return (
+              <div className={styles.fileSection}>
+                <div className={styles.sectionHead}>
+                  <span className={styles.sectionLabel}>GGUF quants</span>
+                  <SelBtns files={shown} />
+                </div>
+                {quants.length > 1 && (
                   <div className={styles.filterBar}>
                     {quants.map((q) => (
                       <button key={q} className={`${styles.filterBadge} ${store.hfHiddenQuants[q] ? styles.filterOff : ''}`} onClick={() => store.toggleQuant(q)} title={store.hfHiddenQuants[q] ? `Show ${q}` : `Hide ${q}`}>{q}</button>
                     ))}
                   </div>
-                ) : null
-              })()}
-              {a.ggufQuants!.filter((f) => !store.hfHiddenQuants[f.quant || 'other']).map((f) => <HFFileRow key={f.path} f={f} />)}
-            </div>
-          )}
+                )}
+                {shown.map((f) => <HFFileRow key={f.path} f={f} />)}
+              </div>
+            )
+          })()}
           {(a.weightFiles?.length ?? 0) > 0 && (
             <div className={styles.fileSection}>
-              <div className={styles.sectionLabel}>Model files</div>
+              <div className={styles.sectionHead}>
+                <span className={styles.sectionLabel}>Model files</span>
+                <SelBtns files={a.weightFiles!} />
+              </div>
               {a.weightFiles!.map((f) => <HFFileRow key={f.path} f={f} />)}
             </div>
           )}
           {a.components && Object.entries(a.components).map(([name, c]) => (
             <div key={name} className={styles.fileSection}>
-              <div className={styles.sectionLabel}>{name} ({gb(c.totalSize)})</div>
+              <div className={styles.sectionHead}>
+                <span className={styles.sectionLabel}>{name} ({gb(c.totalSize)})</span>
+                <SelBtns files={c.files ?? []} />
+              </div>
               {(c.files ?? []).map((f) => <HFFileRow key={f.path} f={f} />)}
             </div>
           ))}
 
           <div className={styles.actionsRow}>
             <span className={styles.selSummary}>{store.hfSelectedFiles.length} files · {gb(store.hfSelectedFiles.reduce((n, f) => n + (f.size || 0), 0))}</span>
+            <SelBtns files={store.hfVisibleFiles} />
             <div className={styles.spacer} />
             <button className={styles.btnPrimary} disabled={store.busy || !store.hfSelectedFiles.length} onClick={() => void store.downloadHf()}>
               <Download size={13} /> Download Selected
@@ -227,7 +253,7 @@ const HFView: React.FC = observer(() => {
             <input className={styles.input} placeholder="model family / variant (e.g. Qwen_3.6/27B)" value={store.hfSuggestedSubfolder} onChange={(e) => (store.hfSuggestedSubfolder = e.target.value)} />
             <div className={styles.destDesc}>Subfolder under the {store.hfCategory.toUpperCase()} models root. Files auto-sort into format/quant subfolders inside it, and the repo README is copied into every quant folder.</div>
             <div className={styles.destHint}>{store.hfCategory === 'llm'
-              ? (/gguf/.test(store.hfAnalysis?.repoType || '') ? '…/<family>/<variant>/GGUF/{quant}/' : '…/<family>/<variant>/{GGUF|EXL2|EXL3|AWQ|GPTQ|NVFP4|BF16-Safetensors}/{quant}/')
+              ? (/gguf/.test(store.hfAnalysis?.repoType || '') ? '…/<family>/<variant>/GGUF/{quant}/' : '…/<family>/<variant>/{GGUF|EXL2|EXL3|AWQ|GPTQ|NVFP4|W8A16|INT8|INT4|AutoRound|BF16-Safetensors}/{quant}/')
               : '…/<subfolder>/'}</div>
           </div>
         </>

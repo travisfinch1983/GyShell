@@ -158,6 +158,23 @@ export class ModelDownloadsStore {
   toggleHfFile(path: string): void {
     this.hfSelected[path] = !this.hfSelected[path]
   }
+  /** Bulk select/deselect — backs the All/None buttons in the picker. */
+  setHfFiles(paths: string[], on: boolean): void {
+    for (const p of paths) this.hfSelected[p] = on
+  }
+  /** Files actually visible in the picker. GGUF quants hidden by the badge
+   *  filter are excluded, so "All" can never select something off-screen. */
+  get hfVisibleFiles(): HFFile[] {
+    const a = this.hfAnalysis
+    if (!a) return []
+    const all: HFFile[] = [
+      ...(a.ggufQuants ?? []).filter((f) => !this.hfHiddenQuants[f.quant || 'other']),
+      ...(a.weightFiles ?? []),
+      ...Object.values(a.components ?? {}).flatMap((c) => c.files ?? []),
+    ]
+    const seen = new Set<string>()
+    return all.filter((f) => !seen.has(f.path) && seen.add(f.path))
+  }
   toggleQuant(q: string): void {
     this.hfHiddenQuants[q] = !this.hfHiddenQuants[q]
   }
