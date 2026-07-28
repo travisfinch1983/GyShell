@@ -32,6 +32,8 @@ export interface ChatItem {
   plan?: Array<{ content: string; status?: string; priority?: string }>
   /** assistant/thought: still receiving chunks */
   streaming?: boolean
+  /** user turns: queued type-ahead — rendered immediately, POSTed when the in-flight turn ends. */
+  queued?: boolean
   /** user turns: what page context rode along ('text' = viewContext, 'vision' = +screenshot). */
   ctxAttached?: 'text' | 'vision'
   /** capture_consent: the pending view_screen request this button completes. */
@@ -45,6 +47,8 @@ export interface AgentChatState {
   connected: boolean
   /** a prompt turn is in flight (from this UI or any other client) */
   busy: boolean
+  /** type-ahead: messages composed while busy; auto-sent on turn end (they used to vanish). */
+  queue: Array<{ itemId: number; text: string }>
   commands: HermesSlashCommand[]
   /** context-window meter from usageUpdate: {used, size} */
   usage: { used: number; size: number } | null
@@ -52,21 +56,58 @@ export interface AgentChatState {
   /** backend session id from `ready` — HEADER state, never a chat item (the
    *  old "attached — session…" items stacked one per tab-swap re-attach). */
   sessionId: string | null
+  /** highest wire `seq` folded into this transcript. Re-attach resumes the stream
+   *  from here (`&since=`) so switching conversations never re-replays history. */
+  lastSeq: number
   error: string | null
 }
 
 function emptyState(): AgentChatState {
-  return { items: [], connected: false, busy: false, commands: [], usage: null, currentModel: null, sessionId: null, error: null }
+  return { items: [], connected: false, busy: false, queue: [], commands: [], usage: null, currentModel: null, sessionId: null, lastSeq: 0, error: null }
+}
+
+/**
+ * A stream event that fails `hermesStreamEventSchema` is ALWAYS either a bug or a
+ * bridge/UI version skew — it must never vanish without a trace. Standing rule
+ * (Travis 2026-07-28): thorough logging is the default; a silently-dropped input
+ * is itself a bug. `t:ping` is the one expected non-variant (heartbeat) and stays quiet.
+ * First occurrence per (site,t) logs the full payload; repeats log a running count so
+ * a hot loop cannot flood the console.
+ */
+const droppedCounts = new Map<string, number>()
+function reportDroppedEvent(where: string, raw: unknown, err: unknown): void {
+  const t = typeof (raw as any)?.t === 'string' ? (raw as any).t : '<no t field>'
+  if (t === 'ping') return
+  const key = `${where}:${t}`
+  const n = (droppedCounts.get(key) ?? 0) + 1
+  droppedCounts.set(key, n)
+  if (n === 1) {
+    console.warn(
+      `[HermesChatStore] DROPPED stream event t="${t}" at ${where} — it does not match ` +
+      `hermesStreamEventSchema, so it will NOT render. Add the variant in ` +
+      `packages/shared/src/fleet/agent-platform.ts.`,
+      { raw, issues: (err as any)?.issues ?? err },
+    )
+  } else {
+    console.warn(`[HermesChatStore] DROPPED stream event t="${t}" at ${where} (x${n})`)
+  }
 }
 
 class HermesChatStore {
   chats = new Map<string, AgentChatState>()
   private sources = new Map<string, EventSource>()
+  private watchdogs = new Map<string, ReturnType<typeof setInterval>>()
+  private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private agents = new Map<string, string>()
   private nextId = 1
   private restored = new Set<string>()
 
   constructor() {
-    makeAutoObservable(this, {}, { autoBind: true })
+    // The infra maps below are plumbing, not reactive state — exclude them so the liveness
+    // watchdog / reconnect callbacks can mutate them without tripping MobX action enforcement.
+    makeAutoObservable(this, {
+      sources: false, watchdogs: false, reconnectTimers: false, agents: false, restored: false, nextId: false,
+    }, { autoBind: true })
   }
 
   state(conversationId: string): AgentChatState {
@@ -103,7 +144,7 @@ class HermesChatStore {
       void this.restoreThenStream(agentId, conversationId)
       return
     }
-    this.openStream(agentId, conversationId)
+    this.openStream(agentId, conversationId, s.lastSeq || undefined)
   }
 
   private async restoreThenStream(agentId: string, conversationId: string): Promise<void> {
@@ -114,7 +155,7 @@ class HermesChatStore {
       let replayed = 0
       for (const raw of events) {
         const r = hermesStreamEventSchema.safeParse(raw)
-        if (!r.success) continue
+        if (!r.success) { reportDroppedEvent('history-replay', raw, r.error); continue }
         runInAction(() => this.reduce(conversationId, r.data))
         replayed++
         if (typeof raw.seq === 'number') since = raw.seq
@@ -123,34 +164,85 @@ class HermesChatStore {
       // indicator, and the row re-stacked on re-attach (Travis had ~5).
       void replayed
     } catch { /* no history yet / route hiccup — stream from live */ }
+    if (since != null) this.state(conversationId).lastSeq = since
     this.openStream(agentId, conversationId, since)
   }
 
   private openStream(agentId: string, conversationId: string, since?: number): void {
     if (this.sources.has(conversationId)) return
+    this.agents.set(conversationId, agentId)
     const s = this.state(conversationId)
     const base = hermesApi.streamPath(agentId, conversationId)
     const es = new EventSource(since != null ? `${base}&since=${since}` : base)
     this.sources.set(conversationId, es)
+    let lastRecv = Date.now()
+    const teardown = () => {
+      es.close()
+      if (this.sources.get(conversationId) === es) this.sources.delete(conversationId)
+      const w = this.watchdogs.get(conversationId)
+      if (w) { clearInterval(w); this.watchdogs.delete(conversationId) }
+    }
     es.onopen = () => runInAction(() => { s.connected = true; s.error = null })
-    es.onerror = () => runInAction(() => { s.connected = false })
     es.onmessage = (ev) => {
-      let parsed: HermesStreamEvent
+      lastRecv = Date.now() // ANY byte (incl. the t:ping heartbeat) proves the socket is live
+      let raw: any
       try {
-        const r = hermesStreamEventSchema.safeParse(JSON.parse(ev.data))
-        if (!r.success) return // forward-compat: ignore unknown variants
-        parsed = r.data
+        raw = JSON.parse(ev.data)
       } catch {
         return
       }
-      runInAction(() => this.reduce(conversationId, parsed))
+      const r = hermesStreamEventSchema.safeParse(raw)
+      // Forward-compat: unknown variants are ignored rather than fatal — but LOUDLY,
+      // so a bridge upgrade that adds an event type cannot silently break the UI again.
+      if (!r.success) { reportDroppedEvent('live-sse', raw, r.error); return }
+      runInAction(() => {
+        this.reduce(conversationId, r.data)
+        if (typeof raw.seq === 'number') s.lastSeq = raw.seq
+      })
     }
+    es.onerror = () => {
+      runInAction(() => { s.connected = false })
+      // Take control of reconnection: native EventSource retries the ORIGINAL url (stale
+      // open-time cursor). Tear down and reopen from the latest folded seq instead.
+      teardown()
+      this.scheduleReopen(conversationId)
+    }
+    // Liveness watchdog — THE fix for \"reply never posts until refresh\": the backend heartbeats
+    // every 15s, so >35s of total silence means the socket is half-open (a proxy stopped forwarding
+    // without firing onerror). Force a clean reconnect from lastSeq; the buffered events replay and
+    // the chat catches up on its own, no manual reload.
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastRecv > 35000) {
+        runInAction(() => { s.connected = false })
+        teardown()
+        this.scheduleReopen(conversationId)
+      }
+    }, 10000)
+    this.watchdogs.set(conversationId, watchdog)
+  }
+
+  /** Reopen the observer stream from the last folded seq after a drop/half-open, debounced so a
+   *  flapping connection can't spin up parallel EventSources. */
+  private scheduleReopen(conversationId: string): void {
+    if (this.reconnectTimers.has(conversationId)) return
+    const timer = setTimeout(() => {
+      this.reconnectTimers.delete(conversationId)
+      const agentId = this.agents.get(conversationId)
+      if (!agentId || !this.chats.has(conversationId)) return // ended/never-attached — don't resurrect
+      if (this.sources.has(conversationId)) return
+      this.openStream(agentId, conversationId, this.state(conversationId).lastSeq || undefined)
+    }, 1200)
+    this.reconnectTimers.set(conversationId, timer)
   }
 
   /** Close the observer stream. The backend session keeps running (headless invariant). */
   detach(conversationId: string): void {
     this.sources.get(conversationId)?.close()
     this.sources.delete(conversationId)
+    const w = this.watchdogs.get(conversationId)
+    if (w) { clearInterval(w); this.watchdogs.delete(conversationId) }
+    const rt = this.reconnectTimers.get(conversationId)
+    if (rt) { clearTimeout(rt); this.reconnectTimers.delete(conversationId) }
     const s = this.chats.get(conversationId)
     if (s) s.connected = false
   }
@@ -176,6 +268,7 @@ class HermesChatStore {
     runInAction(() => {
       const s = this.state(conversationId)
       s.items.splice(0, s.items.length)
+      s.queue.length = 0
       s.error = null
     })
     this.restored.delete(conversationId)
@@ -287,10 +380,27 @@ class HermesChatStore {
         s.busy = false
         push({ kind: 'error', text: `${ev.where ? `[${ev.where}] ` : ''}${ev.message}` })
         break
+      case 'fatal': {
+        // The bridge died mid-turn. Clear busy so the composer unlocks, and SAY SO —
+        // this event was dropped entirely until 2026-07-28, so a dead bridge simply
+        // looked like a turn that never finished.
+        s.busy = false
+        const detail = [ev.reason, ev.message].filter(Boolean).join(': ') || 'bridge stream died'
+        push({ kind: 'error', text: `[fatal] ${detail}${ev.recoverable ? ' — send another message to restart the session.' : ''}` })
+        console.error('[HermesChatStore] bridge fatal', ev)
+        break
+      }
+      case 'model_set':
+        console.info('[HermesChatStore] model set ->', ev.model_id)
+        break
       default:
         // mode/session-info passthroughs — no rendering yet.
         break
     }
+
+    // Type-ahead: once the agent returns to idle, auto-send the next queued message. Deferred so
+    // we never re-enter fire() mid-reduce; flushQueue re-checks busy, so it can't double-send.
+    if (!s.busy && s.queue.length > 0) setTimeout(() => this.flushQueue(conversationId), 0)
   }
 
   /** view_screen round-trip: capture with the chat panel removed from layout,
@@ -371,33 +481,64 @@ class HermesChatStore {
   async send(agentId: string, conversationId: string, text: string): Promise<void> {
     const s = this.state(conversationId)
     const t = text.trim()
-    if (!t || s.busy) return
+    if (!t) return
+    this.agents.set(conversationId, agentId)
 
+    // ALWAYS render the user's message immediately — it must never vanish. If a turn is already
+    // in flight, mark it queued and enqueue; it auto-sends when that turn ends (type-ahead). This
+    // fixes the bug where sending mid-turn silently dropped the message into the void.
+    const queued = s.busy
+    const item: ChatItem = { id: this.nextId++, kind: 'user', text: t, ts: Date.now(), queued: queued || undefined }
+    s.items.push(item)
+    if (queued) {
+      s.queue.push({ itemId: item.id, text: t })
+      return
+    }
+    await this.fire(agentId, conversationId, t, item)
+  }
+
+  /** POST one turn. Sets busy synchronously so a concurrent flush can't double-fire. The reply
+   *  renders via the stream; the POST is for error surfacing + view-context attach. */
+  private async fire(agentId: string, conversationId: string, t: string, item: ChatItem): Promise<void> {
+    const s = this.state(conversationId)
+    s.busy = true
     const extra: { context?: string; screenshot?: string; conversationId?: string } = { conversationId }
     try {
+      // Context is snapshotted at SEND time (for a queued msg, that's when it actually fires).
       const snapshot = buildViewSnapshot((window as any).__appStore)
-      if (snapshot) extra.context = JSON.stringify(snapshot, null, 1)
+      if (snapshot) { extra.context = JSON.stringify(snapshot, null, 1); item.ctxAttached = 'text' }
     } catch { /* context is best-effort — never block the send */ }
-    // Screenshots are NOT auto-attached anymore (Travis: the every-send
-    // panel-hide was jarring, and the agent should look when IT decides to).
-    // On-demand capture arrives via claude1's capture-on-signal tool contract;
-    // captureUI({hide:['.ai-lab-global-chat']}) is the ready-made mechanism.
-
-    s.items.push({
-      id: this.nextId++, kind: 'user', text: t, ts: Date.now(),
-      ctxAttached: extra.context ? 'text' : undefined,
-    })
-    s.busy = true
+    // Screenshots are NOT auto-attached (Travis: the every-send panel-hide was jarring; the agent
+    // looks when IT decides to, via claude1's capture-on-signal contract).
     const r = await hermesApi.prompt(agentId, t, extra)
     runInAction(() => {
       if (!r.ok) {
         s.busy = false
         s.items.push({ id: this.nextId++, kind: 'error', text: r.error || 'prompt failed', ts: Date.now() })
+        // A failed send must not wedge the queue — drain the next one.
+        setTimeout(() => this.flushQueue(conversationId), 0)
       }
-      // /prompt is FIRE-AND-ACK ({ok, fired}) — the reply arrives over the
-      // stream, whose turn_done/error clears busy. Don't clear it here or the
-      // composer re-enables in the gap between the ack and the first chunk.
+      // /prompt is FIRE-AND-ACK ({ok, fired}) — the reply arrives over the stream, whose
+      // turn_done/error clears busy. Don't clear it here or the composer re-enables in the gap
+      // between the ack and the first chunk.
     })
+  }
+
+  /** Send the next queued (type-ahead) message once the agent is idle. Called (deferred) from
+   *  reduce() on every busy->idle transition; guarded so overlapping calls can't double-send. */
+  private flushQueue(conversationId: string): void {
+    const s = this.chats.get(conversationId)
+    if (!s || s.busy || s.queue.length === 0) return
+    const agentId = this.agents.get(conversationId)
+    if (!agentId) return
+    const next = s.queue.shift()!
+    const item = s.items.find((i) => i.id === next.itemId)
+    if (item) item.queued = undefined
+    if (!item) { // bubble was removed (rewind/end) — skip it but keep draining
+      setTimeout(() => this.flushQueue(conversationId), 0)
+      return
+    }
+    void this.fire(agentId, conversationId, next.text, item)
   }
 }
 

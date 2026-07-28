@@ -255,5 +255,11 @@ export const hermesStreamEventSchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('status'), status: z.enum(['idle', 'busy']) }),
   z.object({ t: z.literal('turn_done'), stop_reason: z.string().nullish() }),
   z.object({ t: z.literal('error'), where: z.string().optional(), message: z.string(), tb: z.string().optional() }),
+  /** HARD failure in the bridge's read loop — the turn is over and nothing else is coming.
+   *  Was missing from this union until 2026-07-28, so `safeParse` dropped it and a dead
+   *  bridge rendered as absolutely nothing in chat (silent hang). MUST stay renderable. */
+  z.object({ t: z.literal('fatal'), reason: z.string().optional(), recoverable: z.boolean().optional(), message: z.string().optional(), tb: z.string().optional() }),
+  /** Emitted after ACP session/set_model succeeds. */
+  z.object({ t: z.literal('model_set'), model_id: z.string().optional() }),
 ])
 export type HermesStreamEvent = z.infer<typeof hermesStreamEventSchema>
