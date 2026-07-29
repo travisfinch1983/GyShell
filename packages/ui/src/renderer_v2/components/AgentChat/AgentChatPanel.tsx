@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Pencil, Plus, RefreshCw, ScanEye, SendHorizonal, Settings2, Square, Trash2, Wrench } from 'lucide-react'
+import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Pencil, Plus, RefreshCw, ScanEye, SendHorizonal, Settings2, Square, Trash2, Volume2, VolumeX, Wrench } from 'lucide-react'
+import { isTtsEnabled, setTtsEnabled, stopPlayback } from '../../services/TtsPlayback'
 import type { HermesSlashCommand } from '@gyshell/shared'
 import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
 import { hermesApi } from '../../stores/hermesApi'
@@ -43,6 +44,30 @@ const PlanCard = observer(({ item }: { item: ChatItem }) => (
     ))}
   </div>
 ))
+
+/**
+ * Speak-replies toggle. Turning it OFF also stops whatever is currently playing —
+ * otherwise the agent keeps talking after you have told it to be quiet, which is the
+ * single most irritating way for this to behave.
+ */
+const TtsButton: React.FC = () => {
+  const [on, setOn] = React.useState(isTtsEnabled)
+  return (
+    <button
+      className={styles.btnStop}
+      style={{ background: 'transparent', borderColor: 'var(--border)' }}
+      title={on ? 'Speaking replies aloud — click to mute' : 'Speak agent replies aloud'}
+      onClick={() => {
+        const next = !on
+        setTtsEnabled(next)
+        if (!next) stopPlayback()
+        setOn(next)
+      }}
+    >
+      {on ? <Volume2 size={13} /> : <VolumeX size={13} />}
+    </button>
+  )
+}
 
 const Row = observer(({ item }: { item: ChatItem }) => {
   switch (item.kind) {
@@ -328,6 +353,7 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
               if (e.key === 'Tab' && slashOpen && slashMatches[0]) { e.preventDefault(); setText(`/${slashMatches[0].name} `); setSlashOpen(false) }
             }}
           />
+          <TtsButton />
           {s.busy ? (
             <button className={styles.btnStop} title="Stop generating" onClick={() => chat.stop(agentId, conversationId)}>
               <Square size={11} fill="currentColor" /> Stop

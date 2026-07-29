@@ -1,3 +1,5 @@
+import { isTtsEnabled, speakText } from '../services/TtsPlayback'
+
 /**
  * HermesChatStore — streaming chat sessions with Hermes agents (P0 chat surface).
  *
@@ -338,6 +340,7 @@ class HermesChatStore {
       case 'tool_start':
         // The message above a tool call is complete — the agent stopped talking to
         // go run something. This is the case that fires repeatedly in a tool loop.
+        this.speakFinished(s, conversationId)
         for (const i of s.items) i.streaming = false
         push({ kind: 'tool', toolId: ev.id ?? null, title: ev.title ?? ev.kind ?? 'tool', status: 'running', text: '' })
         break
@@ -388,6 +391,7 @@ class HermesChatStore {
         s.busy = ev.status === 'busy'
         break
       case 'turn_done': {
+        this.speakFinished(s, conversationId)
         for (const i of s.items) i.streaming = false
         s.busy = false
         push({ kind: 'system', text: `turn done${ev.stop_reason ? ` · ${ev.stop_reason}` : ''}` })
@@ -493,6 +497,30 @@ class HermesChatStore {
    *  stops, so the button state always reflects the real backend state. */
   stop(agentId: string, conversationId: string): void {
     void hermesApi.stop(agentId, conversationId)
+  }
+
+  /**
+   * Speak the assistant bubble that is finishing right now, if TTS is on.
+   *
+   * Called at the two points where a bubble is finalized (a tool call starting above
+   * it, or the turn ending) — the same invariant that stops its caret. Speaking here
+   * rather than at turn end means a multi-step turn is narrated as it happens instead
+   * of arriving as one burst afterwards.
+   *
+   * Only `assistant` bubbles: thoughts and tool cards are deliberately never spoken.
+   * The agentId rides along as TtsPlayback's `role`, which is how it resolves a
+   * per-agent voice/RVC override.
+   */
+  private speakFinished(s: AgentChatState, conversationId: string): void {
+    if (!isTtsEnabled()) return
+    const item = [...s.items].reverse().find((i) => i.streaming && i.kind === 'assistant')
+    if (!item?.text?.trim()) return
+    const agentId = this.agents.get(conversationId)
+    // Fire-and-forget: TtsPlayback queues internally, so overlapping calls play in
+    // order. A TTS failure must never interfere with the chat itself.
+    void speakText(item.text, agentId).catch((e) => {
+      console.warn(`[chat] TTS failed for ${agentId ?? 'unknown agent'}:`, e)
+    })
   }
 
   async send(agentId: string, conversationId: string, text: string): Promise<void> {
