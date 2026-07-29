@@ -52,6 +52,21 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     }
   })
 
+  // Global agent defaults — the fallback model every unset agent inherits, and the
+  // value stamped onto newly created agents.
+  router.get('/api/hermes/agent-defaults', async (_req: Req, res: Res) => {
+    try { res.json(await hermes.getAgentDefaults()) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.put('/api/hermes/agent-defaults', json, async (req: Req, res: Res) => {
+    try {
+      const { model, provider } = req.body || {}
+      res.json(await hermes.setAgentDefaults(String(model || ''), provider ? String(provider) : undefined))
+    } catch (e) {
+      res.status(400).json({ error: String((e as Error).message) })
+    }
+  })
+
   // Read back the persisted spec for one agent (for the UI edit flow). 404 if the agent
   // exists as a profile but was never applied through AI-Lab (no stored spec).
   router.get('/api/hermes/agents/:id', async (req: Req, res: Res) => {

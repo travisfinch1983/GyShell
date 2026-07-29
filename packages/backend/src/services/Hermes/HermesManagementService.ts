@@ -324,6 +324,54 @@ export class HermesManagementService {
     }
   }
 
+  /**
+   * The GLOBAL default model — Hermes `model.default` + `model.provider` in the
+   * top-level config. Any agent without its own model block inherits this.
+   *
+   * Read straight from the yaml rather than shelling out: `hermes config` has no
+   * `get` subcommand (only show/edit/set/path/...), and parsing `show` output is
+   * more fragile than reading the file Hermes itself writes.
+   */
+  async getAgentDefaults(): Promise<{ model: string; provider: string }> {
+    // Profiles live at <base>/<agentId>, so the global config is one level up.
+    const globalCfg = `${dirname(this.profileHomeBase)}/config.yaml`
+    const script = [
+      'import sys, yaml, json',
+      'try:',
+      '    with open(sys.argv[1]) as f: cfg = yaml.safe_load(f) or {}',
+      'except FileNotFoundError:',
+      '    cfg = {}',
+      'm = cfg.get("model") or {}',
+      'print(json.dumps({"model": m.get("default") or "", "provider": m.get("provider") or ""}))',
+    ].join('\n')
+    try {
+      const { stdout } = await execFileAsync('python3', ['-c', script, globalCfg], { timeout: 10_000 })
+      return JSON.parse(stdout.trim())
+    } catch (e) {
+      // Surface it — a silent {} here would render the UI as "no default set" when
+      // the real problem is an unreadable config.
+      console.warn(`[hermes] could not read global agent defaults from ${globalCfg}: ${(e as Error).message}`)
+      return { model: '', provider: '' }
+    }
+  }
+
+  /**
+   * Set the global default. `provider` defaults to 'ailab' because the model
+   * picker is fed from the AI-Lab catalog; pass it explicitly to point the
+   * default at an external provider instead.
+   *
+   * NOTE this writes the GLOBAL config — no `-p`. Passing `-p default` would look
+   * like a profile but Hermes treats that profile name as the global config, so
+   * being explicit here avoids a confusing double-write.
+   */
+  async setAgentDefaults(model: string, provider = 'ailab'): Promise<{ model: string; provider: string }> {
+    if (!model) throw new Error('a default model is required')
+    await this.hermes(['config', 'set', 'model.provider', provider])
+    await this.hermes(['config', 'set', 'model.default', model])
+    console.log(`[hermes] global default model -> ${provider}/${model}`)
+    return { model, provider }
+  }
+
   /** Set (or clear) an aux role's `extra_body` as a real DICT via a PyYAML config.yaml write.
    *  `hermes config set` stores a dict as a literal STRING (see applyFallback), which Hermes can't
    *  use — so we edit the yaml directly. noThink=true writes
@@ -1771,15 +1819,36 @@ async lintProfileDocs(agentId: string): Promise<Array<{ file: string; line: numb
       }
     }
 
-    // Model → always via the ailab provider (the AI-Lab universal proxy).
-    await this.hermes(['-p', id, 'config', 'set', 'model.provider', 'ailab'])
-    await this.hermes(['-p', id, 'config', 'set', 'model.default', spec.model])
+    // Model. When the spec names one it wins. When it does NOT, stamp the CURRENT
+    // global default explicitly rather than leaving the agent unset to inherit —
+    // an agent should keep the model it was created with even if the global default
+    // changes later. Inheritance would silently re-point every unset agent.
+    //
+    // The provider travels WITH the model: the global default may belong to a
+    // different provider (deepseek, say), and writing that model under the ailab
+    // provider would point the agent at a proxy that does not serve it.
+    let modelId = spec.model
+    let modelProvider = 'ailab'
+    if (!modelId) {
+      const d = await this.getAgentDefaults()
+      if (d.model) {
+        modelId = d.model
+        modelProvider = d.provider || 'ailab'
+        console.log(`[hermes] ${id}: no model in spec — stamping the global default `
+          + `${modelProvider}/${modelId} so it stays pinned to this agent`)
+      } else {
+        console.warn(`[hermes] ${id}: no model in spec AND no global default set — `
+          + `the agent will have no model configured`)
+      }
+    }
+    await this.hermes(['-p', id, 'config', 'set', 'model.provider', modelProvider])
+    await this.hermes(['-p', id, 'config', 'set', 'model.default', modelId])
 
     // Max output tokens per turn (bounds runaway generations). Unset -> model default.
     await this.hermes(['-p', id, 'config', 'set', 'model.max_tokens', spec.maxTokens ? String(spec.maxTokens) : ''])
 
     // Native-vision routing keyed on the model's capability (supports_vision + describe backend).
-    await this.applyVisionConfig(id, spec.model)
+    await this.applyVisionConfig(id, modelId)   // resolved id, not the (possibly empty) spec value
     // Context-compaction model (global Compaction support-model role).
     await this.applyCompactionConfig(id)
 

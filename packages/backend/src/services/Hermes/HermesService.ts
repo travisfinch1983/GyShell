@@ -190,6 +190,16 @@ export class HermesService {
     return this.mgmt.applySpec(spec)
   }
 
+  /** Global default model — the fallback every agent without its own model block
+   *  inherits, and the value stamped onto newly created agents. */
+  getAgentDefaults(): Promise<{ model: string; provider: string }> {
+    return this.mgmt.getAgentDefaults()
+  }
+
+  setAgentDefaults(model: string, provider?: string): Promise<{ model: string; provider: string }> {
+    return this.mgmt.setAgentDefaults(model, provider)
+  }
+
   getUserDoc(): Promise<string> { return this.mgmt.getUserDoc() }
   setUserDoc(markdown: string): Promise<{ agentsUpdated: number }> { return this.mgmt.setUserDoc(markdown) }
 
