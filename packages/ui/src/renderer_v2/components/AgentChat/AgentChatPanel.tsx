@@ -67,7 +67,9 @@ const TtsButton: React.FC<{ conversationId: string }> = observer(({ conversation
       style={{
         background: 'transparent',
         borderColor: overriding ? 'var(--accent)' : 'var(--border)',
+        color: effective ? 'var(--accent)' : 'var(--fg-muted)',
         position: 'relative',
+        gap: 4,
       }}
       title={
         (effective ? 'Speaking replies aloud in THIS chat' : 'Muted in THIS chat')
@@ -91,6 +93,9 @@ const TtsButton: React.FC<{ conversationId: string }> = observer(({ conversation
       }}
     >
       {effective ? <Volume2 size={13} /> : <VolumeX size={13} />}
+      {/* LABEL IT. As a bare icon among two other icon buttons this control was invisible —
+          it was looked for and reported missing. */}
+      <span style={{ fontSize: 10 }}>{effective ? 'Speaking' : 'Muted'}</span>
       {overriding && (
         <span style={{ position: 'absolute', top: 1, right: 1, width: 4, height: 4, borderRadius: '50%', background: 'var(--accent)' }} />
       )}
@@ -176,7 +181,42 @@ const SttButtons: React.FC<{ onTranscript: (t: string) => void; onAutoSend: (t: 
   )
 }
 
-const Row = observer(({ item }: { item: ChatItem }) => {
+/**
+ * Replay one agent message through TTS on demand, in that agent's configured voice.
+ * Independent of the Auto-TTS toggle by design.
+ */
+const SpeakMessageButton: React.FC<{ agentId: string; text: string }> = ({ agentId, text }) => {
+  const [state, setState] = React.useState<'idle' | 'busy' | 'error'>('idle')
+  if (!text.trim()) return null
+  return (
+    <button
+      title={state === 'error' ? 'Speech failed — click to retry' : 'Read this message aloud'}
+      onClick={async () => {
+        setState('busy')
+        try {
+          await chat.speakMessage(agentId, text)
+          setState('idle')
+        } catch (e) {
+          // Surface it. A silent no-op here is indistinguishable from a dead TTS pool.
+          console.warn('[chat] speakMessage failed:', e)
+          setState('error')
+        }
+      }}
+      style={{
+        background: 'transparent',
+        border: 'none',
+        padding: 2,
+        cursor: 'pointer',
+        color: state === 'error' ? 'var(--danger, #f87171)' : 'var(--fg-faint)',
+        opacity: state === 'busy' ? 1 : 0.6,
+      }}
+    >
+      <Volume2 size={12} />
+    </button>
+  )
+}
+
+const Row = observer(({ item, agentId }: { item: ChatItem; agentId: string }) => {
   switch (item.kind) {
     case 'user':
       return (
@@ -208,6 +248,9 @@ const Row = observer(({ item }: { item: ChatItem }) => {
         <div className={`${styles.msgAgent} markdown-body`}>
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.text}</ReactMarkdown>
           {item.streaming ? <span className={styles.cursor}>▍</span> : null}
+          {/* Only once the bubble is complete — replaying a half-arrived reply would speak
+              a truncated sentence. */}
+          {!item.streaming && <SpeakMessageButton agentId={agentId} text={item.text} />}
         </div>
       )
     case 'thought': return <ThoughtRow item={item} />
@@ -405,7 +448,7 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
             runs headless on the backend and survives closing this view.
           </div>
         )}
-        {s.items.map((i) => <Row key={i.id} item={i} />)}
+        {s.items.map((i) => <Row key={i.id} item={i} agentId={agentId} />)}
         <ScrollAnchor items={s.items} logRef={logRef} nearBottomRef={nearBottomRef} />
         {s.busy && <div className={styles.sysRow}>thinking…</div>}
       </div>

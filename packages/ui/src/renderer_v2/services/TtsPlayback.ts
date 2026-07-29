@@ -107,6 +107,22 @@ export async function speakText(text: string, role?: string, override?: TtsOverr
   })
 }
 
+/**
+ * Speak NOW, ignoring the auto-speak toggle.
+ *
+ * speakText() returns early when auto-speak is off, which is correct for automatic
+ * narration but wrong for an explicit "read this message" click — refusing a direct
+ * request because a global toggle is off would be indefensible. Still goes through the
+ * same queue, so a manual replay cannot talk over automatic narration.
+ */
+export async function speakTextNow(text: string, role?: string, override?: TtsOverride): Promise<void> {
+  if (!text.trim()) return
+  return new Promise<void>((resolve) => {
+    speechQueue.push({ text, role, override, resolve })
+    processQueue()
+  })
+}
+
 /** Per-call voice settings that beat both the role map and the global config. Used by the
  *  agent chat to apply an agent's OWN spec.tts, which is server-side config rather than
  *  the browser-local role map. */

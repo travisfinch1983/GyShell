@@ -1,4 +1,4 @@
-import { isTtsEnabled, speakText, type TtsOverride } from '../services/TtsPlayback'
+import { isTtsEnabled, speakText, speakTextNow, type TtsOverride } from '../services/TtsPlayback'
 
 /**
  * HermesChatStore — streaming chat sessions with Hermes agents (P0 chat surface).
@@ -599,6 +599,21 @@ class HermesChatStore {
 
   /** Drop a cached voice so an edit in the agent editor takes effect without a reload. */
   invalidateVoice(agentId: string): void { this.voiceCache.delete(agentId) }
+
+  /**
+   * Speak one specific message on demand, in the agent's own voice.
+   *
+   * Deliberately does NOT consult the Auto-TTS setting: "read me this one" and "read me
+   * everything" are separate requests, and refusing an explicit click because a global
+   * toggle is off would be indefensible. Errors surface to the caller so the button can
+   * show a failure rather than doing nothing.
+   */
+  async speakMessage(agentId: string, text: string): Promise<void> {
+    const t = text.trim()
+    if (!t) return
+    const override = await this.agentVoice(agentId)
+    await speakTextNow(t, agentId, override)
+  }
 
   async send(agentId: string, conversationId: string, text: string): Promise<void> {
     const s = this.state(conversationId)
