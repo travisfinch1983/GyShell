@@ -25,7 +25,9 @@ def load_immich_key() -> str:
 # Default settings written to DB on first run. User can change via UI.
 DEFAULT_SETTINGS = {
     "model": "seedvr2-7b-fp8",                 # non-sharp mixed_block35_fp16
-    "proxlab_url": "http://10.0.0.140:7777",  # ProxLab base URL (GPU inventory)
+    "proxlab_url": "http://10.0.0.219:17890",  # GPU-inventory base URL — now AI-Lab.
+    # Key name kept: app.py, proxlab.py and DashboardView.tsx all read "proxlab_url".
+    # The old ProxLab host it was named for is decommissioned and gone.
     "gpu_host_user": "root",
     "gpu_host_script": "/opt/photo-upscale/upscale_pipeline.py",
     "gpu_host_workdir": "/tmp/companion-jobs",

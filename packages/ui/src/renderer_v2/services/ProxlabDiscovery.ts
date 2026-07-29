@@ -1,7 +1,7 @@
 import { runInAction } from 'mobx'
 /**
  * ProxlabDiscovery — Auto-discover models and services from the AI-Lab proxy.
- * (Named for the ProxLab proxy it originally targeted; ProxLab @ 10.0.0.140:7777
+ * (Named for the ProxLab proxy it originally targeted; that host
  * is decommissioned and the Vite `/proxlab-api` route now rewrites to AI-Lab's
  * own universal proxy, which serves the same /api/proxy/* discovery shapes.)
  *
@@ -17,7 +17,7 @@ import { runInAction } from 'mobx'
 // Browser-safe prefix — Vite proxy rewrites to the AI-Lab proxy (127.0.0.1:17890)
 const API_PREFIX = '/proxlab-api'
 
-const DISCOVERY_INTERVAL_MS = 60_000 // 60s
+const DISCOVERY_INTERVAL_MS = 300_000 // 5min (was 60s — polling every provider incl. dead TTS/STT from the browser was noisy + wasteful over the tunnel)
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -385,18 +385,39 @@ async function discoverRvcModels(svcData: Partial<ProxlabServices>): Promise<Rvc
 
 /** Run full discovery cycle */
 export async function discoverModels(): Promise<DiscoveredModel[]> {
-  // Discover all in parallel
-  const [llmModels, embed, rerank, svcData, tts, stt] = await Promise.all([
-    discoverLlmModels(),
-    discoverEmbedModel(),
-    discoverRerankModel(),
-    discoverServices(),
-    discoverTtsProviders(),
-    discoverSttProviders(),
-  ])
-
-  // Discover RVC models (needs services data, so runs after)
-  const rvc = await discoverRvcModels(svcData)
+  // Rule #1: the browser makes ZERO connections. On the WEB the backend runs the discovery
+  // loop + owns connection status; we just read its cached snapshot over the ONE gateway RPC.
+  // In Electron (trusted desktop, no gateway `discovery` bridge) we aggregate locally.
+  const gw = (window as any).gyshell?.discovery
+  let llmModels: DiscoveredModel[]
+  let embed: string | null
+  let rerank: string | null
+  let svcData: Partial<ProxlabServices>
+  let tts: TtsProvider[]
+  let stt: SttProvider[]
+  let rvc: RvcModel[]
+  if (gw?.get) {
+    let agg: any = null
+    try { agg = await gw.get() } catch (e) { console.warn('[ProxlabDiscovery] gateway discovery:get failed', e) }
+    if (!agg) return discoveredModels // keep current caches; never fall back to browser fetches on web
+    llmModels = agg.models || []
+    embed = agg.embedModel ?? null
+    rerank = agg.rerankModel ?? null
+    svcData = agg.services || {}
+    tts = agg.ttsProviders || []
+    stt = agg.sttProviders || []
+    rvc = agg.rvcModels || []
+  } else {
+    ;[llmModels, embed, rerank, svcData, tts, stt] = await Promise.all([
+      discoverLlmModels(),
+      discoverEmbedModel(),
+      discoverRerankModel(),
+      discoverServices(),
+      discoverTtsProviders(),
+      discoverSttProviders(),
+    ])
+    rvc = await discoverRvcModels(svcData)
+  }
 
   // Update caches
   discoveredModels = llmModels
@@ -408,22 +429,9 @@ export async function discoverModels(): Promise<DiscoveredModel[]> {
   sttProviders = stt
   rvcModels = rvc
 
-  // Log results
-  console.log(`[ProxlabDiscovery] Discovered ${llmModels.length} LLM models`)
-  for (const m of llmModels) {
-    console.log(`  slot ${m.slot} (${m.node}): ${m.id}`)
-  }
-  if (embed) console.log(`[ProxlabDiscovery] Embeddings: ${embed}`)
-  if (rerank) console.log(`[ProxlabDiscovery] Reranker: ${rerank}`)
-  if (tts.length) console.log(`[ProxlabDiscovery] TTS: ${tts.length} providers, ${tts.reduce((s, p) => s + p.voices.length, 0)} voices`)
-  if (stt.length) console.log(`[ProxlabDiscovery] STT: ${stt.length} providers`)
-  if (rvc.length) console.log(`[ProxlabDiscovery] RVC: ${rvc.length} voice models`)
-
-  const svcSummary = Object.entries(svcData)
-    .filter(([, v]) => Array.isArray(v) && v.length > 0)
-    .map(([k, v]) => `${k}:${(v as any[]).length}`)
-    .join(', ')
-  if (svcSummary) console.log(`[ProxlabDiscovery] Services: ${svcSummary}`)
+  // One concise line (the full per-model dump was console spam on every load).
+  const ttsVoices = tts.reduce((sum, p) => sum + p.voices.length, 0)
+  console.log(`[ProxlabDiscovery] ${llmModels.length} LLM${embed ? ' +embed' : ''}${rerank ? ' +rerank' : ''} | tts:${tts.length}(${ttsVoices}v) stt:${stt.length} rvc:${rvc.length}`)
 
   // Sync discovered LLM models into settings.models.items so they appear
   // in profile role dropdowns. Marked with _proxlabAutoDiscovered so the
@@ -490,7 +498,7 @@ function syncModelsToSettings(models: DiscoveredModel[]) {
         cur._proxlabNode = m.node
         cur._proxlabDisconnected = false
         // Refresh baseUrl — the backend (CT152) reaches its own proxy on localhost.
-        // (Was the dead ProxLab host 10.0.0.140:7777 until 2026-07-03.)
+        // (Was the old ProxLab host until 2026-07-03; it is gone now.)
         cur.baseUrl = `http://127.0.0.1:17890/api/proxy/llm/${m.slot}/v1`
         continue
       }
@@ -534,10 +542,10 @@ function syncModelsToSettings(models: DiscoveredModel[]) {
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
 
 export function startDiscovery(): void {
-  if (discoveryTimer) return
-  discoverModels()
-  discoveryTimer = setInterval(discoverModels, DISCOVERY_INTERVAL_MS)
-  console.log(`[ProxlabDiscovery] Started (refresh every ${DISCOVERY_INTERVAL_MS / 1000}s)`)
+  // No browser-side loop (rule #1). One snapshot on load; the SERVER keeps its cache fresh
+  // (5-min server loop) and owns connection status. Callers re-invoke discoverModels() on
+  // demand (e.g. opening the model/TTS settings) — a single gateway RPC, never a browser fetch.
+  void discoverModels()
 }
 
 export function stopDiscovery(): void {

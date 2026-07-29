@@ -24,7 +24,10 @@ from mcp.server.fastmcp import FastMCP
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
-PROXLAB_URL = os.environ.get("PROXLAB_URL", "http://10.0.0.140:7777")
+# Env var name kept — the systemd unit and README both set PROXLAB_URL, and
+# lines below build RERANKER_URL/EMBED_URL from it. Only the fallback moved
+# off the decommissioned host.
+PROXLAB_URL = os.environ.get("PROXLAB_URL", "http://10.0.0.219:17890")
 HIPPOCAMPAI_URL = os.environ.get("HIPPOCAMPAI_URL", "http://10.0.0.26:8000")
 HIPPOCAMPAI_USER = os.environ.get("HIPPOCAMPAI_USER", "claude")
 

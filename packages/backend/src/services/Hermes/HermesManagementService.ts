@@ -315,6 +315,12 @@ export class HermesManagementService {
     } else {
       await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.provider`, 'auto'])
       await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.model`, ''])
+      // Clear base_url HERE TOO. Without this, a role set to "Auto" kept whatever
+      // endpoint it previously had — so roles that once pointed at the
+      // decommissioned ProxLab survived every apply, looking configured while
+      // being unreachable. "Auto" must mean inherit, not inherit-the-model-but-
+      // keep-a-stale-URL.
+      await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.base_url`, ''])
     }
   }
 

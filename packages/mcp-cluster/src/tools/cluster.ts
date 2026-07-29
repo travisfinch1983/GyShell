@@ -3,7 +3,7 @@ import type { ToolSpec } from './types.js'
 
 /**
  * Cluster + credential-vault tools — the proxlab-cluster replacement.
- * ProxLab (CT107 @ 10.0.0.140) is decommissioned; these point at AI-Lab's
+ * ProxLab (CT107) is decommissioned and GONE; these point at AI-Lab's
  * ported inventory + credential-vault REST. Same tool NAMES as the old
  * proxlab-cluster MCP so agents only swap the server prefix.
  */

@@ -6,12 +6,13 @@
  * (CT 152), never in the browser. The renderer reaches this only through the
  * WebSocket gateway RPCs `cluster:getStatus` (read) and `cluster:request` (the
  * path-allowlisted proxy for actions), both wired as `clusterBridge` in
- * startGyBackend.ts. We proxy ProxLab's existing REST API (10.0.0.140:7777), which
+ * startGyBackend.ts. We proxy AI-Lab's own REST API (10.0.0.219:17890), which
  * already owns the PVE integration (token, migrations, GPU hookscripts, bind-mount
  * handling). The direct-PVE rebuild can later replace the fetch target without
  * changing the RPC surface or the renderer.
  *
- * Configure the upstream with PROXLAB_API_BASE (default http://10.0.0.140:7777).
+ * Configure the upstream with PROXLAB_API_BASE (the env var name line 16 reads;
+ * legacy name, AI-Lab host) — default http://10.0.0.219:17890.
  */
 const DEFAULT_BASE = process.env.PROXLAB_API_BASE || `http://127.0.0.1:${process.env.AILAB_PROXY_PORT || 17890}`
 
