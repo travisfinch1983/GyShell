@@ -63,14 +63,7 @@ const TtsButton: React.FC<{ conversationId: string }> = observer(({ conversation
   const overriding = mode !== undefined
   return (
     <button
-      className={styles.btnStop}
-      style={{
-        background: 'transparent',
-        borderColor: overriding ? 'var(--accent)' : 'var(--border)',
-        color: effective ? 'var(--accent)' : 'var(--fg-muted)',
-        position: 'relative',
-        gap: 4,
-      }}
+      className={`${styles.btnVoice} ${effective ? styles.btnVoiceOn : ''}`}
       title={
         (effective ? 'Speaking replies aloud in THIS chat' : 'Muted in THIS chat')
         + (overriding
@@ -96,9 +89,7 @@ const TtsButton: React.FC<{ conversationId: string }> = observer(({ conversation
       {/* LABEL IT. As a bare icon among two other icon buttons this control was invisible —
           it was looked for and reported missing. */}
       <span style={{ fontSize: 10 }}>{effective ? 'Speaking' : 'Muted'}</span>
-      {overriding && (
-        <span style={{ position: 'absolute', top: 1, right: 1, width: 4, height: 4, borderRadius: '50%', background: 'var(--accent)' }} />
-      )}
+      {overriding && <span className={styles.btnVoiceDot} />}
     </button>
   )
 })
@@ -155,8 +146,7 @@ const SttButtons: React.FC<{ onTranscript: (t: string) => void; onAutoSend: (t: 
   return (
     <>
       <button
-        className={styles.btnStop}
-        style={{ background: recording ? 'var(--danger, #b91c1c)' : 'transparent', borderColor: 'var(--border)' }}
+        className={`${styles.btnVoice} ${recording ? styles.btnVoiceRec : ''}`}
         disabled={!stt.ok || transcribing || handsFree}
         title={!stt.ok ? `Speech-to-text unavailable — ${stt.why}`
           : transcribing ? 'Transcribing…'
@@ -167,8 +157,7 @@ const SttButtons: React.FC<{ onTranscript: (t: string) => void; onAutoSend: (t: 
         {transcribing ? <Radio size={13} /> : recording ? <MicOff size={13} /> : <Mic size={13} />}
       </button>
       <button
-        className={styles.btnStop}
-        style={{ background: speaking ? 'var(--accent)' : 'transparent', borderColor: handsFree ? 'var(--accent)' : 'var(--border)' }}
+        className={`${styles.btnVoice} ${speaking ? styles.btnVoiceRec : handsFree ? styles.btnVoiceOn : ''}`}
         disabled={!stt.ok || recording || transcribing}
         title={!stt.ok ? `Speech-to-text unavailable — ${stt.why}`
           : handsFree ? 'Always-listening ON — transcripts send themselves. Click to stop.'
@@ -202,14 +191,7 @@ const SpeakMessageButton: React.FC<{ agentId: string; text: string }> = ({ agent
           setState('error')
         }
       }}
-      style={{
-        background: 'transparent',
-        border: 'none',
-        padding: 2,
-        cursor: 'pointer',
-        color: state === 'error' ? 'var(--danger, #f87171)' : 'var(--fg-faint)',
-        opacity: state === 'busy' ? 1 : 0.6,
-      }}
+      className={`${styles.speakMsgBtn} ${state === 'error' ? styles.speakMsgBtnErr : ''}`}
     >
       <Volume2 size={12} />
     </button>

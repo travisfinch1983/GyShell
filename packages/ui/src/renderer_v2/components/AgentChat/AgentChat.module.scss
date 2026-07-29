@@ -398,6 +398,78 @@
   &:hover { background: color-mix(in srgb, var(--danger, #e5484d) 12%, transparent); }
 }
 
+/* Voice controls — the Auto-TTS toggle and the two microphone modes, sitting beside Send.
+   Unlike btnPrimary/btnStop these get a real SURFACE (--control-bg) rather than a
+   transparent background: they were previously transparent with the neutral --border
+   token, which on the dark panel made them all but invisible. */
+.btnVoice {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--control-bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 10px;
+  position: relative;
+
+  &:hover:not(:disabled) {
+    color: var(--fg);
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, var(--control-bg));
+  }
+  &:disabled { opacity: 0.45; cursor: not-allowed; }
+}
+
+/* Engaged. FILLED rather than merely outlined, so on/off is readable at a glance instead
+   of being a subtle border-colour difference. */
+.btnVoiceOn {
+  background: color-mix(in srgb, var(--accent) 22%, var(--control-bg));
+  border-color: var(--accent);
+  color: var(--accent);
+
+  &:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 32%, var(--control-bg)); }
+}
+
+/* Actively capturing audio — deliberately loud, because leaving a hot mic running by
+   accident is the failure that matters here. */
+.btnVoiceRec {
+  background: color-mix(in srgb, var(--danger, #e5484d) 30%, var(--control-bg));
+  border-color: var(--danger, #e5484d);
+  color: var(--fg);
+}
+
+/* Overriding the global auto-speak setting for this chat only. */
+.btnVoiceDot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* Per-message replay. Subtle by default (one per bubble would otherwise be noise) but
+   reaches full contrast on hover. */
+.speakMsgBtn {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 2px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  vertical-align: middle;
+
+  &:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+}
+.speakMsgBtnErr { color: var(--danger, #e5484d); }
+
 .ctxChip {
   display: inline-flex;
   align-items: center;
