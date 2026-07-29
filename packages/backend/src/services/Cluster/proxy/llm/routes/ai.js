@@ -2061,7 +2061,7 @@ if out: print(json.dumps(out))
     }
 
     const session = tmuxSession || `${providerId}-${port || 5001}`;
-    const unitName = `proxlab-${session}`;
+    const unitName = `ailab-${session}`;
     const scriptPath = `/opt/proxlab/services/${session}.sh`;
     const logFile = `/var/log/proxlab/${session}.log`;
 
@@ -3755,7 +3755,10 @@ WantedBy=multi-user.target
 
   /** Parse a systemd unit name like "proxlab-koboldcpp-5002" into { providerId, port, session } */
   function parseOrphanUnit(unitName) {
-    const rest = unitName.replace(/^proxlab-/, '');
+    // Accept both prefixes: units launched before the ailab- rename still exist,
+    // and failing to strip one makes providerId unresolvable -> treated as an
+    // unknown orphan -> deleted by the cleanup path below.
+    const rest = unitName.replace(/^(?:ai|prox)lab-/, '');
     const portMatch = rest.match(/-(\d{4,5})$/);
     if (!portMatch) return null;
     const port = parseInt(portMatch[1], 10);
@@ -3860,7 +3863,7 @@ WantedBy=multi-user.target
 
       try {
         // List all proxlab-* service units that are loaded
-        const listCmd = `pct exec ${vmid} -- bash -c "systemctl list-units 'proxlab-*' --no-pager --no-legend --plain 2>/dev/null | awk '{print \\$1}'"`;
+        const listCmd = `pct exec ${vmid} -- bash -c "systemctl list-units 'proxlab-*' 'ailab-*' --no-pager --no-legend --plain 2>/dev/null | awk '{print \\$1}'"`;
         const result = await sshService.exec(hostIp, listCmd, { timeout: 10000 });
         const units = result.stdout.split('\n').map(l => l.trim()).filter(l => l.endsWith('.service'));
 
@@ -3939,7 +3942,7 @@ WantedBy=multi-user.target
             const orphan = { node, vmid, hostIp, unitName, unitFile, port };
             if (cleanup) {
               try {
-                const cleanCmd = `pct exec ${vmid} -- bash -c 'systemctl stop ${unitName} 2>/dev/null; systemctl disable ${unitName} 2>/dev/null; rm -f /etc/systemd/system/${unitFile}; rm -f /opt/proxlab/services/${unitName.replace("proxlab-", "")}.sh; systemctl daemon-reload'`;
+                const cleanCmd = `pct exec ${vmid} -- bash -c 'systemctl stop ${unitName} 2>/dev/null; systemctl disable ${unitName} 2>/dev/null; rm -f /etc/systemd/system/${unitFile}; rm -f /opt/proxlab/services/${unitName.replace(/^(?:ai|prox)lab-/, "")}.sh; systemctl daemon-reload'`;
                 await sshService.exec(hostIp, cleanCmd, { timeout: 15000 });
                 orphan.cleaned = true;
               } catch (err) {
@@ -7410,7 +7413,7 @@ WantedBy=multi-user.target
         // List ALL proxlab-* units with active+sub state (not just --state=failed): a Restart=always
         // crash-looper sits in 'activating (auto-restart)', never 'failed', so the old failed-only
         // filter never caught orphans like a removed service that keeps bouncing on no free GPU.
-        const listCmd = `pct exec ${vmid} -- bash -c "systemctl list-units 'proxlab-*' --all --no-legend --no-pager --plain 2>/dev/null | awk '{print \\$1 \\"|\\" \\$3 \\"|\\" \\$4}'"`;
+        const listCmd = `pct exec ${vmid} -- bash -c "systemctl list-units 'proxlab-*' 'ailab-*' --all --no-legend --no-pager --plain 2>/dev/null | awk '{print \\$1 \\"|\\" \\$3 \\"|\\" \\$4}'"`;
         let out;
         try { out = (await sshService.exec(hostIp, listCmd, { timeout: 10000 })).stdout || ''; } catch { continue; }
         for (const line of out.split('\n').map((l) => l.trim()).filter(Boolean)) {
@@ -7423,7 +7426,7 @@ WantedBy=multi-user.target
           // mid-launch not yet written to active-services.json.
           if (active !== 'failed' && sub !== 'auto-restart') continue;
           const port = ((unitName.match(/-(\d+)$/) || [])[1]) || '';
-          const script = `/opt/proxlab/services/${unitName.replace(/^proxlab-/, '')}.sh`;
+          const script = `/opt/proxlab/services/${unitName.replace(/^(?:ai|prox)lab-/, '')}.sh`;
           const kv = port ? `kvcache-proxy@${port}` : '';
           const cmd = `pct exec ${vmid} -- bash -c 'systemctl stop ${unitName} 2>/dev/null; systemctl disable ${unitName} 2>/dev/null;`
             + (kv ? ` systemctl stop ${kv} 2>/dev/null; systemctl disable ${kv} 2>/dev/null;` : '')
