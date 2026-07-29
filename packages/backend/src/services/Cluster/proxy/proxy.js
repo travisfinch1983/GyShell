@@ -2537,14 +2537,52 @@ export function createProxyRouter(sshService) {
   // plus optional RVC fields (rvc_model, f0_method, f0_up_key, etc.)
   // When rvc_model is omitted, proxies directly to a TTS backend (supports all formats).
   // When rvc_model is provided, routes through TTS→RVC pipeline (returns wav).
-  router.post('/multi-tts/v1/audio/speech', async (req, res) => {
+  /**
+   * THE universal TTS speech endpoint. Registered on both paths so the two can
+   * never diverge again — before phase 3, /tts/v1 was a separate single-provider
+   * route that took services[0], which is why a composite provider/model ID
+   * worked on /multi-tts and 400'd on /tts/v1.
+   *
+   * /multi-tts/* is retained as an alias and logs a deprecation line naming the
+   * caller, so we can see who still depends on it before it goes.
+   */
+  router.post(['/tts/v1/audio/speech', '/multi-tts/v1/audio/speech'], async (req, res) => {
+    if (req.path.startsWith('/multi-tts')) {
+      console.warn(`[deprecated] ${req.path} — use /tts/v1/audio/speech `
+        + `(caller ${req.ip || 'unknown'}, ua=${(req.headers['user-agent'] || 'none').slice(0, 60)})`);
+    }
+
+    const rawBody = await bufferBody(req);
     let body;
     try {
-      const chunks = [];
-      for await (const chunk of req) chunks.push(chunk);
-      body = JSON.parse(Buffer.concat(chunks).toString());
+      body = JSON.parse(rawBody.toString());
     } catch {
-      return res.status(400).json({ error: 'Invalid JSON body' });
+      // Non-JSON: stream it through untouched, as the old /tts/v1 route did —
+      // but to a BALANCED backend rather than always the first service.
+      const pool = findAllTtsPoolServices();
+      if (pool.length === 0) {
+        return res.status(503).json({ error: emptyReason('tts', { registered: 0 }) });
+      }
+      const pick = pool[nextIndex('tts:raw', pool.length)];
+      return proxyBuffered(req, res, pick.containerIp, pick.port, '/v1/audio/speech', rawBody);
+    }
+
+    // Explicit slot pin. proxy_notes keeps individual endpoints addressable, so a
+    // caller naming a slot bypasses the pool entirely and gets exactly that service.
+    if (body.provider) {
+      const slot = body.provider;
+      delete body.provider;               // never forward our own routing field
+      const svc = findServiceBySlot('tts', slot);
+      if (!svc) return res.status(404).json({ error: `No TTS service in slot ${slot}` });
+      const caps = TTS_PROVIDER_CAPS[svc.providerId];
+      if (!caps || !caps.openai) {
+        return res.status(400).json({
+          error: `Provider ${svc.providerId} (slot ${slot}) does not support the OpenAI speech API`,
+          providerId: svc.providerId,
+        });
+      }
+      return proxyBuffered(req, res, svc.containerIp, svc.port, '/v1/audio/speech',
+                           Buffer.from(JSON.stringify(body)));
     }
 
     if (!body.input?.trim()) return res.status(400).json({ error: 'input is required' });
@@ -2552,7 +2590,9 @@ export function createProxyRouter(sshService) {
     const { pipelines, ttsInstances } = await buildHealthyPipelines();
     let healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
     if (healthyTts.length === 0) {
-      return res.status(503).json({ error: 'No healthy TTS instances available' });
+      return res.status(503).json({
+        error: emptyReason('tts', { registered: ttsInstances.total, healthy: 0 }),
+      });
     }
 
     const responseFormat = body.response_format || 'mp3';
@@ -3668,42 +3708,6 @@ export function createProxyRouter(sshService) {
 
   // ─── Enhanced TTS Speech with provider routing ────────────────────────────
 
-  router.post('/tts/v1/audio/speech', async (req, res) => {
-    const body = await bufferBody(req);
-    let parsed;
-    try {
-      parsed = JSON.parse(body.toString());
-    } catch {
-      // Not JSON — proxy raw body to default TTS
-      const svc = findServicesByType('tts').filter(s => s.providerId !== 'proxlab-rvc')[0];
-      if (!svc) return res.status(503).json({ error: 'No active TTS service available' });
-      return proxyBuffered(req, res, svc.containerIp, svc.port, '/v1/audio/speech', body);
-    }
-
-    const providerSlot = parsed.provider;
-    delete parsed.provider; // Don't send custom field downstream
-
-    let svc;
-    if (providerSlot) {
-      svc = findServiceBySlot('tts', providerSlot);
-      if (!svc) return res.status(404).json({ error: `No TTS service in slot ${providerSlot}` });
-
-      const caps = TTS_PROVIDER_CAPS[svc.providerId];
-      if (!caps || !caps.openai) {
-        return res.status(400).json({
-          error: `Provider ${svc.providerId} (slot ${providerSlot}) does not support the OpenAI speech API`,
-          providerId: svc.providerId,
-        });
-      }
-    } else {
-      svc = findServicesByType('tts').filter(s => s.providerId !== 'proxlab-rvc')[0];
-      if (!svc) return res.status(503).json({ error: 'No active TTS service available' });
-    }
-
-    const newBody = Buffer.from(JSON.stringify(parsed));
-    proxyBuffered(req, res, svc.containerIp, svc.port, '/v1/audio/speech', newBody);
-  });
-
   // ─── Enhanced STT Transcription with provider routing ─────────────────────
 
   router.post('/stt/v1/audio/transcriptions', async (req, res) => {
@@ -3728,8 +3732,19 @@ export function createProxyRouter(sshService) {
       svc = findServiceBySlot('stt', providerSlot);
       if (!svc) return res.status(404).json({ error: `No STT service in slot ${providerSlot}` });
     } else {
-      svc = findServicesByType('stt')[0];
-      if (!svc) return res.status(503).json({ error: 'No active STT service available' });
+      // Balance across every HEALTHY STT backend. This used to take [0], so one
+      // instance served every transcription and the rest sat idle.
+      const all = listBackends(loadActiveServices().services, 'stt');
+      if (all.length === 0) {
+        return res.status(503).json({ error: emptyReason('stt', { registered: 0 }) });
+      }
+      const healthy = (await audioHealth.withHealth(all)).filter(h => h.healthy).map(h => h.svc);
+      if (healthy.length === 0) {
+        return res.status(503).json({
+          error: emptyReason('stt', { registered: all.length, healthy: 0 }),
+        });
+      }
+      svc = healthy[nextIndex('stt:default', healthy.length)];
     }
 
     proxyBuffered(req, res, svc.containerIp, svc.port, '/v1/audio/transcriptions', body);
