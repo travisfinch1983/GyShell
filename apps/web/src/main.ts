@@ -7,6 +7,10 @@
 
 // Install the gyshell API shim BEFORE any renderer code loads
 import './gyshell-web-shim'
+import { startVersionCheck } from './version-check'
 
 // Now load the desktop renderer
 import '../../../packages/ui/src/renderer_v2/index'
+
+// Auto-recover stale tabs: clear legacy service workers + reload when a new build ships.
+startVersionCheck()
