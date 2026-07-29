@@ -62,8 +62,12 @@ do_install() {
         conda create -n "$CONDA_ENV" -y python=3.10 2>&1
     fi
 
-    # PyTorch cu124 first (V100 SM70 compat), before anything can pull a
-    # default CPU wheel in as a transitive dep.
+    # PyTorch first, before anything can pull a default CPU wheel in as a
+    # transitive dep.
+    # NOTE: cu124 here is NOT a Volta requirement — sm_70 lives through CUDA 12.9
+    # (removed in 13.0), and the TTS provider now runs 2.9.1+cu128 on the same cards.
+    # RVC stays on 2.6.0+cu124 only because its env is pinned to Python 3.10 for
+    # fairseq 0.12.2, and fairseq against torch 2.9 is UNTESTED. Test before bumping.
     conda run -n "$CONDA_ENV" pip install \
         torch==2.6.0 torchaudio==2.6.0 \
         --index-url https://download.pytorch.org/whl/cu124 \

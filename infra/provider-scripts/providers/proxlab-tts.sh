@@ -41,10 +41,16 @@ do_install() {
 
     echo "Installing AI-Lab TTS (Chatterbox-Turbo + OpenAI-compatible API)..."
 
-    # Install PyTorch cu124 first (V100 SM70 compat)
+    # PyTorch cu128. NOT cu124: sm_70 (Volta/V100) is supported through CUDA 12.9 and
+    # only removed in 13.0, so cu124 was never a Volta requirement — and cu124 is a
+    # dead end, torch 2.6.0 being the last version ever built for it. cu128 covers
+    # torch 2.7.0-2.11.0 and is what most third-party wheels target.
+    # Verified on a V100 (2026-07-29): sm_70 in arch list, cuDNN conv OK, and both
+    # chatterbox engines load and generate audio on 2.9.1+cu128.
+    # chatterbox-tts itself declares a bare `torch` dep — this version is our choice.
     conda run -n "$CONDA_ENV" pip install \
-        torch==2.6.0 torchaudio==2.6.0 \
-        --index-url https://download.pytorch.org/whl/cu124 \
+        torch==2.9.1 torchaudio==2.9.1 \
+        --index-url https://download.pytorch.org/whl/cu128 \
         2>&1
 
     # Core library (--no-deps to avoid pulling default torch)
