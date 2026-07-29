@@ -1971,18 +1971,12 @@ export function createProxyRouter(sshService) {
       if (!updates || typeof updates !== 'object' || !updates.post) {
         return res.status(400).json({ error: 'expected { post: { <group>: {...} } }' });
       }
-      const rvc = updates.post.rvc;
-      if (rvc) {
-        // Enabling with no model selected would silently do nothing on every
-        // request — refuse it rather than store a config that cannot work.
-        const merged = { ...getPipelineConfig().post.rvc, ...rvc };
-        if (merged.enabled && !merged.model) {
-          return res.status(400).json({ error: 'RVC enabled but no model selected' });
-        }
-      }
+      // No enabled-without-model check any more: `allowed` is a permission, and
+      // permitting RVC without picking a house speaker is perfectly valid — the
+      // caller names its own. The old check belonged to the force semantics.
       const saved = savePipelineConfig(updates);
-      console.log(`[audio-pipeline] updated: rvc.enabled=${saved.post.rvc.enabled} `
-        + `model=${saved.post.rvc.model || 'none'}`);
+      console.log(`[audio-pipeline] updated: rvc.allowed=${saved.post.rvc.allowed} `
+        + `fallbackModel=${saved.post.rvc.model || 'none'}`);
       res.json({ config: saved, defaults: PIPELINE_DEFAULTS });
     } catch (e) {
       res.status(400).json({ error: e?.message || String(e) });
@@ -2622,6 +2616,13 @@ export function createProxyRouter(sshService) {
     // `rvc: false` forces the pipeline off for this one call — otherwise a
     // configured default speaker could never be bypassed.
     applyPipelineDefaults(body);
+    // If the gate stripped a requested speaker, say so in a header rather than
+    // pretending the request was honoured as sent.
+    if (body._rvcBlocked) {
+      console.warn(`[audio-pipeline] ${body._rvcBlocked}`);
+      res.set('X-AiLab-Warning', body._rvcBlocked);
+      delete body._rvcBlocked;
+    }
 
     if (!body.input?.trim()) return res.status(400).json({ error: 'input is required' });
 

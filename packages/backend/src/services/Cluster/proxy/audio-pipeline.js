@@ -30,8 +30,12 @@ const FILE = join(DATA_DIR, 'ailab-audio-pipeline.json');
 export const PIPELINE_DEFAULTS = {
   post: {
     rvc: {
-      enabled: false,        // off by default — matches prior behaviour exactly
-      model: null,           // speaker checkpoint; null = none chosen yet
+      // GLOBAL PERMISSION, not a global default. false = RVC cannot run at all,
+      // whatever a caller asks for. true = callers may opt in.
+      allowed: false,
+      // Fallback speaker for a caller that opts in (`rvc: true`) WITHOUT naming
+      // one. Never applied to a caller that did not ask for RVC.
+      model: null,
       f0_method: 'rmvpe',
       f0_up_key: 0,
       index_rate: 0.75,
@@ -53,6 +57,11 @@ function clone(o) {
 function mergeDefaults(stored) {
   const out = clone(PIPELINE_DEFAULTS);
   if (!stored || typeof stored !== 'object') return out;
+  // Migrate the phase-4 field name so a setting already on disk is not lost.
+  if (stored.post?.rvc && 'enabled' in stored.post.rvc && !('allowed' in stored.post.rvc)) {
+    stored.post.rvc.allowed = stored.post.rvc.enabled;
+    delete stored.post.rvc.enabled;
+  }
   for (const [group, entries] of Object.entries(stored.post || {})) {
     if (!out.post[group]) out.post[group] = {};
     Object.assign(out.post[group], entries || {});
@@ -91,10 +100,13 @@ export function savePipelineConfig(patch) {
  * Fill a speech request body with the configured defaults.
  *
  * Precedence, strongest first:
+ *   0. global `allowed: false`      -> RVC cannot run AT ALL; a requested speaker
+ *                                      is stripped and the caller is told via
+ *                                      the X-AiLab-Warning header
  *   1. `rvc: false` in the request  -> pipeline OFF for this request, full stop
- *   2. `rvc_model` in the request   -> that model, plus any params the request set
- *   3. stored config, if enabled    -> its model and params
- *   4. nothing                      -> TTS only
+ *   2. `rvc_model` in the request   -> that speaker, plus any params it set
+ *   3. `rvc: true`, no speaker      -> the configured fallback model
+ *   4. nothing                      -> TTS only (global is PERMISSION, not a default)
  *
  * Mutates and returns `body`, so callers downstream see one shape whether the
  * values came from the request or the config.
@@ -103,16 +115,34 @@ export function applyPipelineDefaults(body) {
   const cfg = getPipelineConfig();
   const rvc = cfg.post.rvc || {};
 
-  // Explicit opt-out beats everything. Without this there is no way to get a
-  // plain TTS response once a default speaker is configured.
-  if (body.rvc === false) {
-    delete body.rvc_model;
+  // GATE FIRST. When RVC is not allowed globally, nothing downstream may run it —
+  // including a caller that explicitly named a speaker. Strip it and RETURN THE
+  // REASON so the route can tell the caller it did not get what it asked for.
+  // Silently dropping a requested feature is how you debug for an hour.
+  if (!rvc.allowed) {
+    if (body.rvc_model || body.rvc === true) {
+      const asked = body.rvc_model || '(unnamed)';
+      delete body.rvc_model;
+      body._rvcBlocked = `RVC is disabled globally (Settings -> Support Models); `
+        + `ignoring requested speaker '${asked}'`;
+    }
+    delete body.rvc;
     return body;
   }
 
-  if (!body.rvc_model && rvc.enabled && rvc.model) {
+  // Explicit opt-out beats everything else.
+  if (body.rvc === false) {
+    delete body.rvc_model;
+    delete body.rvc;
+    return body;
+  }
+
+  // Opting in without naming a speaker falls back to the configured one. A caller
+  // that names its own always wins.
+  if (!body.rvc_model && body.rvc === true && rvc.model) {
     body.rvc_model = rvc.model;
   }
+  delete body.rvc;   // our routing field, never forwarded to a backend
 
   // Only fill params when the pipeline is actually going to run, and only where
   // the request left them out.
