@@ -48,8 +48,13 @@ const Row = observer(({ item }: { item: ChatItem }) => {
   switch (item.kind) {
     case 'user':
       return (
-        <div className={styles.msgYou}>
+        <div className={styles.msgYou} style={item.queued ? { opacity: 0.55 } : undefined}>
           {item.text}
+          {item.queued && (
+            <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.85 }} title="Queued — sends automatically when the current turn finishes">
+              ⏳ queued
+            </span>
+          )}
           {item.ctxAttached && (
             <span
               className={styles.ctxChip}
