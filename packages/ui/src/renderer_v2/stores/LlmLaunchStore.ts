@@ -15,7 +15,7 @@ const SAMPLER_PRESET_KEYS = [
   'reasoningFormat', 'reasoningBudget', 'specType', 'draftMax',
 ]
 // Providers that take llama.cpp-style sampler args (where presets apply).
-export const SAMPLER_PRESET_PROVIDERS = new Set(['llama-server', 'llama-server-mtp'])
+export const SAMPLER_PRESET_PROVIDERS = new Set(['llama-server'])
 
 // ─── VRAM placement evaluation (ported verbatim from ProxLab) ───
 function computeBufferPerGpu(params: number | undefined, numGpus: number): number {
@@ -56,7 +56,7 @@ function evaluateCustomGpus(selectedGpus: any[], weightsMB: number, kvCacheMB: n
 
 // ─── Format → compatible engines (ported) ─────────────────────────────
 const FORMAT_PROVIDER_MAP: Record<string, string[]> = {
-  GGUF: ['koboldcpp', 'llama-server', 'llama-server-mtp', 'ollama'],
+  GGUF: ['koboldcpp', 'llama-server', 'ollama'],
   FP16: ['vllm', '1cat-vllm', 'lmdeploy', 'sglang', 'aphrodite'],
   BF16: ['vllm', '1cat-vllm', 'lmdeploy', 'sglang', 'aphrodite'],
   AWQ: ['vllm', '1cat-vllm', 'lmdeploy', 'sglang', 'aphrodite'],
@@ -211,7 +211,7 @@ export class LlmLaunchStore {
    *  Stored in settings.aliasOverride, so it rides templates for free; the
    *  backend persists it at registration and /v1/models serves the alias. */
   get supportsAliasOverride(): boolean {
-    return this.selectedProvider === 'llama-server' || this.selectedProvider === 'llama-server-mtp'
+    return this.selectedProvider === 'llama-server'
   }
 
   get aliasOverride(): string {
@@ -532,7 +532,7 @@ export class LlmLaunchStore {
     const gpus: any[] = p.gpus || []
     const count = p.gpuCount ?? gpus.length
     const isTabby = this.selectedProvider === 'tabbyapi'
-    const llamaLike = this.selectedProvider === 'llama-server' || this.selectedProvider === 'llama-server-mtp'
+    const llamaLike = this.selectedProvider === 'llama-server'
     if (count > 1) {
       const smallestMB = Math.min(...gpus.map((g) => g.vramMB))
       const perGpuGB = Math.floor((smallestMB - 2048) / 1024)
@@ -668,7 +668,22 @@ export class LlmLaunchStore {
       if (key === 'chatTemplateKwargs' && typeof val === 'string') {
         let t = val.trim(); while (t.length >= 2 && t.startsWith("'") && t.endsWith("'")) t = t.slice(1, -1).trim(); val = t
       }
+      // bareFlags: a select whose chosen value maps to a bare flag with no value
+      // (e.g. reasoning-preserve: on -> --reasoning-preserve, off -> --no-reasoning-preserve).
+      if (arg.bareFlags) { if (val && arg.bareFlags[val]) parts.push(arg.bareFlags[val]); return }
       if (arg.type === 'flag') { if (val) parts.push(flag) }
+      else if (arg.type === 'multi') {
+        // Multi-value flag: llama.cpp wants ONE flag with comma-separated values — repeating the
+        // flag is deprecated and only the last value is honored. Join non-empty lines with commas.
+        if (typeof val === 'string' && val.trim()) {
+          const rules = val.split('\n').map((s: string) => s.trim()).filter(Boolean)
+          if (rules.length) {
+            const joined = rules.join(',')
+            const nq = /[{}"'[\]<>|&;`$\\!*?\s]/.test(joined)
+            parts.push(`${flag} ${nq ? `'${joined.replace(/'/g, "'\\''")}'` : joined}`)
+          }
+        }
+      }
       else if (arg.type === 'path' && arg.positional) { parts.push(val) }
       else if (val !== undefined && val !== '' && flag) {
         if (arg.skipIfZero && Number(val) === 0) return
