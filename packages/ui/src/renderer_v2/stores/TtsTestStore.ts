@@ -115,10 +115,12 @@ export class TtsTestStore {
       const d = await jget('/api/proxy/services')
       const tts = (d?.tts || []).filter((s: any) => s.providerId !== 'rvc')
       const list: any[] = []
-      if (tts.some((s: any) => s.providerId === 'proxlab-tts')) list.push({ id: 'multi-tts', label: 'Chatterbox (multi-TTS aggregator)', base: '/api/proxy/multi-tts', engine: 'chatterbox' })
+      // Server decides pool membership (core rule #1) — the UI must not
+      // hardcode a provider id, or every other pooled provider is invisible here.
+      if (tts.some((s: any) => s.pooled)) list.push({ id: 'multi-tts', label: 'Multi-TTS pool (load balanced)', base: '/api/proxy/multi-tts', engine: 'chatterbox' })
       const seen = new Set<string>()
       for (const s of tts) {
-        if (s.providerId === 'proxlab-tts' || seen.has(s.providerId)) continue
+        if (s.pooled || seen.has(s.providerId)) continue
         seen.add(s.providerId)
         list.push({ id: s.providerId, label: NAME_MAP[s.providerId] || s.providerId, base: `/api/proxy/${s.providerId}`, engine: ENGINE_MAP[s.providerId] || 'unknown' })
       }

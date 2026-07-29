@@ -30,7 +30,9 @@ import { extractToolCalls, recordToolUsage } from './tool-call-metrics.js';
 import { createBalanceHistory } from './balance-history.js';
 import { resolveModelCapabilities } from './model-capabilities.js';
 import { refreshPool, pickInstance, markFailure, markSuccess, invalidatePools } from './servicePools.js';
-import { listBackends, emptyReason, nextIndex, createHealthCache } from './audio-registry.js';
+import { listBackends, emptyReason, nextIndex, createHealthCache,
+         setProviderCaps, getModelCatalog, selectBackends,
+         invalidateModelCatalog, isPooledTtsProvider } from './audio-registry.js';
 import { isKvEligible, getOrchestrator, getKvSettings, saveKvSettings, getAllKvStats, getKvIndexStats, reapNow, resetOrchestratorCache } from './kvcache/integration.js';
 
 // ─── kvcache-proxy companion detection ──────────────────────────────────
@@ -278,20 +280,38 @@ const EMBED_KEYWORDS = ['embed', 'bge-', 'e5-', 'gte-', 'encoding', 'encoder'];
 const RERANK_KEYWORDS = ['rerank', 'ranker', 'cross-encoder'];
 
 // ─── TTS/STT Provider Capabilities ─────────────────────────────────────────
+// `clipVoice` = synthesises from a reference voice CLIP (as opposed to a fixed
+// set of baked-in speakers). Together with `openai` it decides pool membership:
+// clip engines share the same NAS voice library, so a voice name means the same
+// thing on every pooled backend and /tts/v1/voices stays one flat namespace.
+// Fixed-voice engines would collide voice IDs across providers.
+//
+// VERIFICATION STATUS — proxlab-tts is confirmed by live use. s2-pro is
+// confirmed by its own API shape (reference clips passed as `references: [...]`).
+// qwen-tts is marked from its documented 3-second voice cloning but has NOT been
+// probed live; it only enters the pool once an instance is actually launched, at
+// which point a wrong flag shows up as a visible voice-resolution failure rather
+// than silent misrouting. Non-clip engines are unaffected either way.
 const TTS_PROVIDER_CAPS = {
-  'proxlab-tts':     { openai: true,  voices: '/v1/voices', models: '/v1/models', formats: ['wav','mp3','opus','flac'] },
-  'qwen-tts':        { openai: true,  voices: '/v1/audio/voices', models: '/v1/models', formats: ['wav','mp3','opus','flac','pcm'] },
+  'proxlab-tts':     { openai: true,  clipVoice: true,  voices: '/v1/voices', models: '/v1/models', formats: ['wav','mp3','opus','flac'] },
+  'qwen-tts':        { openai: true,  clipVoice: true,  voices: '/v1/audio/voices', models: '/v1/models', formats: ['wav','mp3','opus','flac','pcm'] },
   // S2-Pro doesn't expose a /v1/voices listing — voices are reference-
   // clip-driven (pass `references: [...]` in the speech body). Listing
   // null so the UI knows to skip the dropdown population.
-  's2-pro':          { openai: true,  voices: null,                models: '/v1/models', formats: ['wav','mp3','opus','flac','pcm'] },
-  'kokoro':          { openai: true,  voices: '/v1/voices', models: null,         formats: ['wav','mp3','opus','flac'] },
-  'openedai-speech': { openai: true,  voices: '/v1/voices', models: null,         formats: ['wav','mp3','opus','flac'] },
-  'alltalk':         { openai: false, voices: null,         models: null,         formats: ['wav'] },
-  'f5tts':           { openai: false, voices: null,         models: null,         formats: ['wav'] },
-  'tts-webui':       { openai: false, voices: null,         models: null,         formats: ['wav'] },
-  'piper':           { openai: false, voices: null,         models: null,         formats: ['wav'] },
+  's2-pro':          { openai: true,  clipVoice: true,  voices: null,                models: '/v1/models', formats: ['wav','mp3','opus','flac','pcm'] },
+  // Fixed baked-in speakers — not clip-driven, so not pooled.
+  'kokoro':          { openai: true,  clipVoice: false, voices: '/v1/voices', models: null,         formats: ['wav','mp3','opus','flac'] },
+  // Wraps several backends, some clip-based and some not — ambiguous, left out.
+  'openedai-speech': { openai: true,  clipVoice: false, voices: '/v1/voices', models: null,         formats: ['wav','mp3','opus','flac'] },
+  // Clip-capable but NOT OpenAI-compatible, so it cannot join an OpenAI-shaped pool.
+  'alltalk':         { openai: false, clipVoice: true,  voices: null,         models: null,         formats: ['wav'] },
+  'f5tts':           { openai: false, clipVoice: true,  voices: null,         models: null,         formats: ['wav'] },
+  'tts-webui':       { openai: false, clipVoice: false, voices: null,         models: null,         formats: ['wav'] },
+  'piper':           { openai: false, clipVoice: false, voices: null,         models: null,         formats: ['wav'] },
 };
+
+// Hand the capability table to the registry so pool membership has one source.
+setProviderCaps(TTS_PROVIDER_CAPS);
 
 const STT_PROVIDER_CAPS = {
   'faster-whisper': { openai: true, models: '/v1/models', formats: ['wav','mp3','flac','webm','ogg'] },
@@ -662,6 +682,7 @@ function findServiceBySlot(type, slot) {
  */
 function formatService(svc) {
   return {
+    pooled: isPooledTtsProvider(svc.providerId),
     id: svc.id,
     providerId: svc.providerId,
     providerName: svc.providerName,
@@ -1332,6 +1353,8 @@ export function createProxyRouter(sshService) {
       multiTts: {
         tts: findAllTtsPoolServices().map(svc => ({ slot: svc.proxySlot || 0, ...formatService(svc) })),
         rvc: findAllRvcServices().map(svc => ({ slot: svc.proxySlot || 0, ...formatService(svc) })),
+        // `pooled` tells the UI which providers the balanced TTS pool covers, so
+        // it no longer has to hardcode a provider id to make that call itself.
         pipelines: Math.min(findAllTtsPoolServices().length, findAllRvcServices().length),
         ttsCount: findAllTtsPoolServices().length,
       },
@@ -1905,6 +1928,34 @@ export function createProxyRouter(sshService) {
     res.json(result);
   });
 
+  // Shared health cache for every audio backend. Without this each request
+  // fanned out a fresh probe to every instance; the TTL collapses the burst a
+  // single synthesis triggers while still noticing a dead backend in seconds.
+  const audioHealth = createHealthCache(checkProviderHealth);
+
+  /** JSON GET used when asking a backend what models it serves. */
+  async function fetchJsonForCatalog(url) {
+    const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  }
+
+  /**
+   * Resolve a caller's `model` into the backends that can serve it plus the bare
+   * model id to forward.
+   *
+   * Returns { backends, model, matched, reason }. `backends` empty means nothing
+   * serves it — the caller should 503 with `reason`, NOT fall back to another
+   * model. Silent substitution is how a pool ends up quietly serving the wrong
+   * voice for weeks.
+   */
+  async function resolveTtsSelection(healthyTts, rawModel) {
+    const { models } = await getModelCatalog(healthyTts, fetchJsonForCatalog);
+    const sel = selectBackends(models, rawModel);
+    const bare = rawModel && rawModel.includes('/') ? rawModel.slice(rawModel.indexOf('/') + 1) : rawModel;
+    return { backends: sel.backends, model: bare, matched: sel.matched, reason: sel.reason };
+  }
+
   // --- RVC Voice Conversion Pipeline (TTS -> RVC) ---
   // POST /rvc/convert — Direct RVC conversion (proxy to RVC service)
   // POST /rvc/pipeline — Full pipeline: TTS generates audio, then RVC converts voice
@@ -1943,17 +1994,11 @@ export function createProxyRouter(sshService) {
     const allRvc = findAllRvcServices();
 
     const [ttsHealth, rvcHealth] = await Promise.all([
-      Promise.all(allTts.map(async svc => ({
-        svc,
-        healthy: await checkProviderHealth(svc.containerIp, svc.port),
-      }))),
-      Promise.all(allRvc.map(async svc => ({
-        svc,
-        healthy: await checkProviderHealth(svc.containerIp, svc.port),
-      }))),
+      audioHealth.withHealth(allTts),
+      audioHealth.withHealth(allRvc),
     ]);
 
-    const healthyTts = ttsHealth.filter(h => h.healthy).map(h => h.svc);
+    let healthyTts = ttsHealth.filter(h => h.healthy).map(h => h.svc);
     const healthyRvc = rvcHealth.filter(h => h.healthy).map(h => h.svc);
     const pipelineCount = Math.min(healthyTts.length, healthyRvc.length);
 
@@ -2505,7 +2550,7 @@ export function createProxyRouter(sshService) {
     if (!body.input?.trim()) return res.status(400).json({ error: 'input is required' });
 
     const { pipelines, ttsInstances } = await buildHealthyPipelines();
-    const healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
+    let healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
     if (healthyTts.length === 0) {
       return res.status(503).json({ error: 'No healthy TTS instances available' });
     }
@@ -2517,7 +2562,18 @@ export function createProxyRouter(sshService) {
     // Per-selector rotation. One shared counter across all models interleaved
     // them against a mismatched base; keying by model keeps each model's copies
     // balancing among themselves.
-    const ttsIdx = nextIndex(`tts:${body.model || 'default'}`, healthyTts.length);
+    // Narrow to the backends that actually serve the requested model before
+    // balancing, so rotation happens WITHIN a selector rather than across
+    // unrelated models.
+    const _sel = await resolveTtsSelection(healthyTts, body.model);
+    if (_sel.backends.length === 0) {
+      return res.status(503).json({ error: _sel.reason || `no backend serves '${body.model}'` });
+    }
+    healthyTts = _sel.backends;
+    // Forward the BARE model. Backends are pool-unaware and reject
+    // "provider/model" outright, so the composite must not survive past here.
+    if (_sel.model) body.model = _sel.model;
+    const ttsIdx = nextIndex(`tts:${_sel.matched || 'default'}`, healthyTts.length);
     const ttsSvc = healthyTts[ttsIdx];
     const tryOrder = [ttsSvc, ...healthyTts.filter(s => s !== ttsSvc)];
 
@@ -2942,43 +2998,42 @@ export function createProxyRouter(sshService) {
   });
 
   // GET /multi-tts/v1/models — Aggregated models from all TTS instances
+  /**
+   * Union of every model served by the pool, as composite `provider/model` IDs.
+   *
+   * The previous version asked only the FIRST healthy instance and fell back to a
+   * literal chatterbox list — so a pool serving anything else still advertised
+   * chatterbox, and an EMPTY pool advertised models that did not exist at all.
+   * Both are gone: what you see is what is actually running.
+   */
   router.get('/multi-tts/v1/models', async (req, res) => {
     const allTts = findAllTtsPoolServices();
-    if (allTts.length === 0) {
-      return res.json({
-        object: 'list',
-        data: [
-          { id: 'chatterbox-turbo', object: 'model', owned_by: 'resemble-ai', active: false },
-          { id: 'chatterbox', object: 'model', owned_by: 'resemble-ai', active: false },
-        ],
-      });
-    }
-    // Query first healthy instance for actual model list
-    for (const svc of allTts) {
-      try {
-        const r = await fetch(`http://${svc.containerIp}:${svc.port}/v1/models`, {
-          signal: AbortSignal.timeout(5000),
-        });
-        if (r.ok) {
-          const data = await r.json();
-          return res.json(data);
-        }
-      } catch {}
-    }
-    // Fallback
+    const healthy = (await audioHealth.withHealth(allTts)).filter((h) => h.healthy).map((h) => h.svc);
+
+    const { models, errors } = await getModelCatalog(healthy, fetchJsonForCatalog);
+    for (const e of errors) console.warn(`[tts/models] ${e}`);
+
     res.json({
       object: 'list',
-      data: [
-        { id: 'chatterbox-turbo', object: 'model', owned_by: 'resemble-ai', active: false },
-        { id: 'chatterbox', object: 'model', owned_by: 'resemble-ai', active: false },
-      ],
+      data: models.map((m) => ({
+        id: m.compositeId,
+        object: 'model',
+        owned_by: m.ownedBy || m.providerId,
+        provider: m.providerId,
+        model: m.model,
+        instances: m.backends.length,
+      })),
+      // Bare model IDs remain valid selectors; surfaced so a caller can see both
+      // spellings without having to split the composite themselves.
+      aliases: [...new Set(models.map((m) => m.model))],
+      ...(errors.length ? { errors } : {}),
     });
   });
 
   // GET /multi-tts/v1/voices — Voice list (proxied from first healthy TTS)
   router.get('/multi-tts/v1/voices', async (req, res) => {
     const { ttsInstances } = await buildHealthyPipelines();
-    const healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
+    let healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
     if (healthyTts.length === 0) {
       return res.status(503).json({ error: 'No healthy TTS instances' });
     }
@@ -3121,14 +3176,25 @@ export function createProxyRouter(sshService) {
     const responseFormat = body.response_format || 'mp3';
 
     const { pipelines, ttsInstances } = await buildHealthyPipelines();
-    const healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
+    let healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
     if (healthyTts.length === 0) return res.status(503).json({ error: 'No healthy TTS instances available' });
 
     const mimeMap = { wav: 'audio/wav', mp3: 'audio/mpeg', opus: 'audio/opus', flac: 'audio/flac' };
     // Per-selector rotation. One shared counter across all models interleaved
     // them against a mismatched base; keying by model keeps each model's copies
     // balancing among themselves.
-    const ttsIdx = nextIndex(`tts:${body.model || 'default'}`, healthyTts.length);
+    // Narrow to the backends that actually serve the requested model before
+    // balancing, so rotation happens WITHIN a selector rather than across
+    // unrelated models.
+    const _sel = await resolveTtsSelection(healthyTts, body.model);
+    if (_sel.backends.length === 0) {
+      return res.status(503).json({ error: _sel.reason || `no backend serves '${body.model}'` });
+    }
+    healthyTts = _sel.backends;
+    // Forward the BARE model. Backends are pool-unaware and reject
+    // "provider/model" outright, so the composite must not survive past here.
+    if (_sel.model) body.model = _sel.model;
+    const ttsIdx = nextIndex(`tts:${_sel.matched || 'default'}`, healthyTts.length);
     const ttsSvc = healthyTts[ttsIdx];
     const tryOrder = [ttsSvc, ...healthyTts.filter(s => s !== ttsSvc)];
 
@@ -3231,7 +3297,7 @@ export function createProxyRouter(sshService) {
 
     // Forward to the main speech endpoint internally
     const { pipelines, ttsInstances } = await buildHealthyPipelines();
-    const healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
+    let healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
     if (healthyTts.length === 0) {
       return res.status(503).json({ error: 'No healthy TTS instances available' });
     }
@@ -3242,7 +3308,18 @@ export function createProxyRouter(sshService) {
     // Per-selector rotation. One shared counter across all models interleaved
     // them against a mismatched base; keying by model keeps each model's copies
     // balancing among themselves.
-    const ttsIdx = nextIndex(`tts:${body.model || 'default'}`, healthyTts.length);
+    // Narrow to the backends that actually serve the requested model before
+    // balancing, so rotation happens WITHIN a selector rather than across
+    // unrelated models.
+    const _sel = await resolveTtsSelection(healthyTts, body.model);
+    if (_sel.backends.length === 0) {
+      return res.status(503).json({ error: _sel.reason || `no backend serves '${body.model}'` });
+    }
+    healthyTts = _sel.backends;
+    // Forward the BARE model. Backends are pool-unaware and reject
+    // "provider/model" outright, so the composite must not survive past here.
+    if (_sel.model) body.model = _sel.model;
+    const ttsIdx = nextIndex(`tts:${_sel.matched || 'default'}`, healthyTts.length);
     const ttsSvc = healthyTts[ttsIdx];
     const tryOrder = [ttsSvc, ...healthyTts.filter(s => s !== ttsSvc)];
 

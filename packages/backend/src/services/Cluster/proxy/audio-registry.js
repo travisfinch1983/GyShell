@@ -40,9 +40,10 @@
 // everywhere. Non-pooled providers are NOT dropped — they remain reachable on
 // their individual slot endpoints, they just never receive balanced traffic.
 //
-// Phase 2 will derive this from a `clipVoice` flag on TTS_PROVIDER_CAPS instead of
-// a literal set. Kept explicit for now so Phase 1 changes no routing behaviour.
-export const TTS_POOL_PROVIDERS = new Set(['proxlab-tts']);
+// Membership is derived from TTS_PROVIDER_CAPS via isPooledTtsProvider() below.
+// This set is populated at startup by setProviderCaps() so listBackends() stays a
+// cheap synchronous lookup.
+export const TTS_POOL_PROVIDERS = new Set();
 
 // RVC is a POST-PROCESSOR, not a TTS provider: separate lane, its own model
 // namespace (speaker .pth checkpoints), never selectable as a TTS model.
@@ -175,4 +176,179 @@ export function createHealthCache(probe, ttlMs = DEFAULT_TTL_MS) {
   }
 
   return { isHealthy, withHealth, invalidate };
+}
+
+
+// ─── Provider capabilities + pool membership ────────────────────────────────
+//
+// proxy.js owns TTS_PROVIDER_CAPS and hands it over once at startup, so there is
+// exactly one description of what each provider can do.
+let _caps = {};
+
+export function setProviderCaps(caps) {
+  _caps = caps || {};
+  // Recompute pool membership so listBackends() stays a synchronous Set lookup
+  // instead of re-deriving from caps on every call.
+  TTS_POOL_PROVIDERS.clear();
+  for (const id of Object.keys(_caps)) {
+    if (isPooledTtsProvider(id)) TTS_POOL_PROVIDERS.add(id);
+  }
+}
+
+export function getProviderCaps() {
+  return _caps;
+}
+
+/**
+ * A provider joins the balanced TTS pool iff it synthesises from a reference
+ * voice CLIP and speaks the OpenAI speech API.
+ *
+ * clipVoice is the load-bearing half. Clip engines resolve voices from the same
+ * shared NAS library, so a voice name means the same thing on every pooled
+ * backend and /tts/v1/voices can stay one flat namespace. Admitting fixed-voice
+ * engines (kokoro's baked-in speakers, piper) would collide voice IDs across
+ * providers and force provider/voice compounding through the whole surface.
+ *
+ * Non-pooled providers are NOT dropped — they keep their individual slot
+ * endpoints (/api/proxy/tts/N/v1/...). They just never receive balanced traffic
+ * and never appear in /tts/v1/models.
+ */
+export function isPooledTtsProvider(providerId) {
+  const c = _caps[providerId];
+  return Boolean(c && c.clipVoice === true && c.openai === true);
+}
+
+// ─── Composite provider/model IDs ───────────────────────────────────────────
+//
+// /tts/v1/models advertises `<providerId>/<modelId>` so one endpoint can expose
+// several providers at once and the caller picks both from a single dropdown.
+//
+// Accepted selectors, in order of specificity:
+//   "chatterbox/chatterbox-turbo"  exact provider + model
+//   "chatterbox-turbo"             model on ANY pooled provider that serves it
+//   undefined                      caller's default
+//
+// Bare IDs must keep working: every existing consumer sends one.
+
+export function parseModelSelector(raw) {
+  if (!raw || typeof raw !== 'string') return { providerId: null, model: null, raw: raw || '' };
+  const i = raw.indexOf('/');
+  if (i === -1) return { providerId: null, model: raw, raw };
+  return { providerId: raw.slice(0, i), model: raw.slice(i + 1), raw };
+}
+
+export function compositeId(providerId, model) {
+  return `${providerId}/${model}`;
+}
+
+/**
+ * Build the catalog of composite models across a set of backends.
+ *
+ * Providers that expose a models endpoint are asked what they serve. Providers
+ * that do not (caps.models === null) get one synthetic entry named after
+ * themselves, so they are still addressable rather than invisible.
+ *
+ * NO hardcoded model list. The old /multi-tts/v1/models asked only the FIRST
+ * healthy instance and fell back to a literal chatterbox list, so a pool serving
+ * something else would still advertise chatterbox and a totally empty pool would
+ * advertise models that do not exist.
+ *
+ * @param {(url: string) => Promise<any>} fetchJson
+ */
+export async function buildModelCatalog(backends, fetchJson) {
+  const byComposite = new Map();
+  const errors = [];
+
+  await Promise.all(backends.map(async (svc) => {
+    const caps = _caps[svc.providerId] || {};
+    const base = `http://${svc.containerIp}:${svc.port}`;
+
+    if (!caps.models) {
+      const id = compositeId(svc.providerId, svc.providerId);
+      if (!byComposite.has(id)) {
+        byComposite.set(id, { compositeId: id, providerId: svc.providerId, model: svc.providerId, backends: [] });
+      }
+      byComposite.get(id).backends.push(svc);
+      return;
+    }
+
+    try {
+      const data = await fetchJson(base + caps.models);
+      const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+      for (const m of list) {
+        const modelId = typeof m === 'string' ? m : m?.id;
+        if (!modelId) continue;
+        const id = compositeId(svc.providerId, modelId);
+        if (!byComposite.has(id)) {
+          byComposite.set(id, {
+            compositeId: id,
+            providerId: svc.providerId,
+            model: modelId,
+            ownedBy: (typeof m === 'object' && m?.owned_by) || svc.providerId,
+            backends: [],
+          });
+        }
+        byComposite.get(id).backends.push(svc);
+      }
+    } catch (err) {
+      // Surface it. A backend that cannot be asked what it serves is a real
+      // condition the caller should see, not something to paper over.
+      errors.push(`${svc.providerId}@${svc.containerIp}:${svc.port}: ${err.message}`);
+    }
+  }));
+
+  return { models: [...byComposite.values()], errors };
+}
+
+/**
+ * Candidate backends for a selector. Returns [] rather than guessing, plus a
+ * reason precise enough to debug from the 503 alone.
+ */
+export function selectBackends(catalog, selectorRaw) {
+  const sel = parseModelSelector(selectorRaw);
+
+  if (sel.providerId) {
+    const hit = catalog.find((e) => e.compositeId === sel.raw);
+    if (hit) return { backends: hit.backends, matched: hit.compositeId };
+    return {
+      backends: [],
+      matched: null,
+      reason: `no pooled backend serves '${sel.raw}'`,
+    };
+  }
+
+  if (sel.model) {
+    const hits = catalog.filter((e) => e.model === sel.model);
+    if (hits.length) {
+      return { backends: hits.flatMap((h) => h.backends), matched: hits.map((h) => h.compositeId).join(', ') };
+    }
+    return {
+      backends: [],
+      matched: null,
+      reason: `no pooled backend serves model '${sel.model}' (available: ${catalog.map((e) => e.compositeId).join(', ') || 'none'})`,
+    };
+  }
+
+  return { backends: catalog.flatMap((e) => e.backends), matched: 'any' };
+}
+
+// ─── Catalog cache ──────────────────────────────────────────────────────────
+// Model lists change only when a service is launched or swapped, so a short TTL
+// is plenty and keeps /models off the per-request fan-out path.
+let _catalogCache = { at: 0, key: '', value: null };
+const CATALOG_TTL_MS = 10000;
+
+export async function getModelCatalog(backends, fetchJson, ttlMs = CATALOG_TTL_MS) {
+  const key = backends.map((b) => `${b.providerId}@${b.containerIp}:${b.port}`).sort().join('|');
+  const now = Date.now();
+  if (_catalogCache.value && _catalogCache.key === key && now - _catalogCache.at < ttlMs) {
+    return _catalogCache.value;
+  }
+  const built = await buildModelCatalog(backends, fetchJson);
+  _catalogCache = { at: now, key, value: built };
+  return built;
+}
+
+export function invalidateModelCatalog() {
+  _catalogCache = { at: 0, key: '', value: null };
 }
