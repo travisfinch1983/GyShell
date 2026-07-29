@@ -46,10 +46,27 @@ fi
 
 WS="$ROOT/$FP"
 mkdir -p "$WS"
-python3 - "$SRC" "$RUNTIME" "$WS" <<'PY'
+# Also take vlm.model from AI-Lab's Support Models file (role `memory_vlm`) so the model
+# is controlled in the UI rather than pinned in ov.conf. File wins; ov.conf is the fallback
+# — a missing/unreadable file must never blank a working config.
+SM=/ai-lab-data/hermes-support-models.json
+python3 - "$SRC" "$RUNTIME" "$WS" "$SM" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 cfg.setdefault("storage", {})["workspace"] = sys.argv[3]
+want = ""
+try:
+    sm = json.load(open(sys.argv[4]))
+    want = ((sm.get("memory_vlm") or {}).get("model") or "")
+except FileNotFoundError:
+    print("openviking: support-models not mounted; keeping ov.conf vlm.model", file=sys.stderr)
+except Exception as e:
+    print(f"openviking: support-models unreadable ({e}); keeping ov.conf vlm.model", file=sys.stderr)
+if want:
+    cur = (cfg.get("vlm") or {}).get("model") or ""
+    if cur != want:
+        print(f"openviking: vlm.model <- support-models[memory_vlm] = {want!r} (was {cur!r})", file=sys.stderr)
+    cfg.setdefault("vlm", {})["model"] = want
 json.dump(cfg, open(sys.argv[2], "w"), indent=2)
 PY
 echo "openviking: embed fingerprint $FP -> workspace $WS"

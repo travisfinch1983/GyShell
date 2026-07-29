@@ -104,6 +104,9 @@ services:
       - /zpoolgamma/docker-volume/ai-lab/openviking:/opt/openviking/workspaces
       # Config carries root_api_key — kept OUT of the repo, mounted read-only.
       - /opt/ai-lab-secrets/openviking/ov.conf:/root/.openviking/ov.conf:ro
+      # Support Models file (role `memory_vlm` -> vlm.model). Mount the DIRECTORY: AI-Lab
+      # rewrites the JSON tmp+rename, so a FILE bind-mount would pin the old inode.
+      - /opt/ai-lab/.gybackend-data:/ai-lab-data:ro
 
   redis:
     image: redis:7-alpine
@@ -135,7 +138,14 @@ services:
     depends_on: [qdrant, redis, postgres]
     ports:
       - "8010:8000"   # 8000 on the host is chroma
+    # entrypoint derives LLM_MODEL from the Support Models file; env is the fallback.
+    entrypoint: ["/usr/local/bin/docker-entrypoint.sh"]
+    command: ["python", "-m", "uvicorn", "hippocampai.api.app:socket_app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
     env_file:
       - /opt/ai-lab-secrets/hippocampai/.env
     volumes:
       - /zpoolgamma/docker-volume/ai-lab/hippocampai:/opt/HippocampAI/data
+      # Support Models file (role `memory_extraction` -> LLM_MODEL). DIRECTORY, not file:
+      # the JSON is replaced tmp+rename, which swaps the inode.
+      - /opt/ai-lab/.gybackend-data:/ai-lab-data:ro
+      - ./hippocampai/docker-entrypoint.sh:/usr/local/bin/docker-entrypoint.sh:ro

@@ -31,7 +31,20 @@ export interface HermesApplyResult {
 export interface SupportModelRole { provider: string; model: string; description?: string; recommendation?: string; timeout?: number; noThink?: boolean }
 export type SupportModels = Record<string, SupportModelRole | undefined>
 /** A Hermes auxiliary role from the self-populating catalog (GET /api/hermes/aux-tasks). */
-export interface AuxTask { key: string; label: string; description: string; recommendation: string; shared: boolean }
+export interface AuxTask {
+  key: string; label: string; description: string; recommendation: string; shared: boolean
+  /** Value is DERIVED per-agent from that agent's own model (vision). Agents differing is
+   *  correct and cannot be reconciled — never show it as drift. */
+  capabilityManaged?: boolean
+  /** Consumer is NOT Hermes (HippocampAI / OpenViking): needs a concrete model, Auto is meaningless. */
+  external?: boolean
+  /** LIVE effective model across agents ('' = Auto). Read from the profile configs, NOT the
+   *  stored overlay — the overlay only knows what was set through this UI. */
+  current?: string
+  /** Agents disagree; `current` is '' and perAgent holds the split. */
+  drift?: boolean
+  perAgent?: Record<string, string>
+}
 
 export interface HermesPromptResult {
   ok: boolean

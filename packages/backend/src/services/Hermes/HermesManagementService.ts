@@ -52,12 +52,31 @@ export type SupportModelRoles = Record<string, SupportModelRole>
 
 /** Roles usable beyond Hermes → NO "Hermes-specific" badge in the UI. */
 export const SHARED_SUPPORT_ROLES = new Set<string>(['vision', 'compression', 'tts_audio_tags'])
+/** Roles whose consumer is NOT Hermes. UI-controlled and persisted to the shared
+ *  support-models file (external services read it), but NEVER written into an agent's
+ *  `auxiliary.<key>`. They need ONE concrete model name — `auto` ("the agent's own
+ *  model") is meaningless to an external service. */
+export const EXTERNAL_SUPPORT_ROLES = new Set<string>(['memory_extraction', 'memory_vlm'])
+
+/** Roles whose per-agent value is DERIVED from that agent's own model rather than set
+ *  globally. applyRoleConfig recomputes these per agent (vision-capable model -> auto,
+ *  text-only -> external describer), so agents legitimately differ. Never report that
+ *  as drift: it cannot be reconciled and the warning would be permanent. */
+export const CAPABILITY_MANAGED_ROLES = new Set<string>(['vision'])
+
+/** Profile dirs that are TEMPLATES, not addressable agents. `hermes -p default` means "no
+ *  profile" and writes the GLOBAL config, so a template's own config.yaml never receives an
+ *  apply — it would sit at Auto forever and manufacture permanent, unfixable "drift". */
+export const TEMPLATE_PROFILES = new Set<string>(['default', 'zztmpl', 'zzglob'])
+
 /** Roles Hermes READS (auxiliary.<key>) but does NOT advertise via _all_aux_tasks() — supplied here. */
 const AUX_TASK_SUPPLEMENT: Array<{ key: string; label: string; description: string }> = [
   { key: 'background_review', label: 'Background Review', description: 'Memory auto-extraction reviewer — every ~10 turns it reviews the conversation and saves worthwhile facts to MEMORY.md / USER.md.' },
   { key: 'goal_judge', label: 'Goal Judge', description: 'Judges progress in the /goal tracking loop.' },
   { key: 'session_search', label: 'Session Search', description: 'Searches and ranks your past sessions.' },
   { key: 'monitor', label: 'Monitor', description: 'Classifies items for cron monitors and alerts.' },
+  { key: 'memory_extraction', label: 'Memory Extraction (HippocampAI)', description: 'EXTERNAL consumer: HippocampAI distills durable memories and runs conflict checks; reads this as LLM_MODEL. Not a Hermes aux role — needs a concrete model, never Auto.' },
+  { key: 'memory_vlm', label: 'Memory VLM (OpenViking)', description: 'EXTERNAL consumer: OpenViking vision-language model (vlm.model). Not a Hermes aux role — needs a concrete model, never Auto.' },
 ]
 /** AI-Lab-authored per-role defaults. Precedence: user override (stored) > this default > Hermes short desc. */
 const AUX_ROLE_DEFAULTS: Record<string, { description?: string; recommendation?: string }> = {
@@ -77,6 +96,8 @@ const AUX_ROLE_DEFAULTS: Record<string, { description?: string; recommendation?:
   goal_judge: { recommendation: 'Tiny\u2013small, fast, cheap. Context \u2265 8k.' },
   session_search: { recommendation: 'Small, fast. Context \u2265 32k.' },
   monitor: { recommendation: 'Small, fast. Context \u2265 16k.' },
+  memory_extraction: { recommendation: 'Small-to-mid, fast, always-on. Context >= 32k. Must be a CONCRETE model — HippocampAI cannot resolve Auto.' },
+  memory_vlm: { recommendation: 'Vision-capable. Context >= 32k. Must be a CONCRETE model — OpenViking cannot resolve Auto.' },
 }
 
 /** Single-quote a string for safe embedding in a remote shell command. */
@@ -169,7 +190,7 @@ export class HermesManagementService {
   /** The merged Support-Models role catalog for the UI: Hermes' live _all_aux_tasks() (built-in +
    *  plugin) + the un-advertised supplement, each with an effective description (user override >
    *  authored default > Hermes short desc) + recommendation (user override > authored default). */
-  async getAuxTasks(): Promise<Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean }>> {
+  async getAuxTasks(): Promise<Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean; external: boolean; capabilityManaged: boolean; current: string; drift: boolean; perAgent: Record<string, string> }>> {
     let live: Array<[string, string, string]> = []
     const now = Date.now()
     if (this.auxLiveCache && now - this.auxLiveCache.checkedAt < 300_000) {
@@ -191,17 +212,41 @@ export class HermesManagementService {
     }
     const stored = this.loadSupportModels()
     const seen = new Set<string>()
-    const rows: Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean }> = []
+    const assignments = await this.getAuxAssignments()
+    const agentIds = Object.keys(assignments)
+    // Effective value = what the agents ACTUALLY have. '' means Auto (the agent's own model).
+    // drift = agents disagree, which the overlay-only view structurally could not reveal.
+    const liveFor = (key: string): { current: string; drift: boolean; perAgent: Record<string, string> } => {
+      const perAgent: Record<string, string> = {}
+      for (const a of agentIds) perAgent[a] = assignments[a]?.[key]?.model || ''
+      // Drift is judged on REAL agents only — a template can never be applied to, so including
+      // it would make the "agents disagree" banner permanent and unclearable.
+      const distinct = new Set(agentIds.filter((a) => !TEMPLATE_PROFILES.has(a)).map((a) => perAgent[a]))
+      return { current: distinct.size === 1 ? [...distinct][0] : '', drift: distinct.size > 1, perAgent }
+    }
+    const rows: Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean; external: boolean; capabilityManaged: boolean; current: string; drift: boolean; perAgent: Record<string, string> }> = []
     const add = (key: string, label: string, hermesDesc: string) => {
       if (seen.has(key)) return
       seen.add(key)
       const def = AUX_ROLE_DEFAULTS[key] || {}
       const s = stored[key] || {}
+      const external = EXTERNAL_SUPPORT_ROLES.has(key)
+      const capabilityManaged = CAPABILITY_MANAGED_ROLES.has(key)
+      // External roles have no per-agent Hermes config; the stored overlay IS their truth.
+      const live = external
+        ? { current: s.model || '', drift: false, perAgent: {} as Record<string, string> }
+        : liveFor(key)
       rows.push({
         key, label,
         description: (s.description || def.description || hermesDesc || '').trim(),
         recommendation: (s.recommendation || def.recommendation || '').trim(),
         shared: SHARED_SUPPORT_ROLES.has(key),
+        external,
+        capabilityManaged,
+        current: live.current,
+        // Capability-managed roles are SUPPOSED to differ per agent — not drift.
+        drift: capabilityManaged ? false : live.drift,
+        perAgent: live.perAgent,
       })
     }
     for (const [key, label, desc] of live) add(key, label, desc)
@@ -227,10 +272,19 @@ export class HermesManagementService {
     const keys = (applyKeys && applyKeys.length ? applyKeys : Object.keys(clean))
     if (!keys.length) return { agentsUpdated: 0 }
     const agents = await this.listAgents()
-    let n = 0
-    for (const id of agents) {
-      try { for (const key of keys) await this.applyRoleConfig(id, key, clean[key]); n++ } catch { /* skip unreachable/legacy */ }
-    }
+    // Reconcile agents CONCURRENTLY — this used to be serial (8 agents x up to 3 `hermes
+    // config set` calls each = ~24 sequential round-trips) and felt broken in the UI.
+    // Per-agent writes stay ordered; different agents touch different profile files.
+    const results = await Promise.all(agents.map(async (id) => {
+      try {
+        for (const key of keys) await this.applyRoleConfig(id, key, clean[key])
+        return true
+      } catch (e) {
+        console.warn(`[support-models] apply failed for agent ${id}:`, (e as Error)?.message || e)
+        return false
+      }
+    }))
+    const n = results.filter(Boolean).length
     return { agentsUpdated: n }
   }
 
@@ -238,6 +292,10 @@ export class HermesManagementService {
    *  every other role is a plain `auxiliary.<key>` route through the AI-Lab proxy (provider=ailab),
    *  or `auto` (→ the agent's own main model) when unassigned. This also clears any dead base_url. */
   private async applyRoleConfig(agentId: string, key: string, role?: SupportModelRole): Promise<void> {
+    // External-consumer roles (HippocampAI / OpenViking) are NOT Hermes aux tasks. Writing
+    // them into auxiliary.<key> would invent a phantom role on every agent. The stored
+    // support-models file is their only channel.
+    if (EXTERNAL_SUPPORT_ROLES.has(key)) return
     // Aux timeout (scalar -> config set) + no-think (dict extra_body -> yaml write). Orthogonal to routing.
     if (role && typeof role.timeout === 'number' && role.timeout > 0) {
       await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.timeout`, String(role.timeout)])
@@ -503,6 +561,48 @@ export class HermesManagementService {
       const m = out.match(/["']([^"']+)["']/)
       return m ? m[1] : 'unknown'
     } catch { return 'unknown' }
+  }
+
+  /** Read the LIVE `auxiliary.<key>.{provider,model}` for every agent straight from the
+   *  profile config.yaml files. THIS is the source of truth the UI must display: the stored
+   *  overlay only records what was set THROUGH the UI, so a value set by any other path (or
+   *  predating this feature) is invisible to it — which is exactly how four roles sat on a
+   *  dead 9B while the UI showed "Auto". One python pass over all profiles. */
+  async getAuxAssignments(): Promise<Record<string, Record<string, { provider?: string; model?: string }>>> {
+    const script = [
+      'import os, sys, json, glob',
+      'try:',
+      '    import yaml',
+      'except Exception:',
+      '    print("{}"); raise SystemExit(0)',
+      'out = {}',
+      'base = sys.argv[1] if len(sys.argv) > 1 else ""',
+      'for p in sorted(glob.glob(os.path.join(base, "*", "config.yaml"))):',
+      '    agent = os.path.basename(os.path.dirname(p))',
+      '    try:',
+      '        with open(p) as f: cfg = yaml.safe_load(f) or {}',
+      '    except Exception:',
+      '        continue',
+      '    aux = cfg.get("auxiliary") or {}',
+      '    if not isinstance(aux, dict): continue',
+      '    roles = {}',
+      '    for k, v in aux.items():',
+      '        if isinstance(v, dict):',
+      '            roles[k] = {"provider": v.get("provider") or "", "model": v.get("model") or ""}',
+      '    out[agent] = roles',
+      'print(json.dumps(out))',
+    ].join('\n')
+    const b64 = Buffer.from(script, 'utf8').toString('base64')
+    try {
+      const out = await this.ssh(`printf %s ${shq(b64)} | base64 -d | python3 - ${shq(this.profileHomeBase)}`)
+      const parsed = JSON.parse(out.trim() || '{}')
+      return (parsed && typeof parsed === 'object' ? parsed : {}) as Record<string, Record<string, { provider?: string; model?: string }>>
+    } catch (e) {
+      // NEVER swallow this silently: an empty result makes every role render as "auto",
+      // which is indistinguishable from a genuinely unassigned role.
+      console.warn('[support-models] getAuxAssignments failed; UI will fall back to the stored overlay:', (e as Error)?.message || e)
+      return {}
+    }
   }
 
   private profileHome(agentId: string): string {

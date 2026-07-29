@@ -20,7 +20,7 @@ import React, { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { observer } from 'mobx-react-lite'
 import {
-  Volume2, Mic, RefreshCw, CircleDot, Eye, Archive, Pencil, Database, ListOrdered,
+  Volume2, Mic, RefreshCw, CircleDot, Eye, Archive, Pencil, Database, ListOrdered, Clock,
 } from 'lucide-react'
 import {
   getTtsProviders,
@@ -326,11 +326,14 @@ const SupportModelSection: React.FC<{
   task: AuxTask
   role?: SupportModelRole
   catalog: CatalogModelWithCaps[]
-  onSave: (key: string, patch: { model?: string; description?: string; recommendation?: string }) => Promise<{ ok: boolean; agentsUpdated?: number; error?: string }>
+  onSave: (key: string, patch: { model?: string; description?: string; recommendation?: string; timeout?: number; noThink?: boolean }) => Promise<{ ok: boolean; agentsUpdated?: number; error?: string }>
 }> = ({ task, role, catalog, onSave }) => {
-  const [model, setModel] = useState(role?.model || '')
+  // Seed from the LIVE per-agent value. Seeding from the stored overlay (role?.model) is
+  // what made roles with a stale config render as "Auto" — the drift was unshowable.
+  const [model, setModel] = useState(task.current ?? role?.model ?? '')
   const [desc, setDesc] = useState(task.description)
   const [rec, setRec] = useState(task.recommendation)
+  const [noThink, setNoThink] = useState(!!role?.noThink)
   const [saving, setSaving] = useState('')
   const [status, setStatus] = useState('')
 
@@ -349,6 +352,12 @@ const SupportModelSection: React.FC<{
   const saveMeta = async (field: 'description' | 'recommendation', val: string) => {
     setSaving(field); await onSave(task.key, { [field]: val }); setSaving('')
   }
+  const toggleNoThink = async (v: boolean) => {
+    setNoThink(v); setSaving('noThink'); setStatus('')
+    const r = await onSave(task.key, { noThink: v })
+    setSaving('')
+    setStatus(r.ok ? 'saved' : `save failed${r.error ? ` — ${r.error}` : ''}`)
+  }
 
   const taBox: React.CSSProperties = { width: '100%', resize: 'vertical', fontSize: 12, lineHeight: 1.4, fontFamily: 'inherit', padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--control-bg)', color: 'var(--fg)', marginBottom: 8 }
 
@@ -357,18 +366,55 @@ const SupportModelSection: React.FC<{
       <div className="tts-section-header">
         <CircleDot size={13} />
         <span>{task.label}</span>
-        {!task.shared && (
+        {!task.shared && !task.external && (
           <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: 'rgba(120,130,255,.18)', color: '#9aa6ff', letterSpacing: '.04em' }}>HERMES</span>
+        )}
+        {task.external && (
+          <span title="Consumed by an external service (HippocampAI / OpenViking), not by a Hermes agent. Auto is not valid here — pick a concrete model." style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: 'rgba(255,170,60,.18)', color: '#ffb347', letterSpacing: '.04em' }}>EXTERNAL</span>
         )}
       </div>
       <div className="tts-section-body">
+        {task.drift && (
+          <div style={{ fontSize: 11, lineHeight: 1.45, padding: '6px 8px', marginBottom: 7, borderRadius: 6, border: '1px solid rgba(255,170,60,.35)', background: 'rgba(255,170,60,.10)', color: '#ffb347' }}>
+            <strong>Agents disagree on this role.</strong> Saving a value below applies it to every agent.
+            <div style={{ marginTop: 4, opacity: .9 }}>
+              {Object.entries(task.perAgent || {}).map(([a, mdl]) => (
+                <div key={a}>{a}: {mdl || 'Auto'}</div>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="tts-field">
           <label>Model{saving === 'model' ? ' (saving…)' : ''}</label>
           <select value={model} onChange={(e) => saveModel(e.target.value)} className="tts-select" disabled={saving === 'model'}>
-            <option value="">Auto — agent’s own main model</option>
+            <option value="">{task.external ? 'Auto — NOT SUPPORTED by this consumer' : 'Auto — agent’s own main model'}</option>
             {options.map((id) => <option key={id} value={id}>{id}</option>)}
           </select>
           {status && <span className="tts-hint">{status}</span>}
+          <button
+            type="button"
+            className="tts-btn"
+            style={{ marginTop: 6, alignSelf: "flex-start" }}
+            disabled={saving === "model"}
+            title="Push the selected model to every agent again. Use this when the value here is already correct but the agents have drifted — changing the dropdown is not required."
+            onClick={() => void saveModel(model)}
+          >
+            {saving === "model" ? "Applying…" : "Re-apply to all agents"}
+          </button>
+        </div>
+        <div className="tts-field-row" style={{ marginBottom: 7 }}>
+          <label
+            className="tts-toggle"
+            title="Disables the model's thinking/reasoning for this support task (writes extra_body chat_template_kwargs.enable_thinking=false). Best for local Qwen support models — a fast title/summary shouldn't burn a full think."
+          >
+            <input
+              type="checkbox"
+              checked={noThink}
+              onChange={(e) => toggleNoThink(e.target.checked)}
+              disabled={saving === 'noThink'}
+            />
+            <span className="tts-toggle-label">Disable thinking{saving === 'noThink' ? ' (saving…)' : ''}</span>
+          </label>
         </div>
         <EditableLine
           label="What it does"
@@ -429,12 +475,18 @@ function useSupportModels() {
     void smInflight.then((changed) => { if (alive) { if (!smCache) setErr(true); else if (changed || !hadCache) force((n) => n + 1) } })
     return () => { alive = false }
   }, [])
-  const onSave = async (key: string, patch: { model?: string; description?: string; recommendation?: string }) => {
+  const onSave = async (key: string, patch: { model?: string; description?: string; recommendation?: string; timeout?: number; noThink?: boolean }) => {
     const res = await hermesApi.setSupportModels({ [key]: patch })
     if (res.ok && smCache) {
       smCache = { ...smCache, roles: { ...smCache.roles, [key]: { ...(smCache.roles[key] || { provider: 'ailab', model: '' }), ...patch } } }
       smPersist(smCache)
       force((n) => n + 1)
+      // Re-pull LIVE task state. Only `roles` (the overlay) is updated above, so
+      // current/drift/perAgent would stay frozen -- and because this cache is persisted to
+      // localStorage, a stale "agents disagree" banner survived even a full page reload.
+      void hermesApi.getAuxTasks().then((t) => {
+        if (t && smCache) { smCache = { ...smCache, tasks: t }; smPersist(smCache); force((n) => n + 1) }
+      })
     }
     return res
   }
@@ -459,6 +511,78 @@ const HermesAuxCards: React.FC = () => {
   return <>{data.tasks.filter((t) => !t.shared).map((t) => (
     <SupportModelSection key={t.key} task={t} role={data.roles[t.key]} catalog={data.catalog} onSave={onSave} />
   ))}</>
+}
+
+/** Single GLOBAL auxiliary-task request timeout (seconds). Applies to EVERY aux role
+ *  by PUTing { timeout } for every catalog key — one value fans out to all roles. */
+const AuxTimeoutField: React.FC = () => {
+  const { data } = useSupportModels()
+  const initial = React.useMemo(() => {
+    if (data) {
+      for (const t of data.tasks) {
+        const to = data.roles[t.key]?.timeout
+        if (typeof to === 'number') return to
+      }
+    }
+    return 300
+  }, [data])
+  const [value, setValue] = useState<number>(initial)
+  const [saving, setSaving] = useState(false)
+  const [status, setStatus] = useState('')
+  useEffect(() => { setValue(initial) }, [initial])
+
+  const save = async () => {
+    if (!data || !Number.isFinite(value)) return
+    setSaving(true); setStatus('')
+    const patch: Record<string, { timeout: number }> = {}
+    for (const t of data.tasks) patch[t.key] = { timeout: value }
+    const r = await hermesApi.setSupportModels(patch)
+    setSaving(false)
+    setStatus(r.ok
+      ? `saved${typeof r.agentsUpdated === 'number' ? ` — ${r.agentsUpdated} agent${r.agentsUpdated === 1 ? '' : 's'}` : ''}`
+      : `save failed${r.error ? ` — ${r.error}` : ''}`)
+  }
+
+  return (
+    <div className="tts-section" style={{ marginBottom: 12 }}>
+      <div className="tts-section-header">
+        <Clock size={13} />
+        <span>Auxiliary Task Timeout</span>
+      </div>
+      <div className="tts-section-body">
+        <div className="tts-field">
+          <label>Auxiliary task timeout (seconds){saving ? ' (saving…)' : ''}</label>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              type="number"
+              min={1}
+              className="tts-input"
+              style={{ maxWidth: 120 }}
+              value={Number.isFinite(value) ? value : ''}
+              onChange={(e) => setValue(Number(e.target.value))}
+              onBlur={save}
+              disabled={!data || saving}
+            />
+            <button
+              className="tts-retry"
+              style={{ cursor: 'pointer' }}
+              onClick={save}
+              disabled={!data || saving}
+            >
+              Save
+            </button>
+            {status && <span className="tts-hint">{status}</span>}
+          </div>
+          <span
+            className="tts-hint"
+            title="Per-auxiliary-task request timeout. Too short causes retry storms on slow local models (each timed-out retry re-fires a fresh generation). 300s is a safe default for the local V100 models."
+          >
+            Per-auxiliary-task request timeout. Too short causes retry storms on slow local models (each timed-out retry re-fires a fresh generation). 300s is a safe default for the local V100 models.
+          </span>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) => {
@@ -523,6 +647,9 @@ export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) =
           <RefreshCw size={12} />
         </button>
       </div>
+
+      {/* Global auxiliary-task request timeout — one value fans out to every aux role */}
+      <AuxTimeoutField />
 
       {/* ─── Manual entries (TTS/STT + RAG + universal support models) — masonry (varied panel heights) ─── */}
       <div className="support-masonry">
