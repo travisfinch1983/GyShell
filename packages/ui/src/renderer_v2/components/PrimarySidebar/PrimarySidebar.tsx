@@ -47,7 +47,7 @@ const TABS: TabDef[] = [
   { id: 'addons',    label: 'Addons',    Icon: Blocks },
   { id: 'cluster',   label: 'Cluster',   Icon: Server },
   { id: 'services',  label: 'Services',  Icon: Radar },
-  { id: 'ai-services', label: 'AI Services', Icon: BrainCircuit },
+  { id: 'ai-services', label: 'AI Metrics', Icon: BrainCircuit },
   { id: 'ai-llm', label: 'AI · LLM', Icon: Bot },
   { id: 'ai-image', label: 'AI · Image Gen', Icon: ImageIcon },
   { id: 'ai-tts-stt', label: 'AI · TTS & STT', Icon: AudioLines },

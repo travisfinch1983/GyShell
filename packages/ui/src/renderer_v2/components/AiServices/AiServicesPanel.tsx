@@ -4,6 +4,7 @@ import { RefreshCw, BrainCircuit, Cpu } from 'lucide-react'
 import { aiServicesStore as store } from '../../stores/AiServicesStore'
 import { LlmMetricsDashboard } from './LlmMetricsDashboard'
 import { ClaudeMaxMetricsDashboard } from './ClaudeMaxMetricsDashboard'
+import { KvCacheDashboard } from './KvCacheDashboard'
 import styles from './AiServices.module.scss'
 
 const PoolView: React.FC = observer(() => (
@@ -51,7 +52,7 @@ export const AiServicesPanel: React.FC = observer(() => {
     <div className={styles.container}>
       <div className={styles.header}>
         <BrainCircuit size={16} className={styles.headerIcon} />
-        <span className={styles.title}>AI Services</span>
+        <span className={styles.title}>AI Metrics</span>
         <span className={styles.subTitle}>GPU Pool</span>
         <div className={styles.spacer} />
         <button className={styles.refreshBtn} title="Refresh" onClick={() => void store.load()}>
@@ -65,6 +66,7 @@ export const AiServicesPanel: React.FC = observer(() => {
       <div className={styles.body}>
         <PoolView />
         <LlmMetricsDashboard />
+        <KvCacheDashboard />
         <ClaudeMaxMetricsDashboard />
       </div>
     </div>

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { RefreshCw, Settings2, Trash2, X } from 'lucide-react'
+import { RefreshCw, RotateCcw, Settings2, Trash2, X } from 'lucide-react'
 import { llmMetricsStore as store, type LlmMetricRow } from '../../stores/LlmMetricsStore'
 import { confirmStore } from '../../stores/confirmStore'
 import styles from './AiServices.module.scss'
@@ -13,6 +13,14 @@ const errPct = (errs?: number, total?: number) => (total == null || total === 0 
 
 const SettingsModal: React.FC<{ row: LlmMetricRow; onClose: () => void }> = ({ row, onClose }) => {
   const s = row.settings || {}
+  const [launch, setLaunch] = useState<any>(null)
+  const [loadingLaunch, setLoadingLaunch] = useState(true)
+  useEffect(() => {
+    let alive = true
+    setLoadingLaunch(true)
+    void store.fetchLaunchCommand(row.fingerprint).then((r) => { if (alive) { setLaunch(r); setLoadingLaunch(false) } })
+    return () => { alive = false }
+  }, [row.fingerprint])
   const entries: [string, any][] = [
     ['Model', s.model], ['Alias', s.aliasOverride], ['Family', s.family], ['Variant', s.variant],
     ['Provider / backend', s.provider], ['Quantization', s.quant], ['Context size', s.contextSize?.toLocaleString?.()],
@@ -33,6 +41,16 @@ const SettingsModal: React.FC<{ row: LlmMetricRow; onClose: () => void }> = ({ r
             <tr key={k}><th>{k}</th><td>{String(v)}</td></tr>
           ))}
         </tbody></table>
+        {loadingLaunch ? (
+          <div className={styles.launchNote}>Loading full launch command…</div>
+        ) : launch?.ok && launch?.script ? (
+          <div className={styles.launchSection}>
+            <div className={styles.launchHead}>Full launch command{launch.scriptPath ? ` — ${launch.scriptPath}` : ''}</div>
+            <pre className={styles.launchPre}>{launch.script}</pre>
+          </div>
+        ) : (
+          <div className={styles.launchNote}>{launch?.reason || 'Full command available only while the service is running.'}</div>
+        )}
       </div>
     </div>
   )
@@ -47,12 +65,29 @@ export const LlmMetricsDashboard: React.FC = observer(() => {
       void store.deleteRow(r.fingerprint)
   }
 
+  const reset = async (r: LlmMetricRow) => {
+    if (await confirmStore.confirm({ title: 'Reset metrics', message: `Reset accumulated metrics for “${r.displayName || r.model}” to zero? Clears counters/averages so collection restarts (removes outliers). The row stays.`, confirmText: 'Reset', danger: false }))
+      void store.resetRow(r.fingerprint)
+  }
+
   return (
     <div className={styles.metricsWrap}>
       <div className={styles.metricsBar}>
         <span className={styles.metricsTitle}>LLM Performance Metrics</span>
         <span className={styles.metricsSub}>{store.rows.length} configs · {store.rows.filter((r) => r.running).length} running</span>
         <div className={styles.spacer} />
+        <label className={styles.liveWindowCtl}>Live window (s)
+          <input
+            className={styles.liveWindowInput}
+            type="number"
+            min={5}
+            max={600}
+            key={store.liveWindowSec}
+            defaultValue={store.liveWindowSec}
+            onBlur={(e) => void store.setLiveWindow(Number(e.currentTarget.value))}
+            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+          />
+        </label>
         <button className={styles.refreshBtn} title="Refresh" onClick={() => void store.load()}><RefreshCw size={13} /></button>
       </div>
       {store.error && <div className={styles.errorBar}>{store.error}</div>}
@@ -78,7 +113,8 @@ export const LlmMetricsDashboard: React.FC = observer(() => {
                 <React.Fragment key={g.model}>
                   <tr className={styles.groupRow}><td className={styles.groupCell} colSpan={23}>{g.model} <span className={styles.groupCount}>{g.rows.length}</span></td></tr>
                   {g.rows.map((r) => (
-                    <tr key={r.fingerprint} className={r.running ? '' : styles.stoppedRow}>
+                    <React.Fragment key={r.fingerprint}>
+                    <tr className={r.running ? '' : styles.stoppedRow}>
                       <td className={styles.stickyCol}>
                         <span className={`${styles.dot} ${r.running ? styles.dotOn : styles.dotOff}`} title={r.running ? 'running' : 'stopped'} />
                         {r.displayName || r.model}
@@ -106,9 +142,20 @@ export const LlmMetricsDashboard: React.FC = observer(() => {
                       <td>{errPct(r.toolErrHallucination, r.toolCalls)}</td>
                       <td className={styles.actionCell}>
                         <button className={styles.iconBtn} title="Launch settings" onClick={() => setSettingsRow(r)}><Settings2 size={14} /></button>
+                        <button className={styles.iconBtn} title="Reset metrics for this config" onClick={() => void reset(r)}><RotateCcw size={14} /></button>
                         <button className={styles.iconBtn} title="Delete row" onClick={() => void del(r)}><Trash2 size={14} /></button>
                       </td>
                     </tr>
+                    {r.running && (
+                      <tr className={styles.liveRow}>
+                        <td className={styles.stickyCol}>live ({store.liveWindowSec}s)<span className={styles.liveTag}>live</span></td>
+                        {Array.from({ length: 8 }).map((_, i) => <td key={i} />)}
+                        <td>{n1(r.liveDecodeTps)}</td>
+                        <td>{n1(r.livePrefillTps)}</td>
+                        {Array.from({ length: 12 }).map((_, i) => <td key={i} />)}
+                      </tr>
+                    )}
+                    </React.Fragment>
                   ))}
                 </React.Fragment>
               ))}
