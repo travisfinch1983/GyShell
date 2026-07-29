@@ -2,8 +2,14 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Pencil, Plus, RefreshCw, ScanEye, SendHorizonal, Settings2, Square, Trash2, Volume2, VolumeX, Wrench } from 'lucide-react'
+import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Mic, MicOff, Pencil, Plus, Radio, RefreshCw, ScanEye, SendHorizonal, Settings2, Square, Trash2, Volume2, VolumeX, Wrench } from 'lucide-react'
 import { isTtsEnabled, setTtsEnabled, stopPlayback } from '../../services/TtsPlayback'
+import {
+  startPushToTalk, stopPushToTalk,
+  startHandsFree, stopHandsFree,
+  setOnTranscript, setOnAutoSend, setOnStateChange,
+  type SttState,
+} from '../../services/SttCapture'
 import type { HermesSlashCommand } from '@gyshell/shared'
 import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
 import { hermesApi } from '../../stores/hermesApi'
@@ -50,22 +56,123 @@ const PlanCard = observer(({ item }: { item: ChatItem }) => (
  * otherwise the agent keeps talking after you have told it to be quiet, which is the
  * single most irritating way for this to behave.
  */
-const TtsButton: React.FC = () => {
-  const [on, setOn] = React.useState(isTtsEnabled)
+const TtsButton: React.FC<{ conversationId: string }> = observer(({ conversationId }) => {
+  const mode = chat.chatTtsMode(conversationId)
+  const [, bump] = React.useState(0)
+  const effective = chat.ttsOnFor(conversationId)
+  const overriding = mode !== undefined
   return (
     <button
       className={styles.btnStop}
-      style={{ background: 'transparent', borderColor: 'var(--border)' }}
-      title={on ? 'Speaking replies aloud — click to mute' : 'Speak agent replies aloud'}
-      onClick={() => {
-        const next = !on
-        setTtsEnabled(next)
+      style={{
+        background: 'transparent',
+        borderColor: overriding ? 'var(--accent)' : 'var(--border)',
+        position: 'relative',
+      }}
+      title={
+        (effective ? 'Speaking replies aloud in THIS chat' : 'Muted in THIS chat')
+        + (overriding
+          ? ' (overriding the global setting — alt-click to follow global again)'
+          : ' (following the global setting)')
+      }
+      onClick={(e) => {
+        // Alt-click clears the override and returns to following global. Without an
+        // escape hatch an override is permanent and there is no way to tell the button
+        // "just do whatever global does".
+        if (e.altKey) {
+          chat.setChatTtsMode(conversationId, undefined)
+          bump((n) => n + 1)
+          return
+        }
+        const next = !effective
+        chat.setChatTtsMode(conversationId, next ? 'on' : 'off')
         if (!next) stopPlayback()
-        setOn(next)
+        bump((n) => n + 1)
       }}
     >
-      {on ? <Volume2 size={13} /> : <VolumeX size={13} />}
+      {effective ? <Volume2 size={13} /> : <VolumeX size={13} />}
+      {overriding && (
+        <span style={{ position: 'absolute', top: 1, right: 1, width: 4, height: 4, borderRadius: '50%', background: 'var(--accent)' }} />
+      )}
     </button>
+  )
+})
+
+/**
+ * The two microphone controls, per Travis's spec.
+ *
+ *   MANUAL (Mic)   — press to record, press again to stop. The transcript is dropped
+ *                    INTO THE COMPOSER; he presses Enter himself. Never auto-sends.
+ *   CONSTANT (Radio) — toggle on and the mic stays open. SttCapture's VAD decides the
+ *                    utterance ended on a pause, transcribes, and the text is sent
+ *                    IMMEDIATELY without a manual step.
+ *
+ * Both are disabled with a reason when no STT provider is healthy — the only one lives
+ * on px-epyc, which is down, and a mic button that silently records into nothing is
+ * worse than one that is visibly unavailable.
+ */
+const SttButtons: React.FC<{ onTranscript: (t: string) => void; onAutoSend: (t: string) => void }> = ({ onTranscript, onAutoSend }) => {
+  const [state, setState] = React.useState<SttState>('idle')
+  const [stt, setStt] = React.useState<{ ok: boolean; why: string }>({ ok: false, why: 'checking for an STT provider…' })
+
+  React.useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const r = await fetch('/api/proxy/stt/v1/providers')
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        const d = await r.json()
+        const healthy = (d?.providers ?? []).filter((p: any) => p.status === 'healthy')
+        if (!alive) return
+        setStt(healthy.length
+          ? { ok: true, why: '' }
+          : { ok: false, why: (d?.providers?.length
+              ? `STT provider is unhealthy (${d.providers.map((p: any) => `${p.providerId} on ${p.host}`).join(', ')}) — the host is likely down`
+              : 'no STT provider is registered') })
+      } catch (e: any) {
+        if (alive) setStt({ ok: false, why: `could not reach the STT provider list: ${e?.message ?? e}` })
+      }
+    })()
+    return () => { alive = false }
+  }, [])
+
+  React.useEffect(() => {
+    setOnTranscript(onTranscript)
+    setOnAutoSend(onAutoSend)
+    setOnStateChange((s: SttState) => setState(s))
+  }, [onTranscript, onAutoSend])
+
+  const recording = state === 'recording'
+  const transcribing = state === 'transcribing'
+  const handsFree = state === 'handsfree' || state === 'handsfree-recording'
+  const speaking = state === 'handsfree-recording'
+
+  return (
+    <>
+      <button
+        className={styles.btnStop}
+        style={{ background: recording ? 'var(--danger, #b91c1c)' : 'transparent', borderColor: 'var(--border)' }}
+        disabled={!stt.ok || transcribing || handsFree}
+        title={!stt.ok ? `Speech-to-text unavailable — ${stt.why}`
+          : transcribing ? 'Transcribing…'
+          : recording ? 'Recording — click to stop and drop the text into the box'
+          : 'Record; the transcript goes into the message box for you to send'}
+        onClick={() => { if (recording) void stopPushToTalk(); else if (state === 'idle') void startPushToTalk() }}
+      >
+        {transcribing ? <Radio size={13} /> : recording ? <MicOff size={13} /> : <Mic size={13} />}
+      </button>
+      <button
+        className={styles.btnStop}
+        style={{ background: speaking ? 'var(--accent)' : 'transparent', borderColor: handsFree ? 'var(--accent)' : 'var(--border)' }}
+        disabled={!stt.ok || recording || transcribing}
+        title={!stt.ok ? `Speech-to-text unavailable — ${stt.why}`
+          : handsFree ? 'Always-listening ON — transcripts send themselves. Click to stop.'
+          : 'Always listen: sends each utterance automatically after a pause'}
+        onClick={() => { if (handsFree) stopHandsFree(); else void startHandsFree() }}
+      >
+        <Radio size={13} />
+      </button>
+    </>
   )
 }
 
@@ -353,7 +460,11 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
               if (e.key === 'Tab' && slashOpen && slashMatches[0]) { e.preventDefault(); setText(`/${slashMatches[0].name} `); setSlashOpen(false) }
             }}
           />
-          <TtsButton />
+          <TtsButton conversationId={conversationId} />
+          <SttButtons
+            onTranscript={(t) => setText((cur) => (cur ? `${cur} ${t}` : t))}
+            onAutoSend={(t) => { const v = t.trim(); if (v) void chat.send(agentId, conversationId, v) }}
+          />
           {s.busy ? (
             <button className={styles.btnStop} title="Stop generating" onClick={() => chat.stop(agentId, conversationId)}>
               <Square size={11} fill="currentColor" /> Stop

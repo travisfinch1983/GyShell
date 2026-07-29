@@ -512,7 +512,7 @@ class HermesChatStore {
    * per-agent voice/RVC override.
    */
   private speakFinished(s: AgentChatState, conversationId: string): void {
-    if (!isTtsEnabled()) return
+    if (!this.ttsOnFor(conversationId)) return
     const item = [...s.items].reverse().find((i) => i.streaming && i.kind === 'assistant')
     if (!item?.text?.trim()) return
     const agentId = this.agents.get(conversationId)
@@ -533,6 +533,48 @@ class HermesChatStore {
    * which is exactly the behaviour before per-agent voices existed.
    */
   private voiceCache = new Map<string, TtsOverride | undefined>()
+
+  /**
+   * Per-conversation Auto-TTS override, beating the global toggle.
+   *
+   * THREE states, and the third one matters: undefined = follow the global setting,
+   * 'on'/'off' = an explicit decision for this chat only. Without the inherit state a
+   * chat would be frozen to whatever global happened to be the first time it rendered,
+   * and changing global afterwards would mysteriously affect some chats and not others.
+   *
+   * Persisted per conversation so it survives a reload — a chat you muted should stay
+   * muted, otherwise you re-mute it every refresh.
+   */
+  private chatTts = new Map<string, 'on' | 'off'>()
+
+  private chatTtsKey(conversationId: string): string { return `ailab-chat-tts:${conversationId}` }
+
+  chatTtsMode(conversationId: string): 'on' | 'off' | undefined {
+    if (this.chatTts.has(conversationId)) return this.chatTts.get(conversationId)
+    let v: 'on' | 'off' | undefined
+    try {
+      const raw = localStorage.getItem(this.chatTtsKey(conversationId))
+      if (raw === 'on' || raw === 'off') v = raw
+    } catch { /* private mode / storage disabled — inherit is a fine answer */ }
+    if (v) this.chatTts.set(conversationId, v)
+    return v
+  }
+
+  /** Pass undefined to clear the override and go back to following the global setting. */
+  setChatTtsMode(conversationId: string, mode: 'on' | 'off' | undefined): void {
+    if (mode) this.chatTts.set(conversationId, mode)
+    else this.chatTts.delete(conversationId)
+    try {
+      if (mode) localStorage.setItem(this.chatTtsKey(conversationId), mode)
+      else localStorage.removeItem(this.chatTtsKey(conversationId))
+    } catch { /* non-fatal: the in-memory value still applies for this session */ }
+  }
+
+  /** Effective Auto-TTS for one chat: explicit override if set, else the global toggle. */
+  ttsOnFor(conversationId: string): boolean {
+    const m = this.chatTtsMode(conversationId)
+    return m === 'on' ? true : m === 'off' ? false : isTtsEnabled()
+  }
 
   private async agentVoice(agentId?: string): Promise<TtsOverride | undefined> {
     if (!agentId) return undefined
