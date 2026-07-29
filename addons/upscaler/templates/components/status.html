@@ -1,0 +1,89 @@
+<section class="status-panel" hx-get="/_/status" hx-trigger="every 5s" hx-swap="outerHTML">
+  <h2>Worker status</h2>
+  <div class="status-grid">
+    <div class="card">
+      <div class="card-title">Worker</div>
+      <div class="card-value">
+        {% if settings.worker_enabled == "1" %}
+          <span class="ok">ACTIVE</span>
+          <form method="post" action="/api/worker/pause" style="display:inline">
+            <button type="submit" class="btn-small">pause</button>
+          </form>
+        {% else %}
+          <span class="warn">PAUSED</span>
+          <form method="post" action="/api/worker/resume" style="display:inline">
+            <button type="submit" class="btn-small">resume</button>
+          </form>
+        {% endif %}
+        <form method="post" action="/api/poll-now" style="display:inline">
+          <button type="submit" class="btn-small">poll now</button>
+        </form>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Queue</div>
+      <div class="card-value">
+        pending: <strong>{{ queue.pending or 0 }}</strong>
+        &middot; processing: <strong>{{ queue.processing or 0 }}</strong>
+        &middot; failed: <strong>{{ queue.failed or 0 }}</strong>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Last 24h</div>
+      <div class="card-value">
+        ok: <strong>{{ processed.ok or 0 }}</strong>
+        &middot; failed: <strong>{{ processed.failed or 0 }}</strong>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Immich job queue (backpressure)</div>
+      <div class="card-value">
+        {% set m = job_depth.get("metadataExtraction", {}) %}
+        {% set ss = job_depth.get("smartSearch", {}) %}
+        metadata: {{ m.waiting or 0 }}w {{ m.active or 0 }}a
+        &middot; smart-search: {{ ss.waiting or 0 }}w {{ ss.active or 0 }}a
+      </div>
+    </div>
+  </div>
+
+  {% if processing %}
+  <h3>Currently processing ({{ processing | length }})</h3>
+  <table class="processing-table">
+    <thead><tr><th>GPU</th><th>File</th><th>Elapsed</th></tr></thead>
+    <tbody>
+    {% for p in processing %}
+      <tr>
+        <td><span class="badge album">{{ p.agent_name or "?" }}:{{ p.cuda_index if p.cuda_index is not none else "?" }}</span></td>
+        <td>{{ p.filename or p.asset_id[:12] }}</td>
+        <td>
+          {% if p.started_at %}{{ now_ts - p.started_at }}s
+          {% else %}<span class="muted">queued</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% set failed = activity | selectattr("status", "equalto", "failed") | list %}
+  {% if failed %}
+  <h3>Recent failures - need attention</h3>
+  <table class="activity">
+    <thead><tr><th>When</th><th>File</th><th></th></tr></thead>
+    <tbody>
+      {% for a in failed %}
+      <tr class="failed">
+        <td><time>{{ a.processed_at | int }}</time></td>
+        <td>{{ a.filename or a.asset_id[:12] }}</td>
+        <td>
+          <form method="post" action="/api/queue/{{ a.asset_id }}/retry" style="display:inline">
+            <button type="submit" class="btn-small">retry</button>
+          </form>
+          <details><summary>error</summary><pre class="error">{{ a.error }}</pre></details>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Upscale Companion{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1><a href="/">Upscale Companion</a></h1>
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/browse">Browse / Manual queue</a>
+      <a href="/history">History</a>
+      <a href="/sync">Tag Sync</a>
+    </nav>
+    <div class="immich-state">
+      {% block header_extra %}{% endblock %}
+    </div>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

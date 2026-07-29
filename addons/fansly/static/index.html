@@ -1,0 +1,1260 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scraper WebUI</title>
+<!-- AI-Lab shared token base (dark/light fallback before the live sync runs) -->
+<link rel="stylesheet" href="/addons/_shared/theme.css">
+<script src="/addons/_shared/theme.js"></script>
+<style>
+  /* ===== AI-Lab-styled scraper UI — fully token-driven (obeys global theme) ===== */
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--app-bg, #0b0f14);
+    color: var(--fg, rgba(255,255,255,.92));
+    font-family: var(--font-ui, system-ui, sans-serif);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  main.container { max-width: 1180px; margin: 0 auto; padding: 18px 20px 40px; }
+  h2 { font-size: 1.15rem; font-weight: 650; margin: 0 0 12px; letter-spacing: .01em; }
+  h4 { font-size: .9rem; font-weight: 600; color: var(--fg-muted); margin: 18px 0 8px; }
+  p { margin: .5rem 0; }
+  a { color: var(--accent); text-decoration: none; }
+  code { font-family: var(--font-mono); font-size: .85em; background: var(--control-bg); padding: .1em .35em; border-radius: 4px; }
+  small, .small { font-size: .78rem; color: var(--fg-faint); }
+  .row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
+  .row > .grow { flex: 1; min-width: 0; }
+
+  /* ---- Form controls ---- */
+  input[type=text], input[type=search], input[type=number], select, textarea {
+    background: var(--panel-bg-2); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: .48rem .6rem; font: inherit; font-size: .88rem; width: 100%;
+    outline: none; transition: border-color .12s, box-shadow .12s;
+  }
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(var(--accent-rgb, 78,161,255), .18);
+  }
+  textarea.urls, textarea.creators { font-family: var(--font-mono); min-height: 180px; resize: vertical; }
+  input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--accent); vertical-align: middle; }
+  label { display: block; margin: .5rem 0; }
+  label > small { display: block; margin-top: .15rem; }
+
+  /* ---- Buttons ---- */
+  button {
+    font: inherit; font-size: .84rem; font-weight: 550;
+    padding: .42rem .8rem; border-radius: 8px; cursor: pointer;
+    border: 1px solid transparent; background: var(--accent); color: #fff;
+    transition: filter .12s, background .12s, border-color .12s;
+    line-height: 1.2; white-space: nowrap;
+  }
+  button:hover { filter: brightness(1.08); }
+  button:active { filter: brightness(.94); }
+  button:disabled { opacity: .5; cursor: not-allowed; filter: none; }
+  button.secondary { background: var(--control-bg); color: var(--fg); border-color: var(--border); }
+  button.secondary:hover { background: var(--control-bg-hover); filter: none; }
+  button.outline { background: transparent; color: var(--fg-muted); border-color: var(--border-strong); }
+  button.outline:hover { background: var(--control-bg); color: var(--fg); filter: none; }
+  button.contrast, button.secondary.contrast { background: transparent; color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+  button.contrast:hover, button.secondary.contrast:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); filter: none; }
+
+  /* ---- Service switcher (top-level tabs) ---- */
+  nav.services { display: flex; gap: 4px; margin-bottom: -1px; position: relative; z-index: 1; }
+  nav.services a {
+    padding: .55rem 1.25rem; cursor: pointer; font-weight: 600; font-size: .9rem;
+    color: var(--fg-faint); background: var(--panel-bg-2);
+    border: 1px solid var(--border); border-bottom: none;
+    border-radius: 10px 10px 0 0; transition: color .12s, background .12s;
+  }
+  nav.services a:hover { color: var(--fg-muted); }
+  nav.services a.active {
+    color: var(--fg); background: var(--panel-bg);
+    border-color: var(--border-strong); border-bottom: 1px solid var(--panel-bg);
+  }
+
+  .service-panel {
+    background: var(--panel-bg);
+    border: 1px solid var(--border-strong);
+    border-radius: 0 12px 12px 12px;
+    padding: 18px 20px; box-shadow: var(--shadow);
+  }
+
+  /* ---- Sub-tabs ---- */
+  nav.subtabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+  nav.subtabs a {
+    padding: .5rem .95rem; cursor: pointer; font-size: .86rem; font-weight: 550;
+    color: var(--fg-faint); border-bottom: 2px solid transparent; margin-bottom: -1px;
+    transition: color .12s, border-color .12s;
+  }
+  nav.subtabs a:hover { color: var(--fg-muted); }
+  nav.subtabs a.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* ---- Status pill ---- */
+  .status-pill { padding: .18rem .6rem; border-radius: 999px; font-size: .74rem; font-weight: 650; letter-spacing: .02em; }
+  .status-pill.active   { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--success) 40%, transparent); }
+  .status-pill.inactive { background: color-mix(in srgb, var(--danger) 18%, transparent);  color: var(--danger);  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 40%, transparent); }
+  .status-pill.running  { background: color-mix(in srgb, var(--accent) 20%, transparent);  color: var(--accent);  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
+  .status-pill.unknown  { background: var(--control-bg); color: var(--fg-faint); }
+
+  .toolbar { display: flex; gap: .4rem; flex-wrap: wrap; }
+
+  /* ---- Stat cards ---- */
+  .stat-card {
+    padding: .7rem .95rem; background: var(--panel-bg-2);
+    border: 1px solid var(--border); border-radius: 10px; min-width: 130px; flex: 1 1 130px;
+  }
+  .stat-card .label { font-size: .68rem; color: var(--fg-faint); text-transform: uppercase; letter-spacing: .06em; }
+  .stat-card .value { font-size: 1.5rem; font-weight: 700; line-height: 1.15; margin-top: .1rem; }
+  .stat-card .sub { font-size: .7rem; color: var(--fg-faint); margin-top: .15rem; }
+
+  /* ---- Tables ---- */
+  table { width: 100%; border-collapse: collapse; }
+  table th, table td { padding: .45rem .55rem; font-size: .86rem; text-align: left; vertical-align: middle; }
+  table th { color: var(--fg-faint); font-weight: 600; font-size: .74rem; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--border); }
+  table td { border-bottom: 1px solid var(--border); }
+  table tbody tr:hover td { background: var(--control-bg); }
+  td.right, th.right { text-align: right; font-variant-numeric: tabular-nums; }
+  td.actions, th.actions { text-align: right; white-space: nowrap; }
+
+  .crumb { color: var(--fg-muted); cursor: pointer; }
+  .crumb:hover { color: var(--accent); }
+  .file-icon { margin-right: .4rem; opacity: .8; }
+
+  /* ---- article (autorun box) ---- */
+  article { background: var(--panel-bg-2); border: 1px solid var(--border); border-radius: 10px; padding: .9rem 1.1rem; }
+
+  /* ---- Live log ---- */
+  .live-toolbar { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin: .5rem 0; }
+  .live-toolbar input[type=text] { flex: 1; min-width: 180px; }
+  .conn-dot { width: .6rem; height: .6rem; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .conn-dot.up { background: var(--success); box-shadow: 0 0 7px color-mix(in srgb, var(--success) 70%, transparent); }
+  .conn-dot.down { background: var(--danger); }
+  .live-log {
+    background: var(--panel-bg-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: .55rem .8rem; height: 55vh; min-height: 260px; overflow-y: auto;
+    font-family: var(--font-mono); font-size: .76rem; line-height: 1.45;
+  }
+  .live-log .line { display: flex; gap: .5rem; padding: 1px 0 1px .45rem; border-left: 3px solid transparent; }
+  .live-log .line:hover { background: var(--control-bg); }
+  .live-log .t { color: var(--fg-faint); flex-shrink: 0; }
+  .live-log .m { word-break: break-word; }
+  .live-log .info .m { color: var(--fg-muted); }
+  .live-log .download { border-left-color: var(--success); }
+  .live-log .download .m { color: var(--success); }
+  .live-log .skip .m { color: var(--fg-faint); }
+  .live-log .warn { border-left-color: var(--warning, #fbbf24); }
+  .live-log .warn .m { color: var(--warning, #fbbf24); }
+  .live-log .error { border-left-color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+  .live-log .error .m { color: var(--danger); font-weight: 500; }
+  .live-log .hidden { display: none; }
+
+  /* ---- Toast ---- */
+  .toast {
+    position: fixed; bottom: 1.1rem; right: 1.1rem; z-index: 9999; display: none;
+    background: var(--accent); color: #fff; padding: .6rem 1.05rem; border-radius: 10px;
+    box-shadow: var(--shadow); font-size: .85rem; font-weight: 550;
+  }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main class="container">
+
+  <h2 style="margin-bottom: 0.5rem;">Scraper WebUI</h2>
+
+  <nav class="services" id="services-nav">
+    <a data-service="fansly" class="active">Fansly</a>
+    <a data-service="coomer">Coomer</a>
+    <a data-service="kemono">Kemono</a>
+    <a data-service="coomerfans">Coomerfans</a>
+  </nav>
+
+  <div class="service-panel">
+
+    <div class="row" style="margin-bottom: 0.75rem;">
+      <span class="grow">
+        Status: <span id="svc-status" class="status-pill unknown">loading…</span>
+        <span id="svc-meta" class="small" style="margin-left: 0.5rem;"></span>
+      </span>
+      <div class="toolbar" id="svc-controls">
+        <!-- Buttons added dynamically based on service kind -->
+      </div>
+    </div>
+
+    <nav class="subtabs" id="subtabs">
+      <a data-sub="live" class="active">Live</a>
+      <a data-sub="creators-or-queue">Creators</a>
+      <a data-sub="files">Files</a>
+      <a data-sub="stats">Stats</a>
+      <a data-sub="settings">Settings</a>
+    </nav>
+
+    <!-- Live sub-tab -->
+    <section id="sub-live">
+      <div class="row" style="gap: 0.5rem; margin-bottom: 0.75rem;" id="live-stat-cards">
+        <!-- cards rendered per-service -->
+      </div>
+
+      <div class="live-toolbar">
+        <span class="conn-dot down" id="live-dot" title="Disconnected"></span>
+        <input type="text" id="live-filter" placeholder="Filter (substring, case-insensitive)…">
+        <label class="row" style="gap: 0.3rem; margin: 0;">
+          <input type="checkbox" id="live-autoscroll" checked style="margin: 0;">
+          <span class="small">Auto-scroll</span>
+        </label>
+        <button id="live-clear" class="outline">Clear</button>
+      </div>
+
+      <div id="live-log" class="live-log"><div class="small" style="color: #6b7280;">connecting…</div></div>
+
+      <p class="small" style="margin-top: 0.5rem;">
+        Lines colored: <span style="color:#4ade80">downloads</span>,
+        <span style="color:#9ca3af">skips/dedup</span>,
+        <span style="color:#fbbf24">warnings</span>,
+        <span style="color:#f87171">errors</span>. Capped at 500 lines.
+      </p>
+    </section>
+
+    <!-- Creators (fansly) OR Queue (coomer/kemono) -->
+    <section id="sub-creators-or-queue" hidden></section>
+
+    <!-- Files sub-tab -->
+    <section id="sub-files" hidden>
+      <p id="crumbs" class="small"></p>
+      <table>
+        <thead>
+          <tr><th></th><th>Name</th><th class="right">Size</th><th class="right">Files</th><th class="actions"></th></tr>
+        </thead>
+        <tbody id="files-body"></tbody>
+      </table>
+    </section>
+
+    <!-- Stats sub-tab -->
+    <section id="sub-stats" hidden>
+      <div class="row" style="gap: 1rem;">
+        <div class="stat-card"><div class="label">Creators</div><div class="value" id="stat-creators">–</div></div>
+        <div class="stat-card"><div class="label">Files</div><div class="value" id="stat-files">–</div></div>
+        <div class="stat-card"><div class="label">Total size</div><div class="value" id="stat-size">–</div></div>
+      </div>
+      <h4 style="margin-top: 1rem;">Per creator</h4>
+      <table>
+        <thead><tr><th>Creator</th><th class="right">Files</th><th class="right">Size</th></tr></thead>
+        <tbody id="creators-body"></tbody>
+      </table>
+      <h4>File types</h4>
+      <table>
+        <thead><tr><th>Extension</th><th class="right">Count</th></tr></thead>
+        <tbody id="types-body"></tbody>
+      </table>
+    </section>
+
+    <!-- Settings sub-tab -->
+    <section id="sub-settings" hidden>
+      <label>
+        <input type="checkbox" id="auto-zip">
+        Auto-zip folders before download
+        <small class="small">When on, folder Download streams a zip. When off, folder-download is disabled — open the folder and grab files individually.</small>
+      </label>
+
+      <article id="autorun-section" hidden style="margin-top: 1rem; padding: 0.8rem 1rem;">
+        <header style="margin-bottom: 0.5rem; padding: 0;">
+          <strong>Auto-run on schedule</strong>
+          <p class="small" style="margin: 0;">Triggers <code>/api/&lt;service&gt;/run</code> automatically on a schedule. Skipped if a run is already in progress.</p>
+        </header>
+        <label>
+          <input type="checkbox" id="autorun-enabled">
+          Run automatically on schedule
+        </label>
+        <label>
+          Frequency
+          <select id="autorun-schedule" style="max-width: 200px;">
+            <option value="1h">Every 1 hour</option>
+            <option value="3h">Every 3 hours</option>
+            <option value="6h" selected>Every 6 hours</option>
+            <option value="12h">Every 12 hours</option>
+            <option value="24h">Once a day (3 AM)</option>
+          </select>
+        </label>
+        <p class="small" id="autorun-next" style="margin-bottom: 0;">–</p>
+      </article>
+    </section>
+
+  </div>
+
+</main>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
+
+function toast(msg, ms = 2400) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.style.display = "block";
+  clearTimeout(toast._h);
+  toast._h = setTimeout(() => { t.style.display = "none"; }, ms);
+}
+
+function fmtBytes(n) {
+  if (n === null || n === undefined) return "–";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + " " + u[i];
+}
+
+function fmtCount(n) {
+  if (n === null || n === undefined) return "–";
+  return n.toLocaleString();
+}
+
+function fmtDuration(secs) {
+  if (secs == null) return "–";
+  secs = Math.floor(secs);
+  if (secs < 60) return secs + "s";
+  const m = Math.floor(secs / 60);
+  if (m < 60) return m + "m " + (secs % 60) + "s";
+  const h = Math.floor(m / 60);
+  return h + "h " + (m % 60) + "m";
+}
+
+// === Per-service state ===
+const STATE = {
+  fansly: { sub: "live", path: "", autoZip: true, evtSource: null, intervalRefs: [] },
+  coomer: { sub: "live", path: "", autoZip: true, evtSource: null, intervalRefs: [], users: [], defaultService: "onlyfans" },
+  kemono: { sub: "live", path: "", autoZip: true, evtSource: null, intervalRefs: [], users: [], defaultService: "patreon" },
+  coomerfans: { sub: "live", path: "", autoZip: true, evtSource: null, intervalRefs: [], users: [], defaultService: "onlyfans", hasDiscovery: false },
+};
+
+let activeService = "fansly";
+
+// === Service tab switching ===
+$$("nav.services a").forEach(a => {
+  a.addEventListener("click", () => {
+    switchService(a.dataset.service);
+  });
+});
+
+function switchService(svc) {
+  if (activeService === svc) return;
+  // Tear down previous
+  teardownService(activeService);
+  activeService = svc;
+  $$("nav.services a").forEach(x => x.classList.toggle("active", x.dataset.service === svc));
+  // Reset sub-tab to whatever we last had for this service
+  setupServicePanel();
+}
+
+function teardownService(svc) {
+  const s = STATE[svc];
+  if (s.evtSource) {
+    try { s.evtSource.close(); } catch (e) {}
+    s.evtSource = null;
+  }
+  s.intervalRefs.forEach(id => clearInterval(id));
+  s.intervalRefs = [];
+}
+
+// === Setup the panel for the current service ===
+function setupServicePanel() {
+  const svc = activeService;
+  // Reset header
+  $("#svc-status").className = "status-pill unknown";
+  $("#svc-status").textContent = "loading…";
+  $("#svc-meta").textContent = "";
+  $("#svc-controls").innerHTML = "";
+
+  // Render the second sub-tab label per service
+  const isOneshot = svc !== "fansly";
+  const subtabs = $("#subtabs").querySelectorAll("a");
+  subtabs[1].textContent = isOneshot ? "Queue" : "Creators";
+
+  // Reset live log
+  $("#live-log").innerHTML = '<div class="small" style="color: #6b7280;">connecting…</div>';
+  $("#live-dot").className = "conn-dot down";
+  $("#live-filter").value = "";
+
+  // Render the right second sub-tab content
+  renderCreatorsOrQueue(svc);
+
+  // Render the live-stats cards
+  renderLiveStatCards(svc);
+
+  // Per-service controls
+  if (svc === "fansly") {
+    $("#svc-controls").innerHTML =
+      '<button data-act="start" class="secondary">Start</button>' +
+      '<button data-act="restart" class="secondary">Restart</button>' +
+      '<button data-act="stop" class="secondary contrast">Stop</button>' +
+      '<button data-act="refresh" class="outline">⟳</button>';
+    $$("#svc-controls button").forEach(b => {
+      b.onclick = () => {
+        if (b.dataset.act === "refresh") refreshSvcStatus();
+        else fansyControl(b.dataset.act);
+      };
+    });
+  } else {
+    $("#svc-controls").innerHTML =
+      '<button data-act="run" id="btn-run">Run Now</button>' +
+      '<button data-act="cancel" class="secondary contrast" id="btn-cancel">Cancel</button>' +
+      '<button data-act="refresh" class="outline">⟳</button>';
+    $$("#svc-controls button").forEach(b => {
+      b.onclick = () => {
+        if (b.dataset.act === "refresh") refreshSvcStatus();
+        else if (b.dataset.act === "run") runService();
+        else if (b.dataset.act === "cancel") cancelService();
+      };
+    });
+  }
+
+  // Show the active sub-tab
+  showSubtab(STATE[svc].sub);
+
+  // Kick off live stream + polling
+  refreshSvcStatus();
+  refreshLiveStats();
+  connectLogStream();
+  loadSettings();
+
+  STATE[svc].intervalRefs.push(setInterval(refreshSvcStatus, 8000));
+  STATE[svc].intervalRefs.push(setInterval(refreshLiveStats, 5000));
+}
+
+// === Sub-tab nav ===
+$$("nav.subtabs a").forEach(a => {
+  a.addEventListener("click", () => {
+    showSubtab(a.dataset.sub);
+  });
+});
+
+function showSubtab(sub) {
+  STATE[activeService].sub = sub;
+  $$("nav.subtabs a").forEach(x => x.classList.toggle("active", x.dataset.sub === sub));
+  ["live", "creators-or-queue", "files", "stats", "settings"].forEach(name => {
+    $("#sub-" + name).hidden = (name !== sub);
+  });
+  if (sub === "files") loadDir(STATE[activeService].path);
+  if (sub === "stats") loadStats();
+  if (sub === "creators-or-queue") loadCreatorsOrQueue();
+}
+
+// === Service status / control ===
+async function refreshSvcStatus() {
+  const svc = activeService;
+  try {
+    const r = await fetch(`api/${svc}/info`);
+    const d = await r.json();
+    const pill = $("#svc-status");
+    if (svc === "fansly") {
+      pill.className = "status-pill " + (d.active ? "active" : "inactive");
+      pill.textContent = d.active ? "daemon running" : "daemon stopped";
+      $("#svc-meta").textContent = "fansly-scraper.service";
+    } else {
+      const r = d.run || {};
+      if (r.running) {
+        pill.className = "status-pill running";
+        pill.textContent = "running…";
+        $("#svc-meta").textContent = "started " + (r.elapsed_seconds != null ? fmtDuration(r.elapsed_seconds) + " ago" : "");
+      } else if (r.last_exit !== null && r.last_exit !== undefined) {
+        pill.className = "status-pill " + (r.last_exit === 0 ? "active" : "inactive");
+        pill.textContent = r.last_exit === 0 ? "last run: ok" : "last run: failed (" + r.last_exit + ")";
+        $("#svc-meta").textContent = "";
+      } else {
+        pill.className = "status-pill unknown";
+        pill.textContent = "idle";
+        $("#svc-meta").textContent = "";
+      }
+    }
+  } catch (e) {
+    $("#svc-status").className = "status-pill unknown";
+    $("#svc-status").textContent = "error";
+  }
+}
+
+async function fansyControl(action) {
+  const r = await fetch(`api/fansly/control/${action}`, { method: "POST" });
+  const d = await r.json();
+  toast(d.ok ? action + "ed" : "Failed: " + (d.stderr || ""));
+  setTimeout(refreshSvcStatus, 800);
+}
+
+async function runService() {
+  const svc = activeService;
+  $("#btn-run").setAttribute("aria-busy", "true");
+  try {
+    const r = await fetch(`api/${svc}/run`, { method: "POST" });
+    const d = await r.json();
+    if (r.ok) toast("Run started");
+    else toast("Run failed: " + (d.detail || JSON.stringify(d).slice(0, 200)));
+  } catch (e) {
+    toast("Network error");
+  }
+  $("#btn-run").removeAttribute("aria-busy");
+  setTimeout(refreshSvcStatus, 600);
+}
+
+async function cancelService() {
+  const svc = activeService;
+  const r = await fetch(`api/${svc}/cancel`, { method: "POST" });
+  const d = await r.json();
+  toast(d.was_running ? "Cancel requested" : "Nothing was running");
+  setTimeout(refreshSvcStatus, 600);
+}
+
+// === Live stat cards ===
+function renderLiveStatCards(svc) {
+  const cards = $("#live-stat-cards");
+  if (svc === "fansly") {
+    cards.innerHTML =
+      '<div class="stat-card"><div class="label">Accounts</div><div class="value" id="ls-accounts">–</div></div>' +
+      '<div class="stat-card"><div class="label">Media downloaded</div><div class="value" id="ls-media-dl">–</div><div class="sub" id="ls-media-sub">of – discovered</div></div>' +
+      '<div class="stat-card"><div class="label">Posts</div><div class="value" id="ls-posts">–</div></div>' +
+      '<div class="stat-card"><div class="label">Rate</div><div class="value" id="ls-rate">–</div><div class="sub">media added / min</div></div>' +
+      '<div class="stat-card"><div class="label">On-disk</div><div class="value" id="ls-disk-bytes">–</div><div class="sub" id="ls-disk-files">– files</div></div>';
+  } else {
+    cards.innerHTML =
+      '<div class="stat-card"><div class="label">Queue</div><div class="value" id="ls-queue">–</div><div class="sub">URLs pending</div></div>' +
+      '<div class="stat-card"><div class="label">Run state</div><div class="value" id="ls-runstate">idle</div><div class="sub" id="ls-runstate-sub"></div></div>' +
+      '<div class="stat-card"><div class="label">Last run</div><div class="value" id="ls-lastexit">–</div><div class="sub" id="ls-lastdur">never run</div></div>' +
+      '<div class="stat-card"><div class="label">On-disk</div><div class="value" id="ls-disk-bytes">–</div><div class="sub" id="ls-disk-files">– files</div></div>';
+  }
+}
+
+async function refreshLiveStats() {
+  const svc = activeService;
+  try {
+    const r = await fetch(`api/${svc}/live-stats`);
+    const d = await r.json();
+    if (svc === "fansly") {
+      const db = d.db || {};
+      if (db.available) {
+        $("#ls-accounts").textContent = fmtCount(db.accounts);
+        $("#ls-media-dl").textContent = fmtCount(db.media_downloaded);
+        $("#ls-media-sub").textContent = "of " + fmtCount(db.media_total) + " discovered";
+        $("#ls-posts").textContent = fmtCount(db.posts);
+        $("#ls-rate").textContent = (db.rate_1m != null) ? db.rate_1m : "n/a";
+      } else {
+        $("#ls-accounts").textContent = "?";
+        $("#ls-media-dl").textContent = "?";
+        $("#ls-media-sub").textContent = db.error?.slice(0, 60) || "no DB";
+        $("#ls-posts").textContent = "?";
+        $("#ls-rate").textContent = "DB offline";
+      }
+    } else {
+      $("#ls-queue").textContent = fmtCount(d.queue_count);
+      const run = d.run || {};
+      if (run.running) {
+        $("#ls-runstate").textContent = "running";
+        $("#ls-runstate-sub").textContent = fmtDuration(run.elapsed_seconds);
+      } else {
+        $("#ls-runstate").textContent = "idle";
+        $("#ls-runstate-sub").textContent = "";
+      }
+      if (run.last_exit !== null && run.last_exit !== undefined) {
+        $("#ls-lastexit").textContent = run.last_exit === 0 ? "ok" : "fail " + run.last_exit;
+        const dur = (run.end_time && run.start_time) ? (run.end_time - run.start_time) : null;
+        $("#ls-lastdur").textContent = dur ? fmtDuration(dur) : "";
+      } else {
+        $("#ls-lastexit").textContent = "–";
+        $("#ls-lastdur").textContent = "never run";
+      }
+    }
+    $("#ls-disk-bytes").textContent = fmtBytes(d.disk?.bytes_total);
+    $("#ls-disk-files").textContent = fmtCount(d.disk?.file_count) + " files";
+  } catch (e) { /* ignore */ }
+}
+
+// === Live log SSE ===
+const MAX_LOG_LINES = 500;
+let liveFilter = "";
+
+function appendLogLine(d) {
+  const log = $("#live-log");
+  if (log.firstChild && log.firstChild.classList && log.firstChild.classList.contains("small")) {
+    log.innerHTML = "";
+  }
+  const line = document.createElement("div");
+  line.className = "line " + (d.k || "info");
+  const t = document.createElement("span"); t.className = "t"; t.textContent = d.t || "";
+  const m = document.createElement("span"); m.className = "m"; m.textContent = d.m || "";
+  line.appendChild(t);
+  line.appendChild(m);
+  if (liveFilter && !(d.m || "").toLowerCase().includes(liveFilter)) {
+    line.classList.add("hidden");
+  }
+  log.appendChild(line);
+  while (log.children.length > MAX_LOG_LINES) {
+    log.removeChild(log.firstChild);
+  }
+  if ($("#live-autoscroll").checked) {
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
+function connectLogStream() {
+  const svc = activeService;
+  const s = STATE[svc];
+  if (s.evtSource) try { s.evtSource.close(); } catch (e) {}
+  $("#live-dot").className = "conn-dot down";
+  s.evtSource = new EventSource(`api/${svc}/log-stream`);
+  s.evtSource.addEventListener("ready", () => {
+    $("#live-dot").className = "conn-dot up";
+    $("#live-dot").title = "Connected";
+  });
+  s.evtSource.onmessage = (ev) => {
+    try { appendLogLine(JSON.parse(ev.data)); } catch (e) {}
+  };
+  s.evtSource.onerror = () => {
+    $("#live-dot").className = "conn-dot down";
+    $("#live-dot").title = "Disconnected — retrying…";
+  };
+}
+
+$("#live-filter").addEventListener("input", (ev) => {
+  liveFilter = ev.target.value.trim().toLowerCase();
+  $$("#live-log .line").forEach(line => {
+    const text = (line.querySelector(".m")?.textContent || "").toLowerCase();
+    line.classList.toggle("hidden", !!(liveFilter && !text.includes(liveFilter)));
+  });
+});
+
+$("#live-clear").onclick = () => { $("#live-log").innerHTML = ""; };
+
+// === Creators (fansly) / Queue (coomer/kemono) ===
+function renderCreatorsOrQueue(svc) {
+  const target = $("#sub-creators-or-queue");
+  if (svc === "fansly") {
+    target.innerHTML = `
+      <p class="small">One username per line. Save will write to <code>/opt/fansly-scraper/config.yaml</code> and restart the daemon.</p>
+      <textarea id="creators-text" class="creators" placeholder="creator1&#10;creator2&#10;creator3"></textarea>
+      <label><input type="checkbox" id="use-following"> Use my full following list instead</label>
+      <label><input type="checkbox" id="use-following-pag"> &nbsp;&nbsp;…with pagination</label>
+      <div class="row">
+        <button id="btn-save-creators">Save & Restart</button>
+        <button id="btn-reload-creators" class="outline">Reload</button>
+      </div>
+    `;
+    $("#btn-save-creators").onclick = saveCreators;
+    $("#btn-reload-creators").onclick = loadCreatorsOrQueue;
+  } else if (STATE[svc].hasDiscovery === false) {
+    // No-discovery oneshot (coomerfans). Simple flat URL list.
+    target.innerHTML = `
+      <p class="small">Paste full coomerfans creator URLs, one per line. Example:
+        <code>https://coomerfans.com/u/onlyfans/189228/ayanasin</code>.
+        Browse the site, find a creator, copy the URL from the address bar.</p>
+      <textarea id="queue-input" class="urls" placeholder="https://coomerfans.com/u/onlyfans/189228/ayanasin&#10;https://coomerfans.com/u/onlyfans/204031/drebb"></textarea>
+      <h4 style="margin-top: 1rem;">Saved targets <span class="small" id="queue-summary"></span> <span class="small" id="queue-autosave-status" style="margin-left: 0.5rem;">auto-save enabled · changes persisted automatically</span></h4>
+      <div id="queue-users-panel"></div>
+      <details style="margin-top: 0.75rem;">
+        <summary class="small">Extra scraper args (advanced)</summary>
+        <input type="text" id="queue-extra" placeholder="e.g. --max-pages 50 --request-delay 0.8 --all">
+        <p class="small">Appended to <code>scrape-coomerfans.py</code>. Defaults: <code>-n</code> (skip existing), <code>--request-delay 0.4</code>, <code>--max-pages 500</code>.</p>
+      </details>
+      <div class="row" style="margin-top: 0.75rem;">
+        <button id="btn-save-queue">Save</button>
+        <button id="btn-save-run-queue">Save & Run Now</button>
+        <button id="btn-reload-queue" class="outline">Reload from disk</button>
+      </div>
+    `;
+    $("#btn-save-queue").onclick = () => saveCoomerfansQueue(false);
+    $("#btn-save-run-queue").onclick = () => saveCoomerfansQueue(true);
+    $("#btn-reload-queue").onclick = loadCreatorsOrQueue;
+    // Auto-save on textarea blur — captures the entire list
+    $("#queue-input").addEventListener("blur", () => saveCoomerfansQueue(false));
+    const extraEl = $("#queue-extra");
+    if (extraEl) extraEl.addEventListener("blur", () => saveCoomerfansQueue(false));
+    renderCoomerfansList();
+  } else {
+    target.innerHTML = `
+      <div class="row" style="align-items: flex-end; gap: 0.5rem;">
+        <label style="margin: 0; flex: 0 0 auto;">
+          Default source
+          <select id="queue-default-service" style="max-width: 180px;"></select>
+        </label>
+      </div>
+      <p class="small">Type usernames (one per line). Use <code>service:username</code> to override the default for a single line, or paste a full URL. Hit <strong>Discover</strong> to fetch linked accounts.</p>
+      <textarea id="queue-input" class="urls" placeholder="thorriandjax&#10;somebody&#10;patreon:other_artist"></textarea>
+      <div class="row" style="margin-top: 0.5rem;">
+        <button id="btn-discover">Discover linked accounts</button>
+        <button id="btn-refresh-all" class="outline">Re-query all existing</button>
+      </div>
+      <h4 style="margin-top: 1.25rem;">Discovered users <span class="small" id="queue-summary"></span> <span class="small" id="queue-autosave-status" style="margin-left: 0.5rem;">auto-save enabled · changes persisted automatically</span></h4>
+      <div id="queue-users-panel"></div>
+      <details style="margin-top: 0.75rem;">
+        <summary class="small">Extra coomer-cli args (advanced)</summary>
+        <input type="text" id="queue-extra" placeholder='e.g. --date-after 2025-01-01 -fn 3'>
+        <p class="small">Appended to each per-link invocation.</p>
+      </details>
+      <div class="row" style="margin-top: 0.75rem;">
+        <button id="btn-save-queue">Save</button>
+        <button id="btn-save-run-queue">Save & Run Now</button>
+        <button id="btn-reload-queue" class="outline">Reload from disk</button>
+      </div>
+    `;
+    $("#btn-discover").onclick = discoverUsers;
+    // Auto-save when the user finishes editing the extra-args field.
+    const extraEl = $("#queue-extra");
+    if (extraEl) extraEl.addEventListener("blur", autoSaveQueue);
+    $("#btn-refresh-all").onclick = refreshAllUsers;
+    $("#btn-save-queue").onclick = () => saveQueue(false);
+    $("#btn-save-run-queue").onclick = () => saveQueue(true);
+    $("#btn-reload-queue").onclick = loadCreatorsOrQueue;
+    fetch(`api/${svc}/info`).then(r => r.json()).then(info => {
+      if (info.has_discovery !== undefined) STATE[svc].hasDiscovery = info.has_discovery;
+      const sel = $("#queue-default-service");
+      if (!sel) return;  // no-discovery flow doesn't render the dropdown
+      sel.innerHTML = "";
+      (info.services || []).forEach(s => {
+        const o = document.createElement("option");
+        o.value = s; o.textContent = s;
+        sel.appendChild(o);
+      });
+      const def = STATE[svc].defaultService || info.default_service || (info.services || [])[0];
+      sel.value = def;
+      STATE[svc].defaultService = sel.value;
+      sel.onchange = () => { STATE[svc].defaultService = sel.value; autoSaveQueue(); };
+    });
+  }
+}
+
+async function loadCreatorsOrQueue() {
+  const svc = activeService;
+  if (STATE[svc].hasDiscovery === false) {
+    // Coomerfans-style: pull urls/users from the queue and pre-fill the textarea
+    const r = await fetch(`api/${svc}/queue`);
+    const d = await r.json();
+    STATE[svc].users = d.users || [];
+    if ($("#queue-input")) {
+      const tokens = (d.users || []).map(u => u.input).filter(Boolean);
+      $("#queue-input").value = tokens.join("\n");
+    }
+    if ($("#queue-extra")) $("#queue-extra").value = d.extra_args || "";
+    renderCoomerfansList();
+    return;
+  }
+  if (svc === "fansly") {
+    const r = await fetch("api/fansly/creators");
+    const d = await r.json();
+    const real = d.usernames.filter(u => u !== "replaceme");
+    $("#creators-text").value = real.join("\n");
+    $("#use-following").checked = d.use_following;
+    $("#use-following-pag").checked = d.use_following_with_pagination;
+  } else {
+    const r = await fetch(`api/${svc}/queue`);
+    const d = await r.json();
+    STATE[svc].users = d.users || [];
+    STATE[svc].defaultService = d.default_service || STATE[svc].defaultService;
+    if ($("#queue-default-service")) {
+      const sel = $("#queue-default-service");
+      if (sel.options.length) sel.value = STATE[svc].defaultService;
+    }
+    if ($("#queue-extra")) $("#queue-extra").value = d.extra_args || "";
+    if ($("#queue-input")) $("#queue-input").value = "";
+    renderUsersPanel();
+  }
+}
+
+async function saveCreators() {
+  const usernames = $("#creators-text").value.split("\n").map(s => s.trim()).filter(Boolean);
+  const r = await fetch("api/fansly/creators", {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      usernames,
+      use_following: $("#use-following").checked,
+      use_following_with_pagination: $("#use-following-pag").checked,
+      restart_scraper: true,
+    }),
+  });
+  const d = await r.json();
+  toast(d.restarted ? "Saved & restarted" : (r.ok ? "Saved" : "Failed"));
+  setTimeout(refreshSvcStatus, 1000);
+}
+
+async function saveQueue(runAfter) {
+  const svc = activeService;
+  const extra = $("#queue-extra")?.value.trim() || "";
+  const r = await fetch(`api/${svc}/queue`, {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      users: STATE[svc].users,
+      default_service: STATE[svc].defaultService,
+      extra_args: extra,
+    }),
+  });
+  if (!r.ok) { toast("Save failed: " + r.status); return; }
+  const d = await r.json();
+  setAutosaveStatus("saved");
+  if (!runAfter) {
+    toast(`Saved ${d.user_count} user${d.user_count === 1 ? "" : "s"}, ${d.enabled_links} link${d.enabled_links === 1 ? "" : "s"} enabled`);
+  }
+  if (runAfter) {
+    if (d.enabled_links === 0) {
+      toast("Nothing to run — no links are checked");
+      return;
+    }
+    setTimeout(() => runService(), 300);
+  }
+  setTimeout(refreshLiveStats, 600);
+}
+
+// Auto-save: silently PUT the queue. Debounced so rapid checkbox toggles
+// don't hammer the server. Updates the on-page status indicator.
+let _autoSaveTimer = null;
+async function autoSaveQueue() {
+  const svc = activeService;
+  if (!svc || svc === "fansly") return;
+  setAutosaveStatus("saving");
+  if (_autoSaveTimer) clearTimeout(_autoSaveTimer);
+  _autoSaveTimer = setTimeout(async () => {
+    const extra = $("#queue-extra")?.value.trim() || "";
+    try {
+      const r = await fetch(`api/${svc}/queue`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          users: STATE[svc].users,
+          default_service: STATE[svc].defaultService,
+          extra_args: extra,
+        }),
+      });
+      setAutosaveStatus(r.ok ? "saved" : "failed");
+    } catch (e) {
+      setAutosaveStatus("failed");
+    }
+  }, 400);
+}
+
+function setAutosaveStatus(state) {
+  const el = $("#queue-autosave-status");
+  if (!el) return;
+  if (state === "saving") {
+    el.textContent = "saving…"; el.style.color = "#9ca3af";
+  } else if (state === "saved") {
+    el.textContent = "auto-saved · changes persisted"; el.style.color = "#16a34a";
+  } else if (state === "failed") {
+    el.textContent = "save failed"; el.style.color = "#dc2626";
+  } else {
+    el.textContent = "auto-save enabled · changes persisted automatically";
+    el.style.color = "#9ca3af";
+  }
+}
+
+// === Discovery + users panel ===
+async function discoverUsers() {
+  const svc = activeService;
+  console.log("[discover] click; svc=", svc, "state=", STATE[svc]);
+  const inputEl = $("#queue-input");
+  if (!inputEl) { toast("BUG: textarea not found"); return; }
+  const raw = inputEl.value.trim();
+  if (!raw) { toast("Type at least one username first"); return; }
+  const usernames = raw.split("\n").map(s => s.trim()).filter(Boolean);
+  const btn = $("#btn-discover");
+  btn.setAttribute("aria-busy", "true");
+  btn.disabled = true;
+  try {
+    console.log("[discover] sending POST with", usernames.length, "names");
+    const r = await fetch(`api/${svc}/discover`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        usernames,
+        default_service: STATE[svc].defaultService || "onlyfans",
+      }),
+    });
+    console.log("[discover] response status:", r.status);
+    if (!r.ok) {
+      toast("Discover failed: HTTP " + r.status);
+      return;
+    }
+    const d = await r.json();
+    console.log("[discover] got", d.results?.length, "results");
+    for (const result of d.results) {
+      const existing = STATE[svc].users.find(
+        u => u.input === result.input && u.service === result.service
+      );
+      const newLinks = (result.links || []).map(l => ({
+        service: l.service,
+        id: l.id,
+        name: l.name,
+        enabled: existing
+          ? (existing.links.find(x => x.id === l.id && x.service === l.service)?.enabled ?? true)
+          : true,
+      }));
+      if (existing) {
+        existing.links = newLinks;
+        existing.error = result.error;
+      } else {
+        STATE[svc].users.push({
+          input: result.input,
+          service: result.service,
+          links: newLinks,
+          error: result.error,
+        });
+      }
+    }
+    $("#queue-input").value = "";
+    renderUsersPanel();
+    autoSaveQueue();
+    const totalLinks = d.results.reduce((s, r) => s + (r.links?.length || 0), 0);
+    toast(`Found ${totalLinks} linked account${totalLinks === 1 ? "" : "s"} across ${d.results.length} user${d.results.length === 1 ? "" : "s"}`);
+  } catch (e) {
+    console.error("[discover] error:", e);
+    toast("Discover error: " + (e && e.message ? e.message : e));
+  } finally {
+    btn.removeAttribute("aria-busy");
+    btn.disabled = false;
+  }
+}
+
+async function refreshAllUsers() {
+  const svc = activeService;
+  if (!STATE[svc].users.length) { toast("No users to refresh"); return; }
+  const items = STATE[svc].users.map(u => `${u.service}:${u.input}`);
+  $("#queue-input").value = items.join("\n");
+  await discoverUsers();
+}
+
+function renderUsersPanel() {
+  const svc = activeService;
+  const panel = $("#queue-users-panel");
+  if (!panel) return;
+  panel.innerHTML = "";
+  if (!STATE[svc].users.length) {
+    panel.innerHTML = '<p class="small">No users yet. Type names above and click Discover.</p>';
+    if ($("#queue-summary")) $("#queue-summary").textContent = "";
+    return;
+  }
+  let totalLinks = 0, enabledLinks = 0;
+  STATE[svc].users.forEach((user, ui) => {
+    const card = document.createElement("article");
+    card.style.cssText = "padding: 0.5rem 0.85rem; margin-bottom: 0.5rem;";
+    let head = document.createElement("header");
+    head.style.cssText = "display: flex; gap: 0.5rem; align-items: center; padding: 0; margin-bottom: 0.3rem;";
+    head.innerHTML =
+      `<strong>${user.input}</strong>` +
+      ` <span class="small">(queried via ${user.service})</span>` +
+      ` <span style="flex:1"></span>` +
+      `<button class="outline" data-act="remove" data-ui="${ui}" style="padding: 0.15rem 0.55rem; margin: 0; font-size: 0.7rem;">remove</button>`;
+    card.appendChild(head);
+
+    if (user.resolved_from) {
+      const note = document.createElement("p");
+      note.className = "small";
+      note.style.cssText = "color: #fbbf24; margin: 0;";
+      note.textContent = `auto-resolved from "${user.resolved_from.input}" (${user.resolved_from.service}) -> "${user.input}" (${user.service})`;
+      card.appendChild(note);
+    }
+
+    if (user.error) {
+      const err = document.createElement("p");
+      err.className = "small";
+      err.style.cssText = "color: #f87171; margin: 0;";
+      err.textContent = `error: ${user.error}`;
+      card.appendChild(err);
+
+      if (user.suggestions && user.suggestions.length) {
+        const sg = document.createElement("div");
+        sg.style.cssText = "margin: 0.3rem 0;";
+        sg.appendChild(document.createTextNode("Suggestions: "));
+        user.suggestions.forEach(sug => {
+          const btn = document.createElement("button");
+          btn.className = "outline";
+          btn.style.cssText = "padding: 0.15rem 0.55rem; margin: 0 0.25rem 0.15rem 0; font-size: 0.78rem;";
+          btn.textContent = `${sug.name} — ${sug.service}`;
+          btn.onclick = async () => {
+            // Re-discover using service:id syntax so the backend resolves it directly.
+            $("#queue-input").value = `${sug.service}:${sug.id}`;
+            // Remove the failed entry so the new one takes its place
+            const svc = activeService;
+            const idx = STATE[svc].users.indexOf(user);
+            if (idx >= 0) STATE[svc].users.splice(idx, 1);
+            await discoverUsers();
+          };
+          sg.appendChild(btn);
+        });
+        card.appendChild(sg);
+      }
+    }
+    if (!user.links || user.links.length === 0) {
+      const p = document.createElement("p");
+      p.className = "small";
+      p.style.margin = "0";
+      p.textContent = user.error ? "" : "No linked accounts found.";
+      card.appendChild(p);
+    } else {
+      user.links.forEach((link, li) => {
+        const id = `q-${svc}-${ui}-${li}`;
+        const lbl = document.createElement("label");
+        lbl.style.cssText = "display: flex; gap: 0.5rem; align-items: center; margin: 0.1rem 0;";
+        const selfTag = link.is_self ? ' <span class="small" style="color:#9ca3af;">· primary account</span>' : "";
+        lbl.innerHTML =
+          `<input type="checkbox" id="${id}" ${link.enabled ? "checked" : ""} data-ui="${ui}" data-li="${li}" style="margin: 0;">` +
+          `<span><strong>${link.name}</strong> <span class="small">— ${link.service}</span>${selfTag}</span>`;
+        card.appendChild(lbl);
+        totalLinks++;
+        if (link.enabled) enabledLinks++;
+      });
+    }
+    panel.appendChild(card);
+  });
+  panel.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+    cb.onchange = (ev) => {
+      const ui = +ev.target.dataset.ui, li = +ev.target.dataset.li;
+      STATE[svc].users[ui].links[li].enabled = ev.target.checked;
+      updateQueueSummary();
+      autoSaveQueue();
+    };
+  });
+  panel.querySelectorAll('button[data-act="remove"]').forEach(b => {
+    b.onclick = () => {
+      const ui = +b.dataset.ui;
+      STATE[svc].users.splice(ui, 1);
+      renderUsersPanel();
+      autoSaveQueue();
+    };
+  });
+  updateQueueSummary();
+}
+
+function updateQueueSummary() {
+  const svc = activeService;
+  const total = STATE[svc].users.reduce((s, u) => s + u.links.length, 0);
+  const enabled = STATE[svc].users.reduce((s, u) => s + u.links.filter(l => l.enabled).length, 0);
+  if ($("#queue-summary"))
+    $("#queue-summary").textContent = ` · ${STATE[svc].users.length} users · ${enabled}/${total} links enabled`;
+}
+
+// === Files browser ===
+async function loadDir(path) {
+  const svc = activeService;
+  const r = await fetch(`api/${svc}/browse?path=` + encodeURIComponent(path || ""));
+  if (!r.ok) { toast("Browse failed: " + (await r.text())); return; }
+  const d = await r.json();
+  STATE[svc].path = d.path;
+
+  const crumbs = $("#crumbs");
+  crumbs.innerHTML = "";
+  const parts = d.path ? d.path.split("/") : [];
+  const links = [{ name: `/${svc === "fansly" ? "fans" : svc}`, path: "" }];
+  let acc = "";
+  for (const p of parts) {
+    acc = acc ? acc + "/" + p : p;
+    links.push({ name: p, path: acc });
+  }
+  links.forEach((l, i) => {
+    if (i > 0) crumbs.appendChild(document.createTextNode(" / "));
+    const a = document.createElement("span");
+    a.className = "crumb";
+    a.textContent = l.name;
+    a.onclick = () => loadDir(l.path);
+    crumbs.appendChild(a);
+  });
+
+  const body = $("#files-body");
+  body.innerHTML = "";
+  for (const e of d.entries) {
+    const tr = document.createElement("tr");
+    const icon = e.type === "dir" ? "📁" : "📄";
+    const namePath = (d.path ? d.path + "/" : "") + e.name;
+    const dlAttr = `api/${svc}/download?path=` + encodeURIComponent(namePath);
+    let actions = '<a href="' + dlAttr + '" download>Download</a>';
+    if (e.type === "dir" && !STATE[svc].autoZip) {
+      actions = '<span class="small" title="Enable Auto-zip folders in Settings">⛔ disabled</span>';
+    }
+    tr.innerHTML =
+      '<td><span class="file-icon">' + icon + '</span></td>' +
+      '<td>' + (e.type === "dir" ? '<span class="crumb">' + e.name + '</span>' : e.name) + '</td>' +
+      '<td class="right">' + fmtBytes(e.size) + '</td>' +
+      '<td class="right">' + (e.file_count != null ? e.file_count : "") + '</td>' +
+      '<td class="actions">' + actions + '</td>';
+    if (e.type === "dir") {
+      tr.querySelector(".crumb").onclick = () => loadDir(namePath);
+    }
+    body.appendChild(tr);
+  }
+}
+
+// === Stats ===
+async function loadStats() {
+  const svc = activeService;
+  const r = await fetch(`api/${svc}/stats`);
+  const d = await r.json();
+  $("#stat-creators").textContent = d.creators.length;
+  $("#stat-files").textContent = d.total_files;
+  $("#stat-size").textContent = fmtBytes(d.total_size_bytes);
+  const cb = $("#creators-body");
+  cb.innerHTML = "";
+  d.creators.forEach(c => {
+    cb.innerHTML += '<tr><td>' + c.name + '</td><td class="right">' + c.file_count + '</td><td class="right">' + fmtBytes(c.size_bytes) + '</td></tr>';
+  });
+  const tb = $("#types-body");
+  tb.innerHTML = "";
+  for (const [ext, n] of Object.entries(d.file_types)) {
+    tb.innerHTML += '<tr><td><code>.' + ext + '</code></td><td class="right">' + n + '</td></tr>';
+  }
+}
+
+// === Settings ===
+async function loadSettings() {
+  const svc = activeService;
+  const r = await fetch(`api/${svc}/settings`);
+  const d = await r.json();
+  STATE[svc].autoZip = d.auto_zip_folders;
+  $("#auto-zip").checked = d.auto_zip_folders;
+  await loadAutorun();
+}
+$("#auto-zip").addEventListener("change", async (ev) => {
+  const svc = activeService;
+  const r = await fetch(`api/${svc}/settings`, {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ auto_zip_folders: ev.target.checked }),
+  });
+  if (r.ok) {
+    STATE[svc].autoZip = ev.target.checked;
+    toast("Setting saved");
+  } else { toast("Save failed"); }
+});
+
+// === Auto-run (coomer/kemono only) ===
+function fmtFutureTime(epoch) {
+  if (!epoch) return "not scheduled";
+  const now = Date.now() / 1000;
+  const delta = Math.floor(epoch - now);
+  if (delta <= 0) return "soon";
+  const h = Math.floor(delta / 3600);
+  const m = Math.floor((delta % 3600) / 60);
+  const date = new Date(epoch * 1000);
+  const when = date.toLocaleString();
+  if (h > 0) return `${when} (in ${h}h ${m}m)`;
+  return `${when} (in ${m}m)`;
+}
+
+async function loadAutorun() {
+  const svc = activeService;
+  // Hide autorun section for fansly (daemon mode, not oneshot)
+  const section = $("#autorun-section");
+  if (svc === "fansly") {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  try {
+    const r = await fetch(`api/${svc}/autorun`);
+    const d = await r.json();
+    $("#autorun-enabled").checked = !!d.enabled;
+    if (d.schedule && d.schedule !== "custom") {
+      $("#autorun-schedule").value = d.schedule;
+    }
+    const next = d.enabled ? fmtFutureTime(d.next_fire_time) : "disabled";
+    $("#autorun-next").textContent = "Next run: " + next;
+  } catch (e) {
+    $("#autorun-next").textContent = "Failed to load auto-run state";
+  }
+}
+
+async function saveAutorun() {
+  const svc = activeService;
+  const body = {
+    enabled: $("#autorun-enabled").checked,
+    schedule: $("#autorun-schedule").value,
+  };
+  $("#autorun-next").textContent = "Saving…";
+  const r = await fetch(`api/${svc}/autorun`, {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (r.ok) {
+    const d = await r.json();
+    toast(body.enabled ? "Auto-run enabled" : "Auto-run disabled");
+    $("#autorun-next").textContent = "Next run: " + (d.state.enabled ? fmtFutureTime(d.state.next_fire_time) : "disabled");
+  } else {
+    toast("Save failed");
+  }
+}
+
+$("#autorun-enabled").addEventListener("change", saveAutorun);
+$("#autorun-schedule").addEventListener("change", saveAutorun);
+
+// === Coomerfans (no-discovery) helpers ===
+async function saveCoomerfansQueue(runAfter) {
+  const svc = activeService;
+  if (STATE[svc].hasDiscovery !== false) return;
+  const raw = $("#queue-input")?.value || "";
+  const tokens = raw.split("\n").map(s => s.trim()).filter(Boolean);
+  // Reshape into {input, links:[]} so backend stores them in `users` array
+  const users = tokens.map(t => ({ input: t, service: STATE[svc].defaultService || "onlyfans", links: [] }));
+  STATE[svc].users = users;
+  const extra = $("#queue-extra")?.value.trim() || "";
+  setAutosaveStatus("saving");
+  const r = await fetch(`api/${svc}/queue`, {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      users,
+      default_service: STATE[svc].defaultService || "onlyfans",
+      extra_args: extra,
+    }),
+  });
+  if (!r.ok) { setAutosaveStatus("failed"); toast("Save failed"); return; }
+  const d = await r.json();
+  setAutosaveStatus("saved");
+  renderCoomerfansList();
+  if (!runAfter) {
+    toast(`Saved ${d.user_count} target${d.user_count === 1 ? "" : "s"}`);
+  }
+  if (runAfter) {
+    if (d.user_count === 0) { toast("Nothing to run — queue is empty"); return; }
+    setTimeout(() => runService(), 300);
+  }
+  setTimeout(refreshLiveStats, 600);
+}
+
+function renderCoomerfansList() {
+  const svc = activeService;
+  const panel = $("#queue-users-panel");
+  if (!panel) return;
+  panel.innerHTML = "";
+  if (!STATE[svc].users.length) {
+    panel.innerHTML = '<p class="small">No targets yet. Paste URLs in the box above and click Save.</p>';
+    if ($("#queue-summary")) $("#queue-summary").textContent = "";
+    return;
+  }
+  STATE[svc].users.forEach((user, ui) => {
+    const card = document.createElement("article");
+    card.style.cssText = "padding: 0.4rem 0.75rem; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.5rem;";
+    // Parse URL pieces if it's a coomerfans URL, otherwise just show raw
+    const m = (user.input || "").match(/\/u\/([\w-]+)\/(\d+)\/([\w.@-]+)/);
+    let label;
+    if (m) {
+      label = `<strong>${m[3]}</strong> <span class="small">— ${m[1]} (id ${m[2]})</span>`;
+    } else {
+      label = `<code class="small">${user.input}</code>`;
+    }
+    card.innerHTML = `
+      <div style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;">${label}</div>
+      <button class="outline" data-ui="${ui}" style="padding: 0.15rem 0.55rem; margin: 0; font-size: 0.7rem;">remove</button>
+    `;
+    panel.appendChild(card);
+  });
+  panel.querySelectorAll("button[data-ui]").forEach(b => {
+    b.onclick = () => {
+      const ui = +b.dataset.ui;
+      STATE[svc].users.splice(ui, 1);
+      $("#queue-input").value = STATE[svc].users.map(u => u.input).join("\n");
+      renderCoomerfansList();
+      saveCoomerfansQueue(false);
+    };
+  });
+  if ($("#queue-summary"))
+    $("#queue-summary").textContent = ` · ${STATE[svc].users.length} target${STATE[svc].users.length === 1 ? "" : "s"}`;
+}
+
+// === Initial load ===
+setupServicePanel();
+</script>
+</body>
+</html>

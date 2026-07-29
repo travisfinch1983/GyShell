@@ -29,3 +29,20 @@ apps/web/public/drawio/
 
 __pycache__/
 *.pyc
+
+# ─── Agent/editor backup files ───────────────────────────────────────────
+# Patch scripts drop these next to the file they edit. They are never
+# deliverables, and leaving them untracked-but-not-ignored means every
+# `git status` is noise and a stray `git add -A` commits them.
+*.bak
+*.bak-*
+*.bak2-*
+
+# ─── Addon runtime state + secrets ───────────────────────────────────────
+# The addon services deploy from source; their databases and credentials are
+# per-host runtime data. addons/rule34/data/state.db alone is 1.9G.
+addons/**/*.db
+addons/**/*.key
+addons/fansly/settings.json
+addons/fansly/queue-*.json
+addons/rule34/data/
