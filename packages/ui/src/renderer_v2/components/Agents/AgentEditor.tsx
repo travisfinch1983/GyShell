@@ -104,7 +104,49 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
     provider: initialSpec?.tts?.provider ?? '',
     voiceId: initialSpec?.tts?.voiceId ?? '',
     modelId: initialSpec?.tts?.modelId ?? '',
+    rvcEnabled: initialSpec?.tts?.rvcEnabled ?? false,
+    rvcModel: initialSpec?.tts?.rvcModel ?? '',
+    preset: initialSpec?.tts?.preset ?? '',
   })
+  // Options for the local pool. Loaded once, only when 'ailab' is actually selected —
+  // these are live LAN calls and there is no reason to make them for an agent using an
+  // external provider or no voice at all.
+  const [pool, setPool] = useState<{ voices: string[]; models: string[]; rvc: string[]; presets: string[]; rvcAllowed: boolean; loaded: boolean; error: string }>(
+    { voices: [], models: [], rvc: [], presets: [], rvcAllowed: false, loaded: false, error: '' },
+  )
+  useEffect(() => {
+    if (tts.provider !== 'ailab' || pool.loaded) return
+    let alive = true
+    void (async () => {
+      const get = async (p: string) => { const r = await fetch(p); if (!r.ok) throw new Error(`${p} -> HTTP ${r.status}`); return r.json() }
+      try {
+        const [v, m, rv, pr, ap] = await Promise.all([
+          get('/api/proxy/multi-tts/voices'),
+          get('/api/proxy/multi-tts/v1/models'),
+          get('/api/proxy/multi-tts/rvc-models'),
+          get('/api/proxy/multi-tts/voice-presets'),
+          get('/api/proxy/audio-pipeline/settings'),
+        ])
+        if (!alive) return
+        setPool({
+          voices: (v?.voices ?? []).map((x: any) => x.id ?? x).filter(Boolean),
+          // /v1/models ids are composite "<provider>/<model>"; the backends want the bare
+          // model, so strip the provider the same way the speech route does.
+          models: Array.from(new Set((m?.data ?? []).map((x: any) => x.model ?? String(x.id ?? '').split('/').pop()).filter(Boolean))) as string[],
+          rvc: (rv?.models ?? []).map((x: any) => x.name ?? x).filter(Boolean),
+          presets: Object.keys(pr ?? {}),
+          rvcAllowed: Boolean(ap?.config?.post?.rvc?.allowed),
+          loaded: true,
+          error: '',
+        })
+      } catch (e: any) {
+        // SAY SO. An empty dropdown that looks like "no voices exist" instead of "the
+        // request failed" is the exact confusion this codebase keeps getting bitten by.
+        if (alive) setPool((p) => ({ ...p, loaded: true, error: String(e?.message ?? e) }))
+      }
+    })()
+    return () => { alive = false }
+  }, [tts.provider])
   const [fallback, setFallback] = useState<string[]>(initialSpec?.fallback ?? [])
   // String state so blank ("use the model default") is distinct from any number.
   const [maxTokens, setMaxTokens] = useState<string>(initialSpec?.maxTokens ? String(initialSpec.maxTokens) : '')
@@ -167,7 +209,7 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
       maxSpawnDepth: initialSpec?.subAgents?.maxSpawnDepth ?? 0,
       autoApproveDangerous: initialSpec?.subAgents?.autoApproveDangerous ?? false,
     })
-    setTts({ provider: initialSpec?.tts?.provider ?? '', voiceId: initialSpec?.tts?.voiceId ?? '', modelId: initialSpec?.tts?.modelId ?? '' })
+    setTts({ provider: initialSpec?.tts?.provider ?? '', voiceId: initialSpec?.tts?.voiceId ?? '', modelId: initialSpec?.tts?.modelId ?? '', rvcEnabled: initialSpec?.tts?.rvcEnabled ?? false, rvcModel: initialSpec?.tts?.rvcModel ?? '', preset: initialSpec?.tts?.preset ?? '' })
     setFallback(initialSpec?.fallback ?? [])
     setMaxTokens(initialSpec?.maxTokens ? String(initialSpec.maxTokens) : '')
     setEnabled(initialSpec?.enabled ?? true)
@@ -196,7 +238,22 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
               autoApproveDangerous: sub.autoApproveDangerous || undefined,
             }
           : undefined,
-      tts: tts.provider ? { provider: tts.provider, voiceId: tts.voiceId || undefined, modelId: tts.modelId || undefined } : undefined,
+      tts: tts.provider
+        ? {
+            provider: tts.provider,
+            voiceId: tts.voiceId || undefined,
+            modelId: tts.modelId || undefined,
+            // ailab-only fields. Never persisted for an external provider, so switching
+            // provider cannot leave orphaned RVC settings behind that nothing displays.
+            ...(tts.provider === 'ailab'
+              ? {
+                  rvcEnabled: tts.rvcEnabled || undefined,
+                  rvcModel: (tts.rvcEnabled && tts.rvcModel) || undefined,
+                  preset: tts.preset || undefined,
+                }
+              : {}),
+          }
+        : undefined,
       enabled,
     }
     const parsed = hermesAgentSpecSchema.safeParse(candidate)
@@ -491,18 +548,31 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
             <div className={styles.twoCol}>
               <div className={styles.fieldCol}>
                 <label className={styles.label}>Provider</label>
-                <select className={styles.input} value={tts.provider} onChange={(e) => { setTts({ ...tts, provider: e.target.value, modelId: '' }); touch() }}>
+                <select className={styles.input} value={tts.provider} onChange={(e) => { setTts({ ...tts, provider: e.target.value, modelId: '', voiceId: '', preset: '', rvcModel: '', rvcEnabled: false }); touch() }}>
                   <option value="">none</option>
+                  <option value="ailab">ailab — local TTS pool (voices, RVC, presets)</option>
                   {['elevenlabs', 'edge', 'openai', 'minimax', 'gemini', 'mistral'].map((v) => <option key={v} value={v}>{v}</option>)}
                 </select>
               </div>
               <div className={styles.fieldCol}>
                 <label className={styles.label}>Voice id</label>
-                <input className={`${styles.input} ${styles.mono}`} placeholder={tts.provider === 'elevenlabs' ? 'pNInz6obpgDQGcFmaJgB (Adam)' : 'provider default'} value={tts.voiceId} disabled={!tts.provider} onChange={(e) => { setTts({ ...tts, voiceId: e.target.value }); touch() }} />
+                {tts.provider === 'ailab' ? (
+                  <select className={`${styles.input} ${styles.mono}`} value={tts.voiceId} disabled={!!tts.preset} onChange={(e) => { setTts({ ...tts, voiceId: e.target.value }); touch() }}>
+                    <option value="">global default</option>
+                    {pool.voices.map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                ) : (
+                  <input className={`${styles.input} ${styles.mono}`} placeholder={tts.provider === 'elevenlabs' ? 'pNInz6obpgDQGcFmaJgB (Adam)' : 'provider default'} value={tts.voiceId} disabled={!tts.provider} onChange={(e) => { setTts({ ...tts, voiceId: e.target.value }); touch() }} />
+                )}
               </div>
               <div className={styles.fieldCol}>
                 <label className={styles.label}>Model</label>
-                {tts.provider === 'elevenlabs' ? (
+                {tts.provider === 'ailab' ? (
+                  <select className={`${styles.input} ${styles.mono}`} value={tts.modelId} disabled={!!tts.preset} onChange={(e) => { setTts({ ...tts, modelId: e.target.value }); touch() }}>
+                    <option value="">global default</option>
+                    {pool.models.map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                ) : tts.provider === 'elevenlabs' ? (
                   <select className={`${styles.input} ${styles.mono}`} value={tts.modelId} onChange={(e) => { setTts({ ...tts, modelId: e.target.value }); touch() }}>
                     <option value="">provider default</option>
                     {['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5'].map((v) => <option key={v} value={v}>{v}</option>)}
@@ -510,6 +580,49 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
                 ) : (
                   <input className={`${styles.input} ${styles.mono}`} placeholder="provider default" value={tts.modelId} disabled={!tts.provider} onChange={(e) => { setTts({ ...tts, modelId: e.target.value }); touch() }} />
                 )}
+              </div>
+            </div>,
+          )}
+
+          {tts.provider === 'ailab' && card(
+            <div>
+              {pool.error && <div className={styles.sectionSub} style={{ color: 'var(--danger, #f87171)' }}>Could not load the voice pool: {pool.error}</div>}
+              <div className={styles.twoCol}>
+                <div className={styles.fieldCol}>
+                  <label className={styles.label}>Voice preset</label>
+                  <select className={`${styles.input} ${styles.mono}`} value={tts.preset} onChange={(e) => { setTts({ ...tts, preset: e.target.value }); touch() }}>
+                    <option value="">none — use voice + model above</option>
+                    {pool.presets.map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                  <div className={styles.sectionSub}>
+                    A preset is a complete recipe (voice, model and sampling settings). Choosing
+                    one <b>supersedes</b> the voice and model above, which is why they grey out.
+                  </div>
+                </div>
+                <div className={styles.fieldCol}>
+                  <label className={styles.label}>RVC voice conversion</label>
+                  <label className={styles.sectionSub} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={tts.rvcEnabled && pool.rvcAllowed}
+                      disabled={!pool.rvcAllowed}
+                      onChange={(e) => { setTts({ ...tts, rvcEnabled: e.target.checked }); touch() }}
+                    />
+                    Run this agent&apos;s speech through RVC
+                  </label>
+                  {!pool.rvcAllowed && (
+                    <div className={styles.sectionSub}>
+                      Disabled globally. RVC must first be allowed in <b>Settings › Support Models</b>;
+                      that gate always wins, so one switch can stop all voice conversion.
+                    </div>
+                  )}
+                  {pool.rvcAllowed && tts.rvcEnabled && (
+                    <select className={`${styles.input} ${styles.mono}`} value={tts.rvcModel} onChange={(e) => { setTts({ ...tts, rvcModel: e.target.value }); touch() }}>
+                      <option value="">global default RVC model</option>
+                      {pool.rvc.map((v) => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                  )}
+                </div>
               </div>
             </div>,
           )}

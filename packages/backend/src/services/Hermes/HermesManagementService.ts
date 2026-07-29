@@ -1630,6 +1630,13 @@ export class HermesManagementService {
    *  absent → reset tts.provider so a previously-configured voice stops (idempotent removal).
    *  `config set` handles these scalar dot-keys directly (verified type coercion). */
   private async applyTts(agentId: string, tts?: { provider: string; voiceId?: string; modelId?: string }): Promise<void> {
+    // 'ailab' is the local pool, resolved by the UI at playback time. Writing it into
+    // Hermes config would re-enable the Hermes `tts` toolset we deliberately switched
+    // off, and Hermes cannot reach these voices anyway. Nothing to apply.
+    if (tts?.provider === 'ailab') {
+      console.log(`[hermes] ${agentId}: tts provider 'ailab' is UI-side — not written to Hermes config`)
+      return
+    }
     if (tts?.provider) {
       const p = tts.provider
       await this.hermes(['-p', agentId, 'config', 'set', 'tts.provider', p])

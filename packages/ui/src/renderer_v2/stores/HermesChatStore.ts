@@ -1,4 +1,4 @@
-import { isTtsEnabled, speakText } from '../services/TtsPlayback'
+import { isTtsEnabled, speakText, type TtsOverride } from '../services/TtsPlayback'
 
 /**
  * HermesChatStore — streaming chat sessions with Hermes agents (P0 chat surface).
@@ -516,12 +516,47 @@ class HermesChatStore {
     const item = [...s.items].reverse().find((i) => i.streaming && i.kind === 'assistant')
     if (!item?.text?.trim()) return
     const agentId = this.agents.get(conversationId)
+    const text = item.text
     // Fire-and-forget: TtsPlayback queues internally, so overlapping calls play in
     // order. A TTS failure must never interfere with the chat itself.
-    void speakText(item.text, agentId).catch((e) => {
-      console.warn(`[chat] TTS failed for ${agentId ?? 'unknown agent'}:`, e)
-    })
+    void this.agentVoice(agentId)
+      .then((override) => speakText(text, agentId, override))
+      .catch((e) => { console.warn(`[chat] TTS failed for ${agentId ?? 'unknown agent'}:`, e) })
   }
+
+  /**
+   * The agent's own voice, from its server-side spec.tts. Cached per agent — this runs on
+   * every finished bubble and the spec changes only when someone edits it.
+   *
+   * Only `ailab` yields an override: the other providers are native Hermes TTS, which the
+   * UI does not synthesize. undefined means "fall back to the role map / global default",
+   * which is exactly the behaviour before per-agent voices existed.
+   */
+  private voiceCache = new Map<string, TtsOverride | undefined>()
+
+  private async agentVoice(agentId?: string): Promise<TtsOverride | undefined> {
+    if (!agentId) return undefined
+    if (this.voiceCache.has(agentId)) return this.voiceCache.get(agentId)
+    let resolved: TtsOverride | undefined
+    try {
+      const r = await fetch(`/api/hermes/agents/${encodeURIComponent(agentId)}`)
+      if (r.ok) {
+        const t = (await r.json())?.spec?.tts
+        if (t?.provider === 'ailab') {
+          resolved = { voice: t.voiceId, model: t.modelId, rvcEnabled: t.rvcEnabled, rvcModel: t.rvcModel, preset: t.preset }
+        }
+      }
+    } catch (e) {
+      // Cached as undefined either way, so a dead spec endpoint degrades to the global
+      // voice instead of re-requesting on every single bubble.
+      console.warn(`[chat] could not read voice config for ${agentId}:`, e)
+    }
+    this.voiceCache.set(agentId, resolved)
+    return resolved
+  }
+
+  /** Drop a cached voice so an edit in the agent editor takes effect without a reload. */
+  invalidateVoice(agentId: string): void { this.voiceCache.delete(agentId) }
 
   async send(agentId: string, conversationId: string, text: string): Promise<void> {
     const s = this.state(conversationId)

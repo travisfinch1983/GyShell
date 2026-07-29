@@ -144,16 +144,32 @@ export const hermesAgentSpecSchema = z.object({
       autoApproveDangerous: z.boolean().optional(),
     })
     .optional(),
-  /** Optional per-agent TTS voice. `provider` is a native Hermes TTS provider (elevenlabs,
-   *  edge, openai, minimax, gemini, mistral); voiceId/modelId are provider-specific (ElevenLabs
-   *  uses tts.<provider>.voice_id / .model_id). Applied via `config set tts.*` + enabling the
-   *  `tts` toolset. The provider's API key is configured ONCE under Provider Services (→ Hermes
-   *  .env), never per agent — the "one entry drives both" split. */
+  /** Optional per-agent voice.
+   *
+   *  provider 'ailab' = the local AI-Lab TTS pool behind the universal proxy. This is
+   *  UI-SIDE ONLY: the chat resolves it at playback time and it is never written into
+   *  Hermes config, because TTS inside Hermes is deliberately disabled (voice lives at
+   *  the UI level, where we are not bound by Hermes' constraints). Only 'ailab' supports
+   *  voices, RVC and presets.
+   *
+   *  Any other provider is a native Hermes TTS provider (elevenlabs, edge, openai,
+   *  minimax, gemini, mistral), applied via `config set tts.*` + the `tts` toolset. Its
+   *  API key is configured ONCE under Provider Services (→ Hermes .env), never per
+   *  agent — the "one entry drives both" split. */
   tts: z
     .object({
       provider: z.string().min(1),
       voiceId: z.string().optional(),
       modelId: z.string().optional(),
+      /** ailab only: run the reply through RVC after synthesis. Still subject to the
+       *  GLOBAL allow gate (Support Models › RVC) — per-agent on cannot override a
+       *  global off, so one switch can always stop all voice conversion. */
+      rvcEnabled: z.boolean().optional(),
+      rvcModel: z.string().optional(),
+      /** ailab only: a saved voice preset (voice + model + sampling params). When set it
+       *  SUPERSEDES voiceId/modelId — a preset is a complete recipe, and silently mixing
+       *  half a preset with a stray voice id would be unexplainable from the UI. */
+      preset: z.string().optional(),
     })
     .optional(),
   enabled: z.boolean().default(true),
