@@ -268,6 +268,28 @@ export class HermesAcpBridge extends EventEmitter {
     const session = this.sessions.get(sessionKey)
     if (!session || session.proc.exitCode !== null) return
     session.proc.stdin.write(JSON.stringify({ type: 'cancel' }) + '\n')
+
+    // CONFIRMATION WATCHDOG. The intended chain is conn.cancel() -> prompt resolves
+    // 'cancelled' -> turn_done -> idle. When that chain completes, this is a no-op
+    // because status is already idle. When it does NOT — the symptom being a Stop
+    // button that never turns back into Send without a page refresh — the server
+    // confirms the turn is over and drives the transition itself.
+    //
+    // Deliberately server-side: the client must not guess idle (that is why stop()
+    // does not clear busy locally). And it SHOUTS when it fires, because needing
+    // this means the bridge swallowed a turn_done and that root cause is still open.
+    const CANCEL_GRACE_MS = 4000
+    setTimeout(() => {
+      const live = this.sessions.get(sessionKey)
+      if (!live || live.status !== 'busy') return   // chain worked — nothing to do
+      console.warn(`[acp-bridge] ${sessionKey}: no turn_done ${CANCEL_GRACE_MS}ms after cancel — `
+        + `forcing idle so the composer unlocks. The bridge did not resolve its prompt task; `
+        + `this is a real bug being masked, not a normal path.`)
+      const ev = { t: 'turn_done', stop_reason: 'cancelled' } as unknown as AcpEvent
+      live.emitter.emit('event', ev)
+      this.emit('event', { agentId: live.agentId, event: ev })
+      this.setStatus(sessionKey, 'idle')
+    }, CANCEL_GRACE_MS)
   }
 
   /** Subscribe to a session's normalized events. Returns an unsubscribe fn (safe to call any time). */

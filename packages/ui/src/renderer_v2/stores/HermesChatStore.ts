@@ -312,16 +312,22 @@ class HermesChatStore {
       case 'message': {
         const l = last()
         if (l && l.kind === 'assistant' && l.streaming) l.text += ev.text
-        else push({ kind: 'assistant', text: ev.text, streaming: true })
+        // A NEW bubble supersedes whatever came before it, so nothing older can
+        // still be streaming. Without this, every bubble in a multi-step turn keeps
+        // its caret and the chat fills with blinking cursors until turn_done.
+        else { for (const i of s.items) i.streaming = false; push({ kind: 'assistant', text: ev.text, streaming: true }) }
         break
       }
       case 'thought': {
         const l = last()
         if (l && l.kind === 'thought' && l.streaming) l.text += ev.text
-        else push({ kind: 'thought', text: ev.text, streaming: true })
+        else { for (const i of s.items) i.streaming = false; push({ kind: 'thought', text: ev.text, streaming: true }) }
         break
       }
       case 'tool_start':
+        // The message above a tool call is complete — the agent stopped talking to
+        // go run something. This is the case that fires repeatedly in a tool loop.
+        for (const i of s.items) i.streaming = false
         push({ kind: 'tool', toolId: ev.id ?? null, title: ev.title ?? ev.kind ?? 'tool', status: 'running', text: '' })
         break
       case 'tool_progress': {
