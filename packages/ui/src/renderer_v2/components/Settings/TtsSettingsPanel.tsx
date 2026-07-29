@@ -589,6 +589,50 @@ export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) =
   const [ttsProviders, setTtsProviders] = useState<TtsProvider[]>([])
   const [sttProviders, setSttProviders] = useState<SttProvider[]>([])
   const [rvcModelList, setRvcModelList] = useState<RvcModel[]>([])
+
+  // The RVC gate is SERVER state, not a local preference — the old toggle only
+  // wrote localStorage, so it never actually gated anything. Read it from the
+  // backend and write it back, so what the box shows is what the proxy enforces.
+  const [rvcAllowed, setRvcAllowedState] = useState(false)
+  const [rvcGateBusy, setRvcGateBusy] = useState(false)
+  const [rvcGateError, setRvcGateError] = useState('')
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await fetch('/api/proxy/audio-pipeline/settings')
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        const d = await r.json()
+        setRvcAllowedState(!!d?.config?.post?.rvc?.allowed)
+        setRvcGateError('')
+      } catch (e: any) {
+        setRvcGateError(e?.message || String(e))
+      }
+    })()
+  }, [])
+
+  const setRvcAllowed = async (next: boolean) => {
+    setRvcGateBusy(true)
+    try {
+      const r = await fetch('/api/proxy/audio-pipeline/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ post: { rvc: { allowed: next } } }),
+      })
+      if (!r.ok) {
+        const b = await r.json().catch(() => ({} as any))
+        throw new Error(b?.error || `HTTP ${r.status}`)
+      }
+      const d = await r.json()
+      // Trust the server's answer, not the local optimistic value.
+      setRvcAllowedState(!!d?.config?.post?.rvc?.allowed)
+      setRvcGateError('')
+    } catch (e: any) {
+      setRvcGateError(e?.message || String(e))
+    } finally {
+      setRvcGateBusy(false)
+    }
+  }
   const [refreshing, setRefreshing] = useState(false)
 
   // Hydrate from store settings, falling back to localStorage, then defaults
@@ -760,42 +804,28 @@ export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) =
                   </select>
                 </div>
 
-                {/* Pipeline Mode */}
+                {/* RVC allow gate — SERVER-SIDE permission, not a local preference */}
                 <div className="tts-field-row">
                   <label className="tts-toggle">
                     <input
                       type="checkbox"
-                      checked={ttsConfig.dualPipeline}
-                      onChange={(e) => updateTts({ dualPipeline: e.target.checked })}
+                      checked={rvcAllowed}
+                      disabled={rvcGateBusy}
+                      onChange={(e) => void setRvcAllowed(e.target.checked)}
                     />
-                    <span className="tts-toggle-label">Dual Pipeline</span>
+                    <span className="tts-toggle-label">Allow RVC Voice Conversion</span>
                   </label>
                   <span className="tts-hint">
-                    {ttsConfig.dualPipeline
-                      ? 'Round-robin across TTS workers for faster generation'
-                      : 'Single pipeline — sequential processing'}
-                  </span>
-                </div>
-
-                {/* RVC Toggle */}
-                <div className="tts-field-row">
-                  <label className="tts-toggle">
-                    <input
-                      type="checkbox"
-                      checked={ttsConfig.rvcEnabled}
-                      onChange={(e) => updateTts({ rvcEnabled: e.target.checked })}
-                    />
-                    <span className="tts-toggle-label">RVC Voice Conversion</span>
-                  </label>
-                  <span className="tts-hint">
-                    {ttsConfig.rvcEnabled
-                      ? 'Generated speech is passed through RVC for voice cloning'
-                      : 'Direct TTS output without voice conversion'}
+                    {rvcGateError
+                      ? `Error: ${rvcGateError}`
+                      : rvcAllowed
+                        ? 'RVC MAY be used. Each caller (agent, SillyTavern, Home Assistant) chooses whether to use it and which speaker.'
+                        : 'RVC is blocked for every caller. A request naming a speaker gets it stripped and is told so.'}
                   </span>
                 </div>
 
                 {/* RVC Model (only shown when RVC enabled) */}
-                {ttsConfig.rvcEnabled && (
+                {rvcAllowed && (
                   <div className="tts-field">
                     <label>RVC Voice Model</label>
                     {rvcModelList.length > 0 ? (
