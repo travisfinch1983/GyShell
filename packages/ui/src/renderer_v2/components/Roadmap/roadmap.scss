@@ -127,3 +127,36 @@
     border-color: var(--accent);
   }
 }
+
+// ---- multi-project roadmap (sub-tabs + tree) ----
+.rm-subtabs { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.rm-tab { font-size: 12px; padding: 4px 12px; border: 1px solid var(--border); border-radius: 5px; background: var(--control-bg, rgba(255,255,255,0.04)); color: var(--fg); cursor: pointer; white-space: nowrap;
+  &:hover { background: var(--bg-hover, rgba(255,255,255,0.08)); }
+  &.active { background: var(--accent); border-color: var(--accent); color: var(--accent-fg, #fff); font-weight: 600; }
+  &.rm-add { padding: 4px 8px; } }
+.rm-newproj { display: inline-flex; align-items: center; gap: 4px; }
+.rm-input { font-size: 12px; padding: 3px 8px; background: var(--control-bg, rgba(0,0,0,0.2)); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; min-width: 150px; &:focus { outline: none; border-color: var(--accent); } }
+.rm-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+.rm-empty { padding: 20px 24px; font-size: 12px; color: var(--fg-faint); font-style: italic; &.rm-err { color: var(--danger, #e66); } }
+.rm-tree { padding: 10px 16px 40px; font-size: 13px; }
+.rm-row { display: flex; align-items: center; gap: 5px; padding: 2px 4px; border-radius: 4px;
+  &:hover { background: var(--bg-hover, rgba(255,255,255,0.04)); }
+  &:hover .rm-actions { opacity: 1; } }
+.rm-twist { background: none; border: none; color: var(--fg-faint); cursor: pointer; padding: 0; display: inline-flex; align-items: center; }
+.rm-check { accent-color: var(--accent); cursor: pointer; margin: 0 2px; flex-shrink: 0; }
+.rm-nodetitle { flex: 1; min-width: 0; cursor: text; &.done { text-decoration: line-through; color: var(--fg-faint); } }
+.rm-titleinput { flex: 1; }
+.rm-kind { font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 5px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); flex-shrink: 0; }
+.rm-section > .rm-row .rm-nodetitle { font-weight: 700; font-size: 14px; }
+.rm-phase > .rm-row .rm-nodetitle { font-weight: 600; }
+.rm-actions { display: inline-flex; gap: 2px; opacity: 0; transition: opacity 0.1s; flex-shrink: 0; }
+.rm-mini { background: none; border: none; color: var(--fg-faint); cursor: pointer; padding: 2px; border-radius: 3px; display: inline-flex;
+  &:hover { background: var(--bg-hover, rgba(255,255,255,0.1)); color: var(--fg); }
+  &.rm-danger { color: var(--danger, #e66); } }
+.rm-note { font-size: 11px; color: var(--fg-faint); white-space: pre-wrap; padding: 1px 0 3px; }
+.rm-addrow { display: flex; align-items: center; gap: 4px; padding: 3px 0; opacity: 0.55; &:focus-within { opacity: 1; } &:hover { opacity: 1; } }
+.rm-kindsel { font-size: 11px; padding: 2px 4px; background: var(--control-bg, rgba(0,0,0,0.2)); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; }
+.rm-projfoot { padding: 12px 16px 20px; margin-top: auto; }
+.rm-btn-del { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 3px 10px; background: var(--control-bg, rgba(255,255,255,0.06)); color: var(--fg-faint); border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+  &:hover { color: var(--fg); }
+  &.rm-danger { color: var(--danger, #e66); border-color: var(--danger, #e66); } }
