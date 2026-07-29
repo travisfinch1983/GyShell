@@ -58,6 +58,9 @@ type WebSocketRpcMethod =
   | 'memory:get'
   | 'memory:setContent'
   | 'settings:get'
+  | 'discovery:get'
+  | 'uiSettings:get'
+  | 'uiSettings:set'
   | 'settings:set'
   | 'settings:getCommandPolicyLists'
   | 'settings:addCommandPolicyRule'
@@ -266,6 +269,13 @@ export interface WebSocketGatewayAdapterOptions {
   settingsBridge?: {
     getSettings?: () => unknown | Promise<unknown>;
     setSettings?: (settings: Record<string, any>) => unknown | Promise<unknown>;
+  };
+  discoveryBridge?: {
+    get: () => Promise<unknown>;
+  };
+  uiSettingsBridge?: {
+    get: () => unknown | Promise<unknown>;
+    set: (patch: Record<string, any>) => unknown | Promise<unknown>;
   };
   commandPolicyBridge?: {
     getLists?: () => unknown | Promise<unknown>;
@@ -1295,6 +1305,25 @@ export class WebSocketGatewayAdapter {
           throw new WebSocketRpcError('BAD_REQUEST', 'content must be string.');
         }
         return await this.options.memoryBridge.setContent(content);
+      }
+      case 'discovery:get': {
+        if (!this.options.discoveryBridge?.get) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'discovery:get is not available on this websocket gateway.');
+        }
+        return await this.options.discoveryBridge.get();
+      }
+      case 'uiSettings:get': {
+        if (!this.options.uiSettingsBridge?.get) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'uiSettings:get is not available on this websocket gateway.');
+        }
+        return await this.options.uiSettingsBridge.get();
+      }
+      case 'uiSettings:set': {
+        if (!this.options.uiSettingsBridge?.set) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'uiSettings:set is not available on this websocket gateway.');
+        }
+        const patch = this.readObjectParam(params, 'patch');
+        return await this.options.uiSettingsBridge.set(patch);
       }
       case 'settings:get': {
         if (!this.options.settingsBridge?.getSettings) {
