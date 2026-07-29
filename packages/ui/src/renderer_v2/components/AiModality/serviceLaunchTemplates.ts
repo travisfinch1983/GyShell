@@ -67,7 +67,7 @@ export const TTS_LAUNCH_TEMPLATES: Record<string, any> = {
           `${gpuPrefix}/opt/conda/envs/rvc/bin/python \\`,
           `  /opt/rvc/server.py \\`,
           `  --host 0.0.0.0 --port ${port} \\`,
-          '  --models-dir /rvc-models',
+          '  --models-dir /tts/models/rvc/checkpoints',
         ].join('\n');
       },
     },

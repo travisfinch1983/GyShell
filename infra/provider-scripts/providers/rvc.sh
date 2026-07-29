@@ -336,7 +336,7 @@ def main():
     parser = argparse.ArgumentParser(description="AI-Lab RVC Voice Conversion Service")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=7100)
-    parser.add_argument("--models-dir", default="/rvc-models")
+    parser.add_argument("--models-dir", default="/tts/models/rvc/checkpoints")
     parser.add_argument("--device", default="cuda:0")
     args = parser.parse_args()
 
@@ -367,14 +367,14 @@ RVC_SERVER_EOF
 
     cat > "$INSTALL_DIR/serve.sh" << SERVE_EOF
 #!/bin/bash
-# AI-Lab RVC server — usage: ./serve.sh [--port 7100] [--models-dir /rvc-models]
+# AI-Lab RVC server — usage: ./serve.sh [--port 7100] [--models-dir /tts/models/rvc/checkpoints]
 exec /opt/conda/envs/$CONDA_ENV/bin/python3 "$INSTALL_DIR/server.py" \\
-    --host 0.0.0.0 --models-dir /rvc-models "\$@"
+    --host 0.0.0.0 --models-dir /tts/models/rvc/checkpoints "\$@"
 SERVE_EOF
     chmod +x "$INSTALL_DIR/serve.sh"
 
-    if [ ! -d /rvc-models ]; then
-        echo "WARNING: /rvc-models is not mounted — /models will return empty."
+    if [ ! -d /tts/models/rvc/checkpoints ]; then
+        echo "WARNING: /tts/models/rvc/checkpoints is not mounted — /models will return empty."
         echo "         Expected bind mount -> data/models/rvc/checkpoints"
     fi
 
