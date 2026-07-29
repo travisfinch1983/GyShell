@@ -47,6 +47,14 @@ export class TtsTestStore {
   rvcEnabled = false; rvcModels: { name: string; loaded: boolean }[] = []; rvcModel = ''
   rvcF0Method = 'rmvpe'; rvcF0Key = 0; rvcIndexRate = 0.75; rvcFilter = 3; rvcRmsMix = 0.25; rvcProtect = 0.33
   rvcStatus = ''
+
+  // ── Persisted pipeline defaults (server-side) ──────────────────────────
+  // Distinct from the rvc* fields above: those drive one test request, these are
+  // saved on the backend and applied to EVERY TTS request from every caller.
+  pipelineRvcEnabled = false; pipelineRvcModel = ''; pipelineRvcF0Method = 'rmvpe'
+  pipelineRvcF0Key = 0; pipelineRvcIndexRate = 0.75; pipelineRvcFilter = 3
+  pipelineRvcRmsMix = 0.25; pipelineRvcProtect = 0.33; pipelineRvcResampleSr = 48000
+  pipelineSaving = false; pipelineStatus = ''
   // streaming
   streaming = false
   streamSentences: any[] = []
@@ -222,8 +230,68 @@ export class TtsTestStore {
   async deletePreset(name: string): Promise<void> { if (!name) return; await fetch(`/api/proxy/multi-tts/voice-presets/${encodeURIComponent(name)}`, { method: 'DELETE' }); await this.refreshPresets(); runInAction(() => { this.selectedPreset = '' }); log(`Deleted preset "${name}"`, 'ok') }
 
   rvcParams() { return { rvc_model: this.rvcModel, f0_method: this.rvcF0Method, f0_up_key: this.rvcF0Key, index_rate: this.rvcIndexRate, filter_radius: this.rvcFilter, rms_mix_rate: this.rvcRmsMix, protect: this.rvcProtect } }
+  /** Read the server-side pipeline defaults into the form. */
+  async loadPipelineConfig(): Promise<void> {
+    try {
+      const d = await jget('/api/proxy/audio-pipeline/settings')
+      const r = d?.config?.post?.rvc || {}
+      runInAction(() => {
+        this.pipelineRvcEnabled = !!r.enabled
+        this.pipelineRvcModel = r.model || ''
+        this.pipelineRvcF0Method = r.f0_method ?? 'rmvpe'
+        this.pipelineRvcF0Key = r.f0_up_key ?? 0
+        this.pipelineRvcIndexRate = r.index_rate ?? 0.75
+        this.pipelineRvcFilter = r.filter_radius ?? 3
+        this.pipelineRvcRmsMix = r.rms_mix_rate ?? 0.25
+        this.pipelineRvcProtect = r.protect ?? 0.33
+        this.pipelineRvcResampleSr = r.resample_sr ?? 48000
+        this.pipelineStatus = ''
+      })
+    } catch (e: any) {
+      runInAction(() => { this.pipelineStatus = 'Load failed: ' + (e?.message || e) })
+      log(`Pipeline config load failed: ${e?.message || e}`, 'err')
+    }
+  }
+
+  /** Save defaults, then re-read what the server actually stored. */
+  async savePipelineConfig(): Promise<void> {
+    runInAction(() => { this.pipelineSaving = true; this.pipelineStatus = 'Saving…' })
+    try {
+      const resp = await jpost('/api/proxy/audio-pipeline/settings', {
+        post: {
+          rvc: {
+            enabled: this.pipelineRvcEnabled,
+            model: this.pipelineRvcModel || null,
+            f0_method: this.pipelineRvcF0Method,
+            f0_up_key: this.pipelineRvcF0Key,
+            index_rate: this.pipelineRvcIndexRate,
+            filter_radius: this.pipelineRvcFilter,
+            rms_mix_rate: this.pipelineRvcRmsMix,
+            protect: this.pipelineRvcProtect,
+            resample_sr: this.pipelineRvcResampleSr,
+          },
+        },
+      })
+      if (!resp.ok) {
+        // The backend refuses enabled-without-a-model; surface its reason rather
+        // than a bare status code.
+        const body = await resp.json().catch(() => ({} as any))
+        throw new Error(body?.error || `HTTP ${resp.status}`)
+      }
+      runInAction(() => { this.pipelineStatus = 'Saved' })
+      log('Pipeline defaults saved', 'ok')
+      await this.loadPipelineConfig()   // read back — never trust the local copy
+    } catch (e: any) {
+      runInAction(() => { this.pipelineStatus = 'Error: ' + (e?.message || e) })
+      log(`Pipeline save failed: ${e?.message || e}`, 'err')
+    } finally {
+      runInAction(() => { this.pipelineSaving = false })
+    }
+  }
+
   async loadRvcModels(): Promise<void> {
     try {
+      void this.loadPipelineConfig()
       const d = await jget('/api/proxy/rvc/models')
       const ms = (d?.models || []).map((m: any) => ({ name: m.name || m, loaded: !!m.loaded }))
       runInAction(() => { this.rvcModels = ms; if (!ms.find((m: any) => m.name === this.rvcModel)) this.rvcModel = ms[0]?.name || ''; this.rvcStatus = `${ms.length} model(s)` })

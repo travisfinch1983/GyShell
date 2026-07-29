@@ -33,6 +33,8 @@ import { refreshPool, pickInstance, markFailure, markSuccess, invalidatePools } 
 import { listBackends, emptyReason, nextIndex, createHealthCache,
          setProviderCaps, getModelCatalog, selectBackends,
          invalidateModelCatalog, isPooledTtsProvider } from './audio-registry.js';
+import { getPipelineConfig, savePipelineConfig, applyPipelineDefaults,
+         PIPELINE_DEFAULTS } from './audio-pipeline.js';
 import { isKvEligible, getOrchestrator, getKvSettings, saveKvSettings, getAllKvStats, getKvIndexStats, reapNow, resetOrchestratorCache } from './kvcache/integration.js';
 
 // ─── kvcache-proxy companion detection ──────────────────────────────────
@@ -1956,6 +1958,37 @@ export function createProxyRouter(sshService) {
     return { backends: sel.backends, model: bare, matched: sel.matched, reason: sel.reason };
   }
 
+  // ── Audio pipeline config (persisted post-processing defaults) ──────────
+  // GET  returns the live config plus the shipped defaults, so the UI can show
+  //      what "reset" would mean without hardcoding a copy of them.
+  router.get('/audio-pipeline/settings', (_req, res) => {
+    res.json({ config: getPipelineConfig(), defaults: PIPELINE_DEFAULTS });
+  });
+
+  router.post('/audio-pipeline/settings', async (req, res) => {
+    try {
+      const updates = JSON.parse((await bufferBody(req)).toString());
+      if (!updates || typeof updates !== 'object' || !updates.post) {
+        return res.status(400).json({ error: 'expected { post: { <group>: {...} } }' });
+      }
+      const rvc = updates.post.rvc;
+      if (rvc) {
+        // Enabling with no model selected would silently do nothing on every
+        // request — refuse it rather than store a config that cannot work.
+        const merged = { ...getPipelineConfig().post.rvc, ...rvc };
+        if (merged.enabled && !merged.model) {
+          return res.status(400).json({ error: 'RVC enabled but no model selected' });
+        }
+      }
+      const saved = savePipelineConfig(updates);
+      console.log(`[audio-pipeline] updated: rvc.enabled=${saved.post.rvc.enabled} `
+        + `model=${saved.post.rvc.model || 'none'}`);
+      res.json({ config: saved, defaults: PIPELINE_DEFAULTS });
+    } catch (e) {
+      res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
+
   // --- RVC Voice Conversion Pipeline (TTS -> RVC) ---
   // POST /rvc/convert — Direct RVC conversion (proxy to RVC service)
   // POST /rvc/pipeline — Full pipeline: TTS generates audio, then RVC converts voice
@@ -2584,6 +2617,11 @@ export function createProxyRouter(sshService) {
       return proxyBuffered(req, res, svc.containerIp, svc.port, '/v1/audio/speech',
                            Buffer.from(JSON.stringify(body)));
     }
+
+    // Merge persisted post-processing defaults. Request fields still win, and
+    // `rvc: false` forces the pipeline off for this one call — otherwise a
+    // configured default speaker could never be bypassed.
+    applyPipelineDefaults(body);
 
     if (!body.input?.trim()) return res.status(400).json({ error: 'input is required' });
 
