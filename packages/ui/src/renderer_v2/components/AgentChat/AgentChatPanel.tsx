@@ -48,8 +48,13 @@ const Row = observer(({ item }: { item: ChatItem }) => {
   switch (item.kind) {
     case 'user':
       return (
-        <div className={styles.msgYou} style={item.queued ? { opacity: 0.55 } : undefined}>
+        <div className={styles.msgYou} style={item.queued || item.steering ? { opacity: 0.55 } : undefined}>
           {item.text}
+          {item.steering && (
+            <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.85 }} title="Steering — delivered to the agent at its next tool call, without waiting for the turn to end">
+              ⏩ steering
+            </span>
+          )}
           {item.queued && (
             <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.85 }} title="Queued — sends automatically when the current turn finishes">
               ⏳ queued

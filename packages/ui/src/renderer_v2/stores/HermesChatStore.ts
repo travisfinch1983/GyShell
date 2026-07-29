@@ -34,6 +34,8 @@ export interface ChatItem {
   streaming?: boolean
   /** user turns: queued type-ahead — rendered immediately, POSTed when the in-flight turn ends. */
   queued?: boolean
+  /** user turns: STEERED into the running turn (lands at the next tool boundary). */
+  steering?: boolean
   /** user turns: what page context rode along ('text' = viewContext, 'vision' = +screenshot). */
   ctxAttached?: 'text' | 'vision'
   /** capture_consent: the pending view_screen request this button completes. */
@@ -324,6 +326,15 @@ class HermesChatStore {
         else { for (const i of s.items) i.streaming = false; push({ kind: 'thought', text: ev.text, streaming: true }) }
         break
       }
+      // The steer landed. Hermes acked it on the same session; the bridge diverted the ack
+      // here so it could not be appended into the streaming assistant bubble.
+      case 'steer_ack': {
+        for (let i = s.items.length - 1; i >= 0; i--) {
+          const it = s.items[i]
+          if (it.kind === 'user' && it.steering) { it.steering = undefined; break }
+        }
+        break
+      }
       case 'tool_start':
         // The message above a tool call is complete — the agent stopped talking to
         // go run something. This is the case that fires repeatedly in a tool loop.
@@ -490,13 +501,23 @@ class HermesChatStore {
     if (!t) return
     this.agents.set(conversationId, agentId)
 
-    // ALWAYS render the user's message immediately — it must never vanish. If a turn is already
-    // in flight, mark it queued and enqueue; it auto-sends when that turn ends (type-ahead). This
-    // fixes the bug where sending mid-turn silently dropped the message into the void.
-    const queued = s.busy
-    const item: ChatItem = { id: this.nextId++, kind: 'user', text: t, ts: Date.now(), queued: queued || undefined }
+    // ALWAYS render the user's message immediately — it must never vanish.
+    const item: ChatItem = { id: this.nextId++, kind: 'user', text: t, ts: Date.now() }
     s.items.push(item)
-    if (queued) {
+
+    // MID-TURN => STEER, always. Travis: "Anytime I send a message while an agent is working,
+    // it means I want them to see it ASAP" — if he wanted it to land after the turn he would
+    // have waited. Hermes injects it at the next tool boundary rather than at turn end.
+    // Queueing survives only as the fallback for when steering is impossible.
+    if (s.busy) {
+      runInAction(() => { item.steering = true })
+      const r = await hermesApi.steer(agentId, t, { conversationId })
+      if (r.ok) return
+      // No live session (409) or the write failed: fall back to type-ahead so the message is
+      // still delivered. Log the reason — a steer silently degrading to a queue looks like
+      // steering is broken, and the difference is invisible from the transcript alone.
+      console.warn(`[chat] steer rejected (${r.error || 'unknown'}) — falling back to queue`)
+      runInAction(() => { item.steering = undefined; item.queued = true })
       s.queue.push({ itemId: item.id, text: t })
       return
     }

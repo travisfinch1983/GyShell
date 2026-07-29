@@ -178,7 +178,17 @@ export class HermesAcpBridge extends EventEmitter {
       }
     })
 
-    proc.stderr.on('data', (d: Buffer) => this.emit('stderr', { agentId, text: d.toString('utf8') }))
+    proc.stderr.on('data', (d: Buffer) => {
+      const text = d.toString('utf8')
+      // LOG IT. This event had zero listeners, so the bridge's entire stderr was discarded —
+      // including Python tracebacks and "Task exception was never retrieved", which is how an
+      // asyncio task can die in total silence. A bridge that fails invisibly is the worst case:
+      // the UI just stops behaving and nothing anywhere says why.
+      for (const line of text.split('\n')) {
+        if (line.trim()) console.warn(`[acp-bridge:${agentId}] ${line}`)
+      }
+      this.emit('stderr', { agentId, text })
+    })
 
     proc.on('exit', (code) => {
       this.pendingReload.delete(sessionKey) // a dead session doesn't need a deferred reload
@@ -208,6 +218,26 @@ export class HermesAcpBridge extends EventEmitter {
     } finally {
       clearTimeout(timer!)
     }
+  }
+
+  /**
+   * Inject guidance into a session's RUNNING turn — Hermes's native /steer, which lands at
+   * the next tool boundary instead of waiting for the turn to end.
+   *
+   * Throws when there is no live session. That is deliberate and is the caller's signal to
+   * fall back to a normal prompt: steering something that is not running is meaningless, and
+   * silently swallowing it here is exactly the void-the-message bug we already fixed once.
+   *
+   * NOTE the absence of setStatus. A steer does not start a turn and must not touch turn
+   * state — the real turn is still running and still owns `busy`.
+   */
+  steer(sessionKey: string, text: string): void {
+    const session = this.sessions.get(sessionKey)
+    if (!session?.proc?.stdin) throw new Error(`no live hermes session for ${sessionKey} — cannot steer`)
+    const t = text.trim()
+    if (!t) throw new Error('steer text is empty')
+    console.log(`[acp-bridge] ${sessionKey}: steering the active turn (${t.length} chars)`)
+    session.proc.stdin.write(JSON.stringify({ type: 'steer', text: t }) + '\n')
   }
 
   /** Send a prompt into a running session (UI- or bus-originated). Session must exist.

@@ -516,6 +516,18 @@ export const hermesApi = {
     }
   },
 
+  /** POST /steer — inject into the RUNNING turn. ok:false (409) means there was no live
+   *  session, i.e. the caller should send it as a normal prompt instead. */
+  async steer(id: string, text: string, extra?: { conversationId?: string }): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/steer`, { text, ...(extra?.conversationId ? { conversationId: extra.conversationId } : {}) })
+      if (r?.error) return { ok: false, error: String(r.error) }
+      return { ok: r?.ok !== false }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
   /** POST /api/hermes/screen-capture — answer a capture_request signal (the
    *  backend hands the image to the agent's view_screen tool; 20s timeout its
    *  side, so on capture failure we simply don't POST). */

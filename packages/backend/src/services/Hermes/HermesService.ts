@@ -292,6 +292,15 @@ export class HermesService {
   }
 
   /**
+   * Steer a live turn. Unlike sendPrompt this does NOT ensureReady — a steer only means
+   * something against an already-running session, and spawning one here would turn a
+   * mis-timed steer into a brand-new session. Throws if there is nothing to steer.
+   */
+  async sendSteer(agentId: string, text: string, opts: { sessionKey?: string } = {}): Promise<void> {
+    this.bridge.steer(opts.sessionKey ?? agentId, text)
+  }
+
+  /**
    * Buffered transcript for a live session (read-back on reload). `since` returns only the
    * events after that seq. undefined if the backend-owned session isn't running (nothing
    * buffered — the transcript's lifetime is the session's, per the headless invariant).

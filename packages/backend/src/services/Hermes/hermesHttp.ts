@@ -382,6 +382,22 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
 
   // Stop button: cancel the in-flight turn (server forwards ACP session/cancel to the model). The
   // turn ends with stop_reason 'cancelled' and the status flips to idle over /stream. Idempotent.
+  // Steer the ACTIVE turn (Hermes native /steer — injects at the next tool boundary).
+  // 409 when there is no live session, which the client treats as "fall back to a normal
+  // send" rather than an error worth showing.
+  router.post('/api/hermes/agents/:id/steer', json, async (req: Req, res: Res) => {
+    try {
+      const b = (req.body ?? {}) as { text?: unknown; conversationId?: unknown }
+      const key = typeof b.conversationId === 'string' ? b.conversationId : req.params.id
+      const text = String(b.text ?? '').trim()
+      if (!text) { res.status(400).json({ error: 'text is required' }); return }
+      await hermes.sendSteer(req.params.id, text, { sessionKey: key })
+      res.json({ ok: true })
+    } catch (e) {
+      res.status(409).json({ error: String((e as Error).message) })
+    }
+  })
+
   router.post('/api/hermes/agents/:id/cancel', json, (req: Req, res: Res) => {
     try {
       const q = req.query as { conversationId?: unknown }
