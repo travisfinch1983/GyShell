@@ -42,13 +42,32 @@ export const TTS_LAUNCH_TEMPLATES: Record<string, any> = {
     'proxlab-tts': {
       defaultPort: 8880,
       endpointSuffix: '/v1',
-      // Proxlab TTS: Chatterbox-Turbo with OpenAI-compatible API
+      // AI-Lab TTS: Chatterbox-Turbo with OpenAI-compatible API
       buildCommand(port) {
         return [
           '/opt/conda/envs/chatterbox-tts/bin/python \\',
           `  /opt/proxlab-tts/server.py \\`,
           `  --host 0.0.0.0 --port ${port} \\`,
           '  --voices /root/voices',
+        ].join('\n');
+      },
+    },
+    rvc: {
+      defaultPort: 7100,
+      endpointSuffix: '',
+      // RVC voice conversion. Not a TTS engine — it re-voices audio that a
+      // TTS instance already produced. The multi-TTS pipeline pairs each RVC
+      // instance 1:1 with an AI-Lab TTS instance by proxySlot order, so the
+      // count here should match the TTS instance count.
+      buildCommand(port, model, gpuIndex) {
+        const gpuPrefix = (typeof gpuIndex === 'number' && gpuIndex >= 0)
+          ? `CUDA_VISIBLE_DEVICES=${gpuIndex} `
+          : '';
+        return [
+          `${gpuPrefix}/opt/conda/envs/rvc/bin/python \\`,
+          `  /opt/rvc/server.py \\`,
+          `  --host 0.0.0.0 --port ${port} \\`,
+          '  --models-dir /rvc-models',
         ].join('\n');
       },
     },

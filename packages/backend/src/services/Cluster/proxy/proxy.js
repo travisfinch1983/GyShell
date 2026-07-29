@@ -1928,7 +1928,8 @@ export function createProxyRouter(sshService) {
   function findAllRvcServices() {
     const state = loadActiveServices();
     const registered = Object.values(state.services)
-      .filter(svc => svc.providerId === 'proxlab-rvc' && svc.containerIp && svc.port)
+      .filter(svc => (svc.providerId === 'rvc' || svc.providerId === 'proxlab-rvc')
+                     && svc.containerIp && svc.port)
       .sort((a, b) => (a.proxySlot || 999) - (b.proxySlot || 999));
     if (registered.length > 0) return registered;
     // Fallback: always-on RVC instances

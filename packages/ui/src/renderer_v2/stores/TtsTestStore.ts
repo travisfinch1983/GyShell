@@ -35,7 +35,7 @@ export class TtsTestStore {
   selectedModel = 'chatterbox-turbo'
   format = 'wav'
   // params
-  text = 'Hello! This is a test of the Proxlab TTS system.'
+  text = 'Hello! This is a test of the AI-Lab TTS system.'
   speed = TTS_DEFAULTS.speed; temperature = TTS_DEFAULTS.temperature; topK = TTS_DEFAULTS.topK
   topP = TTS_DEFAULTS.topP; repPen = TTS_DEFAULTS.repPen; exag = TTS_DEFAULTS.exag; cfg = TTS_DEFAULTS.cfg; minP = TTS_DEFAULTS.minP
   qwenLanguage = 'Auto'; qwenInstruction = ''

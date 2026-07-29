@@ -39,6 +39,7 @@ const PROVIDER_VRAM_RESERVES = {
   kokoro: 2048, 'openedai-speech': 2048, 'proxlab-tts': 3072, 'qwen-tts': 4096, 's2-pro': 6144,
   'faster-whisper': 3072, piper: 0,
   'audio-tools': 4096,
+  rvc: 2048,
 };
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -6904,6 +6905,7 @@ WantedBy=multi-user.target
     'proxlab-tts': '/health',
     'qwen-tts': '/health',
     's2-pro': '/health',
+    rvc: '/health',
     alltalk: '/api/ready',
     kokoro: '/v1/models',
     'openedai-speech': '/v1/models',
