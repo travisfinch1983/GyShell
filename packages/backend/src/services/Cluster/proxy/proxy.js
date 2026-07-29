@@ -30,6 +30,7 @@ import { extractToolCalls, recordToolUsage } from './tool-call-metrics.js';
 import { createBalanceHistory } from './balance-history.js';
 import { resolveModelCapabilities } from './model-capabilities.js';
 import { refreshPool, pickInstance, markFailure, markSuccess, invalidatePools } from './servicePools.js';
+import { listBackends, emptyReason, nextIndex, createHealthCache } from './audio-registry.js';
 import { isKvEligible, getOrchestrator, getKvSettings, saveKvSettings, getAllKvStats, getKvIndexStats, reapNow, resetOrchestratorCache } from './kvcache/integration.js';
 
 // ─── kvcache-proxy companion detection ──────────────────────────────────
@@ -1329,10 +1330,10 @@ export function createProxyRouter(sshService) {
         }).filter(([, v]) => v.length)
       ),
       multiTts: {
-        tts: findAllProxlabTtsServices().map(svc => ({ slot: svc.proxySlot || 0, ...formatService(svc) })),
+        tts: findAllTtsPoolServices().map(svc => ({ slot: svc.proxySlot || 0, ...formatService(svc) })),
         rvc: findAllRvcServices().map(svc => ({ slot: svc.proxySlot || 0, ...formatService(svc) })),
-        pipelines: Math.min(findAllProxlabTtsServices().length, findAllRvcServices().length),
-        ttsCount: findAllProxlabTtsServices().length,
+        pipelines: Math.min(findAllTtsPoolServices().length, findAllRvcServices().length),
+        ttsCount: findAllTtsPoolServices().length,
       },
       external: external.map((svc, i) => ({ slot: i + 1, ...svc })),
       anthropic: {
@@ -1910,50 +1911,35 @@ export function createProxyRouter(sshService) {
   // GET  /rvc/models  — List available RVC voice models
   // GET  /rvc/health  — RVC service health
 
+  // Single RVC backend (balanced). Returns null when none is registered — the
+  // callers all already guard on that and return 503.
+  //
+  // This used to filter providerId === 'proxlab-rvc' and fall back to a hardcoded
+  // ai-gpu host/port. Since every row is written as 'rvc', the filter never
+  // matched and all four /rvc/* routes ran on the fallback permanently; it only
+  // appeared to work because the hardcoded host happened to be right.
   function findRvcService() {
-    const state = loadActiveServices();
-    const registered = Object.values(state.services).find(
-      svc => svc.providerId === 'proxlab-rvc' && svc.containerIp && svc.port
-    );
-    if (registered) return registered;
-    // Fallback: first always-on RVC instance
-    return { providerId: 'proxlab-rvc', containerIp: ALWAYS_ON_TTS_HOST, port: ALWAYS_ON_RVC_PORTS[0] };
+    const all = findAllRvcServices();
+    if (all.length === 0) return null;
+    return all[nextIndex('post:rvc', all.length)];
   }
-
-  // Always-on TTS/RVC instances on ai-gpu (systemd services, not launched via UI)
-  const ALWAYS_ON_TTS_HOST = '10.0.0.235';
-  const ALWAYS_ON_TTS_PORTS = [8880, 8881, 8882, 8883, 8884];
-  const ALWAYS_ON_RVC_PORTS = [7100, 7101, 7102, 7103, 7104];
 
   function findAllRvcServices() {
-    const state = loadActiveServices();
-    const registered = Object.values(state.services)
-      .filter(svc => (svc.providerId === 'rvc' || svc.providerId === 'proxlab-rvc')
-                     && svc.containerIp && svc.port)
-      .sort((a, b) => (a.proxySlot || 999) - (b.proxySlot || 999));
-    if (registered.length > 0) return registered;
-    // Fallback: always-on RVC instances
-    return ALWAYS_ON_RVC_PORTS.map((port, i) => ({
-      providerId: 'proxlab-rvc', containerIp: ALWAYS_ON_TTS_HOST, port, proxySlot: i + 1,
-    }));
+    return listBackends(loadActiveServices().services, 'post');
   }
 
-  /** Find all proxlab-tts services (excludes kokoro, openedai-speech, RVC, etc.) */
-  function findAllProxlabTtsServices() {
-    const state = loadActiveServices();
-    const registered = Object.values(state.services)
-      .filter(svc => svc.providerId === 'proxlab-tts' && svc.containerIp && svc.port)
-      .sort((a, b) => (a.proxySlot || 999) - (b.proxySlot || 999));
-    if (registered.length > 0) return registered;
-    // Fallback: always-on TTS instances
-    return ALWAYS_ON_TTS_PORTS.map((port, i) => ({
-      providerId: 'proxlab-tts', containerIp: ALWAYS_ON_TTS_HOST, port, proxySlot: i + 1,
-    }));
+  /**
+   * TTS backends eligible for the balanced pool (clip-style providers only).
+   * Fixed-voice engines like kokoro stay reachable on their slot endpoints but
+   * never join the pool — see audio-registry.js for why.
+   */
+  function findAllTtsPoolServices() {
+    return listBackends(loadActiveServices().services, 'tts');
   }
 
   /** Discover healthy proxlab-tts + proxlab-rvc instances, return paired pipelines. */
   async function buildHealthyPipelines() {
-    const allTts = findAllProxlabTtsServices();
+    const allTts = findAllTtsPoolServices();
     const allRvc = findAllRvcServices();
 
     const [ttsHealth, rvcHealth] = await Promise.all([
@@ -2362,7 +2348,7 @@ export function createProxyRouter(sshService) {
 
   // GET /multi-tts/voices — Aggregated+deduplicated voices from all TTS instances
   router.get('/multi-tts/voices', async (req, res) => {
-    const allTts = findAllProxlabTtsServices();
+    const allTts = findAllTtsPoolServices();
     if (allTts.length === 0) return res.status(503).json({ error: 'No proxlab-tts services registered' });
 
     const voiceMap = new Map();
@@ -2394,7 +2380,7 @@ export function createProxyRouter(sshService) {
 
   // POST /multi-tts/voices — Upload a new voice profile (multipart proxy to first healthy TTS)
   router.post('/multi-tts/voices', async (req, res) => {
-    const allTts = findAllProxlabTtsServices();
+    const allTts = findAllTtsPoolServices();
     if (allTts.length === 0) return res.status(503).json({ error: 'No proxlab-tts services registered' });
 
     // Find first healthy instance
@@ -2410,7 +2396,7 @@ export function createProxyRouter(sshService) {
 
   // DELETE /multi-tts/voices/:name — Delete a voice profile from first healthy TTS
   router.delete('/multi-tts/voices/:name', async (req, res) => {
-    const allTts = findAllProxlabTtsServices();
+    const allTts = findAllTtsPoolServices();
     if (allTts.length === 0) return res.status(503).json({ error: 'No proxlab-tts services registered' });
 
     let target;
@@ -2506,7 +2492,6 @@ export function createProxyRouter(sshService) {
   // plus optional RVC fields (rvc_model, f0_method, f0_up_key, etc.)
   // When rvc_model is omitted, proxies directly to a TTS backend (supports all formats).
   // When rvc_model is provided, routes through TTS→RVC pipeline (returns wav).
-  let _rrTtsIndex = 0;
   router.post('/multi-tts/v1/audio/speech', async (req, res) => {
     let body;
     try {
@@ -2529,8 +2514,10 @@ export function createProxyRouter(sshService) {
     const mimeMap = { wav: 'audio/wav', mp3: 'audio/mpeg', opus: 'audio/opus', flac: 'audio/flac' };
 
     // Round-robin TTS instance selection
-    const ttsIdx = _rrTtsIndex % healthyTts.length;
-    _rrTtsIndex = (_rrTtsIndex + 1) % healthyTts.length;
+    // Per-selector rotation. One shared counter across all models interleaved
+    // them against a mismatched base; keying by model keeps each model's copies
+    // balancing among themselves.
+    const ttsIdx = nextIndex(`tts:${body.model || 'default'}`, healthyTts.length);
     const ttsSvc = healthyTts[ttsIdx];
     const tryOrder = [ttsSvc, ...healthyTts.filter(s => s !== ttsSvc)];
 
@@ -2735,7 +2722,7 @@ export function createProxyRouter(sshService) {
     // Find the chatterbox host that owns the voice library. We read from
     // the first registered chatterbox service by convention — there's
     // typically one canonical voice library per cluster.
-    const chatterbox = findAllProxlabTtsServices()[0];
+    const chatterbox = findAllTtsPoolServices()[0];
     if (!chatterbox?.containerIp) {
       return res.status(503).json({ error: 'No proxlab-tts (chatterbox) service registered — cannot resolve voice library' });
     }
@@ -2956,7 +2943,7 @@ export function createProxyRouter(sshService) {
 
   // GET /multi-tts/v1/models — Aggregated models from all TTS instances
   router.get('/multi-tts/v1/models', async (req, res) => {
-    const allTts = findAllProxlabTtsServices();
+    const allTts = findAllTtsPoolServices();
     if (allTts.length === 0) {
       return res.json({
         object: 'list',
@@ -3138,8 +3125,10 @@ export function createProxyRouter(sshService) {
     if (healthyTts.length === 0) return res.status(503).json({ error: 'No healthy TTS instances available' });
 
     const mimeMap = { wav: 'audio/wav', mp3: 'audio/mpeg', opus: 'audio/opus', flac: 'audio/flac' };
-    const ttsIdx = _rrTtsIndex % healthyTts.length;
-    _rrTtsIndex = (_rrTtsIndex + 1) % healthyTts.length;
+    // Per-selector rotation. One shared counter across all models interleaved
+    // them against a mismatched base; keying by model keeps each model's copies
+    // balancing among themselves.
+    const ttsIdx = nextIndex(`tts:${body.model || 'default'}`, healthyTts.length);
     const ttsSvc = healthyTts[ttsIdx];
     const tryOrder = [ttsSvc, ...healthyTts.filter(s => s !== ttsSvc)];
 
@@ -3250,8 +3239,10 @@ export function createProxyRouter(sshService) {
     const responseFormat = merged.response_format || 'mp3';
     const mimeMap = { wav: 'audio/wav', mp3: 'audio/mpeg', opus: 'audio/opus', flac: 'audio/flac' };
 
-    const ttsIdx = _rrTtsIndex % healthyTts.length;
-    _rrTtsIndex = (_rrTtsIndex + 1) % healthyTts.length;
+    // Per-selector rotation. One shared counter across all models interleaved
+    // them against a mismatched base; keying by model keeps each model's copies
+    // balancing among themselves.
+    const ttsIdx = nextIndex(`tts:${body.model || 'default'}`, healthyTts.length);
     const ttsSvc = healthyTts[ttsIdx];
     const tryOrder = [ttsSvc, ...healthyTts.filter(s => s !== ttsSvc)];
 
