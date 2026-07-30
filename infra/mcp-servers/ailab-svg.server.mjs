@@ -1,0 +1,105 @@
+#!/usr/bin/env node
+/**
+ * ailab-svg MCP — let a model draw, LOOK at what it drew, revise, and export.
+ *
+ * Drawings live in AI-Lab's shared SVG store (/api/svgs) and open in the AI-Lab "SVG" tab
+ * (self-hosted svgedit), so an agent and a human edit the same artwork — the same
+ * one-store-two-authors shape as ailab-flowchart.
+ *
+ * THE LOOK STEP IS THE POINT, and it is why svg_render returns a URL rather than an image.
+ * MCP image results do NOT reach Hermes agents (see reference_hermes_mcp_images_never_reach_model);
+ * an inline image would look correct in Claude Code and silently deliver nothing to the
+ * agents this exists for. A URL can be handed to vision_analyze, or fetched by any client
+ * that can see pixels. Saying so in the tool description matters more than it seems: a model
+ * that does not know how to look will simply skip looking.
+ *
+ * Env: AILAB_API_URL (default http://127.0.0.1:17890), AILAB_API_TIMEOUT_MS (default 20000),
+ *      AILAB_PUBLIC_URL (optional; the base a VISION MODEL should use to fetch renders —
+ *      defaults to AILAB_API_URL, which is correct on-box but wrong for a remote consumer).
+ */
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { z } from 'zod'
+
+const BASE = (process.env.AILAB_API_URL ?? 'http://127.0.0.1:17890').replace(/\/+$/, '')
+const PUBLIC = (process.env.AILAB_PUBLIC_URL ?? BASE).replace(/\/+$/, '')
+const TIMEOUT = Number(process.env.AILAB_API_TIMEOUT_MS ?? 20000)
+const enc = (s) => encodeURIComponent(String(s))
+
+async function api(method, path, body) {
+  const res = await fetch(`${BASE}${path}`, {
+    method,
+    headers: { accept: 'application/json', ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(TIMEOUT),
+  })
+  const text = await res.text()
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}: ${text.slice(0, 400)}`)
+  try { return JSON.parse(text) } catch { return text }
+}
+
+const server = new McpServer({ name: 'ailab-svg', version: '0.1.0' })
+const ok = (d) => ({ content: [{ type: 'text', text: typeof d === 'string' ? d : JSON.stringify(d, null, 2) }] })
+const fail = (e) => ({ content: [{ type: 'text', text: `ERROR: ${e?.message ?? e}` }], isError: true })
+const tool = (name, desc, shape, fn) =>
+  server.tool(name, desc, shape, async (a) => { try { return ok(await fn(a || {})) } catch (e) { return fail(e) } })
+
+tool('svg_list',
+  'List every drawing in the AI-Lab SVG store (id, size, last modified). Start here to find something to edit.',
+  {},
+  async () => api('GET', '/api/svgs'))
+
+tool('svg_get',
+  'Fetch a drawing\'s raw SVG source. Use this before editing so you revise the ACTUAL current document rather than re-generating from memory.',
+  { id: z.string().min(1).describe('Drawing id, as returned by svg_list') },
+  async (a) => api('GET', `/api/svgs/${enc(a.id)}`))
+
+tool('svg_write',
+  'Create or overwrite a drawing with raw SVG. Send the complete document starting with <svg ...> and ending with </svg> — NOT wrapped in a markdown code fence, which is rejected. '
+  + 'Overwrites silently if the id exists, so svg_get first if you mean to revise rather than replace. '
+  + 'After writing, call svg_render and LOOK at the result: text overflowing its box, shapes off-canvas and bad contrast are invisible in source and obvious in the render.',
+  {
+    id: z.string().min(1).describe('Drawing id — letters, digits, dot, underscore, hyphen. Becomes the filename.'),
+    svg: z.string().min(1).describe('Complete SVG document. Include width/height or viewBox, or it may rasterise at an unexpected size.'),
+  },
+  async (a) => api('PUT', `/api/svgs/${enc(a.id)}`, { svg: a.svg }))
+
+tool('svg_render',
+  'Rasterise a drawing to PNG and return a URL to LOOK AT IT. This is how you check your own work.\n\n'
+  + 'IMPORTANT: this returns a URL, not an inline image, because MCP image results do not reach Hermes agents. '
+  + 'To actually see it, pass the returned url to a vision tool (e.g. vision_analyze) or open it in a client that renders images. '
+  + 'The render is never cached, so calling it again after svg_write always shows the CURRENT drawing.',
+  {
+    id: z.string().min(1),
+    width: z.number().int().min(16).max(4096).optional().describe('Output width in px (default 1024). Larger helps when checking small text.'),
+  },
+  async (a) => {
+    // Rasterise now so a broken document fails HERE with a reason, rather than handing back a
+    // URL that 422s later in some other tool where the cause is much harder to see.
+    const w = a.width ?? 1024
+    const res = await fetch(`${BASE}/api/svgs/${enc(a.id)}/render.png?width=${w}`, { signal: AbortSignal.timeout(TIMEOUT) })
+    if (!res.ok) throw new Error(`${res.status}: ${(await res.text()).slice(0, 300)}`)
+    const bytes = (await res.arrayBuffer()).byteLength
+    return {
+      url: `${PUBLIC}/api/svgs/${enc(a.id)}/render.png?width=${w}`,
+      width: w,
+      png_bytes: bytes,
+      how_to_view: 'Pass `url` to a vision tool (vision_analyze) — an inline image would not reach a Hermes agent.',
+    }
+  })
+
+tool('svg_export',
+  'Write a drawing to a filesystem path of your choosing, so finished artwork lands where you want it. '
+  + 'Give an absolute path: a directory (the file is written as <id>.svg inside it) or a full path ending in .svg. Parent directories are created.',
+  {
+    id: z.string().min(1),
+    path: z.string().min(1).describe('Absolute destination — a directory, or a full path ending in .svg'),
+  },
+  async (a) => api('POST', `/api/svgs/${enc(a.id)}/export`, { path: a.path }))
+
+tool('svg_delete',
+  'Delete a drawing from the store. Does not touch anything previously exported with svg_export.',
+  { id: z.string().min(1) },
+  async (a) => api('DELETE', `/api/svgs/${enc(a.id)}`))
+
+await server.connect(new StdioServerTransport())

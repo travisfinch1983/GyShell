@@ -136,6 +136,7 @@ export class UniversalProxyService {
     // @ts-expect-error — native CivitAI downloader (runs curl inside CT 152, writes to local /ai-assets)
     const { createCivitaiRouter } = await import('./proxy/civitai.js')
     const { createFlowchartsRouter } = await import('./flowchartsHttp')
+    const { createSvgsRouter } = await import('./svgsHttp')
     // @ts-expect-error — native service-log viewer (tails logs over AI-Lab's own SSH, reads local data)
     const { createSystemRouter } = await import('./proxy/system.js')
     // @ts-expect-error — full native LLM/AI router: launch, models/scan, estimate, gpu, providers, services, HF
@@ -268,6 +269,8 @@ export class UniversalProxyService {
     }
     // Flowchart diagram store: /api/flowcharts/* — before the broad /api cluster router.
     app.use(createFlowchartsRouter(this.dataDir))
+    // SVG store + rasteriser, feeding both the SVG tab and the svg_* MCP tools.
+    app.use(createSvgsRouter(this.dataDir))
     // @ts-expect-error — JS router: native Proxmox cluster/guest/GPU management (replaces ProxLab-bridged
     // /api/pve, /api/guests, /api/gpu, /api/storages). Mounted at /api (declares its real public paths);
     // placed AFTER the specific /api/* routers so it can't shadow them.
