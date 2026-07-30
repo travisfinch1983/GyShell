@@ -3,7 +3,7 @@ import { observer } from 'mobx-react-lite'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Mic, MicOff, Pencil, Plus, Radio, RefreshCw, ScanEye, SendHorizonal, Settings2, Square, Trash2, Volume2, VolumeX, Wrench } from 'lucide-react'
-import { isTtsEnabled, setTtsEnabled, stopPlayback } from '../../services/TtsPlayback'
+import { stopPlayback } from '../../services/TtsPlayback'
 import {
   startPushToTalk, stopPushToTalk,
   startHandsFree, stopHandsFree,

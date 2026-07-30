@@ -26,11 +26,12 @@ import {
   X,
   GripVertical,
   type LucideIcon,
+  Shapes,
 } from 'lucide-react'
 import { uiPrefsStore } from '../../stores/uiPrefsStore'
 import styles from './PrimarySidebar.module.scss'
 
-export type PrimaryTab = 'home' | 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'roadmap' | 'fleet' | 'addons' | 'chat'
+export type PrimaryTab = 'home' | 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'svg' | 'files' | 'logs' | 'roadmap' | 'fleet' | 'addons' | 'chat'
 
 interface TabDef {
   id: PrimaryTab
@@ -55,6 +56,7 @@ const TABS: TabDef[] = [
   { id: 'helper-scripts', label: 'Helper Scripts', Icon: Package },
   { id: 'model-downloads', label: 'Model Downloads', Icon: Download },
   { id: 'flowchart', label: 'Flowchart', Icon: Workflow },
+  { id: 'svg',       label: 'SVG',       Icon: Shapes },
   { id: 'files',     label: 'Files',     Icon: FolderOpen },
   { id: 'logs',      label: 'Logs',      Icon: ScrollText },
   { id: 'roadmap',   label: 'Roadmap',   Icon: MapIcon },
