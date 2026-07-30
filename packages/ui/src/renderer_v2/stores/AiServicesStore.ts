@@ -64,6 +64,8 @@ type Lifecycle = 'kill' | 'suspend' | 'start' | 'restart'
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let usageTimer: ReturnType<typeof setTimeout> | null = null
+// Module-scoped: the listener is bound once for the singleton store, never per call.
+let usageVisibilityBound = false
 
 /** AI Service card sparkline poll rate — Travis #6b: independent of the GPU
  *  Fleet rate; also sent as ?maxAge so the backend nvtop TTL follows it.
@@ -352,10 +354,26 @@ export class AiServicesStore {
   startUsagePolling(): void {
     if (usageTimer) return
     const tick = async () => {
-      await this.pollServiceUsage()
+      // SKIP THE FETCH WHILE HIDDEN — the timer keeps running so nothing needs restarting,
+      // but a tab you cannot see has no sparklines to keep warm. Measured at 85 req/min,
+      // 2.4KB each, in EVERY open tab simultaneously; on a metered uplink that is real
+      // traffic bought for nothing. The cadence itself is a user setting and is untouched.
+      if (typeof document === 'undefined' || !document.hidden) {
+        await this.pollServiceUsage()
+      }
       usageTimer = setTimeout(() => void tick(), serviceUsagePollMs())
     }
     usageTimer = setTimeout(() => void tick(), 0)
+
+    // Poll the moment the tab becomes visible instead of waiting out the interval. The
+    // always-on design exists so cards are warm when looked at; gating without this would
+    // reintroduce precisely the staleness it was built to avoid.
+    if (typeof document !== 'undefined' && !usageVisibilityBound) {
+      usageVisibilityBound = true
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) void this.pollServiceUsage()
+      })
+    }
   }
 }
 

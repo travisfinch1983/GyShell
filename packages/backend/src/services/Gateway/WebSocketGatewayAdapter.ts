@@ -669,6 +669,14 @@ export class WebSocketGatewayAdapter {
       method = typeof (parsed as { method?: unknown }).method === 'string'
         ? String((parsed as { method?: unknown }).method)
         : undefined;
+      // cluster:request is a GENERIC bridge shared by seven stores, so the method name alone
+      // cannot say which caller is chatty. Fold the proxied path in (query stripped, so the
+      // key stays bounded) — otherwise the counter names a symptom, not a source.
+      if (method === 'cluster:request') {
+        const p = (parsed as { params?: Record<string, unknown> }).params;
+        const path = p && typeof p.path === 'string' ? p.path.split('?')[0] : '';
+        if (path) method = `cluster:request ${path}`;
+      }
       const result = await this.executeRequest(parsed, socket);
       if (requestId) {
         this.sendRpcSuccess(socket, requestId, result, method);
