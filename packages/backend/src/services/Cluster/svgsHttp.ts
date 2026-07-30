@@ -18,6 +18,10 @@ export function createSvgsRouter(dataDir: string): express.Router {
   const router = express.Router()
   const json = express.json({ limit: '12mb' })
   const dir = path.join(dataDir, 'svgs')
+  // Where svg_export is allowed to write. Deliberately a single root rather than "anywhere":
+  // an unauthenticated endpoint that writes arbitrary paths as root is a foothold, not a
+  // convenience. Override with SVG_EXPORT_ROOT.
+  const EXPORT_ROOT = path.resolve(process.env.SVG_EXPORT_ROOT || '/claude/svg-exports')
   const ensure = () => { if (!existsSync(dir)) mkdirSync(dir, { recursive: true }) }
 
   // Ids become filenames, so anything that could escape the directory or collide with the
@@ -125,7 +129,48 @@ export function createSvgsRouter(dataDir: string): express.Router {
     }
   })
 
-  /** Write a stored drawing to a caller-chosen filesystem path. */
+  /**
+   * Raw SVG download. An EXTERNAL agent usually just wants a link to the file rather than the
+   * document echoed back through a tool result, and a browser gets a real download too.
+   */
+  router.get('/api/svgs/:id/file.svg', (req: Req, res: Res) => {
+    const bad = badId(req.params.id)
+    if (bad) return res.status(400).json({ error: bad })
+    const f = fileFor(req.params.id)
+    if (!existsSync(f)) return res.status(404).json({ error: `no svg named "${req.params.id}"` })
+    res.setHeader('Content-Type', 'image/svg+xml')
+    res.setHeader('Content-Disposition', `attachment; filename="${req.params.id}.svg"`)
+    res.setHeader('Cache-Control', 'no-store')
+    res.end(readFileSync(f, 'utf8'))
+  })
+
+  /**
+   * Pull an SVG in from a URL — what "upload so I can edit it" means for an agent holding a
+   * link. Validated exactly like a write, and size-capped: a 20MB HTML error page fetched by
+   * mistake should fail as "no <svg> element", not fill the disk.
+   */
+  router.post('/api/svgs/:id/import', json, async (req: Req, res: Res) => {
+    const bad = badId(req.params.id)
+    if (bad) return res.status(400).json({ error: bad })
+    const url = String((req.body ?? {}).url ?? '').trim()
+    if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'url must be http(s)' })
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(20_000) })
+      if (!r.ok) return res.status(502).json({ error: `fetch failed: ${r.status} ${r.statusText}` })
+      const text = (await r.text()).slice(0, 12 * 1024 * 1024)
+      const problem = svgProblem(text)
+      // Name the content type in the failure: "no <svg> element" plus text/html tells the
+      // caller instantly that the URL served a page, not a drawing.
+      if (problem) return res.status(400).json({ error: `${problem} (server sent ${r.headers.get('content-type') ?? 'unknown type'})` })
+      ensure()
+      writeFileSync(fileFor(req.params.id), text, 'utf8')
+      res.json({ ok: true, id: req.params.id, bytes: Buffer.byteLength(text), source: url })
+    } catch (e) {
+      res.status(502).json({ error: String((e as Error).message) })
+    }
+  })
+
+  /** Write a stored drawing to a caller-chosen filesystem path, CONFINED to an allowlisted root. */
   router.post('/api/svgs/:id/export', json, (req: Req, res: Res) => {
     const bad = badId(req.params.id)
     if (bad) return res.status(400).json({ error: bad })
@@ -136,9 +181,20 @@ export function createSvgsRouter(dataDir: string): express.Router {
     if (!path.isAbsolute(dest)) return res.status(400).json({ error: 'path must be absolute' })
     try {
       const target = dest.endsWith('.svg') ? dest : path.join(dest, `${req.params.id}.svg`)
-      mkdirSync(path.dirname(target), { recursive: true })
-      writeFileSync(target, readFileSync(f, 'utf8'), 'utf8')
-      res.json({ ok: true, path: target, bytes: statSync(target).size })
+      // CONFINED. This endpoint previously wrote anywhere the backend user could reach, which
+      // is remote arbitrary file write the moment /api is exposed. Resolve first so a symlink
+      // or .. cannot walk out, and name the permitted root in the error so a caller is not
+      // left guessing why a reasonable-looking path was refused.
+      const resolved = path.resolve(target)
+      if (resolved !== EXPORT_ROOT && !resolved.startsWith(EXPORT_ROOT + path.sep)) {
+        return res.status(403).json({
+          error: `exports are confined to ${EXPORT_ROOT} (got ${resolved}). `
+            + 'Set SVG_EXPORT_ROOT to change it.',
+        })
+      }
+      mkdirSync(path.dirname(resolved), { recursive: true })
+      writeFileSync(resolved, readFileSync(f, 'utf8'), 'utf8')
+      res.json({ ok: true, path: resolved, bytes: statSync(resolved).size })
     } catch (e) {
       res.status(500).json({ error: String((e as Error).message) })
     }

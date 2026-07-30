@@ -9,7 +9,7 @@
  * THE LOOK STEP IS THE POINT, and it is why svg_render returns a URL rather than an image.
  * MCP image results do NOT reach Hermes agents (see reference_hermes_mcp_images_never_reach_model);
  * an inline image would look correct in Claude Code and silently deliver nothing to the
- * agents this exists for. A URL can be handed to vision_analyze, or fetched by any client
+ * agents this exists for. A URL can be handed to analyze_image, or fetched by any client
  * that can see pixels. Saying so in the tool description matters more than it seems: a model
  * that does not know how to look will simply skip looking.
  *
@@ -67,7 +67,7 @@ tool('svg_write',
 tool('svg_render',
   'Rasterise a drawing to PNG and return a URL to LOOK AT IT. This is how you check your own work.\n\n'
   + 'IMPORTANT: this returns a URL, not an inline image, because MCP image results do not reach Hermes agents. '
-  + 'To actually see it, pass the returned url to a vision tool (e.g. vision_analyze) or open it in a client that renders images. '
+  + 'To actually see it, pass the returned url to a vision tool (e.g. analyze_image) or open it in a client that renders images. '
   + 'The render is never cached, so calling it again after svg_write always shows the CURRENT drawing.',
   {
     id: z.string().min(1),
@@ -81,16 +81,46 @@ tool('svg_render',
     if (!res.ok) throw new Error(`${res.status}: ${(await res.text()).slice(0, 300)}`)
     const bytes = (await res.arrayBuffer()).byteLength
     return {
-      url: `${PUBLIC}/api/svgs/${enc(a.id)}/render.png?width=${w}`,
+      image_url: `${PUBLIC}/api/svgs/${enc(a.id)}/render.png?width=${w}`,
+      svg_download_url: `${PUBLIC}/api/svgs/${enc(a.id)}/file.svg`,
       width: w,
       png_bytes: bytes,
-      how_to_view: 'Pass `url` to a vision tool (vision_analyze) — an inline image would not reach a Hermes agent.',
+      how_to_view: 'Pass image_url to a vision tool (e.g. analyze_image) or fetch it directly — '
+        + 'it is a plain PNG. An inline MCP image result does not reach every agent runtime, '
+        + 'which is why this is a URL.',
+      note: PUBLIC.includes('127.0.0.1') || PUBLIC.includes('localhost')
+        ? 'WARNING: this URL is loopback-only and will NOT resolve for a remote agent. '
+          + 'Set AILAB_PUBLIC_URL on the ailab-svg MCP server to a reachable base URL.'
+        : undefined,
     }
   })
 
+tool('svg_links',
+  'Get shareable URLs for a drawing WITHOUT rasterising: a PNG render link and a raw .svg download link. '
+  + 'Use this when you just need to hand someone a link; use svg_render when you want to check the drawing yourself.',
+  { id: z.string().min(1), width: z.number().int().min(16).max(4096).optional() },
+  async (a) => {
+    await api('GET', `/api/svgs/${enc(a.id)}`)   // 404 here rather than handing back dead links
+    const w = a.width ?? 1024
+    return {
+      image_url: `${PUBLIC}/api/svgs/${enc(a.id)}/render.png?width=${w}`,
+      svg_download_url: `${PUBLIC}/api/svgs/${enc(a.id)}/file.svg`,
+    }
+  })
+
+tool('svg_import',
+  'Import an SVG from a URL into the store so you can edit it and view the changes — the upload path for an agent holding a link rather than the document text. '
+  + 'If you already HAVE the SVG source, use svg_write instead. Overwrites the id if it exists.',
+  {
+    id: z.string().min(1).describe('Id to store it under'),
+    url: z.string().min(1).describe('http(s) URL serving the SVG document'),
+  },
+  async (a) => api('POST', `/api/svgs/${enc(a.id)}/import`, { url: a.url }))
+
 tool('svg_export',
-  'Write a drawing to a filesystem path of your choosing, so finished artwork lands where you want it. '
-  + 'Give an absolute path: a directory (the file is written as <id>.svg inside it) or a full path ending in .svg. Parent directories are created.',
+  'Write a drawing to a filesystem path on the AI-Lab server. Absolute path: a directory (written as <id>.svg inside) or a full path ending in .svg. '
+  + 'CONFINED to the server export root (default /claude/svg-exports) — a path outside it is refused, and the error names the permitted root. '
+  + 'If you are a REMOTE agent you probably want svg_links instead, and to download the file yourself.',
   {
     id: z.string().min(1),
     path: z.string().min(1).describe('Absolute destination — a directory, or a full path ending in .svg'),
