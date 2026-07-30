@@ -3228,6 +3228,59 @@ export function createProxyRouter(sshService) {
     saveVoicePresets(presets);
     res.json({ ok: true });
   });
+  // ─── preset-tts listing endpoints ────────────────────────────────────────
+  // Discovery for OpenAI-compat clients pointed at /preset-tts/v1 (Marinara, OpenClaw):
+  // without these their voice/model dropdowns cannot populate.
+  //
+  // /voices lists PRESET NAMES, deliberately NOT the 44 raw voice clips that
+  // /multi-tts/voices returns. The speech endpoint below resolves body.voice against the
+  // PRESET table and silently falls back to Shadowheart on a miss — so a dropdown full of
+  // raw clip names would leave every single selection producing Shadowheart while the UI
+  // claimed otherwise. Listing presets makes the dropdown's values actually selectable.
+  router.get(['/preset-tts/v1/voices', '/preset-tts/v1/audio/voices'], (req, res) => {
+    try {
+      const presets = loadVoicePresets();
+      // Same envelope as /multi-tts/voices so clients need no special-casing; `voice` and
+      // `model` are echoed so a UI can show what a preset actually resolves to.
+      const voices = Object.entries(presets).map(([name, p]) => ({
+        id: name,
+        voice: p?.voice ?? null,
+        model: p?.model ?? null,
+      }));
+      res.json({ voices });
+    } catch (err) {
+      // Never answer an empty list on failure: "no presets exist" and "the preset store
+      // could not be read" must not look identical to a populating dropdown.
+      console.error(`[preset-tts] could not list presets: ${err.message}`);
+      res.status(500).json({ error: `could not read the voice preset store: ${err.message}` });
+    }
+  });
+
+  // /models mirrors /multi-tts/v1/models so a model field can populate. NOTE the preset
+  // WINS: the speech handler builds its payload as { ...preset, input }, so a preset's own
+  // model overrides whatever the client sends. This list exists for discovery, not control.
+  router.get('/preset-tts/v1/models', async (req, res) => {
+    try {
+      const { ttsInstances } = await buildHealthyPipelines();
+      const healthy = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
+      if (healthy.length === 0) {
+        return res.status(503).json({ error: emptyReason('tts', { registered: ttsInstances.healthResults.length, healthy: 0 }) });
+      }
+      const seen = new Map();
+      for (const svc of healthy) {
+        const provider = svc.providerId;
+        const model = svc.model || svc.modelVariant || 'chatterbox-turbo';
+        const id = `${provider}/${model}`;
+        if (!seen.has(id)) seen.set(id, { id, object: 'model', owned_by: provider, provider, model, instances: 0 });
+        seen.get(id).instances += 1;
+      }
+      res.json({ object: 'list', data: [...seen.values()] });
+    } catch (err) {
+      console.error(`[preset-tts] could not list models: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // GET/POST /preset-tts/v1/audio/speech — OpenAI-compatible TTS endpoint that
   // routes by VOICE PRESET NAME (looked up from body.voice). Intended for any
   // OpenAI-compat TTS client whose UI only exposes a voice/model field but no
