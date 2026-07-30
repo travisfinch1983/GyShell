@@ -270,6 +270,11 @@ export const hermesStreamEventSchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('permission_auto_allow'), option_id: z.string().nullish() }),
   z.object({ t: z.literal('status'), status: z.enum(['idle', 'busy']) }),
   z.object({ t: z.literal('turn_done'), stop_reason: z.string().nullish() }),
+  /** Hermes acked a /steer into the RUNNING turn. The bridge diverts the ack here so it is
+   *  not appended into the streaming assistant bubble. MUST be listed: an unregistered
+   *  variant is dropped by safeParse and reported as a bug — which is exactly what I did
+   *  when I added steer without touching this union. */
+  z.object({ t: z.literal('steer_ack'), text: z.string() }),
   z.object({ t: z.literal('error'), where: z.string().optional(), message: z.string(), tb: z.string().optional() }),
   /** HARD failure in the bridge's read loop — the turn is over and nothing else is coming.
    *  Was missing from this union until 2026-07-28, so `safeParse` dropped it and a dead
