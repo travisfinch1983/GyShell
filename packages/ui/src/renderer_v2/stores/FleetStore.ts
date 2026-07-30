@@ -102,7 +102,7 @@ class FleetStore {
             buffered.forEach((r) => this.ingest(r))
             this.loaded = true
           })
-          this.statusTimer = setInterval(() => void this.refreshStatus(), 30_000)
+          this.statusTimer = setInterval(() => { if (!document.hidden) void this.refreshStatus() }, 30_000)
         }
       })()
     }
