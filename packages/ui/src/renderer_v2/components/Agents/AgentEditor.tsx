@@ -551,7 +551,20 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
                 <select className={styles.input} value={tts.provider} onChange={(e) => { setTts({ ...tts, provider: e.target.value, modelId: '', voiceId: '', preset: '', rvcModel: '', rvcEnabled: false }); touch() }}>
                   <option value="">none</option>
                   <option value="ailab">ailab — local TTS pool (voices, RVC, presets)</option>
-                  {['elevenlabs', 'edge', 'openai', 'minimax', 'gemini', 'mistral'].map((v) => <option key={v} value={v}>{v}</option>)}
+                  {/* The native-Hermes providers (elevenlabs, edge, openai, minimax, gemini,
+                      mistral) are deliberately NOT offered here. Chat playback is UI-side and
+                      only resolves an override for 'ailab', so picking one of them wrote Hermes
+                      config and then spoke in the DEFAULT ailab voice — configured-looking and
+                      silently wrong, which is worse than unavailable.
+                      The schema field and applyTts still support them, because they are wanted
+                      later as a SEPARATE picker for TTS that must genuinely run through the
+                      Hermes pipeline (e.g. the Telegram addon). This hides them from the wrong
+                      control; it does not remove the capability. */}
+                  {tts.provider && tts.provider !== 'ailab' && (
+                    // An agent already configured with a Hermes provider must keep showing it,
+                    // or opening the editor would silently rewrite its config to "none" on save.
+                    <option value={tts.provider}>{tts.provider} — Hermes pipeline (not used by chat playback)</option>
+                  )}
                 </select>
               </div>
               <div className={styles.fieldCol}>

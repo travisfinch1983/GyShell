@@ -369,6 +369,9 @@
   max-height: 220px;
 }
 
+/* FILLED, not outlined. As a transparent button with an accent border this was a faint
+   outline on the dark panel — the same visibility problem the voice controls had. Send is
+   the primary action in the composer and should be the most prominent thing in it. */
 .btnPrimary {
   display: inline-flex;
   align-items: center;
@@ -376,11 +379,20 @@
   padding: 6px 14px;
   border: 1px solid var(--accent);
   border-radius: 8px;
-  background: transparent;
-  color: var(--accent);
+  background: var(--accent);
+  color: var(--app-bg);
+  font-weight: 600;
   cursor: pointer;
 
-  &:disabled { opacity: 0.5; cursor: default; }
+  &:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 84%, #fff); }
+  /* Disabled must not still look like the brightest thing on screen — drop to an outline
+     so "nothing to send" is obvious rather than merely dimmer. */
+  &:disabled {
+    background: transparent;
+    color: var(--fg-faint);
+    border-color: var(--border);
+    cursor: default;
+  }
 }
 
 .btnStop {

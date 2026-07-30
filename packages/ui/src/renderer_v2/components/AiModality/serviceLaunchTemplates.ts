@@ -48,7 +48,10 @@ export const TTS_LAUNCH_TEMPLATES: Record<string, any> = {
           '/opt/conda/envs/chatterbox-tts/bin/python \\',
           `  /opt/proxlab-tts/server.py \\`,
           `  --host 0.0.0.0 --port ${port} \\`,
-          '  --voices /root/voices',
+          // The SHARED library on /tts (a mount visible to every instance), not a local
+          // per-host copy. Launched against /root/voices this served 10 of 44 voices and
+          // adding voices to the shared dir appeared to do nothing.
+          '  --voices /tts/voices/chatterbox',
         ].join('\n');
       },
     },
