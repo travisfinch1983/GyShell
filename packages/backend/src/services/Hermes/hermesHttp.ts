@@ -9,6 +9,7 @@ import { hermesAgentSpecSchema, providerServiceSchema } from '@gyshell/shared'
 import { resolveModelCapabilities } from '../Cluster/proxy/model-capabilities.js'
 import type { HermesService } from './HermesService'
 import type { AcpEvent } from './HermesAcpBridge'
+import { getGatewayStats, resetGatewayStats } from '../Gateway/gatewayStats'
 
 type Req = express.Request
 type Res = express.Response
@@ -385,6 +386,18 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
   // Steer the ACTIVE turn (Hermes native /steer — injects at the next tool boundary).
   // 409 when there is no live session, which the client treats as "fall back to a normal
   // send" rather than an error worth showing.
+  // Gateway egress breakdown. /gateway was measured at 85% of all AI-Lab bytes served with
+  // no visibility into which method or channel caused it; this reports bytes and messages
+  // per RPC method and per push channel, plus the implied sustained rate.
+  router.get('/api/gateway/stats', (_req: Req, res: Res) => {
+    try { res.json(getGatewayStats()) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.post('/api/gateway/stats/reset', (_req: Req, res: Res) => {
+    try { resetGatewayStats(); res.json({ ok: true }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
   router.post('/api/hermes/agents/:id/steer', json, async (req: Req, res: Res) => {
     try {
       const b = (req.body ?? {}) as { text?: unknown; conversationId?: unknown }

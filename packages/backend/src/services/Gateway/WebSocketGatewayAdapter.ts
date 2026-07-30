@@ -1,6 +1,7 @@
 import type { IGatewayRuntime, StartTaskInput, StartTaskOptions } from './types';
 import { WebSocketClientTransport, type IWebSocketConnectionLike } from './WebSocketClientTransport';
 import { WebSocketServer } from 'ws';
+import { recordGatewaySend } from './gatewayStats';
 
 type WebSocketRpcMethod =
   | 'gateway:ping'
@@ -661,12 +662,16 @@ export class WebSocketGatewayAdapter {
 
   private async handleIncomingMessage(socket: IWebSocketConnectionLike, raw: unknown): Promise<void> {
     let requestId: string | undefined;
+    let method: string | undefined;
     try {
       const parsed = this.parseRequest(raw);
       requestId = parsed.id !== undefined ? String(parsed.id) : undefined;
+      method = typeof (parsed as { method?: unknown }).method === 'string'
+        ? String((parsed as { method?: unknown }).method)
+        : undefined;
       const result = await this.executeRequest(parsed, socket);
       if (requestId) {
-        this.sendRpcSuccess(socket, requestId, result);
+        this.sendRpcSuccess(socket, requestId, result, method);
       }
     } catch (error) {
       const rpcError = this.normalizeRpcError(error);
@@ -1669,13 +1674,13 @@ export class WebSocketGatewayAdapter {
     return new WebSocketRpcError('INTERNAL_ERROR', 'Unexpected websocket adapter error.');
   }
 
-  private sendRpcSuccess(socket: IWebSocketConnectionLike, id: string, result: unknown): void {
+  private sendRpcSuccess(socket: IWebSocketConnectionLike, id: string, result: unknown, method?: string): void {
     this.safeSocketSend(socket, {
       type: 'gateway:response',
       id,
       ok: true,
       result
-    });
+    }, method ? `rpc:${method}` : undefined);
   }
 
   private sendRpcFailure(socket: IWebSocketConnectionLike, id: string, code: string, message: string): void {
@@ -1687,9 +1692,12 @@ export class WebSocketGatewayAdapter {
     });
   }
 
-  private safeSocketSend(socket: IWebSocketConnectionLike, payload: Record<string, any>): void {
+  private safeSocketSend(socket: IWebSocketConnectionLike, payload: Record<string, any>, statKey?: string): void {
     try {
-      socket.send(JSON.stringify(payload));
+      const wire = JSON.stringify(payload);
+      // Measure the SERIALIZED length, not the object — that is what goes on the wire.
+      if (statKey) recordGatewaySend('rpc', statKey.replace(/^rpc:/, ''), wire.length);
+      socket.send(wire);
     } catch (error) {
       this.logger.warn('[WebSocketGatewayAdapter] Failed to send RPC response.', error);
     }
