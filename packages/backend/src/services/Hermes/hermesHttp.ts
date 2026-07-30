@@ -460,6 +460,15 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
+    // REQUIRED when anything nginx-shaped sits in front of us, which it does: the public
+    // hostname is served browser -> Cloudflare -> cloudflared -> NPM (nginx) -> here.
+    // nginx buffers proxied responses by DEFAULT, and a buffered event stream never
+    // reaches the client at all: measured 0 bytes in 55s through NPM while the same
+    // conversation delivered 37 events directly from this process. The chat therefore only
+    // updated on refresh, because history read-back is an ordinary GET that completes.
+    // nginx honours this header per-response, so the fix lives HERE in version control
+    // rather than in a hand-edited proxy host that no one remembers exists.
+    res.setHeader('X-Accel-Buffering', 'no')
     ;(res as unknown as { flushHeaders?: () => void }).flushHeaders?.()
 
     let ready: AcpEvent
