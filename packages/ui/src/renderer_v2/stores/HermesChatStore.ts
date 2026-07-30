@@ -512,15 +512,27 @@ class HermesChatStore {
    * per-agent voice/RVC override.
    */
   private speakFinished(s: AgentChatState, conversationId: string): void {
-    if (!this.ttsOnFor(conversationId)) return
+    if (!this.ttsOnFor(conversationId)) {
+      // Not an error, but say so: "muted" and "broken" look identical otherwise.
+      console.debug(`[chat] not speaking — auto-TTS is off for this chat `
+        + `(per-chat=${this.chatTtsMode(conversationId) ?? 'inherit'}, global=${isTtsEnabled()})`)
+      return
+    }
     const item = [...s.items].reverse().find((i) => i.streaming && i.kind === 'assistant')
-    if (!item?.text?.trim()) return
+    if (!item?.text?.trim()) {
+      console.debug('[chat] not speaking — no finished assistant text at this point')
+      return
+    }
     const agentId = this.agents.get(conversationId)
     const text = item.text
-    // Fire-and-forget: TtsPlayback queues internally, so overlapping calls play in
-    // order. A TTS failure must never interfere with the chat itself.
+    // speakTextNow, NOT speakText. speakText re-checks the GLOBAL auto-speak flag and
+    // returns silently — so a per-chat "Speaking" override while global was off passed
+    // ttsOnFor() here and was then vetoed one layer down, and nothing ever reached the
+    // TTS pool. The per-chat decision has ALREADY been made by ttsOnFor(); re-deciding it
+    // downstream is what made the override useless.
+    console.log(`[chat] speaking ${text.length} chars as ${agentId ?? 'unknown agent'}`)
     void this.agentVoice(agentId)
-      .then((override) => speakText(text, agentId, override))
+      .then((override) => speakTextNow(text, agentId, override))
       .catch((e) => { console.warn(`[chat] TTS failed for ${agentId ?? 'unknown agent'}:`, e) })
   }
 
