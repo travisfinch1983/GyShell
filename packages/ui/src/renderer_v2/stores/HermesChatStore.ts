@@ -153,6 +153,10 @@ class HermesChatStore {
 
   private async restoreThenStream(agentId: string, conversationId: string): Promise<void> {
     let since: number | undefined
+    // Held across the whole replay INCLUDING the await, so a turn_done arriving in the
+    // buffer cannot speak. Cleared in finally: leaking this flag would silently disable
+    // TTS for the conversation for the rest of the page's life.
+    this.replaying.add(conversationId)
     try {
       const h = await hermesApi.history(agentId, conversationId)
       const events: Array<Record<string, unknown>> = h?.events ?? []
@@ -168,6 +172,7 @@ class HermesChatStore {
       // indicator, and the row re-stacked on re-attach (Travis had ~5).
       void replayed
     } catch { /* no history yet / route hiccup — stream from live */ }
+    finally { this.replaying.delete(conversationId) }
     if (since != null) this.state(conversationId).lastSeq = since
     this.openStream(agentId, conversationId, since)
   }
@@ -512,6 +517,7 @@ class HermesChatStore {
    * per-agent voice/RVC override.
    */
   private speakFinished(s: AgentChatState, conversationId: string): void {
+    if (this.replaying.has(conversationId)) return  // historical, not happening now
     if (!this.ttsOnFor(conversationId)) {
       // Not an error, but say so: "muted" and "broken" look identical otherwise.
       console.debug(`[chat] not speaking — auto-TTS is off for this chat `
@@ -544,6 +550,17 @@ class HermesChatStore {
    * UI does not synthesize. undefined means "fall back to the role map / global default",
    * which is exactly the behaviour before per-agent voices existed.
    */
+  /**
+   * Conversations currently replaying buffered history. Speech is SUPPRESSED for these.
+   *
+   * The replayed events are the original types (message, turn_done), not history_*, so
+   * they run the same reducer path as live ones — which meant every attach re-spoke the
+   * last turn. Refreshing mid-sentence started the reply over, and a second tab spoke it
+   * again from its own replay. Audio is a side effect of something happening NOW; replaying
+   * a transcript is not that.
+   */
+  private replaying = new Set<string>()
+
   private voiceCache = new Map<string, TtsOverride | undefined>()
 
   /**
@@ -598,6 +615,27 @@ class HermesChatStore {
         const t = (await r.json())?.spec?.tts
         if (t?.provider === 'ailab') {
           resolved = { voice: t.voiceId, model: t.modelId, rvcEnabled: t.rvcEnabled, rvcModel: t.rvcModel, preset: t.preset }
+          // RESOLVE the preset to its concrete voice+model. Passing `preset` through was
+          // useless: the synthesis request never carried it, so an agent with a preset
+          // spoke in the GLOBAL default voice — and because choosing a preset leaves the
+          // voice field blank by design, there was nothing else to fall back to.
+          // Resolving here means every downstream path works without preset support.
+          if (t.preset) {
+            try {
+              const pr = await fetch(`/api/proxy/multi-tts/voice-presets/${encodeURIComponent(t.preset)}`)
+              if (pr.ok) {
+                const p = await pr.json()
+                if (p?.voice) resolved.voice = p.voice
+                if (p?.model) resolved.model = p.model
+                console.log(`[chat] preset '${t.preset}' -> voice ${p?.voice}, model ${p?.model}`)
+              } else {
+                console.warn(`[chat] preset '${t.preset}' could not be resolved (HTTP ${pr.status}) — `
+                  + `falling back to the voice field, which a preset normally leaves blank`)
+              }
+            } catch (e) {
+              console.warn(`[chat] preset '${t.preset}' lookup failed:`, e)
+            }
+          }
         }
       }
     } catch (e) {

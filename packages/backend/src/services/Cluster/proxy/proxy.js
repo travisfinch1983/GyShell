@@ -2418,8 +2418,17 @@ export function createProxyRouter(sshService) {
     }
   });
 
-  // GET /multi-tts/voices — Aggregated+deduplicated voices from all TTS instances
-  router.get('/multi-tts/voices', async (req, res) => {
+  // GET the aggregated voice list. Exposed on several paths because different clients
+  // look in different places: the marinara engine UI expects /audio/voices, OpenAI-shaped
+  // clients expect /v1/audio/voices, and AI-Lab's own UI uses /multi-tts/voices. One
+  // handler, several spellings — cheaper than making each client configurable.
+  router.get([
+    '/multi-tts/voices',
+    '/multi-tts/audio/voices',
+    '/multi-tts/v1/audio/voices',
+    '/tts/audio/voices',
+    '/tts/v1/audio/voices',
+  ], async (req, res) => {
     const allTts = findAllTtsPoolServices();
     if (allTts.length === 0) return res.status(503).json({ error: 'No proxlab-tts services registered' });
 
