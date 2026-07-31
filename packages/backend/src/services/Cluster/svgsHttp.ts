@@ -14,6 +14,146 @@ type Res = express.Response
  * so anything whose contents disagreed with its name listed under the wrong id and could not
  * be opened. Nothing here consults the document for identity.
  */
+
+// ─── structured map mode ──────────────────────────────────────────────────────────────────
+// An agent supplies geography (regions on a 0-100 grid + connections); we lay out and style.
+// Mirrors the flowchart graph mode: no coordinate maths or SVG authoring in the model.
+
+const BIOME: Record<string, { fill: string; stroke: string }> = {
+  islands:  { fill: '#3f9e6b', stroke: '#0b3d5c' },
+  coast:    { fill: '#57ab7d', stroke: '#e6d9a2' },
+  forest:   { fill: '#2f6d3f', stroke: '#1c4427' },
+  mountain: { fill: '#8a8f98', stroke: '#5b6069' },
+  desert:   { fill: '#d9c27e', stroke: '#b39a58' },
+  plains:   { fill: '#8fbf6a', stroke: '#6b9450' },
+  swamp:    { fill: '#5c6f4a', stroke: '#3d4b31' },
+  tundra:   { fill: '#cfe0e8', stroke: '#9db4c0' },
+  city:     { fill: '#c9a227', stroke: '#7d6416' },
+  ruins:    { fill: '#9c8f7a', stroke: '#6b6153' },
+  ocean:    { fill: '#0e4b6e', stroke: '#08304a' },
+  neutral:  { fill: '#7f8a94', stroke: '#59626a' },
+}
+const CONNECTION: Record<string, string> = {
+  border:      'stroke="#f0e68c" stroke-width="2" stroke-dasharray="7 6" fill="none" opacity="0.75"',
+  road:        'stroke="#d8bb87" stroke-width="3" fill="none" opacity="0.9"',
+  river:       'stroke="#5fb0d9" stroke-width="4" fill="none" opacity="0.85" stroke-linecap="round"',
+  'sea-route': 'stroke="#9fd4ec" stroke-width="2.5" stroke-dasharray="3 8" fill="none" opacity="0.8" stroke-linecap="round"',
+  plain:       'stroke="#cbd5e0" stroke-width="2" fill="none" opacity="0.7"',
+}
+
+const xmlEsc = (s: unknown) => String(s ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
+/** Deterministic PRNG seeded from a string — the SAME structure must redraw identically. */
+function seeded(str: string): () => number {
+  let h = 2166136261
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619) }
+  let a = h >>> 0
+  return () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+/** An organic blob around a centre, stable for a given seed. */
+function blobPath(cx: number, cy: number, r: number, seed: string): string {
+  const rnd = seeded(seed)
+  const pts: string[] = []
+  const N = 11
+  for (let i = 0; i < N; i++) {
+    const ang = (i / N) * Math.PI * 2
+    const rad = r * (0.72 + rnd() * 0.55)
+    pts.push(`${(cx + Math.cos(ang) * rad).toFixed(1)},${(cy + Math.sin(ang) * rad).toFixed(1)}`)
+  }
+  // Closed Catmull-Rom-ish: quadratic segments through midpoints read as a coastline.
+  const xy = pts.map((p) => p.split(',').map(Number) as [number, number])
+  let d = ''
+  for (let i = 0; i < xy.length; i++) {
+    const [x0, y0] = xy[i]
+    const [x1, y1] = xy[(i + 1) % xy.length]
+    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2
+    d += i === 0 ? `M ${mx.toFixed(1)} ${my.toFixed(1)} ` : `Q ${x0.toFixed(1)} ${y0.toFixed(1)} ${mx.toFixed(1)} ${my.toFixed(1)} `
+  }
+  return d + 'Z'
+}
+
+interface MapRegion { id: string; name?: string; biome?: string; x?: number; y?: number; size?: number; description?: string }
+interface MapConn { from: string; to: string; kind?: string; label?: string }
+
+function buildMapSvg(spec: { title?: string; regions?: MapRegion[]; connections?: MapConn[] }):
+  { svg: string; warnings: string[] } {
+  const W = 1200, H = 800, PAD = 70
+  const warnings: string[] = []
+  const regions = Array.isArray(spec.regions) ? spec.regions : []
+  if (!regions.length) throw new Error('regions must be a non-empty array')
+
+  const seen = new Set<string>()
+  for (const r of regions) {
+    if (!r?.id) throw new Error('every region needs an id')
+    if (seen.has(r.id)) throw new Error(`duplicate region id "${r.id}"`)
+    seen.add(r.id)
+  }
+
+  // 0-100 -> canvas. Clamped rather than rejected: a slightly out-of-range coordinate is a
+  // drawing nuisance, not a broken map, but it is reported so it can be corrected.
+  const at = (r: MapRegion) => {
+    const cx = Number.isFinite(r.x) ? Number(r.x) : 50
+    const cy = Number.isFinite(r.y) ? Number(r.y) : 50
+    if (cx < 0 || cx > 100 || cy < 0 || cy > 100) warnings.push(`region "${r.id}": x/y outside 0-100, clamped`)
+    return {
+      x: PAD + (Math.min(100, Math.max(0, cx)) / 100) * (W - PAD * 2),
+      y: PAD + (Math.min(100, Math.max(0, cy)) / 100) * (H - PAD * 2),
+    }
+  }
+  const pos = new Map(regions.map((r) => [r.id, at(r)]))
+
+  const conns = (Array.isArray(spec.connections) ? spec.connections : []).map((c) => {
+    // STRICT: a connection to a region that does not exist is an error. Dropping it silently
+    // means the agent believes it drew a route that is not on the map.
+    if (!pos.has(c.from)) throw new Error(`connection references unknown region "${c.from}"`)
+    if (!pos.has(c.to)) throw new Error(`connection references unknown region "${c.to}"`)
+    let kind = String(c.kind ?? 'plain')
+    if (!CONNECTION[kind]) { warnings.push(`connection ${c.from}->${c.to}: unknown kind "${kind}", drawn plain`); kind = 'plain' }
+    return { ...c, kind }
+  })
+
+  // Connections first so routes pass UNDER landmasses rather than over them.
+  const connSvg = conns.map((c) => {
+    const a = pos.get(c.from)!, b = pos.get(c.to)!
+    // Bow the line so overlapping routes stay distinguishable; deterministic per pair.
+    const rnd = seeded(`${c.from}__${c.to}`)
+    const mx = (a.x + b.x) / 2 + (rnd() - 0.5) * 90
+    const my = (a.y + b.y) / 2 + (rnd() - 0.5) * 90
+    return `  <path id="conn-${xmlEsc(c.from)}__${xmlEsc(c.to)}" d="M ${a.x.toFixed(1)} ${a.y.toFixed(1)} Q ${mx.toFixed(1)} ${my.toFixed(1)} ${b.x.toFixed(1)} ${b.y.toFixed(1)}" ${CONNECTION[c.kind]}/>`
+  }).join('\n')
+
+  const regionSvg = regions.map((r) => {
+    const p = pos.get(r.id)!
+    let biome = String(r.biome ?? 'neutral')
+    if (!BIOME[biome]) { warnings.push(`region "${r.id}": unknown biome "${biome}", drawn neutral`); biome = 'neutral' }
+    const st = BIOME[biome]
+    const size = Math.max(18, Math.min(160, Number(r.size) || 58))
+    const label = xmlEsc(r.name ?? r.id)
+    return `  <g id="region-${xmlEsc(r.id)}" data-biome="${xmlEsc(biome)}">
+    <path id="shape-${xmlEsc(r.id)}" d="${blobPath(p.x, p.y, size, r.id)}" fill="${st.fill}" stroke="${st.stroke}" stroke-width="3"/>
+    <title>${label}${r.description ? ' — ' + xmlEsc(r.description) : ''}</title>
+  </g>
+  <text id="label-${xmlEsc(r.id)}" x="${p.x.toFixed(1)}" y="${(p.y + size + 22).toFixed(1)}" text-anchor="middle" font-family="Georgia, serif" font-size="19" fill="#f5ecd2" stroke="#0b3d5c" stroke-width="3.5" paint-order="stroke" >${label}</text>`
+  }).join('\n')
+
+  const title = spec.title ? `  <text id="map-title" x="${W / 2}" y="46" text-anchor="middle" font-family="Georgia, serif" font-size="34" fill="#f5ecd2" stroke="#08304a" stroke-width="4" paint-order="stroke">${xmlEsc(spec.title)}</text>` : ''
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+  <rect id="ocean" width="${W}" height="${H}" fill="#0e4b6e"/>
+${connSvg}
+${regionSvg}
+${title}
+</svg>`
+  return { svg, warnings }
+}
+
 export function createSvgsRouter(dataDir: string): express.Router {
   const router = express.Router()
   const json = express.json({ limit: '12mb' })
@@ -163,6 +303,36 @@ export function createSvgsRouter(dataDir: string): express.Router {
       // NOTHING was written — the batch is applied to an in-memory document and only
       // persisted once every op succeeds, so a rejected batch leaves the drawing untouched.
       res.status(400).json({ error: String((e as Error).message), applied: false })
+    }
+  })
+
+
+  /**
+   * Structured map mode — the agent supplies geography, we lay out and style it.
+   * PUT /api/svgs/:id/map {title, regions:[{id,name,biome,x,y,size,description}], connections:[{from,to,kind}]}
+   * Result is stored as the SVG at :id, so /render.png and /file.svg work unchanged.
+   */
+  router.put('/api/svgs/:id/map', json, async (req: Req, res: Res) => {
+    const bad = badId(req.params.id)
+    if (bad) return res.status(400).json({ error: bad })
+    try {
+      const { svg, warnings } = buildMapSvg(req.body ?? {})
+      const problem = svgProblem(svg)
+      if (problem) throw new Error(`generated map failed validation: ${problem}`)
+      await serialize(req.params.id, async () => { ensure(); writeFileSync(fileFor(req.params.id), svg, 'utf8') })
+      res.json({
+        ok: true,
+        id: req.params.id,
+        bytes: Buffer.byteLength(svg),
+        regions: (req.body?.regions ?? []).length,
+        connections: (req.body?.connections ?? []).length,
+        // Reported, never silent: an unknown biome still draws, but the agent is told it was
+        // substituted rather than left wondering why its desert looks like everything else.
+        warnings,
+        element_ids: 'region-<id>, shape-<id>, label-<id>, conn-<from>__<to>, ocean, map-title — usable with svg_edit',
+      })
+    } catch (e) {
+      res.status(400).json({ error: String((e as Error).message) })
     }
   })
 

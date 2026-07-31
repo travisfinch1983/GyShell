@@ -95,6 +95,33 @@ tool('svg_render',
     }
   })
 
+tool('svg_map',
+  'Draw a WORLD MAP from structure — you supply the geography, the server handles layout, styling and coastlines. Use this instead of hand-writing SVG for maps: authoring raw SVG across a multi-turn conversation is fragile, and this keeps you in control of WHERE things are while never touching markup.\n\n'
+  + 'Regions are placed on a 0-100 grid (x=0 west, y=0 north). Coastlines are generated deterministically from each region id, so re-sending the same structure redraws IDENTICALLY — a map does not writhe as you add to it.\n\n'
+  + 'biome: islands|coast|forest|mountain|desert|plains|swamp|tundra|city|ruins|ocean (unknown -> neutral + a warning, never a failure).\n'
+  + 'connection kind: border|road|river|sea-route (unknown -> plain line + a warning). A connection naming a region that does not exist IS an error — otherwise you would believe you drew a route that is not on the map.\n\n'
+  + 'Every element gets a stable id (region-<id>, shape-<id>, label-<id>, conn-<from>__<to>, ocean, map-title), so you can afterwards tweak ONE coastline or colour with svg_edit instead of regenerating the whole map.',
+  {
+    id: z.string().min(1).describe('Drawing id to store the map as'),
+    title: z.string().optional(),
+    regions: z.array(z.object({
+      id: z.string().min(1).describe('Stable region id, referenced by connections'),
+      name: z.string().optional().describe('Label shown on the map (defaults to id)'),
+      biome: z.string().optional(),
+      x: z.number().optional().describe('0-100, west to east'),
+      y: z.number().optional().describe('0-100, north to south'),
+      size: z.number().optional().describe('Landmass radius 18-160 (default 58) — scale it to importance'),
+      description: z.string().optional().describe('Becomes a <title> tooltip'),
+    })).min(1),
+    connections: z.array(z.object({
+      from: z.string().min(1), to: z.string().min(1),
+      kind: z.string().optional(),
+    })).optional(),
+  },
+  async (a) => api('PUT', `/api/svgs/${enc(a.id)}/map`, {
+    title: a.title, regions: a.regions, connections: a.connections ?? [],
+  }))
+
 tool('svg_edit',
   'Edit INDIVIDUAL ELEMENTS of a drawing instead of replacing the whole document. Use this for incremental work — adding a region while something else edits a label — because whole-document svg_write is last-write-wins and will silently discard another writer\'s changes.\n\n'
   + 'Elements are addressed by their SVG id attribute, so give things ids when you create them (id="region-north", id="city-1") or you will not be able to revise them later.\n\n'
