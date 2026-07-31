@@ -95,6 +95,27 @@ tool('svg_render',
     }
   })
 
+tool('svg_edit',
+  'Edit INDIVIDUAL ELEMENTS of a drawing instead of replacing the whole document. Use this for incremental work — adding a region while something else edits a label — because whole-document svg_write is last-write-wins and will silently discard another writer\'s changes.\n\n'
+  + 'Elements are addressed by their SVG id attribute, so give things ids when you create them (id="region-north", id="city-1") or you will not be able to revise them later.\n\n'
+  + 'Ops apply in order and are STRICT: if any one fails, NOTHING is written and the error names the op index and reason. A half-applied map is worse than a rejected batch, because you would believe it succeeded.\n'
+  + '  {op:"append", svg, parent?}    add a new element (optionally inside a parent id)\n'
+  + '  {op:"set",    id, svg}         replace that element, or append it if absent\n'
+  + '  {op:"attrs",  id, set?, remove?}  change attributes only, keeping children\n'
+  + '  {op:"remove", id}',
+  {
+    id: z.string().min(1).describe('Drawing id'),
+    ops: z.array(z.object({
+      op: z.enum(['append', 'set', 'attrs', 'remove']),
+      id: z.string().optional().describe('Target element id — required for set/attrs/remove'),
+      svg: z.string().optional().describe('Element markup — required for append/set'),
+      parent: z.string().optional().describe('append only: element id to append inside (default: document root)'),
+      set: z.record(z.union([z.string(), z.number()])).optional().describe('attrs only: attributes to set'),
+      remove: z.array(z.string()).optional().describe('attrs only: attribute names to delete'),
+    })).min(1),
+  },
+  async (a) => api('POST', `/api/svgs/${enc(a.id)}/elements`, { ops: a.ops }))
+
 tool('svg_links',
   'Get shareable URLs for a drawing WITHOUT rasterising: a PNG render link and a raw .svg download link. '
   + 'Use this when you just need to hand someone a link; use svg_render when you want to check the drawing yourself.',

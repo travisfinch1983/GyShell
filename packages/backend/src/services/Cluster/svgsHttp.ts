@@ -48,6 +48,124 @@ export function createSvgsRouter(dataDir: string): express.Router {
     return null
   }
 
+  /**
+   * Serialize writes PER DRAWING. Element edits are read-modify-write, so two concurrent
+   * requests would interleave and one would be silently lost — exactly the clobbering this
+   * endpoint exists to prevent. Each id gets a promise chain so an edit always sees the
+   * previous edit's result.
+   */
+  const writeChains = new Map<string, Promise<unknown>>()
+  const serialize = <T>(id: string, fn: () => Promise<T>): Promise<T> => {
+    const prev = writeChains.get(id) ?? Promise.resolve()
+    const next = prev.then(fn, fn)
+    // Keep the chain alive but never let a rejection poison later edits.
+    writeChains.set(id, next.catch(() => undefined))
+    return next
+  }
+
+  /** Depth-first search for an element carrying this id. */
+  const findById = (root: any, id: string): any => {
+    if (!root) return null
+    if (root.nodeType === 1 && typeof root.getAttribute === 'function' && root.getAttribute('id') === id) return root
+    for (let c = root.firstChild; c; c = c.nextSibling) {
+      const hit = findById(c, id)
+      if (hit) return hit
+    }
+    return null
+  }
+
+  /**
+   * Apply element operations to a drawing. Ops are addressed by the elements' SVG `id`.
+   *
+   *   { op:'set',    id, svg }        replace that element, or append it if absent (upsert)
+   *   { op:'attrs',  id, set?, remove? }  change attributes only, leaving children intact
+   *   { op:'remove', id }
+   *   { op:'append', svg, parent? }   append a new element, optionally inside a parent id
+   */
+  router.post('/api/svgs/:id/elements', json, async (req: Req, res: Res) => {
+    const bad = badId(req.params.id)
+    if (bad) return res.status(400).json({ error: bad })
+    const f = fileFor(req.params.id)
+    if (!existsSync(f)) return res.status(404).json({ error: `no svg named "${req.params.id}"` })
+    const ops = (req.body ?? {}).ops
+    if (!Array.isArray(ops) || ops.length === 0) return res.status(400).json({ error: 'ops must be a non-empty array' })
+
+    try {
+      const result = await serialize(req.params.id, async () => {
+        const { DOMParser, XMLSerializer } = await import('@xmldom/xmldom')
+        const doc: any = new DOMParser().parseFromString(readFileSync(f, 'utf8'), 'image/svg+xml')
+        const root: any = doc.documentElement
+        if (!root) throw new Error('stored document could not be parsed as SVG')
+        const SVG_NS = 'http://www.w3.org/2000/svg'
+
+        /** Parse a fragment and adopt it, dropping the redundant xmlns the parser adds. */
+        const parseFragment = (markup: string, where: string): any => {
+          const frag: any = new DOMParser().parseFromString(
+            /xmlns=/.test(markup) ? markup : markup.replace(/^\s*<([a-zA-Z][\w:-]*)/, `<$1 xmlns="${SVG_NS}"`),
+            'image/svg+xml',
+          )
+          const el = frag?.documentElement
+          if (!el || el.nodeType !== 1) throw new Error(`${where}: svg is not a single parseable element`)
+          const adopted = doc.importNode ? doc.importNode(el, true) : el
+          // The root already declares the namespace; repeating it on every child is noise
+          // that an agent then reads back and copies forward.
+          if (adopted.getAttribute && adopted.getAttribute('xmlns') === SVG_NS) adopted.removeAttribute('xmlns')
+          return adopted
+        }
+
+        const applied: Array<Record<string, unknown>> = []
+        ops.forEach((raw: any, i: number) => {
+          const op = String(raw?.op ?? '')
+          const where = `ops[${i}] (${op || 'missing op'})`
+          if (op === 'append') {
+            if (typeof raw.svg !== 'string' || !raw.svg.trim()) throw new Error(`${where}: svg is required`)
+            const parent = raw.parent ? findById(root, String(raw.parent)) : root
+            if (!parent) throw new Error(`${where}: parent id "${raw.parent}" not found`)
+            parent.appendChild(parseFragment(raw.svg, where))
+            applied.push({ i, op, parent: raw.parent ?? null })
+            return
+          }
+          const id = String(raw?.id ?? '')
+          if (!id) throw new Error(`${where}: id is required`)
+          const el = findById(root, id)
+          if (op === 'set') {
+            if (typeof raw.svg !== 'string' || !raw.svg.trim()) throw new Error(`${where}: svg is required`)
+            const node = parseFragment(raw.svg, where)
+            if (el) { el.parentNode.replaceChild(node, el); applied.push({ i, op, id, action: 'replaced' }) }
+            else { root.appendChild(node); applied.push({ i, op, id, action: 'appended' }) }
+            return
+          }
+          // Everything below TARGETS an existing element, so a miss is an error rather than
+          // a no-op: silently doing nothing is how an agent ends up believing it edited a map
+          // it never touched.
+          if (!el) throw new Error(`${where}: no element with id "${id}"`)
+          if (op === 'remove') {
+            el.parentNode.removeChild(el)
+            applied.push({ i, op, id })
+          } else if (op === 'attrs') {
+            const set = raw.set && typeof raw.set === 'object' ? raw.set : {}
+            for (const [k, v] of Object.entries(set)) el.setAttribute(k, String(v))
+            for (const k of Array.isArray(raw.remove) ? raw.remove : []) el.removeAttribute(String(k))
+            applied.push({ i, op, id, set: Object.keys(set), removed: raw.remove ?? [] })
+          } else {
+            throw new Error(`${where}: unknown op — use set | attrs | remove | append`)
+          }
+        })
+
+        const out = new XMLSerializer().serializeToString(doc)
+        const problem = svgProblem(out)
+        if (problem) throw new Error(`result would not be valid SVG: ${problem}`)
+        writeFileSync(f, out, 'utf8')
+        return { ok: true, id: req.params.id, applied, bytes: Buffer.byteLength(out) }
+      })
+      res.json(result)
+    } catch (e) {
+      // NOTHING was written — the batch is applied to an in-memory document and only
+      // persisted once every op succeeds, so a rejected batch leaves the drawing untouched.
+      res.status(400).json({ error: String((e as Error).message), applied: false })
+    }
+  })
+
   router.get('/api/svgs', (_req: Req, res: Res) => {
     try {
       ensure()
