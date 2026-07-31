@@ -219,6 +219,7 @@ export function createSvgsRouter(dataDir: string): express.Router {
    *
    *   { op:'set',    id, svg }        replace that element, or append it if absent (upsert)
    *   { op:'attrs',  id, set?, remove? }  change attributes only, leaving children intact
+   *   { op:'text',   id, text }        replace the element's text content (relabel)
    *   { op:'remove', id }
    *   { op:'append', svg, parent? }   append a new element, optionally inside a parent id
    */
@@ -282,13 +283,20 @@ export function createSvgsRouter(dataDir: string): express.Router {
           if (op === 'remove') {
             el.parentNode.removeChild(el)
             applied.push({ i, op, id })
+          } else if (op === 'text') {
+            // Relabel. Replaces children with a single text node, so any <tspan> structure is
+            // flattened — acceptable for labels, and stated plainly so it is not a surprise.
+            if (typeof raw.text !== 'string') throw new Error(`${where}: text is required (a string)`)
+            while (el.firstChild) el.removeChild(el.firstChild)
+            el.appendChild(doc.createTextNode(raw.text))
+            applied.push({ i, op, id, text: raw.text })
           } else if (op === 'attrs') {
             const set = raw.set && typeof raw.set === 'object' ? raw.set : {}
             for (const [k, v] of Object.entries(set)) el.setAttribute(k, String(v))
             for (const k of Array.isArray(raw.remove) ? raw.remove : []) el.removeAttribute(String(k))
             applied.push({ i, op, id, set: Object.keys(set), removed: raw.remove ?? [] })
           } else {
-            throw new Error(`${where}: unknown op — use set | attrs | remove | append`)
+            throw new Error(`${where}: unknown op — use set | attrs | text | remove | append`)
           }
         })
 
