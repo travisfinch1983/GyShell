@@ -33,6 +33,9 @@ const BIOME: Record<string, { fill: string; stroke: string }> = {
   ocean:    { fill: '#0e4b6e', stroke: '#08304a' },
   neutral:  { fill: '#7f8a94', stroke: '#59626a' },
 }
+/** Coastline colour for merged landmasses — matches the `coast` biome's stroke. */
+const COAST = '#e6d9a2'
+
 const CONNECTION: Record<string, string> = {
   border:      'stroke="#f0e68c" stroke-width="2" stroke-dasharray="7 6" fill="none" opacity="0.75"',
   road:        'stroke="#d8bb87" stroke-width="3" fill="none" opacity="0.9"',
@@ -79,7 +82,7 @@ function blobPath(cx: number, cy: number, r: number, seed: string): string {
   return d + 'Z'
 }
 
-interface MapRegion { id: string; name?: string; biome?: string; x?: number; y?: number; size?: number; description?: string }
+interface MapRegion { id: string; name?: string; biome?: string; x?: number; y?: number; size?: number; description?: string; landmass?: string }
 interface MapConn { from: string; to: string; kind?: string; label?: string }
 
 function buildMapSvg(spec: { title?: string; regions?: MapRegion[]; connections?: MapConn[] }):
@@ -129,25 +132,112 @@ function buildMapSvg(spec: { title?: string; regions?: MapRegion[]; connections?
     return `  <path id="conn-${xmlEsc(c.from)}__${xmlEsc(c.to)}" d="M ${a.x.toFixed(1)} ${a.y.toFixed(1)} Q ${mx.toFixed(1)} ${my.toFixed(1)} ${b.x.toFixed(1)} ${b.y.toFixed(1)}" ${CONNECTION[c.kind]}/>`
   }).join('\n')
 
-  const regionSvg = regions.map((r) => {
-    const p = pos.get(r.id)!
+  // Resolve per-region drawing facts once; both the solo and landmass paths need them.
+  const facts = regions.map((r) => {
     let biome = String(r.biome ?? 'neutral')
     if (!BIOME[biome]) { warnings.push(`region "${r.id}": unknown biome "${biome}", drawn neutral`); biome = 'neutral' }
-    const st = BIOME[biome]
-    const size = Math.max(18, Math.min(160, Number(r.size) || 58))
-    const label = xmlEsc(r.name ?? r.id)
-    return `  <g id="region-${xmlEsc(r.id)}" data-biome="${xmlEsc(biome)}">
-    <path id="shape-${xmlEsc(r.id)}" d="${blobPath(p.x, p.y, size, r.id)}" fill="${st.fill}" stroke="${st.stroke}" stroke-width="3"/>
+    const lm = r.landmass === undefined || r.landmass === null ? '' : String(r.landmass).trim()
+    return {
+      r,
+      biome,
+      st: BIOME[biome],
+      size: Math.max(18, Math.min(160, Number(r.size) || 58)),
+      p: pos.get(r.id)!,
+      label: xmlEsc(r.name ?? r.id),
+      landmass: lm,
+    }
+  })
+
+  // Group by landmass. A landmass of ONE is not a continent — it renders as a plain island,
+  // so a stray/typo'd landmass id degrades to today's behaviour instead of a filtered blob.
+  const byLand = new Map<string, typeof facts>()
+  for (const f of facts) {
+    if (!f.landmass) continue
+    const arr = byLand.get(f.landmass) ?? []
+    arr.push(f)
+    byLand.set(f.landmass, arr)
+  }
+  const continents = [...byLand.entries()].filter(([, m]) => m.length > 1)
+  const inContinent = new Set(continents.flatMap(([, m]) => m.map((f) => f.r.id)))
+  for (const [lid, m] of byLand) {
+    if (m.length === 1) warnings.push(`landmass "${lid}" has only one region, drawn as an island`)
+  }
+
+  /**
+   * Isthmus bands along a minimum spanning tree of the members.
+   *
+   * Blobs only fuse when they are close enough, so a landmass whose regions are spread out
+   * would silently render as separate islands — the very bug this feature fixes, returning
+   * as an intermittent one. The bands guarantee the union is connected regardless of spacing.
+   */
+  const isthmus = (m: typeof facts): string => {
+    const done = [m[0]]
+    const todo = m.slice(1)
+    const seg: string[] = []
+    while (todo.length) {
+      let bi = 0, bj = 0, best = Infinity
+      todo.forEach((t, ti) => done.forEach((d, di) => {
+        const dist = Math.hypot(t.p.x - d.p.x, t.p.y - d.p.y)
+        if (dist < best) { best = dist; bi = ti; bj = di }
+      }))
+      const a = todo[bi], b = done[bj]
+      const w = Math.max(26, Math.min(a.size, b.size) * 0.8)
+      seg.push(`<line x1="${a.p.x.toFixed(0)}" y1="${a.p.y.toFixed(0)}" x2="${b.p.x.toFixed(0)}" y2="${b.p.y.toFixed(0)}" stroke="currentColor" stroke-width="${w.toFixed(0)}" stroke-linecap="round"/>`)
+      done.push(a)
+      todo.splice(bi, 1)
+    }
+    return seg.join('')
+  }
+
+  const landSvg = continents.map(([lid, m]) => {
+    const shapes = m.map((f) => `<path d="${blobPath(f.p.x, f.p.y, f.size, f.r.id)}"/>`).join('')
+    const merged = shapes + isthmus(m)
+    // Base terrain colour = the most common biome among members, so a desert continent
+    // does not read as green between its provinces.
+    const tally = new Map<string, number>()
+    for (const f of m) tally.set(f.biome, (tally.get(f.biome) ?? 0) + 1)
+    const domin = [...tally.entries()].sort((a, b) => b[1] - a[1])[0][0]
+    const base = BIOME[domin].fill
+    return `  <g id="landmass-${xmlEsc(lid)}">
+    <g filter="url(#ail-coast)" fill="${COAST}" color="${COAST}">${merged}</g>
+    <g filter="url(#ail-land)" fill="${base}" color="${base}">${merged}</g>
+  </g>`
+  }).join('\n')
+
+  const regionSvg = facts.map((f) => {
+    const { r, p, st, size, label } = f
+    // Inside a continent the region is an interior SUBDIVISION: no heavy coastline of its
+    // own (that is what made four regions look like four islands), just a subtle seam.
+    const paint = inContinent.has(r.id)
+      ? `fill="${st.fill}" fill-opacity="0.92" stroke="${st.stroke}" stroke-width="1.2" stroke-dasharray="5 5" stroke-opacity="0.5"`
+      : `fill="${st.fill}" stroke="${st.stroke}" stroke-width="3"`
+    return `  <g id="region-${xmlEsc(r.id)}" data-biome="${xmlEsc(f.biome)}"${f.landmass ? ` data-landmass="${xmlEsc(f.landmass)}"` : ''}>
+    <path id="shape-${xmlEsc(r.id)}" d="${blobPath(p.x, p.y, size, r.id)}" ${paint}/>
     <title>${label}${r.description ? ' — ' + xmlEsc(r.description) : ''}</title>
   </g>
   <text id="label-${xmlEsc(r.id)}" x="${p.x.toFixed(1)}" y="${(p.y + size + 22).toFixed(1)}" text-anchor="middle" font-family="Georgia, serif" font-size="19" fill="#f5ecd2" stroke="#0b3d5c" stroke-width="3.5" paint-order="stroke" >${label}</text>`
   }).join('\n')
 
+  // Filters only when something actually needs them — an unfiltered map stays byte-identical
+  // to what it produced before this feature existed.
+  const defs = continents.length ? `  <defs>
+    <filter id="ail-land" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="14" result="b"/>
+      <feColorMatrix in="b" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 26 -11"/>
+    </filter>
+    <filter id="ail-coast" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="14" result="b"/>
+      <feColorMatrix in="b" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 26 -8.5"/>
+    </filter>
+  </defs>` : ''
+
   const title = spec.title ? `  <text id="map-title" x="${W / 2}" y="46" text-anchor="middle" font-family="Georgia, serif" font-size="34" fill="#f5ecd2" stroke="#08304a" stroke-width="4" paint-order="stroke">${xmlEsc(spec.title)}</text>` : ''
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+${defs}
   <rect id="ocean" width="${W}" height="${H}" fill="#0e4b6e"/>
 ${connSvg}
+${landSvg}
 ${regionSvg}
 ${title}
 </svg>`
