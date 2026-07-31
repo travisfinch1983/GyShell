@@ -33,12 +33,80 @@ const SPEECH_OVER_NOISE = 2.5
 const SILENCE_TIMEOUT_MS = 3500 // Auto-send after this much silence
 const SAMPLE_RATE = 16000
 
-// Callbacks
+export type SttState = 'idle' | 'recording' | 'transcribing' | 'handsfree' | 'handsfree-recording'
+
+// ─── Ownership ──────────────────────────────────────────────────────────────
+//
+// There is ONE microphone and one set of callbacks, but more than one consumer (the agent
+// chat composer and the Notes tool). Without an explicit owner the second component to
+// register silently steals the first one's transcripts: the mic still works, the audio is
+// still transcribed, and the text is handed to a component the user isn't looking at. No
+// error is raised anywhere, which makes it near-impossible to diagnose from the symptom.
+//
+// So: claim it. Last claimant wins, the previous owner is TOLD, and any capture still
+// running is stopped instead of feeding a callback nobody is listening to.
+
+export interface SttHandlers {
+  onTranscript?: (text: string) => void
+  onAutoSend?: (text: string) => void
+  onStateChange?: (state: SttState) => void
+  /** Called when someone else claims the microphone, so the UI can drop back to idle. */
+  onEvicted?: (newOwner: string) => void
+}
+
+let owner: string | null = null
 let onTranscript: ((text: string) => void) | null = null
 let onAutoSend: ((text: string) => void) | null = null
-let onStateChange: ((state: 'idle' | 'recording' | 'transcribing' | 'handsfree' | 'handsfree-recording') => void) | null = null
+let onStateChange: ((state: SttState) => void) | null = null
+let onEvicted: ((newOwner: string) => void) | null = null
 
-export type SttState = 'idle' | 'recording' | 'transcribing' | 'handsfree' | 'handsfree-recording'
+/** Take the microphone. Safe to call repeatedly with the same owner (handlers refresh). */
+export function claimStt(newOwner: string, h: SttHandlers): void {
+  if (owner && owner !== newOwner) {
+    const prev = owner
+    const prevEvicted = onEvicted
+    // Stop BEFORE swapping handlers so the old owner sees its own final state change.
+    if (handsFreeActive || (recorder && recorder.state === 'recording')) {
+      console.warn(`[SttCapture] "${newOwner}" claimed the microphone while "${prev}" was still `
+        + 'capturing — stopping the old capture rather than recording into a dead callback')
+      stopHandsFree()
+    }
+    console.log(`[SttCapture] owner: ${prev} -> ${newOwner}`)
+    prevEvicted?.(newOwner)
+  }
+  owner = newOwner
+  onTranscript = h.onTranscript ?? null
+  onAutoSend = h.onAutoSend ?? null
+  onStateChange = h.onStateChange ?? null
+  onEvicted = h.onEvicted ?? null
+}
+
+/**
+ * Give the microphone back. OWNER-CHECKED on purpose: React unmounts the outgoing panel
+ * AFTER the incoming one mounts, so an unguarded release would wipe the new owner's
+ * callbacks on every tab switch and leave the mic owned by nobody.
+ */
+export function releaseStt(claimant: string): void {
+  if (owner !== claimant) return
+  if (handsFreeActive) stopHandsFree()
+  owner = null
+  onTranscript = null
+  onAutoSend = null
+  onStateChange = null
+  onEvicted = null
+}
+
+export function sttOwner(): string | null {
+  return owner
+}
+
+/** Warn loudly if capture starts with nobody registered — the transcript would go nowhere. */
+function warnIfUnowned(what: string): void {
+  if (!owner) {
+    console.warn(`[SttCapture] ${what} started with NO owner claimed — the transcript will be `
+      + 'discarded. Call claimStt() first.')
+  }
+}
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 
@@ -48,20 +116,6 @@ function getSttConfig(): any {
   } catch {
     return {}
   }
-}
-
-// ─── Callbacks ──────────────────────────────────────────────────────────────
-
-export function setOnTranscript(cb: (text: string) => void): void {
-  onTranscript = cb
-}
-
-export function setOnAutoSend(cb: (text: string) => void): void {
-  onAutoSend = cb
-}
-
-export function setOnStateChange(cb: (state: SttState) => void): void {
-  onStateChange = cb
 }
 
 // ─── Microphone Access ──────────────────────────────────────────────────────
@@ -119,6 +173,7 @@ async function transcribeAudio(audioBlob: Blob): Promise<string> {
 // ─── Push-to-Talk Mode ──────────────────────────────────────────────────────
 
 export async function startPushToTalk(): Promise<void> {
+  warnIfUnowned('push-to-talk')
   try {
     const stream = await getMicrophone()
     audioChunks = []
@@ -186,6 +241,7 @@ export async function stopPushToTalk(): Promise<void> {
 export async function startHandsFree(): Promise<void> {
   // A stuck flag from a previous failed attempt used to make every later press a silent
   // no-op — the button looked inert with no explanation anywhere.
+  warnIfUnowned('hands-free')
   if (handsFreeActive) {
     console.warn('[SttCapture] Hands-free is already active — ignoring the start request. '
       + 'If the UI shows it as OFF, its state and this flag have diverged.')

@@ -7,6 +7,7 @@ import { CodebaseRagPanel } from '../AiTools/CodebaseRagPanel'
 import { DocRagPanel } from '../AiTools/DocRagPanel'
 import { ClusterInfoPanel } from '../AiTools/ClusterInfoPanel'
 import { ModelCacherPanel } from '../AiTools/ModelCacherPanel'
+import { NotesPanel } from '../AiTools/NotesPanel'
 import { LlmLaunchPanel } from '../AiLlm/LlmLaunchPanel'
 import { QuantizationPanel } from '../AiLlm/QuantizationPanel'
 import { ServiceLaunchPanel } from './ServiceLaunchPanel'
@@ -75,6 +76,7 @@ export const AiToolsPanel: React.FC = observer(() => (
     { id: 'doc-rag', label: 'Document RAG', render: () => <DocRagPanel /> },
     { id: 'cluster-info', label: 'Cluster Info', render: () => <ClusterInfoPanel /> },
     { id: 'model-cacher', label: 'Model Cacher', render: () => <ModelCacherPanel /> },
+    { id: 'notes', label: 'Notes', render: () => <NotesPanel /> },
   ]} />
 ))
 

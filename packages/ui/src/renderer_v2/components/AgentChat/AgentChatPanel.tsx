@@ -7,9 +7,10 @@ import { stopPlayback } from '../../services/TtsPlayback'
 import {
   startPushToTalk, stopPushToTalk,
   startHandsFree, stopHandsFree,
-  setOnTranscript, setOnAutoSend, setOnStateChange,
+  claimStt, releaseStt,
   type SttState,
 } from '../../services/SttCapture'
+import { useSttHealth } from '../../services/useSttHealth'
 import type { HermesSlashCommand } from '@gyshell/shared'
 import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
 import { hermesApi } from '../../stores/hermesApi'
@@ -109,33 +110,22 @@ const TtsButton: React.FC<{ conversationId: string }> = observer(({ conversation
  */
 const SttButtons: React.FC<{ onTranscript: (t: string) => void; onAutoSend: (t: string) => void }> = ({ onTranscript, onAutoSend }) => {
   const [state, setState] = React.useState<SttState>('idle')
-  const [stt, setStt] = React.useState<{ ok: boolean; why: string }>({ ok: false, why: 'checking for an STT provider…' })
+  const stt = useSttHealth()
 
+  // Claim the shared microphone for the chat composer. If the Notes tool (or anything else)
+  // claims it later, onEvicted fires and these buttons drop back to idle — without it the
+  // UI would keep showing "listening" while the transcripts went somewhere else entirely.
   React.useEffect(() => {
-    let alive = true
-    void (async () => {
-      try {
-        const r = await fetch('/api/proxy/stt/v1/providers')
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
-        const d = await r.json()
-        const healthy = (d?.providers ?? []).filter((p: any) => p.status === 'healthy')
-        if (!alive) return
-        setStt(healthy.length
-          ? { ok: true, why: '' }
-          : { ok: false, why: (d?.providers?.length
-              ? `STT provider is unhealthy (${d.providers.map((p: any) => `${p.providerId} on ${p.host}`).join(', ')}) — the host is likely down`
-              : 'no STT provider is registered') })
-      } catch (e: any) {
-        if (alive) setStt({ ok: false, why: `could not reach the STT provider list: ${e?.message ?? e}` })
-      }
-    })()
-    return () => { alive = false }
-  }, [])
-
-  React.useEffect(() => {
-    setOnTranscript(onTranscript)
-    setOnAutoSend(onAutoSend)
-    setOnStateChange((s: SttState) => setState(s))
+    claimStt('agent-chat', {
+      onTranscript,
+      onAutoSend,
+      onStateChange: (s: SttState) => setState(s),
+      onEvicted: (by) => {
+        console.warn(`[chat] the microphone was taken over by "${by}"`)
+        setState('idle')
+      },
+    })
+    return () => releaseStt('agent-chat')
   }, [onTranscript, onAutoSend])
 
   const recording = state === 'recording'

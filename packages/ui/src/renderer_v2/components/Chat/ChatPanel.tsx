@@ -41,7 +41,7 @@ import { isTtsEnabled, setTtsEnabled, stopPlayback } from "../../services/TtsPla
 import {
   startPushToTalk, stopPushToTalk,
   startHandsFree, stopHandsFree,
-  setOnTranscript, setOnAutoSend, setOnStateChange,
+  claimStt, releaseStt,
   type SttState,
 } from "../../services/SttCapture";
 import { resolveSeamlessOverlayMessages } from "./chatRenderModel";
@@ -1260,8 +1260,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = observer(
             <div className="input-footer">
               <div className="input-left-tools">
                 <TtsToggleButton />
-                <PushToTalkButton richInputRef={richInputRef} store={store} />
-                <HandsFreeButton store={store} />
+                <SttControls richInputRef={richInputRef} store={store} />
                 <div
                   className={`chat-profile-selector ${profileSelectorDisabled ? "is-disabled" : ""}`}
                   onClick={() => {
@@ -1375,94 +1374,82 @@ const TtsToggleButton: React.FC = () => {
   )
 }
 
-// ─── Push-to-Talk Button ────────────────────────────────────────────────────
+// ─── Speech-to-text controls ────────────────────────────────────────────────
+//
+// ONE component owning BOTH buttons, deliberately.
+//
+// These used to be two sibling components that each registered their own callbacks on the
+// SttCapture singleton. There is only one onStateChange slot, so whichever mounted last won
+// and the other button's state callback was orphaned — it recorded and transcribed correctly
+// but never lit up, with nothing logged to explain it. Registering both handlers in a single
+// claim makes that impossible: one owner, one set of slots, one piece of state.
 
-const PushToTalkButton: React.FC<{ richInputRef: React.RefObject<RichInputHandle | null>; store: any }> = ({ richInputRef }) => {
+const SttControls: React.FC<{ richInputRef: React.RefObject<RichInputHandle | null>; store: any }> = ({ richInputRef, store }) => {
   const [state, setState] = React.useState<SttState>('idle')
 
   React.useEffect(() => {
-    setOnTranscript((text: string) => {
-      // Insert transcribed text into the input box
-      if (richInputRef.current) {
-        // Append to current input content
+    claimStt('claude-chat', {
+      // Push-to-talk: drop the text into the composer, never send it.
+      onTranscript: (text: string) => {
         const el = (richInputRef.current as any)?.rootRef?.current
-        if (el) {
-          const current = el.textContent || ''
-          el.textContent = current ? current + ' ' + text : text
-          // Move cursor to end
-          const range = document.createRange()
-          range.selectNodeContents(el)
-          range.collapse(false)
-          const sel = window.getSelection()
-          sel?.removeAllRanges()
-          sel?.addRange(range)
+        if (!el) {
+          // Do not fail silently — the words were captured and transcribed, and without
+          // this you would simply never see them appear.
+          console.warn('[chat] transcript arrived but the input box is not mounted; dropped:', text)
+          return
         }
-      }
+        const current = el.textContent || ''
+        el.textContent = current ? current + ' ' + text : text
+        const range = document.createRange()
+        range.selectNodeContents(el)
+        range.collapse(false)
+        const sel = window.getSelection()
+        sel?.removeAllRanges()
+        sel?.addRange(range)
+      },
+      // Hands-free: each utterance sends itself.
+      onAutoSend: (text: string) => {
+        if (!text || !store) return
+        const sessionId = store.chat?.activeSessionId || store.chat?.sessions?.[0]?.id
+        if (!sessionId) {
+          console.warn('[chat] hands-free transcript had no active session to send to; dropped:', text)
+          return
+        }
+        store.sendChatMessage(sessionId, text)
+      },
+      onStateChange: (s: SttState) => setState(s),
+      onEvicted: (by) => {
+        console.warn(`[chat] the microphone was taken over by "${by}"`)
+        setState('idle')
+      },
     })
-    setOnStateChange((s: SttState) => setState(s))
-  }, [richInputRef])
+    return () => releaseStt('claude-chat')
+  }, [richInputRef, store])
 
   const isRecording = state === 'recording'
   const isTranscribing = state === 'transcribing'
-
-  const handleClick = () => {
-    if (isRecording) {
-      stopPushToTalk()
-    } else if (state === 'idle') {
-      startPushToTalk()
-    }
-  }
-
-  return (
-    <button
-      className={`stt-push-to-talk ${isRecording ? 'recording' : ''} ${isTranscribing ? 'transcribing' : ''}`}
-      onClick={handleClick}
-      disabled={isTranscribing || state === 'handsfree' || state === 'handsfree-recording'}
-      title={isRecording ? 'Stop recording (click to transcribe)' : isTranscribing ? 'Transcribing...' : 'Push to talk — click to start, click again to stop'}
-    >
-      {isTranscribing ? <Radio size={14} className="pulse" /> : <Mic size={14} />}
-    </button>
-  )
-}
-
-// ─── Hands-Free Button ──────────────────────────────────────────────────────
-
-const HandsFreeButton: React.FC<{ store: any }> = ({ store }) => {
-  const [state, setState] = React.useState<SttState>('idle')
-
-  React.useEffect(() => {
-    setOnAutoSend((text: string) => {
-      // Auto-send transcribed text as a chat message
-      if (text && store) {
-        const sessionId = store.chat?.activeSessionId || store.chat?.sessions?.[0]?.id
-        if (sessionId) {
-          store.sendChatMessage(sessionId, text)
-        }
-      }
-    })
-    setOnStateChange((s: SttState) => setState(s))
-  }, [store])
-
-  const isActive = state === 'handsfree' || state === 'handsfree-recording'
+  const isHandsFree = state === 'handsfree' || state === 'handsfree-recording'
   const isSpeaking = state === 'handsfree-recording'
 
-  const handleClick = () => {
-    if (isActive) {
-      stopHandsFree()
-    } else if (state === 'idle') {
-      startHandsFree()
-    }
-  }
-
   return (
-    <button
-      className={`stt-handsfree ${isActive ? 'active' : ''} ${isSpeaking ? 'speaking' : ''}`}
-      onClick={handleClick}
-      disabled={state === 'recording' || state === 'transcribing'}
-      title={isActive ? (isSpeaking ? 'Listening... (speech detected)' : 'Hands-free active — click to stop') : 'Hands-free mode — auto-sends after silence'}
-    >
-      <Radio size={14} />
-    </button>
+    <>
+      <button
+        className={`stt-push-to-talk ${isRecording ? 'recording' : ''} ${isTranscribing ? 'transcribing' : ''}`}
+        onClick={() => { if (isRecording) stopPushToTalk(); else if (state === 'idle') startPushToTalk() }}
+        disabled={isTranscribing || isHandsFree}
+        title={isRecording ? 'Stop recording (click to transcribe)' : isTranscribing ? 'Transcribing...' : 'Push to talk — click to start, click again to stop'}
+      >
+        {isTranscribing ? <Radio size={14} className="pulse" /> : <Mic size={14} />}
+      </button>
+      <button
+        className={`stt-handsfree ${isHandsFree ? 'active' : ''} ${isSpeaking ? 'speaking' : ''}`}
+        onClick={() => { if (isHandsFree) stopHandsFree(); else if (state === 'idle') startHandsFree() }}
+        disabled={isRecording || isTranscribing}
+        title={isHandsFree ? (isSpeaking ? 'Listening... (speech detected)' : 'Hands-free active — click to stop') : 'Hands-free mode — auto-sends after silence'}
+      >
+        <Radio size={14} />
+      </button>
+    </>
   )
 }
 
