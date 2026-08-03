@@ -2027,13 +2027,85 @@ if out: print(json.dumps(out))
    *
    * Body: same as /launch plus model metadata fields for service registration.
    */
+
+  // ─── Service port allocation ─────────────────────────────────────────────────────────────
+  //
+  // A template's saved port is a STARTING POINT, not a reservation. Launch a second instance of
+  // the same provider and it must land on the next free port instead of colliding. (The
+  // reranker template and every 9B template are all pinned to 5003, so this is not theoretical.)
+  //
+  // Two sources are consulted because either on its own gives a wrong answer:
+  //   - the registry catches services that are registered but not yet listening (mid-launch),
+  //     which a port probe cannot see;
+  //   - live listeners catch anything the registry does not know about.
+  async function allocateServicePort(vmid, pveHostIp, desiredPort) {
+    const start = parseInt(desiredPort, 10) || 5001;
+    const taken = new Set();
+
+    const state = loadActiveServices();
+    for (const s of Object.values(state.services || {})) {
+      if (s.vmid === vmid && s.port) taken.add(Number(s.port));
+      // kvcache-proxy companions sit on their own port derived from the service port.
+      if (s.vmid === vmid && s.kvProxyPort) taken.add(Number(s.kvProxyPort));
+    }
+
+    let probed = false;
+    try {
+      const r = await sshService.exec(pveHostIp,
+        `pct exec ${vmid} -- bash -c "ss -lntuH 2>/dev/null | grep -oE ':[0-9]+ ' | tr -d ': '"`,
+        { timeout: 12000 });
+      for (const line of String((r && r.stdout) || '').split('\n')) {
+        const n = parseInt(line.trim(), 10);
+        if (n) taken.add(n);
+      }
+      probed = true;
+    } catch (err) {
+      // Loud on purpose: allocating from the registry alone can hand back a port that something
+      // unregistered is already holding, and the launch then fails with a confusing bind error.
+      console.warn(`[svc-launch] could not probe listening ports on CT${vmid} (${err.message}) — allocating from the registry ALONE, a collision with an unregistered listener is possible`);
+    }
+
+    for (let p = start; p < start + 200; p++) {
+      if (!taken.has(p)) {
+        if (p !== start) {
+          console.log(`[svc-launch] port ${start} taken on CT${vmid} → allocated ${p}${probed ? '' : ' (registry-only check)'}`);
+        }
+        return p;
+      }
+    }
+    throw new Error(`no free port in ${start}..${start + 199} on CT${vmid}`);
+  }
+
+  /** Point a launch command at a different port: the flag AND koboldcpp's embedded config. */
+  function retargetCommandPort(cmd, oldPort, newPort) {
+    let out = String(cmd == null ? '' : cmd);
+    out = out.replace(new RegExp(`(--port[=\\s]+)${oldPort}\\b`, 'g'), `$1${newPort}`);
+    // koboldcpp ships its config as a base64 JSON blob carrying its own "port" key; leaving that
+    // stale would start the process on the old port regardless of the flag.
+    out = out.replace(/echo '([A-Za-z0-9+/=]+)' \| base64 -d/, (m, b64) => {
+      try {
+        const cfg = JSON.parse(Buffer.from(b64, 'base64').toString());
+        if (Number(cfg.port) === Number(oldPort)) {
+          cfg.port = newPort;
+          return `echo '${Buffer.from(JSON.stringify(cfg)).toString('base64')}' | base64 -d`;
+        }
+      } catch { /* not a kcpps blob — leave untouched */ }
+      return m;
+    });
+    return out;
+  }
+
   router.post('/launch-service', async (req, res) => {
-    const { node, providerId, port, tmuxSession,
+    const { node, providerId, tmuxSession,
             model, modelFamily, modelVariant, quantFormat, quantSize, contextSize,
             cudaDevices, gpuPciIds: explicitGpuPciIds,
             reservedVramMB: reqReservedVramMB, isTts, isTools, isImageGen, isStt,
             slots: reqSlots, aliasOverride } = req.body;
     let command = req.body.command;
+    // `port` is deliberately NOT destructured above: it is reassigned by the allocator below,
+    // and every downstream use (endpoint, service card, kvcache companion, proxy registration)
+    // must see the port actually launched on, not the one the template happened to store.
+    let port = req.body.port;
 
     // Cache-proof guard: older launcher JS baked literal single quotes into the
     // --chat-template-kwargs value, emitting ''\''{...}'\''' which bash collapses to
@@ -2065,7 +2137,22 @@ if out: print(json.dumps(out))
       return res.status(400).json({ error: `Cannot resolve PVE host IP for node ${node}` });
     }
 
-    const session = tmuxSession || `${providerId}-${port || 5001}`;
+    // Allocate BEFORE deriving names: the unit/session/script/log all embed the port, and a
+    // unit named for one port while the process listens on another is exactly the kind of
+    // mismatch that leaves an untrackable service behind.
+    const requestedPort = parseInt(port, 10) || 5001;
+    let allocatedPort = requestedPort;
+    try {
+      allocatedPort = await allocateServicePort(agent.vmid, pveHostIp, requestedPort);
+    } catch (err) {
+      return res.status(409).json({ error: err.message });
+    }
+    if (allocatedPort !== requestedPort) command = retargetCommandPort(command, requestedPort, allocatedPort);
+    port = allocatedPort;
+
+    const session = (tmuxSession && allocatedPort !== requestedPort)
+      ? String(tmuxSession).replace(new RegExp(`${requestedPort}$`), String(allocatedPort))
+      : (tmuxSession || `${providerId}-${port}`);
     const unitName = `ailab-${session}`;
     const scriptPath = `/opt/proxlab/services/${session}.sh`;
     const logFile = `/var/log/proxlab/${session}.log`;

@@ -565,20 +565,15 @@ export const LAUNCH_TEMPLATES = {
       numGpuBlocksOverride: { flag: '--num-gpu-blocks-override', type: 'number', default: 0, skipIfZero: true,
                         label: 'Override GPU Blocks',
                         tooltip: 'Manually set the number of KV cache blocks. Advanced: only when auto sizing fails.' },
-      swapSpace:    { flag: '--swap-space', type: 'number', default: 4,
-                        label: 'CPU Swap Space (GiB)',
-                        tooltip: 'CPU RAM reserved per GPU for KV-cache swap when blocks evict. 0 disables swap; bigger swap = more concurrency at cost of host RAM.' },
+      // --swap-space and --preemption-mode were REMOVED in vLLM's V1 engine (no CPU swap;
+      // preemption is recompute-only). They are re-declared in the 1cat-vllm override below,
+      // which is an older fork that still accepts --swap-space.
       cpuOffloadGb: { flag: '--cpu-offload-gb', type: 'number', default: 0, skipIfZero: true,
                         label: 'CPU Offload (GiB)',
                         tooltip: 'Per-GPU CPU memory to offload model weights to. Lets you run models larger than VRAM at cost of latency.' },
       enableChunkedPrefill: { flag: '--enable-chunked-prefill', type: 'flag', default: false,
                         label: 'Enable Chunked Prefill',
                         tooltip: 'Split long-prompt prefills into chunks so decode can interleave. Reduces decode TBT under heavy prefill load.' },
-      preemptionMode: { flag: '--preemption-mode', type: 'select', default: '',
-                        options: ['', 'recompute', 'swap'],
-                        labels: { '': 'auto' },
-                        label: 'Preemption Mode',
-                        tooltip: '"recompute" = drop and re-prefill on resume; "swap" = move to CPU swap (needs swap-space).' },
       // Attention backend
       attentionBackend: { flag: '--attention-backend', type: 'select', default: '',
                         options: ['', 'FLASH_ATTN', 'FLASHINFER', 'XFORMERS', 'TORCH_SDPA', 'TRITON_ATTN_VLLM_V1', 'ROCM_FLASH'],
@@ -640,9 +635,6 @@ export const LAUNCH_TEMPLATES = {
       disableLogStats: { flag: '--disable-log-stats', type: 'flag', default: false,
                         label: 'Disable Stats Log',
                         tooltip: 'Suppress periodic engine stats logging. Cleaner logs; lose visibility into throughput/queue depth.' },
-      disableLogRequests: { flag: '--disable-log-requests', type: 'flag', default: false,
-                        label: 'Disable Request Log',
-                        tooltip: 'Suppress per-request log lines.' },
       maxLogLen:    { flag: '--max-log-len', type: 'number', default: 0, skipIfZero: true,
                         label: 'Max Log Line Length',
                         tooltip: 'Truncate prompt/response strings logged to this many chars. 0 = full.' },
@@ -716,5 +708,14 @@ export const LAUNCH_TEMPLATES = {
         ...LAUNCH_TEMPLATES['vllm'].advancedArgs.maxNumBatchedTokens,
         default: 16384,
         tooltip: '1Cat-vLLM V100 sweet spot: 16384 for AWQ at high context. Reduce if hitting OOM during long-prompt prefill.' },
+      // These two exist ONLY here: upstream vLLM 0.18 dropped them with the V1 engine, but this
+      // fork predates that and still accepts them. Verified against `vllm serve --help=all` in
+      // /opt/conda/envs/1cat-vllm-sm70 — do not "tidy" them back into the shared spec.
+      swapSpace: { flag: '--swap-space', type: 'number', default: 0, skipIfZero: true,
+                        label: 'CPU Swap Space (GiB)',
+                        tooltip: '1Cat-vLLM only. CPU RAM per GPU for KV-cache swap on eviction. 0 = omit the flag.' },
+      disableLogRequests: { flag: '--disable-log-requests', type: 'flag', default: false,
+                        label: 'Disable Request Log',
+                        tooltip: '1Cat-vLLM only. Suppress per-request log lines.' },
     },
   };
