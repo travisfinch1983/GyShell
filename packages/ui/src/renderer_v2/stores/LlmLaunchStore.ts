@@ -470,7 +470,10 @@ export class LlmLaunchStore {
   setPlacement(p: any): void {
     this.customGpus = [] // choosing a suggested placement clears any custom GPU selection
     this.selectedPlacement = p
+    const prevNode = this.selectedNode
     this.selectedNode = p?.node || p?.gpus?.[0]?.node || this.selectedNode
+    // The auto-port is resolved PER CONTAINER, so a cached one from another node is meaningless.
+    if (this.selectedNode !== prevNode) this.autoPort = 0
     this.applyPlacementSettings(p)
   }
 
@@ -517,7 +520,9 @@ export class LlmLaunchStore {
       nvlink: false, custom: true,
     }
     this.selectedPlacement = p
+    const prevNode2 = this.selectedNode
     this.selectedNode = p.node
+    if (this.selectedNode !== prevNode2) this.autoPort = 0  // per-container: drop a stale allocation
     this.applyPlacementSettings(p)
   }
 
@@ -601,7 +606,11 @@ export class LlmLaunchStore {
     if (Number.isFinite(manual) && manual > 0) return // manual override → no auto
     if (this.autoPort && !force) return
     try {
-      const r: any = await bridge().request('GET', '/api/ai/next-port')
+      // Pass the target node: without it the backend can only walk the global registry, which
+      // cannot see unregistered listeners and treats a port busy on one container as free
+      // everywhere. With it, the allocator probes that container directly.
+      const q = this.selectedNode ? `?node=${encodeURIComponent(this.selectedNode)}` : ''
+      const r: any = await bridge().request('GET', `/api/ai/next-port${q}`)
       if (r?.port) runInAction(() => { this.autoPort = Number(r.port) })
     } catch { /* keep fallback */ }
   }

@@ -1916,9 +1916,25 @@ if out: print(json.dumps(out))
 
   /** GET /next-port — a conflict-free port for the launcher (blank Port field = auto-assign). Scans
    *  active-services + in-flight reservations; reserves the returned port for ~5 min. */
-  router.get('/next-port', (_req, res) => {
-    try { res.json({ port: getNextPort() }); }
-    catch (e) { res.status(500).json({ error: String(e?.message || e) }); }
+  // ?node=<node> makes this CONTAINER-AWARE: it delegates to the same allocator /launch-service
+  // uses, which checks the registry AND probes what is actually listening in that container.
+  // Without a node it falls back to the old global registry walk, which cannot see unregistered
+  // listeners and treats a port busy on one container as free everywhere.
+  router.get('/next-port', async (req, res) => {
+    try {
+      const node = req.query.node;
+      if (!node) return res.json({ port: getNextPort(), scope: 'global-registry-only' });
+      const cfg = loadAiConfig();
+      const agent = cfg.agents?.[node];
+      const hostIp = pveApi.getNodeMap()[node]?.ip || agent?.hostIp;
+      if (!agent?.vmid || !hostIp) {
+        // Say so rather than silently handing back a global guess for a node we cannot resolve.
+        return res.json({ port: getNextPort(), scope: 'global-registry-only', warning: `no resolvable agent/host for node '${node}'` });
+      }
+      const seed = parseInt(req.query.from, 10) || getNextPort();
+      const port = await allocateServicePort(agent.vmid, hostIp, seed);
+      res.json({ port, scope: `CT${agent.vmid}` });
+    } catch (e) { res.status(500).json({ error: String(e?.message || e) }); }
   });
 
   /**
@@ -3278,10 +3294,8 @@ WantedBy=multi-user.target
 
   // ─── Active Services ────────────────────────────────────────────────────
 
-  /** GET /next-port — Return next available port for LLM launch */
-  router.get('/next-port', (req, res) => {
-    res.json({ port: getNextPort() });
-  });
+  // (a second '/next-port' used to be registered here; Express matches the first registration,
+  //  so it was dead code that silently diverged from the real one. Removed.)
 
   /** Known STT provider IDs for service type classification */
   const STT_PROVIDERS = new Set(['faster-whisper']);
