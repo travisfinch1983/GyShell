@@ -885,17 +885,29 @@ function findImageGenByProvider(providerId, nth = 1) {
   return matches[nth - 1] || null;
 }
 
-function classifyService(svc) {
-  // Check model name for embedding/reranker keywords
+/**
+ * THE single service classifier. Exported so the API layer renders exactly what the proxy
+ * routes — there used to be a second, weaker copy in llm/routes/ai.js that had no embed or
+ * rerank case, so rerankers and embedders showed up on service cards as plain LLMs.
+ *
+ * EXPLICIT FLAGS FIRST, then model-name keywords. The flags are set deliberately at launch, so
+ * they must outrank name-sniffing: 'encoder' is an EMBED_KEYWORDS entry, and a TTS model with
+ * "encoder" in its name would otherwise be classified as an embedder. Embedders and rerankers
+ * carry no flag of their own, which is why they fall back to keywords.
+ *
+ * Provider sets AND flags are both consulted — the two old copies each checked only one
+ * (proxy.js the provider sets, ai.js the flags), so each mislabelled what the other caught.
+ */
+export function classifyService(svc) {
+  if (svc.isTools) return 'tools';
+  if (svc.isImageGen || IMAGE_GEN_PROVIDERS.has(svc.providerId)) return 'image';
+  // STT before the isTts check: STT providers carry isTts=false.
+  if (svc.isStt || STT_PROVIDERS.has(svc.providerId)) return 'stt';
+  if (svc.isTts) return 'tts';
   const modelLower = (svc.model || '').toLowerCase();
   if (EMBED_KEYWORDS.some(kw => modelLower.includes(kw))) return 'embed';
   if (RERANK_KEYWORDS.some(kw => modelLower.includes(kw))) return 'rerank';
-  if (svc.isTools) return 'tools';
-  if (IMAGE_GEN_PROVIDERS.has(svc.providerId)) return 'image';
-  // Check STT before the !isTts catch-all (STT providers have isTts=false)
-  if (STT_PROVIDERS.has(svc.providerId)) return 'stt';
-  if (!svc.isTts) return 'llm';
-  return 'tts';
+  return 'llm';
 }
 
 /**

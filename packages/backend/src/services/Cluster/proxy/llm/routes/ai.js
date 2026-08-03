@@ -25,6 +25,9 @@ import { ProviderInstaller } from '../services/provider-installer.js';
 import { inspectModel, detectFormat, recommendedHeaderSize, safetensorsHeaderSize } from '../services/model-inspector.js';
 import { getProviderSymlinks } from '../services/shared-folder-mappings.js';
 import { LlmMetricsPoller } from '../services/metrics-poller.js';
+// Single source of truth for service type — see the note on classifyService in proxy.js.
+// (proxy.js does not import this module, so there is no cycle.)
+import { classifyService as classifyServiceShared } from '../../proxy.js';
 
 // Per-provider VRAM reservation strategy:
 //   null  = static LLM — trust live nvidia-smi (no hot-swap, VRAM won't change mid-run)
@@ -3301,12 +3304,10 @@ WantedBy=multi-user.target
   const STT_PROVIDERS = new Set(['faster-whisper']);
 
   /** Classify a service as llm, tts, stt, or tools */
+  // Delegates to the shared classifier so the cards match the proxy's own view. The local copy
+  // this replaced had no embed/rerank case, so every embedder and reranker rendered as an LLM.
   function classifyServiceType(svc) {
-    if (svc.isTools) return 'tools';
-    if (svc.isImageGen) return 'image';
-    if (svc.isStt || STT_PROVIDERS.has(svc.providerId)) return 'stt';
-    if (svc.isTts) return 'tts';
-    return 'llm';
+    return classifyServiceShared(svc);
   }
 
   /** GET /active-services — List all active services with computed serviceType */
