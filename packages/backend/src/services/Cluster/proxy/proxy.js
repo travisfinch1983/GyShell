@@ -538,11 +538,239 @@ async function fetchExternalSourceBalance(source) {
 // Forward a chat/completions request to an external model source's upstream API. The
 // [TAG] is already stripped by the caller (upstreamModel is the real id). Injects the
 // vaulted/env key, rewrites body.model, and streams the response straight back (SSE-safe).
+
+// ─── Prompt caching (external sources) ────────────────────────────────────────────────────
+//
+// Clients send plain OpenAI-shaped requests and set NO cache_control — the proxy injects it so
+// caching is transparent. Verified on OpenRouter + anthropic/claude-opus-5: an identical
+// 5.5k-token prompt cost $0.0346 (cache_write_tokens 5503) then $0.0029 (cached_tokens 5503).
+//
+// CAPABILITY IS DERIVED FROM PRICING, not a hand-maintained vendor list.
+//
+// An upstream that publishes an `input_cache_write` price is telling us it bills for EXPLICIT
+// cache breakpoints — i.e. it acts on cache_control. An upstream that caches automatically has
+// a cache READ discount and no write price, so it lands outside this set and we inject nothing
+// (there is nothing to inject; it caches with or without us).
+//
+// This replaced a `/^anthropic\//` allowlist that was wrong twice over: it skipped OpenRouter's
+// `~anthropic/...-latest` aliases (leading tilde) so they ran uncached forever, and it ignored
+// the Google/OpenAI/Qwen models that do bill cache writes.
+const ANTHROPIC_MODEL_RE = /^~?anthropic\//i;
+const cacheCapability = new Map();                 // sourceId -> { ids:Set<string>, updatedAt }
+const _capInflight = new Map();
+const CACHE_CAP_TTL = 6 * 60 * 60 * 1000;          // 6h — published prices move rarely
+
+/** Build + store the explicit-cache set for a source from an already-fetched raw model list. */
+function setCacheCapability(source, rawModels) {
+  const ids = new Set(
+    (rawModels || []).filter((m) => Number(m?.pricing?.cacheWritePerM) > 0).map((m) => m.id),
+  );
+  cacheCapability.set(source.id, { ids, updatedAt: Date.now() });
+  console.log(`[proxy:cache] ${source.id}: ${ids.size}/${(rawModels || []).length} models bill for cache writes (explicit cache_control)`);
+  return ids;
+}
+
+/** Refresh the capability set out-of-band. Never awaited on the request path. */
+function refreshCacheCapability(source) {
+  const entry = cacheCapability.get(source.id);
+  if (entry && Date.now() - entry.updatedAt < CACHE_CAP_TTL) return;
+  if (_capInflight.has(source.id)) return;
+  const p = fetchExternalSourceModelsRaw(source)
+    .then((models) => { if (models && models.length) setCacheCapability(source, models); })
+    .catch((e) => {
+      // Loud: silently falling back would mean caching quietly stops for most models.
+      console.warn(`[proxy:cache] capability refresh failed for ${source.id}: ${e.message} — only Anthropic models will be cached until it succeeds`);
+    })
+    .finally(() => _capInflight.delete(source.id));
+  _capInflight.set(source.id, p);
+}
+
+function cachingSupported(source, upstreamModel) {
+  const m = String(upstreamModel || '');
+  if (source.transport === 'anthropic') return true;   // native Anthropic source — always explicit
+  if (ANTHROPIC_MODEL_RE.test(m)) return true;         // verified by measurement; never gated on a fetch
+  refreshCacheCapability(source);                      // fire-and-forget; warms for later calls
+  const entry = cacheCapability.get(source.id);
+  return entry ? entry.ids.has(m) : false;             // cold ⇒ don't guess
+}
+
+/** Anthropic is the only dialect that understands a cache_control `ttl`; others take the bare
+ *  breakpoint. Sending an unknown field to a strict upstream is how you break every call. */
+function ttlSupported(source, upstreamModel) {
+  return source.transport === 'anthropic' || ANTHROPIC_MODEL_RE.test(String(upstreamModel || ''));
+}
+
+// Per-model toggles live in source.modelOptions. ABSENT MEANS ON — Travis's requirement is
+// that every caching option defaults to enabled, so config is opt-OUT.
+function cacheOptsFor(source, upstreamModel) {
+  const mo = (source.modelOptions || {})[upstreamModel] || {};
+  return {
+    ephemeral: mo.cacheEphemeral !== false,   // 5-minute breakpoints
+    extended:  mo.cacheExtended  !== false,   // 1-hour TTL on the stable system prefix
+  };
+}
+
+/** Normalise a message's content to a block array so cache_control has somewhere to attach. */
+function asBlocks(content) {
+  if (Array.isArray(content)) return content;
+  if (typeof content === 'string') return [{ type: 'text', text: content }];
+  return null;
+}
+
+/**
+ * Inject cache breakpoints into an OpenAI-shaped payload. Mutates and returns `parsed`.
+ *
+ * TWO breakpoints, deliberately:
+ *   1. the LAST system block  — the big stable prefix; gets the 1h TTL when extended is on
+ *   2. the last message BEFORE the final user turn — the conversation prefix, which grows each
+ *      turn, so it only ever gets the 5-minute ephemeral TTL
+ * Anthropic allows up to 4; two covers the wins without burning the budget.
+ *
+ * Below ~1024 tokens the provider silently ignores cache_control, so short prompts cost
+ * nothing and need no special-casing here.
+ */
+function applyPromptCaching(parsed, source, upstreamModel) {
+  if (!parsed || !Array.isArray(parsed.messages)) return false;
+  if (!cachingSupported(source, upstreamModel)) return false;
+  const opts = cacheOptsFor(source, upstreamModel);
+  // `ephemeral` is the MASTER switch: off ⇒ inject nothing. A toggle labelled "Cache" that
+  // still wrote breakpoints when unticked would be a control that doesn't control anything.
+  if (!opts.ephemeral) return false;
+
+  let marked = 0;
+  const mark = (msg, ttl) => {
+    const blocks = asBlocks(msg.content);
+    if (!blocks || !blocks.length) return false;
+    const last = blocks[blocks.length - 1];
+    if (!last || typeof last !== 'object') return false;
+    last.cache_control = ttl ? { type: 'ephemeral', ttl } : { type: 'ephemeral' };
+    msg.content = blocks;
+    marked += 1;
+    return true;
+  };
+
+  // 1. last system message — longest-lived content, so it earns the 1h TTL.
+  for (let i = parsed.messages.length - 1; i >= 0; i--) {
+    if (parsed.messages[i] && parsed.messages[i].role === 'system') {
+      mark(parsed.messages[i], opts.extended && ttlSupported(source, upstreamModel) ? '1h' : undefined);
+      break;
+    }
+  }
+
+  // 2. conversation prefix: the message just before the final user turn. Ephemeral only —
+  //    this boundary moves every turn, so a long TTL would just churn cache writes.
+  if (opts.ephemeral && parsed.messages.length >= 3) {
+    for (let i = parsed.messages.length - 2; i >= 0; i--) {
+      const r = parsed.messages[i] && parsed.messages[i].role;
+      if (r === 'system') break;
+      if (r === 'assistant' || r === 'user') { mark(parsed.messages[i]); break; }
+    }
+  }
+  // Report what was ACTUALLY marked, not merely what was permitted. The stats counter reads
+  // this: reporting "injected" for a request the per-model toggle had disabled would make the
+  // tally lie about its own behaviour.
+  return marked > 0;
+}
+
+
+// ─── Cache-usage observability ────────────────────────────────────────────────────────────
+//
+// Injecting cache_control silently is not good enough: if an upstream quietly ignores it, or a
+// prompt sits under the ~1024-token minimum, everything still "works" and nobody ever finds out
+// the cache is dead. So tally what the upstream REPORTS back and expose it per model.
+//
+// In-memory, reset on proxy restart — `since` is returned so the UI can say so honestly rather
+// than implying an all-time total.
+const cacheStats = new Map();      // `${sourceId}::${model}` -> counters
+const cacheStatsSince = Date.now();
+
+const _n = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+
+/** Normalise the three usage dialects (OpenAI, OpenRouter, Anthropic) into one shape. */
+function normalizeUsage(u) {
+  if (!u || typeof u !== 'object') return null;
+  const d = u.prompt_tokens_details || u.input_tokens_details || {};
+  const cc = u.cache_creation || {};
+  return {
+    input: _n(u.prompt_tokens ?? u.input_tokens),
+    output: _n(u.completion_tokens ?? u.output_tokens),
+    // OpenAI/OpenRouter report reads under prompt_tokens_details.cached_tokens; Anthropic uses
+    // cache_read_input_tokens. Writes are only ever reported by providers with EXPLICIT caching.
+    cacheRead: _n(d.cached_tokens ?? u.cached_tokens ?? u.cache_read_input_tokens ?? u.cache_read_tokens),
+    // OpenRouter nests BOTH counters under prompt_tokens_details (cached_tokens +
+    // cache_write_tokens); Anthropic puts creation at the top level. Checking only the top
+    // level made every write read as 0 — verified against a live response before fixing.
+    cacheWrite: _n(
+      d.cache_write_tokens ?? u.cache_creation_input_tokens ?? u.cache_write_tokens ??
+      (_n(cc.ephemeral_5m_input_tokens) + _n(cc.ephemeral_1h_input_tokens) || undefined),
+    ),
+    cost: _n(u.cost),
+  };
+}
+
+/**
+ * Pull the LAST usage object out of a response body — handles both a plain JSON completion and
+ * an SSE stream (where usage arrives in a trailing chunk).
+ */
+function extractUsage(text) {
+  if (!text) return null;
+  let last = null;
+  const t = text.trimStart();
+  if (t.startsWith('{')) {
+    try { const j = JSON.parse(t); if (j && j.usage) last = j.usage; } catch { /* truncated tail */ }
+  }
+  if (!last) {
+    const re = /^data:\s*(\{.*\})\s*$/gm;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      try { const j = JSON.parse(m[1]); if (j && j.usage) last = j.usage; } catch { /* partial chunk */ }
+    }
+  }
+  return normalizeUsage(last);
+}
+
+/** Record one completed upstream call. `injected` = did we actually add cache_control? */
+function recordCacheUsage(source, model, text, injected) {
+  try {
+    const u = extractUsage(text);
+    const k = `${source.id}::${model}`;
+    const s = cacheStats.get(k) || { requests: 0, injected: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, lastAt: null };
+    s.requests += 1;
+    if (injected) s.injected += 1;
+    if (u) {
+      s.input += u.input; s.output += u.output;
+      s.cacheRead += u.cacheRead; s.cacheWrite += u.cacheWrite; s.cost += u.cost;
+    }
+    s.lastAt = Date.now();
+    cacheStats.set(k, s);
+    if (u && (u.cacheRead || u.cacheWrite)) {
+      console.log(`[proxy:cache] ${k} read=${u.cacheRead} write=${u.cacheWrite} in=${u.input} out=${u.output}`);
+    } else if (injected) {
+      // Loud on purpose: injected but nothing came back means the cache is doing nothing.
+      console.log(`[proxy:cache] ${k} injected but upstream reported NO cache tokens (prompt under the ~1024-token minimum, or ignored)`);
+    }
+  } catch (e) {
+    console.warn(`[proxy:cache] usage tally failed for ${source?.id}/${model}: ${e.message}`);
+  }
+}
+
 async function forwardToExternalSource(res, source, upstreamModel, parsed) {
   const key = resolveExternalSourceKey(source);
   const ep = externalTransportEndpoints(source);
   const url = ep.chatUrl;
   const headers = { 'content-type': 'application/json', ...ep.chatHeaders(key) };
+
+  // Inject cache breakpoints BEFORE serialising. No-op for models that don't support it.
+  let cacheInjected = false;
+  if (cachingSupported(source, upstreamModel)) {
+    cacheInjected = applyPromptCaching(parsed, source, upstreamModel);
+    // The 1h TTL is gated behind a beta header on native Anthropic. Harmless elsewhere, but
+    // only send it where it means something.
+    const co = cacheOptsFor(source, upstreamModel);
+    if (cacheInjected && source.transport === 'anthropic' && co.ephemeral && co.extended) {
+      headers['anthropic-beta'] = 'extended-cache-ttl-2025-04-11';
+    }
+  }
   const outBody = JSON.stringify({ ...parsed, model: upstreamModel });
 
   let upstream;
@@ -561,7 +789,22 @@ async function forwardToExternalSource(res, source, upstreamModel, parsed) {
   try {
     const { Readable } = await import('node:stream');
     const node = Readable.fromWeb(upstream.body);
-    node.on('end', () => { if (upstream._timer) clearTimeout(upstream._timer); });
+    // Observe a CAPPED copy for the usage tally. The client's bytes still go straight through
+    // via pipe(); this only ever reads, never gates or rewrites the stream, so a failure here
+    // cannot stall a response. Usage lives at the tail of both dialects, so keep the tail.
+    const CAP = 256 * 1024;
+    let seen = '';
+    node.on('data', (chunk) => {
+      try {
+        seen += chunk.toString('utf8');
+        if (seen.length > CAP) seen = seen.slice(-CAP);
+      } catch { /* binary/undecodable — tally is best-effort, the stream is not */ }
+    });
+    node.on('end', () => {
+      if (upstream._timer) clearTimeout(upstream._timer);
+      recordCacheUsage(source, upstreamModel, seen, cacheInjected);
+      seen = '';
+    });
     node.on('error', () => { try { res.end(); } catch {} });
     node.pipe(res);
   } catch (e) {
@@ -1813,10 +2056,30 @@ export function createProxyRouter(sshService) {
       const allow = Array.isArray(source.models) ? source.models : [];
       const allowAll = allow.length === 0;
       const allowSet = new Set(allow);
-      const models = (await fetchExternalSourceModelsRaw(source))
-        .map(m => ({ ...m, enabled: allowAll || allowSet.has(m.id) }));
+      // cacheSupported comes from the forwarder's OWN rule, so the UI can only ever offer a
+      // toggle for something the proxy will genuinely act on.
+      const raw = await fetchExternalSourceModelsRaw(source);
+      if (raw.length) setCacheCapability(source, raw);   // UI and forwarder read the same set
+      const models = raw
+        .map(m => ({
+          ...m,
+          enabled: allowAll || allowSet.has(m.id),
+          cacheSupported: cachingSupported(source, m.id),
+          cacheOptions: cacheOptsFor(source, m.id),
+        }));
       res.json({ sourceId: source.id, tag: source.tag, allowAll, count: models.length, models });
     } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Prompt-cache token tallies per model for this source, as REPORTED BY THE UPSTREAM.
+  // In-memory since the proxy last started (`since`), so the UI can label it truthfully.
+  router.get('/external-sources/:id/cache-stats', (req, res) => {
+    const prefix = `${req.params.id}::`;
+    const models = {};
+    for (const [k, v] of cacheStats.entries()) {
+      if (k.startsWith(prefix)) models[k.slice(prefix.length)] = v;
+    }
+    res.json({ sourceId: req.params.id, since: cacheStatsSince, models });
   });
 
   // Live account credit/balance for one source (OpenRouter/DeepSeek supported; Anthropic not).

@@ -68,6 +68,25 @@ export const externalModelSourceSchema = z.object({
   discovery: z.enum(['auto', 'list']).default('auto'),
   /** explicit model ids (discovery:'list') or an allow-filter over discovered ids (discovery:'auto'). */
   models: z.array(z.string()).default([]),
+  /**
+   * Per-model proxy behaviour, keyed by UPSTREAM model id (untagged). Absent ⇒ defaults, and
+   * every option DEFAULTS ON — config here is opt-OUT, so a source that has never been touched
+   * still gets prompt caching. Only models the proxy reports as `cacheSupported` are affected;
+   * for the rest these fields are inert.
+   *
+   * ⚠️ POST /external-sources replaces the whole source object, so any UI that saves a source
+   * MUST carry modelOptions through or it silently wipes the user's toggles.
+   */
+  modelOptions: z
+    .record(
+      z.object({
+        /** master switch for prompt caching on this model (false ⇒ no cache_control injected). */
+        cacheEphemeral: z.boolean().optional(),
+        /** 1h TTL on the stable system prefix instead of the default 5 minutes. */
+        cacheExtended: z.boolean().optional(),
+      }),
+    )
+    .optional(),
   enabled: z.boolean().default(true),
 })
 export type ExternalModelSource = z.infer<typeof externalModelSourceSchema>

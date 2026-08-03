@@ -26,7 +26,36 @@ export interface AvailableModel {
     currency?: string
   }
   enabled: boolean
+  /** proxy will inject cache_control for this model — the BACKEND's rule, not a UI guess. */
+  cacheSupported?: boolean
+  /** effective (post-default) caching options the proxy would apply right now. */
+  cacheOptions?: { ephemeral: boolean; extended: boolean }
 }
+
+/** Per-model proxy behaviour. Absent ⇒ defaults, and every option defaults ON (opt-OUT). */
+export interface ModelOptions {
+  cacheEphemeral?: boolean
+  cacheExtended?: boolean
+}
+export type ModelOptionsMap = Record<string, ModelOptions>
+
+/** Upstream-reported cache token tallies, in-memory since the proxy last started. */
+export interface CacheStatEntry {
+  requests: number
+  injected: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  cost: number
+  lastAt: number | null
+}
+export interface CacheStatsResult {
+  sourceId: string
+  since: number
+  models: Record<string, CacheStatEntry>
+}
+
 export interface AvailableModelsResult {
   sourceId: string
   tag: string
@@ -93,6 +122,16 @@ export const modelSourcesApi = {
   async available(id: string): Promise<AvailableModelsResult> {
     const r = await bridge().request('GET', `/api/proxy/external-sources/${encodeURIComponent(id)}/available`)
     return (r ?? { sourceId: id, tag: '', allowAll: true, count: 0, models: [] }) as AvailableModelsResult
+  },
+
+  /** Prompt-cache token tallies per model (what the UPSTREAM reported, not what we hoped). */
+  async cacheStats(id: string): Promise<CacheStatsResult> {
+    try {
+      const r = await bridge().request('GET', `/api/proxy/external-sources/${encodeURIComponent(id)}/cache-stats`)
+      return (r ?? { sourceId: id, since: 0, models: {} }) as CacheStatsResult
+    } catch {
+      return { sourceId: id, since: 0, models: {} }
+    }
   },
 
   /** Live account credit/balance for all sources (OpenRouter/DeepSeek supported). */
