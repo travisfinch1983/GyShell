@@ -55,6 +55,11 @@ const hfDownloadsFile = join(dataDir, 'hf-downloads.json');
 const hfHistoryFile = join(dataDir, 'hf-history.json');
 const settingsFile = join(dataDir, 'proxlab-ui-settings.json'); // renamed: avoid gybackend settings.json collision
 const serviceHistoryFile = join(dataDir, 'service-history.json');
+// Durable "this service must die" queue. A removal whose remote cleanup failed is recorded here
+// and retried by a background worker, so the obligation outlives both the request and a backend
+// restart. Without this, a failed cleanup deleted the registry entry and the process became an
+// invisible orphan holding VRAM forever.
+const pendingRemovalsFile = join(dataDir, 'pending-removals.json');
 
 function loadSettings() {
   try { if (existsSync(settingsFile)) return JSON.parse(readFileSync(settingsFile, 'utf-8')); } catch {}
@@ -3512,6 +3517,262 @@ WantedBy=multi-user.target
     res.json({ ok: true });
   });
 
+
+  // ─── Service teardown: destroy, then PROVE it ────────────────────────────────────────────
+  //
+  // "systemctl stop" is not teardown. A unit can be inactive and still enabled (it returns at
+  // the next boot), and a process can outlive its unit while holding a CUDA context — koboldcpp
+  // forks, and vLLM's multiproc_executor detaches engine-core + TP workers that the nvidia
+  // driver will NOT clean up. Both keep their VRAM while systemd reports success.
+  //
+  // So this stops, disables, deletes the unit file AND the target.wants symlink, deletes the
+  // launch script, SIGKILLs whatever is left in the cgroup, then sweeps by script path and by
+  // listening port. It ends by verifying four independent conditions and printing a verdict the
+  // caller parses — never "the command exited 0, so it worked".
+  const shq = (v) => String(v == null ? '' : v).replace(/'/g, "'\\''");
+
+  function buildTeardownCmd(svc) {
+    const unit = shq(svc.systemdUnit || '');
+    const session = shq(svc.tmuxSession || '');
+    const script = shq(svc.scriptPath || (session ? `/opt/proxlab/services/${session}.sh` : ''));
+    const port = String(parseInt(svc.port, 10) || 0);
+    const kvPort = port !== '0' ? port : '';
+    const inner = `
+set +e
+U='${unit}'; SCRIPT='${script}'; PORT='${port}'; KV='${kvPort}'; SESS='${session}'
+[ -n "$U" ] && {
+  for i in 1 2 3; do
+    systemctl stop "$U" 2>/dev/null
+    systemctl disable "$U" 2>/dev/null
+    systemctl kill -s SIGKILL "$U" 2>/dev/null
+    systemctl is-active --quiet "$U" || break
+    sleep 2
+  done
+  rm -f "/etc/systemd/system/$U.service"
+  rm -f "/etc/systemd/system/multi-user.target.wants/$U.service"
+  systemctl reset-failed "$U" 2>/dev/null
+}
+[ -n "$KV" ] && {
+  systemctl stop "kvcache-proxy@$KV" 2>/dev/null
+  systemctl disable "kvcache-proxy@$KV" 2>/dev/null
+  rm -f "/opt/kvcache-proxy/configs/$KV.json"
+  systemctl reset-failed "kvcache-proxy@$KV" 2>/dev/null
+}
+[ -n "$SESS" ] && tmux kill-session -t "$SESS" 2>/dev/null
+systemctl daemon-reload 2>/dev/null
+# Survivors: match the launch script, then whatever still holds the port. This is the step that
+# actually frees leaked VRAM when a worker escaped its cgroup.
+[ -n "$SCRIPT" ] && {
+  for sig in TERM KILL; do
+    pkill -$sig -f "$SCRIPT" 2>/dev/null
+    sleep 1
+  done
+  rm -f "$SCRIPT"
+}
+[ "$PORT" != "0" ] && {
+  for sig in TERM KILL; do
+    pids=$(ss -lntpH "sport = :$PORT" 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u)
+    [ -z "$pids" ] && break
+    for pd in $pids; do kill -$sig "$pd" 2>/dev/null; done
+    sleep 2
+  done
+}
+# ---- verify, do not assume ----
+ACT=no; ENA=no; FILE=no; PORTBUSY=no
+[ -n "$U" ] && { systemctl is-active --quiet "$U" && ACT=yes; systemctl is-enabled --quiet "$U" 2>/dev/null && ENA=yes; [ -f "/etc/systemd/system/$U.service" ] && FILE=yes; }
+[ "$PORT" != "0" ] && { ss -lntH "sport = :$PORT" 2>/dev/null | grep -q . && PORTBUSY=yes; }
+echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
+`;
+    const b64 = Buffer.from(inner, 'utf8').toString('base64');
+    // base64 through pct exec: this script has quotes, $ and newlines, and every attempt to
+    // inline it directly has been mangled by one shell layer or another.
+    return `pct exec ${svc.vmid} -- bash -c 'echo ${b64} | base64 -d | bash'`;
+  }
+
+  /** Parse the verdict line. Anything other than a clean all-no is a FAILED teardown. */
+  function parseTeardown(stdout) {
+    const m = /TEARDOWN active=(\w+) enabled=(\w+) unitfile=(\w+) portbusy=(\w+)/.exec(stdout || '');
+    if (!m) return { ok: false, reason: 'no verdict line from container (pct exec failed or was truncated)' };
+    const [, active, enabled, unitfile, portbusy] = m;
+    const bad = [];
+    if (active === 'yes') bad.push('unit still active');
+    if (enabled === 'yes') bad.push('unit still ENABLED (would return on next boot)');
+    if (unitfile === 'yes') bad.push('unit file still present');
+    if (portbusy === 'yes') bad.push('port still held by a live process');
+    return bad.length ? { ok: false, reason: bad.join('; ') } : { ok: true };
+  }
+
+  /** Run teardown once. Returns {ok, reason}; never throws. */
+  async function teardownService(svc) {
+    try {
+      const r = await sshService.exec(svc.pveHostIp, buildTeardownCmd(svc), { timeout: 90000 });
+      return parseTeardown((r && r.stdout) || '');
+    } catch (err) {
+      return { ok: false, reason: `ssh/pct exec failed: ${err.message}` };
+    }
+  }
+
+  // ─── Durable pending-removal queue ───────────────────────────────────────────────────────
+  function loadPendingRemovals() {
+    try {
+      if (existsSync(pendingRemovalsFile)) return JSON.parse(readFileSync(pendingRemovalsFile, 'utf-8')) || {};
+    } catch (e) {
+      console.warn(`[service-teardown] pending-removals.json unreadable (${e.message}) — starting empty`);
+    }
+    return {};
+  }
+  function savePendingRemovals(map) {
+    try { writeFileSync(pendingRemovalsFile, JSON.stringify(map, null, 2)); }
+    catch (e) { console.error(`[service-teardown] could not persist pending removals: ${e.message}`); }
+  }
+  /** Record a teardown obligation. Keeps only what teardown needs, so it survives a restart. */
+  function enqueueRemoval(svc, reason) {
+    const map = loadPendingRemovals();
+    const key = `${svc.vmid}:${svc.systemdUnit || svc.tmuxSession || svc.id}`;
+    const prev = map[key] || {};
+    map[key] = {
+      id: svc.id, vmid: svc.vmid, pveHostIp: svc.pveHostIp, systemdUnit: svc.systemdUnit || null,
+      tmuxSession: svc.tmuxSession || null, scriptPath: svc.scriptPath || null, port: svc.port || null,
+      attempts: (prev.attempts || 0), firstQueuedAt: prev.firstQueuedAt || Date.now(),
+      lastError: reason || null, nextAttemptAt: 0,
+    };
+    savePendingRemovals(map);
+    console.warn(`[service-teardown] QUEUED for retry: ${key} — ${reason}`);
+  }
+
+  const REMOVAL_RETRY_MS = 60_000;
+  let _drainBusy = false;
+  /** Retry every outstanding teardown. Backs off per entry; never gives up silently. */
+  async function drainPendingRemovals() {
+    if (_drainBusy) return;
+    _drainBusy = true;
+    try {
+      const map = loadPendingRemovals();
+      const keys = Object.keys(map);
+      if (!keys.length) return;
+      for (const key of keys) {
+        const e = map[key];
+        if (e.nextAttemptAt && Date.now() < e.nextAttemptAt) continue;
+        const res = await teardownService(e);
+        if (res.ok) {
+          delete map[key];
+          console.log(`[service-teardown] retry SUCCEEDED, ${key} is gone (after ${e.attempts + 1} attempt(s))`);
+        } else {
+          e.attempts += 1;
+          e.lastError = res.reason;
+          // Exponential-ish backoff, capped at 30min. Entries are never dropped: an orphan that
+          // cannot be killed is a problem to surface, not to forget.
+          e.nextAttemptAt = Date.now() + Math.min(30 * 60_000, REMOVAL_RETRY_MS * Math.pow(2, Math.min(e.attempts, 5)));
+          console.warn(`[service-teardown] retry ${e.attempts} FAILED for ${key}: ${res.reason}`);
+        }
+      }
+      savePendingRemovals(map);
+    } catch (err) {
+      console.error(`[service-teardown] drain error: ${err.message}`);
+    } finally {
+      _drainBusy = false;
+    }
+  }
+
+  // ─── Automatic orphan sweep ──────────────────────────────────────────────────────────────
+  //
+  // An orphan is a unit RUNNING in a container that the registry does not know about. That is
+  // how 124 GB of VRAM went missing: removed in the UI, left enabled in the container, back
+  // after the next reboot, invisible to everything.
+  //
+  // GUARDS, because this function destroys things:
+  //  - if the registry is unreadable or EMPTY, do nothing. An empty registry is far more likely
+  //    to mean "state file lost" than "the user really is running zero services", and acting on
+  //    it would wipe the whole fleet.
+  //  - two strikes: a unit must be seen orphaned on two CONSECUTIVE sweeps before teardown, so a
+  //    service that is mid-launch (running, not yet written to active-services.json) is safe.
+  //  - only proxlab-*/ailab-* units are ever considered.
+  const ORPHAN_SWEEP_MS = 5 * 60_000;
+  let _orphanStrikes = new Map();
+  let _sweepBusy = false;
+
+  async function sweepOrphans() {
+    if (_sweepBusy) return;
+    _sweepBusy = true;
+    try {
+      const state = loadActiveServices();
+      const registered = new Set();
+      let count = 0;
+      for (const svc of Object.values(state.services || {})) {
+        count += 1;
+        if (svc.systemdUnit) registered.add(`${svc.vmid}:${svc.systemdUnit}`);
+      }
+      if (!count) {
+        console.warn('[orphan-sweep] registry is EMPTY — skipping (refusing to treat a lost state file as "kill everything")');
+        return;
+      }
+      const pending = loadPendingRemovals();
+      const cfg = loadAiConfig();
+      const nodeMap = pveApi.getNodeMap();
+      const seenNow = new Set();
+
+      for (const [node, agent] of Object.entries(cfg.agents || {})) {
+        const hostIp = nodeMap[node]?.ip || agent.hostIp;
+        const vmid = agent.vmid;
+        if (!hostIp || !vmid) continue;
+        let units = [];
+        try {
+          // ACTIVE units only: an inactive-but-loaded leftover holds no GPU and no port, so it is
+          // litter for the manual scanner, not something worth killing on a timer.
+          const listCmd = `pct exec ${vmid} -- bash -c "systemctl list-units 'proxlab-*' 'ailab-*' --state=running --no-pager --no-legend --plain 2>/dev/null | awk '{print \\$1}'"`;
+          const r = await sshService.exec(hostIp, listCmd, { timeout: 15000 });
+          units = (r.stdout || '').split('\n').map((l) => l.trim()).filter((l) => l.endsWith('.service'));
+        } catch (err) {
+          // Can't see the container ⇒ can't conclude anything. Skip; do NOT strike.
+          console.warn(`[orphan-sweep] ${node} CT${vmid} unreachable (${err.message}) — skipped, no strikes recorded`);
+          continue;
+        }
+        for (const unitFile of units) {
+          const unitName = unitFile.replace(/\.service$/, '');
+          const key = `${vmid}:${unitName}`;
+          if (registered.has(key)) { _orphanStrikes.delete(key); continue; }
+          seenNow.add(key);
+          const strikes = (_orphanStrikes.get(key) || 0) + 1;
+          _orphanStrikes.set(key, strikes);
+          const queued = pending[key];
+          if (strikes < 2 && !queued) {
+            console.warn(`[orphan-sweep] ORPHAN seen (strike 1/2, could be mid-launch): ${key}`);
+            continue;
+          }
+          const port = (unitName.match(/-(\d{4,5})$/) || [])[1] || null;
+          const session = unitName.replace(/^(?:ai|prox)lab-/, '');
+          const svc = {
+            id: queued?.id || key, vmid, pveHostIp: hostIp, systemdUnit: unitName,
+            tmuxSession: session, scriptPath: queued?.scriptPath || `/opt/proxlab/services/${session}.sh`,
+            port: port ? parseInt(port, 10) : null,
+          };
+          console.warn(`[orphan-sweep] TEARING DOWN orphan ${key} (running, not in registry${queued ? ', removal was queued' : ''})`);
+          const res = await teardownService(svc);
+          if (res.ok) {
+            _orphanStrikes.delete(key);
+            if (queued) { const m = loadPendingRemovals(); delete m[key]; savePendingRemovals(m); }
+            console.log(`[orphan-sweep] reclaimed: ${key} destroyed`);
+            broadcast({ type: 'orphan-cleaned', vmid, unitName });
+          } else {
+            console.error(`[orphan-sweep] FAILED to tear down ${key}: ${res.reason}`);
+            if (!queued) enqueueRemoval(svc, `orphan sweep: ${res.reason}`);
+          }
+        }
+      }
+      // Drop strikes for units that are no longer orphaned, so the counter means "consecutive".
+      for (const k of [..._orphanStrikes.keys()]) if (!seenNow.has(k)) _orphanStrikes.delete(k);
+    } catch (err) {
+      console.error(`[orphan-sweep] error: ${err.message}`);
+    } finally {
+      _sweepBusy = false;
+    }
+  }
+
+  // Startup delay lets the registry load and any boot-time launches settle before the first pass.
+  setTimeout(() => { void drainPendingRemovals(); void sweepOrphans(); }, 90_000);
+  setInterval(() => { void drainPendingRemovals(); }, REMOVAL_RETRY_MS);
+  setInterval(() => { void sweepOrphans(); }, ORPHAN_SWEEP_MS);
+
   /**
    * POST /active-services/:id/kill — Kill tmux session (or systemd service) via SSH, then unregister.
    */
@@ -3519,7 +3780,21 @@ WantedBy=multi-user.target
   // cleanups that time out under host load (leaving orphan units) and race the active-services.json
   // read-modify-write (lost updates). Each removal now runs to completion before the next begins.
   let __removalChain = Promise.resolve();
+  // One lock for ALL state-mutating service ops (kill/suspend/start/restart), not just removals.
+  // Serializing removals alone left suspend/resume free to interleave and clobber each other.
   const serializeRemoval = (fn) => { const run = __removalChain.then(fn, fn); __removalChain = run.then(() => {}, () => {}); return run; };
+  const serviceOp = serializeRemoval;
+
+  /** Re-read the registry, apply `mutate` to the entry, save. NO awaits inside — that is the
+   *  whole point: a read-modify-write spanning an await is how rapid clicks lose each other. */
+  function commitServiceChange(id, mutate) {
+    const fresh = loadActiveServices();
+    const target = fresh.services[id];
+    if (!target) return null;
+    mutate(target);
+    saveActiveServices(fresh);
+    return target;
+  }
 
   router.post('/active-services/:id/kill', async (req, res) => {
     const id = req.params.id;
@@ -3529,23 +3804,24 @@ WantedBy=multi-user.target
         const svc = pre.services[id];
         if (!svc) { res.json({ ok: true, alreadyGone: true }); return; }
 
-        let cleanup = 'clean', warning;
-        try {
-          if (svc.isSystemService) {
-            // Stop+disable+remove unit/script + kv companion, RETRY up to 3x, then VERIFY the unit is
-            // truly gone. A leftover Restart=always unit is exactly what becomes an invisible orphan.
-            const kvPort = svc.port || ((svc.systemdUnit || '').match(/-(\d+)$/) || [])[1];
-            const kvUnit = kvPort ? `kvcache-proxy@${kvPort}` : '';
-            const cleanupCmd = `pct exec ${svc.vmid} -- bash -c 'u="${svc.systemdUnit}"; kv="${kvUnit}"; for i in 1 2 3; do systemctl stop "$u" 2>/dev/null; systemctl disable "$u" 2>/dev/null; [ -n "$kv" ] && { systemctl stop "$kv" 2>/dev/null; systemctl disable "$kv" 2>/dev/null; }; rm -f /etc/systemd/system/"$u".service;${svc.scriptPath ? ` rm -f ${svc.scriptPath};` : ``}${kvPort ? ` rm -f /opt/kvcache-proxy/configs/${kvPort}.json;` : ``} systemctl reset-failed "$u" 2>/dev/null; [ -n "$kv" ] && systemctl reset-failed "$kv" 2>/dev/null; systemctl daemon-reload; systemctl is-active --quiet "$u" || break; sleep 1; done; if systemctl is-active --quiet "$u"; then echo STILL_ACTIVE; else echo CLEAN; fi'`;
-            const r = await sshService.exec(svc.pveHostIp, cleanupCmd, { timeout: 45000 });
-            if (/STILL_ACTIVE/.test((r && r.stdout) || '')) { cleanup = 'failed'; warning = 'unit still active after 3 cleanup attempts'; }
-          } else {
-            const killCmd = `pct exec ${svc.vmid} -- tmux kill-session -t '${(svc.tmuxSession || '').replace(/'/g, "'\\''")}'`;
-            await sshService.exec(svc.pveHostIp, killCmd, { timeout: 10000 });
-          }
-        } catch (err) {
-          cleanup = 'failed'; warning = err.message;
-          console.warn(`[service-kill] remote cleanup for ${svc.systemdUnit || svc.tmuxSession} FAILED: ${err.message} — orphan sweep will retry`);
+        // Record the obligation BEFORE attempting anything. If this request is cancelled
+        // mid-flight (rapid clicks, navigation, a dropped socket), the background worker still
+        // destroys the service. The destroy must not depend on the request surviving.
+        enqueueRemoval(svc, 'teardown in progress');
+        // NOT named `res` — that is the Express response in this scope, and shadowing it here
+        // would put the earlier res.json() in a temporal dead zone and break every reply.
+        const td = await teardownService(svc);
+        if (td.ok) { const m = loadPendingRemovals(); delete m[`${svc.vmid}:${svc.systemdUnit || svc.tmuxSession || svc.id}`]; savePendingRemovals(m); }
+        let cleanup = td.ok ? 'clean' : 'failed';
+        let warning = td.ok ? undefined : td.reason;
+        if (!td.ok) {
+          // The registry entry still gets removed below (the user asked for it gone), but the
+          // OBLIGATION to destroy it is persisted so a worker keeps retrying across restarts.
+          // Previously this path dropped the record entirely and the process became an
+          // invisible orphan holding its VRAM until someone noticed months later.
+          enqueueRemoval(svc, td.reason);   // refresh the queued entry with the real error
+          warning = `${td.reason} — queued for automatic retry`;
+          console.warn(`[service-kill] teardown incomplete for ${svc.systemdUnit || svc.tmuxSession}: ${td.reason}`);
         }
 
         // Atomic state mutation: reload FRESH, delete, save with NO await in between, so a concurrent
@@ -3566,8 +3842,11 @@ WantedBy=multi-user.target
    * POST /active-services/:id/suspend — Stop a systemd service without removing it (temporary pause).
    */
   router.post('/active-services/:id/suspend', async (req, res) => {
+    const id = req.params.id;
+    try {
+    await serviceOp(async () => {
     const state = loadActiveServices();
-    const svc = state.services[req.params.id];
+    const svc = state.services[id];
     if (!svc) return res.status(404).json({ error: 'Service not found' });
     if (!svc.isSystemService) return res.status(400).json({ error: 'Only systemd services support suspend' });
 
@@ -3582,24 +3861,28 @@ WantedBy=multi-user.target
         systemctl stop ${svc.systemdUnit}
       '`;
       await sshService.exec(svc.pveHostIp, cmd, { timeout: 60000 });
-      svc.suspended = true;
       // Clear any in-flight watchdog failure count so a resume later starts clean and the
       // watchdog can't act on stale fails accumulated just before suspend.
-      delete watchdogFailCounts[req.params.id];
-      saveActiveServices(state);
-      broadcast({ type: 'service-updated', service: svc });
+      delete watchdogFailCounts[id];
+      const updated = commitServiceChange(id, (t) => { t.suspended = true; });
+      if (updated) broadcast({ type: 'service-updated', service: updated });
       res.json({ ok: true });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      if (!res.headersSent) res.status(500).json({ error: err.message });
     }
+    });
+    } catch (e) { if (!res.headersSent) res.status(500).json({ error: String((e && e.message) || e) }); }
   });
 
   /**
    * POST /active-services/:id/start — Start a stopped systemd service (also resets failure state).
    */
   router.post('/active-services/:id/start', async (req, res) => {
+    const id = req.params.id;
+    try {
+    await serviceOp(async () => {
     const state = loadActiveServices();
-    const svc = state.services[req.params.id];
+    const svc = state.services[id];
     if (!svc) return res.status(404).json({ error: 'Service not found' });
     if (!svc.isSystemService) return res.status(400).json({ error: 'Only systemd services support start' });
 
@@ -3613,22 +3896,25 @@ WantedBy=multi-user.target
         systemctl start ${svc.systemdUnit}
       '`;
       await sshService.exec(svc.pveHostIp, cmd, { timeout: 15000 });
-      svc.startedAt = new Date().toISOString();
-      delete svc.suspended;
-      saveActiveServices(state);
-      broadcast({ type: 'service-updated', service: svc });
+      const updated = commitServiceChange(id, (t) => { t.startedAt = new Date().toISOString(); delete t.suspended; });
+      if (updated) broadcast({ type: 'service-updated', service: updated });
       res.json({ ok: true });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      if (!res.headersSent) res.status(500).json({ error: err.message });
     }
+    });
+    } catch (e) { if (!res.headersSent) res.status(500).json({ error: String((e && e.message) || e) }); }
   });
 
   /**
    * POST /active-services/:id/restart — Restart a systemd service (also resets failure state).
    */
   router.post('/active-services/:id/restart', async (req, res) => {
+    const id = req.params.id;
+    try {
+    await serviceOp(async () => {
     const state = loadActiveServices();
-    const svc = state.services[req.params.id];
+    const svc = state.services[id];
     if (!svc) return res.status(404).json({ error: 'Service not found' });
     if (!svc.isSystemService) return res.status(400).json({ error: 'Only systemd services support restart' });
 
@@ -3642,14 +3928,14 @@ WantedBy=multi-user.target
         systemctl restart ${svc.systemdUnit}
       '`;
       await sshService.exec(svc.pveHostIp, cmd, { timeout: 15000 });
-      svc.startedAt = new Date().toISOString();
-      delete svc.suspended;
-      saveActiveServices(state);
-      broadcast({ type: 'service-updated', service: svc });
+      const updated = commitServiceChange(id, (t) => { t.startedAt = new Date().toISOString(); delete t.suspended; });
+      if (updated) broadcast({ type: 'service-updated', service: updated });
       res.json({ ok: true });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      if (!res.headersSent) res.status(500).json({ error: err.message });
     }
+    });
+    } catch (e) { if (!res.headersSent) res.status(500).json({ error: String((e && e.message) || e) }); }
   });
 
   /**
@@ -3825,6 +4111,20 @@ WantedBy=multi-user.target
     }
   }
 
+  /** GET /active-services/pending-removals — teardowns still outstanding, with their errors.
+   *  A stuck entry means something in a container refuses to die and is worth looking at. */
+  router.get('/active-services/pending-removals', (_req, res) => {
+    const map = loadPendingRemovals();
+    res.json({ ok: true, count: Object.keys(map).length, pending: map });
+  });
+
+  /** POST /active-services/sweep-orphans — run the automatic sweep on demand. */
+  router.post('/active-services/sweep-orphans', async (_req, res) => {
+    await drainPendingRemovals();
+    await sweepOrphans();
+    res.json({ ok: true, pending: loadPendingRemovals() });
+  });
+
   router.post('/active-services/scan-orphans', async (req, res) => {
     const cleanup = req.body?.cleanup === true;
     const cfg = loadAiConfig();
@@ -3879,7 +4179,21 @@ WantedBy=multi-user.target
           const provider = getProvider(providerId);
           const isKnown = provider || providerId === 'rvc';
 
-          if (isKnown && !cleanup) {
+          // NOTE: `isKnown && cleanup` used to match NEITHER branch — a known-provider orphan
+          // scanned in cleanup mode was silently skipped, which is precisely the case that
+          // matters (a koboldcpp/vLLM unit holding GPUs). Cleanup mode now tears down every
+          // orphan regardless of whether its provider is recognised.
+          if (cleanup) {
+            const orphan = { node, vmid, hostIp, unitName, unitFile, port, providerId };
+            const session2 = unitName.replace(/^(?:ai|prox)lab-/, '');
+            const r2 = await teardownService({
+              vmid, pveHostIp: hostIp, systemdUnit: unitName, tmuxSession: session2,
+              scriptPath: `/opt/proxlab/services/${session2}.sh`, port,
+            });
+            orphan.cleaned = r2.ok;
+            if (!r2.ok) orphan.error = r2.reason;
+            orphans.push(orphan);
+          } else if (isKnown) {
             // Build a proper service entry and register it
             const isTts = TTS_PROVIDER_IDS.has(providerId) || providerId === 'rvc';
             const isStt = STT_PROVIDER_IDS.has(providerId);
@@ -3937,20 +4251,10 @@ WantedBy=multi-user.target
             registeredUnits.add(unitName);
             adopted.push({ unitName, serviceId, providerId, port });
             console.log(`[orphan-scan] Auto-adopted: ${unitName} → ${serviceId} (${providerId})`);
-          } else if (!isKnown) {
-            // Truly unknown orphan
-            const orphan = { node, vmid, hostIp, unitName, unitFile, port };
-            if (cleanup) {
-              try {
-                const cleanCmd = `pct exec ${vmid} -- bash -c 'systemctl stop ${unitName} 2>/dev/null; systemctl disable ${unitName} 2>/dev/null; rm -f /etc/systemd/system/${unitFile}; rm -f /opt/proxlab/services/${unitName.replace(/^(?:ai|prox)lab-/, "")}.sh; systemctl daemon-reload'`;
-                await sshService.exec(hostIp, cleanCmd, { timeout: 15000 });
-                orphan.cleaned = true;
-              } catch (err) {
-                orphan.cleaned = false;
-                orphan.error = err.message;
-              }
-            }
-            orphans.push(orphan);
+          } else {
+            // Known-provider units are adopted above; anything left here is unrecognised and is
+            // reported (not silently ignored) so it shows up in the scan result.
+            orphans.push({ node, vmid, hostIp, unitName, unitFile, port, adopted: false });
           }
         }
       } catch (err) {
