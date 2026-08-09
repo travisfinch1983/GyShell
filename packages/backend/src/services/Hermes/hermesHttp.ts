@@ -703,6 +703,24 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
 
+  // Per-agent USER doc override. The global doc-template above describes Travis and fans out to
+  // EVERY agent; an agent whose human is someone else (idris -> Kyla) sets this so the fan-out
+  // stops overwriting its identity block. PUT '' clears it and returns the agent to the global.
+  router.get('/api/hermes/agents/:id/user-doc', async (req: Req, res: Res) => {
+    try {
+      const markdown = await hermes.getAgentUserDoc(req.params.id)
+      res.json({ markdown, overridden: markdown.trim().length > 0 })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.put('/api/hermes/agents/:id/user-doc', json, async (req: Req, res: Res) => {
+    try {
+      const md = (req.body as { markdown?: unknown })?.markdown
+      if (typeof md !== 'string') return res.status(400).json({ error: 'body needs { markdown: string }' })
+      const r = await hermes.setAgentUserDoc(req.params.id, md)
+      res.json({ ok: true, overridden: md.trim().length > 0, ...r })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
   // Per-conversation model swap: change the model the agent uses for THIS conversation's live
   // session (ACP session/set_model). conversationId scopes it; modelId is a proxy catalog id.
   router.post('/api/hermes/agents/:id/model', json, (req: Req, res: Res) => {

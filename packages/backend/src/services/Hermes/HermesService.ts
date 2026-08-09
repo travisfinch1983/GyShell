@@ -203,6 +203,12 @@ export class HermesService {
   getUserDoc(): Promise<string> { return this.mgmt.getUserDoc() }
   setUserDoc(markdown: string): Promise<{ agentsUpdated: number }> { return this.mgmt.setUserDoc(markdown) }
 
+  // Per-agent override of the shared USER doc, for an agent whose human is not Travis.
+  getAgentUserDoc(agentId: string): Promise<string> { return this.mgmt.getAgentUserDoc(agentId) }
+  setAgentUserDoc(agentId: string, markdown: string): Promise<{ agentsUpdated: number }> {
+    return this.mgmt.setAgentUserDoc(agentId, markdown)
+  }
+
   getSupportModels(): ReturnType<HermesManagementService['getSupportModels']> {
     return this.mgmt.getSupportModels()
   }

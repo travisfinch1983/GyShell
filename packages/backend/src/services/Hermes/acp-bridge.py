@@ -251,6 +251,10 @@ async def main():
     ap.add_argument("--provider", default="ailab")
     ap.add_argument("--hermes", default="/usr/local/bin/hermes")
     ap.add_argument("--resume")  # hermes session id to resume via ACP session/load
+    # The AI-Lab backend spawns ONE process per conversation, so the conversation id is a
+    # property of this process. It arrives via the spawn env rather than a flag so that
+    # nothing has to thread it through every call site. Empty => not supplied (older backend).
+    conv_id = os.environ.get("AILAB_CONVERSATION_ID") or ""
     args = ap.parse_args()
 
     # Run the agent from its own profile workspace so Hermes auto-injects that
@@ -298,6 +302,7 @@ async def main():
                 models = (ns.get("models") or {})
                 modes = (ns.get("modes") or {})
             emit({"t": "ready", "session_id": session_id, "resumed": resumed,
+                  "conversation_id": conv_id or None,
                   "models": models.get("available_models"), "current_model": models.get("current_model_id"),
                   "modes": modes.get("available_modes")})
 
@@ -343,6 +348,14 @@ async def main():
                     sys.stdout.flush()
                     os._exit(3)
             current = None
+            # Tell the agent its own conversation id ONCE per process, on the first turn.
+            # Agents otherwise have no idea which conversation they are in and pass their own
+            # profile name to tools that scope state per conversation, forcing every caller to
+            # guess (last-active wins => a coin flip with two live conversations on one profile).
+            # Injected on the first turn rather than at session create because it has to land in
+            # the model's context, and a resumed session starts a NEW process whose replayed
+            # history predates this statement.
+            conv_injected = False
 
             async for line in stdin_lines():
                 if not line:
@@ -382,6 +395,12 @@ async def main():
                                         "look at it to see exactly what they are viewing.]")
                     if ctx:
                         preamble.append(f"[Current view context]\n{ctx}")
+                    if conv_id and not conv_injected:
+                        preamble.insert(0, f"[Session context] conversationId: {conv_id}\n"
+                                           "This identifies THIS conversation. When a tool scopes state "
+                                           "per conversation, pass this value verbatim — never your "
+                                           "profile/agent name.")
+                        conv_injected = True
                     full_text = ("\n\n".join(preamble) + "\n\n" + text) if preamble else text
                     text_block = TextContentBlock(type="text", text=full_text) if TextContentBlock else {"type": "text", "text": full_text}
                     blocks = [text_block] + image_blocks

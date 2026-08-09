@@ -125,7 +125,11 @@ export class HermesAcpBridge extends EventEmitter {
 
     const resumeId = sessionKey ? this.persistedSessions[sessionKey]?.sessionId : undefined
     const py = this.cfg.pythonBin ?? '/usr/local/lib/hermes-agent/venv/bin/python'
-    const proc = spawn(py, this.bridgeArgs(agentId, resumeId), { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, HOME: '/root' } })
+    // The conversation id rides in on the ENV because this process IS the conversation
+    // (one spawn per sessionKey). Agents otherwise cannot know which conversation they are in,
+    // so tools that scope state per conversation had to guess from the agent's profile name.
+    // acp-bridge injects it into the model's context on the first turn and echoes it on `ready`.
+    const proc = spawn(py, this.bridgeArgs(agentId, resumeId), { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, HOME: '/root', AILAB_CONVERSATION_ID: sessionKey } })
     const emitter = new EventEmitter()
     emitter.setMaxListeners(0)
 

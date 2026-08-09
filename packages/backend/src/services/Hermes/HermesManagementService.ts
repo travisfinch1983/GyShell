@@ -552,6 +552,28 @@ export class HermesManagementService {
     return (await this.ssh(`cat ${shq(HermesManagementService.GLOBAL_USER_PATH)} 2>/dev/null || true`))
   }
 
+  /** Filename of a PER-AGENT override of the shared USER doc, inside the agent's profile home.
+   *  Present + non-empty => this agent's "About Your Human" block uses it instead of the global
+   *  doc. Absent => global, so every agent that has not opted out keeps the old behaviour. */
+  private static readonly USER_DOC_OVERRIDE = 'USER.override.md'
+
+  /** The per-agent USER doc override, or '' when the agent uses the shared global doc. */
+  async getAgentUserDoc(agentId: string): Promise<string> {
+    const p = `${this.profileHome(agentId)}/${HermesManagementService.USER_DOC_OVERRIDE}`
+    const b64 = (await this.ssh(`base64 -w0 ${shq(p)} 2>/dev/null || true`)).trim()
+    if (!b64) return ''
+    try { return Buffer.from(b64, 'base64').toString('utf8') } catch { return '' }
+  }
+
+  /** Set (or, with empty markdown, clear) an agent's USER doc override, then re-propagate so the
+   *  change lands in its AGENTS.md immediately rather than at the next global save. */
+  async setAgentUserDoc(agentId: string, markdown: string): Promise<{ agentsUpdated: number }> {
+    const p = `${this.profileHome(agentId)}/${HermesManagementService.USER_DOC_OVERRIDE}`
+    if (markdown.trim()) await this.writeRemoteFile(p, markdown)
+    else await this.ssh(`rm -f ${shq(p)}`)
+    return this.setUserDoc(await this.getUserDoc())
+  }
+
   private static readonly USER_DOC_MARKER = '<!-- doc:user -->'
 
   /** Write the canonical USER doc + re-propagate its content into every agent's AGENTS.md
@@ -572,9 +594,21 @@ export class HermesManagementService {
       '        t = open(ag, encoding="utf-8").read()',
       '    except Exception:',
       '        continue',
+      // A per-agent USER.override.md wins over the global doc. This is what lets an agent whose
+      // human is NOT Travis (idris -> Kyla) survive a Doc Templates save instead of being reset
+      // to "the user is Travis" on every propagate.
+      '    body = user',
+      '    try:',
+      '        ov = os.path.join(os.path.dirname(os.path.dirname(ag)), "USER.override.md")',
+      '        if os.path.exists(ov):',
+      '            o = open(ov, encoding="utf-8").read().strip()',
+      '            if o:',
+      '                body = o',
+      '    except Exception:',
+      '        pass',
       '    idx = t.find(M)',
       '    head = (t[:idx].rstrip() if idx >= 0 else t.rstrip())',
-      '    new = head + nl + nl + M + nl + user + nl',
+      '    new = head + nl + nl + M + nl + body + nl',
       '    if new != t:',
       '        open(ag, "w", encoding="utf-8").write(new); n += 1',
       'print(n)',
