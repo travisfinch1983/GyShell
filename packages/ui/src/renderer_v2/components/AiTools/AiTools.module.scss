@@ -94,7 +94,13 @@
 .modal { background: var(--panel-bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px; width: min(900px, 94vw); max-height: 90vh; overflow: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.5); display: flex; flex-direction: column; gap: 10px; }
 .modalHead { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 .modalFoot { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
-.editForm { display: flex; flex-direction: column; gap: 8px; }
+// Scrolling body for the edit modals. `.modal` is overflow:hidden with a capped
+// max-height (that shell was written for the file browser, whose .browseList
+// scrolls itself), so without this the host form silently clips: fields past the
+// cap are unreachable and nothing scrolls.
+// `min-height: 0` is load-bearing -- a flex child defaults to min-height:auto and
+// refuses to shrink below its content, so overflow-y never engages without it.
+.editForm { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; overflow-y: auto; }
 .efGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 12px; }
 .efRow { display: flex; align-items: center; gap: 8px; }
 .efCol { display: flex; flex-direction: column; gap: 4px; }
@@ -151,7 +157,10 @@
   background: color-mix(in srgb, #000 55%, transparent); padding: 24px;
 }
 .modal {
-  display: flex; flex-direction: column; width: min(600px, 100%); max-height: min(74vh, 680px);
+  display: flex; flex-direction: column; width: 100%; max-width: min(600px, 100%); max-height: min(74vh, 680px);
+  // width:100% + max-width is equivalent to the old width:min(600px,100%) for modals
+  // that set no inline width, but it lets a per-modal inline maxWidth (host editor
+  // asks for 900) actually take effect -- max-width cannot widen a fixed width.
   border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg);
   box-shadow: 0 12px 40px color-mix(in srgb, #000 45%, transparent); overflow: hidden;
 }
