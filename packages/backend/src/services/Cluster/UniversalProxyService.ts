@@ -145,7 +145,7 @@ export class UniversalProxyService {
     // @ts-expect-error
     const { SSHService } = await import('./proxy/llm/services/ssh.js')
     // @ts-expect-error
-    const { PveApi } = await import('./proxy/llm/services/pve-api.js')
+    const { MultiPveApi } = await import('./proxy/llm/services/multi-pve-api.js')
     // @ts-expect-error
     const { GpuMonitor } = await import('./proxy/llm/services/gpu-monitor.js')
     // @ts-expect-error
@@ -160,7 +160,7 @@ export class UniversalProxyService {
     }
     llmConfig.ssh = { ...(llmConfig.ssh || {}), privateKeyPath: this.keyPath, defaultUser: 'root', connectTimeout: 10000 }
     const llmSsh = new SSHService(llmConfig.ssh)
-    const llmPve = new PveApi(llmConfig)
+    const llmPve = new MultiPveApi(llmConfig)
     const llmGpuMon = new GpuMonitor(llmConfig, llmSsh, llmPve, { interval: 5000 })
     const llmHook = new HookscriptDeploy(llmSsh, llmPve, llmGpuMon, llmConfig)
     const aiModule = createAiRouter(llmConfig, llmGpuMon, llmPve, llmSsh, llmHook)
