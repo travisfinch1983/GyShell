@@ -30,6 +30,14 @@ function formatCloseDetail(event: CloseEvent): string {
   return reason ? `code=${code}${cleanSuffix}, reason=${reason}` : `code=${code}${cleanSuffix}`
 }
 
+/** Drop every handler so a discarded socket can never deliver a frame or mutate client state. */
+function detachSocketHandlers(socket: WebSocket): void {
+  socket.onopen = null
+  socket.onmessage = null
+  socket.onerror = null
+  socket.onclose = null
+}
+
 const HEARTBEAT_INTERVAL_MS = 20_000
 const HEARTBEAT_TIMEOUT_MS = 8_000
 
@@ -103,12 +111,27 @@ export class GatewayClient {
         resolve()
       }
 
+      // A socket that is no longer `this.socket` is an ORPHAN: an earlier connection whose
+      // close event lands after a newer socket is already live. Orphans must never mutate
+      // shared state nor deliver frames, so every handler below checks identity first.
+      //
+      // Without this guard an orphan's onclose nulled the reference to the LIVE socket and
+      // emitted 'disconnected'; the consumer then reconnected, and disconnect() found no
+      // socket to close — leaking a still-open socket whose onmessage kept firing into the
+      // shared raw dispatch. Each cycle added one more copy of every pushed frame, which is
+      // why terminal output (and the echo of typed input) appeared 2x, then 3x.
+      const isCurrent = (): boolean => this.socket === socket
+
       socket.onerror = () => {
+        if (!isCurrent()) return
         this.emit('error', 'WebSocket transport error')
       }
 
       socket.onclose = (event) => {
         clearTimeout(timer)
+        detachSocketHandlers(socket)
+        // An orphan finishing its close has no shared state to tear down.
+        if (!isCurrent()) return
         this.stopHeartbeat()
         this.rejectAllPending(new Error(`Socket closed (${event.code})`))
         this.socket = null
@@ -121,6 +144,7 @@ export class GatewayClient {
       }
 
       socket.onmessage = (event) => {
+        if (!isCurrent()) return
         void this.handleIncoming(event.data)
       }
     })
@@ -145,6 +169,9 @@ export class GatewayClient {
       if (s.readyState === WebSocket.CONNECTING) return
       if (s.readyState !== WebSocket.OPEN) {
         this.stopHeartbeat()
+        // We announce the disconnect ourselves below, so detach first: this socket is being
+        // abandoned and must not deliver frames (or re-announce) while it finishes closing.
+        detachSocketHandlers(s)
         try { s.close() } catch { /* noop */ }
         this.rejectAllPending(new Error('Socket not open (heartbeat)'))
         this.socket = null
@@ -167,14 +194,19 @@ export class GatewayClient {
   disconnect(): void {
     this.manualClose = true
     this.stopHeartbeat()
-    if (!this.socket) return
+    const socket = this.socket
+    this.socket = null
+    if (!socket) return
+    // Detach BEFORE close(): close() is asynchronous and a CLOSING socket keeps firing
+    // onmessage. Leaving the handlers attached let a socket we had already discarded go on
+    // pushing frames into the shared dispatch for the lifetime of the page.
+    detachSocketHandlers(socket)
     try {
-      this.socket.close()
+      socket.close()
     } catch {
       // ignore close errors
     }
     this.rejectAllPending(new Error('Socket disconnected'))
-    this.socket = null
   }
 
   async request<T>(
