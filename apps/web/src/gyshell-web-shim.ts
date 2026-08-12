@@ -110,6 +110,9 @@ const LIVE_PROBE_TIMEOUT_MS = 5000
 let probing = false
 
 function forceReconnect(reason: string): void {
+  // If a connect is already in flight, tearing it down and starting another just restarts the
+  // race. Callers reach here on a failed liveness probe, where connecting is false.
+  if (connecting) return
   console.warn(`[gyshell-web] gateway ${reason} — forcing reconnect`)
   connected = false
   try { client.disconnect() } catch { /* noop */ }
@@ -170,8 +173,12 @@ async function rpc<T = unknown>(method: string, params: Record<string, unknown> 
     // been executed server-side, and blindly retrying could apply a mutation twice.
     const msg = e instanceof Error ? e.message : String(e)
     if (!/socket is not connected/i.test(msg)) throw e
-    console.warn(`[gyshell-web] "${method}" found the socket closed before sending — reconnecting and retrying once`)
-    forceReconnect('socket was not connected when an RPC was issued')
+    // Deliberately do NOT forceReconnect() here. rpc() is the highest-concurrency path in the
+    // app: when a panel mounts, a dozen calls can fail together, and a forceReconnect per
+    // failure tears down the socket the previous one just opened — a connect/disconnect storm
+    // in which no RPC ever completes. ensureConnected() is single-flighted, and the socket is
+    // already gone (that is precisely why this threw), so there is nothing to tear down.
+    console.warn(`[gyshell-web] "${method}" found the socket closed before sending — awaiting reconnect, retrying once`)
     await ensureConnected()
     return await client.request<T>(method, params, timeoutMs)
   }
