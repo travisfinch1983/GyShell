@@ -479,8 +479,27 @@ export class ModelDownloadsStore {
   }
   async histAction(path: string): Promise<void> {
     const ids = this.selectedKeysToIds()
-    if (!ids.length) return
-    await this.cluster().request('POST', path, { items: ids, modelIds: ids.map((x) => x.modelId) }).catch(() => undefined)
+    if (!ids.length) {
+      runInAction(() => { this.civError = 'Nothing selected — tick one or more history rows first.' })
+      return
+    }
+    // This used to be `.catch(() => undefined)`, so a rejected request (or a 4xx from the route)
+    // produced no state change and no message: the button simply appeared to do nothing. Surface
+    // the failure instead — a silently dropped error is a bug, not a tidy default.
+    runInAction(() => { this.civError = null })
+    try {
+      const r = (await this.cluster().request('POST', path, {
+        items: ids,
+        modelIds: ids.map((x) => x.modelId),
+      })) as any
+      if (r && r.error) throw new Error(String(r.error))
+      if (r && typeof r.added === 'number' && r.added === 0) {
+        runInAction(() => { this.civError = `${path.split('/').pop()}: nothing was added (${ids.length} selected).` })
+      }
+    } catch (e) {
+      runInAction(() => { this.civError = `${path.split('/').pop()} failed: ${e instanceof Error ? e.message : String(e)}` })
+      return
+    }
     await Promise.all([this.loadHistories(), this.loadDownloads()])
     if (path.includes('renamer')) {
       runInAction(() => { this.civMode = 'renamer' })

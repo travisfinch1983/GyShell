@@ -118,20 +118,31 @@ function forceReconnect(reason: string): void {
   void connectOnce()
 }
 
+// A probe in flight is exposed so RPCs can WAIT for its verdict instead of racing it. Without
+// this, switching back to a tab fired visibilitychange (starting the probe) while the panel it
+// revealed immediately issued RPCs — those RPCs hit the not-yet-detected dead socket and failed
+// with "RPC timeout"/"Socket closed" before forceReconnect had run. That is the "open the
+// downloader after a while, get an RPC or gateway error, refresh the page" behaviour.
+let probePromise: Promise<void> | null = null
+
 /** Bounded probe: does the socket ACTUALLY answer, regardless of what readyState claims? */
 async function verifyGatewayLive(): Promise<void> {
-  if (probing) return
+  if (probing) return probePromise ?? undefined
   probing = true
-  try {
-    if (!connected) { void connectOnce(); return }
+  probePromise = (async () => {
     try {
-      await client.request('gateway:ping', {}, LIVE_PROBE_TIMEOUT_MS)
-    } catch {
-      forceReconnect('did not answer after wake')
+      if (!connected) { void connectOnce(); return }
+      try {
+        await client.request('gateway:ping', {}, LIVE_PROBE_TIMEOUT_MS)
+      } catch {
+        forceReconnect('did not answer after wake')
+      }
+    } finally {
+      probing = false
+      probePromise = null
     }
-  } finally {
-    probing = false
-  }
+  })()
+  return probePromise
 }
 
 if (typeof document !== 'undefined') {
@@ -147,8 +158,23 @@ if (typeof window !== 'undefined') {
 // ─── RPC Helper ──────────────────────────────────────────────────────────────
 
 async function rpc<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
+  // Settle any in-flight liveness probe first, so an RPC issued the instant a tab regains focus
+  // waits for the verdict rather than firing into a socket already known to be suspect.
+  if (probePromise) { try { await probePromise } catch { /* probe never rejects meaningfully */ } }
   await ensureConnected()
-  return client.request<T>(method, params, timeoutMs)
+  try {
+    return await client.request<T>(method, params, timeoutMs)
+  } catch (e) {
+    // Retry ONLY when the request provably never left the client: request() throws this before
+    // touching the socket. Anything else (socket closed mid-flight, RPC timeout) may already have
+    // been executed server-side, and blindly retrying could apply a mutation twice.
+    const msg = e instanceof Error ? e.message : String(e)
+    if (!/socket is not connected/i.test(msg)) throw e
+    console.warn(`[gyshell-web] "${method}" found the socket closed before sending — reconnecting and retrying once`)
+    forceReconnect('socket was not connected when an RPC was issued')
+    await ensureConnected()
+    return await client.request<T>(method, params, timeoutMs)
+  }
 }
 
 // ─── Event Listeners ─────────────────────────────────────────────────────────
