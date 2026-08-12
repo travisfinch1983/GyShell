@@ -582,10 +582,22 @@ const ReviewBrowser: React.FC = observer(() => {
               const state = store.versionDiskState(ver.id)
               const cls = state === 'all' ? styles.revVerOwned : state === 'partial' ? styles.revVerPartial : state === 'history' ? styles.revVerHistory : ''
               const title = state === 'all' ? 'All files present on disk' : state === 'partial' ? 'Some files present on disk (incomplete)' : state === 'history' ? 'In download history (files not found on disk)' : ''
+              // Checkbox selects the version for download; the badge itself switches which version
+              // you are VIEWING (and therefore editing the folder/filename of) — same split ProxLab
+              // used, so several versions can be queued in one go without clobbering each other.
               return (
-                <button key={ver.id} className={`${styles.revVerBtn} ${ver.id === store.civSelVersionId ? styles.revVerActive : ''} ${cls}`} onClick={() => store.selectVersion(ver.id)} title={title}>
-                  {state === 'all' && <Check size={11} />}{state === 'partial' && '◐ '}{ver.name}{ver.baseModel ? <span className={styles.revBase}>{ver.baseModel}</span> : null}
-                </button>
+                <span key={ver.id} className={`${styles.revVerBtn} ${ver.id === store.civSelVersionId ? styles.revVerActive : ''} ${cls}`} title={title}>
+                  <input
+                    type="checkbox"
+                    checked={store.isVersionSelected(ver.id)}
+                    onChange={(e) => { e.stopPropagation(); store.toggleVersionSelected(ver.id) }}
+                    onClick={(e) => e.stopPropagation()}
+                    title="Include this version in the download"
+                  />
+                  <button className={styles.revVerLabel} onClick={() => store.selectVersion(ver.id)}>
+                    {state === 'all' && <Check size={11} />}{state === 'partial' && '◐ '}{ver.name}{ver.baseModel ? <span className={styles.revBase}>{ver.baseModel}</span> : null}
+                  </button>
+                </span>
               )
             })}
           </div>
@@ -601,7 +613,7 @@ const ReviewBrowser: React.FC = observer(() => {
                   const resolved = store.resolvedNameFor(f.name)
                   return (
                     <label key={f.name} className={styles.fileRow}>
-                      <input type="checkbox" checked={store.civSelFiles.has(f.name)} onChange={() => store.toggleReviewFile(f.name)} />
+                      <input type="checkbox" checked={store.isFileSelected(f.name)} onChange={() => store.toggleReviewFile(f.name)} />
                       <span className={styles.fileName} title={f.name}>{resolved}</span>
                       {resolved !== f.name && <span className={styles.fileOrig} title={`original: ${f.name}`}>was {f.name}</span>}
                       {f.type && <span className={styles.quantBadge}>{f.type}</span>}
@@ -622,14 +634,24 @@ const ReviewBrowser: React.FC = observer(() => {
                 </div>
               )}
 
-              <div className={styles.settingRow}><label>Subfolder</label><input className={styles.input} placeholder="user-defined (optional)" value={store.civReviewUserDefined} onChange={(e) => { store.civReviewUserDefined = e.target.value; store.resolveReviewPathLive() }} /></div>
-              <div className={styles.settingRow}><label>Filename</label><input className={styles.input} placeholder="override (optional)" value={store.civReviewFnOverride} onChange={(e) => { store.civReviewFnOverride = e.target.value; store.resolveReviewPathLive() }} /></div>
+              {/* Both boxes are per-version and pre-filled from what the template resolves to, so
+                  the values are visible and editable in place rather than hidden behind a
+                  placeholder. Folder is the RELATIVE folder under <base>/<type> — exactly what
+                  pathOverride consumes; the absolute result is shown on the line beneath. */}
+              <div className={styles.settingRow}><label>Folder</label><input className={styles.input} placeholder="relative folder" value={store.curFolder} onChange={(e) => store.setCurFolder(e.target.value)} /></div>
+              <div className={styles.settingRow}><label>Filename</label><input className={styles.input} placeholder="base name (no extension)" value={store.curFilename} onChange={(e) => store.setCurFilename(e.target.value)} /></div>
               <div className={styles.revTarget} title={store.civResolvedDir}>→ {store.civResolvedDir || '(resolving…)'}</div>
 
               <div className={styles.actionsRow}>
+                <span className={styles.note}>
+                  {store.selectedVersionIds.length
+                    ? `${store.selectedVersionIds.length} version${store.selectedVersionIds.length === 1 ? '' : 's'} ticked — each downloads with its own folder + filename`
+                    : 'No versions ticked — the version you are viewing will be downloaded'}
+                </span>
                 <div className={styles.spacer} />
                 <button className={styles.btnPrimary} disabled={store.busy} onClick={() => void store.reviewDownload()}>
-                  {store.busy ? <Loader2 size={13} className={styles.spin} /> : <Download size={13} />} Download Version
+                  {store.busy ? <Loader2 size={13} className={styles.spin} /> : <Download size={13} />}
+                  {store.selectedVersionIds.length > 1 ? ` Download ${store.selectedVersionIds.length} Versions` : ' Download Version'}
                 </button>
               </div>
             </>

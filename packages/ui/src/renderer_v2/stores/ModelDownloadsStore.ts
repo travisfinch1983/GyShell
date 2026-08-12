@@ -72,12 +72,25 @@ export class ModelDownloadsStore {
   civModel: any = null // fetched civitai model JSON
   civModelLoading = false
   civModelError: string | null = null
-  civSelVersionId: number | null = null
-  civSelFiles = new Set<string>() // file names selected in the current version
+  civSelVersionId: number | null = null // the version currently BEING VIEWED (not the download set)
   civResolvedDir = '' // resolved target dir from /resolve-paths
   civResolvedFiles: Array<{ originalName: string; newName: string }> = [] // per-file resolved names
-  civReviewUserDefined = ''
-  civReviewFnOverride = ''
+
+  // ── Per-version review state (parity with ProxLab's pathOverrides/fileNameOverrides maps) ──
+  //
+  // These were previously single shared fields (civReviewUserDefined / civReviewFnOverride), so
+  // whatever you typed while viewing one version was still applied when you switched to another —
+  // every version resolved to the same filename and they overwrote each other on disk.
+  //
+  // The folder box maps to `pathOverride`, NOT `userDefined`: userDefined only sets a
+  // $USER_DEFINED template variable and does nothing unless the path template references it,
+  // whereas pathOverride literally replaces the folder segment
+  // (final dir = basePath/typeFolder/folderPart). It holds the RELATIVE folder, e.g. "Pony_XL".
+  civVerFolder = new Map<number, string>() // versionId → pathOverride (relative folder)
+  civVerFilename = new Map<number, string>() // versionId → fileNameOverride (base name, no extension)
+  civVerSeeded = new Set<number>() // versions whose boxes have been pre-filled from the resolver
+  civVerSelected = new Set<number>() // versions ticked for download
+  civVerFiles = new Map<number, Set<string>>() // versionId → selected file names (scoped per version)
   civQueue: any[] = [] // /api/civitai/queue — items sent from the browser extension's "Review" button
   civQueueItemId: string | null = null // the queue item currently loaded into the browser
   civQueueIndex = 0 // position in the review queue (navigated with prev/next arrows)
@@ -722,8 +735,12 @@ export class ModelDownloadsStore {
         this.civMode = 'review'
         const versions = model?.modelVersions ?? []
         const v = (parsed.versionId && versions.find((x: any) => String(x.id) === parsed.versionId)) || versions[0]
+        this.resetReviewVersionState()
         this.civSelVersionId = v?.id ?? null
-        this.civSelFiles = new Set((v?.files ?? []).map((f: any) => f.name))
+        if (v) {
+          this.civVerFiles.set(v.id, new Set((v.files ?? []).map((f: any) => f.name)))
+          this.civVerSelected.add(v.id) // the version you land on starts ticked
+        }
       })
       await this.resolveReviewPath()
       void this.checkVersionsOnDisk()
@@ -733,11 +750,72 @@ export class ModelDownloadsStore {
       runInAction(() => { this.civModelLoading = false })
     }
   }
+  /** Clear all per-version review state. Called whenever a different model is loaded. */
+  resetReviewVersionState(): void {
+    this.civVerFolder.clear()
+    this.civVerFilename.clear()
+    this.civVerSeeded.clear()
+    this.civVerSelected.clear()
+    this.civVerFiles.clear()
+  }
+
+  /** View a version. Viewing is separate from selecting it for download (ProxLab: badge vs checkbox). */
   selectVersion(vid: number): void {
     this.civSelVersionId = vid
     const v = this.civCurrentVersion
-    this.civSelFiles = new Set((v?.files ?? []).map((f: any) => f.name))
+    if (v && !this.civVerFiles.has(vid)) {
+      this.civVerFiles.set(vid, new Set((v.files ?? []).map((f: any) => f.name)))
+    }
     void this.resolveReviewPath()
+  }
+
+  // ── Version download selection ──
+  isVersionSelected(vid: number): boolean {
+    return this.civVerSelected.has(vid)
+  }
+  toggleVersionSelected(vid: number): void {
+    if (this.civVerSelected.has(vid)) this.civVerSelected.delete(vid)
+    else {
+      this.civVerSelected.add(vid)
+      const v = this.civVersions.find((x: any) => x.id === vid)
+      if (v && !this.civVerFiles.has(vid)) {
+        this.civVerFiles.set(vid, new Set((v.files ?? []).map((f: any) => f.name)))
+      }
+    }
+  }
+  get selectedVersionIds(): number[] {
+    return this.civVersions.map((v: any) => v.id).filter((id: number) => this.civVerSelected.has(id))
+  }
+
+  // ── Per-version file selection ──
+  filesForVersion(vid: number | null): Set<string> {
+    if (vid == null) return new Set()
+    let s = this.civVerFiles.get(vid)
+    if (!s) { s = new Set(); this.civVerFiles.set(vid, s) }
+    return s
+  }
+  isFileSelected(name: string): boolean {
+    return this.filesForVersion(this.civSelVersionId).has(name)
+  }
+
+  // ── Per-version Folder / Filename boxes ──
+  // Read the CURRENT version's value. Seeded from the resolver on first view, so the boxes show
+  // what the template actually produces instead of sitting empty behind a placeholder.
+  get curFolder(): string {
+    return this.civSelVersionId == null ? '' : (this.civVerFolder.get(this.civSelVersionId) ?? '')
+  }
+  get curFilename(): string {
+    return this.civSelVersionId == null ? '' : (this.civVerFilename.get(this.civSelVersionId) ?? '')
+  }
+  setCurFolder(v: string): void {
+    if (this.civSelVersionId == null) return
+    this.civVerFolder.set(this.civSelVersionId, v)
+    this.resolveReviewPathLive()
+  }
+  setCurFilename(v: string): void {
+    if (this.civSelVersionId == null) return
+    this.civVerFilename.set(this.civSelVersionId, v)
+    this.resolveReviewPathLive()
   }
   /** Review queue — items the browser extension's "Review" button POSTed to /queue/add. */
   async loadCivQueue(showCurrent = false): Promise<void> {
@@ -767,12 +845,14 @@ export class ModelDownloadsStore {
       this.civModel = model
       this.civVersionStatus = {}
       this.civQueueItemId = item.id
-      this.civReviewUserDefined = ''
-      this.civReviewFnOverride = ''
+      this.resetReviewVersionState()
       const versions = model.modelVersions ?? []
       const v = (item.versionId && versions.find((x: any) => String(x.id) === String(item.versionId))) || versions[0]
       this.civSelVersionId = v?.id ?? null
-      this.civSelFiles = new Set((v?.files ?? []).map((f: any) => f.name))
+      if (v) {
+        this.civVerFiles.set(v.id, new Set((v.files ?? []).map((f: any) => f.name)))
+        this.civVerSelected.add(v.id)
+      }
     })
     void this.resolveReviewPath()
     void this.checkVersionsOnDisk()
@@ -792,16 +872,21 @@ export class ModelDownloadsStore {
     else runInAction(() => { this.civModel = null })
   }
   toggleReviewFile(name: string): void {
-    this.civSelFiles.has(name) ? this.civSelFiles.delete(name) : this.civSelFiles.add(name)
+    const s = this.filesForVersion(this.civSelVersionId)
+    s.has(name) ? s.delete(name) : s.add(name)
+    // Map values are observed by reference; re-set so mobx sees the mutation.
+    if (this.civSelVersionId != null) this.civVerFiles.set(this.civSelVersionId, s)
   }
   async resolveReviewPath(): Promise<void> {
     const m = this.civModel
     const v = this.civCurrentVersion
     if (!m || !v) return
+    const vid: number = v.id
+    const seeded = this.civVerSeeded.has(vid)
     try {
       const r = (await this.cluster().request('POST', '/api/civitai/resolve-paths', {
         modelId: String(m.id),
-        versionId: String(v.id),
+        versionId: String(vid),
         modelType: m.type,
         modelName: m.name,
         versionName: v.name,
@@ -810,12 +895,22 @@ export class ModelDownloadsStore {
         primaryTag: (m.tags || [])[0] || '',
         tags: m.tags || [],
         files: (v.files || []).map((f: any) => ({ name: f.name })),
-        userDefined: this.civReviewUserDefined || undefined,
-        fileNameOverride: this.civReviewFnOverride || undefined,
+        // Send this version's own overrides. Before seeding, both are absent so the server
+        // resolves purely from the template — that result is what we then seed the boxes with.
+        pathOverride: seeded ? (this.civVerFolder.get(vid) ?? '') : undefined,
+        fileNameOverride: seeded ? (this.civVerFilename.get(vid) || undefined) : undefined,
       })) as any
       runInAction(() => {
         this.civResolvedDir = r?.targetDir || ''
         this.civResolvedFiles = Array.isArray(r?.files) ? r.files : []
+        if (!seeded) {
+          // Pre-fill from what the template produced: folderPart is exactly what pathOverride
+          // consumes, and the filename box holds the base name (the backend re-adds the extension).
+          this.civVerFolder.set(vid, String(r?.folderPart ?? ''))
+          const primary = (r?.files ?? [])[0]?.newName ?? ''
+          this.civVerFilename.set(vid, String(primary).replace(/\.[^.]+$/, ''))
+          this.civVerSeeded.add(vid)
+        }
       })
     } catch {
       runInAction(() => { this.civResolvedDir = ''; this.civResolvedFiles = [] })
@@ -830,17 +925,38 @@ export class ModelDownloadsStore {
   resolvedNameFor(originalName: string): string {
     return this.civResolvedFiles.find((f) => f.originalName === originalName)?.newName || originalName
   }
+  /** Download every ticked version, each with ITS OWN folder/filename overrides. Falls back to the
+   *  version being viewed if nothing is ticked, so the button is never a no-op. */
   async reviewDownload(): Promise<void> {
     const m = this.civModel
-    const v = this.civCurrentVersion
-    if (!m || !v) return
+    if (!m) return
+    const ids = this.selectedVersionIds.length
+      ? this.selectedVersionIds
+      : (this.civCurrentVersion ? [this.civCurrentVersion.id] : [])
+    if (!ids.length) return
     this.busy = true
     this.civModelError = null
     try {
-      const body: any = { modelId: String(m.id), versionId: String(v.id), pageUrl: `https://civitai.com/models/${m.id}?modelVersionId=${v.id}` }
-      if (this.civReviewUserDefined) body.userDefined = this.civReviewUserDefined
-      if (this.civReviewFnOverride) body.fileNameOverride = this.civReviewFnOverride
-      await this.cluster().request('POST', '/api/civitai/download', body)
+      const failures: string[] = []
+      for (const vid of ids) {
+        const ver = this.civVersions.find((x: any) => x.id === vid)
+        const body: any = {
+          modelId: String(m.id),
+          versionId: String(vid),
+          pageUrl: `https://civitai.com/models/${m.id}?modelVersionId=${vid}`,
+        }
+        const folder = this.civVerFolder.get(vid)
+        const fname = this.civVerFilename.get(vid)
+        if (folder !== undefined) body.pathOverride = folder
+        if (fname) body.fileNameOverride = fname
+        try {
+          await this.cluster().request('POST', '/api/civitai/download', body)
+        } catch (e) {
+          // One bad version must not abandon the rest of the batch.
+          failures.push(`${ver?.name ?? vid}: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+      if (failures.length) throw new Error(`${failures.length}/${ids.length} failed — ${failures.join(' · ')}`)
       // if this came from the review queue, clear it out + advance to the next queued item
       const fromQueueId = this.civQueueItemId
       await Promise.all([this.loadDownloads(), this.loadHistories()])
