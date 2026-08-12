@@ -304,6 +304,32 @@ export const GENERIC_LAUNCH_TEMPLATES: Record<string, any> = {
           'YAML_EOF',
           'fi',
           '',
+          // Impact Pack's UltralyticsDetectorProvider and SAMLoader only see detectors under
+          // roots registered in extra_model_paths.yaml. The YOLO detectors and SAM checkpoints
+          // live on the NAS (/imagegen), so without this every instance falls back to whatever
+          // happens to be in /opt/comfyui/models and the shared library is invisible.
+          //
+          // Safe to register unconditionally: load_extra_path_config accepts arbitrary top-level
+          // keys, add_model_folder_path APPENDS rather than replaces, and main.py reads the yaml
+          // long before init_extra_nodes runs — so these NAS paths register first and Impact's
+          // own local paths are added alongside, not overwritten.
+          //
+          // Same grep guard as the model-cache block above: appended only when absent, so a
+          // hand-edited yaml is never clobbered. Verified on ai-gpu + ai-epyc (63 detectors:
+          // 46 bbox + 17 segm, plus the SAM checkpoints).
+          '# Ensure ComfyUI extra_model_paths.yaml has the Impact Pack detector roots.',
+          "if ! grep -q '^impact-detectors:' /opt/comfyui/extra_model_paths.yaml 2>/dev/null; then",
+          "  cat >> /opt/comfyui/extra_model_paths.yaml <<'YAML_EOF'",
+          '',
+          'impact-detectors:',
+          '    base_path: /imagegen',
+          '    ultralytics_bbox: ultralytics/bbox',
+          '    ultralytics_segm: ultralytics/segm',
+          '    ultralytics: ultralytics',
+          '    sams: sam',
+          'YAML_EOF',
+          'fi',
+          '',
           'cd /opt/comfyui &&',
           `/opt/conda/envs/comfyui/bin/python main.py \\`,
           `  --listen 0.0.0.0 --port ${port} \\`,
