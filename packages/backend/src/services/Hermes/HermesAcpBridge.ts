@@ -323,6 +323,21 @@ export class HermesAcpBridge extends EventEmitter {
       live.emitter.emit('event', ev)
       this.emit('event', { agentId: live.agentId, event: ev })
       this.setStatus(sessionKey, 'idle')
+
+      // ...and RECYCLE, because flipping the status only fixed what we REPORT. Reaching this
+      // point proves the bridge never resolved its prompt task, so that await is still pending
+      // inside the child. The next prompt queues behind it and is never dispatched: the session
+      // accepts messages, the client marks itself busy, no turn ever starts, and busy never
+      // clears — so every later message piles into the type-ahead queue. A page reload cannot
+      // help (the client re-sends, the same thing happens) and `cancel` is a no-op by then
+      // (status already reads idle), which is exactly the dead end this watchdog used to leave
+      // behind.
+      //
+      // reloadSession respawns the child once it exits and leaves persistedSessions intact, so
+      // the conversation resumes via --resume rather than starting over.
+      console.warn(`[acp-bridge] ${sessionKey}: recycling the session — a bridge that swallowed `
+        + `turn_done cannot be trusted to dispatch the next prompt.`)
+      this.reloadSession(sessionKey)
     }, CANCEL_GRACE_MS)
   }
 
