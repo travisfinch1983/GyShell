@@ -1063,16 +1063,31 @@ export function createAiRouter(config, gpuMonitor, pveApi, sshService, hookscrip
           [ -d "$fmt_dir" ] || continue
           fmt=$(basename "$fmt_dir")
           case "$fmt" in
-            FP16-Safetensors|FP16)
+            FP16-Safetensors|FP16|BF16-Safetensors|BF16)
               if has_model_files "$fmt_dir"; then
+                case "$fmt" in FP16*) base_fmt="FP16";; *) base_fmt="BF16";; esac
+                # A subtype is MANDATORY: parseScanOutput stores subtype-less formats
+                # flat, and the UI iterates format -> quant -> {path,sizeMB}, so a flat
+                # entry breaks caching (sourceDir undefined) and shows 0 MB.
+                # Read the real bit width from config.json like the AWQ/GPTQ branch does;
+                # these folders often hold quantized weights despite the FP16/BF16 name.
+                sub="full"
+                cfg_file="$fmt_dir/config.json"
+                if [ -f "$cfg_file" ]; then
+                  nbits=$(python3 -c "
+import json,sys
+c=json.load(open(sys.argv[1]))
+q=c.get('quantization_config') or (c.get('text_config') or {}).get('quantization_config') or {}
+n=q.get('bits')
+if not n:
+    g=(q.get('config_groups') or {}).get('group_0') or {}
+    n=(g.get('weights') or {}).get('num_bits')
+print(n if n else '')
+" "$cfg_file" 2>/dev/null)
+                  [ -n "$nbits" ] && sub="$nbits-bit"
+                fi
                 size=$(du -sm "$fmt_dir" 2>/dev/null | cut -f1)
-                formats="$formats\${TAB}FP16:$fmt_dir:$size"
-              fi
-              ;;
-            BF16-Safetensors|BF16)
-              if has_model_files "$fmt_dir"; then
-                size=$(du -sm "$fmt_dir" 2>/dev/null | cut -f1)
-                formats="$formats\${TAB}BF16:$fmt_dir:$size"
+                formats="$formats\${TAB}$base_fmt/$sub:$fmt_dir:$size"
               fi
               ;;
             GGUF)
@@ -1224,9 +1239,15 @@ if out: print(json.dumps(out))
             sizeMB: sizeStr ? parseInt(sizeStr, 10) : null,
           };
         } else {
+          // Defensive: a format emitted without a TYPE/SUB subtype would be stored flat,
+          // but the UI iterates two levels (format -> quant -> {path,sizeMB}); a flat
+          // entry yields quant="path" and path=undefined, which breaks caching with
+          // "node and sourceDir are required" and displays 0 MB. Normalise to nested.
           formats[typeAndPath] = {
-            path: path?.replace(/\/$/, '') || '',
-            sizeMB: sizeStr ? parseInt(sizeStr, 10) : null,
+            full: {
+              path: path?.replace(/\/$/, '') || '',
+              sizeMB: sizeStr ? parseInt(sizeStr, 10) : null,
+            },
           };
         }
       }
