@@ -45,7 +45,10 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
     }
     return p
   }
-  const json = express.json({ limit: '25mb' })   // attachments arrive base64 in the body
+  // Measured, not assumed: 16 MiB bodies pass and 26.7 MiB is refused, identically through the
+  // backend (17890) and the web host (17889) — the web host does not narrow it.
+  const BODY_LIMIT = process.env.FLEET_BODY_LIMIT ?? '25mb'
+  const json = express.json({ limit: BODY_LIMIT })   // attachments arrive base64 in the body
 
   // Preserve fleetd's status + stage. A participant check failing is a 400 for the CALLER,
   // not a 500 — collapsing everything to 500 sends the UI into retry/alert instead of
@@ -60,6 +63,24 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
   const ok = async (res: Res, fn: () => Promise<unknown>) => {
     try { res.json(await fn()) } catch (e) { fail(res, e) }
   }
+
+  /**
+   * Body-size failures arrive from express.json as an HTML error page, which a JSON client
+   * parses as a crash rather than a message it can show. An oversized upload is a normal thing
+   * for a user to do, so it has to come back as a readable JSON refusal that names the limit.
+   */
+  const jsonBody = (req: Req, res: Res, next: (e?: unknown) => void) =>
+    json(req, res, (err: any) => {
+      if (err?.type === 'entity.too.large' || err?.status === 413) {
+        return res.status(413).json({
+          ok: false, stage: 'validation',
+          error: `attachment too large — the request body limit is ${BODY_LIMIT}. ` +
+                 `base64 inflates a file by about a third, so keep files under ~18MB.`,
+          limit: BODY_LIMIT,
+        })
+      }
+      return next(err)
+    })
 
   router.get(claim('/api/fleet/threads'), (req: Req, res: Res) => ok(res, () => svc.listFeed({
     viewer: req.query?.viewer as string, scope: req.query?.scope as string,
@@ -77,7 +98,7 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
       receipts: req.query?.receipts !== '0',
     })))
 
-  router.post(claim('/api/fleet/thread/:id/read'), json, (req: Req, res: Res) =>
+  router.post(claim('/api/fleet/thread/:id/read'), jsonBody, (req: Req, res: Res) =>
     ok(res, () => svc.markRead(req.params!.id, req.body?.viewer, Number(req.body?.up_to_seq))))
 
   router.get(claim('/api/fleet/unread'), (req: Req, res: Res) => {
@@ -89,19 +110,19 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
   // Travis-facing kill switch. Read and write, because a control you cannot observe is not a
   // control — the UI has to be able to show that traffic is currently stopped, and why.
   router.get(claim('/api/fleet/delivery-guard'), (_req: Req, res: Res) => ok(res, () => svc.getGuard()))
-  router.post(claim('/api/fleet/delivery-guard'), json, (req: Req, res: Res) =>
+  router.post(claim('/api/fleet/delivery-guard'), jsonBody, (req: Req, res: Res) =>
     ok(res, () => svc.setGuard(Boolean(req.body?.enabled), req.body?.actor ?? 'user', req.body?.reason)))
 
   router.get(claim('/api/fleet/attachment/:id/structured'), (req: Req, res: Res) =>
     ok(res, () => svc.getStructured(req.params!.id)))
 
-  router.post(claim('/api/fleet/post'), json, (req: Req, res: Res) =>
+  router.post(claim('/api/fleet/post'), jsonBody, (req: Req, res: Res) =>
     ok(res, () => svc.post(req.body)))
 
-  router.post(claim('/api/fleet/message'), json, (req: Req, res: Res) =>
+  router.post(claim('/api/fleet/message'), jsonBody, (req: Req, res: Res) =>
     ok(res, () => svc.send(req.body)))
 
-  router.post(claim('/api/fleet/thread/:id/visibility'), json, (req: Req, res: Res) =>
+  router.post(claim('/api/fleet/thread/:id/visibility'), jsonBody, (req: Req, res: Res) =>
     ok(res, () => svc.setVisibility(req.params!.id, req.body?.actor, req.body?.visibility)))
 
   router.get(claim('/api/fleet/categories'), (_req: Req, res: Res) =>
@@ -119,7 +140,7 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
   router.get(claim('/api/fleet/directory'), (_req: Req, res: Res) =>
     ok(res, () => svc.directory()))
 
-  router.post(claim('/api/fleet/attachment'), json, (req: Req, res: Res) =>
+  router.post(claim('/api/fleet/attachment'), jsonBody, (req: Req, res: Res) =>
     ok(res, () => svc.addAttachment(req.body)))
 
   // Bytes stream through the backend — the browser must never fetch fleetd directly (standard #1),

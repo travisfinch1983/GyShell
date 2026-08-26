@@ -12,6 +12,13 @@
  */
 import { z } from 'zod'
 
+/**
+ * ⏱ EVERY timestamp in this file is epoch SECONDS as a float (Python `time.time()`), NOT
+ * milliseconds. `new Date(created_at)` renders 1970; use `new Date(created_at * 1000)`.
+ * Zod cannot encode the unit, so it is stated here — this is the trap a consumer hits first.
+ */
+export const feedSecondsToDate = (epochSeconds: number): Date => new Date(epochSeconds * 1000)
+
 export const feedVisibilitySchema = z.enum(['private', 'public'])
 export type FeedVisibility = z.infer<typeof feedVisibilitySchema>
 
@@ -80,8 +87,8 @@ export const feedThreadSchema = z.object({
   unread_count: z.number().optional(),    // only when the feed is requested with ?unread=1
   last_sender: z.string().nullable(),
   last_snippet: z.string().nullable(),
-  created_at: z.number(),
-  updated_at: z.number(),
+  created_at: z.number(),   // epoch SECONDS (float) — see feedSecondsToDate
+  updated_at: z.number(),   // epoch SECONDS (float)
 })
 export type FeedThread = z.infer<typeof feedThreadSchema>
 
