@@ -126,8 +126,8 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
   router.post(claim('/api/fleet/thread/:id/visibility'), jsonBody, (req: Req, res: Res) =>
     ok(res, () => svc.setVisibility(req.params!.id, req.body?.actor, req.body?.visibility)))
 
-  router.get(claim('/api/fleet/categories'), (_req: Req, res: Res) =>
-    ok(res, () => svc.categories()))
+  router.get(claim('/api/fleet/categories'), (req: Req, res: Res) =>
+    ok(res, () => svc.categories(req.query?.viewer as string)))
 
   router.get(claim('/api/fleet/search'), (req: Req, res: Res) => {
     const q = String(req.query?.q ?? '')

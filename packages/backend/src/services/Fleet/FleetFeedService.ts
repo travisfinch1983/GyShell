@@ -144,7 +144,13 @@ export class FleetFeedService {
                      { actor, visibility })
   }
 
-  categories() { return this.call<{ categories: unknown[] }>('GET', '/categories') }
+  /** Counts are VIEWER-SCOPED — an unscoped count discloses how many private threads exist in
+   *  a category to someone who cannot open any of them. */
+  categories(viewer?: string) {
+    const p = new URLSearchParams()
+    p.set('viewer', viewer ?? 'user')
+    return this.call<{ categories: unknown[] }>('GET', `/categories?${p}`)
+  }
 
   /** PUBLIC content only — enforced by fleetd's query, and there is deliberately no parameter
    *  here that could widen it. */
