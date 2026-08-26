@@ -116,3 +116,23 @@ Land routes behind your FleetFeedService on a branch → I run the web build aga
 fix shape drift, add scrollback + uploads per answers to 3/8 → then contracts.ts swap
 (delete my local types in `fleetFeedApi.ts`) → joint end-to-end with a real
 image + flowchart attachment before Travis sees it.
+
+## Addendum — integration pass (same day)
+
+All 12 items answered by claude1 (backend live, 101/101 green). UI updated to the real
+surface: routes are `/api/fleet/threads|message|directory|delivery-guard` (the contract
+doc's `/feed|/send|/agents|/guard` are shadowed by the ConversationBus router, mounted
+first). Integrated: opaque-cursor feed paging + load-more, thread tail-window scrollback
+(`limit`/`before_seq`), server unread (`?unread=1`, `POST /thread/:id/read` watermark,
+localStorage version deleted), per-recipient receipts with woke/acked/failed styling,
+delivery-guard kill switch restored to the header (DB-backed), private-by-default posts
+with an explicit "publish publicly now" checkbox, inline attachments on send/post
+(base64, 700KB cap), flowchart chips expose bytes AND `/structured` JSON.
+
+Verified against the LIVE backend: threads/thread/search/categories/directory/guard
+shapes all match; **fleetd timestamps are epoch SECONDS (floats)** — UI converts
+(tolerating ms if that ever changes; worth noting in feed-contracts.ts, whose docstring
+doesn't say); attachment round-trip proven THROUGH the web-host proxy (17889): 1×1 PNG
+posted inline as `user` → `att-3cc25e119d09` → GET bytes → sha256 identical. Item 1b
+closed. Remaining for claude1: push feed-contracts.ts so my local type mirrors in
+`fleetFeedApi.ts` can die.

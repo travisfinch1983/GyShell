@@ -6,31 +6,37 @@ import {
   Image as ImageIcon,
   Lock,
   MessageSquare,
+  Paperclip,
   Pin,
   Radio,
   Search,
   Send,
+  ShieldAlert,
+  ShieldCheck,
   Workflow,
   X,
 } from 'lucide-react'
 import { fleetStore as store } from '../../stores/FleetStore'
 import {
-  FLEET_VIEWER,
+  fileToAttachment,
   fleetFeedApi,
-  type FleetAttachmentRef,
-  type FleetMessage,
-  type FleetThread,
+  FLEET_VIEWER,
+  type FeedAttachmentInput,
+  type FeedAttachmentRef,
+  type FeedMessage,
+  type FeedThread,
 } from '../../stores/fleetFeedApi'
 import styles from './Fleet.module.scss'
 
-function fmtTime(ts: string): string {
-  const d = new Date(ts)
+function fmtTime(ts: number): string {
+  // fleetd timestamps are epoch SECONDS (floats); tolerate ms if that ever changes.
+  const d = new Date(ts < 1e12 ? ts * 1000 : ts)
   if (!Number.isFinite(d.getTime())) return ''
   const sameDay = new Date().toDateString() === d.toDateString()
   return sameDay ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : d.toLocaleDateString()
 }
 
-const threadTitle = (t: FleetThread): string =>
+const threadTitle = (t: FeedThread): string =>
   t.subject || (t.kind === 'dm' ? t.participants.filter((p) => p !== FLEET_VIEWER).join(', ') || 'DM' : '(untitled post)')
 
 /** Visibility is always visible (UI rule 2) — never leave the user guessing. */
@@ -47,13 +53,14 @@ const VisibilityBadge: React.FC<{ visibility: string }> = ({ visibility }) =>
 
 /**
  * Attachment chip: metadata only until deliberately opened (UI rule 3 — an
- * image must never arrive unbidden). Flowcharts expose BOTH forms: the render
- * and the structured JSON payload.
+ * image must never arrive unbidden). Flowcharts expose BOTH forms: the
+ * rendered bytes and the structured graph JSON (`/structured`).
  */
-const AttachmentChip: React.FC<{ att: FleetAttachmentRef }> = ({ att }) => {
-  const [open, setOpen] = useState(false)
+const AttachmentChip: React.FC<{ att: FeedAttachmentRef }> = ({ att }) => {
+  const [open, setOpen] = useState<'none' | 'bytes' | 'data'>('none')
   const [url, setUrl] = useState<string | null>(null)
   const [text, setText] = useState<string | null>(null)
+  const [data, setData] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -61,10 +68,10 @@ const AttachmentChip: React.FC<{ att: FleetAttachmentRef }> = ({ att }) => {
     if (url) URL.revokeObjectURL(url)
   }, [url])
 
-  const load = async () => {
+  const loadBytes = async () => {
     if (loading) return
     if (url || text) {
-      setOpen((o) => !o)
+      setOpen((o) => (o === 'bytes' ? 'none' : 'bytes'))
       return
     }
     setLoading(true)
@@ -73,7 +80,25 @@ const AttachmentChip: React.FC<{ att: FleetAttachmentRef }> = ({ att }) => {
       const r = await fleetFeedApi.fetchAttachment(att)
       setUrl(r.url ?? null)
       setText(r.text ?? null)
-      setOpen(true)
+      setOpen('bytes')
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadData = async () => {
+    if (loading) return
+    if (data) {
+      setOpen((o) => (o === 'data' ? 'none' : 'data'))
+      return
+    }
+    setLoading(true)
+    setErr(null)
+    try {
+      setData(await fleetFeedApi.fetchStructured(att))
+      setOpen('data')
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -85,23 +110,39 @@ const AttachmentChip: React.FC<{ att: FleetAttachmentRef }> = ({ att }) => {
   const kb = Math.max(1, Math.round(att.byte_size / 1024))
   return (
     <div className={styles.attachment}>
-      <button type="button" className={styles.attachmentChip} onClick={() => void load()} title={att.media_type}>
-        <Icon size={12} />
-        {att.filename} · {kb} KB
-        {loading ? ' …' : open ? ' ▾' : ''}
-      </button>
+      <span className={styles.attachmentActions}>
+        <button type="button" className={styles.attachmentChip} onClick={() => void loadBytes()} title={att.media_type}>
+          <Icon size={12} />
+          {att.filename ?? att.attachment_id} · {kb} KB
+          {loading ? ' …' : open === 'bytes' ? ' ▾' : ''}
+        </button>
+        {att.kind === 'flowchart' && (
+          <button type="button" className={styles.attachmentChip} onClick={() => void loadData()} title="Structured graph JSON — the machine-readable payload">
+            data{open === 'data' ? ' ▾' : ''}
+          </button>
+        )}
+      </span>
       {err && <span className={styles.attachmentError}>{err}</span>}
-      {open && url && (
+      {open === 'bytes' && url && (
         <a href={url} target="_blank" rel="noreferrer">
-          <img className={styles.attachmentImage} src={url} alt={att.filename} />
+          <img className={styles.attachmentImage} src={url} alt={att.filename ?? ''} />
         </a>
       )}
-      {open && text && <pre className={styles.attachmentJson}>{text}</pre>}
+      {open === 'bytes' && text && <pre className={styles.attachmentJson}>{text}</pre>}
+      {open === 'data' && data && <pre className={styles.attachmentJson}>{data}</pre>}
     </div>
   )
 }
 
-const MessageRow: React.FC<{ msg: FleetMessage; onReply: (msg: FleetMessage) => void }> = ({ msg, onReply }) => {
+const RECEIPT_TITLES: Record<string, string> = {
+  queued: 'accepted; recipient not yet reached',
+  delivered: 'handed to the recipient transport',
+  woke: 'recipient ran inference after delivery — the message reached a model',
+  acked: 'recipient explicitly acknowledged',
+  failed: 'delivery failed — stage in tooltip',
+}
+
+const MessageRow: React.FC<{ msg: FeedMessage; onReply: (msg: FeedMessage) => void }> = ({ msg, onReply }) => {
   if (msg.kind === 'system') {
     return (
       <div className={`${styles.row} ${styles.system}`}>
@@ -134,10 +175,13 @@ const MessageRow: React.FC<{ msg: FleetMessage; onReply: (msg: FleetMessage) => 
       )}
       {msg.receipts && msg.receipts.length > 0 && (
         <div className={styles.deliveries}>
-          {msg.receipts.map((r, i) => (
-            <span key={`${r.agent_id ?? ''}-${i}`} className={`${styles.deliveryChip} ${styles[r.state] ?? ''}`}>
-              {r.agent_id ? `${r.agent_id}: ` : ''}
-              {r.state}
+          {msg.receipts.map((r) => (
+            <span
+              key={r.recipient}
+              className={`${styles.deliveryChip} ${styles[r.state] ?? ''}`}
+              title={r.state === 'failed' ? `${r.failure_stage ?? 'unknown stage'}: ${r.failure_detail ?? ''}` : RECEIPT_TITLES[r.state]}
+            >
+              {r.recipient}: {r.state}
             </span>
           ))}
         </div>
@@ -146,30 +190,77 @@ const MessageRow: React.FC<{ msg: FleetMessage; onReply: (msg: FleetMessage) => 
   )
 }
 
-const ThreadRow: React.FC<{ t: FleetThread; active: boolean; onOpen: () => void }> = observer(({ t, active, onOpen }) => (
-  <button type="button" className={`${styles.threadRow} ${active ? styles.active : ''}`} onClick={onOpen}>
-    <div className={styles.threadRowHead}>
-      {t.kind === 'post' ? (
-        <span className={`${styles.kindBadge} ${styles.post}`}>
-          <Pin size={9} /> {t.category ?? 'post'}
+const ThreadRow: React.FC<{ t: FeedThread; active: boolean; onOpen: () => void }> = observer(({ t, active, onOpen }) => {
+  const unread = store.unreadOf(t)
+  return (
+    <button type="button" className={`${styles.threadRow} ${active ? styles.active : ''}`} onClick={onOpen}>
+      <div className={styles.threadRowHead}>
+        {t.kind === 'post' ? (
+          <span className={`${styles.kindBadge} ${styles.post}`}>
+            <Pin size={9} /> {t.category ?? 'post'}
+          </span>
+        ) : (
+          <span className={styles.kindBadge}>
+            <MessageSquare size={9} /> dm
+          </span>
+        )}
+        <VisibilityBadge visibility={t.visibility} />
+        {unread > 0 && (
+          <span className={styles.unreadDot} title={`${unread} unread`}>
+            {unread > 9 ? '9+' : unread}
+          </span>
+        )}
+        <span className={styles.time}>{fmtTime(t.updated_at)}</span>
+      </div>
+      <div className={styles.threadTitle}>{threadTitle(t)}</div>
+      <div className={styles.threadMeta}>
+        {t.message_count} msg{t.message_count === 1 ? '' : 's'}
+        {t.last_sender ? ` · @${t.last_sender}` : ''}
+        {t.last_snippet ? ` — ${t.last_snippet}` : ''}
+      </div>
+    </button>
+  )
+})
+
+/** Attach-file picker shared by the composers (base64 inline — rides WITH the send). */
+const AttachPicker: React.FC<{
+  attachments: FeedAttachmentInput[]
+  onChange: (a: FeedAttachmentInput[]) => void
+  onError: (msg: string) => void
+}> = ({ attachments, onChange, onError }) => {
+  const fileRef = useRef<HTMLInputElement>(null)
+  return (
+    <span className={styles.attachPicker}>
+      <input
+        ref={fileRef}
+        type="file"
+        multiple
+        style={{ display: 'none' }}
+        onChange={async (e) => {
+          const files = Array.from(e.target.files ?? [])
+          e.target.value = ''
+          try {
+            const converted = await Promise.all(files.map(fileToAttachment))
+            onChange([...attachments, ...converted])
+          } catch (err) {
+            onError(err instanceof Error ? err.message : String(err))
+          }
+        }}
+      />
+      <button type="button" className={styles.iconBtn} title="Attach files" onClick={() => fileRef.current?.click()}>
+        <Paperclip size={14} />
+      </button>
+      {attachments.map((a, i) => (
+        <span key={`${a.filename}-${i}`} className={styles.attachmentChip}>
+          {a.filename}
+          <button type="button" className={styles.iconBtn} onClick={() => onChange(attachments.filter((_, j) => j !== i))}>
+            <X size={10} />
+          </button>
         </span>
-      ) : (
-        <span className={styles.kindBadge}>
-          <MessageSquare size={9} /> dm
-        </span>
-      )}
-      <VisibilityBadge visibility={t.visibility} />
-      {store.isUnread(t) && <span className={styles.unreadDot} title="New activity" />}
-      <span className={styles.time}>{fmtTime(t.updated_at)}</span>
-    </div>
-    <div className={styles.threadTitle}>{threadTitle(t)}</div>
-    <div className={styles.threadMeta}>
-      {t.message_count} msg{t.message_count === 1 ? '' : 's'}
-      {t.last_sender ? ` · @${t.last_sender}` : ''}
-      {t.last_snippet ? ` — ${t.last_snippet}` : ''}
-    </div>
-  </button>
-))
+      ))}
+    </span>
+  )
+}
 
 /** In-page composer overlay (standard #2 — no native dialogs). */
 const ComposeOverlay: React.FC<{ mode: 'post' | 'dm'; onClose: () => void }> = observer(({ mode, onClose }) => {
@@ -177,17 +268,28 @@ const ComposeOverlay: React.FC<{ mode: 'post' | 'dm'; onClose: () => void }> = o
   const [subject, setSubject] = useState('')
   const [body, setBody] = useState('')
   const [to, setTo] = useState<string[]>([])
+  const [publicNow, setPublicNow] = useState(false)
+  const [attachments, setAttachments] = useState<FeedAttachmentInput[]>([])
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  const canSubmit = body.trim() && (mode === 'post' ? category.trim() : to.length > 0) && !busy
+  const canSubmit = body.trim() && (mode === 'post' ? subject.trim() : to.length > 0) && !busy
   const submit = async () => {
     if (!canSubmit) return
     setBusy(true)
     setErr(null)
     try {
-      if (mode === 'post') await store.createPost({ category: category.trim(), subject: subject.trim(), body })
-      else await store.createDm(to, body)
+      if (mode === 'post') {
+        await store.createPost({
+          category: category.trim() || undefined,
+          subject: subject.trim(),
+          body,
+          visibility: publicNow ? 'public' : 'private',
+          attachments,
+        })
+      } else {
+        await store.createDm(to, body, attachments)
+      }
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -221,7 +323,7 @@ const ComposeOverlay: React.FC<{ mode: 'post' | 'dm'; onClose: () => void }> = o
             </datalist>
             <input
               className={styles.field}
-              placeholder="Subject"
+              placeholder="Subject (required)"
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
             />
@@ -229,7 +331,7 @@ const ComposeOverlay: React.FC<{ mode: 'post' | 'dm'; onClose: () => void }> = o
         ) : (
           <div className={styles.recipients}>
             {store.agents
-              .filter((a) => a.agent_id && a.agent_id !== FLEET_VIEWER)
+              .filter((a) => a.agent_id && a.agent_id !== FLEET_VIEWER && a.enabled)
               .map((a) => (
                 <label key={a.agent_id} className={styles.recipient}>
                   <input
@@ -239,7 +341,7 @@ const ComposeOverlay: React.FC<{ mode: 'post' | 'dm'; onClose: () => void }> = o
                       setTo(e.target.checked ? [...to, a.agent_id] : to.filter((id) => id !== a.agent_id))
                     }
                   />
-                  {a.display_name ?? a.agent_id}
+                  {a.display_name || a.agent_id}
                 </label>
               ))}
           </div>
@@ -251,9 +353,15 @@ const ComposeOverlay: React.FC<{ mode: 'post' | 'dm'; onClose: () => void }> = o
           value={body}
           onChange={(e) => setBody(e.target.value)}
         />
-        {mode === 'post' && (
-          <div className={styles.overlayHint}>Posts are public by default — that is the point of the board.</div>
-        )}
+        <div className={styles.overlayFootRow}>
+          <AttachPicker attachments={attachments} onChange={setAttachments} onError={setErr} />
+          {mode === 'post' && (
+            <label className={styles.recipient} title="Posts are PRIVATE by default; publishing makes this readable by every agent and indexes it for search.">
+              <input type="checkbox" checked={publicNow} onChange={(e) => setPublicNow(e.target.checked)} />
+              publish publicly now
+            </label>
+          )}
+        </div>
         {err && <div className={styles.errorNote}>{err}</div>}
         <button type="button" className={styles.sendBtn} disabled={!canSubmit} onClick={() => void submit()}>
           <Send size={13} /> {mode === 'post' ? 'Post' : 'Send'}
@@ -267,7 +375,8 @@ const ThreadView: React.FC = observer(() => {
   const t = store.thread
   const feedRef = useRef<HTMLDivElement>(null)
   const [draft, setDraft] = useState('')
-  const [replyTo, setReplyTo] = useState<FleetMessage | null>(null)
+  const [replyTo, setReplyTo] = useState<FeedMessage | null>(null)
+  const [attachments, setAttachments] = useState<FeedAttachmentInput[]>([])
   const [sending, setSending] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -288,9 +397,10 @@ const ThreadView: React.FC = observer(() => {
     setSending(true)
     setErr(null)
     try {
-      await store.sendReply(draft, replyTo?.message_id)
+      await store.sendReply(draft, replyTo?.message_id, attachments)
       setDraft('')
       setReplyTo(null)
+      setAttachments([])
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -325,6 +435,11 @@ const ThreadView: React.FC = observer(() => {
         </button>
       </div>
       <div ref={feedRef} className={styles.feed}>
+        {store.threadHasMore && (
+          <button type="button" className={styles.loadMoreBtn} disabled={store.loadingOlder} onClick={() => void store.loadOlderMessages()}>
+            {store.loadingOlder ? 'Loading…' : '↑ load older messages'}
+          </button>
+        )}
         {store.messages.map((m) => (
           <MessageRow key={m.message_id} msg={m} onReply={(msg) => setReplyTo(msg)} />
         ))}
@@ -340,6 +455,7 @@ const ThreadView: React.FC = observer(() => {
         )}
         {err && <div className={styles.errorNote}>{err}</div>}
         <div className={styles.composer}>
+          <AttachPicker attachments={attachments} onChange={setAttachments} onError={setErr} />
           <textarea
             className={styles.input}
             rows={1}
@@ -365,7 +481,8 @@ const ThreadView: React.FC = observer(() => {
 /**
  * Fleet Feed (phase 2): bulletin board over fleetd — DM threads and
  * category posts in one list, private by default with visibility always
- * shown, attachment-only images, and public-only search.
+ * shown, attachment-only images, public-only search, per-recipient
+ * delivery receipts, and the fleetd delivery kill switch.
  */
 export const FleetPanel: React.FC = observer(() => {
   const [compose, setCompose] = useState<'post' | 'dm' | null>(null)
@@ -383,8 +500,7 @@ export const FleetPanel: React.FC = observer(() => {
     )
   }
 
-  const presence = (a: { online?: boolean; status?: string }) =>
-    a.online === true || a.status === 'idle' || a.status === 'thinking' ? styles.idle : styles.offline
+  const guard = store.guard
 
   return (
     <div className={styles.panel}>
@@ -393,12 +509,18 @@ export const FleetPanel: React.FC = observer(() => {
           <Radio size={16} /> Fleet Feed
         </span>
         <span className={styles.agents}>
-          {store.agents.map((a) => (
-            <span key={a.agent_id} className={styles.agentChip} title={`${a.kind ?? 'agent'} · ${a.status ?? (a.online ? 'online' : 'offline')}`}>
-              <span className={`${styles.dot} ${presence(a)}`} />
-              {a.display_name ?? a.agent_id}
-            </span>
-          ))}
+          {store.agents
+            .filter((a) => a.agent_id !== FLEET_VIEWER)
+            .map((a) => (
+              <span
+                key={a.agent_id}
+                className={styles.agentChip}
+                title={`${a.kind} · ${a.status ?? (store.isOnline(a) ? 'online' : 'offline')}${a.turn_count !== null ? ` · ${a.turn_count} turns` : ''}`}
+              >
+                <span className={`${styles.dot} ${store.isOnline(a) ? styles.idle : styles.offline}`} />
+                {a.display_name || a.agent_id}
+              </span>
+            ))}
         </span>
         <span className={styles.spacer} />
         <span className={styles.searchBox} title="Searches PUBLIC content only — private threads are never indexed">
@@ -441,6 +563,22 @@ export const FleetPanel: React.FC = observer(() => {
             </button>
           ))}
         </span>
+        <button
+          type="button"
+          className={`${styles.killSwitch} ${guard?.enabled ? styles.armed : ''}`}
+          disabled={!guard}
+          title={
+            !guard
+              ? 'Delivery guard state unknown (backend unreachable?)'
+              : guard.enabled
+                ? 'Fleet delivery is ON — messages wake agents. Click to stop all delivery (DB-backed; survives restarts).'
+                : `Fleet delivery is STOPPED${guard.reason ? ` — ${guard.reason}` : ''}${guard.updated_by ? ` (by ${guard.updated_by})` : ''}. Click to resume.`
+          }
+          onClick={() => guard && void store.setGuard(!guard.enabled, 'via Fleet Feed UI')}
+        >
+          {guard?.enabled ? <ShieldAlert size={13} /> : <ShieldCheck size={13} />}
+          {guard ? (guard.enabled ? 'delivery ON' : 'delivery stopped') : 'guard …'}
+        </button>
       </div>
 
       {store.error && <div className={styles.errorBanner}>fleet feed: {store.error}</div>}
@@ -482,10 +620,11 @@ export const FleetPanel: React.FC = observer(() => {
                   key={c.name}
                   type="button"
                   className={`${styles.catChip} ${store.categoryFilter === c.name ? styles.active : ''}`}
+                  title={c.description ?? undefined}
                   onClick={() => store.setCategoryFilter(store.categoryFilter === c.name ? null : c.name)}
                 >
                   {c.name}
-                  {c.count > 0 ? ` (${c.count})` : ''}
+                  {c.thread_count > 0 ? ` (${c.thread_count})` : ''}
                 </button>
               ))}
             </div>
@@ -496,28 +635,38 @@ export const FleetPanel: React.FC = observer(() => {
                 <div className={styles.listNote}>
                   {store.searching ? 'Searching…' : `${store.searchResults.length} public result(s)`}
                 </div>
-                {store.searchResults.map((r, i) => (
+                {store.searchResults.map((r) => (
                   <button
-                    key={`${r.thread_id}-${i}`}
+                    key={r.message_id}
                     type="button"
                     className={styles.threadRow}
                     onClick={() => void store.openThread(r.thread_id)}
                   >
-                    <div className={styles.threadMeta}>{r.message?.sender ? `@${r.message.sender}: ` : ''}{r.snippet ?? r.message?.body ?? r.thread_id}</div>
+                    <div className={styles.threadTitle}>{r.subject ?? r.thread_id}</div>
+                    <div className={styles.threadMeta}>
+                      @{r.sender} #{r.seq}: {r.body}
+                    </div>
                   </button>
                 ))}
               </>
             ) : store.visibleThreads.length === 0 ? (
               <div className={styles.listNote}>{store.loaded ? 'No threads yet.' : 'Loading…'}</div>
             ) : (
-              store.visibleThreads.map((t) => (
-                <ThreadRow
-                  key={t.thread_id}
-                  t={t}
-                  active={t.thread_id === store.selectedThreadId}
-                  onOpen={() => void store.openThread(t.thread_id)}
-                />
-              ))
+              <>
+                {store.visibleThreads.map((t) => (
+                  <ThreadRow
+                    key={t.thread_id}
+                    t={t}
+                    active={t.thread_id === store.selectedThreadId}
+                    onOpen={() => void store.openThread(t.thread_id)}
+                  />
+                ))}
+                {store.feedHasMore && (
+                  <button type="button" className={styles.loadMoreBtn} onClick={() => void store.loadMoreThreads()}>
+                    ↓ load more threads
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>

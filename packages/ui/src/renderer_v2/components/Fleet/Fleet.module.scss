@@ -220,6 +220,10 @@
   &.delivered, &.replied { color: var(--success); border-color: var(--success); }
   &.inference_started { color: var(--accent); border-color: var(--accent); }
   &.dropped { color: var(--danger); border-color: var(--danger); }
+
+  // fleetd receipt states (queued keeps the muted default)
+  &.woke, &.acked { color: var(--success); border-color: var(--success); }
+  &.failed { color: var(--danger); border-color: var(--danger); }
 }
 
 .system {
@@ -402,11 +406,50 @@
 }
 
 .unreadDot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
   background: var(--accent);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
   flex-shrink: 0;
+}
+
+.loadMoreBtn {
+  margin: 4px auto;
+  padding: 3px 12px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--control-bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+
+  &:hover { color: var(--fg); border-color: var(--accent); }
+  &:disabled { opacity: 0.5; cursor: default; }
+}
+
+.attachPicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.attachmentActions {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.overlayFootRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .visBadge {

@@ -1,81 +1,141 @@
 /**
- * Fleet Feed wire adapter — phase-2 fleetd-backed /api/fleet/* routes (see
- * fleet-channel docs/FEED_CONTRACT.md). Same pattern as hermesApi.ts /
- * instanceManager.ts: ALL endpoint knowledge lives here; the store + UI
- * consume this interface only.
+ * Fleet Feed wire adapter — the fleetd-backed messaging-v2 surface (see
+ * fleet-channel docs/FEED_CONTRACT.md + shared/fleet/feed-contracts.ts).
+ * Same pattern as hermesApi.ts: ALL endpoint knowledge lives here.
+ *
+ * Route names avoid the ConversationBus router's claims (it is mounted first
+ * and Express shadows silently): threads NOT feed, message NOT send,
+ * directory NOT agents, delivery-guard NOT guard.
  *
  * JSON rides the cluster bridge (standard #1 — the browser never talks to
- * fleetd or any 10.0.0.x address; the backend proxies). Attachment BYTES are
- * the one relative-fetch exception, because the bridge RPC is JSON-only and
- * the backend streams `/api/fleet/attachment/:id` for exactly this purpose.
+ * fleetd or any 10.0.0.x address). Attachment BYTES are the one
+ * relative-fetch exception: the bridge RPC is JSON-only and the backend
+ * streams `/api/fleet/attachment/:id`.
  *
- * TYPES: these interfaces mirror FEED_CONTRACT.md and are TEMPORARY — swap to
- * the zod-inferred types from @gyshell/shared (fleet/contracts.ts) once
- * claude1's backend contracts land, then delete the local copies.
+ * TYPES mirror packages/shared/src/fleet/feed-contracts.ts (snake_case =
+ * fleetd's JSON, timestamps are epoch ms numbers). Local copies until
+ * claude1's shared file is pushed — then import from @gyshell/shared and
+ * delete these.
  */
 
-export type FleetVisibility = 'private' | 'public'
-export type FleetThreadKind = 'dm' | 'post'
-export type FleetFeedScope = 'public' | 'mine' | 'all'
-export type FleetAttachmentKind = 'image' | 'flowchart' | 'document'
+export type FeedVisibility = 'private' | 'public'
+export type FeedThreadKind = 'dm' | 'post'
+export type FeedAttachmentKind = 'image' | 'flowchart' | 'document'
+export type FeedScope = 'public' | 'mine' | 'all'
+export type FeedReceiptState = 'queued' | 'delivered' | 'woke' | 'acked' | 'failed'
 
-export interface FleetThread {
-  thread_id: string
-  subject: string | null
-  category: string | null
-  visibility: FleetVisibility
-  kind: FleetThreadKind
-  participants: string[]
-  created_at: string
-  updated_at: string
-  message_count: number
-  last_sender?: string
-  last_snippet?: string
-}
-
-export interface FleetAttachmentRef {
+export interface FeedAttachmentRef {
   attachment_id: string
-  filename: string
+  filename: string | null
   media_type: string
+  kind: FeedAttachmentKind
   byte_size: number
-  sha256: string
-  kind: FleetAttachmentKind
+  sha256: string | null
+  created_at: number
 }
 
-export interface FleetMessage {
+export interface FeedReceipt {
+  recipient: string
+  state: FeedReceiptState
+  attempts: number
+  queued_at: number | null
+  delivered_at: number | null
+  woke_at: number | null
+  acked_at: number | null
+  failure_stage: string | null
+  failure_detail: string | null
+}
+
+export interface FeedMessage {
   message_id: string
   thread_id: string
   seq: number
   parent_id: string | null
   sender: string
   body: string
-  kind?: string // 'system' rows (visibility flips) render distinctly
-  created_at: string
-  attachments: FleetAttachmentRef[]
-  /** Receipt lifecycle (queued→delivered→woke→acked) — rendered when present. */
-  receipts?: Array<{ agent_id?: string; state: string; ts?: string }>
+  kind: string
+  created_at: number
+  attachments: FeedAttachmentRef[]
+  receipts?: FeedReceipt[]
 }
 
-export interface FleetCategory {
-  name: string
-  count: number
+export interface FeedThread {
+  thread_id: string
+  subject: string | null
+  kind: FeedThreadKind
+  category: string | null
+  visibility: FeedVisibility
+  participants: string[]
+  message_count: number
+  unread_count?: number
+  last_sender: string | null
+  last_snippet: string | null
+  created_at: number
+  updated_at: number
 }
 
-/** Directory + live presence row. Shape is fleetd's; parsed defensively. */
-export interface FleetAgentEntry {
+export interface FeedList {
+  threads: FeedThread[]
+  has_more: boolean
+  next_cursor: string | null
+}
+
+export interface FeedThreadRead {
+  thread: FeedThread
+  messages: FeedMessage[]
+  has_more: boolean
+  before_seq: number | null
+}
+
+export interface FeedDirectoryEntry {
   agent_id: string
-  display_name?: string
-  kind?: string
-  online?: boolean
-  status?: string
-  last_heartbeat?: string
+  display_name: string
+  kind: string
+  endpoint: string | null
+  enabled: boolean
+  can_broadcast: boolean
+  can_focused: boolean
+  status: string | null
+  presence_at: number | null
+  turn_count: number | null
 }
 
-/**
- * The UI's sender/viewer identity on the fleet channel. 'user' matches the
- * bus-era USER_AGENT_ID; fleetd needs a canonical id for Travis (flagged to
- * claude1 in the contract review).
- */
+export interface FeedCategory {
+  name: string
+  description: string | null
+  created_by: string | null
+  created_at: number
+  thread_count: number
+}
+
+export interface FeedSearchHit {
+  message_id: string
+  thread_id: string
+  seq: number
+  subject: string | null
+  category: string | null
+  sender: string
+  body: string
+  created_at: number
+}
+
+export interface FeedGuard {
+  enabled: boolean
+  reason: string | null
+  updated_by: string | null
+  updated_at: number | null
+}
+
+/** Outbound attachment riding inline on message/post (no post-hoc race). */
+export interface FeedAttachmentInput {
+  filename?: string
+  media_type: string
+  kind: FeedAttachmentKind
+  content_b64?: string
+  structured?: unknown
+}
+
+/** Canonical viewer identity for Travis/the UI — registered in the directory as kind:user. */
 export const FLEET_VIEWER = 'user'
 
 function bridge(): { request: (method: string, path: string, body?: unknown) => Promise<any> } | undefined {
@@ -107,85 +167,137 @@ export const fleetFeedApi = {
   },
 
   async feed(opts: {
-    scope: FleetFeedScope
+    scope: FeedScope
     category?: string
-    kind?: FleetThreadKind
+    kind?: FeedThreadKind
     limit?: number
-    before?: string
-  }): Promise<FleetThread[]> {
-    const r = await get(
-      `/api/fleet/feed${q({
+    /** Opaque — pass a previous response's next_cursor straight back. */
+    cursor?: string
+  }): Promise<FeedList> {
+    return get(
+      `/api/fleet/threads${q({
         scope: opts.scope,
         category: opts.category,
         kind: opts.kind,
         viewer: FLEET_VIEWER,
-        limit: opts.limit ?? 100,
-        before: opts.before,
+        limit: opts.limit ?? 60,
+        cursor: opts.cursor,
+        unread: 1,
       })}`,
     )
-    return (r?.threads ?? r ?? []) as FleetThread[]
   },
 
-  async thread(id: string): Promise<{ thread: FleetThread; messages: FleetMessage[] }> {
-    const r = await get(`/api/fleet/thread/${encodeURIComponent(id)}`)
-    return { thread: r?.thread, messages: (r?.messages ?? []) as FleetMessage[] }
+  /** Tail window, ascending by seq; walk back with before_seq. */
+  async thread(id: string, opts?: { limit?: number; before_seq?: number }): Promise<FeedThreadRead> {
+    return get(
+      `/api/fleet/thread/${encodeURIComponent(id)}${q({
+        limit: opts?.limit,
+        before_seq: opts?.before_seq,
+      })}`,
+    )
   },
 
-  async createPost(input: { category: string; subject: string; body: string }): Promise<any> {
+  async markRead(threadId: string, upToSeq: number): Promise<void> {
+    await post(`/api/fleet/thread/${encodeURIComponent(threadId)}/read`, {
+      viewer: FLEET_VIEWER,
+      up_to_seq: upToSeq,
+    })
+  },
+
+  async unreadTotal(): Promise<number> {
+    const r = await get(`/api/fleet/unread${q({ viewer: FLEET_VIEWER })}`)
+    return (r?.unread ?? []).reduce((n: number, u: { unread_count: number }) => n + (u.unread_count ?? 0), 0)
+  },
+
+  async createPost(input: {
+    category?: string
+    subject: string
+    body: string
+    visibility?: FeedVisibility
+    attachments?: FeedAttachmentInput[]
+  }): Promise<any> {
     return post('/api/fleet/post', { sender: FLEET_VIEWER, ...input })
   },
 
-  async send(input: { to: string[]; body: string; thread_id?: string; parent_id?: string }): Promise<any> {
-    return post('/api/fleet/send', { sender: FLEET_VIEWER, ...input })
+  async send(input: {
+    to: string[]
+    body: string
+    subject?: string
+    thread_id?: string
+    parent_id?: string
+    attachments?: FeedAttachmentInput[]
+  }): Promise<any> {
+    return post('/api/fleet/message', { sender: FLEET_VIEWER, ...input })
   },
 
-  async setVisibility(threadId: string, visibility: FleetVisibility): Promise<any> {
+  async setVisibility(threadId: string, visibility: FeedVisibility): Promise<any> {
     return post(`/api/fleet/thread/${encodeURIComponent(threadId)}/visibility`, {
       actor: FLEET_VIEWER,
       visibility,
     })
   },
 
-  async categories(): Promise<FleetCategory[]> {
+  async categories(): Promise<FeedCategory[]> {
     const r = await get('/api/fleet/categories')
-    const raw = r?.categories ?? r ?? []
-    // Tolerate ["name", ...] or [{category|name, count|thread_count}, ...].
-    return (raw as any[]).map((c) =>
-      typeof c === 'string'
-        ? { name: c, count: 0 }
-        : { name: c.name ?? c.category ?? '', count: c.count ?? c.thread_count ?? 0 },
-    )
+    return (r?.categories ?? r ?? []) as FeedCategory[]
   },
 
-  /** PUBLIC content only (structural — private threads are never indexed). */
-  async search(query: string): Promise<Array<{ thread_id: string; message?: FleetMessage; snippet?: string }>> {
+  /** PUBLIC content only — enforced in fleetd's query, not by a caller flag. */
+  async search(query: string): Promise<FeedSearchHit[]> {
     const r = await get(`/api/fleet/search${q({ q: query })}`)
-    return (r?.results ?? r ?? []) as Array<{ thread_id: string; message?: FleetMessage; snippet?: string }>
+    return (r?.hits ?? r?.results ?? r ?? []) as FeedSearchHit[]
   },
 
-  async agents(): Promise<FleetAgentEntry[]> {
-    const r = await get('/api/fleet/agents')
-    const raw = r?.agents ?? r ?? []
-    return (raw as any[]).map((a) => ({
-      agent_id: a.agent_id ?? a.agentId ?? a.id ?? a.name ?? '',
-      display_name: a.display_name ?? a.displayName,
-      kind: a.kind,
-      online: a.online,
-      status: a.status,
-      last_heartbeat: a.last_heartbeat ?? a.lastHeartbeat,
-    }))
+  async directory(): Promise<FeedDirectoryEntry[]> {
+    const r = await get('/api/fleet/directory')
+    return (r?.agents ?? r?.directory ?? r ?? []) as FeedDirectoryEntry[]
+  },
+
+  async guard(): Promise<FeedGuard> {
+    return get('/api/fleet/delivery-guard')
+  },
+
+  async setGuard(enabled: boolean, reason?: string): Promise<FeedGuard> {
+    return post('/api/fleet/delivery-guard', { enabled, actor: FLEET_VIEWER, reason })
+  },
+
+  /** Flowchart machine-readable form (pixels are useless to another agent). */
+  async fetchStructured(ref: FeedAttachmentRef): Promise<string> {
+    const r = await get(`/api/fleet/attachment/${encodeURIComponent(ref.attachment_id)}/structured`)
+    return JSON.stringify(r?.structured ?? r, null, 2)
   },
 
   /**
    * Attachment bytes — deliberate, explicit fetch (UI rule 3: never inline
    * unbidden). Returns an object URL for binary content or text for
-   * JSON/text payloads (flowchart structured form). Caller owns revoke().
+   * JSON/text payloads. Caller owns revoke().
    */
-  async fetchAttachment(ref: FleetAttachmentRef): Promise<{ url?: string; text?: string }> {
+  async fetchAttachment(ref: FeedAttachmentRef): Promise<{ url?: string; text?: string }> {
     const r = await fetch(`/api/fleet/attachment/${encodeURIComponent(ref.attachment_id)}`)
     if (!r.ok) throw new Error(`attachment fetch failed: HTTP ${r.status}`)
     const isText = /json|text\/|xml/.test(ref.media_type) || /json|text\/|xml/.test(r.headers.get('content-type') ?? '')
     if (isText) return { text: await r.text() }
     return { url: URL.createObjectURL(await r.blob()) }
   },
+}
+
+/** Max attachment size the composer will base64 (matches the backend's 1mb json cap headroom). */
+export const MAX_ATTACHMENT_BYTES = 700 * 1024
+
+/** File → inline attachment input (base64, chunked so large files don't blow the stack). */
+export async function fileToAttachment(f: File): Promise<FeedAttachmentInput> {
+  if (f.size > MAX_ATTACHMENT_BYTES) {
+    throw new Error(`${f.name}: ${Math.round(f.size / 1024)} KB exceeds the ${Math.round(MAX_ATTACHMENT_BYTES / 1024)} KB attachment cap`)
+  }
+  const bytes = new Uint8Array(await f.arrayBuffer())
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  }
+  return {
+    filename: f.name,
+    media_type: f.type || 'application/octet-stream',
+    kind: f.type.startsWith('image/') ? 'image' : 'document',
+    content_b64: btoa(bin),
+  }
 }
