@@ -209,6 +209,19 @@ export async function startGyBackend(): Promise<void> {
     .start({
       dataDir,
       fleetRouter: createFleetRouter(conversationBus),
+        // One kill switch must stop BOTH delivery paths: fleetd delivery, and this autonomous
+        // one (HermesBusSubscriber). Governing them separately meant stopping one while
+        // believing you had stopped "agent traffic".
+        busGuard: {
+          get: () => ({
+            autonomousRoutingEnabled: conversationBus.getGuardConfig().autonomousRoutingEnabled,
+          }),
+          set: (patch: { autonomousRoutingEnabled: boolean }) => ({
+            autonomousRoutingEnabled: conversationBus.setGuardConfig({
+              autonomousRoutingEnabled: patch.autonomousRoutingEnabled,
+            }).autonomousRoutingEnabled,
+          }),
+        },
       hermesRouter: createHermesRouter(hermesService, path.join(dataDir, 'roadmap.md')),
       agentToolsRouter: createAgentToolsRouter({ settingsService, agentService }),
     })

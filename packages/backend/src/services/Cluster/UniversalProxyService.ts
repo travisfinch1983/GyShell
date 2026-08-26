@@ -36,6 +36,8 @@ export class UniversalProxyService {
   private vectorList: unknown = null
   /** ConversationBus HTTP surface (fleet vertical, createFleetRouter) — set via start opts. */
   private fleetRouter: unknown = null
+  /** ConversationBus guard adapter — lets the ONE kill switch stop the autonomous path too. */
+  private busGuard: unknown = null
   /** AI-Lab x Hermes control-plane HTTP surface (createHermesRouter) — set via start opts. */
   private hermesRouter: unknown = null
   private agentToolsRouter: unknown = null
@@ -101,8 +103,9 @@ export class UniversalProxyService {
       conn.connect({ host, port: 22, username: 'root', privateKey: key, readyTimeout: opts.timeout || 12000, hostVerifier: () => true })
     })
 
-  async start(opts: { dataDir?: string; host?: string; port?: number; fleetRouter?: unknown; hermesRouter?: unknown; agentToolsRouter?: unknown } = {}): Promise<void> {
+  async start(opts: { dataDir?: string; host?: string; port?: number; fleetRouter?: unknown; hermesRouter?: unknown; agentToolsRouter?: unknown; busGuard?: unknown } = {}): Promise<void> {
     this.fleetRouter = opts.fleetRouter ?? this.fleetRouter
+    this.busGuard = opts.busGuard ?? this.busGuard
     this.hermesRouter = opts.hermesRouter ?? this.hermesRouter
     this.agentToolsRouter = opts.agentToolsRouter ?? this.agentToolsRouter
     this.dataDir = opts.dataDir || this.dataDir
@@ -316,7 +319,7 @@ export class UniversalProxyService {
     // semantics and still back the current UI. Those retire when the new tab lands.
     {
       const { createFleetFeedRouter } = await import('../Fleet/fleetFeedHttp.js')
-      app.use(createFleetFeedRouter())
+      app.use(createFleetFeedRouter(undefined, this.busGuard as never))
     }
     // AI-Lab x Hermes control plane (createHermesRouter): /api/hermes/* — before the broad /api cluster router.
     if (this.hermesRouter) {
