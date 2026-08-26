@@ -1,176 +1,299 @@
 import { makeAutoObservable, runInAction } from 'mobx'
-import type {
-  AgentRegistryEntry,
-  AgentStatus,
-  AutonomyBudgetStatus,
-  BusDeliveryUpdate,
-  BusEnvelope,
-  BusRecord,
-  FleetGuardConfig,
-} from '@gyshell/shared'
-import { newUuid } from '../lib/uuid'
+import {
+  FLEET_VIEWER,
+  fleetFeedApi,
+  type FleetAgentEntry,
+  type FleetCategory,
+  type FleetFeedScope,
+  type FleetMessage,
+  type FleetThread,
+  type FleetThreadKind,
+  type FleetVisibility,
+} from './fleetFeedApi'
 
-function bridge(): any {
-  return (window as any).gyshell?.fleet
-}
-
-/** Keep at most this many records in memory; older ones stay on the backend log. */
-const MAX_RECORDS = 1500
+const FEED_POLL_MS = 15_000
+const THREAD_POLL_MS = 6_000
+const LAST_SEEN_KEY = 'fleet-feed-last-seen'
 
 /**
- * Renderer store for the ConversationBus: cursor-replays the log on load,
- * live-tails fleet:record broadcasts, and exposes fleet status (agents,
- * presence, guard config, autonomy budget) for the Fleet Feed panel.
+ * Renderer store for the phase-2 Fleet Feed: a bulletin board of threads
+ * (DMs + category posts) served by the AI-Lab backend's fleetd-backed
+ * /api/fleet/* routes. Replaces the ConversationBus live-tail store.
+ *
+ * No push transport exists in the phase-2 contract (flagged to claude1), so
+ * the store polls: feed while the tab is mounted, the open thread faster.
+ * Unread state is client-side (localStorage updated_at watermarks) until the
+ * backend grows a read-mark story.
  */
 class FleetStore {
-  envelopes: BusEnvelope[] = []
-  deliveriesByRef = new Map<number, BusDeliveryUpdate[]>()
-  agents: AgentRegistryEntry[] = []
-  statuses: AgentStatus[] = []
-  guardConfig: FleetGuardConfig | null = null
-  budget: AutonomyBudgetStatus | null = null
+  threads: FleetThread[] = []
+  categories: FleetCategory[] = []
+  agents: FleetAgentEntry[] = []
+
+  scope: FleetFeedScope = 'all'
+  kindFilter: 'all' | FleetThreadKind = 'all'
+  categoryFilter: string | null = null
+
+  searchQuery = ''
+  searchResults: Array<{ thread_id: string; message?: FleetMessage; snippet?: string }> | null = null
+  searching = false
+
+  selectedThreadId: string | null = null
+  thread: FleetThread | null = null
+  messages: FleetMessage[] = []
+  threadLoading = false
+
   loaded = false
   available = true
-  filter: 'all' | 'agents' | 'system' = 'all'
+  /** Last feed/thread error — rendered in-page, cleared on next success. */
+  error: string | null = null
 
-  private cursor = -1
+  private lastSeen: Record<string, string> = {}
+  private feedTimer: ReturnType<typeof setInterval> | null = null
+  private threadTimer: ReturnType<typeof setInterval> | null = null
   private loading: Promise<void> | null = null
-  private unsubscribe: (() => void) | null = null
-  private statusTimer: ReturnType<typeof setInterval> | null = null
 
   constructor() {
     makeAutoObservable(this)
-  }
-
-  get visibleEnvelopes(): BusEnvelope[] {
-    switch (this.filter) {
-      case 'agents':
-        return this.envelopes.filter((e) => e.from !== 'user' && e.kind !== 'system')
-      case 'system':
-        return this.envelopes.filter((e) => e.kind === 'system')
-      default:
-        return this.envelopes
+    try {
+      this.lastSeen = JSON.parse(localStorage.getItem(LAST_SEEN_KEY) ?? '{}')
+    } catch {
+      this.lastSeen = {}
     }
   }
 
-  latestDelivery(busSeq: number): BusDeliveryUpdate[] {
-    // Latest state per target (a broadcast has one lifecycle per recipient).
-    const updates = this.deliveriesByRef.get(busSeq) ?? []
-    const byTarget = new Map<string, BusDeliveryUpdate>()
-    for (const u of updates) byTarget.set(u.targetAgentId ?? '', u)
-    return [...byTarget.values()]
+  get visibleThreads(): FleetThread[] {
+    return this.threads.filter(
+      (t) =>
+        (this.kindFilter === 'all' || t.kind === this.kindFilter) &&
+        (this.categoryFilter === null || t.category === this.categoryFilter),
+    )
   }
 
-  /** Idempotent — subscribe first so records arriving during replay are not lost. */
+  isUnread(t: FleetThread): boolean {
+    const seen = this.lastSeen[t.thread_id]
+    return !seen || t.updated_at > seen
+  }
+
+  get unreadCount(): number {
+    return this.threads.reduce((n, t) => n + (this.isUnread(t) ? 1 : 0), 0)
+  }
+
+  /** Whether the UI viewer may flip visibility (participant-only rule). */
+  get viewerIsParticipant(): boolean {
+    return this.thread?.participants.includes(FLEET_VIEWER) ?? false
+  }
+
   ensureLoaded(): Promise<void> {
     if (this.loaded) return Promise.resolve()
     if (!this.loading) {
       this.loading = (async () => {
-        const fleet = bridge()
-        if (!fleet) {
+        if (!fleetFeedApi.available()) {
           runInAction(() => {
             this.available = false
             this.loaded = true
           })
           return
         }
-        const buffered: BusRecord[] = []
-        let replaying = true
-        this.unsubscribe = fleet.onRecord((record: BusRecord) => {
-          if (replaying) buffered.push(record)
-          else this.ingest(record)
+        await this.refreshFeed()
+        await Promise.all([this.refreshCategories(), this.refreshAgents()])
+        runInAction(() => {
+          this.loaded = true
         })
-        try {
-          // Page from the start (feed is small at homelab scale; MAX_RECORDS bounds memory).
-          let afterSeq = -1
-          for (;;) {
-            const page = await fleet.replay(afterSeq, 500)
-            runInAction(() => page.records.forEach((r: BusRecord) => this.ingest(r)))
-            if (page.nextAfterSeq === afterSeq || page.records.length === 0) break
-            afterSeq = page.nextAfterSeq
-            if (afterSeq >= page.latestSeq) break
-          }
-          await this.refreshStatus()
-        } catch (err) {
-          console.warn('[FleetStore] load failed:', err)
-          runInAction(() => {
-            this.available = false
-          })
-        } finally {
-          replaying = false
-          runInAction(() => {
-            buffered.forEach((r) => this.ingest(r))
-            this.loaded = true
-          })
-          this.statusTimer = setInterval(() => void this.refreshStatus(), 30_000)
-        }
+        this.feedTimer = setInterval(() => {
+          void this.refreshFeed()
+          void this.refreshAgents()
+        }, FEED_POLL_MS)
       })()
     }
     return this.loading
   }
 
   dispose(): void {
-    this.unsubscribe?.()
-    this.unsubscribe = null
-    if (this.statusTimer) clearInterval(this.statusTimer)
-    this.statusTimer = null
+    if (this.feedTimer) clearInterval(this.feedTimer)
+    this.feedTimer = null
+    this.stopThreadPoll()
   }
 
-  private ingest(record: BusRecord): void {
-    if (record.type === 'envelope') {
-      const seq = record.envelope.busSeq
-      if (seq <= this.cursor) return // replay/live overlap dedup
-      this.cursor = Math.max(this.cursor, seq)
-      this.envelopes.push(record.envelope)
-      if (this.envelopes.length > MAX_RECORDS) this.envelopes.splice(0, this.envelopes.length - MAX_RECORDS)
-    } else {
-      const u = record.update
-      if (u.seq <= this.cursor) return
-      this.cursor = Math.max(this.cursor, u.seq)
-      const list = this.deliveriesByRef.get(u.refSeq)
-      if (list) list.push(u)
-      else this.deliveriesByRef.set(u.refSeq, [u])
-      // Delivery lifecycle changes presence/queue depth — refresh opportunistically.
-      void this.refreshStatus()
+  async refreshFeed(): Promise<void> {
+    try {
+      const threads = await fleetFeedApi.feed({
+        scope: this.scope,
+        kind: this.kindFilter === 'all' ? undefined : this.kindFilter,
+        category: this.categoryFilter ?? undefined,
+      })
+      runInAction(() => {
+        this.threads = threads
+        this.error = null
+      })
+    } catch (e) {
+      runInAction(() => {
+        this.error = e instanceof Error ? e.message : String(e)
+      })
     }
   }
 
-  async refreshStatus(): Promise<void> {
-    const fleet = bridge()
-    if (!fleet) return
+  async refreshCategories(): Promise<void> {
     try {
-      const status = await fleet.status()
+      const categories = await fleetFeedApi.categories()
       runInAction(() => {
-        this.agents = status.agents ?? []
-        this.statuses = status.statuses ?? []
-        this.guardConfig = status.guardConfig ?? null
-        this.budget = status.budget ?? null
+        this.categories = categories
       })
     } catch {
-      /* transient — next poll retries */
+      /* transient — categories are decorative until next poll */
     }
   }
 
-  setFilter(filter: 'all' | 'agents' | 'system'): void {
-    this.filter = filter
+  async refreshAgents(): Promise<void> {
+    try {
+      const agents = await fleetFeedApi.agents()
+      runInAction(() => {
+        this.agents = agents
+      })
+    } catch {
+      /* transient */
+    }
   }
 
-  async send(to: string, body: string): Promise<void> {
-    const fleet = bridge()
-    if (!fleet || !body.trim()) return
-    const kind = to === 'broadcast' ? 'broadcast' : 'dm'
-    await fleet.send({ id: newUuid(), from: 'user', to, kind, body: body.trim() })
-    await this.refreshStatus()
+  setScope(scope: FleetFeedScope): void {
+    this.scope = scope
+    void this.refreshFeed()
   }
 
-  /** F1 kill switch — flips delivery-triggered inference fleet-wide. */
-  async setAutonomousRouting(enabled: boolean): Promise<void> {
-    const fleet = bridge()
-    if (!fleet) return
-    const config = await fleet.setGuardConfig({ autonomousRoutingEnabled: enabled })
+  setKindFilter(kind: 'all' | FleetThreadKind): void {
+    this.kindFilter = kind
+    void this.refreshFeed()
+  }
+
+  setCategoryFilter(category: string | null): void {
+    this.categoryFilter = category
+    void this.refreshFeed()
+  }
+
+  async openThread(threadId: string): Promise<void> {
+    this.selectedThreadId = threadId
+    this.threadLoading = true
+    this.stopThreadPoll()
+    await this.refreshThread()
     runInAction(() => {
-      this.guardConfig = config
+      this.threadLoading = false
     })
+    this.threadTimer = setInterval(() => void this.refreshThread(), THREAD_POLL_MS)
+  }
+
+  closeThread(): void {
+    this.selectedThreadId = null
+    this.thread = null
+    this.messages = []
+    this.stopThreadPoll()
+  }
+
+  private stopThreadPoll(): void {
+    if (this.threadTimer) clearInterval(this.threadTimer)
+    this.threadTimer = null
+  }
+
+  private async refreshThread(): Promise<void> {
+    const id = this.selectedThreadId
+    if (!id) return
+    try {
+      const { thread, messages } = await fleetFeedApi.thread(id)
+      runInAction(() => {
+        // Ignore a late response for a thread we've since navigated away from.
+        if (this.selectedThreadId !== id) return
+        this.thread = thread
+        this.messages = messages
+        this.error = null
+        if (thread) this.markSeen(thread)
+      })
+    } catch (e) {
+      runInAction(() => {
+        if (this.selectedThreadId === id) this.error = e instanceof Error ? e.message : String(e)
+      })
+    }
+  }
+
+  private markSeen(t: FleetThread): void {
+    if (this.lastSeen[t.thread_id] === t.updated_at) return
+    this.lastSeen[t.thread_id] = t.updated_at
+    try {
+      localStorage.setItem(LAST_SEEN_KEY, JSON.stringify(this.lastSeen))
+    } catch {
+      /* private mode etc. — unread dots just stay */
+    }
+  }
+
+  async sendReply(body: string, parentId?: string): Promise<void> {
+    const t = this.thread
+    if (!t || !body.trim()) return
+    await fleetFeedApi.send({
+      // Address the other participants; thread_id keeps it in-thread either way.
+      to: t.participants.filter((p) => p !== FLEET_VIEWER),
+      body: body.trim(),
+      thread_id: t.thread_id,
+      parent_id: parentId,
+    })
+    await this.refreshThread()
+    void this.refreshFeed()
+  }
+
+  async createPost(input: { category: string; subject: string; body: string }): Promise<void> {
+    const r = await fleetFeedApi.createPost(input)
+    await this.refreshFeed()
+    void this.refreshCategories()
+    const id = r?.thread_id ?? r?.thread?.thread_id
+    if (id) await this.openThread(id)
+  }
+
+  async createDm(to: string[], body: string): Promise<void> {
+    const r = await fleetFeedApi.send({ to, body })
+    await this.refreshFeed()
+    const id = r?.thread_id ?? r?.thread?.thread_id
+    if (id) await this.openThread(id)
+  }
+
+  /** Slash-command compat (/dm, /broadcast): fire-and-forget DM by agent id. */
+  async send(to: string, body: string): Promise<void> {
+    if (!body.trim()) return
+    await fleetFeedApi.send({ to: [to], body: body.trim() })
+    void this.refreshFeed()
+  }
+
+  async setVisibility(visibility: FleetVisibility): Promise<void> {
+    const t = this.thread
+    if (!t) return
+    await fleetFeedApi.setVisibility(t.thread_id, visibility)
+    await this.refreshThread()
+    void this.refreshFeed()
+  }
+
+  async runSearch(query: string): Promise<void> {
+    this.searchQuery = query
+    if (!query.trim()) {
+      this.searchResults = null
+      return
+    }
+    this.searching = true
+    try {
+      const results = await fleetFeedApi.search(query.trim())
+      runInAction(() => {
+        // Ignore a stale response after the query moved on.
+        if (this.searchQuery === query) this.searchResults = results
+      })
+    } catch (e) {
+      runInAction(() => {
+        this.error = e instanceof Error ? e.message : String(e)
+      })
+    } finally {
+      runInAction(() => {
+        this.searching = false
+      })
+    }
+  }
+
+  clearSearch(): void {
+    this.searchQuery = ''
+    this.searchResults = null
   }
 }
 
