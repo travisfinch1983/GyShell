@@ -570,21 +570,23 @@ export const FleetPanel: React.FC = observer(() => {
             </button>
           ))}
         </span>
+        {/* Loud styling belongs on the ABNORMAL state: a fleet that silently stopped
+            delivering is the condition that must shout; delivery ON is just normal. */}
         <button
           type="button"
-          className={`${styles.killSwitch} ${guard?.enabled ? styles.armed : ''}`}
+          className={`${styles.killSwitch} ${guard ? (guard.enabled ? styles.healthy : styles.armed) : ''}`}
           disabled={!guard}
           title={
             !guard
               ? 'Delivery guard state unknown (backend unreachable?)'
               : guard.enabled
-                ? 'Fleet delivery is ON — messages wake agents. Click to stop all delivery (DB-backed; survives restarts).'
+                ? 'Fleet delivery is ON (normal). Click to stop all delivery (DB-backed; survives restarts).'
                 : `Fleet delivery is STOPPED${guard.reason ? ` — ${guard.reason}` : ''}${guard.updated_by ? ` (by ${guard.updated_by})` : ''}. Click to resume.`
           }
           onClick={() => guard && void store.setGuard(!guard.enabled, 'via Fleet Feed UI')}
         >
-          {guard?.enabled ? <ShieldAlert size={13} /> : <ShieldCheck size={13} />}
-          {guard ? (guard.enabled ? 'delivery ON' : 'delivery stopped') : 'guard …'}
+          {guard?.enabled === false ? <ShieldAlert size={13} /> : <ShieldCheck size={13} />}
+          {guard ? (guard.enabled ? 'delivery ON' : 'delivery STOPPED') : 'guard …'}
         </button>
       </div>
 
