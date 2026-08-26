@@ -34,6 +34,15 @@ const cfg = defineConfig({
     port: 17889,
     allowedHosts: ['ai-lab.deeveeyant.com', 'gyshell.deeveeyant.com'],
     proxy: {
+      // Cluster WS gateway (:17888) — served SAME-ORIGIN as the app so it rides the exact
+      // proven HTTP chain (CF tunnel -> [NPM] -> :17889) instead of a separate ai-lab-ws host
+      // that has no proxy route. The client points __GYSHELL_GATEWAY_URL__ at wss://<host>/gateway.
+      '/gateway': {
+        target: 'http://127.0.0.1:17888',
+        changeOrigin: true,
+        ws: true,
+        rewrite: (path) => path.replace(/^\/gateway/, '') || '/',
+      },
       // Native universal proxy (AI-Lab's own backend on :17890). Lets the browser make same-origin
       // direct HTTP requests for things the WS RPC bridge can't carry: binary audio (TTS/RVC blobs),
       // <audio> element src (workspace playback), SSE streaming (multi-tts/stream), and large uploads.
@@ -52,7 +61,8 @@ const cfg = defineConfig({
       // Covers: LLM, embeddings, reranker, vector, TTS, STT, image, services
       // Browser makes same-origin requests — no CORS, no mixed content
       // ProxLab is decommissioned — the discovery/TTS/STT layer (ProxlabDiscovery,
-      // TtsPlayback, SttCapture) routes here. Retargeted from 10.0.0.140 to AI-Lab's OWN native proxy
+      // TtsPlayback, SttCapture) routes here. Retargeted off the old decommissioned
+      // ProxLab host onto AI-Lab's OWN native proxy
       // (127.0.0.1:17890), which serves the same /api/proxy/* discovery endpoints (services, *_/v1/models).
       '/proxlab-api': {
         target: 'http://127.0.0.1:17890',

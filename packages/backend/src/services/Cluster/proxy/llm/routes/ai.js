@@ -13,6 +13,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSy
 import { join, dirname, extname, resolve as pathResolve, basename } from 'path';
 import { spawn, execSync } from 'child_process';
 import { randomUUID, createHash } from 'crypto';
+import { computeKvFingerprint } from '../../kvcache/fingerprint.js';
 import multer from 'multer';
 import { fileURLToPath } from 'url';
 import { getClusterGpus, getGpuVramUsage, getAllGpuSpecs } from '../services/gpu-specs.js';
@@ -24,6 +25,9 @@ import { ProviderInstaller } from '../services/provider-installer.js';
 import { inspectModel, detectFormat, recommendedHeaderSize, safetensorsHeaderSize } from '../services/model-inspector.js';
 import { getProviderSymlinks } from '../services/shared-folder-mappings.js';
 import { LlmMetricsPoller } from '../services/metrics-poller.js';
+// Single source of truth for service type — see the note on classifyService in proxy.js.
+// (proxy.js does not import this module, so there is no cycle.)
+import { classifyService as classifyServiceShared } from '../../proxy.js';
 
 // Per-provider VRAM reservation strategy:
 //   null  = static LLM — trust live nvidia-smi (no hot-swap, VRAM won't change mid-run)
@@ -38,6 +42,7 @@ const PROVIDER_VRAM_RESERVES = {
   kokoro: 2048, 'openedai-speech': 2048, 'proxlab-tts': 3072, 'qwen-tts': 4096, 's2-pro': 6144,
   'faster-whisper': 3072, piper: 0,
   'audio-tools': 4096,
+  rvc: 2048,
 };
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -53,6 +58,11 @@ const hfDownloadsFile = join(dataDir, 'hf-downloads.json');
 const hfHistoryFile = join(dataDir, 'hf-history.json');
 const settingsFile = join(dataDir, 'proxlab-ui-settings.json'); // renamed: avoid gybackend settings.json collision
 const serviceHistoryFile = join(dataDir, 'service-history.json');
+// Durable "this service must die" queue. A removal whose remote cleanup failed is recorded here
+// and retried by a background worker, so the obligation outlives both the request and a backend
+// restart. Without this, a failed cleanup deleted the registry entry and the process became an
+// invisible orphan holding VRAM forever.
+const pendingRemovalsFile = join(dataDir, 'pending-removals.json');
 
 function loadSettings() {
   try { if (existsSync(settingsFile)) return JSON.parse(readFileSync(settingsFile, 'utf-8')); } catch {}
@@ -1053,16 +1063,31 @@ export function createAiRouter(config, gpuMonitor, pveApi, sshService, hookscrip
           [ -d "$fmt_dir" ] || continue
           fmt=$(basename "$fmt_dir")
           case "$fmt" in
-            FP16-Safetensors|FP16)
+            FP16-Safetensors|FP16|BF16-Safetensors|BF16)
               if has_model_files "$fmt_dir"; then
+                case "$fmt" in FP16*) base_fmt="FP16";; *) base_fmt="BF16";; esac
+                # A subtype is MANDATORY: parseScanOutput stores subtype-less formats
+                # flat, and the UI iterates format -> quant -> {path,sizeMB}, so a flat
+                # entry breaks caching (sourceDir undefined) and shows 0 MB.
+                # Read the real bit width from config.json like the AWQ/GPTQ branch does;
+                # these folders often hold quantized weights despite the FP16/BF16 name.
+                sub="full"
+                cfg_file="$fmt_dir/config.json"
+                if [ -f "$cfg_file" ]; then
+                  nbits=$(python3 -c "
+import json,sys
+c=json.load(open(sys.argv[1]))
+q=c.get('quantization_config') or (c.get('text_config') or {}).get('quantization_config') or {}
+n=q.get('bits')
+if not n:
+    g=(q.get('config_groups') or {}).get('group_0') or {}
+    n=(g.get('weights') or {}).get('num_bits')
+print(n if n else '')
+" "$cfg_file" 2>/dev/null)
+                  [ -n "$nbits" ] && sub="$nbits-bit"
+                fi
                 size=$(du -sm "$fmt_dir" 2>/dev/null | cut -f1)
-                formats="$formats\${TAB}FP16:$fmt_dir:$size"
-              fi
-              ;;
-            BF16-Safetensors|BF16)
-              if has_model_files "$fmt_dir"; then
-                size=$(du -sm "$fmt_dir" 2>/dev/null | cut -f1)
-                formats="$formats\${TAB}BF16:$fmt_dir:$size"
+                formats="$formats\${TAB}$base_fmt/$sub:$fmt_dir:$size"
               fi
               ;;
             GGUF)
@@ -1214,9 +1239,15 @@ if out: print(json.dumps(out))
             sizeMB: sizeStr ? parseInt(sizeStr, 10) : null,
           };
         } else {
+          // Defensive: a format emitted without a TYPE/SUB subtype would be stored flat,
+          // but the UI iterates two levels (format -> quant -> {path,sizeMB}); a flat
+          // entry yields quant="path" and path=undefined, which breaks caching with
+          // "node and sourceDir are required" and displays 0 MB. Normalise to nested.
           formats[typeAndPath] = {
-            path: path?.replace(/\/$/, '') || '',
-            sizeMB: sizeStr ? parseInt(sizeStr, 10) : null,
+            full: {
+              path: path?.replace(/\/$/, '') || '',
+              sizeMB: sizeStr ? parseInt(sizeStr, 10) : null,
+            },
           };
         }
       }
@@ -1909,9 +1940,25 @@ if out: print(json.dumps(out))
 
   /** GET /next-port — a conflict-free port for the launcher (blank Port field = auto-assign). Scans
    *  active-services + in-flight reservations; reserves the returned port for ~5 min. */
-  router.get('/next-port', (_req, res) => {
-    try { res.json({ port: getNextPort() }); }
-    catch (e) { res.status(500).json({ error: String(e?.message || e) }); }
+  // ?node=<node> makes this CONTAINER-AWARE: it delegates to the same allocator /launch-service
+  // uses, which checks the registry AND probes what is actually listening in that container.
+  // Without a node it falls back to the old global registry walk, which cannot see unregistered
+  // listeners and treats a port busy on one container as free everywhere.
+  router.get('/next-port', async (req, res) => {
+    try {
+      const node = req.query.node;
+      if (!node) return res.json({ port: getNextPort(), scope: 'global-registry-only' });
+      const cfg = loadAiConfig();
+      const agent = cfg.agents?.[node];
+      const hostIp = pveApi.getNodeMap()[node]?.ip || agent?.hostIp;
+      if (!agent?.vmid || !hostIp) {
+        // Say so rather than silently handing back a global guess for a node we cannot resolve.
+        return res.json({ port: getNextPort(), scope: 'global-registry-only', warning: `no resolvable agent/host for node '${node}'` });
+      }
+      const seed = parseInt(req.query.from, 10) || getNextPort();
+      const port = await allocateServicePort(agent.vmid, hostIp, seed);
+      res.json({ port, scope: `CT${agent.vmid}` });
+    } catch (e) { res.status(500).json({ error: String(e?.message || e) }); }
   });
 
   /**
@@ -2020,13 +2067,85 @@ if out: print(json.dumps(out))
    *
    * Body: same as /launch plus model metadata fields for service registration.
    */
+
+  // ─── Service port allocation ─────────────────────────────────────────────────────────────
+  //
+  // A template's saved port is a STARTING POINT, not a reservation. Launch a second instance of
+  // the same provider and it must land on the next free port instead of colliding. (The
+  // reranker template and every 9B template are all pinned to 5003, so this is not theoretical.)
+  //
+  // Two sources are consulted because either on its own gives a wrong answer:
+  //   - the registry catches services that are registered but not yet listening (mid-launch),
+  //     which a port probe cannot see;
+  //   - live listeners catch anything the registry does not know about.
+  async function allocateServicePort(vmid, pveHostIp, desiredPort) {
+    const start = parseInt(desiredPort, 10) || 5001;
+    const taken = new Set();
+
+    const state = loadActiveServices();
+    for (const s of Object.values(state.services || {})) {
+      if (s.vmid === vmid && s.port) taken.add(Number(s.port));
+      // kvcache-proxy companions sit on their own port derived from the service port.
+      if (s.vmid === vmid && s.kvProxyPort) taken.add(Number(s.kvProxyPort));
+    }
+
+    let probed = false;
+    try {
+      const r = await sshService.exec(pveHostIp,
+        `pct exec ${vmid} -- bash -c "ss -lntuH 2>/dev/null | grep -oE ':[0-9]+ ' | tr -d ': '"`,
+        { timeout: 12000 });
+      for (const line of String((r && r.stdout) || '').split('\n')) {
+        const n = parseInt(line.trim(), 10);
+        if (n) taken.add(n);
+      }
+      probed = true;
+    } catch (err) {
+      // Loud on purpose: allocating from the registry alone can hand back a port that something
+      // unregistered is already holding, and the launch then fails with a confusing bind error.
+      console.warn(`[svc-launch] could not probe listening ports on CT${vmid} (${err.message}) — allocating from the registry ALONE, a collision with an unregistered listener is possible`);
+    }
+
+    for (let p = start; p < start + 200; p++) {
+      if (!taken.has(p)) {
+        if (p !== start) {
+          console.log(`[svc-launch] port ${start} taken on CT${vmid} → allocated ${p}${probed ? '' : ' (registry-only check)'}`);
+        }
+        return p;
+      }
+    }
+    throw new Error(`no free port in ${start}..${start + 199} on CT${vmid}`);
+  }
+
+  /** Point a launch command at a different port: the flag AND koboldcpp's embedded config. */
+  function retargetCommandPort(cmd, oldPort, newPort) {
+    let out = String(cmd == null ? '' : cmd);
+    out = out.replace(new RegExp(`(--port[=\\s]+)${oldPort}\\b`, 'g'), `$1${newPort}`);
+    // koboldcpp ships its config as a base64 JSON blob carrying its own "port" key; leaving that
+    // stale would start the process on the old port regardless of the flag.
+    out = out.replace(/echo '([A-Za-z0-9+/=]+)' \| base64 -d/, (m, b64) => {
+      try {
+        const cfg = JSON.parse(Buffer.from(b64, 'base64').toString());
+        if (Number(cfg.port) === Number(oldPort)) {
+          cfg.port = newPort;
+          return `echo '${Buffer.from(JSON.stringify(cfg)).toString('base64')}' | base64 -d`;
+        }
+      } catch { /* not a kcpps blob — leave untouched */ }
+      return m;
+    });
+    return out;
+  }
+
   router.post('/launch-service', async (req, res) => {
-    const { node, providerId, port, tmuxSession,
+    const { node, providerId, tmuxSession,
             model, modelFamily, modelVariant, quantFormat, quantSize, contextSize,
             cudaDevices, gpuPciIds: explicitGpuPciIds,
             reservedVramMB: reqReservedVramMB, isTts, isTools, isImageGen, isStt,
             slots: reqSlots, aliasOverride } = req.body;
     let command = req.body.command;
+    // `port` is deliberately NOT destructured above: it is reassigned by the allocator below,
+    // and every downstream use (endpoint, service card, kvcache companion, proxy registration)
+    // must see the port actually launched on, not the one the template happened to store.
+    let port = req.body.port;
 
     // Cache-proof guard: older launcher JS baked literal single quotes into the
     // --chat-template-kwargs value, emitting ''\''{...}'\''' which bash collapses to
@@ -2058,8 +2177,23 @@ if out: print(json.dumps(out))
       return res.status(400).json({ error: `Cannot resolve PVE host IP for node ${node}` });
     }
 
-    const session = tmuxSession || `${providerId}-${port || 5001}`;
-    const unitName = `proxlab-${session}`;
+    // Allocate BEFORE deriving names: the unit/session/script/log all embed the port, and a
+    // unit named for one port while the process listens on another is exactly the kind of
+    // mismatch that leaves an untrackable service behind.
+    const requestedPort = parseInt(port, 10) || 5001;
+    let allocatedPort = requestedPort;
+    try {
+      allocatedPort = await allocateServicePort(agent.vmid, pveHostIp, requestedPort);
+    } catch (err) {
+      return res.status(409).json({ error: err.message });
+    }
+    if (allocatedPort !== requestedPort) command = retargetCommandPort(command, requestedPort, allocatedPort);
+    port = allocatedPort;
+
+    const session = (tmuxSession && allocatedPort !== requestedPort)
+      ? String(tmuxSession).replace(new RegExp(`${requestedPort}$`), String(allocatedPort))
+      : (tmuxSession || `${providerId}-${port}`);
+    const unitName = `ailab-${session}`;
     const scriptPath = `/opt/proxlab/services/${session}.sh`;
     const logFile = `/var/log/proxlab/${session}.log`;
 
@@ -2157,24 +2291,22 @@ if out: print(json.dumps(out))
     if (/^llama-server/.test(providerId)) {
       // Extract the real model file name for the content fingerprint. Unwrap the model-cache helper
       // (--model $(mc '/models/.../file.gguf')) so different models don't collide on the literal "$(mc" token.
-      const mcMatch = finalCommand.match(/--model[ =]+\$\(mc\s+'([^']+)'\)/);
-      const plainMatch = finalCommand.match(/--model[ =]+"?([^"\s\\]+)"?/);
-      const modelPath = mcMatch ? mcMatch[1] : (plainMatch ? plainMatch[1] : '');
-      const modelName = modelPath.split('/').filter(Boolean).pop() || '';
-      const ctx = (finalCommand.match(/--ctx-size[ =]+(\d+)/) || [])[1] || '';
-      const ck = (finalCommand.match(/--cache-type-k[ =]+(\S+)/) || [])[1] || '';
-      const cv = (finalCommand.match(/--cache-type-v[ =]+(\S+)/) || [])[1] || '';
-      const par = (finalCommand.match(/--parallel[ =]+(\d+)/) || [])[1] || '';
-      const fp = createHash('sha1').update([modelName, ctx, ck, cv].join('|')).digest('hex').slice(0, 8);
-      const slotName = slug(modelName) ? `${slug(modelName)}-${fp}` : `svc-${port || 'x'}-${fp}`;
-      const optanePath = `/optane-sock0/kvcache/${slotName}`;
+      // Stable KV fingerprint (kvcache/fingerprint.js) — the SAME fp the native KV layer keys its
+      // Optane index on, so the launch --slot-save-path == the index's shared pool dir. Hashes model
+      // identity + KV-layout params (cache dtypes, flash-attn, rope/yarn), EXCLUDES ctx (restore is
+      // ctx-agnostic), port and GPUs. Replaces the old inline fp that hashed ctx (churn) and missed
+      // rope/yarn (silent cross-run corruption risk).
+      const { slotName, optanePath } = computeKvFingerprint(finalCommand, { port });
       if (/--slot-save-path[ =]/.test(finalCommand)) {
         finalCommand = finalCommand.replace(/--slot-save-path[ =]"?[^"\s\\]+"?/, `--slot-save-path ${optanePath}`);
       } else {
         finalCommand = finalCommand.replace(/\s+$/, '') + ` --slot-save-path ${optanePath}`;
       }
-      console.log(`[svc-launch] Optane KV slot-save -> ${optanePath} (content fingerprint, always)`);
-      if (port) kvShim = { port: Number(port), shimPort: Number(port) + 1000, cacheDir: optanePath, fingerprint: slotName, slotCount: Number(par) || 0 };
+      console.log(`[svc-launch] Optane KV slot-save -> ${optanePath} (stable fingerprint; native KV layer)`);
+      // Standalone kvcache-proxy shim RETIRED 2026-07-23 — the proxy's native Optane KV layer
+      // (services/Cluster/proxy/kvcache/) handles this backend directly, so no shim is provisioned.
+      // kvShim stays null → the provisioning block below is inert. Teardown cleanup still removes any
+      // pre-existing kvcache-proxy@ units.
     }
 
     // kcpps runtime NAS fallback: koboldcpp loads a base64 config whose model paths live INSIDE the
@@ -3186,21 +3318,17 @@ WantedBy=multi-user.target
 
   // ─── Active Services ────────────────────────────────────────────────────
 
-  /** GET /next-port — Return next available port for LLM launch */
-  router.get('/next-port', (req, res) => {
-    res.json({ port: getNextPort() });
-  });
+  // (a second '/next-port' used to be registered here; Express matches the first registration,
+  //  so it was dead code that silently diverged from the real one. Removed.)
 
   /** Known STT provider IDs for service type classification */
   const STT_PROVIDERS = new Set(['faster-whisper']);
 
   /** Classify a service as llm, tts, stt, or tools */
+  // Delegates to the shared classifier so the cards match the proxy's own view. The local copy
+  // this replaced had no embed/rerank case, so every embedder and reranker rendered as an LLM.
   function classifyServiceType(svc) {
-    if (svc.isTools) return 'tools';
-    if (svc.isImageGen) return 'image';
-    if (svc.isStt || STT_PROVIDERS.has(svc.providerId)) return 'stt';
-    if (svc.isTts) return 'tts';
-    return 'llm';
+    return classifyServiceShared(svc);
   }
 
   /** GET /active-services — List all active services with computed serviceType */
@@ -3373,6 +3501,12 @@ WantedBy=multi-user.target
     pendingPorts.delete(port);
 
     saveActiveServices(state);
+    // A new instance must join its load-balance pool NOW, not after the 30s model-cache TTL.
+    // Best-effort: never let a cache-invalidation hiccup fail the registration itself.
+    try {
+      const pm = await import('../../proxy.js');
+      pm.invalidateModelCache?.();
+    } catch { /* noop */ }
     broadcast({ type: 'service-added', service: state.services[id] });
 
     res.json({ ok: true, service: state.services[id] });
@@ -3393,7 +3527,7 @@ WantedBy=multi-user.target
     let failed = 0;
     const results = [];
     for (const svc of Object.values(state.services)) {
-      if (svc.providerId !== 'llama-server' && svc.providerId !== 'llama-server-mtp' && svc.providerId !== 'koboldcpp') {
+      if (svc.providerId !== 'llama-server' && svc.providerId !== 'koboldcpp') {
         skipped += 1;
         continue;
       }
@@ -3406,7 +3540,7 @@ WantedBy=multi-user.target
         const out = await sshService.exec(svc.pveHostIp, cmd, { timeout: 5000 });
         const text = out.stdout || '';
         let n = 1;
-        if (svc.providerId === 'llama-server' || svc.providerId === 'llama-server-mtp') {
+        if (svc.providerId === 'llama-server') {
           const m = text.match(/--parallel[\s=]+(\d+)/);
           if (m) n = parseInt(m[1], 10);
         } else if (svc.providerId === 'koboldcpp') {
@@ -3429,7 +3563,7 @@ WantedBy=multi-user.target
     if (updated > 0) {
       saveActiveServices(state);
       try {
-        const proxyMod = await import('./proxy.js');
+        const proxyMod = await import('../../proxy.js');
         proxyMod.invalidateModelCache?.();
       } catch {}
     }
@@ -3487,7 +3621,7 @@ WantedBy=multi-user.target
     }
     saveActiveServices(state);
     try {
-      const proxyMod = await import('./proxy.js');
+      const proxyMod = await import('../../proxy.js');
       proxyMod.invalidateModelCache?.();
     } catch {}
     broadcast({ type: 'service-updated', serviceId: req.params.id, aliasOverride: svc.aliasOverride || null });
@@ -3506,55 +3640,336 @@ WantedBy=multi-user.target
     res.json({ ok: true });
   });
 
+
+  // ─── Service teardown: destroy, then PROVE it ────────────────────────────────────────────
+  //
+  // "systemctl stop" is not teardown. A unit can be inactive and still enabled (it returns at
+  // the next boot), and a process can outlive its unit while holding a CUDA context — koboldcpp
+  // forks, and vLLM's multiproc_executor detaches engine-core + TP workers that the nvidia
+  // driver will NOT clean up. Both keep their VRAM while systemd reports success.
+  //
+  // So this stops, disables, deletes the unit file AND the target.wants symlink, deletes the
+  // launch script, SIGKILLs whatever is left in the cgroup, then sweeps by script path and by
+  // listening port. It ends by verifying four independent conditions and printing a verdict the
+  // caller parses — never "the command exited 0, so it worked".
+  const shq = (v) => String(v == null ? '' : v).replace(/'/g, "'\\''");
+
+  function buildTeardownCmd(svc) {
+    const unit = shq(svc.systemdUnit || '');
+    const session = shq(svc.tmuxSession || '');
+    const script = shq(svc.scriptPath || (session ? `/opt/proxlab/services/${session}.sh` : ''));
+    const port = String(parseInt(svc.port, 10) || 0);
+    const kvPort = port !== '0' ? port : '';
+    const inner = `
+set +e
+U='${unit}'; SCRIPT='${script}'; PORT='${port}'; KV='${kvPort}'; SESS='${session}'
+[ -n "$U" ] && {
+  for i in 1 2 3; do
+    systemctl stop "$U" 2>/dev/null
+    systemctl disable "$U" 2>/dev/null
+    systemctl kill -s SIGKILL "$U" 2>/dev/null
+    systemctl is-active --quiet "$U" || break
+    sleep 2
+  done
+  rm -f "/etc/systemd/system/$U.service"
+  rm -f "/etc/systemd/system/multi-user.target.wants/$U.service"
+  systemctl reset-failed "$U" 2>/dev/null
+}
+[ -n "$KV" ] && {
+  systemctl stop "kvcache-proxy@$KV" 2>/dev/null
+  systemctl disable "kvcache-proxy@$KV" 2>/dev/null
+  rm -f "/opt/kvcache-proxy/configs/$KV.json"
+  systemctl reset-failed "kvcache-proxy@$KV" 2>/dev/null
+}
+[ -n "$SESS" ] && tmux kill-session -t "$SESS" 2>/dev/null
+systemctl daemon-reload 2>/dev/null
+# Survivors: match the launch script, then whatever still holds the port. This is the step that
+# actually frees leaked VRAM when a worker escaped its cgroup.
+[ -n "$SCRIPT" ] && {
+  for sig in TERM KILL; do
+    pkill -$sig -f "$SCRIPT" 2>/dev/null
+    sleep 1
+  done
+  rm -f "$SCRIPT"
+}
+[ "$PORT" != "0" ] && {
+  for sig in TERM KILL; do
+    pids=$(ss -lntpH "sport = :$PORT" 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u)
+    [ -z "$pids" ] && break
+    for pd in $pids; do kill -$sig "$pd" 2>/dev/null; done
+    sleep 2
+  done
+}
+# ---- verify, do not assume ----
+ACT=no; ENA=no; FILE=no; PORTBUSY=no
+[ -n "$U" ] && { systemctl is-active --quiet "$U" && ACT=yes; systemctl is-enabled --quiet "$U" 2>/dev/null && ENA=yes; [ -f "/etc/systemd/system/$U.service" ] && FILE=yes; }
+[ "$PORT" != "0" ] && { ss -lntH "sport = :$PORT" 2>/dev/null | grep -q . && PORTBUSY=yes; }
+echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
+`;
+    const b64 = Buffer.from(inner, 'utf8').toString('base64');
+    // base64 through pct exec: this script has quotes, $ and newlines, and every attempt to
+    // inline it directly has been mangled by one shell layer or another.
+    return `pct exec ${svc.vmid} -- bash -c 'echo ${b64} | base64 -d | bash'`;
+  }
+
+  /** Parse the verdict line. Anything other than a clean all-no is a FAILED teardown. */
+  function parseTeardown(stdout) {
+    const m = /TEARDOWN active=(\w+) enabled=(\w+) unitfile=(\w+) portbusy=(\w+)/.exec(stdout || '');
+    if (!m) return { ok: false, reason: 'no verdict line from container (pct exec failed or was truncated)' };
+    const [, active, enabled, unitfile, portbusy] = m;
+    const bad = [];
+    if (active === 'yes') bad.push('unit still active');
+    if (enabled === 'yes') bad.push('unit still ENABLED (would return on next boot)');
+    if (unitfile === 'yes') bad.push('unit file still present');
+    if (portbusy === 'yes') bad.push('port still held by a live process');
+    return bad.length ? { ok: false, reason: bad.join('; ') } : { ok: true };
+  }
+
+  /** Run teardown once. Returns {ok, reason}; never throws. */
+  async function teardownService(svc) {
+    try {
+      const r = await sshService.exec(svc.pveHostIp, buildTeardownCmd(svc), { timeout: 90000 });
+      return parseTeardown((r && r.stdout) || '');
+    } catch (err) {
+      return { ok: false, reason: `ssh/pct exec failed: ${err.message}` };
+    }
+  }
+
+  // ─── Durable pending-removal queue ───────────────────────────────────────────────────────
+  function loadPendingRemovals() {
+    try {
+      if (existsSync(pendingRemovalsFile)) return JSON.parse(readFileSync(pendingRemovalsFile, 'utf-8')) || {};
+    } catch (e) {
+      console.warn(`[service-teardown] pending-removals.json unreadable (${e.message}) — starting empty`);
+    }
+    return {};
+  }
+  function savePendingRemovals(map) {
+    try { writeFileSync(pendingRemovalsFile, JSON.stringify(map, null, 2)); }
+    catch (e) { console.error(`[service-teardown] could not persist pending removals: ${e.message}`); }
+  }
+  /** Record a teardown obligation. Keeps only what teardown needs, so it survives a restart. */
+  function enqueueRemoval(svc, reason) {
+    const map = loadPendingRemovals();
+    const key = `${svc.vmid}:${svc.systemdUnit || svc.tmuxSession || svc.id}`;
+    const prev = map[key] || {};
+    map[key] = {
+      id: svc.id, vmid: svc.vmid, pveHostIp: svc.pveHostIp, systemdUnit: svc.systemdUnit || null,
+      tmuxSession: svc.tmuxSession || null, scriptPath: svc.scriptPath || null, port: svc.port || null,
+      attempts: (prev.attempts || 0), firstQueuedAt: prev.firstQueuedAt || Date.now(),
+      lastError: reason || null, nextAttemptAt: 0,
+    };
+    savePendingRemovals(map);
+    console.warn(`[service-teardown] QUEUED for retry: ${key} — ${reason}`);
+  }
+
+  const REMOVAL_RETRY_MS = 60_000;
+  let _drainBusy = false;
+  /** Retry every outstanding teardown. Backs off per entry; never gives up silently. */
+  async function drainPendingRemovals() {
+    if (_drainBusy) return;
+    _drainBusy = true;
+    try {
+      const map = loadPendingRemovals();
+      const keys = Object.keys(map);
+      if (!keys.length) return;
+      for (const key of keys) {
+        const e = map[key];
+        if (e.nextAttemptAt && Date.now() < e.nextAttemptAt) continue;
+        const res = await teardownService(e);
+        if (res.ok) {
+          delete map[key];
+          console.log(`[service-teardown] retry SUCCEEDED, ${key} is gone (after ${e.attempts + 1} attempt(s))`);
+        } else {
+          e.attempts += 1;
+          e.lastError = res.reason;
+          // Exponential-ish backoff, capped at 30min. Entries are never dropped: an orphan that
+          // cannot be killed is a problem to surface, not to forget.
+          e.nextAttemptAt = Date.now() + Math.min(30 * 60_000, REMOVAL_RETRY_MS * Math.pow(2, Math.min(e.attempts, 5)));
+          console.warn(`[service-teardown] retry ${e.attempts} FAILED for ${key}: ${res.reason}`);
+        }
+      }
+      savePendingRemovals(map);
+    } catch (err) {
+      console.error(`[service-teardown] drain error: ${err.message}`);
+    } finally {
+      _drainBusy = false;
+    }
+  }
+
+  // ─── Automatic orphan sweep ──────────────────────────────────────────────────────────────
+  //
+  // An orphan is a unit RUNNING in a container that the registry does not know about. That is
+  // how 124 GB of VRAM went missing: removed in the UI, left enabled in the container, back
+  // after the next reboot, invisible to everything.
+  //
+  // GUARDS, because this function destroys things:
+  //  - if the registry is unreadable or EMPTY, do nothing. An empty registry is far more likely
+  //    to mean "state file lost" than "the user really is running zero services", and acting on
+  //    it would wipe the whole fleet.
+  //  - two strikes: a unit must be seen orphaned on two CONSECUTIVE sweeps before teardown, so a
+  //    service that is mid-launch (running, not yet written to active-services.json) is safe.
+  //  - only proxlab-*/ailab-* units are ever considered.
+  const ORPHAN_SWEEP_MS = 5 * 60_000;
+  let _orphanStrikes = new Map();
+  let _sweepBusy = false;
+
+  async function sweepOrphans() {
+    if (_sweepBusy) return;
+    _sweepBusy = true;
+    try {
+      const state = loadActiveServices();
+      const registered = new Set();
+      let count = 0;
+      for (const svc of Object.values(state.services || {})) {
+        count += 1;
+        if (svc.systemdUnit) registered.add(`${svc.vmid}:${svc.systemdUnit}`);
+      }
+      if (!count) {
+        console.warn('[orphan-sweep] registry is EMPTY — skipping (refusing to treat a lost state file as "kill everything")');
+        return;
+      }
+      const pending = loadPendingRemovals();
+      const cfg = loadAiConfig();
+      const nodeMap = pveApi.getNodeMap();
+      const seenNow = new Set();
+
+      for (const [node, agent] of Object.entries(cfg.agents || {})) {
+        const hostIp = nodeMap[node]?.ip || agent.hostIp;
+        const vmid = agent.vmid;
+        if (!hostIp || !vmid) continue;
+        let units = [];
+        try {
+          // ACTIVE units only: an inactive-but-loaded leftover holds no GPU and no port, so it is
+          // litter for the manual scanner, not something worth killing on a timer.
+          const listCmd = `pct exec ${vmid} -- bash -c "systemctl list-units 'proxlab-*' 'ailab-*' --state=running --no-pager --no-legend --plain 2>/dev/null | awk '{print \\$1}'"`;
+          const r = await sshService.exec(hostIp, listCmd, { timeout: 15000 });
+          units = (r.stdout || '').split('\n').map((l) => l.trim()).filter((l) => l.endsWith('.service'));
+        } catch (err) {
+          // Can't see the container ⇒ can't conclude anything. Skip; do NOT strike.
+          console.warn(`[orphan-sweep] ${node} CT${vmid} unreachable (${err.message}) — skipped, no strikes recorded`);
+          continue;
+        }
+        for (const unitFile of units) {
+          const unitName = unitFile.replace(/\.service$/, '');
+          const key = `${vmid}:${unitName}`;
+          if (registered.has(key)) { _orphanStrikes.delete(key); continue; }
+          seenNow.add(key);
+          const strikes = (_orphanStrikes.get(key) || 0) + 1;
+          _orphanStrikes.set(key, strikes);
+          const queued = pending[key];
+          if (strikes < 2 && !queued) {
+            console.warn(`[orphan-sweep] ORPHAN seen (strike 1/2, could be mid-launch): ${key}`);
+            continue;
+          }
+          const port = (unitName.match(/-(\d{4,5})$/) || [])[1] || null;
+          const session = unitName.replace(/^(?:ai|prox)lab-/, '');
+          const svc = {
+            id: queued?.id || key, vmid, pveHostIp: hostIp, systemdUnit: unitName,
+            tmuxSession: session, scriptPath: queued?.scriptPath || `/opt/proxlab/services/${session}.sh`,
+            port: port ? parseInt(port, 10) : null,
+          };
+          console.warn(`[orphan-sweep] TEARING DOWN orphan ${key} (running, not in registry${queued ? ', removal was queued' : ''})`);
+          const res = await teardownService(svc);
+          if (res.ok) {
+            _orphanStrikes.delete(key);
+            if (queued) { const m = loadPendingRemovals(); delete m[key]; savePendingRemovals(m); }
+            console.log(`[orphan-sweep] reclaimed: ${key} destroyed`);
+            broadcast({ type: 'orphan-cleaned', vmid, unitName });
+          } else {
+            console.error(`[orphan-sweep] FAILED to tear down ${key}: ${res.reason}`);
+            if (!queued) enqueueRemoval(svc, `orphan sweep: ${res.reason}`);
+          }
+        }
+      }
+      // Drop strikes for units that are no longer orphaned, so the counter means "consecutive".
+      for (const k of [..._orphanStrikes.keys()]) if (!seenNow.has(k)) _orphanStrikes.delete(k);
+    } catch (err) {
+      console.error(`[orphan-sweep] error: ${err.message}`);
+    } finally {
+      _sweepBusy = false;
+    }
+  }
+
+  // Startup delay lets the registry load and any boot-time launches settle before the first pass.
+  setTimeout(() => { void drainPendingRemovals(); void sweepOrphans(); }, 90_000);
+  setInterval(() => { void drainPendingRemovals(); }, REMOVAL_RETRY_MS);
+  setInterval(() => { void sweepOrphans(); }, ORPHAN_SWEEP_MS);
+
   /**
    * POST /active-services/:id/kill — Kill tmux session (or systemd service) via SSH, then unregister.
    */
+  // Removals are SERIALIZED: rapid successive Stop/Remove clicks otherwise fire parallel pct-exec
+  // cleanups that time out under host load (leaving orphan units) and race the active-services.json
+  // read-modify-write (lost updates). Each removal now runs to completion before the next begins.
+  let __removalChain = Promise.resolve();
+  // One lock for ALL state-mutating service ops (kill/suspend/start/restart), not just removals.
+  // Serializing removals alone left suspend/resume free to interleave and clobber each other.
+  const serializeRemoval = (fn) => { const run = __removalChain.then(fn, fn); __removalChain = run.then(() => {}, () => {}); return run; };
+  const serviceOp = serializeRemoval;
+
+  /** Re-read the registry, apply `mutate` to the entry, save. NO awaits inside — that is the
+   *  whole point: a read-modify-write spanning an await is how rapid clicks lose each other. */
+  function commitServiceChange(id, mutate) {
+    const fresh = loadActiveServices();
+    const target = fresh.services[id];
+    if (!target) return null;
+    mutate(target);
+    saveActiveServices(fresh);
+    return target;
+  }
+
   router.post('/active-services/:id/kill', async (req, res) => {
-    const state = loadActiveServices();
-    const svc = state.services[req.params.id];
-    if (!svc) return res.status(404).json({ error: 'Service not found' });
-
+    const id = req.params.id;
     try {
-      if (svc.isSystemService) {
-        // Stop + disable + remove unit file + launch script + reset-failed + daemon-reload.
-        // ALSO tear down the paired Optane kvcache-proxy@<port> companion (unit + config) so a
-        // Stop/Remove leaves NO leftovers that re-arm on boot and fight for the GPU.
-        const kvPort = svc.port || ((svc.systemdUnit || '').match(/-(\d+)$/) || [])[1];
-        const kvUnit = kvPort ? `kvcache-proxy@${kvPort}` : '';
-        const cleanupCmd = [
-          `pct exec ${svc.vmid} -- bash -c '`,
-          `systemctl stop ${svc.systemdUnit} 2>/dev/null;`,
-          ` systemctl disable ${svc.systemdUnit} 2>/dev/null;`,
-          kvUnit ? ` systemctl stop ${kvUnit} 2>/dev/null; systemctl disable ${kvUnit} 2>/dev/null;` : ``,
-          ` rm -f /etc/systemd/system/${svc.systemdUnit}.service;`,
-          ` rm -f ${svc.scriptPath};`,
-          kvPort ? ` rm -f /opt/kvcache-proxy/configs/${kvPort}.json;` : ``,
-          ` systemctl reset-failed ${svc.systemdUnit}${kvUnit ? ` ${kvUnit}` : ``} 2>/dev/null;`,
-          ` systemctl daemon-reload`,
-          `'`,
-        ].join('');
-        await sshService.exec(svc.pveHostIp, cleanupCmd, { timeout: 15000 });
-      } else {
-        const killCmd = `pct exec ${svc.vmid} -- tmux kill-session -t '${svc.tmuxSession.replace(/'/g, "'\\''")}'`;
-        await sshService.exec(svc.pveHostIp, killCmd, { timeout: 10000 });
-      }
-    } catch (err) {
-      console.log(`${svc.isSystemService ? 'systemd' : 'tmux'} kill for ${svc.tmuxSession}: ${err.message}`);
-    }
+      await serializeRemoval(async () => {
+        const pre = loadActiveServices();
+        const svc = pre.services[id];
+        if (!svc) { res.json({ ok: true, alreadyGone: true }); return; }
 
-    archiveService(svc, 'stopped');
-    delete state.services[req.params.id];
-    saveActiveServices(state);
-    broadcast({ type: 'service-removed', serviceId: req.params.id });
-    res.json({ ok: true });
+        // Record the obligation BEFORE attempting anything. If this request is cancelled
+        // mid-flight (rapid clicks, navigation, a dropped socket), the background worker still
+        // destroys the service. The destroy must not depend on the request surviving.
+        enqueueRemoval(svc, 'teardown in progress');
+        // NOT named `res` — that is the Express response in this scope, and shadowing it here
+        // would put the earlier res.json() in a temporal dead zone and break every reply.
+        const td = await teardownService(svc);
+        if (td.ok) { const m = loadPendingRemovals(); delete m[`${svc.vmid}:${svc.systemdUnit || svc.tmuxSession || svc.id}`]; savePendingRemovals(m); }
+        let cleanup = td.ok ? 'clean' : 'failed';
+        let warning = td.ok ? undefined : td.reason;
+        if (!td.ok) {
+          // The registry entry still gets removed below (the user asked for it gone), but the
+          // OBLIGATION to destroy it is persisted so a worker keeps retrying across restarts.
+          // Previously this path dropped the record entirely and the process became an
+          // invisible orphan holding its VRAM until someone noticed months later.
+          enqueueRemoval(svc, td.reason);   // refresh the queued entry with the real error
+          warning = `${td.reason} — queued for automatic retry`;
+          console.warn(`[service-kill] teardown incomplete for ${svc.systemdUnit || svc.tmuxSession}: ${td.reason}`);
+        }
+
+        // Atomic state mutation: reload FRESH, delete, save with NO await in between, so a concurrent
+        // launch/suspend cannot lose this deletion (the fast-succession race).
+        const fresh = loadActiveServices();
+        const target = fresh.services[id];
+        if (target) { archiveService(target, 'stopped'); delete fresh.services[id]; saveActiveServices(fresh); }
+        delete watchdogFailCounts[id];
+        broadcast({ type: 'service-removed', serviceId: id });
+        res.json({ ok: true, cleanup, ...(warning ? { warning } : {}) });
+      });
+    } catch (e) {
+      if (!res.headersSent) res.status(500).json({ error: String((e && e.message) || e) });
+    }
   });
 
   /**
    * POST /active-services/:id/suspend — Stop a systemd service without removing it (temporary pause).
    */
   router.post('/active-services/:id/suspend', async (req, res) => {
+    const id = req.params.id;
+    try {
+    await serviceOp(async () => {
     const state = loadActiveServices();
-    const svc = state.services[req.params.id];
+    const svc = state.services[id];
     if (!svc) return res.status(404).json({ error: 'Service not found' });
     if (!svc.isSystemService) return res.status(400).json({ error: 'Only systemd services support suspend' });
 
@@ -3569,24 +3984,28 @@ WantedBy=multi-user.target
         systemctl stop ${svc.systemdUnit}
       '`;
       await sshService.exec(svc.pveHostIp, cmd, { timeout: 60000 });
-      svc.suspended = true;
       // Clear any in-flight watchdog failure count so a resume later starts clean and the
       // watchdog can't act on stale fails accumulated just before suspend.
-      delete watchdogFailCounts[req.params.id];
-      saveActiveServices(state);
-      broadcast({ type: 'service-updated', service: svc });
+      delete watchdogFailCounts[id];
+      const updated = commitServiceChange(id, (t) => { t.suspended = true; });
+      if (updated) broadcast({ type: 'service-updated', service: updated });
       res.json({ ok: true });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      if (!res.headersSent) res.status(500).json({ error: err.message });
     }
+    });
+    } catch (e) { if (!res.headersSent) res.status(500).json({ error: String((e && e.message) || e) }); }
   });
 
   /**
    * POST /active-services/:id/start — Start a stopped systemd service (also resets failure state).
    */
   router.post('/active-services/:id/start', async (req, res) => {
+    const id = req.params.id;
+    try {
+    await serviceOp(async () => {
     const state = loadActiveServices();
-    const svc = state.services[req.params.id];
+    const svc = state.services[id];
     if (!svc) return res.status(404).json({ error: 'Service not found' });
     if (!svc.isSystemService) return res.status(400).json({ error: 'Only systemd services support start' });
 
@@ -3600,22 +4019,25 @@ WantedBy=multi-user.target
         systemctl start ${svc.systemdUnit}
       '`;
       await sshService.exec(svc.pveHostIp, cmd, { timeout: 15000 });
-      svc.startedAt = new Date().toISOString();
-      delete svc.suspended;
-      saveActiveServices(state);
-      broadcast({ type: 'service-updated', service: svc });
+      const updated = commitServiceChange(id, (t) => { t.startedAt = new Date().toISOString(); delete t.suspended; });
+      if (updated) broadcast({ type: 'service-updated', service: updated });
       res.json({ ok: true });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      if (!res.headersSent) res.status(500).json({ error: err.message });
     }
+    });
+    } catch (e) { if (!res.headersSent) res.status(500).json({ error: String((e && e.message) || e) }); }
   });
 
   /**
    * POST /active-services/:id/restart — Restart a systemd service (also resets failure state).
    */
   router.post('/active-services/:id/restart', async (req, res) => {
+    const id = req.params.id;
+    try {
+    await serviceOp(async () => {
     const state = loadActiveServices();
-    const svc = state.services[req.params.id];
+    const svc = state.services[id];
     if (!svc) return res.status(404).json({ error: 'Service not found' });
     if (!svc.isSystemService) return res.status(400).json({ error: 'Only systemd services support restart' });
 
@@ -3629,14 +4051,14 @@ WantedBy=multi-user.target
         systemctl restart ${svc.systemdUnit}
       '`;
       await sshService.exec(svc.pveHostIp, cmd, { timeout: 15000 });
-      svc.startedAt = new Date().toISOString();
-      delete svc.suspended;
-      saveActiveServices(state);
-      broadcast({ type: 'service-updated', service: svc });
+      const updated = commitServiceChange(id, (t) => { t.startedAt = new Date().toISOString(); delete t.suspended; });
+      if (updated) broadcast({ type: 'service-updated', service: updated });
       res.json({ ok: true });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      if (!res.headersSent) res.status(500).json({ error: err.message });
     }
+    });
+    } catch (e) { if (!res.headersSent) res.status(500).json({ error: String((e && e.message) || e) }); }
   });
 
   /**
@@ -3742,7 +4164,10 @@ WantedBy=multi-user.target
 
   /** Parse a systemd unit name like "proxlab-koboldcpp-5002" into { providerId, port, session } */
   function parseOrphanUnit(unitName) {
-    const rest = unitName.replace(/^proxlab-/, '');
+    // Accept both prefixes: units launched before the ailab- rename still exist,
+    // and failing to strip one makes providerId unresolvable -> treated as an
+    // unknown orphan -> deleted by the cleanup path below.
+    const rest = unitName.replace(/^(?:ai|prox)lab-/, '');
     const portMatch = rest.match(/-(\d{4,5})$/);
     if (!portMatch) return null;
     const port = parseInt(portMatch[1], 10);
@@ -3809,6 +4234,20 @@ WantedBy=multi-user.target
     }
   }
 
+  /** GET /active-services/pending-removals — teardowns still outstanding, with their errors.
+   *  A stuck entry means something in a container refuses to die and is worth looking at. */
+  router.get('/active-services/pending-removals', (_req, res) => {
+    const map = loadPendingRemovals();
+    res.json({ ok: true, count: Object.keys(map).length, pending: map });
+  });
+
+  /** POST /active-services/sweep-orphans — run the automatic sweep on demand. */
+  router.post('/active-services/sweep-orphans', async (_req, res) => {
+    await drainPendingRemovals();
+    await sweepOrphans();
+    res.json({ ok: true, pending: loadPendingRemovals() });
+  });
+
   router.post('/active-services/scan-orphans', async (req, res) => {
     const cleanup = req.body?.cleanup === true;
     const cfg = loadAiConfig();
@@ -3816,9 +4255,11 @@ WantedBy=multi-user.target
     const state = loadActiveServices();
 
     // Build set of registered systemd unit names
+    // Unit names are unique only WITHIN a container -- two containers can both run
+    // proxlab-vllm-5010. Keying on the bare name made the adopter skip the second one forever.
     const registeredUnits = new Set();
     for (const svc of Object.values(state.services)) {
-      if (svc.systemdUnit) registeredUnits.add(svc.systemdUnit);
+      if (svc.systemdUnit) registeredUnits.add(`${svc.vmid}:${svc.systemdUnit}`);
     }
 
     const orphans = [];
@@ -3845,13 +4286,13 @@ WantedBy=multi-user.target
 
       try {
         // List all proxlab-* service units that are loaded
-        const listCmd = `pct exec ${vmid} -- bash -c "systemctl list-units 'proxlab-*' --no-pager --no-legend --plain 2>/dev/null | awk '{print \\$1}'"`;
+        const listCmd = `pct exec ${vmid} -- bash -c "systemctl list-units 'proxlab-*' 'ailab-*' --no-pager --no-legend --plain 2>/dev/null | awk '{print \\$1}'"`;
         const result = await sshService.exec(hostIp, listCmd, { timeout: 10000 });
         const units = result.stdout.split('\n').map(l => l.trim()).filter(l => l.endsWith('.service'));
 
         for (const unitFile of units) {
           const unitName = unitFile.replace(/\.service$/, '');
-          if (registeredUnits.has(unitName)) continue;
+          if (registeredUnits.has(`${vmid}:${unitName}`)) continue;
 
           const parsed = parseOrphanUnit(unitName);
           if (!parsed) continue;
@@ -3861,7 +4302,21 @@ WantedBy=multi-user.target
           const provider = getProvider(providerId);
           const isKnown = provider || providerId === 'rvc';
 
-          if (isKnown && !cleanup) {
+          // NOTE: `isKnown && cleanup` used to match NEITHER branch — a known-provider orphan
+          // scanned in cleanup mode was silently skipped, which is precisely the case that
+          // matters (a koboldcpp/vLLM unit holding GPUs). Cleanup mode now tears down every
+          // orphan regardless of whether its provider is recognised.
+          if (cleanup) {
+            const orphan = { node, vmid, hostIp, unitName, unitFile, port, providerId };
+            const session2 = unitName.replace(/^(?:ai|prox)lab-/, '');
+            const r2 = await teardownService({
+              vmid, pveHostIp: hostIp, systemdUnit: unitName, tmuxSession: session2,
+              scriptPath: `/opt/proxlab/services/${session2}.sh`, port,
+            });
+            orphan.cleaned = r2.ok;
+            if (!r2.ok) orphan.error = r2.reason;
+            orphans.push(orphan);
+          } else if (isKnown) {
             // Build a proper service entry and register it
             const isTts = TTS_PROVIDER_IDS.has(providerId) || providerId === 'rvc';
             const isStt = STT_PROVIDER_IDS.has(providerId);
@@ -3919,20 +4374,10 @@ WantedBy=multi-user.target
             registeredUnits.add(unitName);
             adopted.push({ unitName, serviceId, providerId, port });
             console.log(`[orphan-scan] Auto-adopted: ${unitName} → ${serviceId} (${providerId})`);
-          } else if (!isKnown) {
-            // Truly unknown orphan
-            const orphan = { node, vmid, hostIp, unitName, unitFile, port };
-            if (cleanup) {
-              try {
-                const cleanCmd = `pct exec ${vmid} -- bash -c 'systemctl stop ${unitName} 2>/dev/null; systemctl disable ${unitName} 2>/dev/null; rm -f /etc/systemd/system/${unitFile}; rm -f /opt/proxlab/services/${unitName.replace("proxlab-", "")}.sh; systemctl daemon-reload'`;
-                await sshService.exec(hostIp, cleanCmd, { timeout: 15000 });
-                orphan.cleaned = true;
-              } catch (err) {
-                orphan.cleaned = false;
-                orphan.error = err.message;
-              }
-            }
-            orphans.push(orphan);
+          } else {
+            // Known-provider units are adopted above; anything left here is unrecognised and is
+            // reported (not silently ignored) so it shows up in the scan result.
+            orphans.push({ node, vmid, hostIp, unitName, unitFile, port, adopted: false });
           }
         }
       } catch (err) {
@@ -4033,7 +4478,7 @@ WantedBy=multi-user.target
           }
           if (data.idle) result.idle = true;
         }
-      } else if (svc.providerId === 'llama-server' || svc.providerId === 'llama-server-mtp') {
+      } else if (svc.providerId === 'llama-server') {
         // llama.cpp exposes Prometheus metrics at /metrics when launched with --metrics.
         // Fall back to /health (always available) if metrics are off.
         let metricsOk = false;
@@ -5940,6 +6385,20 @@ WantedBy=multi-user.target
       const url = `https://huggingface.co/${next.repo}/resolve/${revision}/${hfPath}`;
       const targetFile = join(next.targetDir, next.fileName);
 
+      // Skip files that are ALREADY COMPLETE — do not re-download or overwrite.
+      // Ported from the extracted-but-never-wired hf-download.js; the live path
+      // lost this in the ProxLab migration. Without it, re-queuing a repo
+      // re-fetches finished shards, which on a multi-TB repo is catastrophic.
+      if (existsSync(targetFile) && next.size > 0 && statSync(targetFile).size === next.size) {
+        next.status = 'complete';
+        next.completedAt = new Date().toISOString();
+        next.skipped = true;
+        next.pid = null;
+        console.log(`[hf-download] Skip (already complete, ${next.size}B): ${next.fileName}`);
+        saveHfDownloads(manifest);
+        continue;
+      }
+
       // curl: single-connection, resume-capable, reliable per-file download.
       // Download to .part file, resume with -C -, rename to final on success.
       const partFile = targetFile + '.part';
@@ -6005,6 +6464,152 @@ WantedBy=multi-user.target
       setTimeout(() => processHfQueue(node), 2000);
     }
   }
+
+  /** Reap finished/failed downloads and refresh progress. Extracted from the
+   *  GET /hf/downloads handler so the BACKEND can run it on a timer.
+   *
+   *  This was the missing half of the queue fix: the ticker started queued items,
+   *  but nothing marked finished ones complete, so their slots were never freed and
+   *  the queue still stalled without a poll. (An extracted-but-never-imported
+   *  proxy/hf-download.js already had exactly this as reconcileHfDownloads() — the
+   *  duplicate module meant the fix was written but never ran.)
+   *  The GET route calls it too, so a live view stays authoritative. */
+  async function reconcileHfDownloads() {
+    const manifest = loadHfDownloads();
+    // Check progress for active downloads
+    for (const dl of manifest.downloads) {
+      if (dl.status !== 'downloading' || !dl.pid) continue;
+
+      try {
+        // Check if process is still running (local)
+        let isRunning = false;
+        try {
+          process.kill(dl.pid, 0); // signal 0 = just check if alive
+          isRunning = true;
+        } catch { isRunning = false; }
+
+        // Get downloaded file size — check both .part (in-progress) and final path
+        let currentSize = 0;
+        const targetFile = join(dl.targetDir, dl.fileName);
+        const partFile = targetFile + '.part';
+        try {
+          if (existsSync(partFile)) {
+            currentSize = statSync(partFile).size;
+          } else if (existsSync(targetFile)) {
+            currentSize = statSync(targetFile).size;
+          }
+        } catch {}
+
+        // Track speed
+        const now = Date.now();
+        const lastPoll = dl._lastPollTime || now;
+        const lastSize = dl._lastPollSize || 0;
+        const elapsed = (now - lastPoll) / 1000;
+        if (elapsed > 0 && currentSize > lastSize) {
+          dl.speed = Math.round((currentSize - lastSize) / elapsed);
+        } else if (elapsed > 10) {
+          dl.speed = 0;
+        }
+        dl._lastPollTime = now;
+        dl._lastPollSize = currentSize;
+
+        if (!isRunning) {
+          // Process finished — check if curl succeeded (final file exists, .part gone)
+          const finalExists = existsSync(targetFile);
+          const partExists = existsSync(partFile);
+          let finalSize = 0;
+          try { if (finalExists) finalSize = statSync(targetFile).size; } catch {}
+
+          const expectedSize = dl.size || 0;
+          const isComplete = finalExists && !partExists && (
+            expectedSize > 0 ? (finalSize >= expectedSize * 0.95) : (finalSize > 1000)
+          );
+
+          let logContent = '';
+          try {
+            logContent = cleanCurlLog(readFileSync(`/tmp/hfdl-${dl.id}.log`, 'utf8'));
+          } catch {}
+
+          if (isComplete) {
+            dl.status = 'complete';
+            dl.progress = finalSize;
+            dl.completedAt = new Date().toISOString();
+            fixDownloadPermissions(dl.targetDir, dl.fileName);
+            // Parse format/quant from filename for history
+            const parsed = parseFileTarget(dl.fileName);
+            dl.format = parsed.format;
+            dl.quant = parsed.quant;
+            addToHfHistory(dl);
+            // Enrich with repo metadata in background (non-blocking)
+            enrichHfHistoryEntry({ repo: dl.repo, fileName: dl.fileName, completedAt: dl.completedAt }).catch(() => {});
+          } else if (partExists && currentSize > 0) {
+            // Incomplete but has partial data — auto-requeue for resume
+            dl.status = 'queued';
+            dl.pid = null;
+            dl.error = null;
+          } else if (logContent.includes('error') || logContent.includes('Error') || logContent.includes('failed') || currentSize === 0) {
+            dl.status = 'failed';
+            dl.error = logContent || 'Download failed — no output';
+          } else {
+            dl.status = 'failed';
+            const exp = expectedSize ? `${expectedSize}` : 'unknown';
+            dl.error = `Download incomplete: got ${finalSize || currentSize} of ${exp} bytes${logContent ? ` — ${logContent}` : ''}`;
+          }
+          dl.checkFailures = 0;
+          saveHfDownloads(manifest);
+          processHfQueue(dl.node);
+        } else {
+          dl.progress = currentSize;
+          dl.checkFailures = 0;
+          saveHfDownloads(manifest);
+        }
+      } catch (err) {
+        dl.checkFailures = (dl.checkFailures || 0) + 1;
+        if (dl.checkFailures >= 3) {
+          dl.status = 'failed';
+          dl.error = `Check failed: ${err.message}`;
+          saveHfDownloads(manifest);
+          processHfQueue(dl.node);
+        }
+      }
+    }
+
+  }
+
+  // ─── Backend-driven queue ticker ───
+  // The HF queue used to advance ONLY inside the GET /hf/downloads poll handler
+  // ("Process queue on every poll"), so queued files never started unless
+  // somebody had the Downloads page open — which is exactly the symptom of
+  // downloads that "wouldn't start until I navigated back to the page", and a
+  // violation of core rule #1 (the browser must not drive anything).
+  //
+  // Individual transfers were already safe: each runs under `systemd-run --scope`
+  // with `curl -C -`, so a started file survives a backend restart and resumes.
+  // It was only the QUEUE that stalled. This kicks it on boot and on a timer.
+  const HF_TICK_MS = Number(process.env.HF_QUEUE_TICK_MS || 15000);
+  let _hfTickBusy = false;
+  async function hfQueueTick() {
+    if (_hfTickBusy) return;
+    _hfTickBusy = true;
+    try {
+      // Reap finished/failed first so slots are freed, THEN start queued items.
+      try { await reconcileHfDownloads(); } catch (e) { console.warn(`[hf-download] reconcile failed: ${e.message}`); }
+      const manifest = loadHfDownloads();
+      const queued = (manifest.downloads || []).filter(d => d.status === 'queued');
+      if (queued.length) {
+        const nodes = [...new Set(queued.map(d => d.node || '_local'))];
+        for (const n of nodes) await processHfQueue(n);
+      }
+    } catch (e) {
+      console.warn(`[hf-download] queue tick failed: ${e.message}`);
+    } finally {
+      _hfTickBusy = false;
+    }
+  }
+  setTimeout(hfQueueTick, 5000);
+  const _hfTimer = setInterval(hfQueueTick, HF_TICK_MS);
+  if (typeof _hfTimer.unref === 'function') _hfTimer.unref();
+  console.log(`[hf-download] queue ticker armed (every ${HF_TICK_MS}ms) — downloads now progress with no page open`);
 
   /** Resolve a smart download destination from category + destType + file-manager config.
    *  Falls back to legacy /models/{family} path if file-manager config not available. */
@@ -6115,6 +6720,21 @@ WantedBy=multi-user.target
         return `${base}/NVFP4`;
       }
 
+      // Weight-only INT quants that are NOT gptq/awq-named: compressed-tensors
+      // (llm-compressor), AutoRound, Quark, W8A16/W4A16/W8A8 naming, plain INT8/INT4.
+      // MUST come before the FP16/BF16 default — otherwise these land in
+      // BF16-Safetensors and the model cacher reports them as full-precision BF16
+      // (wrong size + quant), which is why an INT8 W8A16 download filed itself as
+      // "BF16 / 0MB" and would not cache.
+      const wa = repoLower.match(/w(\d+)a(\d+)/) || lower.match(/w(\d+)a(\d+)/);
+      if (wa) return `${base}/W${wa[1]}A${wa[2]}`;
+      if (lower.includes('int8') || repoLower.includes('int8')
+          || repoLower.includes('compressed-tensors') || repoLower.includes('compressed_tensors')) {
+        return `${base}/INT8`;
+      }
+      if (lower.includes('int4') || repoLower.includes('int4')) return `${base}/INT4`;
+      if (repoLower.includes('autoround')) return `${base}/AutoRound`;
+
       // FP16 vs BF16 detection
       if (lower.includes('fp16') || repoLower.includes('fp16')) {
         return `${base}/FP16-Safetensors`;
@@ -6211,6 +6831,35 @@ WantedBy=multi-user.target
         }
       }
 
+      // ─── Auto-include EVERY small file (Travis's rule, 2026-07-27) ───
+      // Policy: anything <= HF_AUTO_MAX_BYTES is downloaded automatically and never
+      // needs picking; only files ABOVE that threshold require manual selection (and
+      // those are listed regardless of extension). This replaces the old
+      // extension-based "extras" guess, which bucketed required runtime metadata as
+      // optional and shipped unloadable models.
+      // Enforced HERE, at queue time, so it holds no matter what the UI sent.
+      const HF_AUTO_MAX_BYTES = Number(process.env.HF_AUTO_MAX_BYTES || 100 * 1024 * 1024);
+      try {
+        const tree = await walkHfTree(repo, revision, effectiveToken);
+        const havePaths = new Set((files || []).map(f => f.path));
+        let autoAdded = 0;
+        for (const t of tree) {
+          const sz = t.size || 0;
+          // GGUF is always a deliberate per-quant choice — never auto-pull it even if small.
+          if ((t.path || '').toLowerCase().endsWith('.gguf')) continue;
+          if (sz > 0 && sz <= HF_AUTO_MAX_BYTES && !havePaths.has(t.path)) {
+            files.push({ path: t.path, size: sz });
+            havePaths.add(t.path);
+            autoAdded++;
+          }
+        }
+        if (autoAdded) {
+          console.log(`[hf-download] auto-included ${autoAdded} file(s) <= ${(HF_AUTO_MAX_BYTES/1048576).toFixed(0)}MB for ${repo}`);
+        }
+      } catch (e) {
+        console.warn(`[hf-download] small-file auto-include skipped for ${repo}: ${e.message}`);
+      }
+
       const mkEntry = (f, targetDir, fileName, hfFilter) => ({
         id: Math.random().toString(16).slice(2, 10),
         repo, revision, fileName, hfPath: f.path, hfFilter,
@@ -6230,7 +6879,7 @@ WantedBy=multi-user.target
         const fileName = f.path.split('/').pop();
 
         // README is handled separately below (copied into every quant subfolder), not placed at base.
-        if (category === 'llm' && !preserveStructure && fileName.toLowerCase() === 'readme.md') continue;
+        if (!preserveStructure && fileName.toLowerCase() === 'readme.md') continue;
 
         // Build filter for this specific file
         let hfFilter = fileName;
@@ -6241,24 +6890,39 @@ WantedBy=multi-user.target
 
         // Determine target directory based on category and file type
         let targetDir;
+        // The file's own directory INSIDE the HF repo, if it has one. Repos that ship
+        // several quants as sibling folders reuse identical filenames across them, so
+        // dropping this is silently destructive — each quant overwrites the last.
+        const hfDir = f.path.includes('/') ? f.path.substring(0, f.path.lastIndexOf('/')) : '';
         if (preserveStructure) {
-          const hfDir = f.path.includes('/') ? f.path.substring(0, f.path.lastIndexOf('/')) : '';
           targetDir = hfDir ? `${base}/${hfDir}` : base;
         } else if (category === 'llm') {
           if (fileName.toLowerCase().endsWith('.gguf')) {
             // GGUF: each quant level is its own subfolder (resolved per-file)
             targetDir = resolveLlmSubfolder(base, fileName, repo);
           } else if (llmWeightDir) {
-            // weights + their config/tokenizer sidecars co-locate in one folder
-            targetDir = llmWeightDir;
+            // Weights + their config/tokenizer sidecars co-locate in one folder, but KEEP
+            // the repo's own subfolder when it has one — otherwise a repo with several
+            // safetensors quants in sibling folders collapses into a single directory.
+            targetDir = hfDir ? `${llmWeightDir}/${hfDir}` : llmWeightDir;
           } else {
             targetDir = resolveLlmSubfolder(base, fileName, repo);
           }
         } else {
-          targetDir = base;
+          // Non-LLM (TTS, image-gen, ...): MIRROR the repo layout. Flattening to `base`
+          // here is what dumped a multi-quant TTS repo into one folder and overwrote each
+          // quant with the next. Mirroring can never collide; flattening can.
+          targetDir = hfDir ? `${base}/${hfDir}` : base;
         }
 
-        if (category === 'llm' && !preserveStructure) modelDirs.add(targetDir);
+        // Track every distinct folder that actually receives a model file, for ANY
+        // category — the README fans out into each of them below. Previously this was
+        // llm-only, so a multi-quant TTS/image-gen repo got no README in its quant
+        // folders even though the same self-contained-folder rule applies.
+        if (!preserveStructure && !fileName.toLowerCase().endsWith('.json')
+            && !fileName.toLowerCase().endsWith('.txt') && !fileName.toLowerCase().endsWith('.md')) {
+          modelDirs.add(targetDir);
+        }
         const entry = mkEntry(f, targetDir, fileName, hfFilter);
         manifest.downloads.push(entry);
         queued.push(entry);
@@ -6268,7 +6932,7 @@ WantedBy=multi-user.target
       // 4.00bpw, mmproj, ...) so each downloaded folder is self-contained — overwriting any existing
       // copy so README updates are captured. The README is never in hfSelectedFiles (the picker only
       // sends model files), so backfill it from the repo tree.
-      if (category === 'llm' && !preserveStructure && modelDirs.size) {
+      if (!preserveStructure && modelDirs.size) {
         let readme = (files || []).find(f => (f.path || '').split('/').pop().toLowerCase() === 'readme.md');
         if (!readme) {
           try {
@@ -6299,105 +6963,12 @@ WantedBy=multi-user.target
   /** GET /hf/downloads — Poll download status with live progress */
   router.get('/hf/downloads', async (req, res) => {
     try {
+
+
+      // Reap finished/failed downloads + refresh progress. Same function the backend
+      // ticker runs, so the poll view and the headless path can never diverge.
+      await reconcileHfDownloads();
       const manifest = loadHfDownloads();
-
-      // Check progress for active downloads
-      for (const dl of manifest.downloads) {
-        if (dl.status !== 'downloading' || !dl.pid) continue;
-
-        try {
-          // Check if process is still running (local)
-          let isRunning = false;
-          try {
-            process.kill(dl.pid, 0); // signal 0 = just check if alive
-            isRunning = true;
-          } catch { isRunning = false; }
-
-          // Get downloaded file size — check both .part (in-progress) and final path
-          let currentSize = 0;
-          const targetFile = join(dl.targetDir, dl.fileName);
-          const partFile = targetFile + '.part';
-          try {
-            if (existsSync(partFile)) {
-              currentSize = statSync(partFile).size;
-            } else if (existsSync(targetFile)) {
-              currentSize = statSync(targetFile).size;
-            }
-          } catch {}
-
-          // Track speed
-          const now = Date.now();
-          const lastPoll = dl._lastPollTime || now;
-          const lastSize = dl._lastPollSize || 0;
-          const elapsed = (now - lastPoll) / 1000;
-          if (elapsed > 0 && currentSize > lastSize) {
-            dl.speed = Math.round((currentSize - lastSize) / elapsed);
-          } else if (elapsed > 10) {
-            dl.speed = 0;
-          }
-          dl._lastPollTime = now;
-          dl._lastPollSize = currentSize;
-
-          if (!isRunning) {
-            // Process finished — check if curl succeeded (final file exists, .part gone)
-            const finalExists = existsSync(targetFile);
-            const partExists = existsSync(partFile);
-            let finalSize = 0;
-            try { if (finalExists) finalSize = statSync(targetFile).size; } catch {}
-
-            const expectedSize = dl.size || 0;
-            const isComplete = finalExists && !partExists && (
-              expectedSize > 0 ? (finalSize >= expectedSize * 0.95) : (finalSize > 1000)
-            );
-
-            let logContent = '';
-            try {
-              logContent = cleanCurlLog(readFileSync(`/tmp/hfdl-${dl.id}.log`, 'utf8'));
-            } catch {}
-
-            if (isComplete) {
-              dl.status = 'complete';
-              dl.progress = finalSize;
-              dl.completedAt = new Date().toISOString();
-              fixDownloadPermissions(dl.targetDir, dl.fileName);
-              // Parse format/quant from filename for history
-              const parsed = parseFileTarget(dl.fileName);
-              dl.format = parsed.format;
-              dl.quant = parsed.quant;
-              addToHfHistory(dl);
-              // Enrich with repo metadata in background (non-blocking)
-              enrichHfHistoryEntry({ repo: dl.repo, fileName: dl.fileName, completedAt: dl.completedAt }).catch(() => {});
-            } else if (partExists && currentSize > 0) {
-              // Incomplete but has partial data — auto-requeue for resume
-              dl.status = 'queued';
-              dl.pid = null;
-              dl.error = null;
-            } else if (logContent.includes('error') || logContent.includes('Error') || logContent.includes('failed') || currentSize === 0) {
-              dl.status = 'failed';
-              dl.error = logContent || 'Download failed — no output';
-            } else {
-              dl.status = 'failed';
-              const exp = expectedSize ? `${expectedSize}` : 'unknown';
-              dl.error = `Download incomplete: got ${finalSize || currentSize} of ${exp} bytes${logContent ? ` — ${logContent}` : ''}`;
-            }
-            dl.checkFailures = 0;
-            saveHfDownloads(manifest);
-            processHfQueue(dl.node);
-          } else {
-            dl.progress = currentSize;
-            dl.checkFailures = 0;
-            saveHfDownloads(manifest);
-          }
-        } catch (err) {
-          dl.checkFailures = (dl.checkFailures || 0) + 1;
-          if (dl.checkFailures >= 3) {
-            dl.status = 'failed';
-            dl.error = `Check failed: ${err.message}`;
-            saveHfDownloads(manifest);
-            processHfQueue(dl.node);
-          }
-        }
-      }
 
       // Process queue on every poll — start queued items if slots available
       const hasQueued = manifest.downloads.some(d => d.status === 'queued');
@@ -6741,7 +7312,6 @@ WantedBy=multi-user.target
     vllm:      120,  // 2 min — model loading
     koboldcpp: 90,
     'llama-server': 90,
-    'llama-server-mtp': 90,
     default:   60,   // 1 min for everything else
   };
 
@@ -6757,7 +7327,6 @@ WantedBy=multi-user.target
   const HEALTH_PATHS = {
     koboldcpp: '/api/v1/info/version',
     'llama-server': '/health',
-    'llama-server-mtp': '/health',
     vllm: '/health',
     tabbyapi: '/health',
     lmdeploy: '/health',
@@ -6766,6 +7335,7 @@ WantedBy=multi-user.target
     'proxlab-tts': '/health',
     'qwen-tts': '/health',
     's2-pro': '/health',
+    rvc: '/health',
     alltalk: '/api/ready',
     kokoro: '/v1/models',
     'openedai-speech': '/v1/models',
@@ -7202,6 +7772,30 @@ WantedBy=multi-user.target
     const ok = metricsPoller?.deleteRow(req.params.fp);
     res.json({ ok: !!ok });
   });
+  // POST reset ONE config's accumulated metrics to zero (keeps the row + identity; clears outliers).
+  router.post('/llm-metrics/:fp/reset', (req, res) => {
+    res.json({ ok: !!metricsPoller?.resetRow(req.params.fp) });
+  });
+  // GET / PUT the live rolling-window size (seconds) for the live decode/prefill rates (5-600s).
+  router.get('/llm-metrics/live-window', (req, res) => {
+    res.json({ seconds: metricsPoller?.getLiveWindowSec?.() ?? 60 });
+  });
+  router.put('/llm-metrics/live-window', (req, res) => {
+    const v = metricsPoller?.setLiveWindowSec?.(req.body?.seconds);
+    res.json({ ok: v != null, seconds: v ?? null });
+  });
+  // GET the FULL launch command for a RUNNING config (reads the actual launch script on the host,
+  // so the settings modal can show EVERY flag — not just the curated snapshot).
+  router.get('/llm-metrics/:fp/launch-command', async (req, res) => {
+    try {
+      const row = (metricsPoller?.getRows() || []).find((r) => r.fingerprint === req.params.fp);
+      if (!row || !row.running || !row.currentServiceId) return res.json({ ok: false, reason: 'not-running', settings: row?.settings || null });
+      const svc = loadActiveServices().services[row.currentServiceId];
+      if (!svc || !svc.scriptPath) return res.json({ ok: false, reason: 'no-script', settings: row.settings || null });
+      const out = await sshService.exec(svc.pveHostIp, `pct exec ${svc.vmid} -- cat ${svc.scriptPath}`, { timeout: 10000 });
+      res.json({ ok: true, scriptPath: svc.scriptPath, script: (out.stdout || '').slice(0, 20000), settings: row.settings || null });
+    } catch (e) { res.status(500).json({ ok: false, error: String((e && e.message) || e) }); }
+  });
 
   // Lean per-(model+config) tool-call metrics for external consumers (e.g. openclaw-claude).
   // API-level, authoritative; structure = malformed/schema-invalid args, hallucination = tool name not offered.
@@ -7243,14 +7837,23 @@ WantedBy=multi-user.target
         const hostIp = nodeMap[node]?.ip || agent.hostIp;
         const vmid = agent.vmid;
         if (!hostIp || !vmid) continue;
-        const listCmd = `pct exec ${vmid} -- bash -c "systemctl list-units 'proxlab-*' --state=failed --no-legend --no-pager --plain 2>/dev/null | awk '{print \\$1}'"`;
+        // List ALL proxlab-* units with active+sub state (not just --state=failed): a Restart=always
+        // crash-looper sits in 'activating (auto-restart)', never 'failed', so the old failed-only
+        // filter never caught orphans like a removed service that keeps bouncing on no free GPU.
+        const listCmd = `pct exec ${vmid} -- bash -c "systemctl list-units 'proxlab-*' 'ailab-*' --all --no-legend --no-pager --plain 2>/dev/null | awk '{print \\$1 \\"|\\" \\$3 \\"|\\" \\$4}'"`;
         let out;
         try { out = (await sshService.exec(hostIp, listCmd, { timeout: 10000 })).stdout || ''; } catch { continue; }
-        for (const unitFile of out.split('\n').map((l) => l.trim()).filter((l) => l.endsWith('.service'))) {
+        for (const line of out.split('\n').map((l) => l.trim()).filter(Boolean)) {
+          const [unitFile, active = '', sub = ''] = line.split('|');
+          if (!unitFile || !unitFile.endsWith('.service')) continue;
           const unitName = unitFile.replace(/\.service$/, '');
           if (registered.has(unitName)) continue;
+          // Reap ONLY unambiguously broken/crash-looping orphans (failed, or Restart=always
+          // auto-restart). Never touch an 'active'/'start'ing unit — it may be a legit service
+          // mid-launch not yet written to active-services.json.
+          if (active !== 'failed' && sub !== 'auto-restart') continue;
           const port = ((unitName.match(/-(\d+)$/) || [])[1]) || '';
-          const script = `/opt/proxlab/services/${unitName.replace(/^proxlab-/, '')}.sh`;
+          const script = `/opt/proxlab/services/${unitName.replace(/^(?:ai|prox)lab-/, '')}.sh`;
           const kv = port ? `kvcache-proxy@${port}` : '';
           const cmd = `pct exec ${vmid} -- bash -c 'systemctl stop ${unitName} 2>/dev/null; systemctl disable ${unitName} 2>/dev/null;`
             + (kv ? ` systemctl stop ${kv} 2>/dev/null; systemctl disable ${kv} 2>/dev/null;` : '')

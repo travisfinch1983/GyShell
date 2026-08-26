@@ -1,0 +1,31 @@
+[
+  {
+    "name": "qdrant",
+    "type": "qdrant",
+    "host": "127.0.0.1",
+    "port": 6333,
+    "description": "Qdrant vector DB (dockerised in CT152 2026-07-27)"
+  },
+  {
+    "name": "milvus",
+    "type": "milvus",
+    "host": "10.0.0.138",
+    "port": 19530,
+    "description": "Milvus vector DB",
+    "excludeFromAll": true
+  },
+  {
+    "name": "weaviate",
+    "type": "weaviate",
+    "host": "127.0.0.1",
+    "port": 8087,
+    "description": "Weaviate vector DB (dockerised in CT152 2026-07-27)"
+  },
+  {
+    "name": "chromadb",
+    "type": "chromadb",
+    "host": "127.0.0.1",
+    "port": 8000,
+    "description": "ChromaDB vector DB (dockerised in CT152 2026-07-27)"
+  }
+]

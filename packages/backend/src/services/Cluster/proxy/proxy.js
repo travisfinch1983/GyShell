@@ -29,6 +29,13 @@ import { isAuthenticated, getAuthStatus, CLAUDE_MODELS } from './anthropic-proxy
 import { extractToolCalls, recordToolUsage } from './tool-call-metrics.js';
 import { createBalanceHistory } from './balance-history.js';
 import { resolveModelCapabilities } from './model-capabilities.js';
+import { refreshPool, pickInstance, markFailure, markSuccess, invalidatePools } from './servicePools.js';
+import { listBackends, emptyReason, nextIndex, createHealthCache,
+         setProviderCaps, getModelCatalog, selectBackends,
+         invalidateModelCatalog, isPooledTtsProvider } from './audio-registry.js';
+import { getPipelineConfig, savePipelineConfig, applyPipelineDefaults,
+         PIPELINE_DEFAULTS } from './audio-pipeline.js';
+import { isKvEligible, getOrchestrator, getKvSettings, saveKvSettings, getAllKvStats, getKvIndexStats, reapNow, resetOrchestratorCache } from './kvcache/integration.js';
 
 // ─── kvcache-proxy companion detection ──────────────────────────────────
 // Convention: each LLM service that has a kvcache-proxy companion listens
@@ -65,7 +72,9 @@ async function getKvcacheProxyPort(svc) {
 }
 
 async function getForwardPort(svc) {
-  return (await getKvcacheProxyPort(svc)) ?? svc.port;
+  const _p = await getKvcacheProxyPort(svc);
+  console.log('[kvcache-route]', (svc && svc.containerIp) + ':' + (svc && svc.port), '->', _p ? (_p + ' SHIM') : ((svc && svc.port) + ' direct'));
+  return _p ?? svc.port;
 }
 // ────────────────────────────────────────────────────────────────────────
 
@@ -273,20 +282,38 @@ const EMBED_KEYWORDS = ['embed', 'bge-', 'e5-', 'gte-', 'encoding', 'encoder'];
 const RERANK_KEYWORDS = ['rerank', 'ranker', 'cross-encoder'];
 
 // ─── TTS/STT Provider Capabilities ─────────────────────────────────────────
+// `clipVoice` = synthesises from a reference voice CLIP (as opposed to a fixed
+// set of baked-in speakers). Together with `openai` it decides pool membership:
+// clip engines share the same NAS voice library, so a voice name means the same
+// thing on every pooled backend and /tts/v1/voices stays one flat namespace.
+// Fixed-voice engines would collide voice IDs across providers.
+//
+// VERIFICATION STATUS — proxlab-tts is confirmed by live use. s2-pro is
+// confirmed by its own API shape (reference clips passed as `references: [...]`).
+// qwen-tts is marked from its documented 3-second voice cloning but has NOT been
+// probed live; it only enters the pool once an instance is actually launched, at
+// which point a wrong flag shows up as a visible voice-resolution failure rather
+// than silent misrouting. Non-clip engines are unaffected either way.
 const TTS_PROVIDER_CAPS = {
-  'proxlab-tts':     { openai: true,  voices: '/v1/voices', models: '/v1/models', formats: ['wav','mp3','opus','flac'] },
-  'qwen-tts':        { openai: true,  voices: '/v1/audio/voices', models: '/v1/models', formats: ['wav','mp3','opus','flac','pcm'] },
+  'proxlab-tts':     { openai: true,  clipVoice: true,  voices: '/v1/voices', models: '/v1/models', formats: ['wav','mp3','opus','flac'] },
+  'qwen-tts':        { openai: true,  clipVoice: true,  voices: '/v1/audio/voices', models: '/v1/models', formats: ['wav','mp3','opus','flac','pcm'] },
   // S2-Pro doesn't expose a /v1/voices listing — voices are reference-
   // clip-driven (pass `references: [...]` in the speech body). Listing
   // null so the UI knows to skip the dropdown population.
-  's2-pro':          { openai: true,  voices: null,                models: '/v1/models', formats: ['wav','mp3','opus','flac','pcm'] },
-  'kokoro':          { openai: true,  voices: '/v1/voices', models: null,         formats: ['wav','mp3','opus','flac'] },
-  'openedai-speech': { openai: true,  voices: '/v1/voices', models: null,         formats: ['wav','mp3','opus','flac'] },
-  'alltalk':         { openai: false, voices: null,         models: null,         formats: ['wav'] },
-  'f5tts':           { openai: false, voices: null,         models: null,         formats: ['wav'] },
-  'tts-webui':       { openai: false, voices: null,         models: null,         formats: ['wav'] },
-  'piper':           { openai: false, voices: null,         models: null,         formats: ['wav'] },
+  's2-pro':          { openai: true,  clipVoice: true,  voices: null,                models: '/v1/models', formats: ['wav','mp3','opus','flac','pcm'] },
+  // Fixed baked-in speakers — not clip-driven, so not pooled.
+  'kokoro':          { openai: true,  clipVoice: false, voices: '/v1/voices', models: null,         formats: ['wav','mp3','opus','flac'] },
+  // Wraps several backends, some clip-based and some not — ambiguous, left out.
+  'openedai-speech': { openai: true,  clipVoice: false, voices: '/v1/voices', models: null,         formats: ['wav','mp3','opus','flac'] },
+  // Clip-capable but NOT OpenAI-compatible, so it cannot join an OpenAI-shaped pool.
+  'alltalk':         { openai: false, clipVoice: true,  voices: null,         models: null,         formats: ['wav'] },
+  'f5tts':           { openai: false, clipVoice: true,  voices: null,         models: null,         formats: ['wav'] },
+  'tts-webui':       { openai: false, clipVoice: false, voices: null,         models: null,         formats: ['wav'] },
+  'piper':           { openai: false, clipVoice: false, voices: null,         models: null,         formats: ['wav'] },
 };
+
+// Hand the capability table to the registry so pool membership has one source.
+setProviderCaps(TTS_PROVIDER_CAPS);
 
 const STT_PROVIDER_CAPS = {
   'faster-whisper': { openai: true, models: '/v1/models', formats: ['wav','mp3','flac','webm','ogg'] },
@@ -511,11 +538,239 @@ async function fetchExternalSourceBalance(source) {
 // Forward a chat/completions request to an external model source's upstream API. The
 // [TAG] is already stripped by the caller (upstreamModel is the real id). Injects the
 // vaulted/env key, rewrites body.model, and streams the response straight back (SSE-safe).
+
+// ─── Prompt caching (external sources) ────────────────────────────────────────────────────
+//
+// Clients send plain OpenAI-shaped requests and set NO cache_control — the proxy injects it so
+// caching is transparent. Verified on OpenRouter + anthropic/claude-opus-5: an identical
+// 5.5k-token prompt cost $0.0346 (cache_write_tokens 5503) then $0.0029 (cached_tokens 5503).
+//
+// CAPABILITY IS DERIVED FROM PRICING, not a hand-maintained vendor list.
+//
+// An upstream that publishes an `input_cache_write` price is telling us it bills for EXPLICIT
+// cache breakpoints — i.e. it acts on cache_control. An upstream that caches automatically has
+// a cache READ discount and no write price, so it lands outside this set and we inject nothing
+// (there is nothing to inject; it caches with or without us).
+//
+// This replaced a `/^anthropic\//` allowlist that was wrong twice over: it skipped OpenRouter's
+// `~anthropic/...-latest` aliases (leading tilde) so they ran uncached forever, and it ignored
+// the Google/OpenAI/Qwen models that do bill cache writes.
+const ANTHROPIC_MODEL_RE = /^~?anthropic\//i;
+const cacheCapability = new Map();                 // sourceId -> { ids:Set<string>, updatedAt }
+const _capInflight = new Map();
+const CACHE_CAP_TTL = 6 * 60 * 60 * 1000;          // 6h — published prices move rarely
+
+/** Build + store the explicit-cache set for a source from an already-fetched raw model list. */
+function setCacheCapability(source, rawModels) {
+  const ids = new Set(
+    (rawModels || []).filter((m) => Number(m?.pricing?.cacheWritePerM) > 0).map((m) => m.id),
+  );
+  cacheCapability.set(source.id, { ids, updatedAt: Date.now() });
+  console.log(`[proxy:cache] ${source.id}: ${ids.size}/${(rawModels || []).length} models bill for cache writes (explicit cache_control)`);
+  return ids;
+}
+
+/** Refresh the capability set out-of-band. Never awaited on the request path. */
+function refreshCacheCapability(source) {
+  const entry = cacheCapability.get(source.id);
+  if (entry && Date.now() - entry.updatedAt < CACHE_CAP_TTL) return;
+  if (_capInflight.has(source.id)) return;
+  const p = fetchExternalSourceModelsRaw(source)
+    .then((models) => { if (models && models.length) setCacheCapability(source, models); })
+    .catch((e) => {
+      // Loud: silently falling back would mean caching quietly stops for most models.
+      console.warn(`[proxy:cache] capability refresh failed for ${source.id}: ${e.message} — only Anthropic models will be cached until it succeeds`);
+    })
+    .finally(() => _capInflight.delete(source.id));
+  _capInflight.set(source.id, p);
+}
+
+function cachingSupported(source, upstreamModel) {
+  const m = String(upstreamModel || '');
+  if (source.transport === 'anthropic') return true;   // native Anthropic source — always explicit
+  if (ANTHROPIC_MODEL_RE.test(m)) return true;         // verified by measurement; never gated on a fetch
+  refreshCacheCapability(source);                      // fire-and-forget; warms for later calls
+  const entry = cacheCapability.get(source.id);
+  return entry ? entry.ids.has(m) : false;             // cold ⇒ don't guess
+}
+
+/** Anthropic is the only dialect that understands a cache_control `ttl`; others take the bare
+ *  breakpoint. Sending an unknown field to a strict upstream is how you break every call. */
+function ttlSupported(source, upstreamModel) {
+  return source.transport === 'anthropic' || ANTHROPIC_MODEL_RE.test(String(upstreamModel || ''));
+}
+
+// Per-model toggles live in source.modelOptions. ABSENT MEANS ON — Travis's requirement is
+// that every caching option defaults to enabled, so config is opt-OUT.
+function cacheOptsFor(source, upstreamModel) {
+  const mo = (source.modelOptions || {})[upstreamModel] || {};
+  return {
+    ephemeral: mo.cacheEphemeral !== false,   // 5-minute breakpoints
+    extended:  mo.cacheExtended  !== false,   // 1-hour TTL on the stable system prefix
+  };
+}
+
+/** Normalise a message's content to a block array so cache_control has somewhere to attach. */
+function asBlocks(content) {
+  if (Array.isArray(content)) return content;
+  if (typeof content === 'string') return [{ type: 'text', text: content }];
+  return null;
+}
+
+/**
+ * Inject cache breakpoints into an OpenAI-shaped payload. Mutates and returns `parsed`.
+ *
+ * TWO breakpoints, deliberately:
+ *   1. the LAST system block  — the big stable prefix; gets the 1h TTL when extended is on
+ *   2. the last message BEFORE the final user turn — the conversation prefix, which grows each
+ *      turn, so it only ever gets the 5-minute ephemeral TTL
+ * Anthropic allows up to 4; two covers the wins without burning the budget.
+ *
+ * Below ~1024 tokens the provider silently ignores cache_control, so short prompts cost
+ * nothing and need no special-casing here.
+ */
+function applyPromptCaching(parsed, source, upstreamModel) {
+  if (!parsed || !Array.isArray(parsed.messages)) return false;
+  if (!cachingSupported(source, upstreamModel)) return false;
+  const opts = cacheOptsFor(source, upstreamModel);
+  // `ephemeral` is the MASTER switch: off ⇒ inject nothing. A toggle labelled "Cache" that
+  // still wrote breakpoints when unticked would be a control that doesn't control anything.
+  if (!opts.ephemeral) return false;
+
+  let marked = 0;
+  const mark = (msg, ttl) => {
+    const blocks = asBlocks(msg.content);
+    if (!blocks || !blocks.length) return false;
+    const last = blocks[blocks.length - 1];
+    if (!last || typeof last !== 'object') return false;
+    last.cache_control = ttl ? { type: 'ephemeral', ttl } : { type: 'ephemeral' };
+    msg.content = blocks;
+    marked += 1;
+    return true;
+  };
+
+  // 1. last system message — longest-lived content, so it earns the 1h TTL.
+  for (let i = parsed.messages.length - 1; i >= 0; i--) {
+    if (parsed.messages[i] && parsed.messages[i].role === 'system') {
+      mark(parsed.messages[i], opts.extended && ttlSupported(source, upstreamModel) ? '1h' : undefined);
+      break;
+    }
+  }
+
+  // 2. conversation prefix: the message just before the final user turn. Ephemeral only —
+  //    this boundary moves every turn, so a long TTL would just churn cache writes.
+  if (opts.ephemeral && parsed.messages.length >= 3) {
+    for (let i = parsed.messages.length - 2; i >= 0; i--) {
+      const r = parsed.messages[i] && parsed.messages[i].role;
+      if (r === 'system') break;
+      if (r === 'assistant' || r === 'user') { mark(parsed.messages[i]); break; }
+    }
+  }
+  // Report what was ACTUALLY marked, not merely what was permitted. The stats counter reads
+  // this: reporting "injected" for a request the per-model toggle had disabled would make the
+  // tally lie about its own behaviour.
+  return marked > 0;
+}
+
+
+// ─── Cache-usage observability ────────────────────────────────────────────────────────────
+//
+// Injecting cache_control silently is not good enough: if an upstream quietly ignores it, or a
+// prompt sits under the ~1024-token minimum, everything still "works" and nobody ever finds out
+// the cache is dead. So tally what the upstream REPORTS back and expose it per model.
+//
+// In-memory, reset on proxy restart — `since` is returned so the UI can say so honestly rather
+// than implying an all-time total.
+const cacheStats = new Map();      // `${sourceId}::${model}` -> counters
+const cacheStatsSince = Date.now();
+
+const _n = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+
+/** Normalise the three usage dialects (OpenAI, OpenRouter, Anthropic) into one shape. */
+function normalizeUsage(u) {
+  if (!u || typeof u !== 'object') return null;
+  const d = u.prompt_tokens_details || u.input_tokens_details || {};
+  const cc = u.cache_creation || {};
+  return {
+    input: _n(u.prompt_tokens ?? u.input_tokens),
+    output: _n(u.completion_tokens ?? u.output_tokens),
+    // OpenAI/OpenRouter report reads under prompt_tokens_details.cached_tokens; Anthropic uses
+    // cache_read_input_tokens. Writes are only ever reported by providers with EXPLICIT caching.
+    cacheRead: _n(d.cached_tokens ?? u.cached_tokens ?? u.cache_read_input_tokens ?? u.cache_read_tokens),
+    // OpenRouter nests BOTH counters under prompt_tokens_details (cached_tokens +
+    // cache_write_tokens); Anthropic puts creation at the top level. Checking only the top
+    // level made every write read as 0 — verified against a live response before fixing.
+    cacheWrite: _n(
+      d.cache_write_tokens ?? u.cache_creation_input_tokens ?? u.cache_write_tokens ??
+      (_n(cc.ephemeral_5m_input_tokens) + _n(cc.ephemeral_1h_input_tokens) || undefined),
+    ),
+    cost: _n(u.cost),
+  };
+}
+
+/**
+ * Pull the LAST usage object out of a response body — handles both a plain JSON completion and
+ * an SSE stream (where usage arrives in a trailing chunk).
+ */
+function extractUsage(text) {
+  if (!text) return null;
+  let last = null;
+  const t = text.trimStart();
+  if (t.startsWith('{')) {
+    try { const j = JSON.parse(t); if (j && j.usage) last = j.usage; } catch { /* truncated tail */ }
+  }
+  if (!last) {
+    const re = /^data:\s*(\{.*\})\s*$/gm;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      try { const j = JSON.parse(m[1]); if (j && j.usage) last = j.usage; } catch { /* partial chunk */ }
+    }
+  }
+  return normalizeUsage(last);
+}
+
+/** Record one completed upstream call. `injected` = did we actually add cache_control? */
+function recordCacheUsage(source, model, text, injected) {
+  try {
+    const u = extractUsage(text);
+    const k = `${source.id}::${model}`;
+    const s = cacheStats.get(k) || { requests: 0, injected: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, lastAt: null };
+    s.requests += 1;
+    if (injected) s.injected += 1;
+    if (u) {
+      s.input += u.input; s.output += u.output;
+      s.cacheRead += u.cacheRead; s.cacheWrite += u.cacheWrite; s.cost += u.cost;
+    }
+    s.lastAt = Date.now();
+    cacheStats.set(k, s);
+    if (u && (u.cacheRead || u.cacheWrite)) {
+      console.log(`[proxy:cache] ${k} read=${u.cacheRead} write=${u.cacheWrite} in=${u.input} out=${u.output}`);
+    } else if (injected) {
+      // Loud on purpose: injected but nothing came back means the cache is doing nothing.
+      console.log(`[proxy:cache] ${k} injected but upstream reported NO cache tokens (prompt under the ~1024-token minimum, or ignored)`);
+    }
+  } catch (e) {
+    console.warn(`[proxy:cache] usage tally failed for ${source?.id}/${model}: ${e.message}`);
+  }
+}
+
 async function forwardToExternalSource(res, source, upstreamModel, parsed) {
   const key = resolveExternalSourceKey(source);
   const ep = externalTransportEndpoints(source);
   const url = ep.chatUrl;
   const headers = { 'content-type': 'application/json', ...ep.chatHeaders(key) };
+
+  // Inject cache breakpoints BEFORE serialising. No-op for models that don't support it.
+  let cacheInjected = false;
+  if (cachingSupported(source, upstreamModel)) {
+    cacheInjected = applyPromptCaching(parsed, source, upstreamModel);
+    // The 1h TTL is gated behind a beta header on native Anthropic. Harmless elsewhere, but
+    // only send it where it means something.
+    const co = cacheOptsFor(source, upstreamModel);
+    if (cacheInjected && source.transport === 'anthropic' && co.ephemeral && co.extended) {
+      headers['anthropic-beta'] = 'extended-cache-ttl-2025-04-11';
+    }
+  }
   const outBody = JSON.stringify({ ...parsed, model: upstreamModel });
 
   let upstream;
@@ -534,7 +789,22 @@ async function forwardToExternalSource(res, source, upstreamModel, parsed) {
   try {
     const { Readable } = await import('node:stream');
     const node = Readable.fromWeb(upstream.body);
-    node.on('end', () => { if (upstream._timer) clearTimeout(upstream._timer); });
+    // Observe a CAPPED copy for the usage tally. The client's bytes still go straight through
+    // via pipe(); this only ever reads, never gates or rewrites the stream, so a failure here
+    // cannot stall a response. Usage lives at the tail of both dialects, so keep the tail.
+    const CAP = 256 * 1024;
+    let seen = '';
+    node.on('data', (chunk) => {
+      try {
+        seen += chunk.toString('utf8');
+        if (seen.length > CAP) seen = seen.slice(-CAP);
+      } catch { /* binary/undecodable — tally is best-effort, the stream is not */ }
+    });
+    node.on('end', () => {
+      if (upstream._timer) clearTimeout(upstream._timer);
+      recordCacheUsage(source, upstreamModel, seen, cacheInjected);
+      seen = '';
+    });
     node.on('error', () => { try { res.end(); } catch {} });
     node.pipe(res);
   } catch (e) {
@@ -615,17 +885,29 @@ function findImageGenByProvider(providerId, nth = 1) {
   return matches[nth - 1] || null;
 }
 
-function classifyService(svc) {
-  // Check model name for embedding/reranker keywords
+/**
+ * THE single service classifier. Exported so the API layer renders exactly what the proxy
+ * routes — there used to be a second, weaker copy in llm/routes/ai.js that had no embed or
+ * rerank case, so rerankers and embedders showed up on service cards as plain LLMs.
+ *
+ * EXPLICIT FLAGS FIRST, then model-name keywords. The flags are set deliberately at launch, so
+ * they must outrank name-sniffing: 'encoder' is an EMBED_KEYWORDS entry, and a TTS model with
+ * "encoder" in its name would otherwise be classified as an embedder. Embedders and rerankers
+ * carry no flag of their own, which is why they fall back to keywords.
+ *
+ * Provider sets AND flags are both consulted — the two old copies each checked only one
+ * (proxy.js the provider sets, ai.js the flags), so each mislabelled what the other caught.
+ */
+export function classifyService(svc) {
+  if (svc.isTools) return 'tools';
+  if (svc.isImageGen || IMAGE_GEN_PROVIDERS.has(svc.providerId)) return 'image';
+  // STT before the isTts check: STT providers carry isTts=false.
+  if (svc.isStt || STT_PROVIDERS.has(svc.providerId)) return 'stt';
+  if (svc.isTts) return 'tts';
   const modelLower = (svc.model || '').toLowerCase();
   if (EMBED_KEYWORDS.some(kw => modelLower.includes(kw))) return 'embed';
   if (RERANK_KEYWORDS.some(kw => modelLower.includes(kw))) return 'rerank';
-  if (svc.isTools) return 'tools';
-  if (IMAGE_GEN_PROVIDERS.has(svc.providerId)) return 'image';
-  // Check STT before the !isTts catch-all (STT providers have isTts=false)
-  if (STT_PROVIDERS.has(svc.providerId)) return 'stt';
-  if (!svc.isTts) return 'llm';
-  return 'tts';
+  return 'llm';
 }
 
 /**
@@ -657,6 +939,7 @@ function findServiceBySlot(type, slot) {
  */
 function formatService(svc) {
   return {
+    pooled: isPooledTtsProvider(svc.providerId),
     id: svc.id,
     providerId: svc.providerId,
     providerName: svc.providerName,
@@ -757,6 +1040,9 @@ const MODEL_CACHE_TTL = 30_000; // 30 seconds
 export function invalidateModelCache() {
   modelCache.updatedAt = 0;
   embedModelCache.updatedAt = 0;
+  // Pools are rebuilt from the live registry, so a newly registered/removed embed or rerank
+  // instance joins or leaves the rotation immediately rather than after the 30s TTL.
+  invalidatePools();
 }
 
 /**
@@ -956,7 +1242,9 @@ function bufferBody(req) {
 /**
  * Proxy a buffered request body to a target service.
  */
-function proxyBuffered(req, res, targetHost, targetPort, targetPath, body, capture) {
+function proxyBuffered(req, res, targetHost, targetPort, targetPath, body, capture, onDone) {
+  let doneFired = false;
+  const fireDone = (ok) => { if (!doneFired) { doneFired = true; try { onDone && onDone({ completed: ok }); } catch {} } };
   const proxyReq = http.request(
     {
       hostname: targetHost,
@@ -1009,15 +1297,19 @@ function proxyBuffered(req, res, targetHost, targetPort, targetPath, body, captu
 
         scheduleHeartbeat();
         proxyRes.on('data', (chunk) => { res.write(chunk); capAppend(chunk); scheduleHeartbeat(); });
-        proxyRes.on('end', () => { clearHeartbeat(); res.end(); capDone(); });
-        proxyRes.on('error', () => { clearHeartbeat(); if (!res.writableEnded) res.end(); });
-        res.on('close', clearHeartbeat);
+        proxyRes.on('end', () => { clearHeartbeat(); res.end(); capDone(); fireDone(true); });
+        proxyRes.on('error', () => { clearHeartbeat(); if (!res.writableEnded) res.end(); fireDone(false); });
+        res.on('close', () => { clearHeartbeat(); fireDone(false); });
       } else if (capture) {
         proxyRes.on('data', (chunk) => { res.write(chunk); capAppend(chunk); });
-        proxyRes.on('end', () => { res.end(); capDone(); });
-        proxyRes.on('error', () => { if (!res.writableEnded) res.end(); });
+        proxyRes.on('end', () => { res.end(); capDone(); fireDone(true); });
+        proxyRes.on('error', () => { if (!res.writableEnded) res.end(); fireDone(false); });
+        res.on('close', () => fireDone(false));
       } else {
         proxyRes.pipe(res);
+        proxyRes.on('end', () => fireDone(true));
+        proxyRes.on('error', () => fireDone(false));
+        res.on('close', () => fireDone(false));
       }
     }
   );
@@ -1025,6 +1317,7 @@ function proxyBuffered(req, res, targetHost, targetPort, targetPath, body, captu
     if (!res.headersSent) {
       res.status(502).json({ error: `Proxy error: ${err.message}` });
     }
+    fireDone(false);
   });
   proxyReq.end(body);
 }
@@ -1069,12 +1362,21 @@ async function handleModelRouting(req, res, path) {
   }
 
   // Fall back to slot 1
-  if (!svc) {
+  // Only fall back to an arbitrary LLM service when NO model was requested. If a model WAS
+  // named but is unreachable, do NOT silently reroute to the wrong model (see error below).
+  if (!svc && !modelId) {
     const services = findServicesByType('llm');
     svc = services[0];
   }
 
   if (!svc) {
+    if (modelId) {
+      return res.status(503).json({
+        error: `Assigned model '${modelId}' is not reachable — it is offline or not loaded, and no reachable fallback is available.`,
+        hint: 'Launch the assigned model, or assign an online fallback model. The agent was NOT silently rerouted to another model.',
+        requestedModel: modelId,
+      });
+    }
     return res.status(503).json({
       error: 'No active LLM service available',
       hint: 'Start an LLM service in ProxLab to enable proxying',
@@ -1125,11 +1427,20 @@ async function handleChatWithTools(req, res) {
       parsed.model = parsed.model.replace(/@\d+$/, "");
     }
   }
-  if (!svc) {
+  // Only fall back to an arbitrary LLM service when NO model was requested. A named-but-
+  // unreachable model must error, not silently reroute (lets Hermes' fallback chain react).
+  if (!svc && !parsed.model) {
     const services = findServicesByType("llm");
     svc = services[0];
   }
   if (!svc) {
+    if (parsed.model) {
+      return res.status(503).json({
+        error: `Assigned model '${parsed.model}' is not reachable — it is offline or not loaded, and no reachable fallback is available.`,
+        hint: "Launch the assigned model, or assign an online fallback model. The agent was NOT silently rerouted to another model.",
+        requestedModel: parsed.model,
+      });
+    }
     return res.status(503).json({
       error: "No active LLM service available",
       hint: "Start an LLM service in ProxLab to enable proxying",
@@ -1139,6 +1450,19 @@ async function handleChatWithTools(req, res) {
   // Strip @N suffix if present
   if (parsed.model && parsed.model.includes("@")) {
     parsed.model = parsed.model.replace(/@\d+$/, "");
+  }
+
+  // ─── Native Optane KV-cache (llama.cpp only, per-service toggle, default OFF) ───
+  // When active we ARE the KV layer, so forward DIRECT to llama (bypass the +1000 shim).
+  let _kvOrch = null, _kvTicket = null;
+  if (isKvEligible(svc)) {
+    try {
+      _kvOrch = await getOrchestrator(svc);
+      _kvTicket = await _kvOrch.prepare(parsed);   // mutates parsed: id_slot + cache_prompt
+    } catch (e) {
+      console.warn('[kv] prepare skipped:', e?.message || e);
+      _kvOrch = null; _kvTicket = null;
+    }
   }
 
   const body = Buffer.from(JSON.stringify(parsed));
@@ -1157,7 +1481,7 @@ async function handleChatWithTools(req, res) {
     } catch (e) { console.error('[proxlab-debug-prompts]', e.message); }
   }
 
-  const forwardPort = await getForwardPort(svc);
+  const forwardPort = _kvOrch ? svc.port : await getForwardPort(svc);
   // Tool-call metrics: only capture the response when the request actually offered tools (cheap no-op otherwise).
   const requestTools = Array.isArray(parsed.tools) ? parsed.tools : null;
   const capture = requestTools
@@ -1165,7 +1489,10 @@ async function handleChatWithTools(req, res) {
         try { recordToolUsage({ svc, requestTools, toolCalls: extractToolCalls(text, isSSE) }); } catch {}
       }
     : undefined;
-  proxyBuffered(req, res, svc.containerIp, forwardPort, "/v1/chat/completions", body, capture);
+  const _kvOnDone = _kvTicket
+    ? ({ completed }) => { try { _kvOrch.release(_kvTicket, { completed }); } catch {} }
+    : undefined;
+  proxyBuffered(req, res, svc.containerIp, forwardPort, "/v1/chat/completions", body, capture, _kvOnDone);
 }
 
 /**
@@ -1222,6 +1549,43 @@ export function createProxyRouter(sshService) {
   // Start the credit-tracker snapshotter (idempotent — guarded internally).
   balanceHistory.start();
 
+  // ─── Native Optane KV-cache: stats + settings + reaper (step 6) ───────────
+  router.get('/kvcache/stats', async (_req, res) => {
+    try {
+      const eligible = findServicesByType('llm')
+        .filter((svc) => svc.providerId === 'llama-server' && svc.containerIp && svc.port)
+        .map((svc) => ({
+          id: svc.id, name: svc.aliasOverride || svc.model || svc.id, model: svc.model,
+          port: svc.port, containerIp: svc.containerIp, node: svc.node, slots: svc.slots,
+        }));
+      res.json({ eligible, services: await getAllKvStats(), pools: getKvIndexStats(), settings: getKvSettings() });
+    } catch (e) { res.status(500).json({ error: e?.message || String(e) }); }
+  });
+  router.get('/kvcache/settings', (_req, res) => res.json(getKvSettings()));
+  router.post('/kvcache/settings', async (req, res) => {
+    try {
+      const updates = JSON.parse((await bufferBody(req)).toString());
+      const cur = getKvSettings();
+      if (typeof updates.defaultEnabled === 'boolean') cur.defaultEnabled = updates.defaultEnabled;
+      if (updates.perService && typeof updates.perService === 'object') {
+        cur.perService = cur.perService || {};
+        for (const [id, v] of Object.entries(updates.perService)) {
+          const prev = cur.perService[id] || {};
+          const merged = { ...prev, ...v };
+          if (v.config || prev.config) merged.config = { ...(prev.config || {}), ...(v.config || {}) };  // deep-merge tunables
+          cur.perService[id] = merged;
+        }
+      }
+      saveKvSettings(cur);
+      resetOrchestratorCache();   // rebuild orchestrators so config/enable changes take effect
+      res.json(cur);
+    } catch (e) { res.status(400).json({ error: e?.message || String(e) }); }
+  });
+  router.post('/kvcache/reap/:fp', async (req, res) => {
+    try { res.json(await reapNow(req.params.fp)); }
+    catch (e) { res.status(500).json({ error: e?.message || String(e) }); }
+  });
+
   // GET /services — Return current routing targets for diagnostics
   router.get('/services', async (req, res) => {
     const anthropicAuth = await isAuthenticated().catch(() => false);
@@ -1244,10 +1608,12 @@ export function createProxyRouter(sshService) {
         }).filter(([, v]) => v.length)
       ),
       multiTts: {
-        tts: findAllProxlabTtsServices().map(svc => ({ slot: svc.proxySlot || 0, ...formatService(svc) })),
+        tts: findAllTtsPoolServices().map(svc => ({ slot: svc.proxySlot || 0, ...formatService(svc) })),
         rvc: findAllRvcServices().map(svc => ({ slot: svc.proxySlot || 0, ...formatService(svc) })),
-        pipelines: Math.min(findAllProxlabTtsServices().length, findAllRvcServices().length),
-        ttsCount: findAllProxlabTtsServices().length,
+        // `pooled` tells the UI which providers the balanced TTS pool covers, so
+        // it no longer has to hardcode a provider id to make that call itself.
+        pipelines: Math.min(findAllTtsPoolServices().length, findAllRvcServices().length),
+        ttsCount: findAllTtsPoolServices().length,
       },
       external: external.map((svc, i) => ({ slot: i + 1, ...svc })),
       anthropic: {
@@ -1486,7 +1852,7 @@ export function createProxyRouter(sshService) {
 
   router.get('/embed/v1/models', async (req, res) => {
     try {
-      const cache = await refreshEmbedModelCache();
+      const cache = await refreshPool('embed', findServicesByType);
       res.json({ object: 'list', data: cache.models });
     } catch (err) {
       res.status(500).json({ error: `Failed to aggregate embed models: ${err.message}` });
@@ -1496,14 +1862,6 @@ export function createProxyRouter(sshService) {
   router.all('/embed/v1/{*rest}', async (req, res) => {
     const downstreamPath = '/v1/' + joinRestParam(req.params.rest);
 
-    // TEMP: trace who's calling embeddings — remove after diagnosis
-    if (downstreamPath === '/v1/embeddings' && req.method === 'POST') {
-      const xfwd = req.headers['x-forwarded-for'] || '';
-      const ua = (req.headers['user-agent'] || '').slice(0, 80);
-      const ref = (req.headers['referer'] || req.headers['origin'] || '').slice(0, 80);
-      console.log(`[embed-trace] from=${req.socket.remoteAddress} xfwd=${xfwd} ua=${ua} ref=${ref}`);
-    }
-
     if (req.method === 'GET' || req.method === 'HEAD') {
       const { svc } = findServiceOrExternal('embed');
       if (!svc) return res.status(503).json({ error: 'No active embedding service', hint: 'Start an embeddings model or add an external embedding service' });
@@ -1511,48 +1869,88 @@ export function createProxyRouter(sshService) {
       return;
     }
 
-    // POST — parse body to extract model for routing
     const body = await bufferBody(req);
     let modelId = null;
     try { modelId = JSON.parse(body.toString()).model; } catch {}
 
-    let svc = null;
+    // A BARE model id round-robins across every healthy instance serving it; a decorated
+    // `model@2` pins that one instance (which is the whole point of the alias).
+    let svc = null, baseId = null;
     if (modelId) {
-      const cache = await refreshEmbedModelCache();
-      svc = cache.byModel.get(modelId) || null;
-      // If a decorated ID was used, rewrite the model field back to the base ID
-      // so the downstream backend recognizes it
-      if (svc && modelId.includes('@')) {
-        try {
-          const parsed = JSON.parse(body.toString());
-          const baseId = modelId.replace(/@\d+$/, '');
-          parsed.model = baseId;
-          const rewritten = Buffer.from(JSON.stringify(parsed));
-          return proxyBuffered(req, res, svc.containerIp, svc.port, downstreamPath, rewritten);
-        } catch {}
-      }
+      const cache = await refreshPool('embed', findServicesByType);
+      ({ svc, baseId } = pickInstance('embed', cache, modelId));
     }
     if (!svc) {
       const { svc: fallback } = findServiceOrExternal('embed');
       svc = fallback;
     }
     if (!svc) return res.status(503).json({ error: 'No active embedding service', hint: 'Start an embeddings model or add an external embedding service' });
-    proxyBuffered(req, res, svc.containerIp, svc.port, downstreamPath, body);
+
+    // Downstream backends only know their own undecorated model id.
+    let out = body;
+    if (modelId && baseId && modelId !== baseId) {
+      try {
+        const parsed = JSON.parse(body.toString());
+        parsed.model = baseId;
+        out = Buffer.from(JSON.stringify(parsed));
+      } catch {}
+    }
+    proxyBuffered(req, res, svc.containerIp, svc.port, downstreamPath, out, undefined,
+      ({ completed }) => { if (completed) markSuccess(svc); else markFailure(svc); });
   });
 
   // ─── Universal Rerank Endpoint: /rerank/v1/* & /rerank/v2/* ─────────
+  // Aggregated reranker model list, same shape as /embed/v1/models (this did not exist before —
+  // there was no way to see which rerankers the proxy could reach).
   for (const ver of ['v1', 'v2']) {
-    router.all(`/rerank/${ver}/{*rest}`, (req, res) => {
-      const downstreamPath = `/${ver}/` + joinRestParam(req.params.rest);
-      const { svc } = findServiceOrExternal('rerank');
-      if (!svc) return res.status(503).json({ error: 'No active reranker service', hint: 'Add a reranker model or external reranker service' });
-      if (req.method === 'GET' || req.method === 'HEAD') {
-        proxyRequest(req, res, svc.containerIp, svc.port, downstreamPath);
-      } else {
-        const body = [];
-        req.on('data', c => body.push(c));
-        req.on('end', () => proxyBuffered(req, res, svc.containerIp, svc.port, downstreamPath, Buffer.concat(body)));
+    router.get(`/rerank/${ver}/models`, async (req, res) => {
+      try {
+        const cache = await refreshPool('rerank', findServicesByType);
+        res.json({ object: 'list', data: cache.models });
+      } catch (err) {
+        res.status(500).json({ error: `Failed to aggregate rerank models: ${err.message}` });
       }
+    });
+  }
+
+  for (const ver of ['v1', 'v2']) {
+    router.all(`/rerank/${ver}/{*rest}`, async (req, res) => {
+      const downstreamPath = `/${ver}/` + joinRestParam(req.params.rest);
+
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        const { svc } = findServiceOrExternal('rerank');
+        if (!svc) return res.status(503).json({ error: 'No active reranker service', hint: 'Add a reranker model or external reranker service' });
+        return proxyRequest(req, res, svc.containerIp, svc.port, downstreamPath);
+      }
+
+      // Rerankers previously ignored the requested model entirely and used whichever service
+      // sorted first. Now they route by model and load-balance across its instances, exactly
+      // like embeddings.
+      const body = await bufferBody(req);
+      let modelId = null;
+      try { modelId = JSON.parse(body.toString()).model; } catch {}
+
+      let svc = null, baseId = null;
+      if (modelId) {
+        const cache = await refreshPool('rerank', findServicesByType);
+        ({ svc, baseId } = pickInstance('rerank', cache, modelId));
+      }
+      if (!svc) {
+        const { svc: fallback } = findServiceOrExternal('rerank');
+        svc = fallback;
+      }
+      if (!svc) return res.status(503).json({ error: 'No active reranker service', hint: 'Add a reranker model or external reranker service' });
+
+      let out = body;
+      if (modelId && baseId && modelId !== baseId) {
+        try {
+          const parsed = JSON.parse(body.toString());
+          parsed.model = baseId;
+          out = Buffer.from(JSON.stringify(parsed));
+        } catch {}
+      }
+      proxyBuffered(req, res, svc.containerIp, svc.port, downstreamPath, out, undefined,
+        ({ completed }) => { if (completed) markSuccess(svc); else markFailure(svc); });
     });
   }
 
@@ -1670,10 +2068,30 @@ export function createProxyRouter(sshService) {
       const allow = Array.isArray(source.models) ? source.models : [];
       const allowAll = allow.length === 0;
       const allowSet = new Set(allow);
-      const models = (await fetchExternalSourceModelsRaw(source))
-        .map(m => ({ ...m, enabled: allowAll || allowSet.has(m.id) }));
+      // cacheSupported comes from the forwarder's OWN rule, so the UI can only ever offer a
+      // toggle for something the proxy will genuinely act on.
+      const raw = await fetchExternalSourceModelsRaw(source);
+      if (raw.length) setCacheCapability(source, raw);   // UI and forwarder read the same set
+      const models = raw
+        .map(m => ({
+          ...m,
+          enabled: allowAll || allowSet.has(m.id),
+          cacheSupported: cachingSupported(source, m.id),
+          cacheOptions: cacheOptsFor(source, m.id),
+        }));
       res.json({ sourceId: source.id, tag: source.tag, allowAll, count: models.length, models });
     } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Prompt-cache token tallies per model for this source, as REPORTED BY THE UPSTREAM.
+  // In-memory since the proxy last started (`since`), so the UI can label it truthfully.
+  router.get('/external-sources/:id/cache-stats', (req, res) => {
+    const prefix = `${req.params.id}::`;
+    const models = {};
+    for (const [k, v] of cacheStats.entries()) {
+      if (k.startsWith(prefix)) models[k.slice(prefix.length)] = v;
+    }
+    res.json({ sourceId: req.params.id, since: cacheStatsSince, models });
   });
 
   // Live account credit/balance for one source (OpenRouter/DeepSeek supported; Anthropic not).
@@ -1787,69 +2205,102 @@ export function createProxyRouter(sshService) {
     res.json(result);
   });
 
+  // Shared health cache for every audio backend. Without this each request
+  // fanned out a fresh probe to every instance; the TTL collapses the burst a
+  // single synthesis triggers while still noticing a dead backend in seconds.
+  const audioHealth = createHealthCache(checkProviderHealth);
+
+  /** JSON GET used when asking a backend what models it serves. */
+  async function fetchJsonForCatalog(url) {
+    const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  }
+
+  /**
+   * Resolve a caller's `model` into the backends that can serve it plus the bare
+   * model id to forward.
+   *
+   * Returns { backends, model, matched, reason }. `backends` empty means nothing
+   * serves it — the caller should 503 with `reason`, NOT fall back to another
+   * model. Silent substitution is how a pool ends up quietly serving the wrong
+   * voice for weeks.
+   */
+  async function resolveTtsSelection(healthyTts, rawModel) {
+    const { models } = await getModelCatalog(healthyTts, fetchJsonForCatalog);
+    const sel = selectBackends(models, rawModel);
+    const bare = rawModel && rawModel.includes('/') ? rawModel.slice(rawModel.indexOf('/') + 1) : rawModel;
+    return { backends: sel.backends, model: bare, matched: sel.matched, reason: sel.reason };
+  }
+
+  // ── Audio pipeline config (persisted post-processing defaults) ──────────
+  // GET  returns the live config plus the shipped defaults, so the UI can show
+  //      what "reset" would mean without hardcoding a copy of them.
+  router.get('/audio-pipeline/settings', (_req, res) => {
+    res.json({ config: getPipelineConfig(), defaults: PIPELINE_DEFAULTS });
+  });
+
+  router.post('/audio-pipeline/settings', async (req, res) => {
+    try {
+      const updates = JSON.parse((await bufferBody(req)).toString());
+      if (!updates || typeof updates !== 'object' || !updates.post) {
+        return res.status(400).json({ error: 'expected { post: { <group>: {...} } }' });
+      }
+      // No enabled-without-model check any more: `allowed` is a permission, and
+      // permitting RVC without picking a house speaker is perfectly valid — the
+      // caller names its own. The old check belonged to the force semantics.
+      const saved = savePipelineConfig(updates);
+      console.log(`[audio-pipeline] updated: rvc.allowed=${saved.post.rvc.allowed} `
+        + `fallbackModel=${saved.post.rvc.model || 'none'}`);
+      res.json({ config: saved, defaults: PIPELINE_DEFAULTS });
+    } catch (e) {
+      res.status(400).json({ error: e?.message || String(e) });
+    }
+  });
+
   // --- RVC Voice Conversion Pipeline (TTS -> RVC) ---
   // POST /rvc/convert — Direct RVC conversion (proxy to RVC service)
   // POST /rvc/pipeline — Full pipeline: TTS generates audio, then RVC converts voice
   // GET  /rvc/models  — List available RVC voice models
   // GET  /rvc/health  — RVC service health
 
+  // Single RVC backend (balanced). Returns null when none is registered — the
+  // callers all already guard on that and return 503.
+  //
+  // This used to filter providerId === 'proxlab-rvc' and fall back to a hardcoded
+  // ai-gpu host/port. Since every row is written as 'rvc', the filter never
+  // matched and all four /rvc/* routes ran on the fallback permanently; it only
+  // appeared to work because the hardcoded host happened to be right.
   function findRvcService() {
-    const state = loadActiveServices();
-    const registered = Object.values(state.services).find(
-      svc => svc.providerId === 'proxlab-rvc' && svc.containerIp && svc.port
-    );
-    if (registered) return registered;
-    // Fallback: first always-on RVC instance
-    return { providerId: 'proxlab-rvc', containerIp: ALWAYS_ON_TTS_HOST, port: ALWAYS_ON_RVC_PORTS[0] };
+    const all = findAllRvcServices();
+    if (all.length === 0) return null;
+    return all[nextIndex('post:rvc', all.length)];
   }
-
-  // Always-on TTS/RVC instances on ai-gpu (systemd services, not launched via UI)
-  const ALWAYS_ON_TTS_HOST = '10.0.0.235';
-  const ALWAYS_ON_TTS_PORTS = [8880, 8881, 8882, 8883, 8884];
-  const ALWAYS_ON_RVC_PORTS = [7100, 7101, 7102, 7103, 7104];
 
   function findAllRvcServices() {
-    const state = loadActiveServices();
-    const registered = Object.values(state.services)
-      .filter(svc => svc.providerId === 'proxlab-rvc' && svc.containerIp && svc.port)
-      .sort((a, b) => (a.proxySlot || 999) - (b.proxySlot || 999));
-    if (registered.length > 0) return registered;
-    // Fallback: always-on RVC instances
-    return ALWAYS_ON_RVC_PORTS.map((port, i) => ({
-      providerId: 'proxlab-rvc', containerIp: ALWAYS_ON_TTS_HOST, port, proxySlot: i + 1,
-    }));
+    return listBackends(loadActiveServices().services, 'post');
   }
 
-  /** Find all proxlab-tts services (excludes kokoro, openedai-speech, RVC, etc.) */
-  function findAllProxlabTtsServices() {
-    const state = loadActiveServices();
-    const registered = Object.values(state.services)
-      .filter(svc => svc.providerId === 'proxlab-tts' && svc.containerIp && svc.port)
-      .sort((a, b) => (a.proxySlot || 999) - (b.proxySlot || 999));
-    if (registered.length > 0) return registered;
-    // Fallback: always-on TTS instances
-    return ALWAYS_ON_TTS_PORTS.map((port, i) => ({
-      providerId: 'proxlab-tts', containerIp: ALWAYS_ON_TTS_HOST, port, proxySlot: i + 1,
-    }));
+  /**
+   * TTS backends eligible for the balanced pool (clip-style providers only).
+   * Fixed-voice engines like kokoro stay reachable on their slot endpoints but
+   * never join the pool — see audio-registry.js for why.
+   */
+  function findAllTtsPoolServices() {
+    return listBackends(loadActiveServices().services, 'tts');
   }
 
   /** Discover healthy proxlab-tts + proxlab-rvc instances, return paired pipelines. */
   async function buildHealthyPipelines() {
-    const allTts = findAllProxlabTtsServices();
+    const allTts = findAllTtsPoolServices();
     const allRvc = findAllRvcServices();
 
     const [ttsHealth, rvcHealth] = await Promise.all([
-      Promise.all(allTts.map(async svc => ({
-        svc,
-        healthy: await checkProviderHealth(svc.containerIp, svc.port),
-      }))),
-      Promise.all(allRvc.map(async svc => ({
-        svc,
-        healthy: await checkProviderHealth(svc.containerIp, svc.port),
-      }))),
+      audioHealth.withHealth(allTts),
+      audioHealth.withHealth(allRvc),
     ]);
 
-    const healthyTts = ttsHealth.filter(h => h.healthy).map(h => h.svc);
+    let healthyTts = ttsHealth.filter(h => h.healthy).map(h => h.svc);
     const healthyRvc = rvcHealth.filter(h => h.healthy).map(h => h.svc);
     const pipelineCount = Math.min(healthyTts.length, healthyRvc.length);
 
@@ -2242,9 +2693,18 @@ export function createProxyRouter(sshService) {
     }
   });
 
-  // GET /multi-tts/voices — Aggregated+deduplicated voices from all TTS instances
-  router.get('/multi-tts/voices', async (req, res) => {
-    const allTts = findAllProxlabTtsServices();
+  // GET the aggregated voice list. Exposed on several paths because different clients
+  // look in different places: the marinara engine UI expects /audio/voices, OpenAI-shaped
+  // clients expect /v1/audio/voices, and AI-Lab's own UI uses /multi-tts/voices. One
+  // handler, several spellings — cheaper than making each client configurable.
+  router.get([
+    '/multi-tts/voices',
+    '/multi-tts/audio/voices',
+    '/multi-tts/v1/audio/voices',
+    '/tts/audio/voices',
+    '/tts/v1/audio/voices',
+  ], async (req, res) => {
+    const allTts = findAllTtsPoolServices();
     if (allTts.length === 0) return res.status(503).json({ error: 'No proxlab-tts services registered' });
 
     const voiceMap = new Map();
@@ -2276,7 +2736,7 @@ export function createProxyRouter(sshService) {
 
   // POST /multi-tts/voices — Upload a new voice profile (multipart proxy to first healthy TTS)
   router.post('/multi-tts/voices', async (req, res) => {
-    const allTts = findAllProxlabTtsServices();
+    const allTts = findAllTtsPoolServices();
     if (allTts.length === 0) return res.status(503).json({ error: 'No proxlab-tts services registered' });
 
     // Find first healthy instance
@@ -2292,7 +2752,7 @@ export function createProxyRouter(sshService) {
 
   // DELETE /multi-tts/voices/:name — Delete a voice profile from first healthy TTS
   router.delete('/multi-tts/voices/:name', async (req, res) => {
-    const allTts = findAllProxlabTtsServices();
+    const allTts = findAllTtsPoolServices();
     if (allTts.length === 0) return res.status(503).json({ error: 'No proxlab-tts services registered' });
 
     let target;
@@ -2388,31 +2848,95 @@ export function createProxyRouter(sshService) {
   // plus optional RVC fields (rvc_model, f0_method, f0_up_key, etc.)
   // When rvc_model is omitted, proxies directly to a TTS backend (supports all formats).
   // When rvc_model is provided, routes through TTS→RVC pipeline (returns wav).
-  let _rrTtsIndex = 0;
-  router.post('/multi-tts/v1/audio/speech', async (req, res) => {
+  /**
+   * THE universal TTS speech endpoint. Registered on both paths so the two can
+   * never diverge again — before phase 3, /tts/v1 was a separate single-provider
+   * route that took services[0], which is why a composite provider/model ID
+   * worked on /multi-tts and 400'd on /tts/v1.
+   *
+   * /multi-tts/* is retained as an alias and logs a deprecation line naming the
+   * caller, so we can see who still depends on it before it goes.
+   */
+  router.post(['/tts/v1/audio/speech', '/multi-tts/v1/audio/speech'], async (req, res) => {
+    if (req.path.startsWith('/multi-tts')) {
+      console.warn(`[deprecated] ${req.path} — use /tts/v1/audio/speech `
+        + `(caller ${req.ip || 'unknown'}, ua=${(req.headers['user-agent'] || 'none').slice(0, 60)})`);
+    }
+
+    const rawBody = await bufferBody(req);
     let body;
     try {
-      const chunks = [];
-      for await (const chunk of req) chunks.push(chunk);
-      body = JSON.parse(Buffer.concat(chunks).toString());
+      body = JSON.parse(rawBody.toString());
     } catch {
-      return res.status(400).json({ error: 'Invalid JSON body' });
+      // Non-JSON: stream it through untouched, as the old /tts/v1 route did —
+      // but to a BALANCED backend rather than always the first service.
+      const pool = findAllTtsPoolServices();
+      if (pool.length === 0) {
+        return res.status(503).json({ error: emptyReason('tts', { registered: 0 }) });
+      }
+      const pick = pool[nextIndex('tts:raw', pool.length)];
+      return proxyBuffered(req, res, pick.containerIp, pick.port, '/v1/audio/speech', rawBody);
+    }
+
+    // Explicit slot pin. proxy_notes keeps individual endpoints addressable, so a
+    // caller naming a slot bypasses the pool entirely and gets exactly that service.
+    if (body.provider) {
+      const slot = body.provider;
+      delete body.provider;               // never forward our own routing field
+      const svc = findServiceBySlot('tts', slot);
+      if (!svc) return res.status(404).json({ error: `No TTS service in slot ${slot}` });
+      const caps = TTS_PROVIDER_CAPS[svc.providerId];
+      if (!caps || !caps.openai) {
+        return res.status(400).json({
+          error: `Provider ${svc.providerId} (slot ${slot}) does not support the OpenAI speech API`,
+          providerId: svc.providerId,
+        });
+      }
+      return proxyBuffered(req, res, svc.containerIp, svc.port, '/v1/audio/speech',
+                           Buffer.from(JSON.stringify(body)));
+    }
+
+    // Merge persisted post-processing defaults. Request fields still win, and
+    // `rvc: false` forces the pipeline off for this one call — otherwise a
+    // configured default speaker could never be bypassed.
+    applyPipelineDefaults(body);
+    // If the gate stripped a requested speaker, say so in a header rather than
+    // pretending the request was honoured as sent.
+    if (body._rvcBlocked) {
+      console.warn(`[audio-pipeline] ${body._rvcBlocked}`);
+      res.set('X-AiLab-Warning', body._rvcBlocked);
+      delete body._rvcBlocked;
     }
 
     if (!body.input?.trim()) return res.status(400).json({ error: 'input is required' });
 
     const { pipelines, ttsInstances } = await buildHealthyPipelines();
-    const healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
+    let healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
     if (healthyTts.length === 0) {
-      return res.status(503).json({ error: 'No healthy TTS instances available' });
+      return res.status(503).json({
+        error: emptyReason('tts', { registered: ttsInstances.total, healthy: 0 }),
+      });
     }
 
     const responseFormat = body.response_format || 'mp3';
     const mimeMap = { wav: 'audio/wav', mp3: 'audio/mpeg', opus: 'audio/opus', flac: 'audio/flac' };
 
     // Round-robin TTS instance selection
-    const ttsIdx = _rrTtsIndex % healthyTts.length;
-    _rrTtsIndex = (_rrTtsIndex + 1) % healthyTts.length;
+    // Per-selector rotation. One shared counter across all models interleaved
+    // them against a mismatched base; keying by model keeps each model's copies
+    // balancing among themselves.
+    // Narrow to the backends that actually serve the requested model before
+    // balancing, so rotation happens WITHIN a selector rather than across
+    // unrelated models.
+    const _sel = await resolveTtsSelection(healthyTts, body.model);
+    if (_sel.backends.length === 0) {
+      return res.status(503).json({ error: _sel.reason || `no backend serves '${body.model}'` });
+    }
+    healthyTts = _sel.backends;
+    // Forward the BARE model. Backends are pool-unaware and reject
+    // "provider/model" outright, so the composite must not survive past here.
+    if (_sel.model) body.model = _sel.model;
+    const ttsIdx = nextIndex(`tts:${_sel.matched || 'default'}`, healthyTts.length);
     const ttsSvc = healthyTts[ttsIdx];
     const tryOrder = [ttsSvc, ...healthyTts.filter(s => s !== ttsSvc)];
 
@@ -2617,7 +3141,7 @@ export function createProxyRouter(sshService) {
     // Find the chatterbox host that owns the voice library. We read from
     // the first registered chatterbox service by convention — there's
     // typically one canonical voice library per cluster.
-    const chatterbox = findAllProxlabTtsServices()[0];
+    const chatterbox = findAllTtsPoolServices()[0];
     if (!chatterbox?.containerIp) {
       return res.status(503).json({ error: 'No proxlab-tts (chatterbox) service registered — cannot resolve voice library' });
     }
@@ -2837,43 +3361,42 @@ export function createProxyRouter(sshService) {
   });
 
   // GET /multi-tts/v1/models — Aggregated models from all TTS instances
+  /**
+   * Union of every model served by the pool, as composite `provider/model` IDs.
+   *
+   * The previous version asked only the FIRST healthy instance and fell back to a
+   * literal chatterbox list — so a pool serving anything else still advertised
+   * chatterbox, and an EMPTY pool advertised models that did not exist at all.
+   * Both are gone: what you see is what is actually running.
+   */
   router.get('/multi-tts/v1/models', async (req, res) => {
-    const allTts = findAllProxlabTtsServices();
-    if (allTts.length === 0) {
-      return res.json({
-        object: 'list',
-        data: [
-          { id: 'chatterbox-turbo', object: 'model', owned_by: 'resemble-ai', active: false },
-          { id: 'chatterbox', object: 'model', owned_by: 'resemble-ai', active: false },
-        ],
-      });
-    }
-    // Query first healthy instance for actual model list
-    for (const svc of allTts) {
-      try {
-        const r = await fetch(`http://${svc.containerIp}:${svc.port}/v1/models`, {
-          signal: AbortSignal.timeout(5000),
-        });
-        if (r.ok) {
-          const data = await r.json();
-          return res.json(data);
-        }
-      } catch {}
-    }
-    // Fallback
+    const allTts = findAllTtsPoolServices();
+    const healthy = (await audioHealth.withHealth(allTts)).filter((h) => h.healthy).map((h) => h.svc);
+
+    const { models, errors } = await getModelCatalog(healthy, fetchJsonForCatalog);
+    for (const e of errors) console.warn(`[tts/models] ${e}`);
+
     res.json({
       object: 'list',
-      data: [
-        { id: 'chatterbox-turbo', object: 'model', owned_by: 'resemble-ai', active: false },
-        { id: 'chatterbox', object: 'model', owned_by: 'resemble-ai', active: false },
-      ],
+      data: models.map((m) => ({
+        id: m.compositeId,
+        object: 'model',
+        owned_by: m.ownedBy || m.providerId,
+        provider: m.providerId,
+        model: m.model,
+        instances: m.backends.length,
+      })),
+      // Bare model IDs remain valid selectors; surfaced so a caller can see both
+      // spellings without having to split the composite themselves.
+      aliases: [...new Set(models.map((m) => m.model))],
+      ...(errors.length ? { errors } : {}),
     });
   });
 
   // GET /multi-tts/v1/voices — Voice list (proxied from first healthy TTS)
   router.get('/multi-tts/v1/voices', async (req, res) => {
     const { ttsInstances } = await buildHealthyPipelines();
-    const healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
+    let healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
     if (healthyTts.length === 0) {
       return res.status(503).json({ error: 'No healthy TTS instances' });
     }
@@ -2980,6 +3503,59 @@ export function createProxyRouter(sshService) {
     saveVoicePresets(presets);
     res.json({ ok: true });
   });
+  // ─── preset-tts listing endpoints ────────────────────────────────────────
+  // Discovery for OpenAI-compat clients pointed at /preset-tts/v1 (Marinara, OpenClaw):
+  // without these their voice/model dropdowns cannot populate.
+  //
+  // /voices lists PRESET NAMES, deliberately NOT the 44 raw voice clips that
+  // /multi-tts/voices returns. The speech endpoint below resolves body.voice against the
+  // PRESET table and silently falls back to Shadowheart on a miss — so a dropdown full of
+  // raw clip names would leave every single selection producing Shadowheart while the UI
+  // claimed otherwise. Listing presets makes the dropdown's values actually selectable.
+  router.get(['/preset-tts/v1/voices', '/preset-tts/v1/audio/voices'], (req, res) => {
+    try {
+      const presets = loadVoicePresets();
+      // Same envelope as /multi-tts/voices so clients need no special-casing; `voice` and
+      // `model` are echoed so a UI can show what a preset actually resolves to.
+      const voices = Object.entries(presets).map(([name, p]) => ({
+        id: name,
+        voice: p?.voice ?? null,
+        model: p?.model ?? null,
+      }));
+      res.json({ voices });
+    } catch (err) {
+      // Never answer an empty list on failure: "no presets exist" and "the preset store
+      // could not be read" must not look identical to a populating dropdown.
+      console.error(`[preset-tts] could not list presets: ${err.message}`);
+      res.status(500).json({ error: `could not read the voice preset store: ${err.message}` });
+    }
+  });
+
+  // /models mirrors /multi-tts/v1/models so a model field can populate. NOTE the preset
+  // WINS: the speech handler builds its payload as { ...preset, input }, so a preset's own
+  // model overrides whatever the client sends. This list exists for discovery, not control.
+  router.get('/preset-tts/v1/models', async (req, res) => {
+    try {
+      const { ttsInstances } = await buildHealthyPipelines();
+      const healthy = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
+      if (healthy.length === 0) {
+        return res.status(503).json({ error: emptyReason('tts', { registered: ttsInstances.healthResults.length, healthy: 0 }) });
+      }
+      const seen = new Map();
+      for (const svc of healthy) {
+        const provider = svc.providerId;
+        const model = svc.model || svc.modelVariant || 'chatterbox-turbo';
+        const id = `${provider}/${model}`;
+        if (!seen.has(id)) seen.set(id, { id, object: 'model', owned_by: provider, provider, model, instances: 0 });
+        seen.get(id).instances += 1;
+      }
+      res.json({ object: 'list', data: [...seen.values()] });
+    } catch (err) {
+      console.error(`[preset-tts] could not list models: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // GET/POST /preset-tts/v1/audio/speech — OpenAI-compatible TTS endpoint that
   // routes by VOICE PRESET NAME (looked up from body.voice). Intended for any
   // OpenAI-compat TTS client whose UI only exposes a voice/model field but no
@@ -3016,12 +3592,25 @@ export function createProxyRouter(sshService) {
     const responseFormat = body.response_format || 'mp3';
 
     const { pipelines, ttsInstances } = await buildHealthyPipelines();
-    const healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
+    let healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
     if (healthyTts.length === 0) return res.status(503).json({ error: 'No healthy TTS instances available' });
 
     const mimeMap = { wav: 'audio/wav', mp3: 'audio/mpeg', opus: 'audio/opus', flac: 'audio/flac' };
-    const ttsIdx = _rrTtsIndex % healthyTts.length;
-    _rrTtsIndex = (_rrTtsIndex + 1) % healthyTts.length;
+    // Per-selector rotation. One shared counter across all models interleaved
+    // them against a mismatched base; keying by model keeps each model's copies
+    // balancing among themselves.
+    // Narrow to the backends that actually serve the requested model before
+    // balancing, so rotation happens WITHIN a selector rather than across
+    // unrelated models.
+    const _sel = await resolveTtsSelection(healthyTts, body.model);
+    if (_sel.backends.length === 0) {
+      return res.status(503).json({ error: _sel.reason || `no backend serves '${body.model}'` });
+    }
+    healthyTts = _sel.backends;
+    // Forward the BARE model. Backends are pool-unaware and reject
+    // "provider/model" outright, so the composite must not survive past here.
+    if (_sel.model) body.model = _sel.model;
+    const ttsIdx = nextIndex(`tts:${_sel.matched || 'default'}`, healthyTts.length);
     const ttsSvc = healthyTts[ttsIdx];
     const tryOrder = [ttsSvc, ...healthyTts.filter(s => s !== ttsSvc)];
 
@@ -3124,7 +3713,7 @@ export function createProxyRouter(sshService) {
 
     // Forward to the main speech endpoint internally
     const { pipelines, ttsInstances } = await buildHealthyPipelines();
-    const healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
+    let healthyTts = ttsInstances.healthResults.filter(h => h.healthy).map(h => h.svc);
     if (healthyTts.length === 0) {
       return res.status(503).json({ error: 'No healthy TTS instances available' });
     }
@@ -3132,8 +3721,21 @@ export function createProxyRouter(sshService) {
     const responseFormat = merged.response_format || 'mp3';
     const mimeMap = { wav: 'audio/wav', mp3: 'audio/mpeg', opus: 'audio/opus', flac: 'audio/flac' };
 
-    const ttsIdx = _rrTtsIndex % healthyTts.length;
-    _rrTtsIndex = (_rrTtsIndex + 1) % healthyTts.length;
+    // Per-selector rotation. One shared counter across all models interleaved
+    // them against a mismatched base; keying by model keeps each model's copies
+    // balancing among themselves.
+    // Narrow to the backends that actually serve the requested model before
+    // balancing, so rotation happens WITHIN a selector rather than across
+    // unrelated models.
+    const _sel = await resolveTtsSelection(healthyTts, body.model);
+    if (_sel.backends.length === 0) {
+      return res.status(503).json({ error: _sel.reason || `no backend serves '${body.model}'` });
+    }
+    healthyTts = _sel.backends;
+    // Forward the BARE model. Backends are pool-unaware and reject
+    // "provider/model" outright, so the composite must not survive past here.
+    if (_sel.model) body.model = _sel.model;
+    const ttsIdx = nextIndex(`tts:${_sel.matched || 'default'}`, healthyTts.length);
     const ttsSvc = healthyTts[ttsIdx];
     const tryOrder = [ttsSvc, ...healthyTts.filter(s => s !== ttsSvc)];
 
@@ -3482,42 +4084,6 @@ export function createProxyRouter(sshService) {
 
   // ─── Enhanced TTS Speech with provider routing ────────────────────────────
 
-  router.post('/tts/v1/audio/speech', async (req, res) => {
-    const body = await bufferBody(req);
-    let parsed;
-    try {
-      parsed = JSON.parse(body.toString());
-    } catch {
-      // Not JSON — proxy raw body to default TTS
-      const svc = findServicesByType('tts').filter(s => s.providerId !== 'proxlab-rvc')[0];
-      if (!svc) return res.status(503).json({ error: 'No active TTS service available' });
-      return proxyBuffered(req, res, svc.containerIp, svc.port, '/v1/audio/speech', body);
-    }
-
-    const providerSlot = parsed.provider;
-    delete parsed.provider; // Don't send custom field downstream
-
-    let svc;
-    if (providerSlot) {
-      svc = findServiceBySlot('tts', providerSlot);
-      if (!svc) return res.status(404).json({ error: `No TTS service in slot ${providerSlot}` });
-
-      const caps = TTS_PROVIDER_CAPS[svc.providerId];
-      if (!caps || !caps.openai) {
-        return res.status(400).json({
-          error: `Provider ${svc.providerId} (slot ${providerSlot}) does not support the OpenAI speech API`,
-          providerId: svc.providerId,
-        });
-      }
-    } else {
-      svc = findServicesByType('tts').filter(s => s.providerId !== 'proxlab-rvc')[0];
-      if (!svc) return res.status(503).json({ error: 'No active TTS service available' });
-    }
-
-    const newBody = Buffer.from(JSON.stringify(parsed));
-    proxyBuffered(req, res, svc.containerIp, svc.port, '/v1/audio/speech', newBody);
-  });
-
   // ─── Enhanced STT Transcription with provider routing ─────────────────────
 
   router.post('/stt/v1/audio/transcriptions', async (req, res) => {
@@ -3542,8 +4108,19 @@ export function createProxyRouter(sshService) {
       svc = findServiceBySlot('stt', providerSlot);
       if (!svc) return res.status(404).json({ error: `No STT service in slot ${providerSlot}` });
     } else {
-      svc = findServicesByType('stt')[0];
-      if (!svc) return res.status(503).json({ error: 'No active STT service available' });
+      // Balance across every HEALTHY STT backend. This used to take [0], so one
+      // instance served every transcription and the rest sat idle.
+      const all = listBackends(loadActiveServices().services, 'stt');
+      if (all.length === 0) {
+        return res.status(503).json({ error: emptyReason('stt', { registered: 0 }) });
+      }
+      const healthy = (await audioHealth.withHealth(all)).filter(h => h.healthy).map(h => h.svc);
+      if (healthy.length === 0) {
+        return res.status(503).json({
+          error: emptyReason('stt', { registered: all.length, healthy: 0 }),
+        });
+      }
+      svc = healthy[nextIndex('stt:default', healthy.length)];
     }
 
     proxyBuffered(req, res, svc.containerIp, svc.port, '/v1/audio/transcriptions', body);

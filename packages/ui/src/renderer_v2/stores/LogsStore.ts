@@ -111,7 +111,10 @@ export class LogsStore {
     this.stopPoll()
     // only auto-refresh a running service's log
     if (this.selected?.status === 'running') {
-      this.poll = setInterval(() => void this.fetchLog(), 3000)
+      // Skip while the tab is hidden: a background tab's log view is not being read,
+      // and its requests still occupy the browser's per-host connection budget —
+      // which is shared across ALL AI-Lab tabs, not per tab.
+      this.poll = setInterval(() => { if (!document.hidden) void this.fetchLog() }, 3000)
     }
   }
   stopPoll(): void {
@@ -124,7 +127,7 @@ export class LogsStore {
   startListPoll(intervalMs = 8000): void {
     void this.loadServices()
     if (this.listPoll) return
-    this.listPoll = setInterval(() => void this.loadServices(), intervalMs)
+    this.listPoll = setInterval(() => { if (!document.hidden) void this.loadServices() }, intervalMs)
   }
   private listPoll: ReturnType<typeof setInterval> | null = null
   stopListPoll(): void {

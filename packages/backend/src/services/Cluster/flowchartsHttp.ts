@@ -26,7 +26,7 @@ export function createFlowchartsRouter(dataDir: string): express.Router {
       ensure()
       const charts = readdirSync(dir)
         .filter((f) => f.endsWith('.json'))
-        .map((f) => { try { const c = JSON.parse(readFileSync(path.join(dir, f), 'utf8')); return { id: c.id, name: c.name || c.id, updatedAt: c.updatedAt } } catch { return null } })
+        .map((f) => { try { const id = f.replace(/\.json$/, ''); const c = JSON.parse(readFileSync(path.join(dir, f), 'utf8')); return { id, name: c.name || id, updatedAt: c.updatedAt } } catch { return null } })
         .filter(Boolean)
         .sort((a: any, b: any) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
       res.json({ charts })

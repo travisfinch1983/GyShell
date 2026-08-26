@@ -16,6 +16,7 @@ export interface FleetGpu {
   node: string
   index: number
   name: string
+  friendlyName?: string
   pciBusId?: string
   gpuUtil: number | null // %
   memUtil: number | null // %
@@ -33,6 +34,7 @@ export interface FleetNode {
 
 const OPEN_KEY = 'ai-lab-gpu-fleet-open'
 const HEIGHT_KEY = 'ai-lab-gpu-fleet-height'
+const ORDER_KEY = 'ai-lab-gpu-fleet-order'
 const MIN_HEIGHT = 120
 
 // Single instant query returning gpu_info (metadata) + all live gauges for the `gpu` scrape job.
@@ -56,9 +58,12 @@ class GpuFleetStore {
   // Panel height in px (persisted). null → fall back to the CSS default (46vh).
   heightPx: number | null = null
   nodes: FleetNode[] = []
+  order: string[] = []
   error: string | null = null
   loading = false
   updatedAt = 0
+  gpuConfig: Record<string, any> = {}
+  private gpuConfigAt = 0
 
   private timer: ReturnType<typeof setInterval> | null = null
 
@@ -68,6 +73,10 @@ class GpuFleetStore {
       this.open = localStorage.getItem(OPEN_KEY) === '1'
       const h = parseInt(localStorage.getItem(HEIGHT_KEY) || '', 10)
       if (Number.isFinite(h) && h >= MIN_HEIGHT) this.heightPx = h
+      try {
+        const o = JSON.parse(localStorage.getItem(ORDER_KEY) || '[]')
+        if (Array.isArray(o)) this.order = o.filter((x: unknown) => typeof x === 'string')
+      } catch { /* ignore */ }
     } catch {
       /* localStorage may be unavailable */
     }
@@ -87,6 +96,18 @@ class GpuFleetStore {
 
   private metrics(): any {
     return (window as any).gyshell?.metrics
+  }
+
+  /** Fetch per-GPU config (friendly names + showInFleet curation) from cluster settings.
+   *  Cached ~8s so the panel reflects Settings changes within a couple polls without spamming RPC. */
+  private async loadGpuConfig(): Promise<void> {
+    const now = Date.now()
+    if (this.gpuConfigAt && now - this.gpuConfigAt < 8000) return
+    try {
+      const s = await (window as any).gyshell?.clusterSettings?.get?.()
+      const gc = (s?.gpuConfig ?? s?.settings?.gpuConfig ?? {}) as Record<string, any>
+      runInAction(() => { this.gpuConfig = gc; this.gpuConfigAt = now })
+    } catch { /* keep last-known config */ }
   }
 
   toggle(): void {
@@ -120,6 +141,7 @@ class GpuFleetStore {
       return
     }
     this.loading = true
+    await this.loadGpuConfig()
     try {
       let rows: MetricRow[] = []
       if (api.query) {
@@ -187,8 +209,28 @@ class GpuFleetStore {
         }
       }
 
+      // Join per-GPU config. Config is keyed `node:pciId` (e.g. px-gpu:0000:8a:00.0) while
+      // Prometheus gives host + pci_bus_id (00000000:8A:00.0) — match on host + the lowercased
+      // bus:dev.func tail. friendlyName overrides the card label; showInFleet curates the panel.
+      const cfg = this.gpuConfig || {}
+      const normPci = (p: string) => (p || '').toLowerCase().split(':').slice(-2).join(':')
+      const cfgByNorm: Record<string, any> = {}
+      for (const [k, v] of Object.entries(cfg)) {
+        const i = k.indexOf(':')
+        if (i < 0) continue
+        cfgByNorm[`${k.slice(0, i)}:${normPci(k.slice(i + 1))}`] = v
+      }
+      const anyOptIn = Object.values(cfg).some((c: any) => c && c.showInFleet === true)
+      let list = Object.values(byUuid)
+      for (const g of list) {
+        const c = cfgByNorm[`${g.node}:${normPci(g.pciBusId || '')}`]
+        if (c?.friendlyName) { g.friendlyName = c.friendlyName; g.name = c.friendlyName }
+        ;(g as any)._inFleet = !!c?.showInFleet
+      }
+      // If the user has opted any GPU into the fleet, show ONLY those; otherwise show all.
+      if (anyOptIn) list = list.filter((g) => (g as any)._inFleet)
       const nodesMap: Record<string, FleetGpu[]> = {}
-      for (const g of Object.values(byUuid)) {
+      for (const g of list) {
         ;(nodesMap[g.node] = nodesMap[g.node] || []).push(g)
       }
       const nodes = Object.entries(nodesMap)
@@ -211,6 +253,30 @@ class GpuFleetStore {
 
   get totalGpus(): number {
     return this.nodes.reduce((n, x) => n + x.gpus.length, 0)
+  }
+
+  /** All GPUs as one flat list, ordered by the user's saved drag order (unknown -> end). */
+  get flatGpus(): FleetGpu[] {
+    const all = this.nodes.flatMap((n) => n.gpus)
+    const idx = new Map(this.order.map((u, i) => [u, i] as const))
+    const BIG = Number.MAX_SAFE_INTEGER
+    return all.slice().sort((a, b) => {
+      const ia = idx.has(a.uuid) ? (idx.get(a.uuid) as number) : BIG
+      const ib = idx.has(b.uuid) ? (idx.get(b.uuid) as number) : BIG
+      if (ia !== ib) return ia - ib
+      return a.node.localeCompare(b.node) || a.index - b.index
+    })
+  }
+
+  /** Reorder: move dragUuid to dropUuid's slot, persist the full order. */
+  moveCard(dragUuid: string, dropUuid: string): void {
+    const cur = this.flatGpus.map((g) => g.uuid)
+    const from = cur.indexOf(dragUuid)
+    const to = cur.indexOf(dropUuid)
+    if (from < 0 || to < 0 || from === to) return
+    cur.splice(to, 0, cur.splice(from, 1)[0])
+    this.order = cur
+    try { localStorage.setItem(ORDER_KEY, JSON.stringify(cur)) } catch { /* ignore */ }
   }
 
   get avgUtil(): number {

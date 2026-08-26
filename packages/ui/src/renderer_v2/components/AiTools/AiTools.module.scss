@@ -89,12 +89,14 @@
 .masked { font-family: var(--font-mono); color: var(--fg-faint); letter-spacing: 1px; }
 .secret { font-family: var(--font-mono); color: var(--success,#4ade80); word-break: break-all; }
 
-/* Cluster edit modals */
-.modalOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.modal { background: var(--panel-bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px; width: min(900px, 94vw); max-height: 90vh; overflow: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.5); display: flex; flex-direction: column; gap: 10px; }
-.modalHead { display: flex; align-items: center; gap: 8px; font-size: 14px; }
-.modalFoot { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
-.editForm { display: flex; flex-direction: column; gap: 8px; }
+/* Cluster edit modals — the shared modal shell lives ONCE, further down. */
+// Scrolling body for the edit modals. `.modal` is overflow:hidden with a capped
+// max-height (that shell was written for the file browser, whose .browseList
+// scrolls itself), so without this the host form silently clips: fields past the
+// cap are unreachable and nothing scrolls.
+// `min-height: 0` is load-bearing -- a flex child defaults to min-height:auto and
+// refuses to shrink below its content, so overflow-y never engages without it.
+.editForm { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px; }
 .efGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 12px; }
 .efRow { display: flex; align-items: center; gap: 8px; }
 .efCol { display: flex; flex-direction: column; gap: 4px; }
@@ -150,12 +152,31 @@
   position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center;
   background: color-mix(in srgb, #000 55%, transparent); padding: 24px;
 }
+// THE modal shell for this stylesheet -- do not re-declare .modal elsewhere in
+// this file. It previously existed twice and the cascade blended the two, so a
+// change to one silently altered the other.
+//
+// Contract: the shell never scrolls (overflow:hidden keeps the rounded corners
+// clipping and the head/foot pinned). The BODY scrolls, and every body must
+// therefore be "flex: 1; min-height: 0; overflow: auto" -- see .editForm and
+// .browseList. Padding lives on head/body/foot, never here, or the head/foot
+// borders stop reaching the modal edges.
+//
+// width:100% + max-width (rather than a fixed width) is what lets a per-modal
+// inline maxWidth take effect -- max-width cannot widen a fixed width, which is
+// how the 900px host editor ended up pinned at 600px.
 .modal {
-  display: flex; flex-direction: column; width: min(600px, 100%); max-height: min(74vh, 680px);
+  display: flex; flex-direction: column; width: 100%; max-width: min(600px, 100%); max-height: min(88vh, 900px);
   border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg);
   box-shadow: 0 12px 40px color-mix(in srgb, #000 45%, transparent); overflow: hidden;
 }
-.modalHead { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); color: var(--fg-muted); }
+.modalHead {
+  display: flex; align-items: center; gap: 8px; padding: 12px 14px;
+  border-bottom: 1px solid var(--border); color: var(--fg-muted);
+  // The edit modals title with a bare <strong>; without this they inherit
+  // fg-muted from the head and read as washed out.
+  strong { color: var(--fg); font-size: 13px; }
+}
 .modalTitle { font-weight: 600; font-size: 13px; color: var(--fg); }
 .pathBar { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-bottom: 1px solid var(--border); background: var(--app-bg); }
 .pathText { font-family: var(--font-mono); font-size: 12px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }

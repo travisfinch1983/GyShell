@@ -22,6 +22,9 @@
       // Access token for WebSocket gateway authentication
       // This is injected at serve-time; for production, use env or server-side injection
       window.__GYSHELL_ACCESS_TOKEN__ = 'gys_at_uiLAh401tdLAUbfIvdcC2PPDPoh-ze6n';
+      // Same-origin WS gateway URL (overrides the ai-lab-ws subdomain derivation). Rides the
+      // same origin/chain as the app; vite forwards /gateway -> the cluster gateway on :17888.
+      window.__GYSHELL_GATEWAY_URL__ = (location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host + '/gateway';
     </script>
     <script type="module" src="/src/main.ts"></script>
   </body>

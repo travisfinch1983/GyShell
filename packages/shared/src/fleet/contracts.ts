@@ -142,8 +142,80 @@ export const agentStatusSchema = z.object({
   /** busSeq of the envelope currently being processed, if thinking. */
   processingSeq: z.number().int().nonnegative().optional(),
   updatedAt: z.string(), // ISO-8601
+  /**
+   * When a delivery agent last CONFIRMED this agent's session was reachable.
+   * Absent = nobody has ever reported on it, which is NOT the same as offline.
+   */
+  lastSeenAt: z.string().optional(),
+  /**
+   * Why `status` is what it is. Before 2026-07-28 `offline` merely meant
+   * `kind !== 'local'` — it was never a liveness check, so every relay agent
+   * read as permanently offline even while actively running. Callers must be
+   * able to tell a real heartbeat from a structural fallback.
+   */
+  statusSource: z.enum(['heartbeat', 'busy', 'queue', 'kind-fallback', 'stale-heartbeat']).optional(),
 })
 export type AgentStatus = z.infer<typeof agentStatusSchema>
+
+/**
+ * Is this agent actually DOING anything? Presence (`AgentStatus`) answers "is the
+ * session reachable"; this answers "did my message land and is it being worked".
+ *
+ * Both populations report the same shape from different sources:
+ *   - Claude Code instances -> their session transcript JSONL (tailed on CT180)
+ *   - Hermes agents         -> the ACP event ring already kept per session
+ * Hooks are deliberately NOT the source of truth: the per-instance Stop hook was
+ * observed on fable-builder to fire at first and then silently stop, which is the
+ * worst failure mode for a liveness signal (reads as "idle", not "unknown").
+ */
+export const agentActivityStateSchema = z.enum([
+  /** Mid-turn right now: tool calls / output within the last few seconds. */
+  'working',
+  /** Turn completed cleanly and it is waiting for input. Idle here is NORMAL. */
+  'idle-awaiting-input',
+  /** Was mid-turn but has gone quiet far longer than a turn should take. */
+  'stalled',
+  /** No session / transcript at all. */
+  'dead',
+  /** Nothing has reported yet — NOT the same as idle. */
+  'unknown',
+])
+export type AgentActivityState = z.infer<typeof agentActivityStateSchema>
+
+export const agentActivitySchema = z.object({
+  agentId: agentIdSchema,
+  /** Which collector produced this, so a stale reading is attributable. */
+  kind: z.enum(['claude-code', 'hermes']),
+  state: agentActivityStateSchema,
+  /** Seconds since the last tool call, emitted text, or relay send. */
+  idleSeconds: z.number().nonnegative().nullable(),
+  /** Human-readable: "Bash: npm run build", "Mid-turn comment", "[-> claude1]". */
+  lastEventSummary: z.string().optional(),
+  lastEventKind: z.enum(['tool', 'text', 'relay', 'turn_end', 'user_prompt', 'none']).optional(),
+  lastEventAt: z.string().optional(),
+  /** Opaque handle for fetching this exact record + surrounding turns. */
+  ref: z.string().optional(),
+  /** When the collector last looked (NOT when the agent last acted). */
+  observedAt: z.string(),
+  /**
+   * Bounded window of recent entries, shipped BY the collector.
+   * The transcripts live on CT180 while this backend runs on CT152, so the
+   * server cannot read them (verified: ENOENT). Rather than duplicate whole
+   * multi-MB transcripts into a second store, the collector — which can read
+   * them — sends just the tail, and only when it has changed.
+   */
+  recent: z
+    .array(
+      z.object({
+        role: z.string(),
+        ts: z.string().nullable().optional(),
+        uuid: z.string().nullable().optional(),
+        summary: z.string(),
+      }),
+    )
+    .optional(),
+})
+export type AgentActivity = z.infer<typeof agentActivitySchema>
 
 // ─── Envelopes (immutable) ───────────────────────────────────────────────────
 

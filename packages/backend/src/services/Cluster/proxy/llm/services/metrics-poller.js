@@ -45,6 +45,13 @@ export class LlmMetricsPoller {
     this._slotInterval = 2000
     this._slotTargets = [] // [{id, base}] of running llama.cpp services, refreshed each main poll
     this._slotState = {}   // per-svc { cur:{slotId:{task,total,cached}}, cacheTok, totalTok } cumulative
+    // Live rolling-window decode/prefill rate (computed from cumulative token counters sampled fast).
+    this._win = {}                 // fp -> [{t, gen, prompt}] ring buffer (in-memory, ephemeral)
+    this._winTargets = []          // [{id, base, fp, providerId}] running LLM services, refreshed each poll
+    this._tokenTimer = null
+    this._tokenInterval = 3000     // fast token sampler cadence (supports windows down to ~10s)
+    this._liveWindowSec = Number.isFinite(this.store.liveWindowSec) && this.store.liveWindowSec > 0 ? this.store.liveWindowSec : 60
+    this._WIN_MAX_SEC = 605        // keep enough history for the max configurable window
   }
 
   _load() {
@@ -67,8 +74,11 @@ export class LlmMetricsPoller {
     // Fast, lightweight /slots sampler (cache hit/miss) — independent of the heavy metrics poll.
     this._slotTimer = setInterval(() => this._sampleSlots().catch(() => {}), this._slotInterval)
     if (this._slotTimer.unref) this._slotTimer.unref()
+    // Fast token-counter sampler feeding the live rolling-window rate.
+    this._tokenTimer = setInterval(() => this._sampleTokens().catch(() => {}), this._tokenInterval)
+    if (this._tokenTimer.unref) this._tokenTimer.unref()
   }
-  stop() { if (this._timer) clearInterval(this._timer); if (this._slotTimer) clearInterval(this._slotTimer) }
+  stop() { if (this._timer) clearInterval(this._timer); if (this._slotTimer) clearInterval(this._slotTimer); if (this._tokenTimer) clearInterval(this._tokenTimer) }
 
   /** Fast loop: poll each running llama.cpp service's /slots and fold per-request prompt-cache reuse into
    *  the cumulative per-svc counters. Cheap (tiny JSON), runs every ~2s so it catches most agent requests
@@ -180,6 +190,8 @@ export class LlmMetricsPoller {
       const r = {
         promptTokens: promSum(text, 'llamacpp:prompt_tokens_total'),
         genTokens: promSum(text, 'llamacpp:tokens_predicted_total'),
+        genSec: promSum(text, 'llamacpp:tokens_predicted_seconds_total'),
+        promptSec: promSum(text, 'llamacpp:prompt_seconds_total'),
         decodeTps: promSum(text, 'llamacpp:predicted_tokens_seconds'),
         prefillTps: promSum(text, 'llamacpp:prompt_tokens_seconds'),
         cacheHits: null, cacheQueries: null, optaneHits: null, optaneQueries: null,
@@ -241,6 +253,10 @@ export class LlmMetricsPoller {
     this._slotTargets = llm
       .filter((s) => /^llama-server/.test((s.providerId || '').toLowerCase()))
       .map((s) => ({ id: s.id, base: `http://${s.containerIp}:${s.port}` }))
+    // All running LLM services get a live token window (keyed by durable fingerprint).
+    this._winTargets = llm.map((s) => ({ id: s.id, base: `http://${s.containerIp}:${s.port}`, fp: this.fingerprint(s), providerId: (s.providerId || '').toLowerCase() }))
+    const _liveFps = new Set(this._winTargets.map((t) => t.fp))
+    for (const fp of Object.keys(this._win)) if (!_liveFps.has(fp)) delete this._win[fp]
 
     const now = Date.now()
     const seen = new Set()
@@ -279,15 +295,29 @@ export class LlmMetricsPoller {
       const m = await this._scrape(svc).catch(() => null)
       if (m) {
         const runId = svc.id
-        this._accum(row, 'promptTokens', m.promptTokens, runId)
-        this._accum(row, 'genTokens', m.genTokens, runId)
-        this._accum(row, 'cacheHits', m.cacheHits, runId)
-        this._accum(row, 'cacheQueries', m.cacheQueries, runId)
-        this._accum(row, 'optaneHits', m.optaneHits, runId)
-        this._accum(row, 'optaneQueries', m.optaneQueries, runId)
+        if (row._rebaseline) {
+          // Just reset: baseline the counters at their CURRENT server values so cum_* starts from 0
+          // (the /metrics counters are the server's monotonic lifetime totals; a plain accum after a
+          // reset would re-add the whole lifetime). Skip accumulation for this one cycle.
+          row._last = { promptTokens: m.promptTokens, genTokens: m.genTokens, genSec: m.genSec, promptSec: m.promptSec, cacheHits: m.cacheHits, cacheQueries: m.cacheQueries, optaneHits: m.optaneHits, optaneQueries: m.optaneQueries }
+          delete row._rebaseline
+        } else {
+          this._accum(row, 'promptTokens', m.promptTokens, runId)
+          this._accum(row, 'genTokens', m.genTokens, runId)
+          this._accum(row, 'genSec', m.genSec, runId)
+          this._accum(row, 'promptSec', m.promptSec, runId)
+          this._accum(row, 'cacheHits', m.cacheHits, runId)
+          this._accum(row, 'cacheQueries', m.cacheQueries, runId)
+          this._accum(row, 'optaneHits', m.optaneHits, runId)
+          this._accum(row, 'optaneQueries', m.optaneQueries, runId)
+        }
         row._lastRun = runId
-        if (m.decodeTps != null && m.decodeTps > 0) row.decodeTps = Math.round(m.decodeTps * 10) / 10
-        if (m.prefillTps != null && m.prefillTps > 0) row.prefillTps = Math.round(m.prefillTps * 10) / 10
+        // Long-term rate = accumulated tokens / accumulated PHASE time (reset-able, excludes idle) —
+        // the llamacpp gauge is a non-reset-able lifetime avg. Fall back to the engine gauge (vLLM).
+        if (row.cum_genSec > 0) row.decodeTps = Math.round((row.cum_genTokens / row.cum_genSec) * 10) / 10
+        else if (m.decodeTps != null && m.decodeTps > 0) row.decodeTps = Math.round(m.decodeTps * 10) / 10
+        if (row.cum_promptSec > 0) row.prefillTps = Math.round((row.cum_promptTokens / row.cum_promptSec) * 10) / 10
+        else if (m.prefillTps != null && m.prefillTps > 0) row.prefillTps = Math.round(m.prefillTps * 10) / 10
         if (m.optaneRestoreMs != null) row.optaneRestoreMs = m.optaneRestoreMs
       }
     }
@@ -329,7 +359,88 @@ export class LlmMetricsPoller {
     this._save()
   }
 
-  /** Rows for the dashboard, newest-active first within model groups handled client-side. */
-  getRows() { return Object.values(this.store.rows).map((r) => { const { _last, _lastRun, _toolBase, ...rest } = r; return rest }) }
-  deleteRow(fp) { if (this.store.rows[fp]) { delete this.store.rows[fp]; this._flush(); return true } return false }
+  /** Lightweight fast scrape: just the cumulative gen/prompt token counters (no shim/slots). */
+  async _scrapeTokens(t) {
+    const text = await this._get(`${t.base}/metrics`, 2500)
+    if (!text) return null
+    const pid = t.providerId
+    if (text.includes('vllm:') || pid.includes('vllm')) return { gen: promSum(text, 'vllm:generation_tokens_total'), prompt: promSum(text, 'vllm:prompt_tokens_total') }
+    if (text.includes('aphrodite:')) return { gen: promSum(text, 'aphrodite:generation_tokens_total'), prompt: promSum(text, 'aphrodite:prompt_tokens_total') }
+    if (text.includes('llamacpp:')) return {
+      gen: promSum(text, 'llamacpp:tokens_predicted_total'), genSec: promSum(text, 'llamacpp:tokens_predicted_seconds_total'),
+      prompt: promSum(text, 'llamacpp:prompt_tokens_total'), promptSec: promSum(text, 'llamacpp:prompt_seconds_total'),
+    }
+    return null
+  }
+
+  /** Fast loop: push a timestamped {gen,prompt} counter sample per running service into its ring buffer. */
+  async _sampleTokens() {
+    const now = Date.now()
+    const cutoff = now - this._WIN_MAX_SEC * 1000
+    await Promise.all((this._winTargets || []).map(async (t) => {
+      const m = await this._scrapeTokens(t).catch(() => null)
+      if (!m || m.gen == null) return
+      const buf = this._win[t.fp] || (this._win[t.fp] = [])
+      buf.push({ t: now, gen: m.gen, genSec: m.genSec ?? null, prompt: m.prompt ?? 0, promptSec: m.promptSec ?? null })
+      while (buf.length && buf[0].t < cutoff) buf.shift()
+    }))
+  }
+
+  /** Rolling decode/prefill t/s over the configured live window, from the counter ring buffer.
+   *  Counters can reset on service relaunch — a negative delta means reset, so we skip it. */
+  _liveTps(fp) {
+    const buf = this._win[fp]
+    if (!buf || buf.length < 2) return { liveDecodeTps: null, livePrefillTps: null }
+    const now = buf[buf.length - 1].t
+    const winStart = now - this._liveWindowSec * 1000
+    let a = buf[0]
+    for (const s of buf) { if (s.t <= winStart) a = s; else break }
+    if (a === buf[buf.length - 1]) a = buf[0]
+    const b = buf[buf.length - 1]
+    const dtWall = (b.t - a.t) / 1000
+    if (dtWall <= 0) return { liveDecodeTps: null, livePrefillTps: null }
+    // TRUE rate divides tokens by the PHASE time (llama.cpp's *_seconds_total counters, which only
+    // advance during that phase) — excludes prefill/idle and reflects the aggregate across busy slots.
+    // Both token + seconds counters bulk-update at request completion, so this is the rate of the
+    // request(s) that completed within the window. vLLM has no phase-seconds counter -> wall-time.
+    const rate = (dTok, dSec) => {
+      if (dTok == null || dTok < 0) return null
+      if (dSec != null) return dSec > 0.05 ? Math.round((dTok / dSec) * 10) / 10 : 0
+      return Math.round((dTok / dtWall) * 10) / 10 // wall-time fallback (no phase-seconds counter)
+    }
+    const dGenSec = (b.genSec != null && a.genSec != null) ? b.genSec - a.genSec : null
+    const dPromptSec = (b.promptSec != null && a.promptSec != null) ? b.promptSec - a.promptSec : null
+    return { liveDecodeTps: rate(b.gen - a.gen, dGenSec), livePrefillTps: rate(b.prompt - a.prompt, dPromptSec) }
+  }
+
+  getLiveWindowSec() { return this._liveWindowSec }
+  setLiveWindowSec(sec) {
+    const v = Math.max(5, Math.min(600, Math.round(Number(sec) || 0)))
+    this._liveWindowSec = v; this.store.liveWindowSec = v; this._flush(); return v
+  }
+
+  /** Reset a config's accumulated metrics to zero WITHOUT deleting the row (keeps identity/settings).
+   *  Clears cumulative counters, rates, tool-call tallies, and the live window baseline. */
+  resetRow(fp) {
+    const row = this.store.rows[fp]
+    if (!row) return false
+    for (const k of Object.keys(row)) if (k.startsWith('cum_')) row[k] = 0
+    row.decodeTps = 0; row.prefillTps = 0; row.optaneRestoreMs = null
+    row.toolCalls = 0; row.toolErrStructure = 0; row.toolErrHallucination = 0
+    row._last = undefined; row._lastRun = undefined; row._toolBase = undefined; row._rebaseline = true
+    delete this._win[fp]
+    if (this._slotState[row.currentServiceId]) delete this._slotState[row.currentServiceId]
+    this._flush(); return true
+  }
+
+  /** Rows for the dashboard; running rows also carry the live rolling-window rates + the window size. */
+  getRows() {
+    return Object.values(this.store.rows).map((r) => {
+      const { _last, _lastRun, _toolBase, ...rest } = r
+      if (rest.running) { const live = this._liveTps(r.fingerprint); rest.liveDecodeTps = live.liveDecodeTps; rest.livePrefillTps = live.livePrefillTps }
+      rest.liveWindowSec = this._liveWindowSec
+      return rest
+    })
+  }
+  deleteRow(fp) { if (this.store.rows[fp]) { delete this.store.rows[fp]; delete this._win[fp]; this._flush(); return true } return false }
 }

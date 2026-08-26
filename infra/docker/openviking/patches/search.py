@@ -1,0 +1,314 @@
+# Copyright (c) 2026 Beijing Volcano Engine Technology Co., Ltd.
+# SPDX-License-Identifier: AGPL-3.0
+"""Search endpoints for OpenViking HTTP Server."""
+
+import math
+from typing import Any, Dict, List, Literal, Optional, Union
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+
+from openviking.core.path_variables import resolve_path_variables
+from openviking.pyagfs.exceptions import AGFSClientError, AGFSNotFoundError
+from openviking.server.auth import get_request_context
+from openviking.server.dependencies import get_service
+from openviking.server.error_mapping import map_exception
+from openviking.server.identity import RequestContext
+from openviking.server.models import Response
+from openviking.server.telemetry import run_operation
+from openviking.telemetry import TelemetryRequest
+from openviking.utils.search_filters import _resolve_levels, merge_time_filter
+from openviking_cli.exceptions import InvalidArgumentError, NotFoundError
+
+
+def _sanitize_floats(obj: Any) -> Any:
+    """Recursively replace inf/nan with 0.0 to ensure JSON compliance."""
+    if isinstance(obj, float):
+        if math.isinf(obj) or math.isnan(obj):
+            return 0.0
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_floats(v) for v in obj]
+    return obj
+
+
+# PATCH(ov-recall-compact 2026-06-13): recalled-memory abstracts are stored as
+# "Summary: <one-liner>\n<date> ChatLog: <full transcript>". Injecting the whole
+# abstract inflates the prompt ~80% (the consumer re-parses the ChatLog into 30+
+# messages) and empty-summary memories add pure noise. Compact each abstract to
+# the text BEFORE the ChatLog line, and drop memories whose summary is empty.
+def _compact_memory_abstract(ab: Any) -> Any:
+    if not isinstance(ab, str) or not ab:
+        return ab
+    lines = []
+    for ln in ab.splitlines():
+        if "ChatLog:" in ln:
+            break
+        lines.append(ln)
+    return "\n".join(lines).strip()
+
+
+def _recall_abstract_is_empty(ab: Any) -> bool:
+    if not isinstance(ab, str):
+        return True
+    body = ab.strip()
+    if body.lower().startswith("summary:"):
+        body = body[len("summary:"):].strip()
+    return body == ""
+
+
+def _compact_recall_result(result: Any) -> Any:
+    if not isinstance(result, dict):
+        return result
+    mems = result.get("memories")
+    if isinstance(mems, list):
+        kept = []
+        for m in mems:
+            if isinstance(m, dict) and "abstract" in m:
+                m["abstract"] = _compact_memory_abstract(m.get("abstract"))
+                if _recall_abstract_is_empty(m["abstract"]):
+                    continue  # drop empty-summary memory from recall injection
+            kept.append(m)
+        result["memories"] = kept
+    return result
+
+
+router = APIRouter(prefix="/api/v1/search", tags=["search"])
+TimeField = Literal["updated_at", "created_at"]
+
+
+def _resolve_search_limit(limit: int, node_limit: Optional[int]) -> int:
+    return node_limit if node_limit is not None else limit
+
+
+def _resolve_search_filter(
+    request_filter: Optional[Dict[str, Any]],
+    since: Optional[str],
+    until: Optional[str],
+    time_field: Optional[TimeField],
+) -> Optional[Dict[str, Any]]:
+    try:
+        return merge_time_filter(
+            request_filter,
+            since=since,
+            until=until,
+            time_field=time_field,
+        )
+    except ValueError as exc:
+        raise InvalidArgumentError(str(exc)) from exc
+
+
+def _resolve_uri_or_uris(uri: Union[str, List[str]]) -> Union[str, List[str]]:
+    """Resolve path variables in a single URI or list of URIs."""
+    if isinstance(uri, list):
+        return [resolve_path_variables(u) for u in uri]
+    return resolve_path_variables(uri)
+
+
+class FindRequest(BaseModel):
+    """Request model for find."""
+
+    query: str
+    target_uri: Union[str, List[str]] = ""
+    limit: int = 10
+    node_limit: Optional[int] = None
+    score_threshold: Optional[float] = None
+    filter: Optional[Dict[str, Any]] = None
+    include_provenance: bool = False
+    since: Optional[str] = None
+    until: Optional[str] = None
+    time_field: Optional[TimeField] = None
+    level: Optional[Union[int, str, List[int]]] = None
+    telemetry: TelemetryRequest = False
+
+
+class SearchRequest(BaseModel):
+    """Request model for search with session."""
+
+    query: str
+    target_uri: Union[str, List[str]] = ""
+    session_id: Optional[str] = None
+    limit: int = 10
+    node_limit: Optional[int] = None
+    score_threshold: Optional[float] = None
+    filter: Optional[Dict[str, Any]] = None
+    include_provenance: bool = False
+
+    since: Optional[str] = None
+    until: Optional[str] = None
+    time_field: Optional[TimeField] = None
+    level: Optional[Union[int, str, List[int]]] = None
+    telemetry: TelemetryRequest = False
+
+
+class GrepRequest(BaseModel):
+    """Request model for grep."""
+
+    uri: str
+    exclude_uri: Optional[str] = None
+    pattern: str
+    case_insensitive: bool = False
+    node_limit: Optional[int] = None
+    level_limit: int = 5
+
+
+class GlobRequest(BaseModel):
+    """Request model for glob."""
+
+    pattern: str
+    uri: str = "viking://"
+    node_limit: Optional[int] = None
+
+
+@router.post("/find")
+async def find(
+    request: FindRequest,
+    _ctx: RequestContext = Depends(get_request_context),
+):
+    """Semantic search without session context."""
+    service = get_service()
+    actual_limit = _resolve_search_limit(request.limit, request.node_limit)
+    effective_filter = _resolve_search_filter(
+        request.filter,
+        request.since,
+        request.until,
+        request.time_field,
+    )
+    resolved_target_uri = _resolve_uri_or_uris(request.target_uri)
+    execution = await run_operation(
+        operation="search.find",
+        telemetry=request.telemetry,
+        fn=lambda: service.search.find(
+            query=request.query,
+            ctx=_ctx,
+            target_uri=resolved_target_uri,
+            limit=actual_limit,
+            score_threshold=request.score_threshold,
+            filter=effective_filter,
+            level=_resolve_levels(request.level) or None,
+        ),
+    )
+    result = execution.result
+    if hasattr(result, "to_dict"):
+        result = result.to_dict(include_provenance=request.include_provenance)
+    result = _sanitize_floats(result)
+    result = _compact_recall_result(result)
+    return Response(
+        status="ok",
+        result=result,
+        telemetry=execution.telemetry,
+    ).model_dump(exclude_none=True)
+
+
+@router.post("/search")
+async def search(
+    request: SearchRequest,
+    _ctx: RequestContext = Depends(get_request_context),
+):
+    """Semantic search with optional session context."""
+    service = get_service()
+    actual_limit = _resolve_search_limit(request.limit, request.node_limit)
+    effective_filter = _resolve_search_filter(
+        request.filter,
+        request.since,
+        request.until,
+        request.time_field,
+    )
+    resolved_target_uri = _resolve_uri_or_uris(request.target_uri)
+
+    async def _search():
+        session = None
+        if request.session_id:
+            session = service.sessions.session(_ctx, request.session_id)
+            await session.load()
+        return await service.search.search(
+            query=request.query,
+            ctx=_ctx,
+            target_uri=resolved_target_uri,
+            session=session,
+            limit=actual_limit,
+            score_threshold=request.score_threshold,
+            filter=effective_filter,
+            level=_resolve_levels(request.level) or None,
+        )
+
+    execution = await run_operation(
+        operation="search.search",
+        telemetry=request.telemetry,
+        fn=_search,
+    )
+    result = execution.result
+    if hasattr(result, "to_dict"):
+        result = result.to_dict(include_provenance=request.include_provenance)
+    result = _sanitize_floats(result)
+    result = _compact_recall_result(result)
+    return Response(
+        status="ok",
+        result=result,
+        telemetry=execution.telemetry,
+    ).model_dump(exclude_none=True)
+
+
+@router.post("/grep")
+async def grep(
+    request: GrepRequest,
+    _ctx: RequestContext = Depends(get_request_context),
+):
+    """Content search with pattern."""
+    service = get_service()
+    resolved_uri = resolve_path_variables(request.uri)
+    resolved_exclude_uri = None
+    if request.exclude_uri:
+        resolved_exclude_uri = resolve_path_variables(request.exclude_uri)
+    try:
+        result = await service.fs.grep(
+            resolved_uri,
+            request.pattern,
+            ctx=_ctx,
+            exclude_uri=resolved_exclude_uri,
+            case_insensitive=request.case_insensitive,
+            node_limit=request.node_limit,
+            level_limit=request.level_limit,
+        )
+    except AGFSNotFoundError:
+        raise NotFoundError(resolved_uri, "file")
+    except AGFSClientError as e:
+        mapped = map_exception(e, resource=resolved_uri, resource_type="file")
+        if mapped is not None:
+            raise mapped from e
+        raise
+    except Exception as exc:
+        mapped = map_exception(exc, resource=resolved_uri, resource_type="file")
+        if mapped is not None:
+            raise mapped from exc
+        raise
+    return Response(status="ok", result=result)
+
+
+@router.post("/glob")
+async def glob(
+    request: GlobRequest,
+    _ctx: RequestContext = Depends(get_request_context),
+):
+    """File pattern matching."""
+    service = get_service()
+    resolved_uri = resolve_path_variables(request.uri)
+    try:
+        result = await service.fs.glob(
+            request.pattern, ctx=_ctx, uri=resolved_uri, node_limit=request.node_limit
+        )
+    except AGFSNotFoundError:
+        raise NotFoundError(resolved_uri or request.pattern, "file")
+    except AGFSClientError as e:
+        mapped = map_exception(e, resource=resolved_uri or request.pattern, resource_type="file")
+        if mapped is not None:
+            raise mapped from e
+        raise
+    except Exception as exc:
+        mapped = map_exception(exc, resource=request.uri, resource_type="file")
+        if mapped is not None:
+            raise mapped from exc
+        raise
+    return Response(status="ok", result=result)

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <style id="styleoverrides" media="screen"></style>
+  <link href="./svgedit.css" rel="stylesheet" media="all">
+  <script type="module" src="./browser-not-supported.js"></script>
+  <title>SVG Editor</title>
+</head>
+<body style="margin:0">
+  <div id="container" style="width:100%;height:100vh"></div>
+</body>
+<!--
+  AI-Lab entry point. A SIBLING of svgedit's stock index.html, not a modification of it:
+  upstream files stay pristine so re-vendoring a new svgedit release is a straight copy
+  rather than a merge.
+
+  The parent frame is SAME-ORIGIN (both served by the AI-Lab web app), so it can simply read
+  window.aiLabSvg — no postMessage protocol needed, unlike draw.io which requires one.
+-->
+<script type="module">
+  import Editor from './Editor.js'
+  const svgEditor = new Editor(document.getElementById('container'))
+  svgEditor.setConfig({
+    allowInitialUserOverride: true,
+    extensions: [],
+    noDefaultExtensions: false,
+    userExtensions: [],
+    // No "leave page?" prompt: the parent owns saving, so the browser nagging about unsaved
+    // changes would be both wrong and unskippable inside an iframe.
+    no_save_warning: true,
+  })
+  svgEditor.init()
+
+  // Explicit, minimal bridge. Deliberately NOT exposing svgEditor wholesale — a narrow
+  // surface is what makes an upstream version bump survivable.
+  window.aiLabSvg = {
+    ready: true,
+    /** Replace the canvas contents. Returns false if svgedit rejected the string. */
+    load(svg) {
+      try { return svgEditor.svgCanvas.setSvgString(svg) !== false }
+      catch (e) { console.warn('[ailabSvg] load failed:', e); return false }
+    },
+    /** Current drawing as SVG text. */
+    get() {
+      try { return svgEditor.svgCanvas.getSvgString() }
+      catch (e) { console.warn('[ailabSvg] get failed:', e); return '' }
+    },
+    /** Fire cb after any canvas change, so the parent can mark itself dirty. */
+    onChange(cb) {
+      try { svgEditor.svgCanvas.bind('changed', () => cb()) } catch { /* older api */ }
+    },
+  }
+</script>
+</html>

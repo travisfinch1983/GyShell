@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+
+{% block header_extra %}
+  <span class="immich-badge {{ 'ok' if immich_ok else 'err' }}">
+    Immich {{ immich_version }}
+    {% if not immich_ok %}<small>{{ immich_err }}</small>{% endif %}
+  </span>
+{% endblock %}
+
+{% block content %}
+
+<section class="status-panel" hx-get="/_/status" hx-trigger="every 5s" hx-swap="outerHTML">
+  {% include "components/status.html" %}
+</section>
+
+<section class="watch-list">
+  <h2>Watch list</h2>
+  <p class="muted">Assets in any of these albums or tagged with any of these tags get queued for upscaling.</p>
+  <table>
+    <thead><tr><th>Kind</th><th>Name</th><th>External ID</th><th></th></tr></thead>
+    <tbody>
+      {% for s in watch %}
+      <tr>
+        <td><span class="badge {{ s.kind }}">{{ s.kind }}</span></td>
+        <td>{{ s.name }}</td>
+        <td><code>{{ s.external_id[:8] }}…</code></td>
+        <td>
+          <form method="post" action="/api/sources/{{ s.id }}/delete" style="display:inline">
+            <button type="submit" class="btn-small btn-danger">remove</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">No watch sources. Add one below.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <details>
+    <summary>+ Add watch source</summary>
+    <form method="post" action="/api/sources/add" class="add-source-form" data-source-form>
+      <input type="hidden" name="role" value="watch">
+      <input type="hidden" name="kind" value="">
+      <input type="hidden" name="external_id" value="">
+      <input type="hidden" name="name" value="">
+      <label>Album:
+        <select data-picker="album">
+          <option value="">-- pick an album --</option>
+          {% for a in albums %}
+            <option value="{{ a.id }}" data-name="{{ a.albumName }}">{{ a.albumName }} ({{ a.assetCount }})</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>or Tag:
+        <select data-picker="tag">
+          <option value="">-- pick a tag --</option>
+          {% for t in tags %}
+            <option value="{{ t.id }}" data-name="{{ t.value or t.name }}">{{ t.value or t.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit">Add to watch list</button>
+    </form>
+  </details>
+</section>
+
+<section class="exclude-list">
+  <h2>Exclusions</h2>
+  <p class="muted">Assets carrying any of these tags or in these albums are never queued.</p>
+  <table>
+    <thead><tr><th>Kind</th><th>Name</th><th>External ID</th><th></th></tr></thead>
+    <tbody>
+      {% for s in exclude %}
+      <tr>
+        <td><span class="badge {{ s.kind }}">{{ s.kind }}</span></td>
+        <td>{{ s.name }}</td>
+        <td><code>{{ s.external_id[:8] }}…</code></td>
+        <td>
+          <form method="post" action="/api/sources/{{ s.id }}/delete" style="display:inline">
+            <button type="submit" class="btn-small btn-danger">remove</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">None. The auto-managed tag <code>{{ settings.auto_managed_tag }}</code> is always excluded implicitly.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <details>
+    <summary>+ Add exclusion</summary>
+    <form method="post" action="/api/sources/add" class="add-source-form" data-source-form>
+      <input type="hidden" name="role" value="exclude">
+      <input type="hidden" name="kind" value="">
+      <input type="hidden" name="external_id" value="">
+      <input type="hidden" name="name" value="">
+      <label>Album:
+        <select data-picker="album">
+          <option value="">-- pick an album --</option>
+          {% for a in albums %}
+            <option value="{{ a.id }}" data-name="{{ a.albumName }}">{{ a.albumName }} ({{ a.assetCount }})</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>or Tag:
+        <select data-picker="tag">
+          <option value="">-- pick a tag --</option>
+          {% for t in tags %}
+            <option value="{{ t.id }}" data-name="{{ t.value or t.name }}">{{ t.value or t.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit">Add to exclusions</button>
+    </form>
+  </details>
+</section>
+
+<script>
+(function() {
+  // Auto-populate hidden kind/external_id/name fields when an album or tag
+  // is picked. Picking one clears the other so we never submit ambiguous data.
+  for (const form of document.querySelectorAll('form[data-source-form]')) {
+    const pickers = form.querySelectorAll('select[data-picker]');
+    const hKind = form.querySelector('input[name=kind]');
+    const hId = form.querySelector('input[name=external_id]');
+    const hName = form.querySelector('input[name=name]');
+    pickers.forEach(p => {
+      p.addEventListener('change', () => {
+        // Clear the OTHER picker first
+        pickers.forEach(other => { if (other !== p) other.value = ''; });
+        if (!p.value) {
+          hKind.value = ''; hId.value = ''; hName.value = '';
+          return;
+        }
+        const opt = p.options[p.selectedIndex];
+        hKind.value = p.dataset.picker;
+        hId.value = p.value;
+        hName.value = opt.dataset.name || opt.textContent.trim();
+      });
+    });
+    form.addEventListener('submit', (e) => {
+      if (!hKind.value || !hId.value) {
+        e.preventDefault();
+        alert('Pick an album or a tag first.');
+      }
+    });
+  }
+})();
+</script>
+
+<section class="gpu-panel">
+  <h2>GPUs</h2>
+  <p class="muted">
+    GPUs are discovered from ProxLab. Each toggled-on GPU runs ONE job at a time;
+    total concurrent jobs = number of enabled GPUs. Currently
+    <strong>{{ enabled_gpu_count }}</strong> GPU(s) enabled.
+  </p>
+  <form method="post" action="/api/gpus/save">
+    {% if not gpus_by_container %}
+      <p class="muted">
+        No GPUs cached. Set Proxlab URL below + click Refresh, or wait for the
+        worker to refresh on its next tick (~60s).
+      </p>
+    {% endif %}
+    {% for container, gpus in gpus_by_container.items() %}
+      <h3 style="margin-top:0.5rem">{{ container }}
+        <small class="muted">({{ gpus[0].agent_ip }})</small>
+      </h3>
+      <div class="gpu-grid">
+        {% for g in gpus %}
+          <label class="gpu-card {{ 'on' if g.enabled else '' }}">
+            <input type="checkbox" name="enabled"
+                   value="{{ g.agent_name }}:{{ g.cuda_index }}"
+                   {% if g.enabled %}checked{% endif %}>
+            <span class="gpu-name">[{{ g.cuda_index }}] {{ g.friendly_name }}</span>
+            <span class="muted small">{{ (g.vram_mb / 1024) | round(1) }} GB</span>
+          </label>
+        {% endfor %}
+      </div>
+    {% endfor %}
+    <div style="margin-top:1rem">
+      <button type="submit">Save GPU selection</button>
+      <button type="submit" formaction="/api/gpus/refresh" formnovalidate
+              class="btn-small">Refresh from ProxLab</button>
+    </div>
+  </form>
+</section>
+
+<section class="settings-panel">
+  <h2>Settings</h2>
+  <form method="post" action="/api/settings">
+    <div class="settings-grid">
+      <label>Model
+        <select name="model">
+          {% set current_model = settings.model %}
+          {% for m in ["seedvr2-7b-fp16","seedvr2-7b-fp8","seedvr2-7b-sharp-fp16","seedvr2-7b-sharp-fp8","seedvr2-3b-fp16","seedvr2-3b-fp8","nmkd-siax","remacri","realesrgan-x4"] %}
+            <option value="{{ m }}" {% if m == current_model %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>ProxLab URL
+        <input name="proxlab_url" value="{{ settings.proxlab_url }}" placeholder="http://10.0.0.219:17890">
+      </label>
+      <label>SSH user on GPU containers
+        <input name="gpu_host_user" value="{{ settings.gpu_host_user }}">
+      </label>
+      <label>Path of upscale_pipeline.py on GPU containers
+        <input name="gpu_host_script" value="{{ settings.gpu_host_script }}">
+      </label>
+      <label>Min input MP (smaller = skipped)
+        <input name="min_input_mp" type="number" step="0.1" value="{{ settings.min_input_mp }}">
+      </label>
+      <label>Poll interval (seconds)
+        <input name="poll_interval_sec" type="number" min="10" max="3600" value="{{ settings.poll_interval_sec }}">
+      </label>
+      <label>Auto-managed tag (added on completion)
+        <input name="auto_managed_tag" value="{{ settings.auto_managed_tag }}">
+      </label>
+    </div>
+    <button type="submit">Save settings</button>
+  </form>
+</section>
+
+{% endblock %}

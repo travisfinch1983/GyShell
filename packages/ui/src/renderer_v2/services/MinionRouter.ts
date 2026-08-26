@@ -294,7 +294,8 @@ function getModelEndpoint(role: string): ModelEndpoint | null {
 function rewriteEndpointForBrowser(baseUrl: string): string {
   if (!baseUrl) return baseUrl
 
-  // Rewrite http://10.0.0.140:7777/api/proxy/... → /proxlab-api/...
+  // Rewrite the old decommissioned-ProxLab absolute URLs → /proxlab-api/...
+  // (route name is legacy; the host it named no longer exists)
   const localMatch = baseUrl.match(/^https?:\/\/10\.0\.0\.140:7777\/api\/proxy\/(.*)/)
   if (localMatch) return `/proxlab-api/${localMatch[1]}`
 

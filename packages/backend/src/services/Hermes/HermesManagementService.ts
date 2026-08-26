@@ -1,12 +1,13 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, rmSync } from 'fs'
 import { dirname } from 'path'
 import type { HermesAgentSpec, ProviderService } from '@gyshell/shared'
 import { PROVIDER_SERVICE_CAPS } from '@gyshell/shared'
 // @ts-expect-error — proxy capability resolver ships as untyped JS (same pattern as the other proxy/*.js imports)
 import { resolveModelCapabilities } from '../Cluster/proxy/model-capabilities.js'
 import { clusterSettingsService } from '../Cluster/ClusterSettingsService'
+import { loadToolRegistry, resolveSelection, unknownToolsError, readToolGroup, writeToolGroup } from '../mcp/toolGroups.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -44,19 +45,38 @@ export interface HermesManagementConfig {
 
 /** One Support-Models assignment (a model wired to a Hermes `auxiliary.<key>` role).
  *  `description`/`recommendation` are AI-Lab-side UI metadata (NOT sent to Hermes). */
-export interface SupportModelRole { provider?: string; model?: string; description?: string; recommendation?: string }
+export interface SupportModelRole { provider?: string; model?: string; description?: string; recommendation?: string; timeout?: number; noThink?: boolean }
 /** Global "Support Models" assignments keyed by Hermes auxiliary task key (vision, compression,
  *  web_extract, ...). Legacy visionDescription/compaction keys are migrated on read. */
 export type SupportModelRoles = Record<string, SupportModelRole>
 
 /** Roles usable beyond Hermes → NO "Hermes-specific" badge in the UI. */
 export const SHARED_SUPPORT_ROLES = new Set<string>(['vision', 'compression', 'tts_audio_tags'])
+/** Roles whose consumer is NOT Hermes. UI-controlled and persisted to the shared
+ *  support-models file (external services read it), but NEVER written into an agent's
+ *  `auxiliary.<key>`. They need ONE concrete model name — `auto` ("the agent's own
+ *  model") is meaningless to an external service. */
+export const EXTERNAL_SUPPORT_ROLES = new Set<string>(['memory_extraction', 'memory_vlm'])
+
+/** Roles whose per-agent value is DERIVED from that agent's own model rather than set
+ *  globally. applyRoleConfig recomputes these per agent (vision-capable model -> auto,
+ *  text-only -> external describer), so agents legitimately differ. Never report that
+ *  as drift: it cannot be reconciled and the warning would be permanent. */
+export const CAPABILITY_MANAGED_ROLES = new Set<string>(['vision'])
+
+/** Profile dirs that are TEMPLATES, not addressable agents. `hermes -p default` means "no
+ *  profile" and writes the GLOBAL config, so a template's own config.yaml never receives an
+ *  apply — it would sit at Auto forever and manufacture permanent, unfixable "drift". */
+export const TEMPLATE_PROFILES = new Set<string>(['default', 'zztmpl', 'zzglob'])
+
 /** Roles Hermes READS (auxiliary.<key>) but does NOT advertise via _all_aux_tasks() — supplied here. */
 const AUX_TASK_SUPPLEMENT: Array<{ key: string; label: string; description: string }> = [
   { key: 'background_review', label: 'Background Review', description: 'Memory auto-extraction reviewer — every ~10 turns it reviews the conversation and saves worthwhile facts to MEMORY.md / USER.md.' },
   { key: 'goal_judge', label: 'Goal Judge', description: 'Judges progress in the /goal tracking loop.' },
   { key: 'session_search', label: 'Session Search', description: 'Searches and ranks your past sessions.' },
   { key: 'monitor', label: 'Monitor', description: 'Classifies items for cron monitors and alerts.' },
+  { key: 'memory_extraction', label: 'Memory Extraction (HippocampAI)', description: 'EXTERNAL consumer: HippocampAI distills durable memories and runs conflict checks; reads this as LLM_MODEL. Not a Hermes aux role — needs a concrete model, never Auto.' },
+  { key: 'memory_vlm', label: 'Memory VLM (OpenViking)', description: 'EXTERNAL consumer: OpenViking vision-language model (vlm.model). Not a Hermes aux role — needs a concrete model, never Auto.' },
 ]
 /** AI-Lab-authored per-role defaults. Precedence: user override (stored) > this default > Hermes short desc. */
 const AUX_ROLE_DEFAULTS: Record<string, { description?: string; recommendation?: string }> = {
@@ -76,6 +96,8 @@ const AUX_ROLE_DEFAULTS: Record<string, { description?: string; recommendation?:
   goal_judge: { recommendation: 'Tiny\u2013small, fast, cheap. Context \u2265 8k.' },
   session_search: { recommendation: 'Small, fast. Context \u2265 32k.' },
   monitor: { recommendation: 'Small, fast. Context \u2265 16k.' },
+  memory_extraction: { recommendation: 'Small-to-mid, fast, always-on. Context >= 32k. Must be a CONCRETE model — HippocampAI cannot resolve Auto.' },
+  memory_vlm: { recommendation: 'Vision-capable. Context >= 32k. Must be a CONCRETE model — OpenViking cannot resolve Auto.' },
 }
 
 /** Single-quote a string for safe embedding in a remote shell command. */
@@ -168,7 +190,7 @@ export class HermesManagementService {
   /** The merged Support-Models role catalog for the UI: Hermes' live _all_aux_tasks() (built-in +
    *  plugin) + the un-advertised supplement, each with an effective description (user override >
    *  authored default > Hermes short desc) + recommendation (user override > authored default). */
-  async getAuxTasks(): Promise<Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean }>> {
+  async getAuxTasks(): Promise<Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean; external: boolean; capabilityManaged: boolean; current: string; drift: boolean; perAgent: Record<string, string> }>> {
     let live: Array<[string, string, string]> = []
     const now = Date.now()
     if (this.auxLiveCache && now - this.auxLiveCache.checkedAt < 300_000) {
@@ -190,17 +212,41 @@ export class HermesManagementService {
     }
     const stored = this.loadSupportModels()
     const seen = new Set<string>()
-    const rows: Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean }> = []
+    const assignments = await this.getAuxAssignments()
+    const agentIds = Object.keys(assignments)
+    // Effective value = what the agents ACTUALLY have. '' means Auto (the agent's own model).
+    // drift = agents disagree, which the overlay-only view structurally could not reveal.
+    const liveFor = (key: string): { current: string; drift: boolean; perAgent: Record<string, string> } => {
+      const perAgent: Record<string, string> = {}
+      for (const a of agentIds) perAgent[a] = assignments[a]?.[key]?.model || ''
+      // Drift is judged on REAL agents only — a template can never be applied to, so including
+      // it would make the "agents disagree" banner permanent and unclearable.
+      const distinct = new Set(agentIds.filter((a) => !TEMPLATE_PROFILES.has(a)).map((a) => perAgent[a]))
+      return { current: distinct.size === 1 ? [...distinct][0] : '', drift: distinct.size > 1, perAgent }
+    }
+    const rows: Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean; external: boolean; capabilityManaged: boolean; current: string; drift: boolean; perAgent: Record<string, string> }> = []
     const add = (key: string, label: string, hermesDesc: string) => {
       if (seen.has(key)) return
       seen.add(key)
       const def = AUX_ROLE_DEFAULTS[key] || {}
       const s = stored[key] || {}
+      const external = EXTERNAL_SUPPORT_ROLES.has(key)
+      const capabilityManaged = CAPABILITY_MANAGED_ROLES.has(key)
+      // External roles have no per-agent Hermes config; the stored overlay IS their truth.
+      const live = external
+        ? { current: s.model || '', drift: false, perAgent: {} as Record<string, string> }
+        : liveFor(key)
       rows.push({
         key, label,
         description: (s.description || def.description || hermesDesc || '').trim(),
         recommendation: (s.recommendation || def.recommendation || '').trim(),
         shared: SHARED_SUPPORT_ROLES.has(key),
+        external,
+        capabilityManaged,
+        current: live.current,
+        // Capability-managed roles are SUPPOSED to differ per agent — not drift.
+        drift: capabilityManaged ? false : live.drift,
+        perAgent: live.perAgent,
       })
     }
     for (const [key, label, desc] of live) add(key, label, desc)
@@ -218,16 +264,27 @@ export class HermesManagementService {
       if (r.model) { entry.provider = r.provider || 'ailab'; entry.model = r.model }
       if (r.description) entry.description = r.description
       if (r.recommendation) entry.recommendation = r.recommendation
+      if (typeof r.timeout === 'number' && r.timeout > 0) entry.timeout = r.timeout
+      if (r.noThink !== undefined) entry.noThink = !!r.noThink
       if (Object.keys(entry).length) clean[key] = entry
     }
     if (this.cfg.supportModelsFile) atomicWriteJson(this.cfg.supportModelsFile, clean)
     const keys = (applyKeys && applyKeys.length ? applyKeys : Object.keys(clean))
     if (!keys.length) return { agentsUpdated: 0 }
     const agents = await this.listAgents()
-    let n = 0
-    for (const id of agents) {
-      try { for (const key of keys) await this.applyRoleConfig(id, key, clean[key]); n++ } catch { /* skip unreachable/legacy */ }
-    }
+    // Reconcile agents CONCURRENTLY — this used to be serial (8 agents x up to 3 `hermes
+    // config set` calls each = ~24 sequential round-trips) and felt broken in the UI.
+    // Per-agent writes stay ordered; different agents touch different profile files.
+    const results = await Promise.all(agents.map(async (id) => {
+      try {
+        for (const key of keys) await this.applyRoleConfig(id, key, clean[key])
+        return true
+      } catch (e) {
+        console.warn(`[support-models] apply failed for agent ${id}:`, (e as Error)?.message || e)
+        return false
+      }
+    }))
+    const n = results.filter(Boolean).length
     return { agentsUpdated: n }
   }
 
@@ -235,6 +292,17 @@ export class HermesManagementService {
    *  every other role is a plain `auxiliary.<key>` route through the AI-Lab proxy (provider=ailab),
    *  or `auto` (→ the agent's own main model) when unassigned. This also clears any dead base_url. */
   private async applyRoleConfig(agentId: string, key: string, role?: SupportModelRole): Promise<void> {
+    // External-consumer roles (HippocampAI / OpenViking) are NOT Hermes aux tasks. Writing
+    // them into auxiliary.<key> would invent a phantom role on every agent. The stored
+    // support-models file is their only channel.
+    if (EXTERNAL_SUPPORT_ROLES.has(key)) return
+    // Aux timeout (scalar -> config set) + no-think (dict extra_body -> yaml write). Orthogonal to routing.
+    if (role && typeof role.timeout === 'number' && role.timeout > 0) {
+      await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.timeout`, String(role.timeout)])
+    }
+    if (role && role.noThink !== undefined) {
+      await this.setAuxExtraBody(agentId, key, !!role.noThink)
+    }
     if (key === 'vision') {
       const model = this.getSpec(agentId)?.model
       if (model) await this.applyVisionConfig(agentId, model)
@@ -247,7 +315,90 @@ export class HermesManagementService {
     } else {
       await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.provider`, 'auto'])
       await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.model`, ''])
+      // Clear base_url HERE TOO. Without this, a role set to "Auto" kept whatever
+      // endpoint it previously had — so roles that once pointed at the
+      // decommissioned ProxLab survived every apply, looking configured while
+      // being unreachable. "Auto" must mean inherit, not inherit-the-model-but-
+      // keep-a-stale-URL.
+      await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.base_url`, ''])
     }
+  }
+
+  /**
+   * The GLOBAL default model — Hermes `model.default` + `model.provider` in the
+   * top-level config. Any agent without its own model block inherits this.
+   *
+   * Read straight from the yaml rather than shelling out: `hermes config` has no
+   * `get` subcommand (only show/edit/set/path/...), and parsing `show` output is
+   * more fragile than reading the file Hermes itself writes.
+   */
+  async getAgentDefaults(): Promise<{ model: string; provider: string }> {
+    // Profiles live at <base>/<agentId>, so the global config is one level up.
+    const globalCfg = `${dirname(this.profileHomeBase)}/config.yaml`
+    const script = [
+      'import sys, yaml, json',
+      'try:',
+      '    with open(sys.argv[1]) as f: cfg = yaml.safe_load(f) or {}',
+      'except FileNotFoundError:',
+      '    cfg = {}',
+      'm = cfg.get("model") or {}',
+      'print(json.dumps({"model": m.get("default") or "", "provider": m.get("provider") or ""}))',
+    ].join('\n')
+    try {
+      const { stdout } = await execFileAsync('python3', ['-c', script, globalCfg], { timeout: 10_000 })
+      return JSON.parse(stdout.trim())
+    } catch (e) {
+      // Surface it — a silent {} here would render the UI as "no default set" when
+      // the real problem is an unreadable config.
+      console.warn(`[hermes] could not read global agent defaults from ${globalCfg}: ${(e as Error).message}`)
+      return { model: '', provider: '' }
+    }
+  }
+
+  /**
+   * Set the global default. `provider` defaults to 'ailab' because the model
+   * picker is fed from the AI-Lab catalog; pass it explicitly to point the
+   * default at an external provider instead.
+   *
+   * NOTE this writes the GLOBAL config — no `-p`. Passing `-p default` would look
+   * like a profile but Hermes treats that profile name as the global config, so
+   * being explicit here avoids a confusing double-write.
+   */
+  async setAgentDefaults(model: string, provider = 'ailab'): Promise<{ model: string; provider: string }> {
+    if (!model) throw new Error('a default model is required')
+    await this.hermes(['config', 'set', 'model.provider', provider])
+    await this.hermes(['config', 'set', 'model.default', model])
+    console.log(`[hermes] global default model -> ${provider}/${model}`)
+    return { model, provider }
+  }
+
+  /** Set (or clear) an aux role's `extra_body` as a real DICT via a PyYAML config.yaml write.
+   *  `hermes config set` stores a dict as a literal STRING (see applyFallback), which Hermes can't
+   *  use — so we edit the yaml directly. noThink=true writes
+   *  {chat_template_kwargs:{enable_thinking:false}} (the request-body equivalent of /no_think for
+   *  local llama.cpp Qwen support models); false clears it to {}. Local op (Hermes is co-located). */
+  private async setAuxExtraBody(agentId: string, key: string, noThink: boolean): Promise<void> {
+    const home = this.profileHome(agentId)
+    const eb = noThink ? '{"chat_template_kwargs": {"enable_thinking": false}}' : '{}'
+    const ebB64 = Buffer.from(eb, 'utf8').toString('base64')
+    const script = [
+      'import sys, yaml, base64',
+      'p, key = sys.argv[1], sys.argv[2]',
+      'eb = yaml.safe_load(base64.b64decode(sys.argv[3]).decode()) or {}',
+      'try:',
+      '    with open(p) as f: cfg = yaml.safe_load(f) or {}',
+      'except FileNotFoundError:',
+      '    cfg = {}',
+      'aux = cfg.setdefault("auxiliary", {})',
+      'if not isinstance(aux, dict): aux = cfg["auxiliary"] = {}',
+      'role = aux.setdefault(key, {})',
+      'if not isinstance(role, dict): role = aux[key] = {}',
+      'role["extra_body"] = eb',
+      'with open(p, "w") as f:',
+      '    yaml.safe_dump(cfg, f, sort_keys=False, default_flow_style=False, allow_unicode=True)',
+    ].join('\n')
+    const scriptB64 = Buffer.from(script, 'utf8').toString('base64')
+    await this.ssh(`printf %s ${shq(scriptB64)} | base64 -d | python3 - ${shq(`${home}/config.yaml`)} ${shq(key)} ${shq(ebB64)}`)
   }
 
   /** Reconcile native-vision routing for an agent, keyed on its model's vision capability.
@@ -344,18 +495,13 @@ export class HermesManagementService {
 
   /** Run a single remote command string over SSH (async execFile has no stdin — see writeRemoteFile). */
   private async ssh(remoteCmd: string): Promise<string> {
-    const args = [
-      '-i', this.cfg.sshKeyPath,
-      '-o', 'StrictHostKeyChecking=accept-new',
-      '-o', 'BatchMode=yes',
-      '-o', `ConnectTimeout=${this.cfg.connectTimeoutSec ?? 8}`,
-      `${this.user}@${this.cfg.host}`,
-      remoteCmd,
-    ]
+    // Hermes is co-located in THIS container — run the command LOCALLY instead of over SSH.
+    // (Method name kept as `ssh` so the ~60 call sites that build a shell-command string are untouched.)
     try {
-      const { stdout } = await execFileAsync('ssh', args, {
+      const { stdout } = await execFileAsync('bash', ['-c', remoteCmd], {
         timeout: 90_000,
         maxBuffer: 8 * 1024 * 1024,
+        env: { ...process.env, HOME: '/root' },
       })
       return stdout
     } catch (e) {
@@ -366,7 +512,7 @@ export class HermesManagementService {
       const err = e as { stderr?: string; stdout?: string; code?: unknown; signal?: unknown }
       const stderr = String(err?.stderr ?? '').trim()
       const code = err?.code ?? err?.signal ?? '?'
-      throw new Error(`ssh command failed (exit ${code})${stderr ? `: ${stderr.slice(0, 400)}` : ''}`)
+      throw new Error(`hermes command failed (exit ${code})${stderr ? `: ${stderr.slice(0, 400)}` : ''}`)
     }
   }
 
@@ -406,6 +552,28 @@ export class HermesManagementService {
     return (await this.ssh(`cat ${shq(HermesManagementService.GLOBAL_USER_PATH)} 2>/dev/null || true`))
   }
 
+  /** Filename of a PER-AGENT override of the shared USER doc, inside the agent's profile home.
+   *  Present + non-empty => this agent's "About Your Human" block uses it instead of the global
+   *  doc. Absent => global, so every agent that has not opted out keeps the old behaviour. */
+  private static readonly USER_DOC_OVERRIDE = 'USER.override.md'
+
+  /** The per-agent USER doc override, or '' when the agent uses the shared global doc. */
+  async getAgentUserDoc(agentId: string): Promise<string> {
+    const p = `${this.profileHome(agentId)}/${HermesManagementService.USER_DOC_OVERRIDE}`
+    const b64 = (await this.ssh(`base64 -w0 ${shq(p)} 2>/dev/null || true`)).trim()
+    if (!b64) return ''
+    try { return Buffer.from(b64, 'base64').toString('utf8') } catch { return '' }
+  }
+
+  /** Set (or, with empty markdown, clear) an agent's USER doc override, then re-propagate so the
+   *  change lands in its AGENTS.md immediately rather than at the next global save. */
+  async setAgentUserDoc(agentId: string, markdown: string): Promise<{ agentsUpdated: number }> {
+    const p = `${this.profileHome(agentId)}/${HermesManagementService.USER_DOC_OVERRIDE}`
+    if (markdown.trim()) await this.writeRemoteFile(p, markdown)
+    else await this.ssh(`rm -f ${shq(p)}`)
+    return this.setUserDoc(await this.getUserDoc())
+  }
+
   private static readonly USER_DOC_MARKER = '<!-- doc:user -->'
 
   /** Write the canonical USER doc + re-propagate its content into every agent's AGENTS.md
@@ -426,9 +594,21 @@ export class HermesManagementService {
       '        t = open(ag, encoding="utf-8").read()',
       '    except Exception:',
       '        continue',
+      // A per-agent USER.override.md wins over the global doc. This is what lets an agent whose
+      // human is NOT Travis (idris -> Kyla) survive a Doc Templates save instead of being reset
+      // to "the user is Travis" on every propagate.
+      '    body = user',
+      '    try:',
+      '        ov = os.path.join(os.path.dirname(os.path.dirname(ag)), "USER.override.md")',
+      '        if os.path.exists(ov):',
+      '            o = open(ov, encoding="utf-8").read().strip()',
+      '            if o:',
+      '                body = o',
+      '    except Exception:',
+      '        pass',
       '    idx = t.find(M)',
       '    head = (t[:idx].rstrip() if idx >= 0 else t.rstrip())',
-      '    new = head + nl + nl + M + nl + user + nl',
+      '    new = head + nl + nl + M + nl + body + nl',
       '    if new != t:',
       '        open(ag, "w", encoding="utf-8").write(new); n += 1',
       'print(n)',
@@ -469,6 +649,48 @@ export class HermesManagementService {
       const m = out.match(/["']([^"']+)["']/)
       return m ? m[1] : 'unknown'
     } catch { return 'unknown' }
+  }
+
+  /** Read the LIVE `auxiliary.<key>.{provider,model}` for every agent straight from the
+   *  profile config.yaml files. THIS is the source of truth the UI must display: the stored
+   *  overlay only records what was set THROUGH the UI, so a value set by any other path (or
+   *  predating this feature) is invisible to it — which is exactly how four roles sat on a
+   *  dead 9B while the UI showed "Auto". One python pass over all profiles. */
+  async getAuxAssignments(): Promise<Record<string, Record<string, { provider?: string; model?: string }>>> {
+    const script = [
+      'import os, sys, json, glob',
+      'try:',
+      '    import yaml',
+      'except Exception:',
+      '    print("{}"); raise SystemExit(0)',
+      'out = {}',
+      'base = sys.argv[1] if len(sys.argv) > 1 else ""',
+      'for p in sorted(glob.glob(os.path.join(base, "*", "config.yaml"))):',
+      '    agent = os.path.basename(os.path.dirname(p))',
+      '    try:',
+      '        with open(p) as f: cfg = yaml.safe_load(f) or {}',
+      '    except Exception:',
+      '        continue',
+      '    aux = cfg.get("auxiliary") or {}',
+      '    if not isinstance(aux, dict): continue',
+      '    roles = {}',
+      '    for k, v in aux.items():',
+      '        if isinstance(v, dict):',
+      '            roles[k] = {"provider": v.get("provider") or "", "model": v.get("model") or ""}',
+      '    out[agent] = roles',
+      'print(json.dumps(out))',
+    ].join('\n')
+    const b64 = Buffer.from(script, 'utf8').toString('base64')
+    try {
+      const out = await this.ssh(`printf %s ${shq(b64)} | base64 -d | python3 - ${shq(this.profileHomeBase)}`)
+      const parsed = JSON.parse(out.trim() || '{}')
+      return (parsed && typeof parsed === 'object' ? parsed : {}) as Record<string, Record<string, { provider?: string; model?: string }>>
+    } catch (e) {
+      // NEVER swallow this silently: an empty result makes every role render as "auto",
+      // which is indistinguishable from a genuinely unassigned role.
+      console.warn('[support-models] getAuxAssignments failed; UI will fall back to the stored overlay:', (e as Error)?.message || e)
+      return {}
+    }
   }
 
   private profileHome(agentId: string): string {
@@ -815,20 +1037,172 @@ export class HermesManagementService {
   }
 
   /** Scope an agent to a curated tool set: upsert its gateway group, then repoint the agent's
-   *  native MCP server at the group endpoint (idempotent remove+add, same server name). */
-  async syncAgentTools(agentId: string, treeNames: string[]): Promise<{ endpoint: string; toolCount: number }> {
+   *  native MCP server at the group endpoint (idempotent remove+add, same server name).
+   *
+   *  DESTRUCTIVE-SAVE GUARD (2026-07-25): MCPJungle's POST /tool-groups is create-only, so a
+   *  re-scope must delete first — which made this path capable of destroying the agent's tools.
+   *  MCPJungle rejects the ENTIRE request if any single included_tools entry is not a live,
+   *  ENABLED tool ("tool X does not exist or is disabled"), and a whole-toolset selection (which
+   *  sends a bare server name) or a momentarily-down server is enough to trigger it. Observed:
+   *  DELETE 204 -> POST 400 left Wren with no group and no tools, and her Hermes agent then gave
+   *  up reconnecting entirely. So now: validate first, expand server names, and roll back. */
+  async syncAgentTools(agentId: string, treeNames: string[]): Promise<{ endpoint: string; toolCount: number; gatewayRestarted?: boolean }> {
     const gw = this.gatewayBase()
     const group = `agent-${agentId}`
-    const payload = { name: group, description: `AI-Lab tool set for ${agentId}`, included_servers: [], included_tools: treeNames, excluded_tools: [] }
-    // POST is create-only (UNIQUE constraint), so delete-then-create = true upsert on re-scope.
-    await fetch(`${gw}/api/v0/tool-groups/${group}`, { method: 'DELETE', signal: AbortSignal.timeout(8000) }).catch(() => undefined)
-    const r = await fetch(`${gw}/api/v0/tool-groups`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: AbortSignal.timeout(8000),
-    })
-    if (!r.ok) throw new Error(`group upsert -> ${r.status}: ${await r.text().catch(() => '')}`)
+
+    // Validate + expand + write via the SHARED helper (services/mcp/toolGroups.ts), the single
+    // implementation both this and the AI-Lab-agent path use. It refuses if the gateway is
+    // unreachable, expands a bare server name (a whole-toolset selection) into its tools, rejects
+    // unknown names before anything is written, and PUTs in place — MCPJungle's PUT is atomic, so
+    // a rejected payload leaves the previous membership intact. No DELETE is involved: the old
+    // delete-then-create is what destroyed Wren's entire toolset on 2026-07-25.
+    const reg = await loadToolRegistry(gw)
+    const { included, unknown } = resolveSelection(treeNames, reg)
+    if (unknown.length) throw unknownToolsError(group, unknown)
+
+    // Snapshot the previous membership to disk first. Recovering Wren's group was only possible
+    // because Hermes happens to log its registration line — luck, not design. This fixes that.
+    const previous = await readToolGroup(gw, group)
+    if (previous && previous.length) this.backupToolGroup(agentId, previous)
+
+    await writeToolGroup(gw, group, `AI-Lab tool set for ${agentId}`, included)
+
     const endpoint = `${this.agentGatewayBase()}/v0/groups/${group}/mcp`
     await this.repointGatewayServer(agentId, endpoint)
-    return { endpoint, toolCount: treeNames.length }
+    // ACP chat sessions reload themselves (HermesAcpBridge.reloadAgentSessions respawns them with
+    // --resume). The messaging gateway does NOT — it is a long-lived process that read its MCP
+    // config at startup, so without this the Chat tab and Telegram disagree about which tools the
+    // agent has until someone restarts the unit by hand.
+    const gatewayRestarted = await this.restartAgentGateway(agentId)
+    return { endpoint, toolCount: included.length, gatewayRestarted }
+  }
+
+  /** Where this agent's tool-group snapshots live. */
+  private toolBackupDir(): string | null {
+    return this.cfg.specsFile ? `${dirname(this.cfg.specsFile)}/agent-tool-backups` : null
+  }
+
+  /** Is the agent actually SERVING the tools its group says it has?
+   *
+   *  Hermes gives up permanently after 5 failed MCP reconnects ("failed after N reconnection
+   *  attempts, giving up") and then runs with no tools until its gateway is restarted — even
+   *  after the group is healthy again. That is invisible from the group alone, so compare the
+   *  group against the agent's own last registration and look for a give-up AFTER it. */
+  async getToolHealth(agentId: string): Promise<{
+    groupTools: number; registeredTools: number | null; gaveUp: boolean
+    gatewayActive: boolean; healthy: boolean; detail: string
+  }> {
+    const group = `agent-${agentId}`
+    const tools = (await readToolGroup(this.gatewayBase(), group)) ?? []
+    const groupTools = tools.length
+
+    const log = `${this.profileHome(agentId)}/logs/agent.log`
+    // Last registration line, and anything after it, in one hop.
+    const raw = await this.ssh(
+      `tail -n 4000 ${shq(log)} 2>/dev/null | grep -aE 'registered [0-9]+ tool\\(s\\) from|reconnection attempts, giving up' | tail -n 20 || true`,
+    ).catch(() => '')
+    let registeredTools: number | null = null
+    let gaveUp = false
+    for (const line of raw.split('\n')) {
+      const m = line.match(/registered (\d+) tool\(s\) from/)
+      if (m) { registeredTools = parseInt(m[1], 10); gaveUp = false; continue }
+      if (/reconnection attempts, giving up/.test(line)) gaveUp = true
+    }
+
+    const unit = `hermes-gateway-${agentId}`
+    const gatewayActive = (await this.ssh(`systemctl is-active ${shq(unit)} 2>/dev/null || true`).catch(() => '')).trim() === 'active'
+
+    // The agent's registration count includes MCP protocol built-ins (list_resources,
+    // read_resource, list_prompts, get_prompt) on top of the group's tools, so compare with
+    // that allowance rather than demanding equality.
+    const PROTOCOL_EXTRAS = 4
+    const matches = registeredTools !== null && registeredTools >= groupTools && registeredTools <= groupTools + PROTOCOL_EXTRAS
+    const healthy = !gaveUp && (registeredTools === null || matches)
+    const detail = gaveUp
+      ? 'Hermes stopped retrying its MCP connection and is running with no tools. Reconnect to restore them.'
+      : registeredTools === null
+        ? 'No registration seen in the agent log yet.'
+        : matches
+          ? `Serving ${registeredTools} tools for a group of ${groupTools}.`
+          : `Group has ${groupTools} tools but the agent last registered ${registeredTools} — it is out of date. Reconnect to resync.`
+    return { groupTools, registeredTools, gaveUp, gatewayActive, healthy, detail }
+  }
+
+  /** Restart the agent's messaging gateway so it re-reads config and reconnects its MCP link.
+   *  This is the ONLY way back from Hermes' permanent give-up without patching Hermes. */
+  async reconnectAgentTools(agentId: string): Promise<{ restarted: boolean }> {
+    return { restarted: await this.restartAgentGateway(agentId) }
+  }
+
+  /** Snapshots of this agent's tool group, newest first. */
+  async listToolBackups(agentId: string): Promise<Array<{ file: string; savedAt: string; toolCount: number }>> {
+    const dir = this.toolBackupDir()
+    if (!dir || !existsSync(dir)) return []
+    const out: Array<{ file: string; savedAt: string; toolCount: number }> = []
+    for (const f of readdirSync(dir)) {
+      if (!f.startsWith(`${agentId}-`) || !f.endsWith('.json')) continue
+      try {
+        const d = JSON.parse(readFileSync(`${dir}/${f}`, 'utf8')) as { savedAt?: string; included_tools?: string[] }
+        out.push({ file: f, savedAt: d.savedAt ?? '', toolCount: (d.included_tools ?? []).length })
+      } catch { /* skip an unreadable snapshot */ }
+    }
+    return out.sort((a, b) => b.file.localeCompare(a.file))
+  }
+
+  /** Restore a snapshot: rewrite the group, repoint, and reconnect the gateway. */
+  async restoreToolBackup(agentId: string, file: string): Promise<{ toolCount: number; gatewayRestarted: boolean }> {
+    if (!/^[A-Za-z0-9._-]+\.json$/.test(file)) throw new Error('bad snapshot name')
+    const dir = this.toolBackupDir()
+    if (!dir) throw new Error('no snapshot directory configured')
+    const path = `${dir}/${file}`
+    if (!existsSync(path)) throw new Error(`snapshot not found: ${file}`)
+    const snap = JSON.parse(readFileSync(path, 'utf8')) as { included_tools?: string[] }
+    const tools = snap.included_tools ?? []
+    if (!tools.length) throw new Error('snapshot is empty')
+    // Route through the same validated writer: a tool that has since been removed or disabled
+    // must not silently poison the restore.
+    const { included } = await (async () => {
+      const reg = await loadToolRegistry(this.gatewayBase())
+      const res = resolveSelection(tools, reg)
+      if (res.unknown.length) throw unknownToolsError(`agent-${agentId}`, res.unknown)
+      return res
+    })()
+    await writeToolGroup(this.gatewayBase(), `agent-${agentId}`, `AI-Lab tool set for ${agentId}`, included)
+    await this.repointGatewayServer(agentId, `${this.agentGatewayBase()}/v0/groups/agent-${agentId}/mcp`)
+    const gatewayRestarted = await this.restartAgentGateway(agentId)
+    return { toolCount: included.length, gatewayRestarted }
+  }
+
+  /** Persist an agent's tool-group membership before we change it, so a botched save is always
+   *  recoverable from disk. Keeps the last 10 snapshots per agent. Best-effort: never throws. */
+  private backupToolGroup(agentId: string, tools: string[]): void {
+    try {
+      if (!this.cfg.specsFile) return // no persistence root configured -> nothing to write beside
+      const dir = `${dirname(this.cfg.specsFile)}/agent-tool-backups`
+      mkdirSync(dir, { recursive: true })
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      writeFileSync(`${dir}/${agentId}-${stamp}.json`,
+        JSON.stringify({ agentId, savedAt: new Date().toISOString(), included_tools: tools }, null, 2))
+      const mine = readdirSync(dir).filter((f) => f.startsWith(`${agentId}-`) && f.endsWith('.json')).sort()
+      for (const old of mine.slice(0, Math.max(0, mine.length - 10))) {
+        try { rmSync(`${dir}/${old}`) } catch { /* noop */ }
+      }
+    } catch { /* backups must never block a legitimate save */ }
+  }
+
+  /** Restart an agent's messaging gateway so it picks up a toolset change, but only if it is
+   *  actually running. Returns true if a restart was issued. Never throws — a failed restart
+   *  must not fail the save, it just means Telegram lags until the unit cycles. */
+  private async restartAgentGateway(agentId: string): Promise<boolean> {
+    const unit = `hermes-gateway-${agentId}`
+    try {
+      const active = (await this.ssh(`systemctl is-active ${shq(unit)} 2>/dev/null || true`)).trim()
+      if (active !== 'active') return false
+      await this.ssh(`systemctl restart ${shq(unit)} >/dev/null 2>&1 || true`)
+      return true
+    } catch {
+      return false
+    }
   }
 
   /** Revert an agent to the FULL gateway (remove its group + repoint the MCP server at /mcp). */
@@ -1290,6 +1664,13 @@ export class HermesManagementService {
    *  absent → reset tts.provider so a previously-configured voice stops (idempotent removal).
    *  `config set` handles these scalar dot-keys directly (verified type coercion). */
   private async applyTts(agentId: string, tts?: { provider: string; voiceId?: string; modelId?: string }): Promise<void> {
+    // 'ailab' is the local pool, resolved by the UI at playback time. Writing it into
+    // Hermes config would re-enable the Hermes `tts` toolset we deliberately switched
+    // off, and Hermes cannot reach these voices anyway. Nothing to apply.
+    if (tts?.provider === 'ailab') {
+      console.log(`[hermes] ${agentId}: tts provider 'ailab' is UI-side — not written to Hermes config`)
+      return
+    }
     if (tts?.provider) {
       const p = tts.provider
       await this.hermes(['-p', agentId, 'config', 'set', 'tts.provider', p])
@@ -1342,7 +1723,87 @@ export class HermesManagementService {
    * Create (if needed) + configure a Hermes profile from a spec. Idempotent: safe to
    * re-apply to update model/persona on an existing agent.
    */
-  async applySpec(spec: HermesAgentSpec): Promise<{ created: boolean; home: string }> {
+
+/**
+ * Tokens that must never appear as LIVE instructions in an agent's docs.
+ * Each entry is [label, matcher].
+ *
+ * Why this exists: the 2026-07-28 audit found every agent citing `TOOLS.md`
+ * ABSOLUTE RULE #1/#2/#4 and being told to read `IDENTITY.md` at session start
+ * — NEITHER FILE EXISTS for any agent. They were folded into SOUL.md + AGENTS.md
+ * by an earlier consolidation that never updated the references. Worse, the
+ * rot is in the profile TEMPLATE, so `hermes profile create --clone` gives every
+ * NEW agent the same dead pointers (turing + default proved it). Cleaning the
+ * artifacts is not enough; the provisioning path has to refuse to reproduce it.
+ * Same shape as the skills bug where Hermes auto-assigned all 778 bundled skills
+ * at profile creation.
+ */
+private static readonly FORBIDDEN_DOC_TOKENS: Array<[string, RegExp]> = [
+  ['TOOLS.md (consolidated into AGENTS.md)', /\bTOOLS\.md\b/],
+  ['IDENTITY.md (consolidated into SOUL.md)', /\bIDENTITY\.md\b/],
+  ['EXECUTION.md (consolidated into AGENTS.md)', /\bEXECUTION\.md\b/],
+  // Flagged by Fable's audit; verified 2026-07-28 to have ZERO references anywhere
+  // (no profile, no hermes_cli/agent source, no live doc), so this is pure
+  // insurance against it being reintroduced by a future doc merge.
+  ['BOOTSTRAP.md (does not exist)', /\bBOOTSTRAP\.md\b/],
+  ['OpenClaw (decommissioned 2026-07)', /openclaw/i],
+  ['ask-claude (skill deleted; use fleet_send)', /\bask[-_]claude\b/i],
+  ['CT 196 (OpenClaw container, gone)', /\bCT[ -]?196\b/i],
+  ['claude-relay (service decommissioned)', /\bclaude-relay\b/i],
+  ['10.0.0.161:6277 (dead relay endpoint)', /10\.0\.0\.161:6277/],
+]
+
+/**
+ * A line that TELLS the agent something no longer exists is correct and must not
+ * trip the lint — e.g. "(There is no separate `TOOLS.md`; don't go looking.)" or
+ * a one-line "ask-claude is decommissioned" tombstone. Without this the lint
+ * fires on every well-maintained doc and gets ignored, which is worse than no
+ * lint at all. (I hit this exact false positive twice by hand before writing it.)
+ */
+private static readonly DOC_NEGATION_CONTEXT =
+  /(\bno separate\b|\bdoes ?n[o']t exist\b|\bno longer\b|decommission\w*|deprecat\w*|\bremoved\b|\bretired\b|\bdon'?t go looking\b|\bthere is no\b|\bgone\b|\bdo not use\b|\bdead\b|\breplaces? the old\b|\breplaced the old\b|\bformerly\b|\bused to be\b|\bthe old\b)/i
+
+/** Core docs only — dated memory notes are a historical record, not instructions. */
+private static readonly LINTED_DOCS = [
+  'SOUL.md',
+  'workspace/AGENTS.md',
+  'workspace/HEARTBEAT.md',
+  'workspace/MEMORY.md',
+  'memories/USER.md',
+  'memories/MEMORY.md',
+]
+
+/**
+ * Scan a profile's core docs for dead references. Reports; does NOT rewrite —
+ * a generator that silently edits an agent's persona is worse than one that
+ * complains. Never throws: a broken lint must not block agent creation.
+ */
+async lintProfileDocs(agentId: string): Promise<Array<{ file: string; line: number; token: string; text: string }>> {
+  const findings: Array<{ file: string; line: number; token: string; text: string }> = []
+  const home = this.profileHome(agentId)
+  for (const rel of HermesManagementService.LINTED_DOCS) {
+    let body = ''
+    try {
+      body = await this.ssh(`cat ${shq(`${home}/${rel}`)} 2>/dev/null || true`)
+    } catch {
+      continue
+    }
+    if (!body.trim()) continue
+    body.split('\n').forEach((text, i) => {
+      if (HermesManagementService.DOC_NEGATION_CONTEXT.test(text)) return
+      for (const [token, re] of HermesManagementService.FORBIDDEN_DOC_TOKENS) {
+        if (re.test(text)) findings.push({ file: rel, line: i + 1, token, text: text.trim().slice(0, 180) })
+      }
+    })
+  }
+  return findings
+}
+
+  async applySpec(spec: HermesAgentSpec): Promise<{
+    created: boolean
+    home: string
+    docIssues?: Array<{ file: string; line: number; token: string; text: string }>
+  }> {
     const id = spec.agentId // slug-validated by the zod schema
     const home = this.profileHome(id)
 
@@ -1359,15 +1820,76 @@ export class HermesManagementService {
     // Seed the new agent's workspace from the doc templates (default/workspace).
     if (created) await this.copyTemplateDocs(id)
 
-    // Model → always via the ailab provider (the AI-Lab universal proxy).
-    await this.hermes(['-p', id, 'config', 'set', 'model.provider', 'ailab'])
-    await this.hermes(['-p', id, 'config', 'set', 'model.default', spec.model])
+    // A brand-new profile arrives with the ENTIRE bundled skills library seeded
+    // into it (778 skills / ~2,690 md files) — that is how turing and mari ended
+    // up fully loaded when Travis only created them and named them. Worse,
+    // `hermes update` re-seeds EVERY profile (hermes_cli/main.py:9364), so
+    // without the opt-out marker each agent gets the whole library dumped on top
+    // of its curated set at the next Hermes upgrade.
+    //
+    // The marker CANNOT be inherited: verified 2026-07-28 that
+    // `hermes profile create --clone` does NOT copy dotfiles (only .env came
+    // across from a marked source), and `--no-skills` is mutually exclusive with
+    // `--clone` (profiles.py:861) so it cannot be passed in createArgs either.
+    // So: write the marker and clear what seeding just installed. New agents
+    // start with NO skills and get them assigned deliberately via the UI.
+    if (created) {
+      try {
+        const before = Number(
+          (await this.ssh(`find ${shq(`${home}/skills`)} -name SKILL.md 2>/dev/null | wc -l`)).trim() || '0',
+        )
+        await this.writeRemoteFile(
+          `${home}/.no-bundled-skills`,
+          'Opted out of bundled-skill seeding (written by AI-Lab at agent creation).\n' +
+            'Without this, `hermes update` re-seeds the entire bundled library into this profile.\n' +
+            'Assign skills deliberately via the AI-Lab Skills tab. Delete this file to opt back in.\n',
+        )
+        await this.ssh(`find ${shq(`${home}/skills`)} -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true`)
+        const after = Number(
+          (await this.ssh(`find ${shq(`${home}/skills`)} -name SKILL.md 2>/dev/null | wc -l`)).trim() || '0',
+        )
+        console.warn(
+          `[hermes] ${id}: cleared ${before - after} auto-seeded bundled skill(s) and wrote ` +
+            `.no-bundled-skills (was ${before}, now ${after}). Assign skills deliberately.`,
+        )
+      } catch (e) {
+        console.warn(
+          `[hermes] ${id}: FAILED to opt out of bundled skills (${(e as Error).message}) — ` +
+            `this agent will receive the full bundled library on the next \`hermes update\`.`,
+        )
+      }
+    }
+
+    // Model. When the spec names one it wins. When it does NOT, stamp the CURRENT
+    // global default explicitly rather than leaving the agent unset to inherit —
+    // an agent should keep the model it was created with even if the global default
+    // changes later. Inheritance would silently re-point every unset agent.
+    //
+    // The provider travels WITH the model: the global default may belong to a
+    // different provider (deepseek, say), and writing that model under the ailab
+    // provider would point the agent at a proxy that does not serve it.
+    let modelId = spec.model
+    let modelProvider = 'ailab'
+    if (!modelId) {
+      const d = await this.getAgentDefaults()
+      if (d.model) {
+        modelId = d.model
+        modelProvider = d.provider || 'ailab'
+        console.log(`[hermes] ${id}: no model in spec — stamping the global default `
+          + `${modelProvider}/${modelId} so it stays pinned to this agent`)
+      } else {
+        console.warn(`[hermes] ${id}: no model in spec AND no global default set — `
+          + `the agent will have no model configured`)
+      }
+    }
+    await this.hermes(['-p', id, 'config', 'set', 'model.provider', modelProvider])
+    await this.hermes(['-p', id, 'config', 'set', 'model.default', modelId])
 
     // Max output tokens per turn (bounds runaway generations). Unset -> model default.
     await this.hermes(['-p', id, 'config', 'set', 'model.max_tokens', spec.maxTokens ? String(spec.maxTokens) : ''])
 
     // Native-vision routing keyed on the model's capability (supports_vision + describe backend).
-    await this.applyVisionConfig(id, spec.model)
+    await this.applyVisionConfig(id, modelId)   // resolved id, not the (possibly empty) spec value
     // Context-compaction model (global Compaction support-model role).
     await this.applyCompactionConfig(id)
 
@@ -1412,7 +1934,32 @@ export class HermesManagementService {
       this.saveSpecs(specs)
     }
 
-    return { created, home }
+    // Doc-lint: refuse to SILENTLY reproduce the dead-reference rot. Runs on
+    // create AND edit, because the template is the source (a fresh --clone
+    // carries it in) and hand-edits can reintroduce it. Reported, never
+    // auto-rewritten, and never fatal — a lint that blocks agent creation, or
+    // that quietly edits someone's persona, would be worse than the bug.
+    let docIssues: Array<{ file: string; line: number; token: string; text: string }> = []
+    try {
+      docIssues = await this.lintProfileDocs(id)
+      if (docIssues.length) {
+        console.warn(
+          `[hermes] DOC-LINT: ${docIssues.length} dead reference(s) in ${id}'s core docs — ` +
+            `this agent will be told to use things that do not exist:`,
+        )
+        for (const f of docIssues) console.warn(`  ${id}/${f.file}:${f.line}  [${f.token}]  ${f.text}`)
+        if (created) {
+          console.warn(
+            `[hermes] ${id} was JUST CREATED with these — the profile TEMPLATE still carries them. ` +
+              `Fix the template or every new agent inherits the same dead pointers.`,
+          )
+        }
+      }
+    } catch (e) {
+      console.warn(`[hermes] doc-lint failed for ${id} (non-fatal):`, e)
+    }
+
+    return { created, home, docIssues }
   }
 
   // ── Per-agent OpenViking memory key (isolation) ──────────────────────────────

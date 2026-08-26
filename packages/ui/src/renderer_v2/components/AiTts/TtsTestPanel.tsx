@@ -175,6 +175,57 @@ export const TtsTestPanel: React.FC = observer(() => {
         </div>
       </section>
 
+      {/* ── Pipeline defaults (persisted, server-side) ── */}
+      <section className={styles.card}>
+        <div className={styles.head}>
+          <h4 className={styles.h4}>Pipeline Defaults</h4>
+          <span className={styles.dim}>{store.pipelineStatus}</span>
+          <span className={styles.spacer} />
+          <label className={styles.check}>
+            <input type="checkbox" checked={store.pipelineRvcEnabled}
+              onChange={(e) => store.set('pipelineRvcEnabled', e.target.checked)} />
+            {' '}Route ALL TTS through RVC by default
+          </label>
+        </div>
+        <div className={styles.dim} style={{ marginBottom: 8 }}>
+          Saved on the server and applied to every TTS request from every caller —
+          agents, SillyTavern, Home Assistant. Unlike the test controls above, this
+          is not per-request. A caller can still override any field, or send
+          <code> rvc: false </code> to bypass the pipeline for one request.
+        </div>
+        <div className={styles.grid}>
+          <label className={styles.field}><span>Default RVC model</span>
+            <select value={store.pipelineRvcModel}
+              onChange={(e) => store.set('pipelineRvcModel', e.target.value)}>
+              <option value="">— none —</option>
+              {store.rvcModels.map((m) => <option key={m.name} value={m.name}>{m.name}</option>)}
+            </select></label>
+          <label className={styles.field}><span>Default F0 method</span>
+            <select value={store.pipelineRvcF0Method}
+              onChange={(e) => store.set('pipelineRvcF0Method', e.target.value)}>
+              {['rmvpe', 'harvest', 'crepe', 'pm'].map((m) => <option key={m} value={m}>{m}</option>)}
+            </select></label>
+          <label className={styles.field}><span>Resample (Hz)</span>
+            <input type="number" value={store.pipelineRvcResampleSr} min={0} step={1000}
+              onChange={(e) => store.set('pipelineRvcResampleSr', Number(e.target.value))} /></label>
+        </div>
+        <div className={styles.sliders}>
+          <Slider label="F0 key " k="pipelineRvcF0Key" min={-12} max={12} step={1} unit=" st" />
+          <Slider label="Index rate " k="pipelineRvcIndexRate" min={0} max={1} step={0.05} />
+          <Slider label="Filter radius " k="pipelineRvcFilter" min={0} max={7} step={1} />
+          <Slider label="RMS mix " k="pipelineRvcRmsMix" min={0} max={1} step={0.05} />
+          <Slider label="Protect " k="pipelineRvcProtect" min={0} max={0.5} step={0.01} />
+        </div>
+        <div className={styles.actions}>
+          <button className={styles.btnPrimary} disabled={store.pipelineSaving}
+            onClick={() => void store.savePipelineConfig()}>
+            {store.pipelineSaving ? 'Saving…' : 'Save defaults'}
+          </button>
+          <button className={styles.btn} disabled={store.pipelineSaving}
+            onClick={() => void store.loadPipelineConfig()}>Revert</button>
+        </div>
+      </section>
+
       <ActivityLog />
     </div>
   )

@@ -1,0 +1,797 @@
+From 6ddaddf9e9b2915b512e79b4f50b400b110e474d Mon Sep 17 00:00:00 2001
+From: claude <claude@deeveeyant.com>
+Date: Mon, 27 Jul 2026 11:47:14 +0000
+Subject: [PATCH 1/3] Homelab patches: self-hosted endpoints, remote embedder,
+ pluggable vector backend
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+These have been running in production on CT26 since ~2026-06 but were only ever
+present in the working tree. Committing so they survive a rebuild — the Docker
+migration (AI-Lab task #80) would otherwise silently discard them.
+
+- adapters/provider_openai.py: accept an optional base_url so the OpenAI adapter
+  can target a self-hosted OpenAI-compatible endpoint (the AI-Lab LLM proxy at
+  10.0.0.219:17890) instead of api.openai.com.
+
+- embed/embedder.py: support a REMOTE OpenAI-compatible embedding API via
+  EMBED_API_URL / EMBED_API_MODEL, falling back to the local SentenceTransformer
+  when unset. Lets the embedder share the same pooled model as the rest of the
+  stack instead of loading its own copy.
+
+- config.py: add vector_backend ("qdrant" | "milvus") and milvus_uri.
+
+- client.py: pass config.llm_base_url through to the OpenAI adapter, and select
+  the vector store via a factory instead of hardcoding Qdrant. Imports
+  MilvusStore defensively so pymilvus stays optional.
+
+- vector/milvus_store.py: new Milvus backend implementation.
+
+- .gitignore: ignore .env.bak* / .env.*.bak — secret-bearing backups were
+  untracked but NOT ignored, so they could have been committed by accident.
+---
+ .gitignore                                  |   4 +
+ src/hippocampai/adapters/provider_openai.py |   9 +-
+ src/hippocampai/client.py                   |  39 +-
+ src/hippocampai/config.py                   |   4 +
+ src/hippocampai/embed/embedder.py           |  67 ++-
+ src/hippocampai/vector/milvus_store.py      | 522 ++++++++++++++++++++
+ 6 files changed, 619 insertions(+), 26 deletions(-)
+ create mode 100644 src/hippocampai/vector/milvus_store.py
+
+diff --git a/.gitignore b/.gitignore
+index 36f2772..52dc2f8 100755
+--- a/.gitignore
++++ b/.gitignore
+@@ -225,3 +225,7 @@ dist
+ .ruff_cache
+ frontend/node_modules/
+ data/consolidation.db
++
++# secret-bearing backups (never commit)
++.env.bak*
++.env.*.bak
+diff --git a/src/hippocampai/adapters/provider_openai.py b/src/hippocampai/adapters/provider_openai.py
+index 1eef872..b7f9a5b 100755
+--- a/src/hippocampai/adapters/provider_openai.py
++++ b/src/hippocampai/adapters/provider_openai.py
+@@ -12,15 +12,18 @@ logger = logging.getLogger(__name__)
+ class OpenAILLM(BaseLLM):
+     """OpenAI LLM adapter."""
+ 
+-    def __init__(self, api_key: str, model: str = "gpt-4o-mini"):
++    def __init__(self, api_key: str, model: str = "gpt-4o-mini", base_url: str | None = None):
+         try:
+             from openai import OpenAI
+         except ImportError:
+             raise ImportError("openai package required: pip install openai")
+ 
+-        self.client = OpenAI(api_key=api_key)
++        kwargs: dict = {"api_key": api_key}
++        if base_url:
++            kwargs["base_url"] = base_url
++        self.client = OpenAI(**kwargs)
+         self.model = model
+-        logger.info(f"Initialized OpenAI: {model}")
++        logger.info(f"Initialized OpenAI: {model} at {base_url or 'api.openai.com'}")
+ 
+     def generate(
+         self,
+diff --git a/src/hippocampai/client.py b/src/hippocampai/client.py
+index bc8ebb3..84fd003 100755
+--- a/src/hippocampai/client.py
++++ b/src/hippocampai/client.py
+@@ -58,6 +58,11 @@ from hippocampai.storage import MemoryKVStore
+ from hippocampai.telemetry import MemoryTrace, OperationType, get_telemetry
+ from hippocampai.utils.context_injection import ContextInjector
+ from hippocampai.vector.qdrant_store import QdrantStore
++
++try:
++    from hippocampai.vector.milvus_store import MilvusStore
++except ImportError:
++    MilvusStore = None  # pymilvus not installed
+ from hippocampai.versioning import AuditEntry, ChangeType, MemoryVersionControl
+ 
+ if TYPE_CHECKING:
+@@ -125,7 +130,7 @@ def _initialize_llm(
+ 
+     provider_map = {
+         "ollama": lambda: OllamaLLM(model=config.llm_model, base_url=config.llm_base_url),
+-        "openai": lambda: OpenAILLM(api_key=os.getenv("OPENAI_API_KEY", ""), model=config.llm_model),
++        "openai": lambda: OpenAILLM(api_key=os.getenv("OPENAI_API_KEY", ""), model=config.llm_model, base_url=config.llm_base_url),
+         "groq": lambda: GroqLLM(api_key=os.getenv("GROQ_API_KEY", ""), model=config.llm_model),
+         "anthropic": lambda: AnthropicLLM(api_key=os.getenv("ANTHROPIC_API_KEY", ""), model=config.llm_model),
+     }
+@@ -198,15 +203,29 @@ class MemoryClient:
+         )
+ 
+         # Initialize components
+-        self.qdrant = QdrantStore(
+-            url=self.config.qdrant_url,
+-            collection_facts=self.config.collection_facts,
+-            collection_prefs=self.config.collection_prefs,
+-            dimension=self.config.embed_dimension,
+-            hnsw_m=self.config.hnsw_m,
+-            ef_construction=self.config.ef_construction,
+-            ef_search=self.config.ef_search,
+-        )
++        # Vector store factory — supports Qdrant and Milvus backends
++        if self.config.vector_backend == "milvus":
++            if MilvusStore is None:
++                raise ImportError("pymilvus required for Milvus backend: pip install pymilvus")
++            self.qdrant = MilvusStore(
++                uri=self.config.milvus_uri,
++                collection_facts=self.config.collection_facts,
++                collection_prefs=self.config.collection_prefs,
++                dimension=self.config.embed_dimension,
++                hnsw_m=self.config.hnsw_m,
++                ef_construction=self.config.ef_construction,
++                ef_search=self.config.ef_search,
++            )
++        else:
++            self.qdrant = QdrantStore(
++                url=self.config.qdrant_url,
++                collection_facts=self.config.collection_facts,
++                collection_prefs=self.config.collection_prefs,
++                dimension=self.config.embed_dimension,
++                hnsw_m=self.config.hnsw_m,
++                ef_construction=self.config.ef_construction,
++                ef_search=self.config.ef_search,
++            )
+ 
+         self.embedder = get_embedder(
+             model_name=self.config.embed_model,
+diff --git a/src/hippocampai/config.py b/src/hippocampai/config.py
+index 1fb366c..1771dd7 100755
+--- a/src/hippocampai/config.py
++++ b/src/hippocampai/config.py
+@@ -208,6 +208,10 @@ class Config(BaseSettings):
+     # Feature 6: Embedding Model Migration
+     embed_model_version: str = Field(default="1", validation_alias="EMBED_MODEL_VERSION")
+ 
++    # Vector store backend: "qdrant" or "milvus"
++    vector_backend: str = Field(default="qdrant", validation_alias="VECTOR_BACKEND")
++    milvus_uri: str = Field(default="http://localhost:19530", validation_alias="MILVUS_URI")
++
+     def get_weights(self) -> dict[str, float]:
+         return {
+             "sim": self.weight_sim,
+diff --git a/src/hippocampai/embed/embedder.py b/src/hippocampai/embed/embedder.py
+index e782ea1..45d53ba 100755
+--- a/src/hippocampai/embed/embedder.py
++++ b/src/hippocampai/embed/embedder.py
+@@ -1,17 +1,19 @@
+-"""Embedder with batching and quantization."""
++"""Embedder with batching — supports local SentenceTransformer or remote OpenAI-compatible API."""
+ 
++import json
+ import logging
++import os
+ import threading
++import urllib.request
+ from typing import Any, cast
+ 
+ import numpy as np
+-from sentence_transformers import SentenceTransformer
+ 
+ logger = logging.getLogger(__name__)
+ 
+ 
+ class Embedder:
+-    """Thread-safe embedder with batching."""
++    """Thread-safe embedder with batching. Supports local or remote embeddings."""
+ 
+     def __init__(
+         self,
+@@ -23,16 +25,53 @@ class Embedder:
+         self.model_name = model_name
+         self.batch_size = batch_size
+         self.dimension = dimension
++        self.lock = threading.Lock()
++        self.model = None
+ 
+-        # Load model
+-        # Note: quantization is handled by SentenceTransformer internally
+-        # or can be done during inference, not during model loading
+-        self.model = SentenceTransformer(model_name)
++        # Check env vars at init time (after dotenv has loaded)
++        api_url = os.environ.get("EMBED_API_URL", "")
++        api_model = os.environ.get("EMBED_API_MODEL", "")
++        self.use_remote = bool(api_url)
+ 
+-        if quantized:
+-            logger.info("Quantized mode enabled - embeddings will use lower precision")
+-        self.lock = threading.Lock()
+-        logger.info(f"Loaded embedder: {model_name}, quantized={quantized}")
++        if self.use_remote:
++            self.api_url = api_url.rstrip("/")
++            self.api_model = api_model or model_name
++            logger.info(f"Using remote embedder: {self.api_url} model={self.api_model} dim={dimension}")
++        else:
++            from sentence_transformers import SentenceTransformer
++            self.model = SentenceTransformer(model_name)
++            if quantized:
++                logger.info("Quantized mode enabled")
++            logger.info(f"Loaded local embedder: {model_name}, dim={dimension}")
++
++    def _remote_encode(self, texts: list[str]) -> np.ndarray:
++        """Encode texts via OpenAI-compatible embeddings API."""
++        # The API may not support batch, so send one at a time if needed
++        all_embeddings = []
++        for i in range(0, len(texts), self.batch_size):
++            batch = texts[i:i + self.batch_size]
++            data = json.dumps({
++                "model": self.api_model,
++                "input": batch if len(batch) > 1 else batch[0],
++            }).encode()
++            req = urllib.request.Request(
++                f"{self.api_url}/embeddings",
++                data=data,
++                headers={"Content-Type": "application/json"},
++                method="POST",
++            )
++            try:
++                resp = urllib.request.urlopen(req, timeout=30)
++                result = json.loads(resp.read())
++                for item in result.get("data", []):
++                    all_embeddings.append(item["embedding"])
++            except Exception as e:
++                logger.error(f"Remote embedding failed: {e}")
++                # Return zero vectors as fallback
++                for _ in batch:
++                    all_embeddings.append([0.0] * self.dimension)
++
++        return np.array(all_embeddings, dtype=np.float32)
+ 
+     def encode(self, texts: list[str]) -> np.ndarray:
+         """Encode texts to embeddings."""
+@@ -40,13 +79,15 @@ class Embedder:
+             return cast(np.ndarray[Any, Any], np.array([]))
+ 
+         with self.lock:
++            if self.use_remote:
++                return self._remote_encode(texts)
++
+             embeddings = self.model.encode(
+                 texts, batch_size=self.batch_size, show_progress_bar=False, convert_to_numpy=True
+             )
+-        # Ensure we return ndarray
++
+         if isinstance(embeddings, np.ndarray):
+             return embeddings
+-        # Handle List[Tensor] or Tensor cases
+         return cast(np.ndarray[Any, Any], np.array(embeddings))
+ 
+     def encode_single(self, text: str) -> np.ndarray:
+diff --git a/src/hippocampai/vector/milvus_store.py b/src/hippocampai/vector/milvus_store.py
+new file mode 100644
+index 0000000..27b2092
+--- /dev/null
++++ b/src/hippocampai/vector/milvus_store.py
+@@ -0,0 +1,522 @@
++"""Milvus vector store — drop-in replacement for QdrantStore."""
++
++import logging
++import time
++from typing import Any, Optional
++
++import numpy as np
++from pymilvus import (
++    Collection,
++    CollectionSchema,
++    DataType,
++    FieldSchema,
++    MilvusClient,
++    connections,
++    utility,
++)
++
++logger = logging.getLogger(__name__)
++
++# Milvus index params matching Qdrant's HNSW tuning
++DEFAULT_INDEX_PARAMS = {
++    "metric_type": "COSINE",
++    "index_type": "HNSW",
++    "params": {"M": 48, "efConstruction": 256},
++}
++DEFAULT_SEARCH_PARAMS = {"metric_type": "COSINE", "params": {"ef": 128}}
++
++# Max VARCHAR length for Milvus
++MAX_VARCHAR = 65535
++MAX_TAG_LEN = 512
++MAX_ID_LEN = 64
++MAX_FIELD_LEN = 256
++
++
++class MilvusStore:
++    """Milvus store with HNSW optimization — API-compatible with QdrantStore."""
++
++    def __init__(
++        self,
++        uri: str = "http://localhost:19530",
++        collection_facts: str = "hippocampai_facts",
++        collection_prefs: str = "hippocampai_prefs",
++        dimension: int = 384,
++        hnsw_m: int = 48,
++        ef_construction: int = 256,
++        ef_search: int = 128,
++    ):
++        self.uri = uri
++        self.collection_facts = collection_facts
++        self.collection_prefs = collection_prefs
++        self.dimension = dimension
++        self.hnsw_m = hnsw_m
++        self.ef_construction = ef_construction
++        self.ef_search = ef_search
++
++        # Connect using pymilvus connections (for Collection API)
++        host = uri.replace("http://", "").replace("https://", "").split(":")[0]
++        port = uri.split(":")[-1].split("/")[0] if ":" in uri.split("//")[-1] else "19530"
++        connections.connect(alias="default", host=host, port=int(port))
++
++        self.index_params = {
++            "metric_type": "COSINE",
++            "index_type": "HNSW",
++            "params": {"M": hnsw_m, "efConstruction": ef_construction},
++        }
++        self.search_params = {
++            "metric_type": "COSINE",
++            "params": {"ef": ef_search},
++        }
++
++        logger.info(f"Connected to Milvus at {uri}")
++        self._ensure_collections()
++
++    def _build_schema(self) -> CollectionSchema:
++        """Build the collection schema matching QdrantStore's payload structure."""
++        fields = [
++            FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=MAX_ID_LEN),
++            FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=self.dimension),
++            # Core payload fields
++            FieldSchema(name="user_id", dtype=DataType.VARCHAR, max_length=MAX_FIELD_LEN),
++            FieldSchema(name="type", dtype=DataType.VARCHAR, max_length=MAX_FIELD_LEN),
++            FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=MAX_VARCHAR),
++            FieldSchema(name="importance", dtype=DataType.FLOAT),
++            FieldSchema(name="confidence", dtype=DataType.FLOAT),
++            FieldSchema(name="tags", dtype=DataType.VARCHAR, max_length=MAX_TAG_LEN),
++            FieldSchema(name="created_at", dtype=DataType.VARCHAR, max_length=MAX_FIELD_LEN),
++            FieldSchema(name="updated_at", dtype=DataType.VARCHAR, max_length=MAX_FIELD_LEN),
++            FieldSchema(name="session_id", dtype=DataType.VARCHAR, max_length=MAX_FIELD_LEN),
++            FieldSchema(name="is_deleted", dtype=DataType.BOOL),
++            FieldSchema(name="is_archived", dtype=DataType.BOOL),
++            # Extra payload stored as JSON string
++            FieldSchema(name="extra_payload", dtype=DataType.VARCHAR, max_length=MAX_VARCHAR),
++        ]
++        return CollectionSchema(fields=fields, description="HippocampAI memory collection")
++
++    def _ensure_collections(self, collection_name: Optional[str] = None) -> None:
++        """Create collections if they don't exist."""
++        import json
++
++        names = [collection_name] if collection_name else [self.collection_facts, self.collection_prefs]
++
++        for name in names:
++            if utility.has_collection(name):
++                logger.debug(f"Collection '{name}' already exists")
++                col = Collection(name)
++                col.load()
++                continue
++
++            schema = self._build_schema()
++            col = Collection(name=name, schema=schema)
++
++            # Create HNSW index on vector field
++            col.create_index(field_name="vector", index_params=self.index_params)
++
++            # Load collection into memory
++            col.load()
++
++            logger.info(f"Created Milvus collection '{name}' with HNSW index (M={self.hnsw_m})")
++
++    def ensure_collection(
++        self,
++        collection_name: str,
++        vector_size: Optional[int] = None,
++        distance: str = "Cosine",
++    ) -> None:
++        """Public method to ensure a collection exists."""
++        if utility.has_collection(collection_name):
++            return
++
++        dim = vector_size or self.dimension
++        metric = {"Cosine": "COSINE", "Euclid": "L2", "Dot": "IP"}.get(distance, "COSINE")
++
++        fields = [
++            FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=MAX_ID_LEN),
++            FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=dim),
++            FieldSchema(name="user_id", dtype=DataType.VARCHAR, max_length=MAX_FIELD_LEN),
++            FieldSchema(name="type", dtype=DataType.VARCHAR, max_length=MAX_FIELD_LEN),
++            FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=MAX_VARCHAR),
++            FieldSchema(name="importance", dtype=DataType.FLOAT),
++            FieldSchema(name="confidence", dtype=DataType.FLOAT),
++            FieldSchema(name="tags", dtype=DataType.VARCHAR, max_length=MAX_TAG_LEN),
++            FieldSchema(name="created_at", dtype=DataType.VARCHAR, max_length=MAX_FIELD_LEN),
++            FieldSchema(name="updated_at", dtype=DataType.VARCHAR, max_length=MAX_FIELD_LEN),
++            FieldSchema(name="session_id", dtype=DataType.VARCHAR, max_length=MAX_FIELD_LEN),
++            FieldSchema(name="is_deleted", dtype=DataType.BOOL),
++            FieldSchema(name="is_archived", dtype=DataType.BOOL),
++            FieldSchema(name="extra_payload", dtype=DataType.VARCHAR, max_length=MAX_VARCHAR),
++        ]
++        schema = CollectionSchema(fields=fields)
++        col = Collection(name=collection_name, schema=schema)
++
++        idx_params = dict(self.index_params)
++        idx_params["metric_type"] = metric
++        col.create_index(field_name="vector", index_params=idx_params)
++        col.load()
++        logger.info(f"Created collection '{collection_name}' with metric={metric}")
++
++    def _payload_to_row(self, id: str, vector: Any, payload: dict[str, Any]) -> dict[str, Any]:
++        """Convert a QdrantStore-style payload dict to a Milvus row."""
++        import json
++
++        vec = vector.tolist() if isinstance(vector, np.ndarray) else list(vector)
++
++        # Extract known fields, put the rest in extra_payload
++        known_keys = {
++            "user_id", "type", "text", "importance", "confidence",
++            "tags", "created_at", "updated_at", "session_id",
++            "is_deleted", "is_archived",
++        }
++        extra = {k: v for k, v in payload.items() if k not in known_keys}
++
++        # Handle tags: QdrantStore stores as list, Milvus stores as JSON string
++        tags = payload.get("tags", [])
++        if isinstance(tags, list):
++            tags_str = json.dumps(tags)
++        else:
++            tags_str = str(tags)
++
++        return {
++            "id": str(id),
++            "vector": vec,
++            "user_id": str(payload.get("user_id", "")),
++            "type": str(payload.get("type", "")),
++            "text": str(payload.get("text", ""))[:MAX_VARCHAR],
++            "importance": float(payload.get("importance", 0.0)),
++            "confidence": float(payload.get("confidence", 0.0)),
++            "tags": tags_str[:MAX_TAG_LEN],
++            "created_at": str(payload.get("created_at", "")),
++            "updated_at": str(payload.get("updated_at", "")),
++            "session_id": str(payload.get("session_id", "")),
++            "is_deleted": bool(payload.get("is_deleted", False)),
++            "is_archived": bool(payload.get("is_archived", False)),
++            "extra_payload": json.dumps(extra)[:MAX_VARCHAR] if extra else "{}",
++        }
++
++    def _row_to_result(self, row: dict[str, Any], score: Optional[float] = None) -> dict[str, Any]:
++        """Convert a Milvus row back to QdrantStore-compatible result format."""
++        import json
++
++        # Reconstruct payload
++        payload = {
++            "user_id": row.get("user_id", ""),
++            "type": row.get("type", ""),
++            "text": row.get("text", ""),
++            "importance": row.get("importance", 0.0),
++            "confidence": row.get("confidence", 0.0),
++            "created_at": row.get("created_at", ""),
++            "updated_at": row.get("updated_at", ""),
++            "session_id": row.get("session_id", ""),
++            "is_deleted": row.get("is_deleted", False),
++            "is_archived": row.get("is_archived", False),
++        }
++
++        # Parse tags back to list
++        tags_str = row.get("tags", "[]")
++        try:
++            payload["tags"] = json.loads(tags_str) if tags_str else []
++        except (json.JSONDecodeError, TypeError):
++            payload["tags"] = []
++
++        # Merge extra payload
++        extra_str = row.get("extra_payload", "{}")
++        try:
++            extra = json.loads(extra_str) if extra_str else {}
++            payload.update(extra)
++        except (json.JSONDecodeError, TypeError):
++            pass
++
++        result: dict[str, Any] = {"id": str(row.get("id", "")), "payload": payload}
++        if score is not None:
++            result["score"] = score
++        return result
++
++    def upsert(
++        self, collection_name: str, id: str, vector: np.ndarray, payload: dict[str, Any]
++    ) -> None:
++        """Insert or update a point."""
++        self._ensure_collections(collection_name)
++        col = Collection(collection_name)
++
++        row = self._payload_to_row(id, vector, payload)
++
++        # Milvus upsert
++        col.upsert(data=[row])
++        col.flush()
++
++    def bulk_upsert(
++        self,
++        collection_name: str,
++        ids: list[str],
++        vectors: list[np.ndarray],
++        payloads: list[dict[str, Any]],
++    ) -> None:
++        """Bulk insert or update multiple points."""
++        if not (len(ids) == len(vectors) == len(payloads)):
++            raise ValueError("ids, vectors, and payloads must have the same length")
++
++        self._ensure_collections(collection_name)
++        col = Collection(collection_name)
++
++        rows = [
++            self._payload_to_row(id_val, vec, payload)
++            for id_val, vec, payload in zip(ids, vectors, payloads)
++        ]
++
++        col.upsert(data=rows)
++        col.flush()
++        logger.debug(f"Bulk upserted {len(rows)} points to {collection_name}")
++
++    def search(
++        self,
++        collection_name: str,
++        vector: np.ndarray,
++        limit: int = 100,
++        filters: Optional[dict[str, Any]] = None,
++        ef: Optional[int] = None,
++        include_deleted: bool = False,
++    ) -> list[dict[str, Any]]:
++        """Vector similarity search."""
++        if not utility.has_collection(collection_name):
++            logger.warning(f"Collection {collection_name} does not exist. Returning empty list.")
++            return []
++
++        col = Collection(collection_name)
++
++        # Build filter expression
++        expr_parts = []
++
++        if not include_deleted:
++            expr_parts.append("is_deleted == false")
++
++        if filters:
++            if "user_id" in filters:
++                expr_parts.append(f'user_id == "{filters["user_id"]}"')
++            if "type" in filters:
++                expr_parts.append(f'type == "{filters["type"]}"')
++            # Tags filtering requires JSON contains — use LIKE for simplicity
++            if "tags" in filters:
++                tags = filters["tags"]
++                if isinstance(tags, str):
++                    tags = [tags]
++                tag_exprs = [f'tags like "%{t}%"' for t in tags]
++                if tag_exprs:
++                    expr_parts.append(f"({' or '.join(tag_exprs)})")
++
++        expr = " and ".join(expr_parts) if expr_parts else ""
++
++        search_params = dict(self.search_params)
++        if ef:
++            search_params["params"]["ef"] = ef
++
++        vec = vector.tolist() if isinstance(vector, np.ndarray) else vector
++
++        output_fields = [
++            "id", "user_id", "type", "text", "importance", "confidence",
++            "tags", "created_at", "updated_at", "session_id",
++            "is_deleted", "is_archived", "extra_payload",
++        ]
++
++        results = col.search(
++            data=[vec],
++            anns_field="vector",
++            param=search_params,
++            limit=limit,
++            expr=expr if expr else None,
++            output_fields=output_fields,
++        )
++
++        output = []
++        for hits in results:
++            for hit in hits:
++                row = hit.entity.to_dict() if hasattr(hit.entity, "to_dict") else {}
++                # Some pymilvus versions use different access patterns
++                if not row:
++                    row = {f: getattr(hit.entity, f, hit.entity.get(f)) for f in output_fields if hasattr(hit.entity, f) or (hasattr(hit.entity, 'get') and hit.entity.get(f) is not None)}
++                row["id"] = str(hit.id)
++                output.append(self._row_to_result(row, score=hit.score))
++
++        return output
++
++    def scroll(
++        self,
++        collection_name: str,
++        filters: Optional[dict[str, Any]] = None,
++        limit: int = 100,
++        include_deleted: bool = False,
++        include_archived: bool = False,
++    ) -> list[dict[str, Any]]:
++        """Scroll through points (query without vector)."""
++        if not utility.has_collection(collection_name):
++            logger.warning(f"Collection {collection_name} does not exist. Returning empty list.")
++            return []
++
++        col = Collection(collection_name)
++
++        expr_parts = []
++
++        if not include_deleted:
++            expr_parts.append("is_deleted == false")
++        if not include_archived:
++            expr_parts.append("is_archived == false")
++
++        if filters:
++            if "should" in filters:
++                # OR logic for should conditions
++                should_parts = []
++                for item in filters["should"]:
++                    for key, value in item.items():
++                        should_parts.append(f'{key} == "{value}"')
++                if should_parts:
++                    expr_parts.append(f"({' or '.join(should_parts)})")
++            else:
++                if "user_id" in filters:
++                    expr_parts.append(f'user_id == "{filters["user_id"]}"')
++                if "session_id" in filters:
++                    uid = filters.get("user_id", filters["session_id"])
++                    sid = filters["session_id"]
++                    expr_parts.append(f'(user_id == "{uid}" or session_id == "{sid}")')
++                    # Remove the user_id condition we may have just added
++                    expr_parts = [e for e in expr_parts if not e.startswith(f'user_id == "{uid}"')]
++                if "type" in filters:
++                    expr_parts.append(f'type == "{filters["type"]}"')
++                if "tags" in filters:
++                    tags = filters["tags"]
++                    if isinstance(tags, str):
++                        tags = [tags]
++                    tag_exprs = [f'tags like "%{t}%"' for t in tags]
++                    if tag_exprs:
++                        expr_parts.append(f"({' or '.join(tag_exprs)})")
++
++        expr = " and ".join(expr_parts) if expr_parts else ""
++
++        output_fields = [
++            "id", "user_id", "type", "text", "importance", "confidence",
++            "tags", "created_at", "updated_at", "session_id",
++            "is_deleted", "is_archived", "extra_payload",
++        ]
++
++        results = col.query(
++            expr=expr if expr else "id != ''",
++            output_fields=output_fields,
++            limit=limit,
++        )
++
++        return [self._row_to_result(row) for row in results]
++
++    def delete(self, collection_name: str, ids: list[str]) -> None:
++        """Delete points by IDs."""
++        if not utility.has_collection(collection_name):
++            logger.warning(f"Collection {collection_name} does not exist. Skipping delete.")
++            return
++
++        col = Collection(collection_name)
++        # Build expression for deletion
++        id_list = ", ".join(f'"{i}"' for i in ids)
++        col.delete(expr=f"id in [{id_list}]")
++        col.flush()
++
++    def get(self, collection_name: str, id: str) -> Optional[dict[str, Any]]:
++        """Get a single point by ID."""
++        if not utility.has_collection(collection_name):
++            return None
++
++        col = Collection(collection_name)
++        output_fields = [
++            "id", "user_id", "type", "text", "importance", "confidence",
++            "tags", "created_at", "updated_at", "session_id",
++            "is_deleted", "is_archived", "extra_payload",
++        ]
++
++        try:
++            results = col.query(
++                expr=f'id == "{id}"',
++                output_fields=output_fields,
++                limit=1,
++            )
++            if results:
++                return self._row_to_result(results[0])
++            return None
++        except Exception as e:
++            logger.error(f"Failed to get point {id}: {e}")
++            return None
++
++    def update(self, collection_name: str, id: str, payload: dict[str, Any]) -> bool:
++        """Update payload of an existing point."""
++        if not utility.has_collection(collection_name):
++            return False
++
++        try:
++            # Get existing point to preserve vector
++            col = Collection(collection_name)
++            existing = col.query(
++                expr=f'id == "{id}"',
++                output_fields=["vector", "user_id", "type", "text", "importance", "confidence",
++                              "tags", "created_at", "updated_at", "session_id",
++                              "is_deleted", "is_archived", "extra_payload"],
++                limit=1,
++            )
++
++            if not existing:
++                return False
++
++            old_row = existing[0]
++
++            # Merge old payload with new payload
++            old_result = self._row_to_result(old_row)
++            merged_payload = {**old_result["payload"], **payload}
++
++            # Get vector (need to re-query with vector)
++            vec_results = col.query(
++                expr=f'id == "{id}"',
++                output_fields=["vector"],
++                limit=1,
++            )
++            if not vec_results:
++                return False
++
++            vector = vec_results[0].get("vector", [])
++
++            # Upsert with merged payload
++            row = self._payload_to_row(id, vector, merged_payload)
++            col.upsert(data=[row])
++            col.flush()
++            return True
++        except Exception as e:
++            logger.error(f"Failed to update point {id}: {e}")
++            return False
++
++    def create_snapshot(self, collection_name: str) -> str:
++        """Create collection snapshot (Milvus equivalent: backup/compaction)."""
++        if not utility.has_collection(collection_name):
++            raise ValueError(f"Collection {collection_name} does not exist")
++
++        col = Collection(collection_name)
++        col.compact()
++        timestamp = time.strftime("%Y%m%d_%H%M%S")
++        snapshot_name = f"{collection_name}_{timestamp}"
++        logger.info(f"Compacted collection {collection_name} (snapshot: {snapshot_name})")
++        return snapshot_name
++
++    def _wait_for_collection_ready(self, collection_name: str, max_attempts: int = 10) -> None:
++        """Wait for collection to be loaded and ready."""
++        col = Collection(collection_name)
++        for attempt in range(max_attempts):
++            try:
++                progress = utility.loading_progress(collection_name)
++                if progress.get("loading_progress", 0) == 100 or progress == {"loading_progress": "100%"}:
++                    return
++            except Exception:
++                pass
++
++            try:
++                # Alternative: just try a simple query
++                col.query(expr="id != ''", limit=1, output_fields=["id"])
++                return
++            except Exception:
++                pass
++
++            if attempt < max_attempts - 1:
++                time.sleep(0.2)
++
++        logger.warning(f"Collection {collection_name} may not be fully ready")
+-- 
+2.47.3
+

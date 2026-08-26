@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+{% block title %}Browse & manual queue{% endblock %}
+
+{% block content %}
+<section class="browse-picker">
+  <h2>Browse Immich</h2>
+  <form method="get" action="/browse" class="picker-form" id="picker-form">
+    <label>Album:
+      <select name="album_id" onchange="this.form.tag_id.value='';this.form.submit()">
+        <option value="">-- pick album --</option>
+        {% for a in albums %}
+          <option value="{{ a.id }}" {% if a.id == selected_album %}selected{% endif %}>
+            {{ a.albumName }} ({{ a.assetCount }})
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>or Tag:
+      <select name="tag_id" onchange="this.form.album_id.value='';this.form.submit()">
+        <option value="">-- pick tag --</option>
+        {% for t in tags %}
+          <option value="{{ t.id }}" {% if t.id == selected_tag %}selected{% endif %}>
+            {{ t.value or t.name }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Per page:
+      <select name="page_size" onchange="this.form.submit()">
+        {% for opt in page_size_options %}
+          <option value="{{ opt }}" {% if page_size_str == (opt | string) %}selected{% endif %}>{{ opt }}</option>
+        {% endfor %}
+        <option value="all" {% if show_all %}selected{% endif %}>All</option>
+      </select>
+    </label>
+    <button type="button" class="btn-small" onclick="location.reload()"
+            title="Re-fetch albums + tags from Immich (use after adding new ones in the Immich UI)">
+      &#x21bb; refresh albums/tags
+    </button>
+  </form>
+  <p class="muted small">Selection persists across page navigations until you change the album/tag scope. Use "Queue ALL incl. children" below if a parent tag's children should also be processed.</p>
+</section>
+
+{% if selected_album or selected_tag %}
+<section class="add-as-watch">
+  <form method="post" action="/api/sources/add" class="add-source-form">
+    <input type="hidden" name="role" value="watch">
+    {% if selected_album %}
+      <input type="hidden" name="kind" value="album">
+      <input type="hidden" name="external_id" value="{{ selected_album }}">
+      {% for a in albums if a.id == selected_album %}
+        <input type="hidden" name="name" value="{{ a.albumName }}">
+        <button type="submit">Add "{{ a.albumName }}" as watch source</button>
+      {% endfor %}
+    {% else %}
+      <input type="hidden" name="kind" value="tag">
+      <input type="hidden" name="external_id" value="{{ selected_tag }}">
+      {% for t in tags if t.id == selected_tag %}
+        <input type="hidden" name="name" value="{{ t.value or t.name }}">
+        <button type="submit">Add "{{ t.value or t.name }}" as watch source ({{ expanded_tag_count }} tag(s) incl. children)</button>
+      {% endfor %}
+    {% endif %}
+  </form>
+</section>
+
+<section class="asset-list">
+  <div class="asset-toolbar">
+    <h3>
+      {% if show_all %}
+        {{ total }} asset(s) total
+      {% elif page_list %}
+        {{ total }} asset(s) total - page {{ page }} of {{ total_pages }}
+      {% else %}
+        Page {{ page }} - {{ assets | length }} on this page (more available)
+      {% endif %}
+      {% if selected_tag and expanded_tag_count > 1 %}
+        <span class="muted small">(direct only; "Queue ALL incl. children" below covers nested)</span>
+      {% endif %}
+    </h3>
+    {% if selected_tag and expanded_tag_count > 1 %}
+      <p class="muted small">
+        This tag has <strong>{{ expanded_tag_count - 1 }} child tag(s)</strong>.
+        The list above shows only assets directly tagged with the parent.
+        Use "Queue ALL incl. children" below to include child-tagged assets too
+        (per-tag fan-out, may take 1-2 min first time).
+      </p>
+    {% endif %}
+    <div class="selection-info">
+      <strong id="sel-count">0</strong> selected across all pages
+      <button type="button" id="clear-sel" class="btn-small">Clear selection</button>
+      <button type="button" class="btn-small" onclick="location.reload()"
+              title="Re-fetch this page's asset list from Immich (use after Immich indexes newly-uploaded photos)">
+        &#x21bb; refresh assets
+      </button>
+    </div>
+  </div>
+
+  <form method="post" action="/api/queue" class="queue-form" id="queue-form">
+    <table class="assets">
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="page-toggle"></th>
+          <th>Asset</th><th>Filename</th><th>Resolution</th><th>Type</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in assets %}
+        <tr data-asset-id="{{ a.id }}">
+          <td><input type="checkbox" class="asset-cb" data-id="{{ a.id }}"></td>
+          <td><code>{{ a.id[:8] }}</code></td>
+          <td>{{ a.originalFileName }}</td>
+          <td>
+            {% set w = (a.exifInfo or {}).get("exifImageWidth") or 0 %}
+            {% set h = (a.exifInfo or {}).get("exifImageHeight") or 0 %}
+            {% if w and h %}{{ w }} x {{ h }} ({{ "%.1f" | format((w*h)/1000000) }} MP){% else %}?{% endif %}
+          </td>
+          <td>{{ a.type }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="queue-actions">
+      <button type="submit" id="queue-selected-btn">Queue selected (<span id="sel-count2">0</span>)</button>
+    </div>
+  </form>
+
+  <form method="post" action="/api/queue/all" class="queue-form" style="margin-top:0.5rem">
+    {% if selected_album %}<input type="hidden" name="album_id" value="{{ selected_album }}">{% endif %}
+    {% if selected_tag %}<input type="hidden" name="tag_id" value="{{ selected_tag }}">{% endif %}
+    <button type="submit" class="btn-large"
+            onclick="return confirm('Queue every asset directly matching this {{ 'album' if selected_album else 'tag' }}? Server pre-counts on submit (can take ~10-30s for large sources).')">
+      Queue ALL matching (this scope, direct only)
+    </button>
+    {% if selected_tag and expanded_tag_count > 1 %}
+      <button type="submit" name="include_children" value="1" class="btn-large"
+              onclick="return confirm('This will fan out to {{ expanded_tag_count }} child tags. First-time fetch can take 1-2 minutes. Continue?')">
+        Queue ALL incl. {{ expanded_tag_count - 1 }} child tag(s) - SLOW first time
+      </button>
+    {% endif %}
+  </form>
+
+  {% if not show_all and total_pages > 1 %}
+  <nav class="pagination">
+    {% if page > 1 %}
+      <a href="?{% if selected_album %}album_id={{ selected_album }}{% else %}tag_id={{ selected_tag }}{% endif %}&page={{ page - 1 }}&page_size={{ page_size_str }}">&laquo; prev</a>
+    {% else %}
+      <span class="disabled">&laquo; prev</span>
+    {% endif %}
+    {% for p in page_list %}
+      {% if p == "..." %}
+        <span class="ellipsis">&hellip;</span>
+      {% elif p == page %}
+        <span class="current">{{ p }}</span>
+      {% else %}
+        <a href="?{% if selected_album %}album_id={{ selected_album }}{% else %}tag_id={{ selected_tag }}{% endif %}&page={{ p }}&page_size={{ page_size_str }}">{{ p }}</a>
+      {% endif %}
+    {% endfor %}
+    {% if page < total_pages %}
+      <a href="?{% if selected_album %}album_id={{ selected_album }}{% else %}tag_id={{ selected_tag }}{% endif %}&page={{ page + 1 }}&page_size={{ page_size_str }}">next &raquo;</a>
+    {% else %}
+      <span class="disabled">next &raquo;</span>
+    {% endif %}
+  </nav>
+  {% endif %}
+</section>
+
+<script>
+(function() {
+  // Scope selection state to the current album/tag, so it persists across
+  // page navigations but resets when the scope changes.
+  const SCOPE = "{{ selected_album or '' }}|{{ selected_tag or '' }}";
+  const KEY = "upscale-sel-" + SCOPE;
+  function loadSel() {
+    try { return new Set(JSON.parse(sessionStorage.getItem(KEY) || "[]")); }
+    catch (e) { return new Set(); }
+  }
+  function saveSel(s) {
+    sessionStorage.setItem(KEY, JSON.stringify([...s]));
+  }
+  const sel = loadSel();
+  const checkboxes = document.querySelectorAll(".asset-cb");
+  function refreshCount() {
+    document.getElementById("sel-count").textContent = sel.size;
+    document.getElementById("sel-count2").textContent = sel.size;
+  }
+  // Apply existing selection state
+  checkboxes.forEach(cb => {
+    if (sel.has(cb.dataset.id)) cb.checked = true;
+    cb.addEventListener("change", () => {
+      if (cb.checked) sel.add(cb.dataset.id);
+      else sel.delete(cb.dataset.id);
+      saveSel(sel);
+      refreshCount();
+    });
+  });
+  refreshCount();
+  // Toggle-all on this page
+  const pageToggle = document.getElementById("page-toggle");
+  if (pageToggle) {
+    pageToggle.addEventListener("change", () => {
+      checkboxes.forEach(cb => {
+        cb.checked = pageToggle.checked;
+        if (cb.checked) sel.add(cb.dataset.id);
+        else sel.delete(cb.dataset.id);
+      });
+      saveSel(sel);
+      refreshCount();
+    });
+  }
+  // Clear-all button
+  const clearBtn = document.getElementById("clear-sel");
+  if (clearBtn) {
+    clearBtn.addEventListener("click", () => {
+      sel.clear();
+      saveSel(sel);
+      checkboxes.forEach(cb => cb.checked = false);
+      refreshCount();
+    });
+  }
+  // On submit: append hidden inputs for ALL ids in selection (including from
+  // other pages not currently rendered).
+  const queueForm = document.getElementById("queue-form");
+  if (queueForm) {
+    queueForm.addEventListener("submit", e => {
+      sel.forEach(id => {
+        const inp = document.createElement("input");
+        inp.type = "hidden";
+        inp.name = "asset_id";
+        inp.value = id;
+        queueForm.appendChild(inp);
+      });
+      // Clear selection after submit so it doesn't carry across re-queues
+      sel.clear();
+      saveSel(sel);
+    });
+  }
+})();
+</script>
+{% endif %}
+{% endblock %}

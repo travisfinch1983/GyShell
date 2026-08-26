@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Eye, EyeOff, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { KNOWN_SOURCE_TAGS, externalModelSourceSchema, type CatalogModel } from '@gyshell/shared'
-import { modelSourcesApi, balanceHistoryApi, type ExternalModelSourceWire, type AvailableModel, type SourceBalance, type BalanceHistoryResult } from '../../stores/modelSourcesApi'
+import { modelSourcesApi, balanceHistoryApi, type ExternalModelSourceWire, type AvailableModel, type SourceBalance, type BalanceHistoryResult, type ModelOptions, type ModelOptionsMap, type CacheStatEntry } from '../../stores/modelSourcesApi'
 import { providerServicesApi } from '../../stores/providerServicesApi'
 import { PROVIDER_SERVICE_CAPS, type ProviderServiceWire } from '@gyshell/shared'
 import { hermesApi } from '../../stores/hermesApi'
@@ -319,12 +319,23 @@ const tdc: React.CSSProperties = { padding: '4px 8px', textAlign: 'center', whit
 const fmtCtx = (n?: number | null) => (n == null ? '—' : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
 const fmtCost = (v?: number | null) =>
   v == null ? '—' : v === 0 ? 'free' : v < 1 ? `$${v.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}` : `$${v.toFixed(2)}`
+const fmtTok = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
+const cacheLbl: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, cursor: 'pointer' }
 
 /** Expandable list of a source's upstream models with enable checkboxes + cost/context columns.
  *  Curate which models are proxied / shown (all checked ⇒ empty allow-list = allow-all). */
-const ModelCuration: React.FC<{ sourceId: string; onSelection: (models: string[]) => void }> = ({ sourceId, onSelection }) => {
+const ModelCuration: React.FC<{
+  sourceId: string
+  /** the source's STORED per-model options, so unsaved toggles round-trip through the parent. */
+  modelOptions?: ModelOptionsMap
+  onSelection: (models: string[]) => void
+  onOptions: (opts: ModelOptionsMap) => void
+}> = ({ sourceId, modelOptions, onSelection, onOptions }) => {
   const [models, setModels] = useState<AvailableModel[]>([])
   const [checked, setChecked] = useState<Set<string>>(new Set())
+  const [opts, setOpts] = useState<ModelOptionsMap>(modelOptions ?? {})
+  const [stats, setStats] = useState<Record<string, CacheStatEntry>>({})
+  const [statsSince, setStatsSince] = useState<number>(0)
   const [loading, setLoading] = useState(true)
   const [q, setQ] = useState('')
   const [err, setErr] = useState<string | null>(null)
@@ -338,6 +349,12 @@ const ModelCuration: React.FC<{ sourceId: string; onSelection: (models: string[]
       setChecked(new Set(r.models.filter((m) => m.enabled).map((m) => m.id)))
       setLoading(false)
     }).catch((e) => { if (alive) { setErr(String(e?.message ?? e)); setLoading(false) } })
+    // Tallies are cheap and local to the proxy — fetch alongside so a model that is "on" but
+    // never actually caching is visible instead of silently assumed to be working.
+    modelSourcesApi.cacheStats(sourceId).then((s) => {
+      if (!alive) return
+      setStats(s.models || {}); setStatsSince(s.since || 0)
+    })
     return () => { alive = false }
   }, [sourceId])
 
@@ -349,6 +366,20 @@ const ModelCuration: React.FC<{ sourceId: string; onSelection: (models: string[]
   useEffect(() => {
     if (!loading && models.length) onSelection(checked.size === models.length ? [] : [...checked])
   }, [checked, loading, models.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Options are opt-OUT: only DEVIATIONS from the all-on default are persisted, so an entry
+  // that returns to defaults is dropped rather than pinning today's default forever.
+  const setOpt = (id: string, patch: ModelOptions) =>
+    setOpts((o) => {
+      const next: ModelOptionsMap = { ...o, [id]: { ...(o[id] || {}), ...patch } }
+      const e = next[id]
+      if (e.cacheEphemeral !== false && e.cacheExtended !== false) delete next[id]
+      return next
+    })
+  useEffect(() => { if (!loading) onOptions(opts) }, [opts, loading]) // eslint-disable-line react-hooks/exhaustive-deps
+  const cacheOn = (id: string) => opts[id]?.cacheEphemeral !== false
+  const extOn = (id: string) => opts[id]?.cacheExtended !== false
+  const anyCache = models.some((m) => m.cacheSupported)
 
   if (loading) return <div style={{ ...sub, padding: '6px 0' }}>Loading models…</div>
   if (err) return <div style={{ fontSize: 12, color: 'var(--danger)', padding: '4px 0' }}>Couldn’t load models: {err}</div>
@@ -368,6 +399,8 @@ const ModelCuration: React.FC<{ sourceId: string; onSelection: (models: string[]
             <tr style={{ position: 'sticky', top: 0, background: 'var(--bg-elev, var(--bg))', color: 'var(--fg-muted)' }}>
               <th style={thc}></th><th style={{ ...thc, textAlign: 'left' }}>Model</th>
               <th style={thc}>Ctx</th><th style={thc}>In $/M</th><th style={thc}>Out $/M</th><th style={thc}>Cache $/M</th>
+              {anyCache && <th style={thc} title="Prompt caching. ON = the proxy injects cache breakpoints for you; 1h = keep the system prefix cached an hour instead of 5 minutes.">Caching</th>}
+              {anyCache && <th style={thc} title={statsSince ? `Cache tokens the upstream reported since the proxy started (${new Date(statsSince).toLocaleString()}).` : 'Cache tokens reported by the upstream.'}>Read / Wrote</th>}
             </tr>
           </thead>
           <tbody>
@@ -379,6 +412,39 @@ const ModelCuration: React.FC<{ sourceId: string; onSelection: (models: string[]
                 <td style={tdc}>{fmtCost(m.pricing?.inputPerM)}</td>
                 <td style={tdc}>{fmtCost(m.pricing?.outputPerM)}</td>
                 <td style={tdc}>{fmtCost(m.pricing?.cacheReadPerM)}</td>
+                {anyCache && (
+                  <td style={tdc} onClick={(e) => e.stopPropagation()}>
+                    {m.cacheSupported ? (
+                      <span style={{ display: 'inline-flex', gap: 9, alignItems: 'center' }}>
+                        <label style={cacheLbl} title="Inject cache_control breakpoints for this model. Default ON.">
+                          <input type="checkbox" checked={cacheOn(m.id)} onChange={(e) => setOpt(m.id, { cacheEphemeral: e.target.checked })} /> on
+                        </label>
+                        <label style={{ ...cacheLbl, opacity: cacheOn(m.id) ? 1 : 0.35 }} title="1-hour TTL on the stable system prefix instead of 5 minutes. Costs more per cache WRITE, so it wins only if you come back within the hour.">
+                          <input type="checkbox" disabled={!cacheOn(m.id)} checked={extOn(m.id)} onChange={(e) => setOpt(m.id, { cacheExtended: e.target.checked })} /> 1h
+                        </label>
+                      </span>
+                    ) : (
+                      <span
+                        style={{ color: 'var(--fg-muted)' }}
+                        title={m.pricing?.cacheReadPerM != null
+                          ? 'This provider caches automatically server-side — there is nothing for the proxy to switch on or off.'
+                          : 'No prompt caching offered for this model.'}
+                      >
+                        {m.pricing?.cacheReadPerM != null ? 'auto' : '—'}
+                      </span>
+                    )}
+                  </td>
+                )}
+                {anyCache && (
+                  <td style={{ ...tdc, fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+                    {stats[m.id]
+                      ? <span title={`${stats[m.id].requests} request(s), ${stats[m.id].injected} with breakpoints injected · in ${fmtTok(stats[m.id].input)} / out ${fmtTok(stats[m.id].output)}`}>
+                          <span style={{ color: stats[m.id].cacheRead ? 'var(--success)' : 'var(--fg-muted)' }}>{fmtTok(stats[m.id].cacheRead)}</span>
+                          {' / '}{fmtTok(stats[m.id].cacheWrite)}
+                        </span>
+                      : <span style={{ color: 'var(--fg-muted)' }}>—</span>}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -537,6 +603,7 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
   const [expanded, setExpanded] = useState<string | null>(null)
   const [balances, setBalances] = useState<Record<string, SourceBalance>>({})
   const [pendingSel, setPendingSel] = useState<Record<string, string[]>>({}) // curation selection per source (for the Save button)
+  const [pendingOpts, setPendingOpts] = useState<Record<string, ModelOptionsMap>>({}) // per-model caching toggles, saved with the selection
 
   const [chartId, setChartId] = useState<string | null>(null)
   const loadBalances = () => {
@@ -560,9 +627,10 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
 
   const discoveredCount = (sourceId: string) => catalog.filter((m) => m.sourceId === sourceId).length
 
-  const saveRow = async (i: number, overrides: Partial<{ models: string[] }> = {}) => {
+  const saveRow = async (i: number, overrides: Partial<{ models: string[]; modelOptions: ModelOptionsMap }> = {}) => {
     const d = rows[i]
     if (overrides.models) up(i, { models: overrides.models }) // reflect the curated selection in the row
+    if (overrides.modelOptions) up(i, { modelOptions: overrides.modelOptions })
     const candidate = {
       id: d.id || slugify(d.displayName || ''),
       tag: (d.tag || '').toUpperCase(),
@@ -574,6 +642,10 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
       adminApiKey: d.adminApiKey && !d.adminApiKey.startsWith('***') ? d.adminApiKey : undefined,
       discovery: d.discovery ?? 'auto',
       models: overrides.models ?? d.models ?? [],
+      // MUST be carried on EVERY save path: POST /external-sources replaces the whole source
+      // object, so omitting this would silently wipe the per-model caching toggles whenever
+      // someone edited an unrelated field like the base URL.
+      modelOptions: overrides.modelOptions ?? d.modelOptions ?? undefined,
       enabled: d.enabled !== false,
     }
     const parsed = externalModelSourceSchema.safeParse(candidate)
@@ -711,14 +783,19 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
                   <button
                     style={{ ...btn, padding: '4px 12px', fontSize: 12, fontWeight: 600, borderColor: 'var(--accent)', color: 'var(--accent)' }}
                     disabled={busyId !== null}
-                    onClick={() => void saveRow(i, { models: pendingSel[d.id] ?? d.models ?? [] })}
+                    onClick={() => void saveRow(i, { models: pendingSel[d.id] ?? d.models ?? [], modelOptions: pendingOpts[d.id] ?? d.modelOptions ?? {} })}
                   >
                     Save selection
                   </button>
                 )}
               </div>
               {expanded === d.id && (
-                <ModelCuration sourceId={d.id} onSelection={(models) => setPendingSel((p) => ({ ...p, [d.id]: models }))} />
+                <ModelCuration
+                  sourceId={d.id}
+                  modelOptions={d.modelOptions}
+                  onSelection={(models) => setPendingSel((p) => ({ ...p, [d.id]: models }))}
+                  onOptions={(o) => setPendingOpts((p) => ({ ...p, [d.id]: o }))}
+                />
               )}
             </div>
           )}

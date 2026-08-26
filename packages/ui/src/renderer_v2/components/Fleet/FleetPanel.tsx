@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { fleetStore as store } from '../../stores/FleetStore'
 import {
+  feedSecondsToDate,
   fileToAttachment,
   fleetFeedApi,
   FLEET_VIEWER,
@@ -29,8 +30,7 @@ import {
 import styles from './Fleet.module.scss'
 
 function fmtTime(ts: number): string {
-  // fleetd timestamps are epoch SECONDS (floats); tolerate ms if that ever changes.
-  const d = new Date(ts < 1e12 ? ts * 1000 : ts)
+  const d = feedSecondsToDate(ts)
   if (!Number.isFinite(d.getTime())) return ''
   const sameDay = new Date().toDateString() === d.toDateString()
   return sameDay ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : d.toLocaleDateString()

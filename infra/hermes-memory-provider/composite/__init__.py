@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 _LANES = ("hippocampai", "openviking")
 _DEFAULT_OV_ENDPOINT = os.environ.get("OPENVIKING_ENDPOINT", "http://10.0.0.156:1933")
 _RERANK_URL = os.environ.get(
-    "MEMORY_RERANK_URL", "http://10.0.0.140:7777/api/proxy/rerank/v2/rerank")
+    "MEMORY_RERANK_URL", "http://10.0.0.219:17890/api/proxy/rerank/v2/rerank")
 _PREFETCH_DEADLINE_SECS = float(os.environ.get("MEMORY_PREFETCH_DEADLINE", "4.0") or 4.0)
 _MERGE_TOP_K = int(os.environ.get("MEMORY_MERGE_TOP_K", "8") or 8)
 

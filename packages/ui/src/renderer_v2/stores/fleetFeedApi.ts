@@ -12,121 +12,43 @@
  * relative-fetch exception: the bridge RPC is JSON-only and the backend
  * streams `/api/fleet/attachment/:id`.
  *
- * TYPES mirror packages/shared/src/fleet/feed-contracts.ts (snake_case =
- * fleetd's JSON, timestamps are epoch ms numbers). Local copies until
- * claude1's shared file is pushed — then import from @gyshell/shared and
- * delete these.
+ * TYPES come from @gyshell/shared fleet/feed-contracts.ts (snake_case =
+ * fleetd's JSON; timestamps are epoch SECONDS floats — use feedSecondsToDate).
+ * Re-exported here so the store/panel have a single import seam.
  */
+import { FEED_VIEWER_ID, type FeedAttachmentKind, type FeedVisibility } from '@gyshell/shared'
+import type {
+  FeedAttachmentRef,
+  FeedCategory,
+  FeedDirectoryEntry,
+  FeedGuard,
+  FeedList,
+  FeedSearchHit,
+  FeedThreadKind,
+  FeedThreadRead,
+} from '@gyshell/shared'
 
-export type FeedVisibility = 'private' | 'public'
-export type FeedThreadKind = 'dm' | 'post'
-export type FeedAttachmentKind = 'image' | 'flowchart' | 'document'
+export type {
+  FeedAttachmentRef,
+  FeedCategory,
+  FeedDirectoryEntry,
+  FeedGuard,
+  FeedList,
+  FeedMessage,
+  FeedReceipt,
+  FeedReceiptState,
+  FeedSearchHit,
+  FeedThread,
+  FeedThreadKind,
+  FeedThreadRead,
+  FeedVisibility,
+} from '@gyshell/shared'
+export { feedSecondsToDate } from '@gyshell/shared'
+
+/** Feed list scope — a query concept of the /threads route, not a stored shape. */
 export type FeedScope = 'public' | 'mine' | 'all'
-export type FeedReceiptState = 'queued' | 'delivered' | 'woke' | 'acked' | 'failed'
 
-export interface FeedAttachmentRef {
-  attachment_id: string
-  filename: string | null
-  media_type: string
-  kind: FeedAttachmentKind
-  byte_size: number
-  sha256: string | null
-  created_at: number
-}
-
-export interface FeedReceipt {
-  recipient: string
-  state: FeedReceiptState
-  attempts: number
-  queued_at: number | null
-  delivered_at: number | null
-  woke_at: number | null
-  acked_at: number | null
-  failure_stage: string | null
-  failure_detail: string | null
-}
-
-export interface FeedMessage {
-  message_id: string
-  thread_id: string
-  seq: number
-  parent_id: string | null
-  sender: string
-  body: string
-  kind: string
-  created_at: number
-  attachments: FeedAttachmentRef[]
-  receipts?: FeedReceipt[]
-}
-
-export interface FeedThread {
-  thread_id: string
-  subject: string | null
-  kind: FeedThreadKind
-  category: string | null
-  visibility: FeedVisibility
-  participants: string[]
-  message_count: number
-  unread_count?: number
-  last_sender: string | null
-  last_snippet: string | null
-  created_at: number
-  updated_at: number
-}
-
-export interface FeedList {
-  threads: FeedThread[]
-  has_more: boolean
-  next_cursor: string | null
-}
-
-export interface FeedThreadRead {
-  thread: FeedThread
-  messages: FeedMessage[]
-  has_more: boolean
-  before_seq: number | null
-}
-
-export interface FeedDirectoryEntry {
-  agent_id: string
-  display_name: string
-  kind: string
-  endpoint: string | null
-  enabled: boolean
-  can_broadcast: boolean
-  can_focused: boolean
-  status: string | null
-  presence_at: number | null
-  turn_count: number | null
-}
-
-export interface FeedCategory {
-  name: string
-  description: string | null
-  created_by: string | null
-  created_at: number
-  thread_count: number
-}
-
-export interface FeedSearchHit {
-  message_id: string
-  thread_id: string
-  seq: number
-  subject: string | null
-  category: string | null
-  sender: string
-  body: string
-  created_at: number
-}
-
-export interface FeedGuard {
-  enabled: boolean
-  reason: string | null
-  updated_by: string | null
-  updated_at: number | null
-}
-
-/** Outbound attachment riding inline on message/post (no post-hoc race). */
+/** Outbound attachment riding inline on message/post (FeedAttachmentRequest minus message_id — no post-hoc race). */
 export interface FeedAttachmentInput {
   filename?: string
   media_type: string
@@ -136,7 +58,7 @@ export interface FeedAttachmentInput {
 }
 
 /** Canonical viewer identity for Travis/the UI — registered in the directory as kind:user. */
-export const FLEET_VIEWER = 'user'
+export const FLEET_VIEWER = FEED_VIEWER_ID
 
 function bridge(): { request: (method: string, path: string, body?: unknown) => Promise<any> } | undefined {
   return (window as any).gyshell?.cluster
@@ -281,8 +203,13 @@ export const fleetFeedApi = {
   },
 }
 
-/** Max attachment size the composer will base64 (matches the backend's 1mb json cap headroom). */
-export const MAX_ATTACHMENT_BYTES = 700 * 1024
+/**
+ * Client-side sanity cap: the write routes accept 25mb JSON bodies (measured by
+ * claude1 through both 17890 and the web host), so ~18MB of raw file survives
+ * base64 inflation. Oversize server refusals come back readable
+ * ({ok:false, stage:'validation', limit:'25mb'}, HTTP 413) and are surfaced as-is.
+ */
+export const MAX_ATTACHMENT_BYTES = 18 * 1024 * 1024
 
 /** File → inline attachment input (base64, chunked so large files don't blow the stack). */
 export async function fileToAttachment(f: File): Promise<FeedAttachmentInput> {

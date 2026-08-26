@@ -106,17 +106,12 @@ export class HermesAcpBridge extends EventEmitter {
     this.loadSessionMap()
   }
 
-  private sshArgs(agentId: string, resumeId?: string): string[] {
-    const py = this.cfg.pythonBin ?? '/usr/local/lib/hermes-agent/venv/bin/python'
+  private bridgeArgs(agentId: string, resumeId?: string): string[] {
+    // Hermes is co-located — spawn the bridge LOCALLY (no ssh). The python binary is the spawn
+    // target (see startSession); these are its args.
     const bridge = this.cfg.bridgePath ?? '/opt/acp-bridge/acp-bridge.py'
     return [
-      '-i', this.cfg.sshKeyPath,
-      '-o', 'StrictHostKeyChecking=accept-new',
-      '-o', 'BatchMode=yes',
-      '-o', 'ServerAliveInterval=20',
-      '-o', 'ServerAliveCountMax=3',
-      `${this.cfg.user ?? 'root'}@${this.cfg.host}`,
-      py, bridge, '--profile', agentId,
+      bridge, '--profile', agentId,
       ...(resumeId ? ['--resume', resumeId] : []),
     ]
   }
@@ -129,7 +124,12 @@ export class HermesAcpBridge extends EventEmitter {
     if (existing && existing.proc.exitCode === null) return existing
 
     const resumeId = sessionKey ? this.persistedSessions[sessionKey]?.sessionId : undefined
-    const proc = spawn('ssh', this.sshArgs(agentId, resumeId), { stdio: ['pipe', 'pipe', 'pipe'] })
+    const py = this.cfg.pythonBin ?? '/usr/local/lib/hermes-agent/venv/bin/python'
+    // The conversation id rides in on the ENV because this process IS the conversation
+    // (one spawn per sessionKey). Agents otherwise cannot know which conversation they are in,
+    // so tools that scope state per conversation had to guess from the agent's profile name.
+    // acp-bridge injects it into the model's context on the first turn and echoes it on `ready`.
+    const proc = spawn(py, this.bridgeArgs(agentId, resumeId), { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, HOME: '/root', AILAB_CONVERSATION_ID: sessionKey } })
     const emitter = new EventEmitter()
     emitter.setMaxListeners(0)
 
@@ -182,7 +182,17 @@ export class HermesAcpBridge extends EventEmitter {
       }
     })
 
-    proc.stderr.on('data', (d: Buffer) => this.emit('stderr', { agentId, text: d.toString('utf8') }))
+    proc.stderr.on('data', (d: Buffer) => {
+      const text = d.toString('utf8')
+      // LOG IT. This event had zero listeners, so the bridge's entire stderr was discarded —
+      // including Python tracebacks and "Task exception was never retrieved", which is how an
+      // asyncio task can die in total silence. A bridge that fails invisibly is the worst case:
+      // the UI just stops behaving and nothing anywhere says why.
+      for (const line of text.split('\n')) {
+        if (line.trim()) console.warn(`[acp-bridge:${agentId}] ${line}`)
+      }
+      this.emit('stderr', { agentId, text })
+    })
 
     proc.on('exit', (code) => {
       this.pendingReload.delete(sessionKey) // a dead session doesn't need a deferred reload
@@ -212,6 +222,26 @@ export class HermesAcpBridge extends EventEmitter {
     } finally {
       clearTimeout(timer!)
     }
+  }
+
+  /**
+   * Inject guidance into a session's RUNNING turn — Hermes's native /steer, which lands at
+   * the next tool boundary instead of waiting for the turn to end.
+   *
+   * Throws when there is no live session. That is deliberate and is the caller's signal to
+   * fall back to a normal prompt: steering something that is not running is meaningless, and
+   * silently swallowing it here is exactly the void-the-message bug we already fixed once.
+   *
+   * NOTE the absence of setStatus. A steer does not start a turn and must not touch turn
+   * state — the real turn is still running and still owns `busy`.
+   */
+  steer(sessionKey: string, text: string): void {
+    const session = this.sessions.get(sessionKey)
+    if (!session?.proc?.stdin) throw new Error(`no live hermes session for ${sessionKey} — cannot steer`)
+    const t = text.trim()
+    if (!t) throw new Error('steer text is empty')
+    console.log(`[acp-bridge] ${sessionKey}: steering the active turn (${t.length} chars)`)
+    session.proc.stdin.write(JSON.stringify({ type: 'steer', text: t }) + '\n')
   }
 
   /** Send a prompt into a running session (UI- or bus-originated). Session must exist.
@@ -272,6 +302,43 @@ export class HermesAcpBridge extends EventEmitter {
     const session = this.sessions.get(sessionKey)
     if (!session || session.proc.exitCode !== null) return
     session.proc.stdin.write(JSON.stringify({ type: 'cancel' }) + '\n')
+
+    // CONFIRMATION WATCHDOG. The intended chain is conn.cancel() -> prompt resolves
+    // 'cancelled' -> turn_done -> idle. When that chain completes, this is a no-op
+    // because status is already idle. When it does NOT — the symptom being a Stop
+    // button that never turns back into Send without a page refresh — the server
+    // confirms the turn is over and drives the transition itself.
+    //
+    // Deliberately server-side: the client must not guess idle (that is why stop()
+    // does not clear busy locally). And it SHOUTS when it fires, because needing
+    // this means the bridge swallowed a turn_done and that root cause is still open.
+    const CANCEL_GRACE_MS = 4000
+    setTimeout(() => {
+      const live = this.sessions.get(sessionKey)
+      if (!live || live.status !== 'busy') return   // chain worked — nothing to do
+      console.warn(`[acp-bridge] ${sessionKey}: no turn_done ${CANCEL_GRACE_MS}ms after cancel — `
+        + `forcing idle so the composer unlocks. The bridge did not resolve its prompt task; `
+        + `this is a real bug being masked, not a normal path.`)
+      const ev = { t: 'turn_done', stop_reason: 'cancelled' } as unknown as AcpEvent
+      live.emitter.emit('event', ev)
+      this.emit('event', { agentId: live.agentId, event: ev })
+      this.setStatus(sessionKey, 'idle')
+
+      // ...and RECYCLE, because flipping the status only fixed what we REPORT. Reaching this
+      // point proves the bridge never resolved its prompt task, so that await is still pending
+      // inside the child. The next prompt queues behind it and is never dispatched: the session
+      // accepts messages, the client marks itself busy, no turn ever starts, and busy never
+      // clears — so every later message piles into the type-ahead queue. A page reload cannot
+      // help (the client re-sends, the same thing happens) and `cancel` is a no-op by then
+      // (status already reads idle), which is exactly the dead end this watchdog used to leave
+      // behind.
+      //
+      // reloadSession respawns the child once it exits and leaves persistedSessions intact, so
+      // the conversation resumes via --resume rather than starting over.
+      console.warn(`[acp-bridge] ${sessionKey}: recycling the session — a bridge that swallowed `
+        + `turn_done cannot be trusted to dispatch the next prompt.`)
+      this.reloadSession(sessionKey)
+    }, CANCEL_GRACE_MS)
   }
 
   /** Subscribe to a session's normalized events. Returns an unsubscribe fn (safe to call any time). */
@@ -336,16 +403,13 @@ export class HermesAcpBridge extends EventEmitter {
   /** Run the NATIVE Hermes tail-rewind helper on CT158 (drives SessionDB.rewind_to_message /
    *  get_messages — no source patching). Resolves the parsed JSON result (last stdout line). */
   private runRewindHelper(agentId: string, sessionId: string, action: 'peek' | 'rewind'): Promise<Record<string, unknown>> {
-    const user = this.cfg.user ?? 'root'
     const py = this.cfg.pythonBin ?? '/usr/local/lib/hermes-agent/venv/bin/python'
     const helper = (this.cfg.bridgePath ?? '/opt/acp-bridge/acp-bridge.py').replace(/[^/]+$/, 'hermes_rewind.py')
     const db = `${this.cfg.profilesDir ?? '/root/.hermes/profiles'}/${agentId}/state.db`
-    const args = [
-      '-i', this.cfg.sshKeyPath, '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
-      `${user}@${this.cfg.host}`, py, helper, '--db', db, '--session', sessionId, '--action', action,
-    ]
+    // Co-located: run the rewind helper LOCALLY (no ssh).
+    const args = [helper, '--db', db, '--session', sessionId, '--action', action]
     return new Promise((resolve, reject) => {
-      const p = spawn('ssh', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+      const p = spawn(py, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, HOME: '/root' } })
       let out = ''; let err = ''
       p.stdout.on('data', (d: Buffer) => { out += d.toString('utf8') })
       p.stderr.on('data', (d: Buffer) => { err += d.toString('utf8') })
@@ -382,14 +446,11 @@ export class HermesAcpBridge extends EventEmitter {
    *  and verify it's gone. Killing the local ssh does NOT reliably kill the remote, and a surviving
    *  process re-persists stale rows over our rewind (the clobber bug). Rejects if it can't confirm. */
   private remoteKillSession(sessionId: string): Promise<void> {
-    const user = this.cfg.user ?? 'root'
     const script = (this.cfg.bridgePath ?? '/opt/acp-bridge/acp-bridge.py').replace(/[^/]+$/, 'hard_stop.sh')
-    const args = [
-      '-i', this.cfg.sshKeyPath, '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8',
-      `${user}@${this.cfg.host}`, 'bash', script, sessionId,
-    ]
+    // Co-located: hermes runs LOCALLY, so hard_stop.sh kills the local hermes child by session id.
+    const args = [script, sessionId]
     return new Promise((resolve, reject) => {
-      const p = spawn('ssh', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+      const p = spawn('bash', args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, HOME: '/root' } })
       let err = ''
       p.stderr.on('data', (d: Buffer) => { err += d.toString('utf8') })
       p.on('error', reject)
@@ -499,6 +560,84 @@ export class HermesAcpBridge extends EventEmitter {
       agentId: s.agentId, startedAt: s.startedAt, lastActivity: s.lastActivity,
       model: s.lastReady?.current_model,
     }))
+  }
+
+  /**
+   * Per-AGENT activity, aggregated across that agent's sessions. Feeds the fleet
+   * activity collector so "is this agent actually working?" is answerable for
+   * Hermes agents the same way it is for Claude Code instances.
+   *
+   * We can answer this precisely — unlike the Claude Code side, which has to
+   * infer from a transcript that lags — because the bridge already keeps
+   * server-authoritative per-session `status` (set busy on prompt, idle on
+   * turn_done/exit) plus a seq-stamped event ring.
+   *
+   * An agent is `busy` if ANY of its sessions is mid-turn; lastActivity is the
+   * most recent across them.
+   */
+  listAgentActivity(): Array<{
+    agentId: string
+    status: 'idle' | 'busy'
+    lastActivity: number
+    lastEvent?: { t: string; summary: string; seq?: number }
+    recent: Array<{ role: string; ts: string | null; uuid: string | null; summary: string }>
+  }> {
+    const byAgent = new Map<string, ReturnType<HermesAcpBridge['listAgentActivity']>[number]>()
+    for (const sess of this.sessions.values()) {
+      const prev = byAgent.get(sess.agentId)
+      const busy = sess.status === 'busy' || prev?.status === 'busy'
+      const lastActivity = Math.max(sess.lastActivity ?? 0, prev?.lastActivity ?? 0)
+      // Only describe from the session that actually acted most recently.
+      const useThis = !prev || (sess.lastActivity ?? 0) >= (prev.lastActivity ?? 0)
+      byAgent.set(sess.agentId, {
+        agentId: sess.agentId,
+        status: busy ? 'busy' : 'idle',
+        lastActivity,
+        lastEvent: useThis ? HermesAcpBridge.describeEvents(sess.history).at(-1) : prev?.lastEvent,
+        recent: useThis ? HermesAcpBridge.recentEntries(sess.history) : (prev?.recent ?? []),
+      })
+    }
+    return [...byAgent.values()]
+  }
+
+  /** Collapse ACP events into human-readable one-liners; drops noise (ping/status/usage). */
+  private static describeEvents(history: AcpEvent[]): Array<{ t: string; summary: string; seq?: number }> {
+    const out: Array<{ t: string; summary: string; seq?: number }> = []
+    for (const e of history) {
+      const t = String(e.t ?? '')
+      let summary = ''
+      if (t === 'tool_start') summary = `Tool: ${String((e as any).title ?? (e as any).name ?? 'tool')}`
+      else if (t === 'tool_progress') continue
+      // Do NOT trim here: `message` events stream token-by-token and each token
+      // carries its own leading space. Trimming per-token welds the words
+      // together ("Received,claude1.I'mLoom—Icurate..."). Trim once at the end.
+      else if (t === 'message') summary = String((e as any).text ?? '')
+      else if (t === 'thought') continue
+      else if (t === 'turn_done') summary = `Turn ended (${String((e as any).stop_reason ?? 'done')})`
+      else if (t === 'error' || t === 'fatal') summary = `ERROR: ${String((e as any).message ?? t)}`
+      else continue
+      if (!summary || (t !== 'message' && !summary.trim())) continue
+      const last = out.at(-1)
+      // message events stream token-by-token — coalesce them into one line.
+      if (last && t === 'message' && last.t === 'message') {
+        last.summary = (last.summary + summary).slice(0, 400)
+        last.seq = e.seq
+        continue
+      }
+      out.push({ t, summary: (t === 'message' ? summary.trimStart() : summary).slice(0, 400), seq: e.seq })
+    }
+    return out
+  }
+
+  private static recentEntries(history: AcpEvent[], cap = 25) {
+    return HermesAcpBridge.describeEvents(history)
+      .slice(-cap)
+      .map((d) => ({
+        role: d.t === 'message' ? 'assistant' : d.t,
+        ts: null as string | null,
+        uuid: d.seq != null ? String(d.seq) : null,
+        summary: d.summary,
+      }))
   }
 
   /** Server-side conversation list (cross-device): every persisted conversation with a known agent,

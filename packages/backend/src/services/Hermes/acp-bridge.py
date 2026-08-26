@@ -109,10 +109,32 @@ def _strip_view_preamble(text):
     return t
 
 
+# The exact replies Hermes's _cmd_steer can produce (acp_adapter/server.py ~L1956).
+# These arrive as normal agent messages, so they are matched by content — the ACP update
+# carries nothing to distinguish them. Matching is scoped to a window where a steer is
+# actually in flight, so ordinary agent text starting with these words is never eaten.
+_STEER_ACK_MARKERS = (
+    "\u23e9 Steer queued for the active turn:",
+    "No active turn \u2014 queued for the next turn.",
+    "\u26a0\ufe0f Steer failed:",
+    "Usage: /steer",
+)
+
+
+def _is_steer_ack(text):
+    t = (text or "").strip()
+    return any(t.startswith(m) for m in _STEER_ACK_MARKERS)
+
+
 class BridgeClient:
     # mode == "replay" while a session/load is streaming prior history; "live" otherwise.
     def __init__(self):
         self.mode = "live"
+        # >0 while a /steer prompt is outstanding; gates ack interception (trap 2).
+        self.steer_pending = 0
+        # Set when an ack is intercepted — distinguishes a true steer from Hermes
+        # rewriting /steer into a real turn on an idle session (trap 3).
+        self.steer_ack_seen = False
 
     async def session_update(self, *args, **kwargs):
         upd = kwargs.get("update") or (args[0] if args else None)
@@ -121,8 +143,14 @@ class BridgeClient:
         replaying = self.mode == "replay"
         # Map ACP session-update variants -> normalized events.
         if name == "AgentMessageChunk":
+            _txt = _content_text(d)
+            # Trap 2: divert a steer ack so it is not appended into the live assistant bubble.
+            if self.steer_pending and not replaying and _is_steer_ack(_txt):
+                self.steer_ack_seen = True
+                emit({"t": "steer_ack", "text": _txt})
+                return
             emit({"t": "history" if replaying else "message",
-                  **({"role": "assistant"} if replaying else {}), "text": _content_text(d)})
+                  **({"role": "assistant"} if replaying else {}), "text": _txt})
         elif name == "UserMessageChunk":
             # Only meaningful during replay (live user turns originate from us).
             emit({"t": "history", "role": "user", "text": _strip_view_preamble(_content_text(d))})
@@ -223,6 +251,10 @@ async def main():
     ap.add_argument("--provider", default="ailab")
     ap.add_argument("--hermes", default="/usr/local/bin/hermes")
     ap.add_argument("--resume")  # hermes session id to resume via ACP session/load
+    # The AI-Lab backend spawns ONE process per conversation, so the conversation id is a
+    # property of this process. It arrives via the spawn env rather than a flag so that
+    # nothing has to thread it through every call site. Empty => not supplied (older backend).
+    conv_id = os.environ.get("AILAB_CONVERSATION_ID") or ""
     args = ap.parse_args()
 
     # Run the agent from its own profile workspace so Hermes auto-injects that
@@ -270,6 +302,7 @@ async def main():
                 models = (ns.get("models") or {})
                 modes = (ns.get("modes") or {})
             emit({"t": "ready", "session_id": session_id, "resumed": resumed,
+                  "conversation_id": conv_id or None,
                   "models": models.get("available_models"), "current_model": models.get("current_model_id"),
                   "modes": modes.get("available_modes")})
 
@@ -315,6 +348,14 @@ async def main():
                     sys.stdout.flush()
                     os._exit(3)
             current = None
+            # Tell the agent its own conversation id ONCE per process, on the first turn.
+            # Agents otherwise have no idea which conversation they are in and pass their own
+            # profile name to tools that scope state per conversation, forcing every caller to
+            # guess (last-active wins => a coin flip with two live conversations on one profile).
+            # Injected on the first turn rather than at session create because it has to land in
+            # the model's context, and a resumed session starts a NEW process whose replayed
+            # history predates this statement.
+            conv_injected = False
 
             async for line in stdin_lines():
                 if not line:
@@ -354,6 +395,12 @@ async def main():
                                         "look at it to see exactly what they are viewing.]")
                     if ctx:
                         preamble.append(f"[Current view context]\n{ctx}")
+                    if conv_id and not conv_injected:
+                        preamble.insert(0, f"[Session context] conversationId: {conv_id}\n"
+                                           "This identifies THIS conversation. When a tool scopes state "
+                                           "per conversation, pass this value verbatim — never your "
+                                           "profile/agent name.")
+                        conv_injected = True
                     full_text = ("\n\n".join(preamble) + "\n\n" + text) if preamble else text
                     text_block = TextContentBlock(type="text", text=full_text) if TextContentBlock else {"type": "text", "text": full_text}
                     blocks = [text_block] + image_blocks
@@ -367,6 +414,44 @@ async def main():
                             await conn.cancel(session_id=session_id)
                         except Exception as e:
                             emit({"t": "error", "where": "cancel", "message": str(e)})
+                elif cmd.get("type") == "steer":
+                    # Inject guidance into the RUNNING turn rather than waiting for idle.
+                    # Deliberately NOT run_prompt: that emits turn_done, and a steer resolves
+                    # immediately with end_turn — which would end the real turn in the UI while
+                    # the agent is still working (trap 1). Also bypasses the "busy: a turn is
+                    # already running" guard on purpose: landing mid-turn is the entire point.
+                    stext = (cmd.get("text") or "").strip()
+                    if not stext:
+                        emit({"t": "error", "where": "steer", "message": "empty steer text"})
+                        continue
+
+                    async def run_steer(t=stext):
+                        client.steer_pending += 1
+                        client.steer_ack_seen = False
+                        body = "/steer " + t
+                        blk = (TextContentBlock(type="text", text=body) if TextContentBlock
+                               else {"type": "text", "text": body})
+                        stop = None
+                        try:
+                            resp = await conn.prompt(prompt=[blk], session_id=session_id)
+                            rd = _dump(resp)
+                            stop = rd.get("stop_reason") or rd.get("stopReason") or "end_turn"
+                        except Exception as e:
+                            emit({"t": "error", "where": "steer", "message": str(e)})
+                            print("[bridge] steer FAILED: " + str(e), file=sys.stderr, flush=True)
+                            client.steer_pending = max(0, client.steer_pending - 1)
+                            return
+                        acked = client.steer_ack_seen
+                        client.steer_pending = max(0, client.steer_pending - 1)
+                        if not acked:
+                            # Trap 3: no ack means Hermes did NOT treat this as a steer. The
+                            # session was idle, so it rewrote /steer into a normal prompt and ran
+                            # a REAL turn. Forward that turn_done or the composer never unlocks.
+                            print("[bridge] steer landed on an IDLE session -> Hermes ran it as a "
+                                  "full turn; forwarding turn_done (stop=" + str(stop) + ")",
+                                  file=sys.stderr, flush=True)
+                            emit({"t": "turn_done", "stop_reason": stop})
+                    asyncio.create_task(run_steer())
                 elif cmd.get("type") == "set_model":
                     # Swap the model for THIS conversation's live session (ACP session/set_model).
                     # Hermes re-creates the session agent with the new model and persists it, so the
@@ -393,6 +478,18 @@ async def main():
                         except Exception:
                             pass
                     break
+                else:
+                    # An unrecognized command used to fall straight through this if/elif chain
+                    # and vanish. That is how a NEW backend talking to an OLD deployed bridge
+                    # fails: the write succeeds, the caller sees success, and nothing happens.
+                    # Cost me two full test cycles chasing a phantom. Say it loudly instead.
+                    _t = cmd.get("type")
+                    emit({"t": "error", "where": "stdin",
+                          "message": "unknown command type " + repr(_t)
+                                     + " — this bridge is older than the backend that sent it"})
+                    print("[bridge] UNKNOWN stdin command " + repr(_t)
+                          + " — ignoring. If this is a real command, /opt/acp-bridge/acp-bridge.py "
+                          + "is STALE relative to the repo copy.", file=sys.stderr, flush=True)
         except Exception as e:
             emit({"t": "error", "where": "session", "message": str(e), "tb": traceback.format_exc()[:500]})
 

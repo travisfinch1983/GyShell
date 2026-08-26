@@ -1,5 +1,6 @@
 import { makeAutoObservable, runInAction } from 'mobx'
 import {
+  feedSecondsToDate,
   fleetFeedApi,
   type FeedAttachmentInput,
   type FeedCategory,
@@ -88,9 +89,7 @@ class FleetStore {
   isOnline(a: FeedDirectoryEntry): boolean {
     if (a.status === 'idle' || a.status === 'busy' || a.status === 'thinking') return true
     if (a.presence_at === null) return false
-    // fleetd timestamps are epoch SECONDS (floats); tolerate ms if that ever changes.
-    const ms = a.presence_at < 1e12 ? a.presence_at * 1000 : a.presence_at
-    return Date.now() - ms < PRESENCE_FRESH_MS
+    return Date.now() - feedSecondsToDate(a.presence_at).getTime() < PRESENCE_FRESH_MS
   }
 
   /** Whether the UI viewer may flip visibility (participant-only rule — no operator override, by design). */
@@ -115,6 +114,7 @@ class FleetStore {
           this.loaded = true
         })
         this.feedTimer = setInterval(() => {
+          if (document.hidden) return // hidden tab: don't burn polls (claude1's old-store fix, carried over)
           void this.refreshFeed()
           void this.refreshDirectory()
           void this.refreshGuard()
@@ -238,7 +238,9 @@ class FleetStore {
     runInAction(() => {
       this.threadLoading = false
     })
-    this.threadTimer = setInterval(() => void this.refreshThread(), THREAD_POLL_MS)
+    this.threadTimer = setInterval(() => {
+      if (!document.hidden) void this.refreshThread()
+    }, THREAD_POLL_MS)
   }
 
   closeThread(): void {

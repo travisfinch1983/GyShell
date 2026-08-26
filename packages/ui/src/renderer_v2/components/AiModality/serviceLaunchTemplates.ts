@@ -42,13 +42,35 @@ export const TTS_LAUNCH_TEMPLATES: Record<string, any> = {
     'proxlab-tts': {
       defaultPort: 8880,
       endpointSuffix: '/v1',
-      // Proxlab TTS: Chatterbox-Turbo with OpenAI-compatible API
+      // AI-Lab TTS: Chatterbox-Turbo with OpenAI-compatible API
       buildCommand(port) {
         return [
           '/opt/conda/envs/chatterbox-tts/bin/python \\',
           `  /opt/proxlab-tts/server.py \\`,
           `  --host 0.0.0.0 --port ${port} \\`,
-          '  --voices /root/voices',
+          // The SHARED library on /tts (a mount visible to every instance), not a local
+          // per-host copy. Launched against /root/voices this served 10 of 44 voices and
+          // adding voices to the shared dir appeared to do nothing.
+          '  --voices /tts/voices/chatterbox',
+        ].join('\n');
+      },
+    },
+    rvc: {
+      defaultPort: 7100,
+      endpointSuffix: '',
+      // RVC voice conversion. Not a TTS engine — it re-voices audio that a
+      // TTS instance already produced. The multi-TTS pipeline pairs each RVC
+      // instance 1:1 with an AI-Lab TTS instance by proxySlot order, so the
+      // count here should match the TTS instance count.
+      buildCommand(port, model, gpuIndex) {
+        const gpuPrefix = (typeof gpuIndex === 'number' && gpuIndex >= 0)
+          ? `CUDA_VISIBLE_DEVICES=${gpuIndex} `
+          : '';
+        return [
+          `${gpuPrefix}/opt/conda/envs/rvc/bin/python \\`,
+          `  /opt/rvc/server.py \\`,
+          `  --host 0.0.0.0 --port ${port} \\`,
+          '  --models-dir /tts/models/rvc/checkpoints',
         ].join('\n');
       },
     },
@@ -279,6 +301,32 @@ export const GENERIC_LAUNCH_TEMPLATES: Record<string, any> = {
           '    TTS: tts',
           '    step_audio: step-audio',
           '    clip_models: clip-models',
+          'YAML_EOF',
+          'fi',
+          '',
+          // Impact Pack's UltralyticsDetectorProvider and SAMLoader only see detectors under
+          // roots registered in extra_model_paths.yaml. The YOLO detectors and SAM checkpoints
+          // live on the NAS (/imagegen), so without this every instance falls back to whatever
+          // happens to be in /opt/comfyui/models and the shared library is invisible.
+          //
+          // Safe to register unconditionally: load_extra_path_config accepts arbitrary top-level
+          // keys, add_model_folder_path APPENDS rather than replaces, and main.py reads the yaml
+          // long before init_extra_nodes runs — so these NAS paths register first and Impact's
+          // own local paths are added alongside, not overwritten.
+          //
+          // Same grep guard as the model-cache block above: appended only when absent, so a
+          // hand-edited yaml is never clobbered. Verified on ai-gpu + ai-epyc (63 detectors:
+          // 46 bbox + 17 segm, plus the SAM checkpoints).
+          '# Ensure ComfyUI extra_model_paths.yaml has the Impact Pack detector roots.',
+          "if ! grep -q '^impact-detectors:' /opt/comfyui/extra_model_paths.yaml 2>/dev/null; then",
+          "  cat >> /opt/comfyui/extra_model_paths.yaml <<'YAML_EOF'",
+          '',
+          'impact-detectors:',
+          '    base_path: /imagegen',
+          '    ultralytics_bbox: ultralytics/bbox',
+          '    ultralytics_segm: ultralytics/segm',
+          '    ultralytics: ultralytics',
+          '    sams: sam',
           'YAML_EOF',
           'fi',
           '',

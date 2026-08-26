@@ -38,6 +38,12 @@ export async function detectServiceType(endpoint: string): Promise<'llm' | 'embe
   const v1 = endpoint.replace(/\/+$/, '')
   const root = v1.replace(/\/v1$/, '')
   const models = await getJson(`${v1}/models`)
+  // A service that is still loading refuses every connection, which would make each probe below
+  // fail and land on the default 'llm' -- then get cached as though we had learned something.
+  // We learned nothing. Return provisionally WITHOUT caching so the next pass re-probes once the
+  // engine is actually serving. (vLLM takes ~1 min for an 8B; the old behaviour pinned whatever
+  // the first, too-early probe happened to see.)
+  if (!models) return 'llm'
   const model = models?.data?.[0]?.id || 'model'
 
   // Order matters: embedding servers answer BOTH /v1/embeddings AND /rerank (rerank is built on

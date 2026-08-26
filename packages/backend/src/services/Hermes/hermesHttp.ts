@@ -2,11 +2,14 @@
 import express from 'express'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
+// @ts-expect-error — roadmapStore is TS resolved by tsx at runtime
+import * as rmStore from '../Roadmap/roadmapStore.js'
 import { hermesAgentSpecSchema, providerServiceSchema } from '@gyshell/shared'
 // @ts-expect-error — proxy capability resolver ships as untyped JS (same pattern as the other proxy/*.js imports)
 import { resolveModelCapabilities } from '../Cluster/proxy/model-capabilities.js'
 import type { HermesService } from './HermesService'
 import type { AcpEvent } from './HermesAcpBridge'
+import { getGatewayStats, resetGatewayStats } from '../Gateway/gatewayStats'
 
 type Req = express.Request
 type Res = express.Response
@@ -50,6 +53,21 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     }
   })
 
+  // Global agent defaults — the fallback model every unset agent inherits, and the
+  // value stamped onto newly created agents.
+  router.get('/api/hermes/agent-defaults', async (_req: Req, res: Res) => {
+    try { res.json(await hermes.getAgentDefaults()) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.put('/api/hermes/agent-defaults', json, async (req: Req, res: Res) => {
+    try {
+      const { model, provider } = req.body || {}
+      res.json(await hermes.setAgentDefaults(String(model || ''), provider ? String(provider) : undefined))
+    } catch (e) {
+      res.status(400).json({ error: String((e as Error).message) })
+    }
+  })
+
   // Read back the persisted spec for one agent (for the UI edit flow). 404 if the agent
   // exists as a profile but was never applied through AI-Lab (no stored spec).
   router.get('/api/hermes/agents/:id', async (req: Req, res: Res) => {
@@ -80,6 +98,31 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
       res.json({ ok: true, ...(await hermes.syncAgentTools(req.params.id, selected)) })
     } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
+  // Tool HEALTH: the group can be perfectly healthy while the agent serves nothing, because
+  // Hermes stops retrying its MCP connection after 5 failures and never resumes on its own.
+  // Surface that instead of leaving the user to wonder why an agent has no tools.
+  router.get('/api/hermes/agents/:id/tool-health', async (req: Req, res: Res) => {
+    try { res.json(await hermes.getToolHealth(req.params.id)) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.post('/api/hermes/agents/:id/tool-reconnect', async (req: Req, res: Res) => {
+    try { res.json({ ok: true, ...(await hermes.reconnectAgentTools(req.params.id)) }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
+  // Snapshots taken before every tool change, so a bad save is recoverable without a shell.
+  router.get('/api/hermes/agents/:id/tool-backups', async (req: Req, res: Res) => {
+    try { res.json({ backups: await hermes.listToolBackups(req.params.id) }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.post('/api/hermes/agents/:id/tool-backups/restore', json, async (req: Req, res: Res) => {
+    try {
+      const file = String((req.body as any)?.file ?? '')
+      if (!file) return res.status(400).json({ error: 'body needs { file }' })
+      res.json({ ok: true, ...(await hermes.restoreToolBackup(req.params.id, file)) })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
   router.delete('/api/hermes/agents/:id/tools', async (req: Req, res: Res) => {
     try { await hermes.resetAgentTools(req.params.id); res.json({ ok: true }) }
     catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
@@ -340,6 +383,34 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
 
   // Stop button: cancel the in-flight turn (server forwards ACP session/cancel to the model). The
   // turn ends with stop_reason 'cancelled' and the status flips to idle over /stream. Idempotent.
+  // Steer the ACTIVE turn (Hermes native /steer — injects at the next tool boundary).
+  // 409 when there is no live session, which the client treats as "fall back to a normal
+  // send" rather than an error worth showing.
+  // Gateway egress breakdown. /gateway was measured at 85% of all AI-Lab bytes served with
+  // no visibility into which method or channel caused it; this reports bytes and messages
+  // per RPC method and per push channel, plus the implied sustained rate.
+  router.get('/api/gateway/stats', (_req: Req, res: Res) => {
+    try { res.json(getGatewayStats()) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.post('/api/gateway/stats/reset', (_req: Req, res: Res) => {
+    try { resetGatewayStats(); res.json({ ok: true }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
+  router.post('/api/hermes/agents/:id/steer', json, async (req: Req, res: Res) => {
+    try {
+      const b = (req.body ?? {}) as { text?: unknown; conversationId?: unknown }
+      const key = typeof b.conversationId === 'string' ? b.conversationId : req.params.id
+      const text = String(b.text ?? '').trim()
+      if (!text) { res.status(400).json({ error: 'text is required' }); return }
+      await hermes.sendSteer(req.params.id, text, { sessionKey: key })
+      res.json({ ok: true })
+    } catch (e) {
+      res.status(409).json({ error: String((e as Error).message) })
+    }
+  })
+
   router.post('/api/hermes/agents/:id/cancel', json, (req: Req, res: Res) => {
     try {
       const q = req.query as { conversationId?: unknown }
@@ -402,6 +473,15 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
+    // REQUIRED when anything nginx-shaped sits in front of us, which it does: the public
+    // hostname is served browser -> Cloudflare -> cloudflared -> NPM (nginx) -> here.
+    // nginx buffers proxied responses by DEFAULT, and a buffered event stream never
+    // reaches the client at all: measured 0 bytes in 55s through NPM while the same
+    // conversation delivered 37 events directly from this process. The chat therefore only
+    // updated on refresh, because history read-back is an ordinary GET that completes.
+    // nginx honours this header per-response, so the fix lives HERE in version control
+    // rather than in a hand-edited proxy host that no one remembers exists.
+    res.setHeader('X-Accel-Buffering', 'no')
     ;(res as unknown as { flushHeaders?: () => void }).flushHeaders?.()
 
     let ready: AcpEvent
@@ -421,6 +501,16 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     })
     // Detach ONLY the observer on disconnect — the backend-owned session keeps running.
     req.on('close', () => off())
+    // SSE keepalive: an IDLE stream (e.g. the user composing a long message with no events
+    // flowing) gets silently dropped or half-opened by intermediary proxies (CF tunnel, vite
+    // preview) after their idle timeout — the client then sits "connected" receiving nothing
+    // until a manual reload. A 15s heartbeat keeps the connection warm AND gives the client's
+    // liveness watchdog a signal to detect a truly dead socket. Sent as a real event so the
+    // browser delivers bytes to onmessage; the client ignores the unknown t:ping variant.
+    const keepAlive = setInterval(() => {
+      try { res.write(`data: ${JSON.stringify({ t: 'ping' })}\n\n`) } catch { /* client gone */ }
+    }, 15000)
+    req.on('close', () => clearInterval(keepAlive))
 
     let lastWritten = 0
     if (since > 0) {
@@ -522,9 +612,11 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
         }
         if ('description' in patch) { const d = patch.description; if (typeof d === 'string' && d.trim()) cur.description = d; else delete cur.description }
         if ('recommendation' in patch) { const rc = patch.recommendation; if (typeof rc === 'string' && rc.trim()) cur.recommendation = rc; else delete cur.recommendation }
+        if ('timeout' in patch) { applyKeys.push(key); const t = Number(patch.timeout); if (Number.isFinite(t) && t > 0) cur.timeout = t; else delete cur.timeout }
+        if ('noThink' in patch) { applyKeys.push(key); cur.noThink = !!patch.noThink }
         if (Object.keys(cur).length) roles[key] = cur; else delete roles[key]
       }
-      const r = await hermes.setSupportModels(roles as Record<string, { provider?: string; model?: string; description?: string; recommendation?: string }>, applyKeys)
+      const r = await hermes.setSupportModels(roles as Record<string, { provider?: string; model?: string; description?: string; recommendation?: string; timeout?: number; noThink?: boolean }>, [...new Set(applyKeys)])
       res.json({ ok: true, ...r })
     } catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
   })
@@ -549,6 +641,53 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
 
+  // ---- Multi-project structured roadmaps (project sub-tabs + roadmap_* MCP tools) ----
+  const rmDir = (): string => (roadmapFile ? dirname(roadmapFile) : '')
+  const rmLoad = (): rmStore.RoadmapData => rmStore.ensureSeeded(rmDir(), roadmapFile)
+  const rmSave = (d: rmStore.RoadmapData): void => rmStore.saveRoadmaps(rmDir(), d)
+  const rmCount = (nodes: rmStore.RoadmapNode[]): number => nodes.reduce((s, n) => s + 1 + rmCount(n.children || []), 0)
+
+  router.get('/api/roadmap/projects', (_req: Req, res: Res) => {
+    try {
+      const d = rmLoad()
+      const projects = d.projects.slice().sort((a, b) => (a.order || 0) - (b.order || 0))
+        .map(p => ({ id: p.id, name: p.name, order: p.order, updatedAt: p.updatedAt, nodeCount: rmCount(p.nodes) }))
+      res.json({ projects })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.post('/api/roadmap/projects', json, (req: Req, res: Res) => {
+    try { const d = rmLoad(); const p = rmStore.createProject(d, String((req.body as { name?: unknown })?.name ?? 'Untitled')); rmSave(d); res.json({ project: p }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.get('/api/roadmap/projects/:pid', (req: Req, res: Res) => {
+    try { const d = rmLoad(); const p = rmStore.getProject(d, req.params.pid); if (!p) return res.status(404).json({ error: 'project not found' }); res.json({ project: p }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.patch('/api/roadmap/projects/:pid', json, (req: Req, res: Res) => {
+    try { const d = rmLoad(); if (!rmStore.renameProject(d, req.params.pid, String((req.body as { name?: unknown })?.name ?? ''))) return res.status(404).json({ error: 'project not found' }); rmSave(d); res.json({ ok: true }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.delete('/api/roadmap/projects/:pid', (req: Req, res: Res) => {
+    try { const d = rmLoad(); if (!rmStore.deleteProject(d, req.params.pid)) return res.status(404).json({ error: 'project not found' }); rmSave(d); res.json({ ok: true }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.post('/api/roadmap/projects/:pid/nodes', json, (req: Req, res: Res) => {
+    try { const d = rmLoad(); const n = rmStore.addNode(d, req.params.pid, (req.body as Record<string, unknown>) || {} as any); if (!n) return res.status(404).json({ error: 'project or parent not found' }); rmSave(d); res.json({ node: n }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.patch('/api/roadmap/projects/:pid/nodes/:nid', json, (req: Req, res: Res) => {
+    try { const d = rmLoad(); const n = rmStore.editNode(d, req.params.pid, req.params.nid, (req.body as any) || {}); if (!n) return res.status(404).json({ error: 'node not found' }); rmSave(d); res.json({ node: n }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.delete('/api/roadmap/projects/:pid/nodes/:nid', (req: Req, res: Res) => {
+    try { const d = rmLoad(); if (!rmStore.removeNode(d, req.params.pid, req.params.nid)) return res.status(404).json({ error: 'node not found' }); rmSave(d); res.json({ ok: true }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.post('/api/roadmap/projects/:pid/nodes/:nid/move', json, (req: Req, res: Res) => {
+    try { const d = rmLoad(); const b = (req.body as { parentId?: string | null; position?: number }) || {}; if (!rmStore.moveNode(d, req.params.pid, req.params.nid, b.parentId ?? null, b.position)) return res.status(400).json({ error: 'move failed (not found or invalid target)' }); rmSave(d); res.json({ ok: true }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
   // Global USER doc-template ("About Travis") — shared across agents. GET returns it; PUT writes it
   // and re-propagates into every agent's AGENTS.md "About Your Human" section.
   router.get('/api/hermes/doc-templates/user', async (_req: Req, res: Res) => {
@@ -561,6 +700,24 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
       if (typeof md !== 'string') return res.status(400).json({ error: 'body needs { markdown: string }' })
       const r = await hermes.setUserDoc(md)
       res.json({ ok: true, ...r })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+
+  // Per-agent USER doc override. The global doc-template above describes Travis and fans out to
+  // EVERY agent; an agent whose human is someone else (idris -> Kyla) sets this so the fan-out
+  // stops overwriting its identity block. PUT '' clears it and returns the agent to the global.
+  router.get('/api/hermes/agents/:id/user-doc', async (req: Req, res: Res) => {
+    try {
+      const markdown = await hermes.getAgentUserDoc(req.params.id)
+      res.json({ markdown, overridden: markdown.trim().length > 0 })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.put('/api/hermes/agents/:id/user-doc', json, async (req: Req, res: Res) => {
+    try {
+      const md = (req.body as { markdown?: unknown })?.markdown
+      if (typeof md !== 'string') return res.status(400).json({ error: 'body needs { markdown: string }' })
+      const r = await hermes.setAgentUserDoc(req.params.id, md)
+      res.json({ ok: true, overridden: md.trim().length > 0, ...r })
     } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
 

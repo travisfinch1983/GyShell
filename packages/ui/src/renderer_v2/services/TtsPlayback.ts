@@ -13,7 +13,7 @@ let currentAudio: HTMLAudioElement | null = null
 let currentAbort: AbortController | null = null
 
 // Speech queue — messages wait for the current one to finish
-const speechQueue: Array<{ text: string; role?: string; resolve: () => void }> = []
+const speechQueue: Array<{ text: string; role?: string; override?: TtsOverride; resolve: () => void }> = []
 let isProcessingQueue = false
 
 // Load saved state
@@ -65,7 +65,7 @@ async function processQueue(): Promise<void> {
   while (speechQueue.length > 0) {
     const item = speechQueue[0]
     try {
-      await speakTextImmediate(item.text, item.role)
+      await speakTextImmediate(item.text, item.role, item.override)
     } catch {}
     speechQueue.shift()
     item.resolve()
@@ -98,13 +98,40 @@ function getRoleVoiceSettings(role?: string): { voice?: string; rvcVoice?: strin
  * @param text Clean body text to speak
  * @param role Optional role name — uses role-specific voice if configured
  */
-export async function speakText(text: string, role?: string): Promise<void> {
+export async function speakText(text: string, role?: string, override?: TtsOverride): Promise<void> {
   if (!enabled || !text.trim()) return
 
   return new Promise<void>((resolve) => {
-    speechQueue.push({ text, role, resolve })
+    speechQueue.push({ text, role, override, resolve })
     processQueue()
   })
+}
+
+/**
+ * Speak NOW, ignoring the auto-speak toggle.
+ *
+ * speakText() returns early when auto-speak is off, which is correct for automatic
+ * narration but wrong for an explicit "read this message" click — refusing a direct
+ * request because a global toggle is off would be indefensible. Still goes through the
+ * same queue, so a manual replay cannot talk over automatic narration.
+ */
+export async function speakTextNow(text: string, role?: string, override?: TtsOverride): Promise<void> {
+  if (!text.trim()) return
+  return new Promise<void>((resolve) => {
+    speechQueue.push({ text, role, override, resolve })
+    processQueue()
+  })
+}
+
+/** Per-call voice settings that beat both the role map and the global config. Used by the
+ *  agent chat to apply an agent's OWN spec.tts, which is server-side config rather than
+ *  the browser-local role map. */
+export interface TtsOverride {
+  voice?: string
+  model?: string
+  rvcEnabled?: boolean
+  rvcModel?: string
+  preset?: string
 }
 
 /**
@@ -165,13 +192,20 @@ function sanitizeForTts(text: string): string {
 /**
  * Speak text immediately (internal — called by queue processor).
  */
-async function speakTextImmediate(text: string, role?: string): Promise<void> {
+async function speakTextImmediate(text: string, role?: string, override?: TtsOverride): Promise<void> {
   const config = getTtsConfig()
-  if (!config.enabled) return
+  // Only an EXPLICIT false blocks here. This used to be `if (!config.enabled) return`,
+  // which also caught undefined — so on a browser that had never opened the TTS settings
+  // tab, the speak toggle was on, every call looked successful, and absolutely nothing
+  // was ever spoken. A silent veto from a second key in a different localStorage entry.
+  if (config.enabled === false) {
+    console.warn('[TtsPlayback] suppressed: gyshell-tts-config.enabled is explicitly false')
+    return
+  }
 
-  // Resolve voice: role-specific override > global default
+  // Resolve voice: per-call override (agent spec) > role map > global default.
   const roleVoice = getRoleVoiceSettings(role)
-  const effectiveVoice = roleVoice.voice || config.defaultVoice || 'default'
+  const effectiveVoice = override?.voice || roleVoice.voice || config.defaultVoice || 'default'
 
   // RVC: "__none__" means explicitly skip RVC for this role
   // undefined/missing means use global default
@@ -190,13 +224,17 @@ async function speakTextImmediate(text: string, role?: string): Promise<void> {
   console.log(`[TtsPlayback] Role voice settings:`, JSON.stringify(roleVoice))
   console.log(`[TtsPlayback] Effective voice: ${effectiveVoice}, RVC: ${effectiveRvcModel || '(disabled for role)'}`)
 
-  // Build effective config with role overrides applied
+  // Build effective config: per-call override (the agent's own spec) beats the role map,
+  // which beats the global default.
   const effectiveConfig = {
     ...config,
     defaultVoice: effectiveVoice,
-    rvcModel: rvcDisabledForRole ? '' : effectiveRvcModel,
-    // If RVC is explicitly disabled for this role, override rvcEnabled
-    rvcEnabled: rvcDisabledForRole ? false : config.rvcEnabled,
+    ...(override?.model ? { defaultModel: override.model } : {}),
+    ...(override?.preset ? { preset: override.preset } : {}),
+    rvcModel: override?.rvcEnabled === false ? '' : (override?.rvcModel || (rvcDisabledForRole ? '' : effectiveRvcModel)),
+    rvcEnabled: override?.rvcEnabled !== undefined
+      ? override.rvcEnabled
+      : (rvcDisabledForRole ? false : config.rvcEnabled),
   }
 
   const apiBase = getProxlabApiBase()

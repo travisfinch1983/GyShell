@@ -17,6 +17,7 @@ import { Router, json as jsonParser } from 'express';
 import http from 'http';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { createHash } from 'crypto';
 
 const CONFIG_FILE = join(process.env.AILAB_PROXY_DATA_DIR || join(process.cwd(), 'data'), 'vector-db-config.json');
 
@@ -158,6 +159,63 @@ export function createVectorProxyRouter() {
     try { if (existsSync(RAG_MODELS_FILE)) c = JSON.parse(readFileSync(RAG_MODELS_FILE, 'utf-8')); } catch {}
     _ragCache = { cfg: { embedModel: c.embedModel || EMBED_MODEL, rerankModel: c.rerankModel || RERANKER_MODEL }, ts: now };
     return _ragCache.cfg;
+  }
+
+  // ─── Embedding-model fingerprint → collection routing ───
+  // The SAME served model name can cover multiple quantisations (Qwen3-VL-Embedding-8B
+  // is both the 4-bit and the FP8 build) and their vectors are only ~0.96 apart —
+  // close enough to look plausible while silently ranking wrong. So we fingerprint on
+  // model id + the weights `root` the endpoint reports, and route to the collections
+  // that encoder actually produced. Mirrors collection_suffix() in the unified memory
+  // MCP; the manifest is shared.
+  //
+  // The suffix is PER BACKEND: qdrant's 4-bit set is suffixed (__bnb4) because the
+  // FP8 re-embed took the base names, while weaviate/chroma were never re-embedded so
+  // their 4-bit data IS the base name. That inverts once they are re-embedded.
+  const FINGERPRINT_FILE = join(process.env.AILAB_PROXY_DATA_DIR || '/opt/ai-lab/.gybackend-data', 'collection-fingerprints.json');
+  let _fpManifest = { data: null, ts: 0 };
+  let _fpCache = { fp: null, ts: 0 };
+
+  function fingerprintManifest() {
+    const now = Date.now();
+    if (_fpManifest.data && now - _fpManifest.ts < 60000) return _fpManifest.data;
+    let d = {};
+    try { if (existsSync(FINGERPRINT_FILE)) d = JSON.parse(readFileSync(FINGERPRINT_FILE, 'utf-8')); } catch {}
+    _fpManifest = { data: d, ts: now };
+    return d;
+  }
+
+  /** sha1(model_id|root)[:12] for the embedder currently behind EMBED_URL. '' if unknown. */
+  async function embedFingerprint() {
+    const now = Date.now();
+    if (_fpCache.fp !== null && now - _fpCache.ts < 60000) return _fpCache.fp;
+    let fp = '';
+    try {
+      const base = EMBED_URL.replace(/\/embeddings$/, '');
+      const r = await fetch(`${base}/models`, { signal: AbortSignal.timeout(8000) });
+      const d = await r.json();
+      const model = ragModelCfg().embedModel;
+      const entry = (d.data || []).find(m => m.id === model);
+      if (entry) fp = createHash('sha1').update(`${model}|${entry.root || ''}`).digest('hex').slice(0, 12);
+    } catch (e) {
+      console.warn(`[vector-fp] fingerprint probe failed: ${e.message}`);
+    }
+    _fpCache = { fp, ts: now };
+    return fp;
+  }
+
+  /** Collection name for the ACTIVE embedder, for a given backend type. */
+  async function resolveCollection(dbType, collection) {
+    const man = fingerprintManifest();
+    const fp = await embedFingerprint();
+    const entry = (man.by_fingerprint || {})[fp];
+    let sfx = '';
+    if (entry) {
+      sfx = typeof entry.suffix === 'object' ? (entry.suffix[dbType] || '') : (entry.suffix || '');
+    } else if (fp) {
+      console.warn(`[vector-fp] embed fingerprint ${fp} not in ${FINGERPRINT_FILE}; using base collection names for ${dbType}`);
+    }
+    return sfx ? `${collection}${sfx}` : collection;
   }
 
   /** Rerank documents using the cross-encoder reranker. Fails gracefully. */
@@ -335,7 +393,8 @@ export function createVectorProxyRouter() {
     try {
       switch (db.type) {
         case 'qdrant': {
-          const qResp = await fetch(`${url}/collections/${collection}/points?wait=true`, {
+          const qUpCol = await resolveCollection('qdrant', collection);
+          const qResp = await fetch(`${url}/collections/${qUpCol}/points?wait=true`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -531,7 +590,8 @@ export function createVectorProxyRouter() {
     try {
       switch (db.type) {
         case 'qdrant': {
-          const r = await fetch(`${url}/collections/${collection}/points/query`, {
+          const qCol = await resolveCollection('qdrant', collection);
+          const r = await fetch(`${url}/collections/${qCol}/points/query`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query: queryVector, limit: topK, with_payload: true }),

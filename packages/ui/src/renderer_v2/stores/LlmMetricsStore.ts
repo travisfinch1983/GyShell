@@ -23,6 +23,9 @@ export interface LlmMetricRow {
   lastSeen?: number
   decodeTps?: number
   prefillTps?: number
+  liveDecodeTps?: number | null
+  livePrefillTps?: number | null
+  liveWindowSec?: number
   cum_genTokens?: number
   cum_promptTokens?: number
   cum_cacheHits?: number
@@ -40,6 +43,7 @@ export class LlmMetricsStore {
   rows: LlmMetricRow[] = []
   loaded = false
   error = ''
+  liveWindowSec = 60
   private timer: ReturnType<typeof setInterval> | null = null
 
   constructor() { makeAutoObservable(this) }
@@ -47,7 +51,13 @@ export class LlmMetricsStore {
   async load(): Promise<void> {
     try {
       const r = await bridge().request('GET', '/api/ai/llm-metrics')
-      runInAction(() => { this.rows = (r as any)?.rows ?? []; this.loaded = true; this.error = '' })
+      runInAction(() => {
+        this.rows = (r as any)?.rows ?? []
+        this.loaded = true
+        this.error = ''
+        const lw = this.rows.find((x) => x.liveWindowSec != null)?.liveWindowSec
+        if (lw != null) this.liveWindowSec = lw
+      })
     } catch (e: any) {
       runInAction(() => { this.error = e?.message || 'load failed'; this.loaded = true })
     }
@@ -63,6 +73,24 @@ export class LlmMetricsStore {
   async deleteRow(fp: string): Promise<void> {
     await bridge().request('DELETE', `/api/ai/llm-metrics/${encodeURIComponent(fp)}`).catch(() => undefined)
     await this.load()
+  }
+
+  async resetRow(fp: string): Promise<void> {
+    await bridge().request('POST', `/api/ai/llm-metrics/${encodeURIComponent(fp)}/reset`, {}).catch(() => undefined)
+    await this.load()
+  }
+
+  async setLiveWindow(sec: number): Promise<void> {
+    const clamped = Math.max(5, Math.min(600, Math.round(Number(sec) || 0)))
+    try {
+      const r = await bridge().request('PUT', '/api/ai/llm-metrics/live-window', { seconds: clamped })
+      runInAction(() => { this.liveWindowSec = (r as any)?.seconds ?? clamped })
+    } catch { runInAction(() => { this.liveWindowSec = clamped }) }
+    await this.load()
+  }
+
+  async fetchLaunchCommand(fp: string): Promise<any> {
+    return bridge().request('GET', `/api/ai/llm-metrics/${encodeURIComponent(fp)}/launch-command`).catch((e: any) => ({ ok: false, reason: e?.message || String(e) }))
   }
 
   /** Rows grouped by base model, each group sorted running-first then by last-seen. */

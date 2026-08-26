@@ -2,7 +2,15 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Pencil, Plus, RefreshCw, ScanEye, SendHorizonal, Settings2, Square, Trash2, Wrench } from 'lucide-react'
+import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Mic, MicOff, Pencil, Plus, Radio, RefreshCw, ScanEye, SendHorizonal, Settings2, Square, Trash2, Volume2, VolumeX, Wrench } from 'lucide-react'
+import { stopPlayback } from '../../services/TtsPlayback'
+import {
+  startPushToTalk, stopPushToTalk,
+  startHandsFree, stopHandsFree,
+  claimStt, releaseStt,
+  type SttState,
+} from '../../services/SttCapture'
+import { useSttHealth } from '../../services/useSttHealth'
 import type { HermesSlashCommand } from '@gyshell/shared'
 import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
 import { hermesApi } from '../../stores/hermesApi'
@@ -44,12 +52,158 @@ const PlanCard = observer(({ item }: { item: ChatItem }) => (
   </div>
 ))
 
-const Row = observer(({ item }: { item: ChatItem }) => {
+/**
+ * Speak-replies toggle. Turning it OFF also stops whatever is currently playing —
+ * otherwise the agent keeps talking after you have told it to be quiet, which is the
+ * single most irritating way for this to behave.
+ */
+const TtsButton: React.FC<{ conversationId: string }> = observer(({ conversationId }) => {
+  const mode = chat.chatTtsMode(conversationId)
+  const [, bump] = React.useState(0)
+  const effective = chat.ttsOnFor(conversationId)
+  const overriding = mode !== undefined
+  return (
+    <button
+      className={`${styles.btnVoice} ${effective ? styles.btnVoiceOn : ''}`}
+      title={
+        (effective ? 'Speaking replies aloud in THIS chat' : 'Muted in THIS chat')
+        + (overriding
+          ? ' (overriding the global setting — alt-click to follow global again)'
+          : ' (following the global setting)')
+      }
+      onClick={(e) => {
+        // Alt-click clears the override and returns to following global. Without an
+        // escape hatch an override is permanent and there is no way to tell the button
+        // "just do whatever global does".
+        if (e.altKey) {
+          chat.setChatTtsMode(conversationId, undefined)
+          bump((n) => n + 1)
+          return
+        }
+        const next = !effective
+        chat.setChatTtsMode(conversationId, next ? 'on' : 'off')
+        if (!next) stopPlayback()
+        bump((n) => n + 1)
+      }}
+    >
+      {effective ? <Volume2 size={13} /> : <VolumeX size={13} />}
+      {/* LABEL IT. As a bare icon among two other icon buttons this control was invisible —
+          it was looked for and reported missing. */}
+      <span style={{ fontSize: 10 }}>{effective ? 'Speaking' : 'Muted'}</span>
+      {overriding && <span className={styles.btnVoiceDot} />}
+    </button>
+  )
+})
+
+/**
+ * The two microphone controls, per Travis's spec.
+ *
+ *   MANUAL (Mic)   — press to record, press again to stop. The transcript is dropped
+ *                    INTO THE COMPOSER; he presses Enter himself. Never auto-sends.
+ *   CONSTANT (Radio) — toggle on and the mic stays open. SttCapture's VAD decides the
+ *                    utterance ended on a pause, transcribes, and the text is sent
+ *                    IMMEDIATELY without a manual step.
+ *
+ * Both are disabled with a reason when no STT provider is healthy — the only one lives
+ * on px-epyc, which is down, and a mic button that silently records into nothing is
+ * worse than one that is visibly unavailable.
+ */
+const SttButtons: React.FC<{ onTranscript: (t: string) => void; onAutoSend: (t: string) => void }> = ({ onTranscript, onAutoSend }) => {
+  const [state, setState] = React.useState<SttState>('idle')
+  const stt = useSttHealth()
+
+  // Claim the shared microphone for the chat composer. If the Notes tool (or anything else)
+  // claims it later, onEvicted fires and these buttons drop back to idle — without it the
+  // UI would keep showing "listening" while the transcripts went somewhere else entirely.
+  React.useEffect(() => {
+    claimStt('agent-chat', {
+      onTranscript,
+      onAutoSend,
+      onStateChange: (s: SttState) => setState(s),
+      onEvicted: (by) => {
+        console.warn(`[chat] the microphone was taken over by "${by}"`)
+        setState('idle')
+      },
+    })
+    return () => releaseStt('agent-chat')
+  }, [onTranscript, onAutoSend])
+
+  const recording = state === 'recording'
+  const transcribing = state === 'transcribing'
+  const handsFree = state === 'handsfree' || state === 'handsfree-recording'
+  const speaking = state === 'handsfree-recording'
+
+  return (
+    <>
+      <button
+        className={`${styles.btnVoice} ${recording ? styles.btnVoiceRec : ''}`}
+        disabled={!stt.ok || transcribing || handsFree}
+        title={!stt.ok ? `Speech-to-text unavailable — ${stt.why}`
+          : transcribing ? 'Transcribing…'
+          : recording ? 'Recording — click to stop and drop the text into the box'
+          : 'Record; the transcript goes into the message box for you to send'}
+        onClick={() => { if (recording) void stopPushToTalk(); else if (state === 'idle') void startPushToTalk() }}
+      >
+        {transcribing ? <Radio size={13} /> : recording ? <MicOff size={13} /> : <Mic size={13} />}
+      </button>
+      <button
+        className={`${styles.btnVoice} ${speaking ? styles.btnVoiceRec : handsFree ? styles.btnVoiceOn : ''}`}
+        disabled={!stt.ok || recording || transcribing}
+        title={!stt.ok ? `Speech-to-text unavailable — ${stt.why}`
+          : handsFree ? 'Always-listening ON — transcripts send themselves. Click to stop.'
+          : 'Always listen: sends each utterance automatically after a pause'}
+        onClick={() => { if (handsFree) stopHandsFree(); else void startHandsFree() }}
+      >
+        <Radio size={13} />
+      </button>
+    </>
+  )
+}
+
+/**
+ * Replay one agent message through TTS on demand, in that agent's configured voice.
+ * Independent of the Auto-TTS toggle by design.
+ */
+const SpeakMessageButton: React.FC<{ agentId: string; text: string }> = ({ agentId, text }) => {
+  const [state, setState] = React.useState<'idle' | 'busy' | 'error'>('idle')
+  if (!text.trim()) return null
+  return (
+    <button
+      title={state === 'error' ? 'Speech failed — click to retry' : 'Read this message aloud'}
+      onClick={async () => {
+        setState('busy')
+        try {
+          await chat.speakMessage(agentId, text)
+          setState('idle')
+        } catch (e) {
+          // Surface it. A silent no-op here is indistinguishable from a dead TTS pool.
+          console.warn('[chat] speakMessage failed:', e)
+          setState('error')
+        }
+      }}
+      className={`${styles.speakMsgBtn} ${state === 'error' ? styles.speakMsgBtnErr : ''}`}
+    >
+      <Volume2 size={12} />
+    </button>
+  )
+}
+
+const Row = observer(({ item, agentId }: { item: ChatItem; agentId: string }) => {
   switch (item.kind) {
     case 'user':
       return (
-        <div className={styles.msgYou}>
+        <div className={styles.msgYou} style={item.queued || item.steering ? { opacity: 0.55 } : undefined}>
           {item.text}
+          {item.steering && (
+            <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.85 }} title="Steering — delivered to the agent at its next tool call, without waiting for the turn to end">
+              ⏩ steering
+            </span>
+          )}
+          {item.queued && (
+            <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.85 }} title="Queued — sends automatically when the current turn finishes">
+              ⏳ queued
+            </span>
+          )}
           {item.ctxAttached && (
             <span
               className={styles.ctxChip}
@@ -66,6 +220,9 @@ const Row = observer(({ item }: { item: ChatItem }) => {
         <div className={`${styles.msgAgent} markdown-body`}>
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.text}</ReactMarkdown>
           {item.streaming ? <span className={styles.cursor}>▍</span> : null}
+          {/* Only once the bubble is complete — replaying a half-arrived reply would speak
+              a truncated sentence. */}
+          {!item.streaming && <SpeakMessageButton agentId={agentId} text={item.text} />}
         </div>
       )
     case 'thought': return <ThoughtRow item={item} />
@@ -263,7 +420,7 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
             runs headless on the backend and survives closing this view.
           </div>
         )}
-        {s.items.map((i) => <Row key={i.id} item={i} />)}
+        {s.items.map((i) => <Row key={i.id} item={i} agentId={agentId} />)}
         <ScrollAnchor items={s.items} logRef={logRef} nearBottomRef={nearBottomRef} />
         {s.busy && <div className={styles.sysRow}>thinking…</div>}
       </div>
@@ -317,6 +474,11 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
               if (e.key === 'Escape') setSlashOpen(false)
               if (e.key === 'Tab' && slashOpen && slashMatches[0]) { e.preventDefault(); setText(`/${slashMatches[0].name} `); setSlashOpen(false) }
             }}
+          />
+          <TtsButton conversationId={conversationId} />
+          <SttButtons
+            onTranscript={(t) => setText((cur) => (cur ? `${cur} ${t}` : t))}
+            onAutoSend={(t) => { const v = t.trim(); if (v) void chat.send(agentId, conversationId, v) }}
           />
           {s.busy ? (
             <button className={styles.btnStop} title="Stop generating" onClick={() => chat.stop(agentId, conversationId)}>

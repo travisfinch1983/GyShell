@@ -26,11 +26,12 @@ import {
   X,
   GripVertical,
   type LucideIcon,
+  Shapes,
 } from 'lucide-react'
 import { uiPrefsStore } from '../../stores/uiPrefsStore'
 import styles from './PrimarySidebar.module.scss'
 
-export type PrimaryTab = 'home' | 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'files' | 'logs' | 'roadmap' | 'fleet' | 'addons' | 'chat'
+export type PrimaryTab = 'home' | 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'svg' | 'files' | 'logs' | 'roadmap' | 'fleet' | 'addons' | 'chat'
 
 interface TabDef {
   id: PrimaryTab
@@ -47,7 +48,7 @@ const TABS: TabDef[] = [
   { id: 'addons',    label: 'Addons',    Icon: Blocks },
   { id: 'cluster',   label: 'Cluster',   Icon: Server },
   { id: 'services',  label: 'Services',  Icon: Radar },
-  { id: 'ai-services', label: 'AI Services', Icon: BrainCircuit },
+  { id: 'ai-services', label: 'AI Metrics', Icon: BrainCircuit },
   { id: 'ai-llm', label: 'AI · LLM', Icon: Bot },
   { id: 'ai-image', label: 'AI · Image Gen', Icon: ImageIcon },
   { id: 'ai-tts-stt', label: 'AI · TTS & STT', Icon: AudioLines },
@@ -55,6 +56,7 @@ const TABS: TabDef[] = [
   { id: 'helper-scripts', label: 'Helper Scripts', Icon: Package },
   { id: 'model-downloads', label: 'Model Downloads', Icon: Download },
   { id: 'flowchart', label: 'Flowchart', Icon: Workflow },
+  { id: 'svg',       label: 'SVG',       Icon: Shapes },
   { id: 'files',     label: 'Files',     Icon: FolderOpen },
   { id: 'logs',      label: 'Logs',      Icon: ScrollText },
   { id: 'roadmap',   label: 'Roadmap',   Icon: MapIcon },

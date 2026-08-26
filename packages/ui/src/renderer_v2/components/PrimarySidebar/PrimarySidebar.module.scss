@@ -46,8 +46,12 @@ $sidebar-expanded: 200px;
   transition: background 0.1s, color 0.1s, border-color 0.1s, justify-content 0s;
   white-space: nowrap;
   font-family: var(--font-ui);
-  font-size: 11px;
-  min-height: 36px;
+  // Tightened to make room for more primary tabs (19 and counting). 19 x 36px was ~700px
+  // of sidebar before gaps, which overflows a laptop viewport. INTERIM: the real fix is
+  // grouping related tabs (the four AI-* entries are the obvious candidates) rather than
+  // shrinking type indefinitely — past ~10px this stops being readable.
+  font-size: 10px;
+  min-height: 29px;
   justify-content: center;
 
   svg {

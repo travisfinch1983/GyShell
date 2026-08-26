@@ -11,6 +11,8 @@ import { WebSocketGatewayAdapter } from '../../services/Gateway/WebSocketGateway
 import { clusterService } from '../../services/Cluster/ClusterService'
 import { CatalogInstallService } from '../../services/Cluster/CatalogInstallService'
 import { universalProxyService } from '../../services/Cluster/UniversalProxyService'
+import { discoveryService } from '../../services/Cluster/proxy/discovery-service'
+import { uiSettingsService } from '../../services/Cluster/proxy/ui-settings-service'
 import { detectServiceTypes } from '../../services/Cluster/probeServiceType'
 import { fetchCivitaiModel } from '../../services/Cluster/civitaiModel'
 import { metricsService } from '../../services/Cluster/MetricsService'
@@ -41,6 +43,7 @@ import { createFleetRouter } from '../../services/ConversationBus/fleetHttp'
 import { HermesService } from '../../services/Hermes/HermesService'
 import { createHermesRouter } from '../../services/Hermes/hermesHttp'
 import { createAgentToolsRouter } from '../../services/Agent/agentToolsHttp'
+import { HermesActivityReporter } from '../../services/Hermes/HermesActivityReporter'
 import { HermesBusSubscriber } from '../../services/Hermes/HermesBusSubscriber'
 import { createAutoTerminalConfig } from '../../services/terminal/terminalConnectionSupport'
 import { TerminalCommandDraftService } from '../../services/TerminalCommandDraftService'
@@ -188,7 +191,7 @@ export async function startGyBackend(): Promise<void> {
   // AI-Lab x Hermes control plane — create/configure/drive Hermes agents on CT158.
   // Backend-owned + headless: sessions run server-side regardless of any UI (see plan INVARIANT).
   const hermesService = new HermesService({
-    host: process.env.HERMES_HOST || '10.0.0.236',
+    host: process.env.HERMES_HOST || '127.0.0.1',
     sshKeyPath: process.env.AILAB_SSH_KEY || path.join(dataDir, 'ssh', 'id_ed25519'),
     specsFile: path.join(dataDir, 'hermes-agent-specs.json'),
     providerServicesFile: path.join(dataDir, 'hermes-provider-services.json'),
@@ -197,6 +200,10 @@ export async function startGyBackend(): Promise<void> {
   // Autonomous, headless inter-agent path: Hermes agents as first-class bus participants.
   // Gated by the `autonomousRoutingEnabled` kill switch (default OFF) — inert until enabled.
   new HermesBusSubscriber(hermesService, conversationBus).start()
+  // Hermes half of fleet activity — Claude Code instances are reported by the
+  // transcript tailer on CT180; these are reported here because the ACP bridge
+  // (with authoritative per-session busy/idle) is in-process.
+  new HermesActivityReporter(hermesService.bridge, conversationBus).start()
   // AI-Lab Universal API Proxy — dedicated HTTP listener fronting running services by slot.
   void universalProxyService
     .start({
@@ -251,6 +258,9 @@ export async function startGyBackend(): Promise<void> {
     }
   }
 
+  // Server-side model/service discovery loop (rule #1: browser makes zero connections).
+  discoveryService.start()
+
   const wsGatewayControlService = new WebSocketGatewayControlService({
     createAdapter: (host, port, ipFilter) =>
       new WebSocketGatewayAdapter(gatewayService, {
@@ -274,6 +284,13 @@ export async function startGyBackend(): Promise<void> {
         },
         proxyBridge: {
           getState: () => universalProxyService.getState()
+        },
+        discoveryBridge: {
+          get: () => discoveryService.get()
+        },
+        uiSettingsBridge: {
+          get: () => uiSettingsService.get(),
+          set: (patch) => uiSettingsService.set(patch)
         },
         fleetBridge,
         aiProbeBridge: {

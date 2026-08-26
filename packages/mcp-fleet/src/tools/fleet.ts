@@ -15,6 +15,54 @@ interface FeedRecord {
  */
 export const fleetTools: ToolSpec[] = [
   {
+    name: 'fleet_check_status',
+    description:
+      'Is another agent ACTUALLY working right now? Use this after sending someone a task — do NOT ' +
+      'assume they received it or started. Covers both Claude Code instances and Hermes agents. ' +
+      'Returns per agent: state, idleSeconds, and what they last did.\n' +
+      'READING THE STATE:\n' +
+      '  working             = mid-turn now; idleSeconds near zero. Leave them alone.\n' +
+      '  idle-awaiting-input = finished cleanly and waiting. A LARGE idle here is NORMAL, not a fault.\n' +
+      '  stalled             = went quiet MID-TURN. If idleSeconds is large and lastEventSummary is\n' +
+      '                        unchanged since you messaged them, YOUR MESSAGE NEVER LANDED — resend.\n' +
+      '  dead                = no session/transcript at all.\n' +
+      '  unknown             = nothing has reported. NOT the same as idle — do not read it as "fine".\n' +
+      'Pair with fleet_activity_detail to see exactly what they were doing at that point.',
+    schema: {
+      agentId: z
+        .string()
+        .optional()
+        .describe('Agent to check (e.g. "fable-builder", "loom"). Omit for the whole fleet.'),
+    },
+    method: 'GET',
+    endpoint: (args) =>
+      args.agentId
+        ? `/api/fleet/activity?agentId=${encodeURIComponent(String(args.agentId))}`
+        : '/api/fleet/activity',
+  },
+  {
+    name: 'fleet_activity_detail',
+    description:
+      'Pull the recent transcript entries for an agent — what they actually said and which tools they ' +
+      'ran, most recent last. Use after fleet_check_status when you need to know WHERE someone got to, ' +
+      'or where they stopped. Works for Claude Code instances (session transcript) and Hermes agents ' +
+      '(ACP event ring). Returns the entries plus the source so you can tell how far back it goes.',
+    schema: {
+      agentId: z.string().min(1).describe('Agent whose recent activity you want'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe('How many recent entries (default 20)'),
+    },
+    method: 'GET',
+    endpoint: (args) =>
+      `/api/fleet/activity/detail?agentId=${encodeURIComponent(String(args.agentId))}` +
+      (args.limit ? `&limit=${Number(args.limit)}` : ''),
+  },
+  {
     name: 'fleet_send',
     description:
       'STATE-CHANGING: Send a message to an AI-Lab fleet agent (or "broadcast" for all, "user" for the ' +

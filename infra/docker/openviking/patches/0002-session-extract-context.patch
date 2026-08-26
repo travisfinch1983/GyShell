@@ -1,0 +1,96 @@
+--- /opt/openviking/venv/lib/python3.13/site-packages/openviking/session/memory/session_extract_context_provider.py.bak-ovrecall-1781264909	2026-06-12 11:48:29.626332792 +0000
++++ /opt/openviking/venv/lib/python3.13/site-packages/openviking/session/memory/session_extract_context_provider.py	2026-06-12 11:48:29.627332810 +0000
+@@ -263,53 +263,29 @@
+         return "ToolCall: " + "; ".join(fields)
+ 
+     def _build_prefetch_search_query(self) -> str:
+-        """Build a compact semantic query from raw conversation messages.
+-
+-        The LLM already receives the full conversation via pre_fetch_messages.
+-        Search only needs topical recall signals, so use the raw message content
+-        instead of the prompt-wrapped conversation.
+-        """
++        # PATCH(ov-recall 2026-06-12): bias the prefetch query to the MOST RECENT
++        # user turns (newest-first) so the current ask drives recall. The old code
++        # joined ALL user turns oldest-first then head-truncated to 5000 chars,
++        # which dropped the current topic off the tail (Cinder kept recalling stale
++        # baseline memories). Returns "" when there is no user text (true session
++        # start) so the caller skips the prefetch instead of searching "conversation".
+         if not isinstance(self.messages, list):
+             return ""
+-
+-        primary_sections: List[str] = []
+-        supporting_sections: List[str] = []
+-
++        user_sections = []
+         for msg in self.messages:
+-            role = getattr(msg, "role", "")
+-            role_id = getattr(msg, "role_id", "") or role
+-            parts = getattr(msg, "parts", [])
+-
+-            text_parts: List[str] = []
+-            tool_parts: List[str] = []
+-
+-            for part in parts:
++            if getattr(msg, "role", "") != "user":
++                continue
++            role_id = getattr(msg, "role_id", "") or "user"
++            texts = []
++            for part in getattr(msg, "parts", []):
+                 if hasattr(part, "text") and part.text:
+-                    limit = (
+-                        _PREFETCH_SEARCH_TEXT_PART_MAX_CHARS
+-                        if role == "user"
+-                        else _PREFETCH_SEARCH_ASSISTANT_TEXT_PART_MAX_CHARS
+-                    )
+-                    text_parts.append(self._truncate_prefetch_query_text(part.text, limit))
+-                elif isinstance(part, ToolPart):
+-                    tool_part = self._format_tool_part_for_search(part)
+-                    if tool_part != "ToolCall: ":
+-                        tool_parts.append(tool_part)
+-
+-            if text_parts:
+-                section = f"{role_id}: " + "\n".join(text_parts)
+-                if role == "user":
+-                    primary_sections.append(section)
+-                else:
+-                    supporting_sections.append(section)
+-
+-            if tool_parts:
+-                supporting_sections.append(f"{role_id}: " + "\n".join(tool_parts))
+-
+-        query = "\n\n".join(primary_sections + supporting_sections)
+-        if not query.strip():
+-            query = self._assemble_conversation(self.messages)
+-
++                    texts.append(self._truncate_prefetch_query_text(part.text, _PREFETCH_SEARCH_TEXT_PART_MAX_CHARS))
++            if texts:
++                user_sections.append(f"{role_id}: " + "\n".join(texts))
++        if not user_sections:
++            return ""
++        recent = list(reversed(user_sections))[:3]
++        query = "\n\n".join(recent)
+         return self._truncate_prefetch_query_text(query, _PREFETCH_SEARCH_QUERY_MAX_CHARS)
+ 
+     def create_tool_context(self, default_search_uris=[]):
+@@ -450,11 +426,15 @@
+             dir_list = list(ls_dirs)
+             search_query = self._build_prefetch_search_query()
+             if not search_query:
+-                search_query = "conversation"
+-            search_uris = await self.search_files(
+-                query=search_query,
+-                search_uris=dir_list,
+-            )
++                # PATCH(ov-recall 2026-06-12): contentless/session-start query ->
++                # skip prefetch entirely (was: fallback to literal "conversation",
++                # which recalled the generic baseline cluster every time).
++                search_uris = []
++            else:
++                search_uris = await self.search_files(
++                    query=search_query,
++                    search_uris=dir_list,
++                )
+             result_value = search_uris
+             if self._eager_prefetch:
+                 files_to_read_from_search.extend(search_uris)

@@ -28,10 +28,23 @@ export interface HermesApplyResult {
 }
 
 /** One global support-model role assignment (Support Models tab). */
-export interface SupportModelRole { provider: string; model: string; description?: string; recommendation?: string }
+export interface SupportModelRole { provider: string; model: string; description?: string; recommendation?: string; timeout?: number; noThink?: boolean }
 export type SupportModels = Record<string, SupportModelRole | undefined>
 /** A Hermes auxiliary role from the self-populating catalog (GET /api/hermes/aux-tasks). */
-export interface AuxTask { key: string; label: string; description: string; recommendation: string; shared: boolean }
+export interface AuxTask {
+  key: string; label: string; description: string; recommendation: string; shared: boolean
+  /** Value is DERIVED per-agent from that agent's own model (vision). Agents differing is
+   *  correct and cannot be reconciled — never show it as drift. */
+  capabilityManaged?: boolean
+  /** Consumer is NOT Hermes (HippocampAI / OpenViking): needs a concrete model, Auto is meaningless. */
+  external?: boolean
+  /** LIVE effective model across agents ('' = Auto). Read from the profile configs, NOT the
+   *  stored overlay — the overlay only knows what was set through this UI. */
+  current?: string
+  /** Agents disagree; `current` is '' and perAgent holds the split. */
+  drift?: boolean
+  perAgent?: Record<string, string>
+}
 
 export interface HermesPromptResult {
   ok: boolean
@@ -198,6 +211,55 @@ export const hermesApi = {
       const r = await bridge().request('PUT', `/api/hermes/agents/${encodeURIComponent(id)}/tools`, { selected })
       if (r?.error || r?.ok === false) return { ok: false, error: String(r?.error ?? 'scope failed') }
       return { ok: true, endpoint: r?.endpoint, toolCount: r?.toolCount }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
+  /** GET /api/hermes/agents/:id/tool-health — is the agent actually SERVING its group's
+   *  tools? Hermes gives up on MCP reconnect after 5 failures and then runs toolless until
+   *  its gateway restarts, which the group alone cannot reveal. */
+  async getToolHealth(id: string): Promise<{
+    groupTools: number; registeredTools: number | null; gaveUp: boolean
+    gatewayActive: boolean; healthy: boolean; detail: string
+  } | null> {
+    try {
+      const r = await bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/tool-health`)
+      if (!r || r.error || typeof r.healthy !== 'boolean') return null
+      return r
+    } catch {
+      return null
+    }
+  },
+
+  /** POST /api/hermes/agents/:id/tool-reconnect — restart the agent's gateway so it re-reads
+   *  config and reconnects its MCP link (the only way back from Hermes' permanent give-up). */
+  async reconnectTools(id: string): Promise<{ ok: boolean; restarted?: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/tool-reconnect`)
+      if (r?.error) return { ok: false, error: String(r.error) }
+      return { ok: true, restarted: !!r?.restarted }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
+  /** GET /api/hermes/agents/:id/tool-backups — snapshots taken before each tool change. */
+  async listToolBackups(id: string): Promise<Array<{ file: string; savedAt: string; toolCount: number }>> {
+    try {
+      const r = await bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/tool-backups`)
+      return Array.isArray(r?.backups) ? r.backups : []
+    } catch {
+      return []
+    }
+  },
+
+  /** POST /api/hermes/agents/:id/tool-backups/restore { file } — revalidated + reconnected. */
+  async restoreToolBackup(id: string, file: string): Promise<{ ok: boolean; toolCount?: number; error?: string }> {
+    try {
+      const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/tool-backups/restore`, { file })
+      if (r?.error) return { ok: false, error: String(r.error) }
+      return { ok: true, toolCount: r?.toolCount }
     } catch (e) {
       return { ok: false, error: String((e as Error)?.message ?? e) }
     }
@@ -454,6 +516,18 @@ export const hermesApi = {
     }
   },
 
+  /** POST /steer — inject into the RUNNING turn. ok:false (409) means there was no live
+   *  session, i.e. the caller should send it as a normal prompt instead. */
+  async steer(id: string, text: string, extra?: { conversationId?: string }): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/steer`, { text, ...(extra?.conversationId ? { conversationId: extra.conversationId } : {}) })
+      if (r?.error) return { ok: false, error: String(r.error) }
+      return { ok: r?.ok !== false }
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) }
+    }
+  },
+
   /** POST /api/hermes/screen-capture — answer a capture_request signal (the
    *  backend hands the image to the agent's view_screen tool; 20s timeout its
    *  side, so on capture failure we simply don't POST). */
@@ -573,6 +647,8 @@ export const hermesApi = {
             model: typeof v.model === 'string' ? v.model : '',
             ...(typeof v.description === 'string' ? { description: v.description } : {}),
             ...(typeof v.recommendation === 'string' ? { recommendation: v.recommendation } : {}),
+            ...(typeof v.timeout === 'number' ? { timeout: v.timeout } : {}),
+            ...(typeof v.noThink === 'boolean' ? { noThink: v.noThink } : {}),
           }
         }
       }
@@ -605,7 +681,7 @@ export const hermesApi = {
    * PUT /api/hermes/support-models — MERGE semantics: only the keys present in
    * the patch are touched; a key set to null clears that role. Applies globally.
    */
-  async setSupportModels(patch: Record<string, { model?: string; provider?: string; description?: string; recommendation?: string } | null>): Promise<{ ok: boolean; agentsUpdated?: number; error?: string }> {
+  async setSupportModels(patch: Record<string, { model?: string; provider?: string; description?: string; recommendation?: string; timeout?: number; noThink?: boolean } | null>): Promise<{ ok: boolean; agentsUpdated?: number; error?: string }> {
     try {
       const r = await bridge().request('PUT', '/api/hermes/support-models', patch)
       if (r?.error) return { ok: false, error: String(r.error) }

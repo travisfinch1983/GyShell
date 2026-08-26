@@ -1,6 +1,7 @@
 import type { IGatewayRuntime, StartTaskInput, StartTaskOptions } from './types';
 import { WebSocketClientTransport, type IWebSocketConnectionLike } from './WebSocketClientTransport';
 import { WebSocketServer } from 'ws';
+import { recordGatewaySend } from './gatewayStats';
 
 type WebSocketRpcMethod =
   | 'gateway:ping'
@@ -58,6 +59,9 @@ type WebSocketRpcMethod =
   | 'memory:get'
   | 'memory:setContent'
   | 'settings:get'
+  | 'discovery:get'
+  | 'uiSettings:get'
+  | 'uiSettings:set'
   | 'settings:set'
   | 'settings:getCommandPolicyLists'
   | 'settings:addCommandPolicyRule'
@@ -266,6 +270,13 @@ export interface WebSocketGatewayAdapterOptions {
   settingsBridge?: {
     getSettings?: () => unknown | Promise<unknown>;
     setSettings?: (settings: Record<string, any>) => unknown | Promise<unknown>;
+  };
+  discoveryBridge?: {
+    get: () => Promise<unknown>;
+  };
+  uiSettingsBridge?: {
+    get: () => unknown | Promise<unknown>;
+    set: (patch: Record<string, any>) => unknown | Promise<unknown>;
   };
   commandPolicyBridge?: {
     getLists?: () => unknown | Promise<unknown>;
@@ -651,12 +662,24 @@ export class WebSocketGatewayAdapter {
 
   private async handleIncomingMessage(socket: IWebSocketConnectionLike, raw: unknown): Promise<void> {
     let requestId: string | undefined;
+    let method: string | undefined;
     try {
       const parsed = this.parseRequest(raw);
       requestId = parsed.id !== undefined ? String(parsed.id) : undefined;
+      method = typeof (parsed as { method?: unknown }).method === 'string'
+        ? String((parsed as { method?: unknown }).method)
+        : undefined;
+      // cluster:request is a GENERIC bridge shared by seven stores, so the method name alone
+      // cannot say which caller is chatty. Fold the proxied path in (query stripped, so the
+      // key stays bounded) — otherwise the counter names a symptom, not a source.
+      if (method === 'cluster:request') {
+        const p = (parsed as { params?: Record<string, unknown> }).params;
+        const path = p && typeof p.path === 'string' ? p.path.split('?')[0] : '';
+        if (path) method = `cluster:request ${path}`;
+      }
       const result = await this.executeRequest(parsed, socket);
       if (requestId) {
-        this.sendRpcSuccess(socket, requestId, result);
+        this.sendRpcSuccess(socket, requestId, result, method);
       }
     } catch (error) {
       const rpcError = this.normalizeRpcError(error);
@@ -1296,6 +1319,25 @@ export class WebSocketGatewayAdapter {
         }
         return await this.options.memoryBridge.setContent(content);
       }
+      case 'discovery:get': {
+        if (!this.options.discoveryBridge?.get) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'discovery:get is not available on this websocket gateway.');
+        }
+        return await this.options.discoveryBridge.get();
+      }
+      case 'uiSettings:get': {
+        if (!this.options.uiSettingsBridge?.get) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'uiSettings:get is not available on this websocket gateway.');
+        }
+        return await this.options.uiSettingsBridge.get();
+      }
+      case 'uiSettings:set': {
+        if (!this.options.uiSettingsBridge?.set) {
+          throw new WebSocketRpcError('METHOD_NOT_FOUND', 'uiSettings:set is not available on this websocket gateway.');
+        }
+        const patch = this.readObjectParam(params, 'patch');
+        return await this.options.uiSettingsBridge.set(patch);
+      }
       case 'settings:get': {
         if (!this.options.settingsBridge?.getSettings) {
           throw new WebSocketRpcError('METHOD_NOT_FOUND', 'settings:get is not available on this websocket gateway.');
@@ -1640,13 +1682,13 @@ export class WebSocketGatewayAdapter {
     return new WebSocketRpcError('INTERNAL_ERROR', 'Unexpected websocket adapter error.');
   }
 
-  private sendRpcSuccess(socket: IWebSocketConnectionLike, id: string, result: unknown): void {
+  private sendRpcSuccess(socket: IWebSocketConnectionLike, id: string, result: unknown, method?: string): void {
     this.safeSocketSend(socket, {
       type: 'gateway:response',
       id,
       ok: true,
       result
-    });
+    }, method ? `rpc:${method}` : undefined);
   }
 
   private sendRpcFailure(socket: IWebSocketConnectionLike, id: string, code: string, message: string): void {
@@ -1658,9 +1700,12 @@ export class WebSocketGatewayAdapter {
     });
   }
 
-  private safeSocketSend(socket: IWebSocketConnectionLike, payload: Record<string, any>): void {
+  private safeSocketSend(socket: IWebSocketConnectionLike, payload: Record<string, any>, statKey?: string): void {
     try {
-      socket.send(JSON.stringify(payload));
+      const wire = JSON.stringify(payload);
+      // Measure the SERIALIZED length, not the object — that is what goes on the wire.
+      if (statKey) recordGatewaySend('rpc', statKey.replace(/^rpc:/, ''), wire.length);
+      socket.send(wire);
     } catch (error) {
       this.logger.warn('[WebSocketGatewayAdapter] Failed to send RPC response.', error);
     }

@@ -132,7 +132,7 @@
 .metricsBar { display: flex; align-items: center; gap: 10px; }
 .metricsTitle { font-size: 14px; font-weight: 700; }
 .metricsSub { font-size: 11px; color: var(--fg-faint); }
-.metricsScroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+.metricsScroll { overflow-x: auto; overflow-y: auto; max-height: 62vh; border: 1px solid var(--border); border-radius: 8px; }
 .metricsTable { border-collapse: collapse; font-size: 12px; white-space: nowrap; min-width: 100%; }
 .metricsTable th, .metricsTable td { padding: 5px 9px; text-align: right; border-bottom: 1px solid var(--border); }
 .metricsTable thead th { position: sticky; top: 0; background: var(--panel-bg); z-index: 2; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--fg-muted); font-weight: 600; }
@@ -149,6 +149,16 @@
 .dotOff { background: var(--fg-faint); }
 .actionCell { display: flex; gap: 4px; justify-content: flex-end; }
 .iconBtn { display: inline-flex; align-items: center; padding: 3px; border: 1px solid var(--border); border-radius: 5px; background: var(--control-bg); color: var(--fg-muted); cursor: pointer; &:hover { color: var(--fg); border-color: var(--accent); } }
+
+.liveRow td { background: color-mix(in srgb, var(--accent) 5%, transparent); color: var(--fg-muted); font-style: italic; }
+.liveRow .stickyCol { background: color-mix(in srgb, var(--accent) 5%, var(--app-bg)); font-weight: 500; font-style: normal; }
+.liveTag { display: inline-block; margin-left: 6px; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: #34d399; border: 1px solid color-mix(in srgb, #34d399 45%, transparent); border-radius: 8px; padding: 0 6px; font-style: normal; }
+.liveWindowCtl { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--fg-muted); }
+.liveWindowInput { width: 58px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--control-bg); color: var(--fg); font-size: 11px; text-align: right; }
+.launchSection { margin-top: 8px; padding: 0 14px 14px; }
+.launchHead { font-size: 12px; font-weight: 700; color: var(--fg); margin: 6px 0; }
+.launchNote { font-size: 11.5px; color: var(--fg-faint); font-style: italic; padding: 8px 14px 14px; }
+.launchPre { margin: 0; padding: 10px 12px; background: var(--app-bg); border: 1px solid var(--border); border-radius: 6px; font-family: var(--font-mono); font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; color: var(--fg); }
 
 .modalBackdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; }
 .modalCard { background: var(--app-bg); border: 1px solid var(--border); border-radius: 10px; max-width: 560px; width: 90%; max-height: 80vh; overflow: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }

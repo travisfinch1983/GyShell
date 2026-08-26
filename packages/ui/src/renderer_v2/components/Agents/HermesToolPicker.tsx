@@ -17,7 +17,7 @@
  * Changes apply on the agent's NEXT session (Hermes caches tools per session).
  */
 import React, { useEffect, useState } from 'react'
-import { RotateCcw, Save } from 'lucide-react'
+import { RotateCcw, Save, AlertTriangle, Plug, History } from 'lucide-react'
 import { McpToolTree, useMcpTree, type McpTreeServer } from '../Common/McpToolTree'
 import { hermesApi } from '../../stores/hermesApi'
 import { confirmStore } from '../../stores/confirmStore'
@@ -33,6 +33,44 @@ export const HermesToolPicker: React.FC<{ agentId: string }> = ({ agentId }) => 
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
+  // Health is separate from the group: the group can be perfect while the agent serves nothing.
+  const [health, setHealth] = useState<{ healthy: boolean; gaveUp: boolean; detail: string } | null>(null)
+  const [backups, setBackups] = useState<Array<{ file: string; savedAt: string; toolCount: number }>>([])
+  const [showBackups, setShowBackups] = useState(false)
+
+  const refreshHealth = React.useCallback(async () => {
+    const [h, b] = await Promise.all([hermesApi.getToolHealth(agentId), hermesApi.listToolBackups(agentId)])
+    setHealth(h ? { healthy: h.healthy, gaveUp: h.gaveUp, detail: h.detail } : null)
+    setBackups(b)
+  }, [agentId])
+
+  useEffect(() => { void refreshHealth() }, [refreshHealth])
+
+  const reconnect = async () => {
+    setBusy(true); setErr(''); setStatus('Reconnecting the agent…')
+    const r = await hermesApi.reconnectTools(agentId)
+    setBusy(false)
+    if (!r.ok) { setErr(`Reconnect failed: ${r.error ?? 'unknown'}`); setStatus(''); return }
+    setStatus(r.restarted ? 'Reconnected — the agent is reloading its tools.' : 'Gateway was not running; nothing to reconnect.')
+    setTimeout(() => { void refreshHealth() }, 4000)
+  }
+
+  const restore = async (file: string, toolCount: number) => {
+    const sure = await confirmStore.confirm({
+      title: 'Restore this tool set?',
+      body: `Replaces the agent's current tools with the ${toolCount}-tool snapshot from ${file}. Any tool removed or disabled since then will be reported instead of silently dropped.`,
+      confirmText: 'Restore',
+    })
+    if (!sure) return
+    setBusy(true); setErr(''); setStatus('Restoring…')
+    const r = await hermesApi.restoreToolBackup(agentId, file)
+    setBusy(false)
+    if (!r.ok) { setErr(`Restore failed: ${r.error ?? 'unknown'}`); setStatus(''); return }
+    setStatus(`Restored ${r.toolCount ?? '?'} tools.`)
+    const fresh = await hermesApi.getTools(agentId)
+    if (fresh) { setSelected(new Set(fresh.selected)); setBaseline(new Set(fresh.selected)); setScoped(fresh.scoped) }
+    void refreshHealth()
+  }
 
   useEffect(() => {
     void hermesApi.getTools(agentId).then((r) => {
@@ -144,6 +182,39 @@ export const HermesToolPicker: React.FC<{ agentId: string }> = ({ agentId }) => 
       {err && <div className={styles.formMsg} style={{ color: 'var(--danger, #f87171)' }}>{err}</div>}
       {treeErr && <div className={styles.formMsg} style={{ color: 'var(--danger, #f87171)' }}>{treeErr}</div>}
       {status && <div className={styles.formMsg} style={{ color: 'var(--accent)' }}>{status}</div>}
+
+      {health && !health.healthy && (
+        <div className={styles.formMsg} style={{ color: 'var(--warning, #fbbf24)', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <AlertTriangle size={14} />
+          <span style={{ flex: 1 }}>{health.detail}</span>
+          <button className={styles.btn} disabled={busy} onClick={() => void reconnect()}>
+            <Plug size={13} /> Reconnect
+          </button>
+        </div>
+      )}
+
+      {backups.length > 0 && (
+        <div style={{ margin: '6px 0' }}>
+          <button className={styles.btn} onClick={() => setShowBackups((v) => !v)}>
+            <History size={13} /> {showBackups ? 'Hide' : 'Restore'} previous tool sets ({backups.length})
+          </button>
+          {showBackups && (
+            <div className={styles.dim} style={{ marginTop: 6 }}>
+              Snapshots are taken automatically before every tool change.
+              {backups.map((b) => (
+                <div key={b.file} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                  <span style={{ flex: 1 }}>
+                    {b.savedAt ? new Date(b.savedAt).toLocaleString() : b.file} · {b.toolCount} tools
+                  </span>
+                  <button className={styles.btn} disabled={busy} onClick={() => void restore(b.file, b.toolCount)}>
+                    Restore
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <McpToolTree
         servers={servers}

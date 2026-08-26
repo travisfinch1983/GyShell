@@ -68,6 +68,25 @@ export const externalModelSourceSchema = z.object({
   discovery: z.enum(['auto', 'list']).default('auto'),
   /** explicit model ids (discovery:'list') or an allow-filter over discovered ids (discovery:'auto'). */
   models: z.array(z.string()).default([]),
+  /**
+   * Per-model proxy behaviour, keyed by UPSTREAM model id (untagged). Absent ⇒ defaults, and
+   * every option DEFAULTS ON — config here is opt-OUT, so a source that has never been touched
+   * still gets prompt caching. Only models the proxy reports as `cacheSupported` are affected;
+   * for the rest these fields are inert.
+   *
+   * ⚠️ POST /external-sources replaces the whole source object, so any UI that saves a source
+   * MUST carry modelOptions through or it silently wipes the user's toggles.
+   */
+  modelOptions: z
+    .record(
+      z.object({
+        /** master switch for prompt caching on this model (false ⇒ no cache_control injected). */
+        cacheEphemeral: z.boolean().optional(),
+        /** 1h TTL on the stable system prefix instead of the default 5 minutes. */
+        cacheExtended: z.boolean().optional(),
+      }),
+    )
+    .optional(),
   enabled: z.boolean().default(true),
 })
 export type ExternalModelSource = z.infer<typeof externalModelSourceSchema>
@@ -144,16 +163,32 @@ export const hermesAgentSpecSchema = z.object({
       autoApproveDangerous: z.boolean().optional(),
     })
     .optional(),
-  /** Optional per-agent TTS voice. `provider` is a native Hermes TTS provider (elevenlabs,
-   *  edge, openai, minimax, gemini, mistral); voiceId/modelId are provider-specific (ElevenLabs
-   *  uses tts.<provider>.voice_id / .model_id). Applied via `config set tts.*` + enabling the
-   *  `tts` toolset. The provider's API key is configured ONCE under Provider Services (→ Hermes
-   *  .env), never per agent — the "one entry drives both" split. */
+  /** Optional per-agent voice.
+   *
+   *  provider 'ailab' = the local AI-Lab TTS pool behind the universal proxy. This is
+   *  UI-SIDE ONLY: the chat resolves it at playback time and it is never written into
+   *  Hermes config, because TTS inside Hermes is deliberately disabled (voice lives at
+   *  the UI level, where we are not bound by Hermes' constraints). Only 'ailab' supports
+   *  voices, RVC and presets.
+   *
+   *  Any other provider is a native Hermes TTS provider (elevenlabs, edge, openai,
+   *  minimax, gemini, mistral), applied via `config set tts.*` + the `tts` toolset. Its
+   *  API key is configured ONCE under Provider Services (→ Hermes .env), never per
+   *  agent — the "one entry drives both" split. */
   tts: z
     .object({
       provider: z.string().min(1),
       voiceId: z.string().optional(),
       modelId: z.string().optional(),
+      /** ailab only: run the reply through RVC after synthesis. Still subject to the
+       *  GLOBAL allow gate (Support Models › RVC) — per-agent on cannot override a
+       *  global off, so one switch can always stop all voice conversion. */
+      rvcEnabled: z.boolean().optional(),
+      rvcModel: z.string().optional(),
+      /** ailab only: a saved voice preset (voice + model + sampling params). When set it
+       *  SUPERSEDES voiceId/modelId — a preset is a complete recipe, and silently mixing
+       *  half a preset with a stray voice id would be unexplainable from the UI. */
+      preset: z.string().optional(),
     })
     .optional(),
   enabled: z.boolean().default(true),
@@ -254,6 +289,17 @@ export const hermesStreamEventSchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('permission_auto_allow'), option_id: z.string().nullish() }),
   z.object({ t: z.literal('status'), status: z.enum(['idle', 'busy']) }),
   z.object({ t: z.literal('turn_done'), stop_reason: z.string().nullish() }),
+  /** Hermes acked a /steer into the RUNNING turn. The bridge diverts the ack here so it is
+   *  not appended into the streaming assistant bubble. MUST be listed: an unregistered
+   *  variant is dropped by safeParse and reported as a bug — which is exactly what I did
+   *  when I added steer without touching this union. */
+  z.object({ t: z.literal('steer_ack'), text: z.string() }),
   z.object({ t: z.literal('error'), where: z.string().optional(), message: z.string(), tb: z.string().optional() }),
+  /** HARD failure in the bridge's read loop — the turn is over and nothing else is coming.
+   *  Was missing from this union until 2026-07-28, so `safeParse` dropped it and a dead
+   *  bridge rendered as absolutely nothing in chat (silent hang). MUST stay renderable. */
+  z.object({ t: z.literal('fatal'), reason: z.string().optional(), recoverable: z.boolean().optional(), message: z.string().optional(), tb: z.string().optional() }),
+  /** Emitted after ACP session/set_model succeeds. */
+  z.object({ t: z.literal('model_set'), model_id: z.string().optional() }),
 ])
 export type HermesStreamEvent = z.infer<typeof hermesStreamEventSchema>

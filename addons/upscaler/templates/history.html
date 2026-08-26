@@ -1,0 +1,282 @@
+{% extends "base.html" %}
+{% block title %}History{% endblock %}
+{% block content %}
+<section>
+  <h2>
+    Processed history
+    <span class="muted small">
+      ({{ total }} {{ view }}{% if filter_active %} in <i>{{ filter_label }}</i>{% endif %})
+    </span>
+  </h2>
+
+  <!-- Filter (album / tag) — preserves view (ok/failed) on submit -->
+  <form method="get" action="/history" class="filter-bar"
+        style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.5em;">
+    <input type="hidden" name="status" value="{{ view }}">
+    <label>Album:
+      <select name="album_id" onchange="pickAlbum(this.form)">
+        <option value="">-- any --</option>
+        {% for a in albums %}
+          <option value="{{ a.id }}" {% if a.id == selected_album %}selected{% endif %}>
+            {{ a.albumName }} ({{ a.assetCount }})
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Tag:
+      <select name="tag_id" onchange="pickTag(this.form)">
+        <option value="">-- any --</option>
+        {% for t in tags %}
+          <option value="{{ t.id }}" {% if t.id == selected_tag %}selected{% endif %}>
+            {{ t.value or t.name }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    {% if selected_tag %}
+    <label>
+      <input type="checkbox" name="include_children" value="1"
+             {% if include_children %}checked{% endif %}
+             onchange="this.form.submit()"> include child tags
+    </label>
+    {% endif %}
+    {% if filter_active %}
+      <a href="/history?status={{ view }}" class="btn-small">clear filter</a>
+    {% endif %}
+    <span style="margin-left:auto"></span>
+    <!-- Entries-per-page (persistent across visits) -->
+    <label>Show
+      <select name="page_size" form="page-size-form" onchange="document.getElementById('page-size-form').submit()">
+        {% for opt in page_size_options %}
+          <option value="{{ opt }}" {% if opt == selected_page_size %}selected{% endif %}>{{ opt }}</option>
+        {% endfor %}
+      </select> per page
+    </label>
+  </form>
+
+  <!-- target form for the page-size select; carries current view + filter -->
+  <form method="get" action="/history" id="page-size-form" style="display:none">
+    <input type="hidden" name="status" value="{{ view }}">
+    {% if selected_album %}<input type="hidden" name="album_id" value="{{ selected_album }}">{% endif %}
+    {% if selected_tag %}<input type="hidden" name="tag_id" value="{{ selected_tag }}">{% endif %}
+    {% if include_children %}<input type="hidden" name="include_children" value="1">{% endif %}
+  </form>
+
+  <nav class="tabs" style="margin: 0.5em 0 1em 0;">
+    <a href="?status=ok{% if selected_album %}&album_id={{ selected_album }}{% endif %}{% if selected_tag %}&tag_id={{ selected_tag }}{% endif %}{% if include_children %}&include_children=1{% endif %}"
+       class="tab {% if view == 'ok' %}active{% endif %}">
+      Successful <span class="muted small">({{ ok_count }})</span>
+    </a>
+    <a href="?status=failed{% if selected_album %}&album_id={{ selected_album }}{% endif %}{% if selected_tag %}&tag_id={{ selected_tag }}{% endif %}{% if include_children %}&include_children=1{% endif %}"
+       class="tab {% if view == 'failed' %}active{% endif %}">
+      Failed <span class="muted small">({{ failed_count }})</span>
+    </a>
+  </nav>
+
+  <!-- "Retry/Reprocess all" — filter-aware -->
+  {% if filter_active and total > 0 %}
+    <form method="post" action="/api/history/reprocess-batch"
+          style="margin-bottom: 0.75em;"
+          onsubmit="return confirm('Re-enqueue ALL {{ total }} {{ view }} asset(s) in {{ filter_label }} on the current active model?');">
+      <input type="hidden" name="view" value="{{ view }}">
+      <input type="hidden" name="all_in_filter" value="1">
+      {% if selected_album %}<input type="hidden" name="album_id" value="{{ selected_album }}">{% endif %}
+      {% if selected_tag %}<input type="hidden" name="tag_id" value="{{ selected_tag }}">{% endif %}
+      {% if include_children %}<input type="hidden" name="include_children" value="1">{% endif %}
+      <button type="submit" class="btn-small {% if view == 'failed' %}danger{% endif %}">
+        {% if view == 'failed' %}Retry all {{ total }} failed in this filter
+        {% else %}Reprocess all {{ total }} in this filter{% endif %}
+      </button>
+    </form>
+  {% elif view == 'failed' and failed_count > 0 %}
+    <form method="post" action="/api/history/reprocess-batch"
+          style="margin-bottom: 0.75em;"
+          onsubmit="return confirm('Retry ALL {{ failed_count }} failures (unfiltered)?');">
+      <input type="hidden" name="view" value="failed">
+      <input type="hidden" name="all_failed" value="1">
+      <button type="submit" class="btn-small danger">
+        Retry all {{ failed_count }} failed
+      </button>
+    </form>
+  {% endif %}
+
+  <form method="post" action="/api/history/reprocess-batch" id="bulk-form">
+    <input type="hidden" name="view" value="{{ view }}">
+    {% if selected_album %}<input type="hidden" name="album_id" value="{{ selected_album }}">{% endif %}
+    {% if selected_tag %}<input type="hidden" name="tag_id" value="{{ selected_tag }}">{% endif %}
+    {% if include_children %}<input type="hidden" name="include_children" value="1">{% endif %}
+
+    <div id="bulk-bar" style="display:none; margin: 0.5em 0; padding: 0.5em;
+         background: var(--panel-bg, #2a2a2a); border-radius: 4px;">
+      <span><b id="bulk-count">0</b> selected.</span>
+      <button type="submit" class="btn-small"
+              onclick="return confirm('Re-enqueue the selected asset(s) on the CURRENT active upscaler? To run with a different model, switch the model in Settings first.');">
+        {% if view == 'failed' %}Retry selected{% else %}Reprocess selected{% endif %}
+      </button>
+      <a href="#" onclick="bulkClear(); return false;" class="muted small">clear</a>
+    </div>
+
+    <table class="activity">
+      <thead><tr>
+        <th><input type="checkbox" onclick="bulkToggleAll(this)" title="select all on page"></th>
+        <th>When</th>
+        <th></th>
+        <th>File</th>
+        {% if view == 'ok' %}
+          <th>Before</th>
+          <th>After</th>
+          <th>Model</th>
+          <th>Time</th>
+          <th></th>
+        {% else %}
+          <th>Model</th>
+          <th>Error</th>
+          <th></th>
+        {% endif %}
+      </tr></thead>
+      <tbody>
+        {% for a in entries %}
+        <tr class="{{ view }}">
+          <td>
+            <input type="checkbox" name="asset_id" value="{{ a.asset_id }}"
+                   class="bulk-cb" onchange="bulkUpdate()">
+          </td>
+          <td><time>{{ a.processed_at | int }}</time></td>
+          <td>
+            {% set thumb_id = a.new_asset_id or a.asset_id %}
+            {% if view == 'ok' and a.new_asset_id %}
+              <a href="/compare/{{ a.asset_id }}" title="open comparison">
+                <img src="/preview/{{ thumb_id }}?which=thumbnail&size=thumbnail" loading="lazy"
+                     alt="" class="hist-thumb" onerror="this.style.display='none'">
+              </a>
+            {% else %}
+              <img src="/preview/{{ thumb_id }}?which=thumbnail&size=thumbnail" loading="lazy"
+                   alt="" class="hist-thumb" onerror="this.style.display='none'">
+            {% endif %}
+          </td>
+          <td>{{ a.filename or a.asset_id[:12] }}</td>
+
+          {% if view == 'ok' %}
+            <td>
+              {% if a.src_w and a.src_h %}
+                {{ a.src_w }}&times;{{ a.src_h }}
+                <span class="muted small">({{ "%.1f" | format((a.src_w * a.src_h) / 1000000) }} MP)</span>
+              {% else %}<span class="muted">?</span>{% endif %}
+            </td>
+            <td>
+              {% if a.dst_w and a.dst_h %}
+                {{ a.dst_w }}&times;{{ a.dst_h }}
+                <span class="muted small">({{ "%.1f" | format((a.dst_w * a.dst_h) / 1000000) }} MP)</span>
+              {% else %}<span class="muted">?</span>{% endif %}
+            </td>
+            <td><span class="muted small">{{ a.model or "-" }}</span></td>
+            <td>{{ "%.1fs" | format(a.elapsed_sec or 0) }}</td>
+            <td style="white-space:nowrap;">
+              <a href="/compare/{{ a.asset_id }}" class="btn-small">compare</a>
+              <button type="button" class="btn-small" formaction="/api/history/{{ a.asset_id }}/reprocess?view=ok" formmethod="post"
+                      onclick="return confirm('Reprocess this asset on the CURRENT active model? Switch the model in Settings first if you want a different upscaler.');">
+                reprocess
+              </button>
+            </td>
+          {% else %}
+            <td><span class="muted small">{{ a.model or "-" }}</span></td>
+            <td style="max-width:40em; word-break:break-word;">
+              {% if a.error and a.error|trim %}
+                <code class="small">{{ a.error[:200] }}{% if a.error|length > 200 %}…{% endif %}</code>
+              {% else %}
+                <span class="muted small">(no error captured — likely SSH crashed before output)</span>
+              {% endif %}
+            </td>
+            <td style="white-space:nowrap;">
+              <button type="button" class="btn-small" formaction="/api/history/{{ a.asset_id }}/reprocess?view=failed" formmethod="post"
+                      onclick="return confirm('Retry this asset on the current active model?');">
+                retry
+              </button>
+            </td>
+          {% endif %}
+        </tr>
+        {% else %}
+        <tr><td colspan="{% if view == 'ok' %}9{% else %}7{% endif %}" class="muted">
+          {% if filter_active %}
+            No {{ view }} assets in {{ filter_label }}.
+          {% elif view == 'failed' %}
+            No failures recorded.
+          {% else %}
+            No completed assets yet.
+          {% endif %}
+        </td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </form>
+
+  {% if total_pages > 1 %}
+  <nav class="pagination">
+    {% set q = "status=" ~ view %}{% if selected_album %}{% set q = q ~ "&album_id=" ~ selected_album %}{% endif %}{% if selected_tag %}{% set q = q ~ "&tag_id=" ~ selected_tag %}{% endif %}{% if include_children %}{% set q = q ~ "&include_children=1" %}{% endif %}
+    {% if page > 1 %}
+      <a href="?{{ q }}&page={{ page - 1 }}">&laquo; prev</a>
+    {% else %}
+      <span class="disabled">&laquo; prev</span>
+    {% endif %}
+    {% for p in page_list %}
+      {% if p == "..." %}<span class="ellipsis">&hellip;</span>
+      {% elif p == page %}<span class="current">{{ p }}</span>
+      {% else %}<a href="?{{ q }}&page={{ p }}">{{ p }}</a>{% endif %}
+    {% endfor %}
+    {% if page < total_pages %}
+      <a href="?{{ q }}&page={{ page + 1 }}">next &raquo;</a>
+    {% else %}
+      <span class="disabled">next &raquo;</span>
+    {% endif %}
+  </nav>
+  {% endif %}
+</section>
+
+<script>
+  // Filter dropdowns — mutually clear other source + submit
+  function pickAlbum(form) {
+    if (form.tag_id) form.tag_id.value = '';
+    if (form.include_children) form.include_children.checked = false;
+    form.submit();
+  }
+  function pickTag(form) {
+    if (form.album_id) form.album_id.value = '';
+    form.submit();
+  }
+
+  function bulkUpdate() {
+    const cbs = document.querySelectorAll('.bulk-cb:checked');
+    const bar = document.getElementById('bulk-bar');
+    const count = document.getElementById('bulk-count');
+    count.textContent = cbs.length;
+    bar.style.display = cbs.length > 0 ? '' : 'none';
+  }
+  function bulkToggleAll(master) {
+    document.querySelectorAll('.bulk-cb').forEach(cb => cb.checked = master.checked);
+    bulkUpdate();
+  }
+  function bulkClear() {
+    document.querySelectorAll('.bulk-cb').forEach(cb => cb.checked = false);
+    document.querySelector('input[onclick="bulkToggleAll(this)"]').checked = false;
+    bulkUpdate();
+  }
+</script>
+
+<style>
+  nav.tabs { display: flex; gap: 0.5em; border-bottom: 1px solid var(--border, #444); }
+  nav.tabs a.tab {
+    padding: 0.4em 1em; text-decoration: none;
+    border-bottom: 2px solid transparent;
+    color: inherit;
+  }
+  nav.tabs a.tab.active {
+    border-bottom-color: var(--accent, #5af);
+    font-weight: 600;
+  }
+  .hist-thumb { height: 44px; width: 44px; object-fit: cover; border-radius: 4px;
+                display: block; background: var(--panel-bg, #2a2a2a); }
+  .btn-small.danger { background: #a33; color: #fff; }
+  tr.failed code.small { font-family: monospace; font-size: 0.85em; }
+  form.filter-bar select { min-width: 12em; }
+</style>
+{% endblock %}

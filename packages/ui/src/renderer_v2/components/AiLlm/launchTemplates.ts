@@ -5,7 +5,6 @@
 
 export const MODEL_IDENTIFIER_FLAG_BY_PROVIDER = {
     'llama-server':     '--alias',
-    'llama-server-mtp': '--alias',
     'vllm':             '--served-model-name',
     '1cat-vllm':        '--served-model-name',
     'sglang':           '--served-model-name',
@@ -15,7 +14,6 @@ export const MODEL_IDENTIFIER_FLAG_BY_PROVIDER = {
 
 export const SLOT_SETTING_KEY_BY_PROVIDER = {
     'llama-server':     'parallel',
-    'llama-server-mtp': 'parallel',
     'koboldcpp':        'multiuser',
     'vllm':             'maxNumSeqs',
     '1cat-vllm':        'maxNumSeqs',
@@ -237,10 +235,9 @@ export const LAUNCH_TEMPLATES = {
                             label: 'Context Checkpoints/Slot',
                             tooltip: 'Max number of mid-prompt KV checkpoints per slot (0 = use llama.cpp default). More checkpoints = finer-grained partial cache reuse on diverging prompts.' },
         checkpointEveryNTokens: { flag: '--checkpoint-min-step',
-                            flagByProvider: { 'llama-server-mtp': '--ctx-checkpoints-interval' },
                             type: 'number', default: 0, skipIfZero: true,
                             label: 'Checkpoint Every N Tokens',
-                            tooltip: 'During prefill, create a KV checkpoint every N tokens. Lets llama.cpp resume from mid-prompt on prefix divergence. -1 to disable. (ik_llama.cpp MTP fork: emitted as --ctx-checkpoints-interval, same semantics.)' },
+                            tooltip: 'During prefill, create a KV checkpoint every N tokens. Lets llama.cpp resume from mid-prompt on prefix divergence. -1 to disable.' },
         slotPromptSimilarity: { flag: '--slot-prompt-similarity', type: 'number', default: 0.5,
                             label: 'Slot Prompt Similarity Threshold',
                             tooltip: 'Minimum prefix-match fraction (0.0-1.0) for a new prompt to attach to an existing slot rather than evicting it. Lower = more aggressive reuse, risk of incorrect attachment. Default 0.5.' },
@@ -261,7 +258,7 @@ export const LAUNCH_TEMPLATES = {
         splitMode:       { flag: '--split-mode',        type: 'select', default: 'layer',
                             options: ['none', 'layer', 'row', 'tensor'],
                             label: 'Split Mode',
-                            tooltip: 'How to split across GPUs. "layer" (default) = pipeline, one layer-range per GPU (best for MoE — continuous-batches concurrent slots cheaply). "row"/"tensor" = split each layer across GPUs in parallel (tensor parallelism) — best for DENSE models (e.g. 27B), wins on both latency and concurrent throughput. NOTE for "tensor": set Param Fit = off (below) and keep KV Cache K/V = f16 (tensor mode rejects quantized KV); the bundle is built with NCCL so the cross-GPU AllReduce runs over NVLink.' },
+                            tooltip: 'How to split across GPUs. "layer" (default) = pipeline, one layer-range per GPU (best for MoE — continuous-batches concurrent slots cheaply). "row"/"tensor" = split each layer across GPUs in parallel (tensor parallelism) — best for DENSE models (e.g. 27B), wins on both latency and concurrent throughput. NOTE for "tensor": set Param Fit = off (below) quantized KV cache (q8_0 etc.) is supported with tensor split on current builds; the bundle is built with NCCL so the cross-GPU AllReduce runs over NVLink.' },
         fit:             { flag: '--fit',               type: 'select', default: 'on',
                             options: ['on', 'off'],
                             label: 'Param Fit (off for tensor)',
@@ -286,6 +283,12 @@ export const LAUNCH_TEMPLATES = {
                             labels: { '': 'off' },
                             label: 'NUMA Policy',
                             tooltip: 'Multi-socket CPU policy. "distribute" = spread across nodes, "isolate" = pin to one node, "numactl" = use system numactl config' },
+        overrideTensor:  { flag: '--override-tensor',  type: 'multi',  default: '',
+                            label: 'Override-Tensor Rules (-ot)',
+                            tooltip: 'One "regex=BUFFER" rule per line (device = CUDA0-7 or CPU). Pins matching tensors to a device; first match wins, so put the catch-all rule last. Used to spread MoE expert layers evenly across all GPUs (what --cpu-moe / --n-cpu-moe cannot do). Emitted as repeated --override-tensor flags.' },
+        numaInterleave:  { flag: '--numactl-interleave', type: 'flag',  default: false,
+                            label: 'NUMA Interleave (numactl)',
+                            tooltip: 'Wrap the server in `numactl --interleave=all` so CPU-resident weights are round-robin placed across all NUMA nodes. Essential on dual-socket hosts when CPU experts exceed a single node RAM (prevents one memory controller overflowing / bottlenecking). Handled by run.sh; harmless on single-socket nodes.' },
         ropeScaling:     { flag: '--rope-scaling',      type: 'select', default: '',
                             options: ['', 'none', 'linear', 'yarn'],
                             labels: { '': 'model default' },
@@ -309,10 +312,16 @@ export const LAUNCH_TEMPLATES = {
                             labels: { '': 'binary default (omit flag)', 'auto': 'auto (legacy — same as binary default)' },
                             skipIfValue: ['auto'],
                             label: 'Reasoning Format',
-                            tooltip: 'How llama.cpp surfaces the reasoning stream in the /v1/chat/completions response.\n• (binary default) or auto: omit the flag, let llama.cpp pick. The ik_llama.cpp fork (llama-server-mtp) does NOT accept "auto" as an explicit value, so we skip emission for both empty and "auto"\n• none: returns raw model output unchanged — REQUIRED for Gemma 4 (its <|channel|>thought\\n…<channel|> format isn\'t recognized by auto-detection and gets mangled into empty <think></think> tags)\n• deepseek: separates thinking into a reasoning_content field (DeepSeek-R1, Qwen3.5 thinking)\n• deepseek-legacy: older variant of the above' },
+                            tooltip: 'How llama.cpp surfaces the reasoning stream in the /v1/chat/completions response.\n• (binary default) or auto: omit the flag, let llama.cpp pick.\n• none: returns raw model output unchanged — REQUIRED for Gemma 4 (its <|channel|>thought\\n…<channel|> format isn\'t recognized by auto-detection and gets mangled into empty <think></think> tags)\n• deepseek: separates thinking into a reasoning_content field (DeepSeek-R1, Qwen3.5 thinking)\n• deepseek-legacy: older variant of the above' },
         reasoningBudget: { flag: '--reasoning-budget',  type: 'number', default: -1,
                             label: 'Reasoning Budget Tokens',
                             tooltip: 'Max tokens for the reasoning/thinking phase. -1 = unlimited, 0 = no reasoning, else hard cap' },
+        reasoningPreserve:{ flag: '--reasoning-preserve', type: 'select', default: '',
+                            options: ['', 'on', 'off'],
+                            bareFlags: { on: '--reasoning-preserve', off: '--no-reasoning-preserve' },
+                            labels: { '': 'model/template default (omit flag)', 'on': 'on \u2014 --reasoning-preserve', 'off': 'off \u2014 --no-reasoning-preserve' },
+                            label: 'Preserve Reasoning',
+                            tooltip: 'Keep the model\'s reasoning/thinking block in its context across turns instead of stripping it.\n\nThis REPLACES the now-deprecated  --chat-template-kwargs \'{\"preserve_thinking\": true}\'  kwarg (build b10075+ prints "chat template supports preserving reasoning, consider enabling it via --reasoning-preserve" if you use the old kwarg). Use the native flag now.\n\u2022 (default): omit the flag, let the model/chat-template decide.\n\u2022 on: --reasoning-preserve (Qwen3.x / thinking models that benefit from seeing their prior reasoning).\n\u2022 off: --no-reasoning-preserve (force strip).\nEnv equiv: LLAMA_ARG_REASONING_PRESERVE. Note: enable/disable thinking itself is still the chat template\'s enable_thinking kwarg or --reasoning on/off \u2014 this only controls whether the produced reasoning is preserved.' },
         chatTemplate:    { flag: '--chat-template',     type: 'select', default: '',
                             options: ['', 'chatml', 'llama2', 'llama3', 'llama4',
                                       'mistral-v3', 'mistral-v3-tekken', 'mistral-v7', 'mistral-v7-tekken',
@@ -344,7 +353,7 @@ export const LAUNCH_TEMPLATES = {
                               [`{"enable_thinking": false, "preserve_thinking": true}`]: 'Qwen3.6 instruct + preserve history',
                             },
                             label: 'Template Kwargs',
-                            tooltip: 'JSON kwargs passed to the Jinja chat template — THIS is the primary lever for controlling whether the model thinks. Far more reliable than the Reasoning Mode dropdown above.\n• Qwen3.5 / Qwen3: enable_thinking defaults to true; pick "disable thinking prefix" for the non-thinking variant\n• Qwen3.6: pick "preserve historical thinking" for agent loops where earlier think blocks add context (saves tokens, improves consistency); default keeps only the latest block\n• Gemma 4 Thinking: pick "force thinking prefix" — this injects the <|think|> token at the start of the system prompt (Gemma 4\'s documented thinking trigger). Pair with Reasoning Format = none, since Gemma 4\'s <|channel|> format would otherwise be mangled by auto post-processing.' },
+                            tooltip: 'JSON kwargs passed to the Jinja chat template — THIS is the primary lever for controlling whether the model thinks. Far more reliable than the Reasoning Mode dropdown above.\n• Qwen3.5 / Qwen3: enable_thinking defaults to true; pick "disable thinking prefix" for the non-thinking variant\n• Qwen3.6: pick "preserve historical thinking" for agent loops where earlier think blocks add context (saves tokens, improves consistency); default keeps only the latest block\n• Gemma 4 Thinking: pick "force thinking prefix" — this injects the <|think|> token at the start of the system prompt (Gemma 4\'s documented thinking trigger). Pair with Reasoning Format = none, since Gemma 4\'s <|channel|> format would otherwise be mangled by auto post-processing.\n\n\u26a0 preserve_thinking here is DEPRECATED on this mainline (b10075+) build \u2014 use the \"Preserve Reasoning\" dropdown (--reasoning-preserve) above instead; the old kwarg still works but logs a deprecation notice.' },
         samplers:        { flag: '--samplers',          type: 'string', default: '',
                             label: 'Samplers',
                             tooltip: 'Semicolon-separated sampler order, e.g. "penalties;dry;top_k;min_p;temperature". Empty = llama.cpp default chain' },
@@ -409,19 +418,41 @@ export const LAUNCH_TEMPLATES = {
                             tooltip: 'Extra-chatty server logs — useful when debugging prompt formatting or slot issues' },
         modelDraft:      { flag: '--model-draft',       type: 'string', default: '',
                             label: 'Draft Model Path',
-                            tooltip: 'Speculative decoding: path to a small, same-family draft GGUF. Can 1.5-2x throughput when the target model accepts most drafts' },
+                            tooltip: 'Path to a small same-family draft GGUF for draft-simple/eagle3/dflash speculation. For draft-mtp, leave this blank and use the MTP-variant target model (built-in head). 1.5-2x on compute-bound models.' },
         draftMax:        { flag: '--spec-draft-n-max',         type: 'number', default: 16,
                             label: 'Draft Tokens',
-                            tooltip: 'Max tokens the draft model generates per speculation step' },
+                            tooltip: 'Max draft tokens proposed per step (--spec-draft-n-max; = DFlash block size). Higher helps on fast GPUs but HURTS on slower ones — on V100s ~4-6 usually beats 16.' },
         draftPmin:       { flag: '--draft-p-min',       type: 'number', default: 0.75, step: 0.05,
                             label: 'Draft Min Prob',
                             tooltip: 'Minimum probability a draft token needs to be proposed. Higher = fewer but more confident drafts' },
-        ctxSizeDraft:    { flag: '--ctx-size-draft',    type: 'number', default: 0, skipIfZero: true,
-                            label: 'Draft Ctx Size',
-                            tooltip: 'Context size for the draft model. 0 = match main model' },
         ngpuLayersDraft: { flag: '--gpu-layers-draft',  type: 'string', default: '',
                             label: 'Draft GPU Layers',
                             tooltip: 'GPU offload count for the draft model. Empty = all on GPU' },
+        specType:        { flag: '--spec-type',         type: 'select', default: '',
+                            options: ['', 'draft-mtp', 'draft-dflash', 'draft-eagle3', 'draft-simple', 'ngram-simple', 'ngram-map-k', 'ngram-map-k4v', 'ngram-mod', 'ngram-cache'],
+                            labels: {
+                              '': 'draft-model (if Draft Model Path set) / none',
+                              'draft-mtp': 'draft-mtp — built-in MTP heads (Qwen3.6-MTP); no draft model',
+                              'draft-dflash': 'draft-dflash — DFlash block-diffusion (needs Draft Model Path)',
+                              'draft-eagle3': 'draft-eagle3 — EAGLE-3 (needs Draft Model Path)',
+                              'draft-simple': 'draft-simple — plain draft model (needs Draft Model Path)',
+                              'ngram-simple': 'ngram-simple — statistical n-gram (no draft model)',
+                              'ngram-map-k': 'ngram-map-k',
+                              'ngram-map-k4v': 'ngram-map-k4v',
+                              'ngram-mod': 'ngram-mod',
+                              'ngram-cache': 'ngram-cache — cached n-gram',
+                            },
+                            label: 'Speculative Type',
+                            tooltip: 'Speculative decoding strategy (llama.cpp b10075+ naming: draft-* / ngram-*). draft-mtp uses the target GGUFs built-in MTP heads (no draft model). draft-dflash/eagle3/simple need a Draft Model Path. ngram-* are model-agnostic (no draft model). Tune Draft Tokens per step. NOTE: spec-decode HELPS compute-bound (all-on-GPU) models but HURTS transfer-bound ones (MoE experts offloaded to CPU RAM).' },
+        draftMin:        { flag: '--spec-draft-n-min',   type: 'number', default: 0, skipIfZero: true,
+                            label: 'Draft Min Tokens',
+                            tooltip: 'Minimum draft tokens per speculation step (--spec-draft-n-min). 0 = llama.cpp default.' },
+        draftDevice:     { flag: '--spec-draft-device',  type: 'string', default: '',
+                            label: 'Draft Device (pin)',
+                            tooltip: 'Pin the draft model to specific device(s) e.g. CUDA0 (comma-separated for several). Keeps the small draft off the tensor-split so it does not fragment the main compute graph. Empty = follow main placement.' },
+        noDraftBackendSampling: { flag: '--no-spec-draft-backend-sampling', type: 'flag', default: false,
+                            label: 'Draft: force CPU sampler',
+                            tooltip: 'Disable GPU/backend draft sampling and use the CPU sampler for draft tokens. Try if you hit backend offload failed for seq_id warnings during speculative decode.' },
         imageMinTokens:  { flag: '--image-min-tokens',  type: 'number', default: 0, skipIfZero: true,
                             label: 'Image Min Tokens',
                             tooltip: 'Vision models: minimum tokens an image expands to (0 = model default)' },
@@ -429,69 +460,6 @@ export const LAUNCH_TEMPLATES = {
                             label: 'Image Max Tokens',
                             tooltip: 'Vision models: maximum tokens per image — hard cap on image detail (0 = model default)' },
       },
-    },
-  };
-
-  // llama-server-mtp inherits every flag from upstream llama-server and layers
-  // on the MTP speculation knobs from ik_llama.cpp. Defined after the main
-  // object so we can spread it; the launch builder treats both identically.
-  //
-  // ik_llama.cpp is a fork that diverged before some upstream-only flags
-  // landed. Strip those keys from the inherited advancedArgs so the emitter
-  // doesn't pass them on launch (they cause the binary to print usage and
-  // exit). Audited 2026-05-15 against ik_llama.cpp commit 0fcffdb.
-  // Missing in ik_llama.cpp:
-  //   --cache-prompt          (auto via similarity threshold, not a CLI flag)
-  //   --cache-reuse           (same)
-  //   --swa-full              (no SWA-cache feature)
-  //   --no-webui              (different web-UI gating mechanism)
-  //   --model-draft + draft-* (separate draft-model spec not supported;
-  //     ik uses --spec-type with built-in MTP / ngram heads instead)
-  //   --slots                 (ik enables slots monitoring by default; uses
-  //     inverted --no-slots to disable)
-  //   --dry-multiplier        (DRY sampler not exposed as CLI flag)
-  //   --api-prefix            (no path-prefix mounting)
-  //   --rerank                (no /v1/rerank endpoint)
-  // Note: --chat-template-kwargs is accepted but emits a deprecation
-  // warning when used to set enable_thinking. ik prefers --reasoning on/off.
-  const _IK_INCOMPAT_KEYS = ['cachePrompt', 'cacheReuse', 'swaFull', 'noWebui',
-    'modelDraft', 'ctxSizeDraft', 'ngpuLayersDraft',
-    'slots', 'dryMultiplier', 'apiPrefix', 'rerank'];
-  const _ikInheritedAdvanced = { ...LAUNCH_TEMPLATES['llama-server'].advancedArgs };
-  for (const k of _IK_INCOMPAT_KEYS) delete _ikInheritedAdvanced[k];
-
-  LAUNCH_TEMPLATES['llama-server-mtp'] = {
-    ...LAUNCH_TEMPLATES['llama-server'],
-    command: '/opt/llama-server-mtp/run.sh',
-    args: { ...LAUNCH_TEMPLATES['llama-server'].args },
-    advancedArgs: {
-      ..._ikInheritedAdvanced,
-      specType:        { flag: '--spec-type',         type: 'select', default: '',
-                          options: ['', 'none', 'mtp', 'ngram-cache', 'ngram-simple', 'ngram-map-k', 'ngram-map-k4v', 'ngram-mod', 'suffix'],
-                          labels: {
-                            '': 'default (draft model if --model-draft set)',
-                            'mtp': 'mtp — model\'s built-in MTP heads',
-                            'ngram-cache': 'ngram-cache — statistical n-gram (cached)',
-                            'ngram-simple': 'ngram-simple — basic n-gram',
-                            'ngram-map-k': 'ngram-map-k',
-                            'ngram-map-k4v': 'ngram-map-k4v',
-                            'ngram-mod': 'ngram-mod',
-                            'suffix': 'suffix — suffix-array speculation',
-                          },
-                          label: 'Speculative Type',
-                          tooltip: 'Speculative decoding strategy. Pair with Draft Tokens above to set the per-step draft count.\n• mtp — uses the target model\'s built-in MTP heads (Qwen3.6, MTP-trained Gemma 4). No draft model needed; ~1.5–1.9x decode speedup.\n• ngram-* / suffix — model-agnostic statistical speculation. No MTP heads or draft model needed. Useful for models without MTP support (e.g. Mistral). Smaller speedup but free to enable.\n• Leave blank to use draft-model speculation when --model-draft is set, otherwise none.' },
-      specNgramSizeN:  { flag: '--spec-ngram-size-n', type: 'number', default: 0, skipIfZero: true,
-                          label: 'NGram Size N (lookup)',
-                          tooltip: 'ngram-simple / ngram-map: lookup n-gram length (default 12). Only used when --spec-type is an ngram variant.' },
-      specNgramSizeM:  { flag: '--spec-ngram-size-m', type: 'number', default: 0, skipIfZero: true,
-                          label: 'NGram Size M (draft)',
-                          tooltip: 'ngram-simple / ngram-map: draft m-gram length (default 48). Only used when --spec-type is an ngram variant.' },
-      specNgramMinHits: { flag: '--spec-ngram-min-hits', type: 'number', default: 0, skipIfZero: true,
-                          label: 'NGram Min Hits',
-                          tooltip: 'ngram-map: minimum hits required for a draft proposal (default 1). Only used when --spec-type is an ngram-map variant.' },
-      specAutotune:    { flag: '--spec-autotune',     type: 'flag',   default: false,
-                          label: 'Spec Autotune',
-                          tooltip: 'Auto-tune speculative parameters to maximize tokens/sec. Useful if you don\'t know the right draft-max / ngram sizes for your workload.' },
     },
   };
 
@@ -597,20 +565,15 @@ export const LAUNCH_TEMPLATES = {
       numGpuBlocksOverride: { flag: '--num-gpu-blocks-override', type: 'number', default: 0, skipIfZero: true,
                         label: 'Override GPU Blocks',
                         tooltip: 'Manually set the number of KV cache blocks. Advanced: only when auto sizing fails.' },
-      swapSpace:    { flag: '--swap-space', type: 'number', default: 4,
-                        label: 'CPU Swap Space (GiB)',
-                        tooltip: 'CPU RAM reserved per GPU for KV-cache swap when blocks evict. 0 disables swap; bigger swap = more concurrency at cost of host RAM.' },
+      // --swap-space and --preemption-mode were REMOVED in vLLM's V1 engine (no CPU swap;
+      // preemption is recompute-only). They are re-declared in the 1cat-vllm override below,
+      // which is an older fork that still accepts --swap-space.
       cpuOffloadGb: { flag: '--cpu-offload-gb', type: 'number', default: 0, skipIfZero: true,
                         label: 'CPU Offload (GiB)',
                         tooltip: 'Per-GPU CPU memory to offload model weights to. Lets you run models larger than VRAM at cost of latency.' },
       enableChunkedPrefill: { flag: '--enable-chunked-prefill', type: 'flag', default: false,
                         label: 'Enable Chunked Prefill',
                         tooltip: 'Split long-prompt prefills into chunks so decode can interleave. Reduces decode TBT under heavy prefill load.' },
-      preemptionMode: { flag: '--preemption-mode', type: 'select', default: '',
-                        options: ['', 'recompute', 'swap'],
-                        labels: { '': 'auto' },
-                        label: 'Preemption Mode',
-                        tooltip: '"recompute" = drop and re-prefill on resume; "swap" = move to CPU swap (needs swap-space).' },
       // Attention backend
       attentionBackend: { flag: '--attention-backend', type: 'select', default: '',
                         options: ['', 'FLASH_ATTN', 'FLASHINFER', 'XFORMERS', 'TORCH_SDPA', 'TRITON_ATTN_VLLM_V1', 'ROCM_FLASH'],
@@ -672,9 +635,6 @@ export const LAUNCH_TEMPLATES = {
       disableLogStats: { flag: '--disable-log-stats', type: 'flag', default: false,
                         label: 'Disable Stats Log',
                         tooltip: 'Suppress periodic engine stats logging. Cleaner logs; lose visibility into throughput/queue depth.' },
-      disableLogRequests: { flag: '--disable-log-requests', type: 'flag', default: false,
-                        label: 'Disable Request Log',
-                        tooltip: 'Suppress per-request log lines.' },
       maxLogLen:    { flag: '--max-log-len', type: 'number', default: 0, skipIfZero: true,
                         label: 'Max Log Line Length',
                         tooltip: 'Truncate prompt/response strings logged to this many chars. 0 = full.' },
@@ -748,5 +708,14 @@ export const LAUNCH_TEMPLATES = {
         ...LAUNCH_TEMPLATES['vllm'].advancedArgs.maxNumBatchedTokens,
         default: 16384,
         tooltip: '1Cat-vLLM V100 sweet spot: 16384 for AWQ at high context. Reduce if hitting OOM during long-prompt prefill.' },
+      // These two exist ONLY here: upstream vLLM 0.18 dropped them with the V1 engine, but this
+      // fork predates that and still accepts them. Verified against `vllm serve --help=all` in
+      // /opt/conda/envs/1cat-vllm-sm70 — do not "tidy" them back into the shared spec.
+      swapSpace: { flag: '--swap-space', type: 'number', default: 0, skipIfZero: true,
+                        label: 'CPU Swap Space (GiB)',
+                        tooltip: '1Cat-vLLM only. CPU RAM per GPU for KV-cache swap on eviction. 0 = omit the flag.' },
+      disableLogRequests: { flag: '--disable-log-requests', type: 'flag', default: false,
+                        label: 'Disable Request Log',
+                        tooltip: '1Cat-vLLM only. Suppress per-request log lines.' },
     },
   };

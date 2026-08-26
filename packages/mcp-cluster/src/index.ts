@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * ailab-cluster MCP — cluster inventory + credential vault (the proxlab-cluster
- * replacement). ProxLab / CT107 (10.0.0.140) is decommissioned; this exposes
+ * replacement). ProxLab / CT107 is decommissioned and GONE; this exposes
  * AI-Lab's ported inventory + credential-vault REST as MCP tools over stdio,
  * with the SAME tool names the old proxlab-cluster MCP had (list_credentials,
  * get_credential, store_credential, update_credential, cluster_search,

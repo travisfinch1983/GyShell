@@ -26,7 +26,7 @@ import { spawn } from 'child_process';
 // ai-epyc) over SSH. It sees the same data at /imagegen/training_images/<rel>
 // and the models at /imagegen/taggers/. ONNX engine (WD/JoyTag) + BLIP engine.
 const TAGGER_SSH = process.env.TAGGER_SSH || 'root@10.0.0.234';
-const TAGGER_REMOTE_TI = '/imagegen/training_images';   // training_images on the GPU host
+const TAGGER_REMOTE_TI = '/imagegen';   // same root as BASE, on the GPU host
 const TAGGER_REMOTE_MODELS = '/imagegen/taggers';        // ONNX tagger model dirs there
 const TAGGER_LOCAL_MODELS = '/ai-assets/imagegen/taggers'; // same dir, proxlab-local (for listing)
 const ONNX_PY = '/opt/imagegen-tagger/.venv/bin/python';
@@ -37,7 +37,13 @@ const BLIP_MODEL_DIR = '/imagegen/blip/hf-large';
 const TAGGER_GPU_INDEX = 4;   // the RTX 4090 (5060 Tis are Blackwell — onnxruntime CUDA EP n/a)
 const captionJobs = new Map();   // jobId -> { state, total, done, wrote, skipped, errors, ... }
 
-const BASE = '/ai-assets/imagegen/training_images';
+// Widened 2026-07-28 from .../training_images to the whole imagegen tree so agents
+// can inspect outputs (/imagegen/outputs) and the example images shipped alongside
+// models/LoRAs — not just curation training sets. Relative paths are now rooted at
+// /imagegen, so TAGGER_REMOTE and agent_path below must match this root exactly.
+// NOTE: this root is GLOBAL — the routes are caller-anonymous, so every agent gets
+// the same view. Per-agent roots are a later piece of work.
+const BASE = '/ai-assets/imagegen';
 const THUMB_DIR = '/tmp/imagegen-thumbs';
 const THUMB_PX = 320;
 const COMPANION = process.env.COMPANION_URL || 'http://10.0.0.231:8080';  // upscale companion (shares the mount)
@@ -348,7 +354,13 @@ export function createImagegenRouter(config) {
       : (ext === '.jpg' || ext === '.jpeg') ? 'image/jpeg' : 'application/octet-stream';
     // Optional downscale: ?maxdim=N caps the longest side (fit inside, no enlargement) and returns
     // webp. Used by the agent view_image tool to keep vision-token / KV cost sane on long runs.
-    const maxdim = Math.max(64, Math.min(4096, parseInt(String(req.query.maxdim || ''), 10) || 0));
+    // NB: only clamp when maxdim was ACTUALLY supplied. Folding the floor into the
+    // no-param case turns "serve the original" into Math.max(64, 0) === 64, i.e. every
+    // full-image request silently came back as a 64px thumbnail (smaller than /thumb).
+    const maxdimRaw = parseInt(String(req.query.maxdim || ''), 10);
+    const maxdim = Number.isFinite(maxdimRaw) && maxdimRaw > 0
+      ? Math.max(64, Math.min(4096, maxdimRaw))
+      : 0;
     if (maxdim) {
       try {
         const buf = await sharp(file).rotate()
@@ -833,7 +845,7 @@ export function createImagegenRouter(config) {
         const outRel = `${rel}/${fn}`;
         writeFileSync(path.join(BASE, outRel), r.out);
         try { chmodSync(path.join(BASE, outRel), 0o664); } catch { /* ignore */ }
-        pages.push({ path: outRel, agent_path: `/imagegen/training_images/${outRel}`,
+        pages.push({ path: outRel, agent_path: `/imagegen/${outRel}`,
           n: chunk.length, cols: r.cols, rows: r.rows, w: r.w, h: r.h });
       }
       res.json({ ok: true, total: all.length, per_page: PER_PAGE, paged, page_count: pageCount, pages });

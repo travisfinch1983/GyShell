@@ -6,12 +6,13 @@
  * (CT 152), never in the browser. The renderer reaches this only through the
  * WebSocket gateway RPCs `cluster:getStatus` (read) and `cluster:request` (the
  * path-allowlisted proxy for actions), both wired as `clusterBridge` in
- * startGyBackend.ts. We proxy ProxLab's existing REST API (10.0.0.140:7777), which
+ * startGyBackend.ts. We proxy AI-Lab's own REST API (10.0.0.219:17890), which
  * already owns the PVE integration (token, migrations, GPU hookscripts, bind-mount
  * handling). The direct-PVE rebuild can later replace the fetch target without
  * changing the RPC surface or the renderer.
  *
- * Configure the upstream with PROXLAB_API_BASE (default http://10.0.0.140:7777).
+ * Configure the upstream with PROXLAB_API_BASE (the env var name line 16 reads;
+ * legacy name, AI-Lab host) — default http://10.0.0.219:17890.
  */
 const DEFAULT_BASE = process.env.PROXLAB_API_BASE || `http://127.0.0.1:${process.env.AILAB_PROXY_PORT || 17890}`
 
@@ -27,7 +28,7 @@ export class ClusterService {
   private readonly timeoutMs: number
 
   // Only cluster-management paths are proxyable from the renderer.
-  private static readonly ALLOWED_PREFIXES = ['/api/guests/', '/api/gpu', '/api/storages', '/api/pve/', '/api/ai', '/api/discovery', '/api/scripts', '/api/script-catalog', '/api/civitai', '/api/system', '/api/mcp', '/api/ui-prefs', '/api/proxy', '/api/claude', '/api/hermes', '/api/roadmap', '/api/flowcharts', '/api/ftp', '/api/agent', '/api/addons']
+  private static readonly ALLOWED_PREFIXES = ['/api/guests/', '/api/gpu', '/api/storages', '/api/pve/', '/api/ai', '/api/discovery', '/api/scripts', '/api/script-catalog', '/api/civitai', '/api/system', '/api/mcp', '/api/ui-prefs', '/api/proxy', '/api/claude', '/api/hermes', '/api/roadmap', '/api/flowcharts', '/api/ftp', '/api/agent', '/api/addons', '/api/fleet']
 
   constructor(opts: ClusterServiceOptions = {}) {
     this.base = (opts.proxlabBase || DEFAULT_BASE).replace(/\/+$/, '')
@@ -39,7 +40,7 @@ export class ClusterService {
   // /api/ai is now fully native (the ported launch/scan/estimate/gpu/providers/services/HF router on the
   // universal proxy). AI-Lab only uses /api/ai/{providers,hf,active-services,config} + the launch
   // endpoints — none of the un-ported RAG/inventory sub-paths — so the whole prefix routes local.
-  private static readonly LOCAL_PREFIXES = ['/api/civitai', '/api/ai', '/api/system', '/api/mcp', '/api/ui-prefs', '/api/proxy', '/api/claude', '/api/discovery', '/api/pve', '/api/guests', '/api/gpu', '/api/storages', '/api/scripts', '/api/script-catalog', '/api/hermes', '/api/roadmap', '/api/flowcharts', '/api/ftp', '/api/agent', '/api/addons']
+  private static readonly LOCAL_PREFIXES = ['/api/civitai', '/api/ai', '/api/system', '/api/mcp', '/api/ui-prefs', '/api/proxy', '/api/claude', '/api/discovery', '/api/pve', '/api/guests', '/api/gpu', '/api/storages', '/api/scripts', '/api/script-catalog', '/api/hermes', '/api/roadmap', '/api/flowcharts', '/api/ftp', '/api/agent', '/api/addons', '/api/fleet']
   private localBase = `http://127.0.0.1:${process.env.AILAB_PROXY_PORT || 17890}`
 
   private async send(method: HttpMethod, path: string, body?: unknown): Promise<unknown> {

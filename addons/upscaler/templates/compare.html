@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Compare: {{ entry.filename or entry.asset_id[:8] }}{% endblock %}
+{% block content %}
+<section class="compare-page">
+  <div class="compare-toolbar">
+    <h2>{{ entry.filename or entry.asset_id[:12] }}</h2>
+    <div class="muted small">
+      Original {{ "%.1f" | format(entry.src_mp or 0) }} MP -
+      upscaled with <code>{{ entry.model or "?" }}</code> in
+      {{ "%.1fs" | format(entry.elapsed_sec or 0) }}
+    </div>
+    <div class="compare-controls">
+      <button type="button" id="reset-view">Reset view</button>
+      <label><input type="checkbox" id="sync-toggle" checked> Sync pan + zoom</label>
+      <a href="/history" class="btn-small">&laquo; back to history</a>
+    </div>
+  </div>
+  <div class="compare-grid">
+    <div class="compare-pane">
+      <div class="pane-label">ORIGINAL</div>
+      <div class="pan-wrap" id="pan-left">
+        <img id="img-left" src="/preview/{{ entry.asset_id }}?which=original" alt="original" loading="eager" draggable="false">
+      </div>
+    </div>
+    <div class="compare-pane">
+      <div class="pane-label">UPSCALED</div>
+      <div class="pan-wrap" id="pan-right">
+        <img id="img-right" src="/preview/{{ entry.new_asset_id }}?which=original" alt="upscaled" loading="eager" draggable="false">
+      </div>
+    </div>
+  </div>
+</section>
+<script>
+(function() {
+  // Self-contained pan+zoom with optional sync between two panes.
+  // No external libraries -- just CSS transforms + pointer events.
+  const state = {
+    left:  { x: 0, y: 0, scale: 1, drag: false, lx: 0, ly: 0 },
+    right: { x: 0, y: 0, scale: 1, drag: false, lx: 0, ly: 0 },
+  };
+  const imgs = { left: document.getElementById('img-left'),
+                 right: document.getElementById('img-right') };
+  const wraps = { left: document.getElementById('pan-left'),
+                  right: document.getElementById('pan-right') };
+  const sync = () => document.getElementById('sync-toggle').checked;
+  function apply(side) {
+    const s = state[side];
+    imgs[side].style.transform =
+      `translate(${s.x}px, ${s.y}px) scale(${s.scale})`;
+  }
+  function setBoth(s) {
+    Object.assign(state.left, s);
+    Object.assign(state.right, s);
+    apply('left'); apply('right');
+  }
+  function reset() {
+    state.left = { x: 0, y: 0, scale: 1, drag: false, lx: 0, ly: 0 };
+    state.right = { x: 0, y: 0, scale: 1, drag: false, lx: 0, ly: 0 };
+    apply('left'); apply('right');
+  }
+  document.getElementById('reset-view').addEventListener('click', reset);
+  for (const side of ['left', 'right']) {
+    const wrap = wraps[side];
+    wrap.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const rect = wrap.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      const delta = -Math.sign(e.deltaY) * 0.15;
+      const s = state[side];
+      const newScale = Math.max(0.1, Math.min(20, s.scale * (1 + delta)));
+      // Zoom toward cursor: adjust translation so cursor stays anchored
+      const sf = newScale / s.scale;
+      s.x = cx - (cx - s.x) * sf;
+      s.y = cy - (cy - s.y) * sf;
+      s.scale = newScale;
+      apply(side);
+      if (sync()) {
+        const other = side === 'left' ? 'right' : 'left';
+        state[other].x = s.x; state[other].y = s.y; state[other].scale = s.scale;
+        apply(other);
+      }
+    }, { passive: false });
+    wrap.addEventListener('pointerdown', (e) => {
+      e.preventDefault();   // belt-and-suspenders: kill native image drag
+      state[side].drag = true;
+      state[side].lx = e.clientX;
+      state[side].ly = e.clientY;
+      try { wrap.setPointerCapture(e.pointerId); } catch (_) {}
+    });
+    // Block native drag-image gesture explicitly
+    wrap.addEventListener('dragstart', (e) => e.preventDefault());
+    wrap.addEventListener('pointermove', (e) => {
+      const s = state[side];
+      if (!s.drag) return;
+      const dx = e.clientX - s.lx;
+      const dy = e.clientY - s.ly;
+      s.lx = e.clientX; s.ly = e.clientY;
+      s.x += dx; s.y += dy;
+      apply(side);
+      if (sync()) {
+        const other = side === 'left' ? 'right' : 'left';
+        state[other].x = s.x; state[other].y = s.y;
+        apply(other);
+      }
+    });
+    wrap.addEventListener('pointerup', (e) => {
+      state[side].drag = false;
+      wrap.releasePointerCapture(e.pointerId);
+    });
+    wrap.addEventListener('pointercancel', () => { state[side].drag = false; });
+  }
+})();
+</script>
+{% endblock %}

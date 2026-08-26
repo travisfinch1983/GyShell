@@ -101,6 +101,92 @@ const GlobalUserEditor: React.FC = () => {
   )
 }
 
+/**
+ * Global default model. Two distinct effects, and the second is the one worth
+ * spelling out in the UI:
+ *   - it is the fallback any agent WITHOUT its own model block inherits
+ *   - it is stamped onto NEW agents at creation, so they keep that model even if
+ *     this setting changes later
+ * Without the stamping, changing this would silently re-point every unset agent.
+ */
+const GlobalDefaultModel: React.FC = observer(() => {
+  const [model, setModel] = useState('')
+  const [provider, setProvider] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState('')
+
+  const load = async () => {
+    try {
+      const r = await fetch('/api/hermes/agent-defaults')
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const d = await r.json()
+      setModel(d.model || ''); setProvider(d.provider || ''); setStatus('')
+    } catch (e: any) { setStatus(`Load failed: ${e?.message || e}`) }
+  }
+  useEffect(() => { void load(); if (!store.catalogLoaded) void store.loadCatalog() }, [])
+
+  const save = async () => {
+    setBusy(true); setStatus('Saving…')
+    try {
+      const r = await fetch('/api/hermes/agent-defaults', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      })
+      if (!r.ok) {
+        const b = await r.json().catch(() => ({} as any))
+        throw new Error(b?.error || `HTTP ${r.status}`)
+      }
+      const d = await r.json()
+      setModel(d.model || ''); setProvider(d.provider || '')   // trust the server
+      setStatus('Saved')
+    } catch (e: any) { setStatus(`Error: ${e?.message || e}`) }
+    finally { setBusy(false) }
+  }
+
+  // Keep a model selectable even when it is not in the AI-Lab catalog — the
+  // current default may belong to an external provider (deepseek etc.), and
+  // dropping it from the list would silently offer to change it.
+  const options = store.catalog.some((m) => m.id === model) || !model
+    ? store.catalog
+    : [{ id: model, displayName: `${model} (${provider || 'external'} — not in AI-Lab catalog)` } as any, ...store.catalog]
+
+  return (
+    <div className={styles.card}>
+      <div className={styles.summaryRow}>
+        <Bot size={15} />
+        <div>
+          <strong>Global default model</strong>
+          <div className={styles.dim}>
+            The fallback for any agent without its own model, AND the model stamped onto
+            NEW agents when they are created. Changing it does <b>not</b> re-point existing
+            agents — they keep whatever they were created with.
+          </div>
+        </div>
+        <span className={styles.spacer} />
+        <span className={styles.dim}>{status}</span>
+      </div>
+      <div className={styles.summaryRow}>
+        <select
+          className={`${styles.input} ${styles.mono}`}
+          style={{ maxWidth: 460 }}
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+        >
+          <option value="">— none set —</option>
+          {options.map((m: any) => (
+            <option key={m.id} value={m.id}>{m.displayName ?? m.id}</option>
+          ))}
+        </select>
+        <button className={styles.btn} disabled={busy || !model} onClick={() => void save()}>
+          {busy ? 'Saving…' : 'Save default'}
+        </button>
+        <button className={styles.btn} disabled={busy} onClick={() => void load()}>Revert</button>
+      </div>
+    </div>
+  )
+})
+
 const DocTemplatesView: React.FC = () => {
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState<string | null>(null)
@@ -115,12 +201,15 @@ const DocTemplatesView: React.FC = () => {
   return (
     <div className={styles.agentView}>
       <section>
-        <div className={styles.sectionTitle}>Doc Templates</div>
+        <div className={styles.sectionTitle}>Agent Defaults</div>
         <div className={styles.sectionSub}>
-          The default operating docs every NEW agent is created from (the Hermes “default” profile).
-          Edits here change the templates only — existing agents keep their own copies.
+          What every NEW agent inherits: its starting model, and the operating docs it is
+          created from (the Hermes “default” profile). Edits here change the defaults only —
+          existing agents keep what they already have.
           The shared USER doc is global (propagated into every agent's AGENTS.md), edited below.
         </div>
+        <GlobalDefaultModel />
+        <div className={styles.sectionTitle} style={{ marginTop: 16 }}>Doc Templates</div>
         <GlobalUserEditor />
         <div className={styles.card}>
           <div className={styles.summaryRow}>
@@ -180,7 +269,7 @@ export const AgentsSettings: React.FC = observer(() => {
     <div className={styles.settingsBody}>
       <div className={styles.tabs}>
         <button className={`${styles.tab} ${active === TEMPLATES ? styles.tabActive : ''}`} onClick={() => setActive(TEMPLATES)}>
-          <FileText size={13} /> Doc Templates
+          <FileText size={13} /> Agent Defaults
         </button>
         <span className={styles.tabDivider} />
         {visibleAgents.map((id) => (

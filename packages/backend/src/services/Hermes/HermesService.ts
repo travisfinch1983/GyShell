@@ -94,6 +94,27 @@ export class HermesService {
     return this.mgmt.resetAgentTools(agentId).then(() => { this.bridge.reloadAgentSessions(agentId) })
   }
 
+  /** Is the agent actually serving the tools its group holds? (Hermes gives up on MCP
+   *  reconnect after 5 failures and then runs toolless until its gateway restarts.) */
+  getToolHealth(agentId: string) {
+    return this.mgmt.getToolHealth(agentId)
+  }
+
+  /** Restart the agent's gateway so it re-reads config and reconnects its MCP link. */
+  reconnectAgentTools(agentId: string) {
+    return this.mgmt.reconnectAgentTools(agentId).then((r) => { this.bridge.reloadAgentSessions(agentId); return r })
+  }
+
+  /** Tool-group snapshots taken before each change, newest first. */
+  listToolBackups(agentId: string) {
+    return this.mgmt.listToolBackups(agentId)
+  }
+
+  /** Restore a snapshot (revalidated against the live registry) and reconnect. */
+  restoreToolBackup(agentId: string, file: string) {
+    return this.mgmt.restoreToolBackup(agentId, file).then((r) => { this.bridge.reloadAgentSessions(agentId); return r })
+  }
+
   /** Reload an agent's live sessions to pick up config/tool changes (new tools, same history). */
   reloadAgentSessions(agentId: string): { reloaded: number; deferred: number } {
     return this.bridge.reloadAgentSessions(agentId)
@@ -169,8 +190,24 @@ export class HermesService {
     return this.mgmt.applySpec(spec)
   }
 
+  /** Global default model — the fallback every agent without its own model block
+   *  inherits, and the value stamped onto newly created agents. */
+  getAgentDefaults(): Promise<{ model: string; provider: string }> {
+    return this.mgmt.getAgentDefaults()
+  }
+
+  setAgentDefaults(model: string, provider?: string): Promise<{ model: string; provider: string }> {
+    return this.mgmt.setAgentDefaults(model, provider)
+  }
+
   getUserDoc(): Promise<string> { return this.mgmt.getUserDoc() }
   setUserDoc(markdown: string): Promise<{ agentsUpdated: number }> { return this.mgmt.setUserDoc(markdown) }
+
+  // Per-agent override of the shared USER doc, for an agent whose human is not Travis.
+  getAgentUserDoc(agentId: string): Promise<string> { return this.mgmt.getAgentUserDoc(agentId) }
+  setAgentUserDoc(agentId: string, markdown: string): Promise<{ agentsUpdated: number }> {
+    return this.mgmt.setAgentUserDoc(agentId, markdown)
+  }
 
   getSupportModels(): ReturnType<HermesManagementService['getSupportModels']> {
     return this.mgmt.getSupportModels()
@@ -258,6 +295,15 @@ export class HermesService {
     const key = opts.sessionKey ?? agentId
     await this.bridge.ensureReady(key, agentId)
     this.bridge.prompt(key, text, { context: opts.context, screenshot: opts.screenshot, images: opts.images })
+  }
+
+  /**
+   * Steer a live turn. Unlike sendPrompt this does NOT ensureReady — a steer only means
+   * something against an already-running session, and spawning one here would turn a
+   * mis-timed steer into a brand-new session. Throws if there is nothing to steer.
+   */
+  async sendSteer(agentId: string, text: string, opts: { sessionKey?: string } = {}): Promise<void> {
+    this.bridge.steer(opts.sessionKey ?? agentId, text)
   }
 
   /**

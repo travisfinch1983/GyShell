@@ -64,6 +64,8 @@ type Lifecycle = 'kill' | 'suspend' | 'start' | 'restart'
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let usageTimer: ReturnType<typeof setTimeout> | null = null
+// Module-scoped: the listener is bound once for the singleton store, never per call.
+let usageVisibilityBound = false
 
 /** AI Service card sparkline poll rate — Travis #6b: independent of the GPU
  *  Fleet rate; also sent as ?maxAge so the backend nvtop TTL follows it.
@@ -112,7 +114,11 @@ export class AiServicesStore {
    *  falls back to the whole-GPU series, and this lights up on deploy. */
   serviceUsage: Record<string, { util: number[]; vram: number[]; vramTotalMB: number; attribution: 'per-process' | 'gpu-total' }> = {}
   serviceUsageLive = false
-  typeProbeCache: Record<string, string> = {} // endpoint → capability-detected type (llm/embed/rerank)
+  // endpoint → { capability-detected type, when }. TTL'd deliberately: an 'llm' verdict is only
+  // ever provisional (it is also what a still-loading service looks like), so it must expire fast
+  // and be retried; a confirmed embed/rerank is held longer but still re-checked so swapping a
+  // slot's model re-classifies it.
+  typeProbeCache: Record<string, { t: string; ts: number }> = {}
 
   constructor() {
     makeAutoObservable(this)
@@ -146,8 +152,9 @@ export class AiServicesStore {
       // Baseline type (provider/isTts); apply any cached capability-probe result over the 'llm' bucket.
       for (const s of services) {
         s.serviceType = classifyServiceType(s)
-        if (s.serviceType === 'llm' && s.endpoint && this.typeProbeCache[s.endpoint]) {
-          s.serviceType = this.typeProbeCache[s.endpoint]
+        const cached = s.endpoint ? this.typeProbeCache[s.endpoint] : undefined
+        if (s.serviceType === 'llm' && cached && !this.probeExpired(cached)) {
+          s.serviceType = cached.t
         }
       }
       services.sort((a, b) => (a.node || '').localeCompare(b.node || '') || (a.port ?? 0) - (b.port ?? 0))
@@ -269,11 +276,22 @@ export class AiServicesStore {
     }
   }
 
+  /** 'llm' is the fallback a still-loading service also produces, so it expires quickly and gets
+   *  retried; a confirmed embed/rerank is trusted for longer but still re-checked periodically. */
+  probeExpired(c: { t: string; ts: number }): boolean {
+    const ttl = c.t === 'llm' ? 30_000 : 300_000
+    return Date.now() - c.ts > ttl
+  }
+
   /** Capability-probe the 'llm' bucket via the backend; cache + apply embed/rerank refinements. */
   async refineTypes(services: AiService[]): Promise<void> {
     const api = (window as any).gyshell?.ai
     if (!api?.probeTypes) return
-    const todo = services.filter((s) => s.serviceType === 'llm' && s.endpoint && !this.typeProbeCache[s.endpoint])
+    const todo = services.filter((s) => {
+      if (s.serviceType !== 'llm' || !s.endpoint) return false
+      const c = this.typeProbeCache[s.endpoint]
+      return !c || this.probeExpired(c) // stale or provisional ⇒ ask again
+    })
     if (!todo.length) return
     try {
       const res = (await api.probeTypes(todo.map((s) => ({ id: s.id, endpoint: s.endpoint })))) as Record<string, string>
@@ -282,7 +300,7 @@ export class AiServicesStore {
         for (const s of services) {
           const t = res?.[s.id]
           if (!t || !s.endpoint) continue
-          this.typeProbeCache[s.endpoint] = t // cache even 'llm' so we don't re-probe
+          this.typeProbeCache[s.endpoint] = { t, ts: Date.now() }
           if (t !== 'llm' && s.serviceType !== t) {
             s.serviceType = t
             changed = true
@@ -352,10 +370,26 @@ export class AiServicesStore {
   startUsagePolling(): void {
     if (usageTimer) return
     const tick = async () => {
-      await this.pollServiceUsage()
+      // SKIP THE FETCH WHILE HIDDEN — the timer keeps running so nothing needs restarting,
+      // but a tab you cannot see has no sparklines to keep warm. Measured at 85 req/min,
+      // 2.4KB each, in EVERY open tab simultaneously; on a metered uplink that is real
+      // traffic bought for nothing. The cadence itself is a user setting and is untouched.
+      if (typeof document === 'undefined' || !document.hidden) {
+        await this.pollServiceUsage()
+      }
       usageTimer = setTimeout(() => void tick(), serviceUsagePollMs())
     }
     usageTimer = setTimeout(() => void tick(), 0)
+
+    // Poll the moment the tab becomes visible instead of waiting out the interval. The
+    // always-on design exists so cards are warm when looked at; gating without this would
+    // reintroduce precisely the staleness it was built to avoid.
+    if (typeof document !== 'undefined' && !usageVisibilityBound) {
+      usageVisibilityBound = true
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) void this.pollServiceUsage()
+      })
+    }
   }
 }
 

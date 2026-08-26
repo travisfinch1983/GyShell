@@ -23,16 +23,90 @@ let analyser: AnalyserNode | null = null
 let audioContext: AudioContext | null = null
 let silenceCheckInterval: ReturnType<typeof setInterval> | null = null
 
-const SILENCE_THRESHOLD = 15 // RMS below this = silence (0-128 scale)
+// Floor for "is this speech" on a 0-128 RMS scale. Used only until the real noise
+// floor has been measured (see calibrate below) — the previous fixed 15 was higher than
+// normal speech on a quiet mic with noiseSuppression enabled, which made hands-free look
+// completely dead rather than merely mis-tuned.
+const SILENCE_THRESHOLD_FLOOR = 3
+// Speech must exceed the measured ambient noise by this factor.
+const SPEECH_OVER_NOISE = 2.5
 const SILENCE_TIMEOUT_MS = 3500 // Auto-send after this much silence
 const SAMPLE_RATE = 16000
 
-// Callbacks
+export type SttState = 'idle' | 'recording' | 'transcribing' | 'handsfree' | 'handsfree-recording'
+
+// ─── Ownership ──────────────────────────────────────────────────────────────
+//
+// There is ONE microphone and one set of callbacks, but more than one consumer (the agent
+// chat composer and the Notes tool). Without an explicit owner the second component to
+// register silently steals the first one's transcripts: the mic still works, the audio is
+// still transcribed, and the text is handed to a component the user isn't looking at. No
+// error is raised anywhere, which makes it near-impossible to diagnose from the symptom.
+//
+// So: claim it. Last claimant wins, the previous owner is TOLD, and any capture still
+// running is stopped instead of feeding a callback nobody is listening to.
+
+export interface SttHandlers {
+  onTranscript?: (text: string) => void
+  onAutoSend?: (text: string) => void
+  onStateChange?: (state: SttState) => void
+  /** Called when someone else claims the microphone, so the UI can drop back to idle. */
+  onEvicted?: (newOwner: string) => void
+}
+
+let owner: string | null = null
 let onTranscript: ((text: string) => void) | null = null
 let onAutoSend: ((text: string) => void) | null = null
-let onStateChange: ((state: 'idle' | 'recording' | 'transcribing' | 'handsfree' | 'handsfree-recording') => void) | null = null
+let onStateChange: ((state: SttState) => void) | null = null
+let onEvicted: ((newOwner: string) => void) | null = null
 
-export type SttState = 'idle' | 'recording' | 'transcribing' | 'handsfree' | 'handsfree-recording'
+/** Take the microphone. Safe to call repeatedly with the same owner (handlers refresh). */
+export function claimStt(newOwner: string, h: SttHandlers): void {
+  if (owner && owner !== newOwner) {
+    const prev = owner
+    const prevEvicted = onEvicted
+    // Stop BEFORE swapping handlers so the old owner sees its own final state change.
+    if (handsFreeActive || (recorder && recorder.state === 'recording')) {
+      console.warn(`[SttCapture] "${newOwner}" claimed the microphone while "${prev}" was still `
+        + 'capturing — stopping the old capture rather than recording into a dead callback')
+      stopHandsFree()
+    }
+    console.log(`[SttCapture] owner: ${prev} -> ${newOwner}`)
+    prevEvicted?.(newOwner)
+  }
+  owner = newOwner
+  onTranscript = h.onTranscript ?? null
+  onAutoSend = h.onAutoSend ?? null
+  onStateChange = h.onStateChange ?? null
+  onEvicted = h.onEvicted ?? null
+}
+
+/**
+ * Give the microphone back. OWNER-CHECKED on purpose: React unmounts the outgoing panel
+ * AFTER the incoming one mounts, so an unguarded release would wipe the new owner's
+ * callbacks on every tab switch and leave the mic owned by nobody.
+ */
+export function releaseStt(claimant: string): void {
+  if (owner !== claimant) return
+  if (handsFreeActive) stopHandsFree()
+  owner = null
+  onTranscript = null
+  onAutoSend = null
+  onStateChange = null
+  onEvicted = null
+}
+
+export function sttOwner(): string | null {
+  return owner
+}
+
+/** Warn loudly if capture starts with nobody registered — the transcript would go nowhere. */
+function warnIfUnowned(what: string): void {
+  if (!owner) {
+    console.warn(`[SttCapture] ${what} started with NO owner claimed — the transcript will be `
+      + 'discarded. Call claimStt() first.')
+  }
+}
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 
@@ -42,20 +116,6 @@ function getSttConfig(): any {
   } catch {
     return {}
   }
-}
-
-// ─── Callbacks ──────────────────────────────────────────────────────────────
-
-export function setOnTranscript(cb: (text: string) => void): void {
-  onTranscript = cb
-}
-
-export function setOnAutoSend(cb: (text: string) => void): void {
-  onAutoSend = cb
-}
-
-export function setOnStateChange(cb: (state: SttState) => void): void {
-  onStateChange = cb
 }
 
 // ─── Microphone Access ──────────────────────────────────────────────────────
@@ -113,6 +173,7 @@ async function transcribeAudio(audioBlob: Blob): Promise<string> {
 // ─── Push-to-Talk Mode ──────────────────────────────────────────────────────
 
 export async function startPushToTalk(): Promise<void> {
+  warnIfUnowned('push-to-talk')
   try {
     const stream = await getMicrophone()
     audioChunks = []
@@ -178,7 +239,14 @@ export async function stopPushToTalk(): Promise<void> {
 // ─── Hands-Free Mode ────────────────────────────────────────────────────────
 
 export async function startHandsFree(): Promise<void> {
-  if (handsFreeActive) return
+  // A stuck flag from a previous failed attempt used to make every later press a silent
+  // no-op — the button looked inert with no explanation anywhere.
+  warnIfUnowned('hands-free')
+  if (handsFreeActive) {
+    console.warn('[SttCapture] Hands-free is already active — ignoring the start request. '
+      + 'If the UI shows it as OFF, its state and this flag have diverged.')
+    return
+  }
 
   try {
     const stream = await getMicrophone()
@@ -186,6 +254,28 @@ export async function startHandsFree(): Promise<void> {
 
     // Set up audio analysis for silence detection
     audioContext = new AudioContext()
+    // MUST resume. getMicrophone() is awaited above, which ends the user-gesture context,
+    // so this AudioContext can be created 'suspended'. A suspended context feeds the
+    // analyser nothing: RMS reads 0 forever, speech is never detected, and hands-free
+    // silently does absolutely nothing. This was the bug.
+    if (audioContext.state === 'suspended') {
+      console.warn('[SttCapture] AudioContext started suspended (created after an await) — resuming')
+      try {
+        await audioContext.resume()
+      } catch (e) {
+        console.error('[SttCapture] could not resume the AudioContext — hands-free cannot hear anything:', e)
+      }
+    }
+    console.log(`[SttCapture] AudioContext state: ${audioContext.state}`)
+    if (audioContext.state !== 'running') {
+      console.error('[SttCapture] AudioContext is not running — aborting hands-free rather than '
+        + 'appearing to listen while deaf')
+      handsFreeActive = false
+      onStateChange?.('idle')
+      releaseMicrophone()
+      return
+    }
+
     const source = audioContext.createMediaStreamSource(stream)
     analyser = audioContext.createAnalyser()
     analyser.fftSize = 512
@@ -206,9 +296,17 @@ export async function startHandsFree(): Promise<void> {
 function listenLoop(stream: MediaStream): void {
   if (!handsFreeActive || !analyser) return
 
-  // Wait for speech to start
-  const dataArray = new Uint8Array(analyser.frequencyBinCount)
+  // fftSize samples, NOT frequencyBinCount (= fftSize/2): getByteTimeDomainData fills a
+  // waveform of fftSize, so the old half-length array examined only half of each window.
+  const dataArray = new Uint8Array(analyser.fftSize)
   let speechDetected = false
+  // Ambient noise is measured for the first second and the speech threshold derived from
+  // it, so a quiet mic no longer reads as permanent silence.
+  let noiseFloor = 0
+  let calibrationTicks = 0
+  let threshold = SILENCE_THRESHOLD_FLOOR
+  let peak = 0
+  let ticks = 0
 
   audioChunks = []
   recorder = new MediaRecorder(stream, {
@@ -240,7 +338,29 @@ function listenLoop(stream: MediaStream): void {
     }
     const rms = Math.sqrt(sum / dataArray.length) * 128
 
-    if (rms > SILENCE_THRESHOLD) {
+    // First ~1s: learn the room instead of trusting a constant.
+    ticks++
+    if (rms > peak) peak = rms
+    if (calibrationTicks < 10) {
+      calibrationTicks++
+      noiseFloor = Math.max(noiseFloor, rms)
+      if (calibrationTicks === 10) {
+        threshold = Math.max(noiseFloor * SPEECH_OVER_NOISE, SILENCE_THRESHOLD_FLOOR)
+        console.log(`[SttCapture] VAD calibrated: noise floor ${noiseFloor.toFixed(1)}, `
+          + `speech threshold ${threshold.toFixed(1)} (0-128 scale)`)
+      }
+      return
+    }
+
+    // Say what we are hearing. Without this, a mic quieter than the threshold is
+    // indistinguishable from a dead pipeline — which is exactly how this bug presented.
+    if (ticks % 20 === 0 && !speechDetected) {
+      console.log(`[SttCapture] listening… peak RMS ${peak.toFixed(1)} vs threshold `
+        + `${threshold.toFixed(1)} — ${peak > threshold ? 'should have triggered' : 'below threshold, not speech yet'}`)
+      peak = 0
+    }
+
+    if (rms > threshold) {
       // Speech detected
       if (!speechDetected) {
         speechDetected = true
@@ -255,9 +375,10 @@ function listenLoop(stream: MediaStream): void {
     } else if (speechDetected) {
       // Silence after speech — start countdown
       if (!silenceTimer) {
+        console.log(`[SttCapture] Hands-free: silence — sending in ${SILENCE_TIMEOUT_MS}ms unless you resume`)
         silenceTimer = setTimeout(() => {
-          // Silence timeout reached — stop and transcribe
-          finishHandsFreeSegment(stream)
+          console.log('[SttCapture] Hands-free: silence timeout — transcribing the segment')
+          void finishHandsFreeSegment(stream)
         }, SILENCE_TIMEOUT_MS)
       }
     }

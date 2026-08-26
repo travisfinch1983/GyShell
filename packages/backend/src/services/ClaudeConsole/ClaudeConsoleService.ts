@@ -181,13 +181,46 @@ export class ClaudeConsoleService {
     // ping/pong (below) for its own half-open detection, and a genuinely dead attach
     // is reaped server-side by SSH ServerAliveInterval (~45s) → pty exit → cleanup.
 
-    // pty → browser (raw bytes as binary frames)
+    // pty → browser (raw bytes as binary frames), COALESCED.
+    //
+    // One frame per pty data event meant ~71 bytes of payload per TCP segment on the wire
+    // (measured: 105,447 bytes across 1482 data segments on a live console socket). node-pty
+    // emits a data event per read, and a scrolling terminal produces a great many tiny ones;
+    // with IP+TCP headers plus TLS framing on each, the overhead dwarfed the content. Over a
+    // tunnel and an asymmetric uplink that turned an idle console into real saturation.
+    //
+    // Buffer briefly and flush on whichever comes first: FLUSH_MS elapsed, or FLUSH_BYTES
+    // pending. Identical bytes of content, an order of magnitude fewer packets.
+    const FLUSH_MS = 20        // below human-perceptible output latency
+    const FLUSH_BYTES = 16384  // a big burst should not wait on a timer to save packets it already saves
+    let pending: Buffer[] = []
+    let pendingLen = 0
+    let flushTimer: ReturnType<typeof setTimeout> | null = null
+
+    const flushPending = (): void => {
+      if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
+      if (pendingLen === 0) return
+      const buf = Buffer.concat(pending, pendingLen)
+      pending = []
+      pendingLen = 0
+      if (ws.readyState === ws.OPEN) {
+        try { ws.send(buf, { binary: true }) } catch { /* racing close */ }
+      }
+    }
+
     pty.onData((data) => {
-      if (ws.readyState === ws.OPEN) ws.send(Buffer.from(data, 'utf8'), { binary: true })
+      const chunk = Buffer.from(data, 'utf8')
+      pending.push(chunk)
+      pendingLen += chunk.length
+      if (pendingLen >= FLUSH_BYTES) { flushPending(); return }
+      if (!flushTimer) flushTimer = setTimeout(flushPending, FLUSH_MS)
     })
     pty.onExit(({ exitCode }) => {
       if (this.sessions.get(id)?.seq !== seq) return // a takeover already replaced us
       this.sessions.delete(id)
+      // Flush BEFORE the status + close, or the tail of the output is lost exactly when it
+      // matters most — the end of whatever the command was printing.
+      flushPending()
       this.sendStatus(ws, 'exit', `attach process exited (${exitCode})`)
       try { ws.close(4002, 'pty exit') } catch { /* already closed */ }
     })
@@ -216,11 +249,15 @@ export class ClaudeConsoleService {
     // CLEAN RECONNECT: closing kills the pty (dtach detaches). Nothing is
     // buffered or replayed — the next connect gets a fresh dtach redraw.
     ws.on('close', () => {
+      // Clear the timer even on a takeover path: a pending flush against a dead socket is
+      // harmless but a stray timer on every reconnect is a slow leak.
+      if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
       if (this.sessions.get(id)?.seq !== seq) return
       this.sessions.delete(id)
       try { pty.kill() } catch { /* already dead */ }
     })
     ws.on('error', () => {
+      if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
       if (this.sessions.get(id)?.seq !== seq) return
       this.sessions.delete(id)
       try { pty.kill() } catch { /* already dead */ }

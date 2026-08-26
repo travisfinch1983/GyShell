@@ -1,4 +1,5 @@
 import type { GatewayEvent, IClientTransport } from './types'
+import { recordGatewaySend } from './gatewayStats'
 
 /**
  * TransportHub is a transport-only registry and broadcaster.
@@ -22,7 +23,13 @@ export class TransportHub {
   }
 
   send(channel: string, data: any): void {
+    // Counted PER RECIPIENT: a broadcast to N clients is N copies on the wire, so counting
+    // one copy would understate real egress by exactly the client count. Serialized once
+    // here purely to measure; each transport still does its own encoding.
+    let bytes = 0
+    try { bytes = JSON.stringify(data ?? null).length } catch { bytes = 0 }
     this.transports.forEach((transport) => {
+      recordGatewaySend('push', channel, bytes)
       transport.send(channel, data)
     })
   }

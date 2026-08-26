@@ -66,6 +66,15 @@ const SettingField: React.FC<{ k: string; arg: any }> = observer(({ k, arg }) =>
             <option key={o} value={o}>{arg.labels?.[o] ?? (o === '' ? '(default)' : o)}</option>
           ))}
         </select>
+      ) : arg.type === 'multi' ? (
+        <textarea
+          className={styles.input}
+          rows={5}
+          spellCheck={false}
+          placeholder={'one rule per line, e.g. blk\\.3\\.ffn_(gate|up|down)_exps=CUDA0'}
+          value={val ?? ''}
+          onChange={(e) => store.setSetting(k, e.target.value)}
+        />
       ) : (
         <input
           className={styles.input}
@@ -83,7 +92,7 @@ const SettingField: React.FC<{ k: string; arg: any }> = observer(({ k, arg }) =>
 
 /** Distinct badge colour per backend; unknown providers fall back to a stable hashed hue. */
 const PROVIDER_COLORS: Record<string, string> = {
-  'koboldcpp': '#d8a657', 'llama-server': '#4ea1ff', 'llama-server-mtp': '#22d3ee',
+  'koboldcpp': '#d8a657', 'llama-server': '#4ea1ff', 
   'vllm': '#a78bfa', '1cat-vllm': '#f472b6', 'ollama': '#fb923c', 'sglang': '#f87171',
   'tabbyapi': '#818cf8', 'aphrodite': '#fb7185', 'lmdeploy': '#2dd4bf', 'exllama': '#c084fc',
 }

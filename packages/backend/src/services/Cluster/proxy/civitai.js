@@ -9,7 +9,7 @@
  */
 
 import { Router } from 'express';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync, renameSync } from 'fs';
 import { join, basename } from 'path';
 import { spawn } from 'child_process';
 import { execSync } from 'child_process';
@@ -22,16 +22,59 @@ const RENAMER_PATH = join(DATA_DIR, 'civitai-renamer.json');
 const HISTORY_PATH = join(DATA_DIR, 'civitai-history.json');
 const DOWNLOADS_PATH = join(DATA_DIR, 'civitai-downloads.json');
 
+// #3 Pause/resume the already-RUNNING curl processes for a source (SIGSTOP/SIGCONT).
+// The scheduler only gates NEW starts; without this, hitting Pause left active downloads running.
+function signalActiveDownloads(source, sig) {
+  const file = source === 'hf' ? join(DATA_DIR, 'hf-downloads.json') : DOWNLOADS_PATH;
+  try {
+    const m = JSON.parse(readFileSync(file, 'utf8'));
+    for (const d of (m.downloads || [])) {
+      if (d.status === 'downloading' && d.pid) { try { process.kill(d.pid, sig); } catch {} }
+    }
+  } catch {}
+}
+
+// ─── Durable JSON state ───────────────────────────────────────────────────
+//
+// These files (history is ~2 MB) were previously written with a plain writeFileSync, which
+// TRUNCATES the target and then streams the new contents into it. A restart or an overlapping
+// write during that window leaves invalid JSON on disk. The readers then swallowed the parse
+// error and returned an EMPTY object — so the UI showed "no history" — and the very next
+// addToHistory() loaded that emptiness, appended one item and saved it back, permanently
+// destroying the real history. AI-Lab widened this window considerably versus ProxLab, because
+// its reconciler now writes the downloads manifest every 5s instead of only when the UI polled.
+
+/** Serialise to <path>.tmp then rename into place. rename(2) is atomic within a filesystem, so a
+ *  crash mid-write can never leave a partially-written file where the real one used to be. */
+function writeJsonAtomic(path, data) {
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(data, null, 2));
+  renameSync(tmp, path);
+}
+
+/** Read JSON without ever degrading corruption into a silent empty result: preserve the bad file
+ *  as <path>.corrupt-<ts> and say so loudly, so it stays recoverable and the next write starts a
+ *  fresh file rather than quietly overwriting data that was merely unreadable. */
+function readJsonSafe(path, fallback, label) {
+  if (!existsSync(path)) return fallback;
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (e) {
+    const kept = `${path}.corrupt-${Date.now()}`;
+    try { renameSync(path, kept); } catch { /* best effort — still must not return silently */ }
+    console.error(`[civitai] ${label} at ${path} is CORRUPT (${e.message}). ` +
+      `Preserved as ${kept}; continuing with an empty ${label}.`);
+    return fallback;
+  }
+}
+
 // ─── Download tracking (active downloads + temp session history) ──────────
 function loadDownloads() {
-  try {
-    if (existsSync(DOWNLOADS_PATH)) return JSON.parse(readFileSync(DOWNLOADS_PATH, 'utf8'));
-  } catch {}
-  return { downloads: [] };
+  return readJsonSafe(DOWNLOADS_PATH, { downloads: [] }, 'downloads manifest');
 }
 
 function saveDownloads(data) {
-  writeFileSync(DOWNLOADS_PATH, JSON.stringify(data, null, 2));
+  writeJsonAtomic(DOWNLOADS_PATH, data);
 }
 
 // All folder types used in imagegen — matches CivitAI model types
@@ -220,7 +263,7 @@ function loadConfig() {
 }
 
 function saveConfig(cfg) {
-  writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+  writeJsonAtomic(CONFIG_PATH, cfg);
 }
 
 // ─── Component Type Detection ───────────────────────────────────────────────
@@ -305,14 +348,11 @@ function getBasePath() {
 //               creator, downloadedAt, source ('proxlab'|'synced'), pageUrl }
 
 function loadHistory() {
-  try {
-    if (existsSync(HISTORY_PATH)) return JSON.parse(readFileSync(HISTORY_PATH, 'utf8'));
-  } catch {}
-  return { items: [], lastSync: null };
+  return readJsonSafe(HISTORY_PATH, { items: [], lastSync: null }, 'download history');
 }
 
 function saveHistory(h) {
-  writeFileSync(HISTORY_PATH, JSON.stringify(h, null, 2));
+  writeJsonAtomic(HISTORY_PATH, h);
 }
 
 function addToHistory(model, version, source = 'proxlab', extra = {}) {
@@ -501,9 +541,50 @@ function applyTemplate(template, vars, separator = '-', caseMode = 'standard') {
 }
 
 /**
+ * Resolve the CivitAI API token. Module scope so BOTH the route handlers and spawnCurl can use it.
+ *
+ * AI-Lab's Settings UI writes to cluster-settings.json -> tokens.civitaiToken. The code ported from
+ * ProxLab read settings.json -> ui.civitaiToken, which AI-Lab never populates, so this silently
+ * returned '' and every download went out unauthenticated (CivitAI answers 401 with a 106-byte JSON
+ * body). Read the real location first; keep the legacy path for ProxLab-era configs.
+ */
+let _tokenWarned = false;
+function readCivitaiToken() {
+  try {
+    const cs = JSON.parse(readFileSync(join(DATA_DIR, 'cluster-settings.json'), 'utf8'));
+    const t = cs.tokens?.civitaiToken || '';
+    if (t) return t;
+  } catch {}
+  try {
+    const settings = JSON.parse(readFileSync(join(DATA_DIR, 'settings.json'), 'utf8'));
+    const t = settings.ui?.civitaiToken || '';
+    if (t) return t;
+  } catch {}
+  // Never fail silently: no token degrades into a retry loop whose error says nothing useful.
+  if (!_tokenWarned) {
+    _tokenWarned = true;
+    console.warn('[civitai] No API token found (cluster-settings.json -> tokens.civitaiToken, nor ' +
+      'legacy settings.json -> ui.civitaiToken). Downloads requiring auth WILL fail with 401.');
+  }
+  return '';
+}
+
+/** Append the API token to a civitai download URL that lacks one. */
+function withCivitaiToken(url) {
+  if (!url || !/civitai\.com\/api\/download\//.test(url) || url.includes('token=')) return url;
+  const t = readCivitaiToken();
+  if (!t) return url;
+  return url + (url.includes('?') ? '&' : '?') + `token=${t}`;
+}
+
+/**
  * Download a file via curl to a target path. Returns the spawned PID.
  */
 function spawnCurl(url, targetPath, token) {
+  // Entries queued before the token fix have a token-less dlUrl persisted in the manifest, and the
+  // retry paths call this with token=null. Re-attach it here so retries of existing queue items
+  // authenticate too, instead of looping until "5 retries exhausted".
+  url = withCivitaiToken(url);
   const dir = targetPath.substring(0, targetPath.lastIndexOf('/'));
   mkdirSync(dir, { recursive: true });
 
@@ -512,7 +593,12 @@ function spawnCurl(url, targetPath, token) {
   // and avoids curl -C - resume issues with CDNs that drop Range headers
   // through redirect chains (e.g. CivitAI → B2/Cloudflare).
   const partPath = targetPath + '.part';
-  const args = ['-L', '-o', partPath, '--retry', '3', '--retry-delay', '5'];
+  // --fail is load-bearing: without it curl treats an HTTP 401/404 as success, writes the error
+  // body to the .part file and exits 0, so the `&& mv` below renames a few KB of HTML into place
+  // as if it were the model. The size check then rejects it and the reconciler requeues, which is
+  // how an auth failure surfaced as "download keeps dying immediately" instead of "unauthorised".
+  // --retry still covers transient 5xx/429; --fail makes 4xx abort loudly, which is what we want.
+  const args = ['-L', '--fail', '-o', partPath, '--retry', '3', '--retry-delay', '5'];
   if (token) args.push('-H', `Authorization: Bearer ${token}`);
   args.push(url);
 
@@ -532,22 +618,17 @@ function spawnCurl(url, targetPath, token) {
   });
   child.unref();
 
-  // systemd-run forks — the real curl PID is different from child.pid.
-  // Wait briefly and find the actual curl PID from the scope.
-  let realPid = child.pid;
-  try {
-    const { execSync } = require('child_process');
-    // Small delay for systemd-run to set up the scope
-    execSync('sleep 0.5');
-    const pids = execSync(`systemctl show ${scopeName}.scope --property=MainPID --value 2>/dev/null || true`).toString().trim();
-    // Fallback: find curl writing to this .part file
-    if (!pids || pids === '0') {
-      const grepResult = execSync(`pgrep -f '${partPath.replace(/'/g, "")}'  2>/dev/null || true`).toString().trim();
-      if (grepResult) realPid = parseInt(grepResult.split('\n')[0], 10);
-    } else {
-      realPid = parseInt(pids, 10);
-    }
-  } catch {}
+  // child.pid IS the right PID to track. `systemd-run --scope` runs the command in the
+  // foreground of the calling process, so this bash stays alive for exactly as long as curl
+  // does — which is precisely what the reconciler's `process.kill(pid, 0)` liveness check needs.
+  //
+  // This previously tried to look up the scope's MainPID inside a `try { ... } catch {}`, but the
+  // first statement was `const { execSync } = require('child_process')` — and this module is ESM,
+  // where `require` is not defined. So it threw ReferenceError on EVERY call, the empty catch
+  // swallowed it, and none of that lookup ever ran. Removed rather than repaired: the fallback
+  // branch used `pgrep -f <partPath>`, which also matches this very bash wrapper (its command line
+  // contains that same path), so "fixing" it would have started storing an unrelated PID.
+  const realPid = child.pid;
 
   console.log(`[civitai-dl] SPAWN: PID ${realPid} (scope ${scopeName}) → ${targetPath.split('/').pop()} (log: ${logPath})`);
   return realPid;
@@ -579,6 +660,12 @@ function processPendingDownloads() {
   for (const dl of manifest.downloads) {
     if (slots <= 0) break;
     if (dl.status !== 'pending') continue;
+    // #4 Skip files that already exist AND match the expected size (parity with HF fix #1).
+    if (dl.targetFile && existsSync(dl.targetFile) && dl.size > 0 && statSync(dl.targetFile).size === dl.size) {
+      dl.status = 'complete'; dl.skipped = true; dl.completedAt = new Date().toISOString();
+      console.log(`[civitai] Skip (already complete, ${dl.size}B): ${dl.targetFile}`);
+      continue;
+    }
     const pid = spawnCurl(dl.dlUrl, dl.targetFile, null);
     if (pid) {
       dl.pid = pid;
@@ -685,13 +772,8 @@ export function createCivitaiRouter(config, sshService) {
   // getBasePath is defined at module scope (see below router)
 
   // ─── Helper: get CivitAI API token ────────────────────────────────────
-  function getCivitaiToken() {
-    try {
-      const settings = JSON.parse(readFileSync(join(DATA_DIR, 'settings.json'), 'utf8'));
-      return settings.ui?.civitaiToken || '';
-    } catch {}
-    return '';
-  }
+  // Single implementation lives at module scope (readCivitaiToken) so spawnCurl can use it too.
+  const getCivitaiToken = readCivitaiToken;
 
   // ─── Helper: resolve target path for a model file ──────────────────────
   function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined, extensionOverride, componentOverride) {
@@ -824,9 +906,17 @@ export function createCivitaiRouter(config, sshService) {
     }
 
     const resolved = [];
+    // Captured from the LAST resolve pass so the client can seed its editable Folder/Filename
+    // boxes with the values the template actually produced. Without these the UI can only show
+    // the absolute targetDir, which is not what `pathOverride` expects (it wants just the folder
+    // part beneath <basePath>/<typeFolder>), so the boxes had to be left blank.
+    let lastTypeFolder = '';
+    let lastFolderPart = '';
     for (const file of files) {
       const fakeFile = { name: file.name, sizeKB: file.sizeKB || 0, metadata: {}, hashes: {} };
-      let { targetDir, fileName, typeFolder } = resolveTargetPath(model, version, fakeFile, cfg, effectiveOverride, userDefined || '');
+      let { targetDir, fileName, typeFolder, folderPart } = resolveTargetPath(model, version, fakeFile, cfg, effectiveOverride, userDefined || '');
+      lastTypeFolder = typeFolder || lastTypeFolder;
+      lastFolderPart = folderPart || '';
       // Apply filename override — keep the extension from the resolved name
       if (fileNameOverride) {
         const _dot = fileName.lastIndexOf('.');
@@ -841,6 +931,12 @@ export function createCivitaiRouter(config, sshService) {
       targetDir,
       files: resolved,
       override: effectiveOverride,
+      // Seed values for the UI's editable Folder box. `pathOverride` replaces exactly folderPart
+      // (final dir = basePath/typeFolder/folderPart), so folderPart — not targetDir — is what the
+      // box should be pre-filled with and what it should send back.
+      basePath,
+      typeFolder: lastTypeFolder,
+      folderPart: lastFolderPart,
     });
   });
 
@@ -1256,7 +1352,7 @@ export function createCivitaiRouter(config, sshService) {
   }
 
   function saveQueue(q) {
-    writeFileSync(QUEUE_PATH, JSON.stringify(q, null, 2));
+    writeJsonAtomic(QUEUE_PATH, q);
   }
 
   /** POST /queue/add — Add item to processing queue (from browser extension "Send to Review") */
@@ -1270,11 +1366,7 @@ export function createCivitaiRouter(config, sshService) {
     // Fetch model data from CivitAI so it's ready for review
     let modelData = null;
     try {
-      let civitaiToken = '';
-      try {
-        const settings = JSON.parse(readFileSync(join(DATA_DIR, 'settings.json'), 'utf8'));
-        civitaiToken = settings.ui?.civitaiToken || '';
-      } catch {}
+      const civitaiToken = getCivitaiToken();
       const headers = {};
       if (civitaiToken) headers['Authorization'] = `Bearer ${civitaiToken}`;
       const resp = await fetch(`https://civitai.com/api/v1/models/${modelId}`, { headers });
@@ -1369,7 +1461,7 @@ export function createCivitaiRouter(config, sshService) {
     return { items: [] };
   }
   function saveRenamer(r) {
-    writeFileSync(RENAMER_PATH, JSON.stringify(r, null, 2));
+    writeJsonAtomic(RENAMER_PATH, r);
   }
 
   router.get('/renamer', (req, res) => {
@@ -1421,11 +1513,7 @@ export function createCivitaiRouter(config, sshService) {
     const { names } = req.body;
     if (!names?.length) return res.status(400).json({ error: 'names array required' });
 
-    let civitaiToken = '';
-    try {
-      const settings = JSON.parse(readFileSync(join(DATA_DIR, 'settings.json'), 'utf8'));
-      civitaiToken = settings.ui?.civitaiToken || '';
-    } catch {}
+    const civitaiToken = getCivitaiToken();
     const headers = {};
     if (civitaiToken) headers['Authorization'] = `Bearer ${civitaiToken}`;
 
@@ -1480,7 +1568,12 @@ export function createCivitaiRouter(config, sshService) {
   // ─── Active Download Tracking ─────────────────────────────────────────
 
   /** GET /downloads — Poll active downloads with live progress */
-  router.get('/downloads', (req, res) => {
+  // Backend-driven reconciler (mirrors HF reconcileHfDownloads): reap finished civ downloads
+  // (dead-PID -> complete/failed/requeue) + advance the pending queue, on a setInterval below so the
+  // queue ALWAYS progresses with NO browser tab and across UI restarts (curl runs under systemd-run
+  // --scope). The GET /downloads route calls it too, so the live view stays authoritative.
+  function reconcileCivDownloads() {
+    try {
     const manifest = loadDownloads();
     let changed = false;
     const now = Date.now();
@@ -1582,6 +1675,19 @@ export function createCivitaiRouter(config, sshService) {
     // Start pending downloads if slots are available
     processPendingDownloads();
 
+      return manifest;
+    } catch (e) {
+      console.error('[civitai] reconcile error:', e.message);
+      return loadDownloads();
+    }
+  }
+  if (!globalThis.__civReconcileTimer) {
+    globalThis.__civReconcileTimer = setInterval(() => { reconcileCivDownloads(); }, 5000);
+    if (globalThis.__civReconcileTimer.unref) globalThis.__civReconcileTimer.unref();
+  }
+
+  router.get('/downloads', (req, res) => {
+    const manifest = reconcileCivDownloads();
     // Annotate pending/downloading items with extra UI info
     const enriched = manifest.downloads.map(dl => {
       const out = { ...dl };
@@ -1741,11 +1847,7 @@ export function createCivitaiRouter(config, sshService) {
     const { modelIds } = req.body;
     if (!modelIds?.length) return res.status(400).json({ error: 'modelIds required' });
 
-    let civitaiToken = '';
-    try {
-      const settings = JSON.parse(readFileSync(join(DATA_DIR, 'settings.json'), 'utf8'));
-      civitaiToken = settings.ui?.civitaiToken || '';
-    } catch {}
+    const civitaiToken = getCivitaiToken();
     const headers = {};
     if (civitaiToken) headers['Authorization'] = `Bearer ${civitaiToken}`;
 
@@ -2462,10 +2564,15 @@ export function createCivitaiRouter(config, sshService) {
     if (!['hf', 'civ'].includes(source)) return res.status(400).json({ error: 'source must be hf or civ' });
     const sched = loadScheduler();
     const { mode, manualState, schedule } = req.body;
+    const prevManual = sched[source].manualState;
     if (mode !== undefined) sched[source].mode = mode;
     if (manualState !== undefined) sched[source].manualState = manualState;
     if (schedule !== undefined) sched[source].schedule = schedule;
     saveScheduler(sched);
+    // #3 Also SIGSTOP/SIGCONT the already-running downloads (not just gate new starts).
+    if (manualState !== undefined && manualState !== prevManual) {
+      signalActiveDownloads(source, manualState === 'paused' ? 'SIGSTOP' : 'SIGCONT');
+    }
     res.json({ ok: true, allowed: isDownloadAllowed(source) });
   });
 

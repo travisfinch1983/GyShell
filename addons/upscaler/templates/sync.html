@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}Tag Sync{% endblock %}
+
+{% macro node(n) %}
+  <li>
+    <span class="tagrow">
+      <code>{{ n.leaf }}</code>
+      <span class="muted small">({{ n.count }})</span>
+      <form method="post" action="/api/sync/reset" style="display:inline"
+            onsubmit="return confirm('Reset sync for {{ n.value }}{% if n.children %} and its sub-tags{% endif %}? Next pass re-downloads only images currently MISSING from {% if n.children %}these folders{% else %}this folder{% endif %}.');">
+        <input type="hidden" name="tag_id" value="{{ n.id }}">
+        <button class="btn-tiny">reset</button>
+      </form>
+    </span>
+    {% if n.children %}
+      <ul>{% for c in n.children %}{{ node(c) }}{% endfor %}</ul>
+    {% endif %}
+  </li>
+{% endmacro %}
+
+{% block content %}
+<section>
+  <h2>Tag → Training-Images Sync
+    <span class="muted small">one-way download of upscaled assets to the NAS</span>
+  </h2>
+
+  <!-- live progress (polls /api/sync/status) -->
+  <div id="syncbar" style="margin:0.5em 0; padding:0.6em; background:var(--panel-bg,#2a2a2a); border-radius:4px;">
+    <div id="sync-line">loading…</div>
+    <div style="height:10px; background:#333; border-radius:5px; overflow:hidden; margin:0.4em 0;">
+      <div id="sync-fill" style="height:100%; width:0; background:var(--accent,#5af); transition:width .4s;"></div>
+    </div>
+    <div style="display:flex; gap:0.5em; align-items:center; flex-wrap:wrap;">
+      <form method="post" action="/api/sync/toggle" style="display:inline">
+        <button class="btn-small">{{ "Pause" if enabled else "Resume" }} watching</button>
+      </form>
+      <form method="post" action="/api/sync/run" style="display:inline">
+        <button class="btn-small">Sync now</button>
+      </form>
+      <span class="muted small">watch loop every {{ interval }}s · dest <code>{{ dest_root }}</code></span>
+    </div>
+  </div>
+
+  <h3>Watched tags ({{ trees|length }})</h3>
+  {% if trees %}
+    {% for t in trees %}
+    <div style="border:1px solid var(--border,#444); border-radius:4px; margin-bottom:0.6em; padding:0.4em 0.6em;">
+      <div class="tagrow" style="font-weight:600;">
+        <code>{{ t.src.tag_value }}</code>
+        <span class="muted small">{{ t.n_tags }} tag(s) · {{ t.total_synced }} downloaded</span>
+        <form method="post" action="/api/sync/reset" style="display:inline"
+              onsubmit="return confirm('Reset the ENTIRE {{ t.src.tag_value }} subtree?');">
+          <input type="hidden" name="tag_id" value="{{ t.src.tag_id }}">
+          <button class="btn-tiny">reset all</button>
+        </form>
+        <form method="post" action="/api/sync/source" style="display:inline"
+              onsubmit="return confirm('Stop watching {{ t.src.tag_value }}? (Downloaded files kept; ledger kept so they will not re-download if re-added.)');">
+          <input type="hidden" name="tag_id" value="{{ t.src.tag_id }}">
+          <input type="hidden" name="action" value="remove">
+          <button class="btn-tiny danger">remove</button>
+        </form>
+      </div>
+      {% if t.tree.children %}
+      <details style="margin-top:0.3em;">
+        <summary class="muted small">show {{ t.n_tags - 1 }} sub-tag folder(s)</summary>
+        <ul class="tagtree">{% for c in t.tree.children %}{{ node(c) }}{% endfor %}</ul>
+      </details>
+      {% endif %}
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="muted">No tags watched yet. Pick one below — its images (and all sub-tag images) that also carry the <code>upscaled</code> tag download into nested folders under <code>{{ dest_root }}</code>.</p>
+  {% endif %}
+
+  <h3 style="margin-top:1.2em;">Add a tag</h3>
+  <form method="get" action="/sync" style="margin-bottom:0.5em;">
+    <input type="text" name="q" value="{{ q }}" placeholder="filter tags…" style="min-width:18em;">
+    <button class="btn-small">search</button>
+    {% if q %}<a href="/sync" class="btn-small">clear</a>{% endif %}
+    <span class="muted small">showing {{ tags|length }} of {{ tag_total }}</span>
+  </form>
+  <div style="max-height:50vh; overflow:auto; border:1px solid var(--border,#444); border-radius:4px;">
+    <table class="activity" style="margin:0;">
+      <tbody>
+        {% for tg in tags %}
+        <tr>
+          <td style="width:100%;"><code>{{ tg.value or tg.name }}</code></td>
+          <td style="white-space:nowrap;">
+            {% if tg.id in src_ids %}
+              <span class="muted small">✓ watched</span>
+            {% else %}
+              <form method="post" action="/api/sync/source" style="display:inline">
+                <input type="hidden" name="tag_id" value="{{ tg.id }}">
+                <button class="btn-small">+ watch</button>
+              </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td class="muted">No tags match.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+  async function pollSync() {
+    try {
+      const r = await fetch('/api/sync/status'); const p = await r.json();
+      const line = document.getElementById('sync-line');
+      const fill = document.getElementById('sync-fill');
+      const tot = p.tags_total || 0, done = p.tags_done || 0;
+      const pct = tot ? Math.round(done * 100 / tot) : (p.running ? 0 : 100);
+      fill.style.width = pct + '%';
+      if (p.running) {
+        const dl = (p.dl_total||0) > 0 ? ` · downloading ${p.dl_done||0}/${p.dl_total}` : '';
+        line.innerHTML = `<b style="color:#5c5">● syncing</b> — tag ${done}/${tot} ` +
+          `· <code>${(p.tag||'').replace(/</g,'&lt;')}</code>${dl} ` +
+          `· delivered ${p.delivered||0}, skipped ${p.skipped||0}` +
+          (p.errors ? `, <span style="color:#c55">errors ${p.errors}</span>` : '');
+      } else {
+        const when = p.last_run ? new Date(p.last_run*1000).toLocaleTimeString() : 'never';
+        line.innerHTML = (p.enabled ? '<b>● idle</b>' : '<b style="color:#c55">● paused</b>') +
+          ` — last pass: delivered ${p.delivered||0}, skipped ${p.skipped||0}` +
+          (p.errors ? `, errors ${p.errors}` : '') + ` · ${when}`;
+      }
+    } catch(e) {}
+  }
+  pollSync(); setInterval(pollSync, 2000);
+</script>
+
+<style>
+  .btn-small.danger, .btn-tiny.danger { background:#a33; color:#fff; }
+  .btn-tiny { font-size:0.75em; padding:1px 6px; margin-left:4px; }
+  .tagrow { display:inline-flex; align-items:center; gap:0.3em; }
+  ul.tagtree, ul.tagtree ul { list-style:none; margin:0; padding-left:1.1em; }
+  ul.tagtree li { margin:1px 0; }
+  section h3 { margin-top:1em; }
+</style>
+{% endblock %}
