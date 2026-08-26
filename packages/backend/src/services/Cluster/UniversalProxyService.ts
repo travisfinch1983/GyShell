@@ -214,9 +214,38 @@ export class UniversalProxyService {
     // Claude MAX-subscription proxy (direct api.anthropic.com via OAuth). Mounted at the
     // canonical /claude-max path the proxy card advertises, with /anthropic kept as a
     // back-compat alias. One router instance serves both mounts.
-    const claudeMaxRouter = createAnthropicProxyRouter()
-    app.use('/api/proxy/claude-max', claudeMaxRouter)
-    app.use('/api/proxy/anthropic', claudeMaxRouter)
+    //
+    // DISABLED BY DEFAULT since 2026-08-20 (Travis). Its whole purpose was to point
+    // Anthropic/OpenAI-API clients at the MAX subscription back when `claude -p` did not
+    // consume extra usage credits. Anthropic has since changed that, so it has no current
+    // use. Measured before switching it off: ZERO requests to the route across ~3 weeks of
+    // journal retention, while its OAuth refresh failed every 30 minutes — 961
+    // `invalid_grant: Refresh token expired` lines, pure noise on a path nobody calls.
+    //
+    // Creating the router also STARTS that refresh timer (anthropic-proxy.js:73 ->
+    // startBackgroundRefresh), so NOT calling the factory stops the routes AND the noise.
+    //
+    // Re-enable with CLAUDE_MAX_PROXY=1 in the systemd unit. NOTE: the OAuth credentials on
+    // this host (~/.claude/.credentials.json) are EXPIRED — re-authenticate Claude Code here
+    // first, or supply CLAUDE_CODE_OAUTH_TOKEN / CLAUDE_MAX_TOKEN_FILE, or it will just
+    // resume failing.
+    const claudeMaxEnabled = /^(1|true|yes|on)$/i.test(String(process.env.CLAUDE_MAX_PROXY || ''))
+    if (claudeMaxEnabled) {
+      const claudeMaxRouter = createAnthropicProxyRouter()
+      app.use('/api/proxy/claude-max', claudeMaxRouter)
+      app.use('/api/proxy/anthropic', claudeMaxRouter)
+    } else {
+      console.log('[universal-proxy] Claude MAX proxy DISABLED (set CLAUDE_MAX_PROXY=1 to re-enable)')
+      // Answer explicitly rather than letting these fall through to the generic /api/proxy
+      // router below, which would 404 or mis-route and make this look like a bug.
+      const disabled = (_req: any, res: any) => res.status(503).json({
+        error: 'claude-max proxy disabled',
+        detail: 'The Claude MAX-subscription proxy is intentionally disabled (CLAUDE_MAX_PROXY unset). '
+          + 'Anthropic now bills `claude -p` as extra usage credits, so this path is not in use.',
+      })
+      app.use('/api/proxy/claude-max', disabled)
+      app.use('/api/proxy/anthropic', disabled)
+    }
     app.use('/api/proxy', createProxyRouter({ exec: this.sshExec }))
     app.use('/api/civitai', express.json({ limit: '10mb' }), createCivitaiRouter({}, { exec: this.sshExec }))
     // RAG routes (/api/ai/rag/*, /api/ai/docrag/*) registered BEFORE the /api/ai router so the specific
@@ -235,6 +264,22 @@ export class UniversalProxyService {
     if (this.agentToolsRouter) app.use(this.agentToolsRouter as any) // /api/mcp/agent-tools/* — before /api/mcp
     const { createMcpRouter } = await import('./proxy/mcp.js')
     app.use('/api/mcp', createMcpRouter({ exec: this.sshExec }))
+
+    // Search metaproxy — stable URL for the self-hosted SearXNG instance (Travis's rule:
+    // services are addressed via the proxy, never raw IP:PORT, so the URL survives moves).
+    // Passthrough only; SearXNG's own API shape (/search?q=&format=json) is the contract.
+    const SEARXNG_BACKEND = process.env.AILAB_SEARXNG_URL || 'http://127.0.0.1:8888'
+    app.use('/api/proxy/search', async (req: any, res: any) => {
+      try {
+        const target = `${SEARXNG_BACKEND}${req.url}`
+        const r = await fetch(target, { signal: AbortSignal.timeout(30_000), headers: { Accept: 'application/json' } })
+        res.status(r.status)
+        const ct = r.headers.get('content-type'); if (ct) res.setHeader('content-type', ct)
+        res.send(Buffer.from(await r.arrayBuffer()))
+      } catch (e) {
+        res.status(502).json({ error: `searxng unreachable: ${String((e as Error).message)}` })
+      }
+    })
     const { createUiPrefsRouter } = await import('./proxy/ui-prefs.js')
     app.use('/api/ui-prefs', createUiPrefsRouter())
     const { createClaudeRouter, attachClaudeTermUpgrade } = await import('./proxy/claude.js')
@@ -263,6 +308,15 @@ export class UniversalProxyService {
     // Routes declare absolute /api/fleet/* paths; see ConversationBus/fleetHttp.ts.
     if (this.fleetRouter) {
       app.use(this.fleetRouter)
+    }
+    // Fleet FEED (phase 2): the reworked Fleet tab's surface, proxied to fleetd.
+    // Mounted AFTER the ConversationBus fleet router and on DISTINCT paths
+    // (/api/fleet/threads, /thread/:id, /post, /categories, /search, /attachment, /directory)
+    // so it cannot shadow the existing /api/fleet/feed + /agents, which have different
+    // semantics and still back the current UI. Those retire when the new tab lands.
+    {
+      const { createFleetFeedRouter } = await import('../Fleet/fleetFeedHttp.js')
+      app.use(createFleetFeedRouter())
     }
     // AI-Lab x Hermes control plane (createHermesRouter): /api/hermes/* — before the broad /api cluster router.
     if (this.hermesRouter) {
