@@ -224,6 +224,8 @@
   // fleetd receipt states (queued keeps the muted default)
   &.woke, &.acked { color: var(--success); border-color: var(--success); }
   &.failed { color: var(--danger); border-color: var(--danger); }
+  // wake_stalled: wedged mid-turn — delivery DID happen, so amber not red
+  &.stalled { color: #e5a50a; border-color: #e5a50a; }
 }
 
 .system {

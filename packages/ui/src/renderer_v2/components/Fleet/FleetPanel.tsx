@@ -139,7 +139,14 @@ const RECEIPT_TITLES: Record<string, string> = {
   delivered: 'handed to the recipient transport',
   woke: 'recipient ran inference after delivery — the message reached a model',
   acked: 'recipient explicitly acknowledged',
-  failed: 'delivery failed — stage in tooltip',
+}
+
+/** failed is not one fault: "wedged mid-turn" ≠ "never landed" — name the stage. */
+function receiptTitle(r: { state: string; failure_stage: string | null; failure_detail: string | null }): string {
+  if (r.state !== 'failed') return RECEIPT_TITLES[r.state] ?? r.state
+  if (r.failure_stage === 'wake_stalled')
+    return `recipient woke but is wedged mid-turn (${r.failure_detail ?? 'no detail'}) — delivery happened; the turn never finished`
+  return `${r.failure_stage ?? 'unknown stage'}: ${r.failure_detail ?? ''}`
 }
 
 const MessageRow: React.FC<{ msg: FeedMessage; onReply: (msg: FeedMessage) => void }> = ({ msg, onReply }) => {
@@ -178,10 +185,10 @@ const MessageRow: React.FC<{ msg: FeedMessage; onReply: (msg: FeedMessage) => vo
           {msg.receipts.map((r) => (
             <span
               key={r.recipient}
-              className={`${styles.deliveryChip} ${styles[r.state] ?? ''}`}
-              title={r.state === 'failed' ? `${r.failure_stage ?? 'unknown stage'}: ${r.failure_detail ?? ''}` : RECEIPT_TITLES[r.state]}
+              className={`${styles.deliveryChip} ${styles[r.state] ?? ''} ${r.failure_stage === 'wake_stalled' ? styles.stalled : ''}`}
+              title={receiptTitle(r)}
             >
-              {r.recipient}: {r.state}
+              {r.recipient}: {r.failure_stage === 'wake_stalled' ? 'stalled' : r.state}
             </span>
           ))}
         </div>
