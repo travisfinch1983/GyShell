@@ -29,7 +29,14 @@ model = dense.get("model") or ""
 try:
     data = json.load(urllib.request.urlopen(base + "/models", timeout=10)).get("data") or []
     entry = next((m for m in data if m.get("id") == model), None)
-    print(hashlib.sha1(f"{model}|{(entry or {}).get('root','')}".encode()).hexdigest()[:12] if entry else "")
+    if entry is None and len(data) == 1:
+        # ov.conf pinned a name AI-Lab no longer serves. The proxy serves exactly ONE embed
+        # model, so that IS the Support Models selection -- use it rather than refusing to
+        # boot. A stale pin here crash-looped this container 4149 times.
+        entry = data[0]
+        print(f"openviking: ov.conf names {model!r} which is not served; "
+              f"using the proxy's only model {entry.get('id')!r}", file=sys.stderr)
+    print(hashlib.sha1(f"{entry['id']}|{entry.get('root','')}".encode()).hexdigest()[:12] if entry else "")
 except Exception as e:
     print("", file=sys.stderr); print(f"fingerprint probe failed: {e}", file=sys.stderr)
     print("")
@@ -51,9 +58,23 @@ mkdir -p "$WS"
 # — a missing/unreadable file must never blank a working config.
 SM=/ai-lab-data/hermes-support-models.json
 python3 - "$SRC" "$RUNTIME" "$WS" "$SM" <<'PY'
-import json, sys
+import json, sys, urllib.request
 cfg = json.load(open(sys.argv[1]))
 cfg.setdefault("storage", {})["workspace"] = sys.argv[3]
+
+# embed model <- what the AI-Lab proxy actually serves (Support Models drives the proxy).
+# Without this the runtime config keeps a name that 404s on every embed call, which is how
+# embeddings silently stopped while the service looked healthy.
+_dense = (cfg.get("embedding") or {}).get("dense") or {}
+_base = (_dense.get("api_base") or "").rstrip("/")
+try:
+    _data = json.load(urllib.request.urlopen(_base + "/models", timeout=15)).get("data") or []
+    _want = _dense.get("model") or ""
+    if not any(m.get("id") == _want for m in _data) and len(_data) == 1:
+        print(f"openviking: embedding.dense.model <- {_data[0]['id']!r} (was {_want!r})", file=sys.stderr)
+        cfg["embedding"]["dense"]["model"] = _data[0]["id"]
+except Exception as _e:
+    print(f"openviking: embed /models unreadable ({_e}); keeping ov.conf embed model", file=sys.stderr)
 want = ""
 try:
     sm = json.load(open(sys.argv[4]))

@@ -9,6 +9,24 @@ import { join } from 'path'
 
 const MCPJUNGLE_URL = (process.env.MCPJUNGLE_URL || 'http://127.0.0.1:8080').replace(/\/+$/, '')
 const MCPJUNGLE_HOST = process.env.MCPJUNGLE_HOST || '127.0.0.1'
+const AILAB_SELF = (process.env.AILAB_API_URL || 'http://127.0.0.1:17890').replace(/\/+$/, '')
+
+/** ailab-native federates the AI-Lab chat agent's built-ins so they can be enabled/disabled
+ * alongside MCP tools, but only its STATELESS tools actually execute over the gateway —
+ * session-bound ones answer tools/call with a config-only refusal (they run inside AI-Lab's
+ * own agent loop). Report which is which so pickers for external agents (Hermes) can hide
+ * the dead ones. Static fallback = the two known-stateless tools, so a metadata hiccup
+ * never re-advertises dead tools. */
+async function statelessNativeTools() {
+  try {
+    const r = await fetch(`${AILAB_SELF}/api/agent/native-tools`, { signal: AbortSignal.timeout(8000) })
+    const d = await r.json()
+    const set = new Set()
+    for (const t of d.tools || []) if (t.stateless) set.add(`ailab-native__${t.name}`)
+    if (set.size) return set
+  } catch { /* fall through to the static floor */ }
+  return new Set(['ailab-native__web_search', 'ailab-native__web_fetch'])
+}
 
 async function gwGet(path) {
   const r = await fetch(`${MCPJUNGLE_URL}${path}`, { signal: AbortSignal.timeout(8000) })
@@ -70,6 +88,7 @@ export function createMcpRouter({ exec }) {
   router.get('/tree', async (_req, res) => {
     try {
       const servers = await gwGet('/api/v0/servers')
+      const stateless = await statelessNativeTools()
       const out = []
       for (const s of servers) {
         let tools = []
@@ -79,6 +98,8 @@ export function createMcpRouter({ exec }) {
           shortName: shortName(t.name),
           enabled: t.enabled !== false,
           description: t.description || '',
+          // false = listed for config federation only; tools/call through the gateway refuses it
+          gatewayExecutable: s.name !== 'ailab-native' || stateless.has(t.name),
         }))
         out.push({
           name: s.name,

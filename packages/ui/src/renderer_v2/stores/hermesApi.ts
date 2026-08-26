@@ -193,6 +193,28 @@ export const hermesApi = {
   /** GET /api/hermes/agents/:id/tools — the agent's gateway tool scoping
    *  (047cc8b). scoped:false = the agent points at the FULL gateway. Null on
    *  failure so the picker can render an error instead of a fake empty scope. */
+  /** Master switch — Hermes auto-TTS for EVERY agent (per-agent voices/config untouched). */
+  async setHermesTtsAll(autoTts: boolean): Promise<{ ok: boolean; updated?: string[]; gatewaysRestarted?: string[]; failed?: Array<{ agent: string; error: string }>; error?: string }> {
+    try { return { ok: true, ...(await bridge().request('POST', '/api/hermes/hermes-tts/all', { autoTts })) } }
+    catch (e) { return { ok: false, error: String((e as Error).message) } }
+  },
+
+  /** Synthesize a short sample through the agent's HERMES-native TTS config and return playable audio. */
+  async testHermesTts(id: string, text?: string): Promise<{ ok: boolean; audioB64?: string; mime?: string; error?: string }> {
+    try { return { ok: true, ...(await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/hermes-tts/test`, text ? { text } : {})) } }
+    catch (e) { return { ok: false, error: String((e as Error).message) } }
+  },
+
+  /** Hermes-NATIVE TTS (Telegram/gateway) — independent of spec.tts (AI-Lab chat voice). */
+  async getHermesTts(id: string): Promise<{ provider: string; voice: string; model: string; baseUrl: string; speed: number; autoTts: boolean; voices: string[]; voicesError?: string } | null> {
+    try { return await bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/hermes-tts`) }
+    catch { return null }
+  },
+  async putHermesTts(id: string, patch: Record<string, unknown>): Promise<{ ok: boolean; gatewayRestarted?: boolean; error?: string }> {
+    try { return { ok: true, ...(await bridge().request('PUT', `/api/hermes/agents/${encodeURIComponent(id)}/hermes-tts`, patch)) } }
+    catch (e) { return { ok: false, error: String((e as Error).message) } }
+  },
+
   async getTools(id: string): Promise<{ selected: string[]; scoped: boolean; endpoint: string | null } | null> {
     try {
       const r = await bridge().request('GET', `/api/hermes/agents/${encodeURIComponent(id)}/tools`)
@@ -206,7 +228,7 @@ export const hermesApi = {
   /** PUT /api/hermes/agents/:id/tools { selected } — upserts the agent-<id>
    *  gateway group and repoints the agent's MCP server at it (idempotent;
    *  synchronous, ~1-3s — no client timeout, the picker shows a Syncing state). */
-  async putTools(id: string, selected: string[]): Promise<{ ok: boolean; endpoint?: string; toolCount?: number; error?: string }> {
+  async putTools(id: string, selected: string[]): Promise<{ ok: boolean; endpoint?: string; toolCount?: number; removedNonExecutable?: string[]; error?: string }> {
     try {
       const r = await bridge().request('PUT', `/api/hermes/agents/${encodeURIComponent(id)}/tools`, { selected })
       if (r?.error || r?.ok === false) return { ok: false, error: String(r?.error ?? 'scope failed') }
@@ -506,9 +528,9 @@ export const hermesApi = {
    * writes it to the agent's cwd and tells the agent to read it with its vision tool).
    * Both augment only the agent's turn, never the displayed user message.
    */
-  async prompt(id: string, text: string, extra?: { context?: string; screenshot?: string; conversationId?: string }): Promise<HermesPromptResult> {
+  async prompt(id: string, text: string, extra?: { context?: string; screenshot?: string; conversationId?: string; wait?: boolean }): Promise<HermesPromptResult> {
     try {
-      const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/prompt`, { text, ...(extra?.context ? { context: extra.context } : {}), ...(extra?.screenshot ? { screenshot: extra.screenshot } : {}), ...(extra?.conversationId ? { conversationId: extra.conversationId } : {}) })
+      const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/prompt`, { text, ...(extra?.wait ? { wait: true } : {}), ...(extra?.context ? { context: extra.context } : {}), ...(extra?.screenshot ? { screenshot: extra.screenshot } : {}), ...(extra?.conversationId ? { conversationId: extra.conversationId } : {}) })
       if (r?.error) return { ok: false, error: String(r.error) }
       return { ok: r?.ok !== false, reply: r?.reply, stopReason: r?.stopReason }
     } catch (e) {
@@ -671,6 +693,10 @@ export const hermesApi = {
   /** GET /api/ai/rag/models — RAG embed/reranker selection + probe-classified service lists. */
   async getRagModels(): Promise<any | null> {
     try { return await bridge().request('GET', '/api/ai/rag/models') } catch { return null }
+  },
+  /** GET /api/ai/rag/embedding-health — is every collection encoded by the model we query with? */
+  async getEmbeddingHealth(deep = false): Promise<any | null> {
+    try { return await bridge().request('GET', `/api/ai/rag/embedding-health${deep ? '?deep=1' : ''}`) } catch { return null }
   },
   /** PUT /api/ai/rag/models — set the embed/reranker model selection (loopback route + model). */
   async setRagModels(patch: { embedModel?: string; embedUrl?: string; rerankModel?: string; rerankUrl?: string }): Promise<{ ok: boolean; error?: string }> {

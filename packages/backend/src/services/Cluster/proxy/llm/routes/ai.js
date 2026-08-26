@@ -13,7 +13,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSy
 import { join, dirname, extname, resolve as pathResolve, basename } from 'path';
 import { spawn, execSync } from 'child_process';
 import { randomUUID, createHash } from 'crypto';
-import { computeKvFingerprint } from '../../kvcache/fingerprint.js';
+import { computeKvFingerprint, computeVllmKvFingerprint } from '../../kvcache/fingerprint.js';
 import multer from 'multer';
 import { fileURLToPath } from 'url';
 import { getClusterGpus, getGpuVramUsage, getAllGpuSpecs } from '../services/gpu-specs.js';
@@ -2307,6 +2307,72 @@ if out: print(json.dumps(out))
       // (services/Cluster/proxy/kvcache/) handles this backend directly, so no shim is provisioned.
       // kvShim stays null → the provisioning block below is inert. Teardown cleanup still removes any
       // pre-existing kvcache-proxy@ units.
+    } else if (/^1cat-vllm/.test(providerId)) {
+      // vLLM Optane KV offloading — wired here so it is AUTOMATIC and cannot depend on someone
+      // remembering to put four flags in a launch template. The capability shipped months ago
+      // (/opt/1cat-vllm/patches/optane_offloading.py, OptaneOffloadingSpec, index persistence
+      // included) but nothing ever launched with it, so it did nothing.
+      //
+      // Restricted to the 1cat-vllm fork on purpose: the patch lives in that fork's tree, and the
+      // plain `vllm` provider serves the embedding/reranker pooling models, which have no business
+      // offloading a KV cache.
+      //
+      // The directory is keyed by computeVllmKvFingerprint — model identity + TP + dtypes, and
+      // deliberately NOT the port, so a service that comes back on a different port after a reboot
+      // still finds its own blocks. TP is in the key because offloaded blocks are per-rank.
+      //
+      // ESCAPE HATCH: an explicit --kv-offloading-size in the template wins; we inject nothing.
+      // 🛑 DISABLED BY DEFAULT (2026-08-26). Injecting KV-offload flags into an arbitrary
+      // 1cat-vllm launch is NOT safe: our Qwen 3.5/3.8/3.6 models are HYBRID (GDN linear-attn
+      // + full attention), and external KV offload does not support hybrid models —
+      // upstream vllm-project/vllm#38230, PR #38261 (OPEN, ~261 files, NOT merged).
+      // Measured on ai-gpu 2026-08-26:
+      //   * TieringOffloadingSpec (disk/Optane) -> assert len(gpu_block_size)==1, tiering/spec.py:113
+      //   * with HMA auto-disabled -> unify_hybrid_kv_cache_specs() raises "failed to convert
+      //     the KV cache specs to one unified type" (GDN specs cannot be unified)
+      //   * vLLM 1.0.0 disables HMA unconditionally whenever --kv-transfer-config is set,
+      //     so the older engine can never serve a hybrid model with offload either.
+      // The previous unconditional injection was a LANDMINE: it emitted OptaneOffloadingSpec +
+      // PYTHONPATH, which cannot even import on 1.3.0, so the next AI-Lab relaunch of the 27B
+      // would have killed EngineCore at init.
+      // Only CPUOffloadingSpec (RAM, no disk tier) is verified working on a hybrid model, and
+      // only at TP1 so far — not yet validated at the TP4 production shape.
+      // Opt in deliberately with AILAB_VLLM_KV_OFFLOAD=1 once that is validated.
+      if (process.env.AILAB_VLLM_KV_OFFLOAD !== '1') {
+        console.log('[svc-launch] vLLM KV offload: DISABLED (hybrid models unsupported upstream; set AILAB_VLLM_KV_OFFLOAD=1 to override)');
+      } else if (/--kv-offloading-size[ =]/.test(finalCommand)) {
+        console.log('[svc-launch] vLLM KV offload: --kv-offloading-size already set; leaving launch untouched');
+      } else {
+        const gib = Number(process.env.AILAB_VLLM_KV_OFFLOAD_GIB || 64);
+        const { optaneDir, modelName, tp, fp } = computeVllmKvFingerprint(finalCommand);
+        // There is NO --kv-connector-extra-config flag in 1Cat-vLLM 1.0.0 OR 1.3.0 — verified
+        // against `vllm serve --help=all` on both envs (the flag only appears under --help=all,
+        // and this one is simply absent). The spec is selected through the
+        // kv_connector_extra_config FIELD nested inside --kv-transfer-config, which
+        // v1/kv_offload/factory.py reads for spec_name / spec_module_path.
+        //
+        // cpu_bytes_to_use is deliberately NOT set: config/vllm.py derives it from
+        // --kv-offloading-size and .update()s it over anything we pass, so supplying it is dead
+        // weight that can only ever disagree with the real buffer. Its docstring in
+        // optane_offloading.py still prescribes the old flag and is stale.
+        // `kv_connector` MUST be named explicitly: config/vllm.py resolves the connector class
+        // from this field to test SupportsHMA. Leave it null and the check cannot resolve it, so
+        // vLLM silently turns the Hybrid KV cache Manager OFF — which then hard-fails any hybrid
+        // model. Confirmed required by the upstream KV-offloading usage guide.
+        const payload = JSON.stringify({
+          kv_connector: 'OffloadingConnector',
+          kv_role: 'kv_both',
+          kv_connector_extra_config: { spec_name: 'CPUOffloadingSpec' },
+        });
+        // single-quoted for the shell; the JSON contains no single quotes
+        finalCommand = finalCommand.replace(/\s+$/, '')
+          + ` --kv-offloading-backend native --kv-offloading-size ${gib}`
+          + ` --kv-transfer-config '${payload}'`;
+        // No PYTHONPATH injection: CPUOffloadingSpec is built into vLLM. The old
+        // /opt/1cat-vllm/patches import is only needed by the retired custom OptaneOffloadingSpec,
+        // which cannot import on 1.3.0 at all.
+        console.log(`[svc-launch] vLLM Optane KV -> ${optaneDir} (model=${modelName} tp=${tp} fp=${fp}, ${gib}GiB)`);
+      }
     }
 
     // kcpps runtime NAS fallback: koboldcpp loads a base64 config whose model paths live INSIDE the

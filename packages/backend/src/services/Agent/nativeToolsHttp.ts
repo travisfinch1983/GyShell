@@ -28,6 +28,19 @@ const STATELESS: Record<string, (args: unknown, signal?: AbortSignal) => Promise
   web_fetch: runWebFetch,
 }
 
+/** Gateway names (`ailab-native__X`) of native tools that can NEVER execute over the gateway —
+ *  session-bound built-ins federated for enable/disable config only. A tool group serving an
+ *  external MCP client (a Hermes agent) must exclude them: tools/call answers with a refusal
+ *  string that the calling model reads as tool output. */
+export function nonGatewayExecutableNativeTools(): Set<string> {
+  return new Set(
+    (TOOLS_FOR_MODEL as OpenAiTool[])
+      .map((t) => t.function.name)
+      .filter((n) => !(n in STATELESS))
+      .map((n) => `ailab-native__${n}`),
+  )
+}
+
 export function createNativeToolsRouter(): express.Router {
   const router = express.Router()
   const json = express.json({ limit: '1mb' })

@@ -744,7 +744,7 @@ export class ResourceMonitorService {
       ['disks', 'df -P -k'],
       [
         'gpu',
-        'if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,utilization.memory,temperature.gpu --format=csv,noheader,nounits; fi',
+        'S=$(command -v nvidia-smi-cached || command -v nvidia-smi); if [ -n "$S" ]; then "$S" --query-gpu=name,utilization.gpu,memory.used,memory.total,utilization.memory,temperature.gpu --format=csv,noheader,nounits; fi',
       ],
       ['network', 'cat /proc/net/dev'],
       ['load', 'cat /proc/loadavg'],
@@ -772,7 +772,7 @@ export class ResourceMonitorService {
       ['diskApfs', 'diskutil apfs list -plist | plutil -convert json -o - -'],
       [
         'gpu',
-        'if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,utilization.memory,temperature.gpu --format=csv,noheader,nounits; fi',
+        'S=$(command -v nvidia-smi-cached || command -v nvidia-smi); if [ -n "$S" ]; then "$S" --query-gpu=name,utilization.gpu,memory.used,memory.total,utilization.memory,temperature.gpu --format=csv,noheader,nounits; fi',
       ],
       ['network', 'netstat -ibn'],
       ['load', 'sysctl -n vm.loadavg'],

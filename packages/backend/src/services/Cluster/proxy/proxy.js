@@ -2290,7 +2290,20 @@ export function createProxyRouter(sshService) {
     return listBackends(loadActiveServices().services, 'tts');
   }
 
-  /** Discover healthy proxlab-tts + proxlab-rvc instances, return paired pipelines. */
+  /**
+   * Discover healthy TTS instances, attaching an RVC instance to each ONLY when one
+   * is available. RVC IS AN OPTIONAL POST-PROCESSOR, not half of a mandatory pair:
+   * it runs only when a request supplies rvc_model, and processSentence already
+   * guards that with `if (rvcSvc && params.rvc_model)`. A null rvcSvc is therefore
+   * safe for every consumer.
+   *
+   * This used to be pipelineCount = Math.min(healthyTts, healthyRvc), which meant a
+   * dead RVC produced ZERO pipelines and took plain TTS down with it. On 2026-08-18
+   * the RVC launch scripts pointed at a non-existent /opt/rvc/server.py, all three
+   * RVC instances crash-looped, and every TTS request failed with
+   * "No healthy TTS+RVC pipelines available" while all three TTS backends were fine.
+   * TTS availability now depends on TTS alone.
+   */
   async function buildHealthyPipelines() {
     const allTts = findAllTtsPoolServices();
     const allRvc = findAllRvcServices();
@@ -2302,16 +2315,18 @@ export function createProxyRouter(sshService) {
 
     let healthyTts = ttsHealth.filter(h => h.healthy).map(h => h.svc);
     const healthyRvc = rvcHealth.filter(h => h.healthy).map(h => h.svc);
-    const pipelineCount = Math.min(healthyTts.length, healthyRvc.length);
 
-    const pipelines = [];
-    for (let i = 0; i < pipelineCount; i++) {
-      pipelines.push({ ttsSvc: healthyTts[i], rvcSvc: healthyRvc[i] });
-    }
+    // One lane per healthy TTS. RVC is attached round-robin so N TTS instances can
+    // share M RVC instances (any M >= 1), and is null when no RVC is up at all.
+    const pipelines = healthyTts.map((ttsSvc, i) => ({
+      ttsSvc,
+      rvcSvc: healthyRvc.length > 0 ? healthyRvc[i % healthyRvc.length] : null,
+    }));
 
     return {
       pipelines,
-      pipelineCount,
+      pipelineCount: pipelines.length,
+      rvcAvailable: healthyRvc.length > 0,
       ttsInstances: { total: allTts.length, healthy: healthyTts.length, services: allTts, healthResults: ttsHealth },
       rvcInstances: { total: allRvc.length, healthy: healthyRvc.length, services: allRvc, healthResults: rvcHealth },
     };
@@ -2661,10 +2676,13 @@ export function createProxyRouter(sshService) {
   // GET /multi-tts/status — Pipeline count, per-instance health, ready state
   router.get('/multi-tts/status', async (req, res) => {
     try {
-      const { pipelines, pipelineCount, ttsInstances, rvcInstances } = await buildHealthyPipelines();
+      const { pipelines, pipelineCount, rvcAvailable, ttsInstances, rvcInstances } = await buildHealthyPipelines();
       res.json({
-        ready: pipelineCount > 0,
+        // Readiness is a TTS question. RVC is optional post-processing, so a dead
+        // RVC must not make the whole surface report "not ready".
+        ready: ttsInstances.healthy > 0,
         pipelines: pipelineCount,
+        rvcAvailable,
         tts: {
           total: ttsInstances.total,
           healthy: ttsInstances.healthy,
@@ -2804,9 +2822,17 @@ export function createProxyRouter(sshService) {
     if (!body.input?.trim()) return res.status(400).json({ error: 'input is required' });
     if (!body.rvc_model) return res.status(400).json({ error: 'rvc_model is required' });
 
-    const { pipelines } = await buildHealthyPipelines();
+    const { pipelines, rvcAvailable } = await buildHealthyPipelines();
     if (pipelines.length === 0) {
-      return res.status(503).json({ error: 'No healthy TTS+RVC pipelines available' });
+      return res.status(503).json({ error: 'No healthy TTS backends available' });
+    }
+    // This endpoint is explicitly TTS+RVC (rvc_model is required above), so an
+    // absent RVC is a real failure HERE -- but say which half is missing.
+    if (!rvcAvailable) {
+      return res.status(503).json({
+        error: 'rvc_model was requested but no healthy RVC backend is available. '
+             + 'Use /tts/v1/audio/speech (omit rvc_model) for plain TTS.',
+      });
     }
 
     const params = {

@@ -30,6 +30,15 @@ $sidebar-expanded: 200px;
   width: 100%;
   flex: 1;
   padding: 0 6px;
+  /* Scroll the TAB LIST when the viewport is short (phone, small windows) instead
+     of pushing the Settings footer off-screen. min-height: 0 is load-bearing —
+     without it a flex child refuses to shrink below its content height and the
+     overflow never engages. The footer (.bottom) stays pinned and reachable. */
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  &::-webkit-scrollbar { width: 4px; }
+  &::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 }
 
 .tab {
@@ -93,6 +102,7 @@ $sidebar-expanded: 200px;
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex-shrink: 0; /* the footer never gets squeezed out — the tab list scrolls instead */
 }
 
 /* ── edit mode (keep expanded so labels + drag are usable) ── */

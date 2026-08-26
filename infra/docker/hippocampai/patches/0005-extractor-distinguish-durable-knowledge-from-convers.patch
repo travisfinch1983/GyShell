@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: claude <claude@deeveeyant.com>
+Date: Tue, 18 Aug 2026 21:30:00 +0000
+Subject: [PATCH 5/5] extractor: distinguish durable knowledge from conversation
+ process
+
+The extraction prompt's only guidance was "useful to remember long-term", so a
+single run stored a DISPROVEN hypothesis and a transient debugging state as
+importance 6-7 facts. Both then get injected into every future conversation as
+though they were true, which is strictly worse than having no memory at all.
+
+Adds explicit exclusions for hypotheses, superseded claims, in-flight state and
+discussion mechanics; requires negation to be preserved verbatim (a dropped
+negation inverts the fact and reads perfectly plausible); and states that an
+empty array is a correct result.
+---
+--- a/src/hippocampai/pipeline/extractor.py
++++ b/src/hippocampai/pipeline/extractor.py
+@@ -40,11 +40,38 @@
+     LLM_PROMPT = """You are a memory extraction system. Extract important, actionable memories from the conversation below.
+ 
+ RULES:
+-1. Extract facts, preferences, goals, and context that would be useful to remember long-term
+-2. Rephrase user statements into complete, context-aware memories
++1. Extract only DURABLE knowledge — things still true next week. Facts, preferences,
++   goals, decisions, and settled outcomes.
++2. Rephrase into complete, self-contained sentences. A memory must make sense on its
++   own months later, with no access to this conversation.
+ 3. Assign appropriate types: "preference", "fact", "goal", "habit", "event", "context"
+ 4. Rate importance 0-10 (0=trivial, 10=critical)
+ 5. Return ONLY valid JSON array, no markdown, no explanations
++
++NEVER EXTRACT (these are conversation PROCESS, not knowledge):
++6. Hypotheses, guesses, suspicions, or anything phrased as "may/might/could/possibly
++   be" — store a theory only once it has been CONFIRMED, and store it as the
++   confirmed fact.
++7. Anything the conversation later contradicts or disproves. If a claim is corrected
++   later in the text, extract the CORRECTED version and discard the original.
++8. Transient state: what is currently broken, in progress, pending, or being
++   investigated. Extract the durable outcome instead, and nothing at all if the work
++   has not concluded.
++9. The mechanics of the discussion itself — what was tried, tested, ruled out, or
++   what someone is about to do next.
++10. PRESERVE NEGATION EXACTLY. "X does not run on Y" must never become "X runs on Y".
++    If a statement is negated, conditional, or hedged, keep that or drop it entirely.
++11. If nothing in the conversation is durable, return an empty array. An empty result
++    is correct and expected — a wrong memory is far worse than a missing one, because
++    it gets injected into every future conversation as if it were true.
++
++EXAMPLES OF WHAT NOT TO EXTRACT:
++User: "maybe the vectors were never re-embedded, that could explain it"
++  -> nothing (a hypothesis)
++User: "four stale entries are still showing up while I debug this"
++  -> nothing (transient state)
++User: "support services stay OFF the V100s"
++  -> {"text": "Support services do NOT run on the V100s", ...}  (negation preserved)
+ 
+ EXAMPLES:
+ User: "I love coffee" → {"text": "User loves coffee", "type": "preference", "importance": 6}
+-- 
+2.43.0
+

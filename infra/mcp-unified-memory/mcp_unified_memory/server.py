@@ -134,7 +134,7 @@ HIPPO_RECALL_TIMEOUT = float(os.environ.get("HIPPO_RECALL_TIMEOUT", "6.0"))
 # via its native content API — NOT by deliberate remember() calls (atomic facts
 # would be noise to it). Disabled unless an API key is configured AND it health-
 # checks, so an unreachable/unconfigured OpenViking is a safe no-op for recall.
-OPENVIKING_URL = os.environ.get("OPENVIKING_URL", "http://10.0.0.156:1933")
+OPENVIKING_URL = os.environ.get("OPENVIKING_URL", "http://127.0.0.1:1933")
 OPENVIKING_API_KEY = os.environ.get("OPENVIKING_API_KEY", "")
 OPENVIKING_ACCOUNT = os.environ.get("OPENVIKING_ACCOUNT", "")
 

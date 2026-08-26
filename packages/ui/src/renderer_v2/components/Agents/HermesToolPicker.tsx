@@ -84,9 +84,38 @@ export const HermesToolPicker: React.FC<{ agentId: string }> = ({ agentId }) => 
     })
   }, [agentId])
 
-  const totalTools = servers.reduce((n, s) => n + s.toolCount, 0)
+  // #86: session-bound AI-Lab built-ins are federated into the gateway for config only and can
+  // NEVER execute for a Hermes agent (tools/call answers with a refusal the model reads as
+  // output). Don't advertise them here at all.
+  const hermesServers = React.useMemo(() => servers
+    .map((s) => {
+      const tools = s.tools.filter((t) => t.gatewayExecutable !== false)
+      return { ...s, tools, toolCount: tools.length, enabledCount: tools.filter((t) => t.enabled).length }
+    })
+    .filter((s) => s.tools.length > 0), [servers])
+  const nonExecutable = React.useMemo(
+    () => new Set(servers.flatMap((s) => s.tools.filter((t) => t.gatewayExecutable === false).map((t) => t.name))),
+    [servers])
+
+  // Prune never-executable names out of the WORKING selection once the tree is known. The
+  // baseline keeps the raw group, so the pruning registers as an unsaved change — saving then
+  // genuinely cleans the agent's group (the backend strips them too, and reports it).
+  const [prunedCount, setPrunedCount] = useState(0)
+  useEffect(() => {
+    if (!loaded || nonExecutable.size === 0) return
+    setSelected((prev) => {
+      const dead = [...prev].filter((n) => nonExecutable.has(n))
+      if (!dead.length) return prev
+      const next = new Set(prev)
+      for (const n of dead) next.delete(n)
+      setPrunedCount((c) => c + dead.length)
+      return next
+    })
+  }, [loaded, nonExecutable])
+
+  const totalTools = hermesServers.reduce((n, s) => n + s.toolCount, 0)
   const dirty = selected.size !== baseline.size || [...selected].some((n) => !baseline.has(n))
-  const conflicts = servers.flatMap((s) => s.tools.filter((t) => selected.has(t.name) && !t.enabled))
+  const conflicts = hermesServers.flatMap((s) => s.tools.filter((t) => selected.has(t.name) && !t.enabled))
 
   const toggleTool = (name: string) => {
     setSelected((prev) => {
@@ -120,7 +149,9 @@ export const HermesToolPicker: React.FC<{ agentId: string }> = ({ agentId }) => 
     setScoped(true)
     setBaseline(new Set(selected))
     setEndpoint(r.endpoint ?? null)
-    setStatus(`Scoped ✓ — ${r.toolCount ?? selected.size} tools${r.endpoint ? ` · ${r.endpoint}` : ''} · applies on the agent's next session`)
+    const removedNote = r.removedNonExecutable?.length ? ` · removed ${r.removedNonExecutable.length} non-executable AI-Lab-internal tool(s)` : ''
+    setStatus(`Scoped ✓ — ${r.toolCount ?? selected.size} tools${r.endpoint ? ` · ${r.endpoint}` : ''}${removedNote} · applies on the agent's next session`)
+    setPrunedCount(0)
   }
 
   const reset = async () => {
@@ -182,6 +213,13 @@ export const HermesToolPicker: React.FC<{ agentId: string }> = ({ agentId }) => 
       {err && <div className={styles.formMsg} style={{ color: 'var(--danger, #f87171)' }}>{err}</div>}
       {treeErr && <div className={styles.formMsg} style={{ color: 'var(--danger, #f87171)' }}>{treeErr}</div>}
       {status && <div className={styles.formMsg} style={{ color: 'var(--accent)' }}>{status}</div>}
+      {prunedCount > 0 && (
+        <div className={styles.formMsg} style={{ color: 'var(--warning, #fbbf24)' }}>
+          {prunedCount} tool{prunedCount === 1 ? '' : 's'} in this agent's group {prunedCount === 1 ? 'is an' : 'are'} AI-Lab-internal
+          built-in{prunedCount === 1 ? '' : 's'} that can never execute for Hermes agents — hidden from the list; Save to remove
+          {prunedCount === 1 ? ' it' : ' them'} from the group.
+        </div>
+      )}
 
       {health && !health.healthy && (
         <div className={styles.formMsg} style={{ color: 'var(--warning, #fbbf24)', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -217,7 +255,7 @@ export const HermesToolPicker: React.FC<{ agentId: string }> = ({ agentId }) => 
       )}
 
       <McpToolTree
-        servers={servers}
+        servers={hermesServers}
         dimDisabled={false}
         emptyLabel={treeLoading ? 'Loading the gateway tool tree…' : 'No servers registered on the gateway.'}
         serverBadge={(s) => {

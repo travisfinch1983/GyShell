@@ -79,8 +79,14 @@ export class FleetFeedService {
   /** Paging here is a TAIL window: omit `limit` for the whole thread, or pass limit and walk
    *  `before_seq` backwards. Receipts ride along by default — losing them would be a silent
    *  downgrade from the delivery observability the old ConversationBus tab had. */
-  readThread(threadId: string, opts: { limit?: number; before_seq?: number; receipts?: boolean } = {}) {
+  readThread(threadId: string, opts: { limit?: number; before_seq?: number; receipts?: boolean;
+                                       viewer?: string } = {}) {
     const p = new URLSearchParams()
+    // fleetd is FAIL-CLOSED on private threads: reading one requires naming a viewer who
+    // participates. The UI acts as the canonical 'user' identity, so it sees public threads
+    // plus the ones Travis is actually in — deliberately NOT everything. There is no operator
+    // override anywhere in this system, and adding one here would be exactly that.
+    p.set('viewer', opts.viewer ?? 'user')
     if (opts.limit) p.set('limit', String(opts.limit))
     if (opts.before_seq !== undefined) p.set('before_seq', String(opts.before_seq))
     if (opts.receipts === false) p.set('receipts', '0')

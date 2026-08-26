@@ -1,0 +1,141 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: claude <claude@deeveeyant.com>
+Date: Tue, 18 Aug 2026 20:00:00 +0000
+Subject: [PATCH 4/4] extractor: never store regex-heuristic output implicitly
+
+MemoryExtractor runs mode="hybrid", which silently substitutes a regex
+heuristic whenever the LLM returns nothing. That heuristic lowercases the whole
+conversation and captures "everything after a trigger word to end of line", so
+what it stores is lowercase mid-sentence fragments rather than memories:
+
+  source : "do you want me to start with the first character while we troubleshoot"
+  stored : "me to start with the first character while we troubleshoot"
+
+Patch 0002 fixed the str.format() KeyError that made this fire on EVERY
+extraction; the damage was invisible because the fallback is silent. Several
+agent namespaces were left full of fragments (agent:mari held 29, all lowercase,
+dated before the 0002 fix).
+
+Changes:
+- extract(): the heuristic is OPT-IN ONLY (mode="heuristic"). hybrid/llm now
+  return [] and log when the LLM yields nothing. Also fixes mode="llm" with no
+  LLM configured, which upstream let fall through into the hybrid branch and
+  therefore into the heuristic.
+- _extract_llm(): all four fallbacks (no JSON array, non-list JSON,
+  JSONDecodeError, generic exception) log at ERROR and return [] instead of
+  quietly emitting regex fragments.
+- HEURISTIC_PATTERNS[CONTEXT]: anchored to i/user like every other group, so a
+  bare "want" mid-sentence can no longer swallow the rest of the line.
+
+Storing nothing is strictly better than storing garbage: a missing memory is
+recoverable, a poisoned namespace gets injected into every future conversation.
+---
+--- a/src/hippocampai/pipeline/extractor.py
++++ b/src/hippocampai/pipeline/extractor.py
+@@ -29,8 +29,11 @@
+             r"(?:my|user's) (?:name is|job is|work is)\s+(.+)",
+         ],
+         MemoryType.CONTEXT: [
+-            r"(?:looking for|searching for|need|want)\s+(.+)",
+-            r"(?:interested in|curious about)\s+(.+)",
++            # Anchored to i/user like every other group. Unanchored, a bare
++            # "want" ANYWHERE (e.g. "do you want me to...") matched and captured
++            # the rest of the line as a "memory".
++            r"(?:i|user) (?:am looking for|is looking for|need|want)s?\s+(.+)",
++            r"(?:i|user) (?:am interested in|is interested in|am curious about)\s+(.+)",
+         ],
+     }
+ 
+@@ -62,17 +65,31 @@
+         self, conversation: str, user_id: str, session_id: Optional[str] = None
+     ) -> list[Memory]:
+         """Extract memories from conversation."""
+-        if self.mode == "llm" and self.llm:
+-            return self._extract_llm(conversation, user_id, session_id)
++        # The regex heuristic is now OPT-IN ONLY. It lowercases the conversation
++        # and captures "everything after a trigger word to end of line", so its
++        # output is lowercase mid-sentence fragments, not memories. Storing that
++        # silently whenever the LLM hiccups poisoned several agent namespaces
++        # (see patch 0002 for the bug that made it fire on every extraction).
++        # Storing NOTHING is strictly better than storing garbage.
+         if self.mode == "heuristic":
+             return self._extract_heuristic(conversation, user_id, session_id)
+-        # hybrid
+-        heuristic_mems = self._extract_heuristic(conversation, user_id, session_id)
+-        if self.llm:
+-            llm_mems = self._extract_llm(conversation, user_id, session_id)
+-            # Merge, prefer LLM
+-            return llm_mems if llm_mems else heuristic_mems
+-        return heuristic_mems
++        if not self.llm:
++            # NB: upstream let mode="llm" with llm=None fall through to hybrid,
++            # i.e. straight to the heuristic. Refuse instead.
++            logger.error(
++                "MemoryExtractor mode=%r but no LLM is configured -- refusing to "
++                "store regex-heuristic output. Extraction is a NO-OP until an LLM "
++                "is wired. Set mode='heuristic' explicitly if you really want it.",
++                self.mode,
++            )
++            return []
++        memories = self._extract_llm(conversation, user_id, session_id)
++        if not memories:
++            logger.warning(
++                "LLM extraction produced no memories; NOT falling back to the regex "
++                "heuristic. Nothing stored for this conversation."
++            )
++        return memories
+ 
+     def _extract_heuristic(
+         self, conversation: str, user_id: str, session_id: Optional[str] = None
+@@ -127,15 +144,22 @@
+             # Robust JSON extraction
+             json_str = self._extract_json_array(response)
+             if not json_str:
+-                logger.warning("No valid JSON array found in LLM response")
+-                return self._extract_heuristic(conversation, user_id, session_id)
++                logger.error(
++                    "LLM extraction: no JSON array in response (%d chars). Storing "
++                    "NOTHING rather than regex fragments. Response head: %r",
++                    len(response or ""), (response or "")[:200],
++                )
++                return []
+ 
+             data = json.loads(json_str)
+ 
+             # Validate it's a list
+             if not isinstance(data, list):
+-                logger.warning(f"Expected JSON array, got {type(data)}")
+-                return self._extract_heuristic(conversation, user_id, session_id)
++                logger.error(
++                    "LLM extraction: expected a JSON array, got %s. Storing NOTHING "
++                    "rather than regex fragments.", type(data),
++                )
++                return []
+ 
+             memories = []
+             for item in data:
+@@ -173,11 +197,17 @@
+             return memories
+ 
+         except json.JSONDecodeError as e:
+-            logger.warning(f"JSON decode error: {e}, falling back to heuristic")
+-            return self._extract_heuristic(conversation, user_id, session_id)
++            logger.error(
++                "LLM extraction: JSON decode error: %s. Storing NOTHING rather than "
++                "regex fragments.", e,
++            )
++            return []
+         except Exception as e:
+-            logger.warning(f"LLM extraction failed: {e}, falling back to heuristic")
+-            return self._extract_heuristic(conversation, user_id, session_id)
++            logger.error(
++                "LLM extraction failed: %s. Storing NOTHING rather than regex "
++                "fragments.", e,
++            )
++            return []
+ 
+     def _extract_json_array(self, text: str) -> Optional[str]:
+         """Extract JSON array from text, handling markdown and extra content.
+-- 
+2.43.0
+

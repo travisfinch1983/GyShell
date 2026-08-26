@@ -1,6 +1,6 @@
 import React from 'react'
 import { observer } from 'mobx-react-lite'
-import { Server, Square } from 'lucide-react'
+import { Server, Settings, Square } from 'lucide-react'
 import type { AppStore } from '../../stores/AppStore'
 import { aiServicesStore } from '../../stores/AiServicesStore'
 import { isLinux } from '../../platform/platform'
@@ -12,7 +12,7 @@ export const TopBar: React.FC<{
   store: AppStore
   servicesOpen: boolean
   onServicesToggle: () => void
-}> = observer(({ servicesOpen, onServicesToggle }) => {
+}> = observer(({ store, servicesOpen, onServicesToggle }) => {
   const linux = isLinux()
 
   React.useEffect(() => {
@@ -31,6 +31,7 @@ export const TopBar: React.FC<{
       {/* Running-services toggle — centered in the header so it's an easy target
           (it used to live in the collapsed model sidebar, too small + easy to
           mis-click into the chat overlay). */}
+      <div className="topbar-center">
       <button
         className={`topbar-services-btn${servicesOpen ? ' active' : ''}`}
         onClick={onServicesToggle}
@@ -40,6 +41,19 @@ export const TopBar: React.FC<{
         <span>Services</span>
         {serviceCount > 0 && <span className="topbar-services-badge">{serviceCount}</span>}
       </button>
+
+      {/* Settings in the header too — the sidebar-bottom button is unreachable on
+          mobile (viewport cuts the sidebar before its footer), so the phone had NO
+          way into Settings at all. Same overlay, second door. */}
+      <button
+        className="topbar-services-btn"
+        onClick={() => store.toggleSettings()}
+        title="Open settings"
+      >
+        <Settings size={14} strokeWidth={2} />
+        <span>Settings</span>
+      </button>
+      </div>
 
       {linux ? (
         <div className="linux-wc">

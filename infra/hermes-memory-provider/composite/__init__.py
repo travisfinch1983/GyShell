@@ -9,7 +9,7 @@ merging them through the lab's existing reranker for the actual injection.
 Lanes (loaded via the normal plugin loader, so each keeps its own config):
   1. hippocampai — our user plugin (plugins/hippocampai/), HippocampAI REST.
   2. openviking  — Hermes' BUNDLED OpenViking provider, pointed at the lab's
-     instance via OPENVIKING_ENDPOINT (default http://10.0.0.156:1933).
+     instance via OPENVIKING_ENDPOINT (default http://127.0.0.1:1933).
 
 Compare log: $HERMES_HOME/memory-compare.jsonl — one line per recalled turn:
   {ts, session_id, query, lanes: {hippocampai: "...", openviking: "..."},
@@ -46,7 +46,7 @@ from agent.memory_provider import MemoryProvider
 logger = logging.getLogger(__name__)
 
 _LANES = ("hippocampai", "openviking")
-_DEFAULT_OV_ENDPOINT = os.environ.get("OPENVIKING_ENDPOINT", "http://10.0.0.156:1933")
+_DEFAULT_OV_ENDPOINT = os.environ.get("OPENVIKING_ENDPOINT", "http://127.0.0.1:1933")
 _RERANK_URL = os.environ.get(
     "MEMORY_RERANK_URL", "http://10.0.0.219:17890/api/proxy/rerank/v2/rerank")
 _PREFETCH_DEADLINE_SECS = float(os.environ.get("MEMORY_PREFETCH_DEADLINE", "4.0") or 4.0)

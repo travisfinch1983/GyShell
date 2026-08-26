@@ -157,7 +157,12 @@ do_update() {
 
     cd "$INSTALL_DIR"
     echo "Pulling latest changes..."
-    git pull 2>&1
+    if ! git pull --ff-only 2>&1; then
+        echo "ERROR: git pull --ff-only failed - divergent/dirty tree or network. NOT updating."
+        echo "PROXLAB_STATUS=error"
+        echo "PROXLAB_VERSION=$OLD_VER"
+        return 1
+    fi
 
     echo "Updating dependencies..."
     conda run -n "$CONDA_ENV" pip install -r requirements.txt 2>&1
@@ -165,7 +170,7 @@ do_update() {
     # Update ComfyUI Manager if installed
     if [ -d "$INSTALL_DIR/custom_nodes/ComfyUI-Manager/.git" ]; then
         echo "Updating ComfyUI Manager..."
-        cd "$INSTALL_DIR/custom_nodes/ComfyUI-Manager" && git pull 2>&1
+        cd "$INSTALL_DIR/custom_nodes/ComfyUI-Manager" && git pull --ff-only 2>&1
         if [ -f "requirements.txt" ]; then
             conda run -n "$CONDA_ENV" pip install -r requirements.txt 2>&1
         fi

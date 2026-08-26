@@ -15,7 +15,14 @@ import './mcpToolTree.scss'
 
 function bridge(): any { return (window as any).gyshell?.cluster }
 
-export interface McpTreeTool { name: string; shortName: string; enabled: boolean; description: string }
+export interface McpTreeTool {
+  name: string
+  shortName: string
+  enabled: boolean
+  description: string
+  /** false = federated for config only; a tools/call through the gateway refuses it (#86). */
+  gatewayExecutable?: boolean
+}
 export interface McpTreeServer {
   name: string
   description: string

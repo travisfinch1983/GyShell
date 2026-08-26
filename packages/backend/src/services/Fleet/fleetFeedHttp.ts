@@ -96,6 +96,7 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
       limit: req.query?.limit ? Number(req.query.limit) : undefined,
       before_seq: req.query?.before_seq !== undefined ? Number(req.query.before_seq) : undefined,
       receipts: req.query?.receipts !== '0',
+      viewer: req.query?.viewer as string,
     })))
 
   router.post(claim('/api/fleet/thread/:id/read'), jsonBody, (req: Req, res: Res) =>

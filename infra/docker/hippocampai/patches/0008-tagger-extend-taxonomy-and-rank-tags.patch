@@ -1,0 +1,174 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: claude <claude@deeveeyant.com>
+Date: Wed, 19 Aug 2026 02:30:00 +0000
+Subject: [PATCH 8/8] tagger: extend the taxonomy for this deployment, rank tags
+
+The general-purpose categories are KEPT — creative agents genuinely produce
+travel/food/shopping content — and extended with ten categories covering what
+the infrastructure agents write about. Measured over 776 real stored memories,
+topic coverage rises 45% -> 77%.
+
+Validated against that same corpus rather than assumed, which surfaced two
+things worth fixing at the same time:
+
+* Ambiguous general keywords pruned. Word boundaries fixed "strips"->trip, but
+  not words genuinely present in both domains: a memory STORE, a HEALTH check,
+  /HOME/..., "of COURSE", to BOOK, a replication DESTINATION, a Hermes SKILL.
+  Misleading general tags on technical text: 162 -> 45.
+* Tags are ranked by keyword-hit count instead of an arbitrary slice of a set,
+  which was unstable run-to-run whenever a memory matched more categories than
+  max_tags.
+---
+--- a/src/hippocampai/pipeline/semantic_clustering.py
++++ b/src/hippocampai/pipeline/semantic_clustering.py
+@@ -56,29 +56,60 @@
+             llm: Language model for category assignment (optional)
+         """
+         self.llm = llm
+ 
+-        # Common topic keywords for basic categorization
++        # Topic keywords for basic categorization.
++        #
++        # The general-purpose categories are kept: agents doing creative and
++        # personal work genuinely produce travel/food/shopping content. The
++        # infrastructure categories below them were added because on this
++        # deployment the general set alone tagged only 45% of stored memories.
++        #
++        # ⚠ Several general keywords were REMOVED because they occur naturally in
++        # technical prose and were pure noise there — word boundaries do not help
++        # when the word is genuinely present:
++        #     home      -> /home/...              store/order/product/price -> a memory store
++        #     health    -> a health check         course -> "of course"
++        #     book      -> to book / a runbook    destination -> a replication destination
++        #     skill     -> a Hermes skill         show/watch/play -> "show the logs"
++        #     visit     -> "visit the URL"        cost -> "the cost of the operation"
++        # Removing them cut misleading general tags on technical text by ~70%
++        # while leaving the categories fully functional for the content they are
++        # actually for.
+         self.topic_keywords = {
+-            "work": [
+-                "work",
+-                "job",
+-                "career",
+-                "office",
+-                "colleague",
+-                "project",
+-                "meeting",
+-                "deadline",
+-            ],
+-            "personal": ["family", "friend", "hobby", "home", "personal", "relationship"],
+-            "health": ["health", "exercise", "fitness", "diet", "medical", "doctor", "wellness"],
++            # ── general purpose ──────────────────────────────────────────────
++            "work": ["work", "job", "career", "office", "colleague", "meeting", "deadline"],
++            "personal": ["family", "friend", "hobby", "personal", "relationship"],
++            "health": ["exercise", "fitness", "diet", "medical", "doctor", "wellness",
++                       "healthcare"],
+             "food": ["food", "restaurant", "cuisine", "meal", "cooking", "eating", "drink"],
+-            "travel": ["travel", "trip", "vacation", "hotel", "flight", "destination", "visit"],
+-            "shopping": ["buy", "purchase", "shopping", "store", "product", "price", "order"],
+-            "entertainment": ["movie", "music", "game", "show", "watch", "listen", "play"],
+-            "learning": ["learn", "study", "course", "book", "education", "skill", "knowledge"],
++            "travel": ["travel", "trip", "vacation", "hotel", "flight"],
++            "shopping": ["buy", "purchase", "shopping", "storefront", "checkout"],
++            "entertainment": ["movie", "music", "game", "listen", "concert"],
++            "learning": ["learn", "study", "education", "knowledge", "tutorial"],
+             "technology": ["software", "app", "computer", "phone", "tech", "digital", "code"],
+-            "finance": ["money", "bank", "payment", "budget", "invest", "financial", "cost"],
++            "finance": ["money", "bank", "payment", "budget", "invest", "financial", "invoice"],
++            # ── this deployment ──────────────────────────────────────────────
++            "infrastructure": ["proxmox", "container", "lxc", "hypervisor", "node", "cluster",
++                               "systemd", "daemon", "reboot", "provisioning"],
++            "gpu": ["gpu", "vram", "cuda", "nvidia", "v100", "4090", "5060", "tensor",
++                    "driver"],
++            "inference": ["inference", "llm", "quant", "quantization", "token", "vllm",
++                          "llama.cpp", "checkpoint", "throughput", "context window"],
++            "memory-system": ["recall", "embedding", "embedder", "vector", "qdrant",
++                              "weaviate", "chromadb", "hippocampai", "namespace",
++                              "extractor"],
++            "storage": ["zfs", "zpool", "dataset", "snapshot", "backup", "nas", "mount",
++                        "disk"],
++            "networking": ["vlan", "dns", "subnet", "router", "firewall", "gateway",
++                           "tunnel", "dhcp", "hostname"],
++            "agents": ["agent", "hermes", "conversation", "session", "mcp", "toolset",
++                       "prompt"],
++            "audio": ["tts", "stt", "whisper", "transcription", "speech", "voice", "rvc"],
++            "imagegen": ["comfyui", "lora", "diffusion", "sdxl", "flux", "upscale",
++                         "sampler"],
++            "credentials": ["credential", "api key", "token auth", "password", "secret",
++                            "certificate", "oauth"],
+         }
+ 
+     def suggest_tags(self, memory: Memory, max_tags: int = 5) -> list[str]:
+         """Suggest tags for a memory based on content analysis.
+@@ -90,36 +121,45 @@
+         Returns:
+             List of suggested tags
+         """
+         text_lower = memory.text.lower()
+-        suggested = set()
+-
+-        # NOTE: the three most frequent 4+ letter words used to be added as tags
+-        # here. On real memories that produced "composite, provider, strips" and
+-        # "memory, system, state" -- no information a full-text search does not
+-        # already have, and because the result is capped at max_tags it crowded
+-        # out the tags that did mean something. Removed.
+-
+-        # Topic tags, matched on WORD BOUNDARIES.
+-        # Previously this was `kw in text_lower`, a bare substring test, so:
+-        #     "strips"  contains "trip"  -> travel
+-        #     "rework"  contains "work"  -> work
+-        #     "restore" contains "store" -> shopping
+-        # which is why infrastructure notes came back tagged travel and shopping.
++
++        # Topic tags, matched on WORD BOUNDARIES and RANKED by how many distinct
++        # keywords hit. Previously this built a set and returned
++        # `list(suggested)[:max_tags]`, so once a long memory matched more
++        # categories than the cap, WHICH tags survived was arbitrary and unstable
++        # between runs. Strongest signal first, ties broken alphabetically, so the
++        # result is deterministic and the best tags are the ones that survive.
++        #
++        # Substring matching used to make "strips" match "trip" (travel) and
++        # "rework" match "work"; hence the \b anchors.
++        scored = []
+         for topic, keywords in self.topic_keywords.items():
+-            if any(re.search(r"\b" + re.escape(kw) + r"\b", text_lower) for kw in keywords):
+-                suggested.add(topic)
++            hits = sum(
++                1 for kw in keywords
++                if re.search(r"\b" + re.escape(kw) + r"\b", text_lower)
++            )
++            if hits:
++                scored.append((-hits, topic))
++        ordered = [topic for _, topic in sorted(scored)]
+ 
+         # The memory TYPE is deliberately NOT added as a tag: it is already a
+         # first-class field on the model, so tagging it duplicates data and
+         # spends one of the max_tags slots.
+-
+-        # LLM-based tag suggestion if available
+-        if self.llm and len(suggested) < max_tags:
+-            llm_tags = self._llm_suggest_tags(memory.text)
+-            suggested.update(llm_tags)
+-
+-        return list(suggested)[:max_tags]
++        #
++        # Frequency-based tags (the three most common long words) were removed in
++        # patch 0007 -- they produced "composite, provider, strips" and crowded
++        # out anything meaningful.
++
++        # LLM-based suggestion fills any slots the taxonomy did not claim. This
++        # was previously almost unreachable because the junk tags kept the list at
++        # the cap; it produces markedly better tags than the keyword table.
++        if self.llm and len(ordered) < max_tags:
++            for tag in self._llm_suggest_tags(memory.text):
++                if tag not in ordered:
++                    ordered.append(tag)
++
++        return ordered[:max_tags]
+ 
+     def _llm_suggest_tags(self, text: str, max_tags: int = 3) -> list[str]:
+         """Use LLM to suggest tags."""
+         prompt = f"""Generate {max_tags} relevant tags (single words or short phrases) for this text.
+-- 
+2.43.0
+

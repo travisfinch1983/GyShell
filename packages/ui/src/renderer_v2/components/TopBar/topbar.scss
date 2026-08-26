@@ -63,10 +63,17 @@
 
 
 
-.topbar-services-btn {
+/* Centered header button group — was a single absolutely-centered button; the
+   group wrapper keeps the centering while allowing Services + Settings side by side. */
+.topbar-center {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.topbar-services-btn {
   -webkit-app-region: no-drag;
   display: inline-flex;
   align-items: center;

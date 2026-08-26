@@ -8,6 +8,7 @@ import { PROVIDER_SERVICE_CAPS } from '@gyshell/shared'
 import { resolveModelCapabilities } from '../Cluster/proxy/model-capabilities.js'
 import { clusterSettingsService } from '../Cluster/ClusterSettingsService'
 import { loadToolRegistry, resolveSelection, unknownToolsError, readToolGroup, writeToolGroup } from '../mcp/toolGroups.js'
+import { nonGatewayExecutableNativeTools } from '../Agent/nativeToolsHttp.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -399,6 +400,168 @@ export class HermesManagementService {
     ].join('\n')
     const scriptB64 = Buffer.from(script, 'utf8').toString('base64')
     await this.ssh(`printf %s ${shq(scriptB64)} | base64 -d | python3 - ${shq(`${home}/config.yaml`)} ${shq(key)} ${shq(ebB64)}`)
+  }
+
+
+  /** Hermes-NATIVE TTS (gateway channels: Telegram etc.) — backed by the profile's
+   *  config.yaml `tts:` + `voice.auto_tts`, deliberately OUTSIDE the agent spec so the
+   *  applySpec auxiliary reset can never clear it BY CONSTRUCTION. Fully independent of
+   *  spec.tts (the AI-Lab chat voice). */
+  async getHermesTts(agentId: string): Promise<{
+    provider: string; voice: string; model: string; baseUrl: string; speed: number
+    autoTts: boolean; voices: string[]; voicesError?: string
+  }> {
+    const home = this.profileHome(agentId)
+    const script = [
+      'import sys, json, yaml',
+      'try:',
+      '    with open(sys.argv[1]) as f: cfg = yaml.safe_load(f) or {}',
+      'except FileNotFoundError:',
+      '    cfg = {}',
+      'tts = cfg.get("tts") or {}',
+      'oa = tts.get("openai") or {}',
+      'vc = cfg.get("voice") or {}',
+      'print(json.dumps({"provider": str(tts.get("provider") or ""), "voice": str(oa.get("voice") or ""),',
+      '  "model": str(oa.get("model") or "chatterbox"), "baseUrl": str(oa.get("base_url") or ""),',
+      '  "speed": float(oa.get("speed") or 1.0), "autoTts": bool(vc.get("auto_tts", False))}))',
+    ].join('\n')
+    const scriptB64 = Buffer.from(script, 'utf8').toString('base64')
+    const out = await this.ssh(`printf %s ${shq(scriptB64)} | base64 -d | python3 - ${shq(`${home}/config.yaml`)}`)
+    const cfg = JSON.parse(out.trim()) as { provider: string; voice: string; model: string; baseUrl: string; speed: number; autoTts: boolean }
+    const { voices, voicesError } = await this.fetchTtsVoices(cfg.baseUrl)
+    return { ...cfg, voices, ...(voicesError ? { voicesError } : {}) }
+  }
+
+  /** Live voice ids from the OpenAI-compatible TTS service the agent points at. */
+  private async fetchTtsVoices(baseUrl: string): Promise<{ voices: string[]; voicesError?: string }> {
+    const origin = (baseUrl || '').replace(/\/+$/, '').replace(/\/v1$/, '')
+    if (!origin) return { voices: [], voicesError: 'base_url not set' }
+    try {
+      const r = await fetch(`${origin}/v1/voices`, { signal: AbortSignal.timeout(6000) })
+      if (!r.ok) return { voices: [], voicesError: `voice list HTTP ${r.status}` }
+      const d = (await r.json()) as { voices?: Array<{ id?: string }> }
+      return { voices: (d.voices ?? []).map((v) => String(v.id ?? '')).filter(Boolean) }
+    } catch (e) {
+      return { voices: [], voicesError: `voice list unreachable: ${(e as Error).message}` }
+    }
+  }
+
+  /** Synthesize a short phrase through the profile's EXACT Hermes TTS config (same code path
+   *  the gateway uses) and return the audio — the honest "will Telegram sound right" test,
+   *  minus only the delivery leg. */
+  async testHermesTts(agentId: string, text?: string): Promise<{ audioB64: string; mime: string; bytes: number }> {
+    const home = this.profileHome(agentId)
+    // 500 chars: enough to voice a quick-test reply; long replies are truncated for the TEST
+    // only (Telegram itself has no such cap).
+    const phrase = (text && text.trim().slice(0, 500)) || 'Voice check: this is my Hermes gateway voice.'
+    const script = [
+      'import sys, os, json, base64, tempfile',
+      "sys.path.insert(0, '/usr/local/lib/hermes-agent')",
+      'from hermes_cli.config import load_config',
+      'from tools.tts_tool import _generate_openai_tts',
+      'cfg = load_config()',
+      'tts_cfg = cfg.get("tts") or {}',
+      'out = tempfile.mktemp(suffix=".ogg")',
+      '_generate_openai_tts(sys.argv[1], out, tts_config=tts_cfg)',
+      'b = open(out, "rb").read()',
+      'os.unlink(out)',
+      'print(json.dumps({"audioB64": base64.b64encode(b).decode(), "bytes": len(b)}))',
+    ].join('\n')
+    const scriptB64 = Buffer.from(script, 'utf8').toString('base64')
+    const out = await this.ssh(
+      `HERMES_HOME=${shq(home)} printf %s ${shq(scriptB64)} | base64 -d | HERMES_HOME=${shq(home)} /usr/local/lib/hermes-agent/venv/bin/python - ${shq(phrase)}`,
+    )
+    const parsed = JSON.parse(out.trim().split('\n').pop() ?? '{}') as { audioB64?: string; bytes?: number }
+    if (!parsed.audioB64) throw new Error('synthesis produced no audio')
+    return { audioB64: parsed.audioB64, mime: 'audio/ogg', bytes: parsed.bytes ?? 0 }
+  }
+
+  /** Master switch: set voice.auto_tts for EVERY real profile (ceval-* eval throwaways
+   *  excluded), restarting the gateways that are actually running. Loud per-agent results —
+   *  a partial failure names the profile instead of pretending. */
+  async setHermesTtsAll(autoTts: boolean): Promise<{ updated: string[]; gatewaysRestarted: string[]; failed: Array<{ agent: string; error: string }> }> {
+    const listing = await this.ssh(`ls -1 ${shq(this.profileHomeBase)}`)
+    const profiles = listing.split('\n').map((s) => s.trim()).filter((p) => p && !p.startsWith('ceval-'))
+    const updated: string[] = []; const gatewaysRestarted: string[] = []; const failed: Array<{ agent: string; error: string }> = []
+    for (const p of profiles) {
+      try {
+        const script = [
+          'import sys, yaml',
+          'p = sys.argv[1]',
+          'with open(p) as f: cfg = yaml.safe_load(f) or {}',
+          'vc = cfg.setdefault("voice", {})',
+          'if not isinstance(vc, dict): vc = cfg["voice"] = {}',
+          `vc["auto_tts"] = ${autoTts ? 'True' : 'False'}`,
+          'with open(p, "w") as f:',
+          '    yaml.safe_dump(cfg, f, sort_keys=False, default_flow_style=False, allow_unicode=True)',
+        ].join('\n')
+        const b64 = Buffer.from(script, 'utf8').toString('base64')
+        await this.ssh(`printf %s ${shq(b64)} | base64 -d | python3 - ${shq(`${this.profileHomeBase}/${p}/config.yaml`)}`)
+        updated.push(p)
+        const unit = `hermes-gateway-${p}.service`
+        const active = (await this.ssh(`systemctl is-active ${shq(unit)} || true`)).trim() === 'active'
+        if (active) { await this.ssh(`systemctl restart ${shq(unit)}`); gatewaysRestarted.push(p) }
+      } catch (e) {
+        failed.push({ agent: p, error: String((e as Error).message) })
+      }
+    }
+    console.log(`[hermes-tts] ALL-agents auto_tts=${autoTts}: updated=${updated.length} restarted=${gatewaysRestarted.join(',') || 'none'} failed=${failed.length}`)
+    return { updated, gatewaysRestarted, failed }
+  }
+
+  /** Change-only merge into the profile's tts/voice config. Unknown voices are REJECTED
+   *  against the live voice list — never accepted silently (a silent fallback is exactly
+   *  how the phantom `proxlab-tts` provider hid for months). Restarts the agent's
+   *  messaging gateway when it is running so Telegram picks the change up. */
+  async putHermesTts(agentId: string, patch: {
+    voice?: string; model?: string; baseUrl?: string; speed?: number; autoTts?: boolean
+  }): Promise<{ ok: true; gatewayRestarted: boolean }> {
+    const home = this.profileHome(agentId)
+    if (patch.voice !== undefined) {
+      const current = await this.getHermesTts(agentId)
+      const baseUrl = patch.baseUrl ?? current.baseUrl
+      const { voices, voicesError } = await this.fetchTtsVoices(baseUrl)
+      if (voicesError) throw new Error(`cannot validate voice — ${voicesError}`)
+      if (!voices.includes(patch.voice)) {
+        throw new Error(`unknown voice '${patch.voice}' — not in the endpoint's voice list (${voices.length} voices). Refusing to save a value that would fail at synthesis time.`)
+      }
+    }
+    await this.ssh(`cp -a ${shq(`${home}/config.yaml`)} ${shq(`${home}/config.yaml.bak-hermes-tts`)}`)
+    const patchB64 = Buffer.from(JSON.stringify(patch), 'utf8').toString('base64')
+    const script = [
+      'import sys, json, base64, yaml',
+      'p = sys.argv[1]',
+      'patch = json.loads(base64.b64decode(sys.argv[2]).decode())',
+      'try:',
+      '    with open(p) as f: cfg = yaml.safe_load(f) or {}',
+      'except FileNotFoundError:',
+      '    cfg = {}',
+      'tts = cfg.setdefault("tts", {})',
+      'if not isinstance(tts, dict): tts = cfg["tts"] = {}',
+      'tts["provider"] = "openai"',
+      'tts.pop("proxlab-tts", None)',
+      'oa = tts.setdefault("openai", {})',
+      'if not isinstance(oa, dict): oa = tts["openai"] = {}',
+      'for src, dst in (("voice","voice"),("model","model"),("baseUrl","base_url"),("speed","speed")):',
+      '    if src in patch and patch[src] is not None: oa[dst] = patch[src]',
+      'oa.setdefault("model", "chatterbox")',
+      'vc = cfg.setdefault("voice", {})',
+      'if not isinstance(vc, dict): vc = cfg["voice"] = {}',
+      'if "autoTts" in patch and patch["autoTts"] is not None: vc["auto_tts"] = bool(patch["autoTts"])',
+      'with open(p, "w") as f:',
+      '    yaml.safe_dump(cfg, f, sort_keys=False, default_flow_style=False, allow_unicode=True)',
+      'print("ok")',
+    ].join('\n')
+    const scriptB64 = Buffer.from(script, 'utf8').toString('base64')
+    await this.ssh(`printf %s ${shq(scriptB64)} | base64 -d | python3 - ${shq(`${home}/config.yaml`)} ${shq(patchB64)}`)
+    let gatewayRestarted = false
+    try {
+      const unit = `hermes-gateway-${agentId}.service`
+      const active = (await this.ssh(`systemctl is-active ${shq(unit)} || true`)).trim() === 'active'
+      if (active) { await this.ssh(`systemctl restart ${shq(unit)}`); gatewayRestarted = true }
+    } catch { /* no unit for this profile — config applies on next gateway start */ }
+    console.log(`[hermes-tts] ${agentId}: saved ${JSON.stringify(patch)} gatewayRestarted=${gatewayRestarted}`)
+    return { ok: true, gatewayRestarted }
   }
 
   /** Reconcile native-vision routing for an agent, keyed on its model's vision capability.
@@ -805,6 +968,87 @@ export class HermesManagementService {
    *  key lives in the global `.env` every profile inherits. This is what makes composite the
    *  default for NEW agents, since `hermes profile create --clone` carries neither the plugins nor
    *  a non-empty provider. Native user-config + plugin-file writes — not a Hermes-source patch. */
+  /**
+   * Give an agent its OWN memory namespace and the fleet toolset. Idempotent; runs on create AND
+   * edit so existing agents converge too.
+   *
+   * 🛑 BOTH halves or neither. Enabling memory TOOLS without provisioning the NAMESPACE is a
+   * silent backend failure: the agent gets working-looking tools that read and write whatever the
+   * shared `memory` server defaults to (HIPPOCAMPAI_USER=fleet — the operator's own memories).
+   * That is exactly the 2026-08-18 incident. Never split these.
+   *
+   * 🛑 The namespace is derived from the profile id, never a hand-written string: the memory
+   * service answers HTTP 200 for ANY /u/<ns>/mcp path, so a typo yields a working-but-EMPTY
+   * namespace instead of an error.
+   *
+   * Never throws — a messaging/memory provisioning hiccup must not block agent creation. It logs
+   * loudly instead, because a silent skip here is the original bug.
+   */
+  private async ensureMemoryNamespaceAndFleet(agentId: string): Promise<void> {
+    const gw = this.gatewayBase()
+    const memSrv = `memory-${agentId}`
+    const ns = `agent:${agentId}`
+    try {
+      const current = (await readToolGroup(gw, `agent-${agentId}`)) ?? []
+
+      // Detect ANY memory-* server, not just the expected name. Wren was the profile `main` with
+      // server `memory-wren`; matching only `memory-<id>__` would mint a SECOND namespace and
+      // split an agent's memories across two stores.
+      const existingMem = [...new Set(current
+        .map((t) => t.split('__')[0])
+        .filter((p) => p.startsWith('memory')))]
+      const hasFleet = current.some((t) => t.startsWith('fleet__'))
+
+      if (existingMem.length === 0) {
+        const memUrl = `${process.env.UNIFIED_MEMORY_URL || 'http://127.0.0.1:9847'}/u/${ns}/mcp`
+        const res = await fetch(`${gw}/api/v0/servers`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: memSrv, transport: 'streamable_http', url: memUrl, session_mode: 'stateless',
+            description: `${agentId}-scoped unified memory, pinned to ${ns} so recall/remember act on ITS memories, not the operator fleet namespace.`,
+          }),
+          signal: AbortSignal.timeout(15000),
+        })
+        // 409/400 = already registered; that is success for our purposes.
+        if (!res.ok && res.status !== 409 && res.status !== 400) {
+          console.warn(`[agent-provision] ${agentId}: could not register ${memSrv} (HTTP ${res.status}) — MEMORY TOOLS WILL BE OMITTED rather than pointed at the shared namespace`)
+          return
+        }
+      }
+
+      const want = [...current]
+      if (existingMem.length === 0) want.push(memSrv)   // bare server name expands to all its tools
+      if (!hasFleet) want.push('fleet')
+      if (want.length === current.length) return        // already complete
+
+      const reg = await loadToolRegistry(gw)
+      const sel = resolveSelection(want, reg)
+      if (sel.included.length < current.length) {
+        console.warn(`[agent-provision] ${agentId}: refusing to write a SMALLER tool group (${current.length} -> ${sel.included.length})`)
+        return
+      }
+      await writeToolGroup(gw, `agent-${agentId}`, `AI-Lab tool set for ${agentId}`, sel.included)
+      await this.repointGatewayServer(agentId, `${this.agentGatewayBase()}/v0/groups/agent-${agentId}/mcp`)
+      console.log(`[agent-provision] ${agentId}: namespace ${ns}, tools ${current.length} -> ${sel.included.length}`)
+    } catch (e) {
+      console.warn(`[agent-provision] ${agentId}: FAILED (${(e as Error).message}) — agent created WITHOUT its own memory namespace; run adapters/provision_agent.py to repair`)
+    }
+
+    // Fleet directory — so the agent is addressable and discoverable via fleet_directory.
+    try {
+      const fleetd = process.env.FLEETD_URL || 'http://10.0.0.161:17900'
+      await fetch(`${fleetd}/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent_id: agentId, display_name: agentId, kind: 'hermes', endpoint: agentId }),
+        signal: AbortSignal.timeout(10000),
+      })
+    } catch (e) {
+      console.warn(`[agent-provision] ${agentId}: fleet directory registration failed (${(e as Error).message}) — agent works but is not addressable by other agents until registered`)
+    }
+  }
+
   private async ensureCompositeMemory(agentId: string): Promise<void> {
     if (agentId === HermesManagementService.MEMORY_TEMPLATE_PROFILE) return
     const home = this.profileHome(agentId)
@@ -1046,7 +1290,7 @@ export class HermesManagementService {
    *  sends a bare server name) or a momentarily-down server is enough to trigger it. Observed:
    *  DELETE 204 -> POST 400 left Wren with no group and no tools, and her Hermes agent then gave
    *  up reconnecting entirely. So now: validate first, expand server names, and roll back. */
-  async syncAgentTools(agentId: string, treeNames: string[]): Promise<{ endpoint: string; toolCount: number; gatewayRestarted?: boolean }> {
+  async syncAgentTools(agentId: string, treeNames: string[]): Promise<{ endpoint: string; toolCount: number; gatewayRestarted?: boolean; removedNonExecutable?: string[] }> {
     const gw = this.gatewayBase()
     const group = `agent-${agentId}`
 
@@ -1057,8 +1301,19 @@ export class HermesManagementService {
     // a rejected payload leaves the previous membership intact. No DELETE is involved: the old
     // delete-then-create is what destroyed Wren's entire toolset on 2026-07-25.
     const reg = await loadToolRegistry(gw)
-    const { included, unknown } = resolveSelection(treeNames, reg)
+    const { included: resolved, unknown } = resolveSelection(treeNames, reg)
     if (unknown.length) throw unknownToolsError(group, unknown)
+
+    // #86: session-bound ailab-native tools are config-only federation — a call through the
+    // gateway answers with a refusal string the agent's model reads as tool output. A Hermes
+    // group must never carry them. Strip LOUDLY: reported in the response and logged, never
+    // silent (old groups, backup restores, and raw API callers can still send them).
+    const nonExec = nonGatewayExecutableNativeTools()
+    const removedNonExecutable = resolved.filter((n) => nonExec.has(n))
+    const included = resolved.filter((n) => !nonExec.has(n))
+    if (removedNonExecutable.length) {
+      console.log(`[hermes-tools] ${group}: stripped ${removedNonExecutable.length} non-executable ailab-native tool(s): ${removedNonExecutable.join(', ')}`)
+    }
 
     // Snapshot the previous membership to disk first. Recovering Wren's group was only possible
     // because Hermes happens to log its registration line — luck, not design. This fixes that.
@@ -1074,7 +1329,7 @@ export class HermesManagementService {
     // config at startup, so without this the Chat tab and Telegram disagree about which tools the
     // agent has until someone restarts the unit by hand.
     const gatewayRestarted = await this.restartAgentGateway(agentId)
-    return { endpoint, toolCount: included.length, gatewayRestarted }
+    return { endpoint, toolCount: included.length, gatewayRestarted, ...(removedNonExecutable.length ? { removedNonExecutable } : {}) }
   }
 
   /** Where this agent's tool-group snapshots live. */
@@ -1165,7 +1420,12 @@ export class HermesManagementService {
       const reg = await loadToolRegistry(this.gatewayBase())
       const res = resolveSelection(tools, reg)
       if (res.unknown.length) throw unknownToolsError(`agent-${agentId}`, res.unknown)
-      return res
+      // #86: snapshots predating the non-executable strip can carry config-only ailab-native
+      // tools — clean them on the way back in, loudly.
+      const nonExec = nonGatewayExecutableNativeTools()
+      const dropped = res.included.filter((n) => nonExec.has(n))
+      if (dropped.length) console.log(`[hermes-tools] agent-${agentId} restore: stripped ${dropped.length} non-executable ailab-native tool(s): ${dropped.join(', ')}`)
+      return { included: res.included.filter((n) => !nonExec.has(n)) }
     })()
     await writeToolGroup(this.gatewayBase(), `agent-${agentId}`, `AI-Lab tool set for ${agentId}`, included)
     await this.repointGatewayServer(agentId, `${this.agentGatewayBase()}/v0/groups/agent-${agentId}/mcp`)
@@ -1920,6 +2180,11 @@ async lintProfileDocs(agentId: string): Promise<Array<{ file: string; line: numb
     // Per-agent OpenViking memory key (isolation): provision/rotate the agent's key, wire it into
     // the profile .env (capture) and the recall key-map (recall). No-op if OV admin creds unset.
     await this.ensureOpenVikingKey(id)
+    // Per-agent MEMORY NAMESPACE + fleet messaging. Every agent gets these, no exceptions.
+    // Before 2026-08-26 this was manual and only 3 of 16 agents actually had memory tools —
+    // including user-facing mari with none — because "enable the tools" and "create the
+    // namespace" were separate manual steps and nobody noticed the second was skipped.
+    await this.ensureMemoryNamespaceAndFleet(id)
 
     // Enabled toolsets — additive: enable what the spec requests. (Does not disable others; a
     // full enable/disable sync would risk stripping Hermes defaults the profile relies on.)
@@ -1984,7 +2249,67 @@ async lintProfileDocs(agentId: string): Promise<Array<{ file: string; line: numb
     const { url, rootKey, account } = this.ovAdmin()
     if (!url || !rootKey) return
     if (agentId === 'main' || agentId === HermesManagementService.MEMORY_TEMPLATE_PROFILE) return
-    let key = ''
+
+    const envPath = `${this.profileHome(agentId)}/.env`
+
+    // Identity is embedded in the key itself: base64url(account).base64url(user).base64url(secret).
+    const identityOf = (k: string): string => {
+      const p = (k || '').split('.')
+      if (p.length !== 3) return ''
+      try {
+        return Buffer.from(p[1], 'base64url').toString('utf8')
+      } catch {
+        return ''
+      }
+    }
+
+    // A key is acceptable only if it authenticates AND is scoped to THIS agent. The `default`
+    // template ships main's (admin-role) key and `hermes profile create --clone` copies .env, so a
+    // brand-new agent starts out holding Wren's key — it authenticates fine and writes into Wren's
+    // namespace. Never treat an inherited key as usable.
+    const usable = async (k: string): Promise<boolean> => {
+      if (!k || identityOf(k) !== agentId) return false
+      try {
+        const r = await fetch(`${url}/api/v1/stats/memories`, {
+          headers: { Authorization: `Bearer ${k}` },
+          signal: AbortSignal.timeout(8000),
+        })
+        return r.ok
+      } catch {
+        return false
+      }
+    }
+    const readEnvKey = async (): Promise<string> =>
+      (await this.ssh(`grep -m1 '^OPENVIKING_API_KEY=' ${shq(envPath)} 2>/dev/null | cut -d= -f2- || true`)).trim()
+
+    // IDEMPOTENT. applySpec runs on EVERY Agents-tab save; minting a new key each time is
+    // gratuitous churn, and a rotation whose .env write fails strands the agent on a key the
+    // server has already replaced — a permanent, silent 401.
+    let current = ''
+    try {
+      current = await readEnvKey()
+    } catch {
+      current = ''
+    }
+    if (await usable(current)) {
+      this.registerOpenVikingRecallKey(agentId, current)
+      return
+    }
+
+    // What we hold is absent, dead, or belongs to another agent. Clear it BEFORE minting so that
+    // if anything below fails we fail loudly (401 → memory capture degrades) instead of silently
+    // writing into someone else's namespace.
+    if (current && identityOf(current) !== agentId) {
+      try {
+        await this.ssh(`sed -i 's/^OPENVIKING_API_KEY=.*/OPENVIKING_API_KEY=/' ${shq(envPath)} || true`)
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    // Mint AND write inside ONE try, then verify from disk. Previously the .env write sat outside
+    // the try that wrapped minting, so an ssh failure left the key rotated server-side but never
+    // recorded.
     try {
       const post = async (path: string, body?: unknown): Promise<string> => {
         const r = await fetch(`${url}${path}`, {
@@ -1996,28 +2321,38 @@ async lintProfileDocs(agentId: string): Promise<Array<{ file: string; line: numb
         const j = (await r.json().catch(() => ({}))) as any
         return j?.result?.user_key || ''
       }
-      key = await post(`/api/v1/admin/accounts/${account}/users`, { user_id: agentId, role: 'user' })
+      let key = await post(`/api/v1/admin/accounts/${account}/users`, { user_id: agentId, role: 'user' })
       if (!key) key = await post(`/api/v1/admin/accounts/${account}/users/${encodeURIComponent(agentId)}/key`)
+      if (!key) throw new Error('OpenViking returned no user_key')
+      if (identityOf(key) !== agentId) throw new Error(`minted key is scoped to '${identityOf(key)}'`)
+
+      // capture: upsert OPENVIKING_API_KEY in the profile .env (base64'd python write -> no quoting)
+      const py = [
+        'import sys, re, base64',
+        'p = sys.argv[1]; line = "OPENVIKING_API_KEY=" + base64.b64decode(sys.argv[2]).decode()',
+        'try: t = open(p).read()',
+        'except FileNotFoundError: t = ""',
+        "if re.search(r'^OPENVIKING_API_KEY=', t, flags=re.M): t = re.sub(r'^OPENVIKING_API_KEY=.*$', line, t, flags=re.M)",
+        'else: t = (t if (not t or t.endswith(chr(10))) else t + chr(10)) + line + chr(10)',
+        'open(p, "w").write(t)',
+      ].join('\n')
+      const pyB64 = Buffer.from(py, 'utf8').toString('base64')
+      const keyB64 = Buffer.from(key, 'utf8').toString('base64')
+      await this.ssh(`printf %s ${shq(pyB64)} | base64 -d | python3 - ${shq(envPath)} ${shq(keyB64)}`)
+
+      // Trust the FILE, not the mint response: re-read and re-probe.
+      const after = await readEnvKey()
+      if (!(await usable(after))) throw new Error('.env does not hold a working key after the write')
+
+      // recall: register agent -> key in the map the unified memory MCP hot-reloads (15s TTL)
+      this.registerOpenVikingRecallKey(agentId, key)
     } catch (e) {
-      console.warn(`[hermes-mgmt] OpenViking key provisioning skipped for ${agentId}: ${String((e as Error)?.message ?? e)}`)
-      return
+      // LOUD, and console.error not console.warn: the agent now has NO OpenViking key, which is
+      // the correct failure — it must not fall back to another agent's identity.
+      console.error(
+        `[hermes-mgmt] OpenViking key provisioning FAILED for ${agentId}: ${String((e as Error)?.message ?? e)}`,
+      )
     }
-    if (!key) return
-    // 1) capture: upsert OPENVIKING_API_KEY in the profile .env (base64'd python write -> no quoting)
-    const py = [
-      'import sys, re, base64',
-      'p = sys.argv[1]; line = "OPENVIKING_API_KEY=" + base64.b64decode(sys.argv[2]).decode()',
-      'try: t = open(p).read()',
-      'except FileNotFoundError: t = ""',
-      "if re.search(r'^OPENVIKING_API_KEY=', t, flags=re.M): t = re.sub(r'^OPENVIKING_API_KEY=.*$', line, t, flags=re.M)",
-      'else: t = (t if (not t or t.endswith(chr(10))) else t + chr(10)) + line + chr(10)',
-      'open(p, "w").write(t)',
-    ].join('\n')
-    const pyB64 = Buffer.from(py, 'utf8').toString('base64')
-    const keyB64 = Buffer.from(key, 'utf8').toString('base64')
-    await this.ssh(`printf %s ${shq(pyB64)} | base64 -d | python3 - ${shq(`${this.profileHome(agentId)}/.env`)} ${shq(keyB64)}`)
-    // 2) recall: register agent -> key in the map the unified memory MCP hot-reloads (15s TTL)
-    this.registerOpenVikingRecallKey(agentId, key)
   }
 
   private registerOpenVikingRecallKey(agentId: string, key: string): void {

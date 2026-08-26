@@ -148,6 +148,28 @@ export function registerRagRoutes(app, { exec, selfPort }) {
   // Bridge-friendly doc upload: AI-Lab's browser reaches the backend over the WS bridge (JSON only),
   // so doc files arrive base64-encoded here, get written to temp files, then handed to runDocRagIndexing
   // exactly like the multer path. (Mirrors the CivitAI key-upload base64 pattern.)
+  // Embedding-space health. Encoder drift degrades recall SILENTLY -- every
+  // build in use is dim 4096, so querying a corpus with the wrong encoder can
+  // never raise, it just returns worse neighbours. Previously this was only
+  // announced in hippo's container boot log, which nobody can see after the
+  // fact. ?deep=1 additionally samples vectors to catch degenerate (shared)
+  // vectors written by a failing embedder -- costs real bandwidth, so opt-in.
+  app.get('/api/ai/rag/embedding-health', async (req, res) => {
+    const deep = String(req.query?.deep || '') === '1'
+    try {
+      const r = await fetch('http://127.0.0.1:9847/rest/embedding-health', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deep }),
+        signal: AbortSignal.timeout(deep ? 180000 : 45000),
+      })
+      if (!r.ok) return res.status(502).json({ error: `memory MCP HTTP ${r.status}` })
+      res.json(await r.json())
+    } catch (e) {
+      res.status(502).json({ error: String(e?.message || e) })
+    }
+  })
+
   app.post('/api/ai/docrag/index-b64', express.json({ limit: '120mb' }), (req, res) => {
     const { collection, description, files } = req.body || {}
     if (!collection || !Array.isArray(files) || !files.length) return res.status(400).json({ error: 'collection and files are required' })
@@ -255,23 +277,60 @@ function ragStatus() {
   };
 }
 
-/** Process next item in the RAG queue */
+/** Process next item in the RAG queue.
+ *
+ *  A QUEUE ITEM MUST NEVER KILL THE BACKEND. It used to: `type: 'update'` called
+ *  `runRagUpdate`, which is not defined anywhere in the backend, and the resulting
+ *  ReferenceError was thrown from inside watchRagQueue's setInterval callback — an
+ *  uncaught throw in a timer callback takes the whole Node process down. rag-autosync
+ *  queues update items every night at 01:00, so ai-lab.service died nightly (confirmed
+ *  2026-08-16 through 2026-08-20) and systemd restarted it ~5s later, which is exactly
+ *  why it went unnoticed for weeks. It also meant codebase-RAG auto-update never ran.
+ *
+ *  So: dispatch by CAPABILITY rather than assuming the handler exists, and contain any
+ *  failure to the item that caused it. The item is already shift()ed off the queue
+ *  before dispatch, so a bad item is dropped rather than retried forever.
+ */
 function processRagQueue() {
   if (ragJob.active || ragQueue.length === 0) return;
   const next = ragQueue.shift();
   console.log(`[rag-queue] Processing: ${next.type} ${next.collection} (${ragQueue.length} remaining)`);
-  if (next.type === 'update') {
-    runRagUpdate(next.collection);
-  } else {
-    runRagIndexing(next.url, next.collection, next.description, next.branch);
+  try {
+    if (next.type === 'update') {
+      // TODO(runRagUpdate): re-index an existing collection with replace/resume
+      // semantics. NOT a rename — no update variant has ever existed here.
+      if (typeof runRagUpdate !== 'function') {
+        console.error(`[rag-queue] SKIPPED update '${next.collection}': runRagUpdate is not `
+          + `implemented, so this collection is NOT being refreshed. This is why codebase-RAG `
+          + `auto-update does nothing. Skipping instead of crashing the backend.`);
+        return;
+      }
+      runRagUpdate(next.collection);
+    } else {
+      const p = runRagIndexing(next.url, next.collection, next.description, next.branch);
+      // runRagIndexing is async and is deliberately not awaited here; without this
+      // catch an unhandled rejection is just as fatal under Node 22 as a throw.
+      if (p && typeof p.catch === 'function') {
+        p.catch((err) => console.error(`[rag-queue] indexing '${next.collection}' failed:`, err));
+      }
+    }
+  } catch (err) {
+    console.error(`[rag-queue] item '${next.type} ${next.collection}' threw — dropping it and `
+      + `continuing. The queue must not take the process down:`, err);
   }
 }
 
 /** Watch for job completion and process queue */
 function watchRagQueue() {
   const check = setInterval(() => {
-    if (!ragJob.active && ragQueue.length > 0) {
-      processRagQueue();
+    // Belt AND braces: processRagQueue already contains its own failures, but this is a
+    // timer callback, so anything that escapes here would kill the process.
+    try {
+      if (!ragJob.active && ragQueue.length > 0) {
+        processRagQueue();
+      }
+    } catch (err) {
+      console.error('[rag-queue] watcher tick threw (contained):', err);
     }
   }, 3000);
   return check;

@@ -210,6 +210,126 @@ const CompactionSection: React.FC = () => (
 // model dropdown from the AI-Lab proxy catalog — assigning also clears any dead
 // upstream URL. Shared roles (vision/compaction/tts tags) get no Hermes badge.
 
+// ─── Embedding-space health ───────────────────────────────────────────────────
+// Answers "is every memory collection encoded by the model we currently query
+// with?". Drift there degrades recall silently — every build in use is dim 4096,
+// so a mismatch can never raise an error. It lives here because this is the tab
+// where the embedder gets chosen, so the consequence sits next to the cause.
+const EmbeddingHealthSection: React.FC = () => {
+  const [data, setData] = useState<any>(null)
+  const [busy, setBusy] = useState(false)
+  const [deep, setDeep] = useState(false)
+
+  const load = async (withVectors: boolean) => {
+    setBusy(true)
+    const d = await hermesApi.getEmbeddingHealth(withVectors)
+    setData(d); setBusy(false); setDeep(withVectors)
+  }
+  useEffect(() => { void load(false) }, [])
+
+  const cols: any[] = data?.collections || []
+  const attention: string[] = data?.attention || []
+  const info: string[] = data?.informational || []
+  const badge = (v: string) =>
+    v === 'ok' ? { t: 'OK', c: '#3fb950' }
+      : v === 'drift' ? { t: 'DRIFT', c: '#f85149' }
+      : v === 'unstamped' ? { t: 'UNVERIFIED', c: '#d29922' }
+      : { t: (v || '?').toUpperCase(), c: '#8b949e' }
+
+  return (
+    <div className="tts-section">
+      <div className="tts-section-header">
+        <Database size={13} />
+        <span>Embedding Space Health</span>
+        <button
+          className="tts-mini-btn"
+          style={{ marginLeft: 'auto' }}
+          disabled={busy}
+          onClick={() => void load(false)}
+          title="Re-check encoder consistency"
+        >
+          <RefreshCw size={12} /> {busy ? 'checking…' : 'refresh'}
+        </button>
+        <button
+          className="tts-mini-btn"
+          disabled={busy}
+          onClick={() => void load(true)}
+          title="Also sample vectors to detect degenerate (shared) vectors. Slower."
+        >
+          deep scan
+        </button>
+      </div>
+
+      {!data && <div className="tts-hint">checking…</div>}
+
+      {data && (
+        <>
+          <div className="tts-hint">
+            Queries are encoded with <strong>{data.expected_model || '(unset)'}</strong>. A collection
+            encoded by anything else still returns results — every build here is 4096-dim, so a
+            mismatch can never error — it just returns worse ones. Fix by re-embedding.
+          </div>
+
+          {attention.length > 0 && (
+            <div className="tts-hint" style={{ color: '#f85149' }}>
+              <strong>Action required:</strong>
+              {attention.map((a, i) => <div key={i}>• {a}</div>)}
+            </div>
+          )}
+          {attention.length === 0 && (
+            <div className="tts-hint" style={{ color: '#3fb950' }}>
+              All audited collections match the selected embedder.
+            </div>
+          )}
+
+          <table className="tts-table" style={{ width: '100%', fontSize: 12 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left' }}>Collection</th>
+                <th style={{ textAlign: 'left' }}>Status</th>
+                <th style={{ textAlign: 'right' }}>Points</th>
+                <th style={{ textAlign: 'left' }}>Encoder(s)</th>
+                {deep && <th style={{ textAlign: 'right' }}>Bad vectors</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {cols.map((c) => {
+                const b = badge(c.verdict)
+                return (
+                  <tr key={c.collection} title={c.detail}>
+                    <td style={{ fontFamily: 'monospace' }}>{c.collection}</td>
+                    <td style={{ color: b.c, fontWeight: 600 }}>{b.t}</td>
+                    <td style={{ textAlign: 'right' }}>{c.points ?? '—'}</td>
+                    <td style={{ fontFamily: 'monospace', fontSize: 11 }}>
+                      {Object.entries(c.encoders || {})
+                        .map(([m, n]) => `${m} (${n})`).join(', ') || '—'}
+                    </td>
+                    {deep && (
+                      <td style={{ textAlign: 'right', color: c.degenerate_vectors ? '#f85149' : undefined }}>
+                        {c.degenerate_vectors ?? '—'}
+                      </td>
+                    )}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+
+          {info.length > 0 && (
+            <div className="tts-hint" style={{ opacity: 0.75 }}>
+              {info.map((s, i) => <div key={i}>· {s}</div>)}
+            </div>
+          )}
+          <div className="tts-hint" style={{ opacity: 0.7 }}>
+            Sampled per collection, not a full scan. “Deep scan” also reads vectors to find points
+            that share one — an embedder failure path writing a constant.
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ─── Embeddings + Reranker (RAG support models) — probe-classified service picker ─────────────
 const RagModelSection: React.FC<{ kind: 'embed' | 'rerank' }> = ({ kind }) => {
   const [data, setData] = useState<any>(null)
@@ -699,6 +819,7 @@ export const TtsSettingsPanel: React.FC<{ store: any }> = observer(({ store }) =
       <div className="support-masonry">
       <RagModelSection kind="embed" />
       <RagModelSection kind="rerank" />
+      <EmbeddingHealthSection />
       {/* ─── STT Section ──────────────────────────────────────────── */}
       <div className="tts-section">
         <div className="tts-section-header">

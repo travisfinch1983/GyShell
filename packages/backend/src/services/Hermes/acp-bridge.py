@@ -271,7 +271,7 @@ async def main():
     # Never launch hermes with --resume: `session/new` ignores it and the launch flag
     # does not restore conversation context. Resume is done via ACP session/load below.
     hargs = ["-p", args.profile, "acp", "--accept-hooks"]
-    async with spawn_agent_process(client, args.hermes, *hargs, cwd=agent_cwd, transport_kwargs={"limit": 64 * 1024 * 1024}) as (conn, proc):
+    async with spawn_agent_process(client, args.hermes, *hargs, cwd=agent_cwd, transport_kwargs={"limit": 64 * 1024 * 1024, "stderr": None}) as (conn, proc):
         try:
             await conn.initialize(protocol_version=PROTOCOL_VERSION, client_capabilities=caps)
             session_id = None

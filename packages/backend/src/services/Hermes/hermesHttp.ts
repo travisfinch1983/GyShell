@@ -139,6 +139,27 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
 
+  // Hermes-NATIVE TTS (Telegram/gateway channels) — separate from spec.tts (AI-Lab chat voice).
+  router.get('/api/hermes/agents/:id/hermes-tts', async (req: Req, res: Res) => {
+    try { res.json(await hermes.getHermesTts(req.params.id)) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  // Master switch: enable/disable Hermes auto-TTS for EVERY agent at once.
+  router.post('/api/hermes/hermes-tts/all', json, async (req: Req, res: Res) => {
+    const v = (req.body as { autoTts?: unknown })?.autoTts
+    if (typeof v !== 'boolean') return res.status(400).json({ error: 'body needs { autoTts: boolean }' })
+    try { res.json({ ok: true, ...(await hermes.setHermesTtsAll(v)) }) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.post('/api/hermes/agents/:id/hermes-tts/test', json, async (req: Req, res: Res) => {
+    try { res.json(await hermes.testHermesTts(req.params.id, typeof (req.body as { text?: unknown })?.text === 'string' ? (req.body as { text: string }).text : undefined)) }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
+  router.put('/api/hermes/agents/:id/hermes-tts', json, async (req: Req, res: Res) => {
+    try { res.json(await hermes.putHermesTts(req.params.id, (req.body ?? {}) as Record<string, never>)) }
+    catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
+  })
+
   // Native (built-in Hermes) tool on/off for the ACP chat agent — backs the acp-tool-override
   // plugin (native browser tools etc. can't be toggled via Hermes config on the ACP runtime).
   // GET catalog = the pristine native tool list; GET per-agent = catalog + current enabled state;

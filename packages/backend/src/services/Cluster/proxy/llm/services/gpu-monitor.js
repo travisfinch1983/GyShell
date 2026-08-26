@@ -17,7 +17,7 @@ const NVTOP_REMOTE_PATH = '/opt/proxlab/bin/proxlab-nvtop';
 const NVTOP_CMD = `echo ___NVTOP___;${NVTOP_REMOTE_PATH} -s 2>/dev/null`;
 /** Fallback for hosts without proxlab-nvtop */
 const NVIDIA_SMI_CMD = "bash --norc --noprofile -c 'nvidia-smi --query-gpu=index,name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw,power.limit --format=csv,noheader,nounits 2>/dev/null'";
-const NVIDIA_UUID_CMD = "bash --norc --noprofile -c 'nvidia-smi --query-gpu=index,uuid,pci.bus_id,name --format=csv,noheader 2>/dev/null'";
+const NVIDIA_UUID_CMD = "bash --norc --noprofile -c 'S=$(command -v nvidia-smi-cached || command -v nvidia-smi); \"$S\" --query-gpu=index,uuid,pci.bus_id,name --format=csv,noheader 2>/dev/null'";
 
 export class GpuMonitor {
   constructor(config, sshService, pveApi, { interval = 5000 } = {}) {

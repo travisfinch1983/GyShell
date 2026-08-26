@@ -158,11 +158,7 @@ export class HermesAcpBridge extends EventEmitter {
         // ask for only the gap it missed (/stream?since=<seq>).
         ev.seq = ++session.seq
         session.history.push(ev)
-        const cap = this.cfg.historyCap ?? 5000
-        if (session.history.length > cap) {
-          session.history.splice(0, session.history.length - cap)
-          session.truncated = true
-        }
+        this.trimHistory(session, sessionKey)
         if (ev.t === 'ready' && !session.readyResolved) {
           session.readyResolved = true
           session.lastReady = ev
@@ -257,8 +253,7 @@ export class HermesAcpBridge extends EventEmitter {
     // emit, or the live view double-shows it. Renders via the reducer's `case 'user'`.
     const uev = { t: 'user', text, seq: ++session.seq } as unknown as AcpEvent
     session.history.push(uev)
-    { const cap = this.cfg.historyCap ?? 5000
-      if (session.history.length > cap) { session.history.splice(0, session.history.length - cap); session.truncated = true } }
+    this.trimHistory(session, sessionKey)
     // Server-side conversation registry: first user message becomes the tab title; every turn bumps lastActive.
     const meta = this.persistedSessions[sessionKey]
     if (meta) { meta.lastActive = Date.now(); if (!meta.title && text.trim()) meta.title = text.trim().slice(0, 80); this.saveSessionMap() }
@@ -285,8 +280,7 @@ export class HermesAcpBridge extends EventEmitter {
     session.status = status
     const ev = { t: 'status', status, seq: ++session.seq } as unknown as AcpEvent
     session.history.push(ev)
-    const cap = this.cfg.historyCap ?? 5000
-    if (session.history.length > cap) { session.history.splice(0, session.history.length - cap); session.truncated = true }
+    this.trimHistory(session, sessionKey)
     session.emitter.emit('event', ev)
     this.emit('event', { agentId: session.agentId, event: ev })
     // A toolset-change reload deferred while this session was mid-turn now runs (session idle).
@@ -354,6 +348,35 @@ export class HermesAcpBridge extends EventEmitter {
    * only events with seq > since (the gap a reconnecting observer missed); since=0 returns
    * the whole buffer. undefined if no session exists for the agent.
    */
+
+  /** Default ring size. Events are small (median ~32B measured), so this is ~1.2MB per
+   *  session — the old 5000 was ~0.3MB and a SINGLE orchestrated turn overflowed it
+   *  (turing, 2026-08-20: 6005 events, firstSeq 1006, so 1005 events were dropped).
+   *  Override with AILAB_HISTORY_CAP. */
+  private static readonly DEFAULT_HISTORY_CAP =
+    Number(process.env.AILAB_HISTORY_CAP) > 0 ? Number(process.env.AILAB_HISTORY_CAP) : 20000
+
+  /** Trim the ring to the cap. ONE implementation — this logic used to be copy-pasted at
+   *  three call sites, which is how they drift.
+   *
+   *  🛑 Dropping events is DATA LOSS and it used to be silent: `truncated` was set here,
+   *  returned by getHistory(), and read by NOTHING in the entire codebase. A caller that
+   *  re-reads history from a low seq silently receives a reply missing its beginning. So
+   *  say it out loud, once per session, the first time it happens. */
+  private trimHistory(session: AcpSession, sessionKey: string): void {
+    const cap = this.cfg.historyCap ?? HermesAcpBridge.DEFAULT_HISTORY_CAP
+    if (session.history.length <= cap) return
+    const dropped = session.history.length - cap
+    session.history.splice(0, dropped)
+    if (!session.truncated) {
+      console.warn(`[acp-bridge] ${sessionKey}: history ring FULL at ${cap} events — dropping the `
+        + `oldest ${dropped}. Anything re-reading this conversation from a seq below `
+        + `${session.history[0]?.seq ?? '?'} will silently miss the start. Raise AILAB_HISTORY_CAP `
+        + `or page the transcript instead of replaying it.`)
+    }
+    session.truncated = true
+  }
+
   getHistory(sessionKey: string, since = 0): AcpHistory | undefined {
     const s = this.sessions.get(sessionKey)
     if (!s) return undefined

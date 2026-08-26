@@ -10,6 +10,7 @@ const FIELDS: { key: string; label: string; type?: string; readOnly?: boolean }[
   { key: 'rate_limit_requests', label: 'Per-Key Requests / Window' },
   { key: 'rate_limit_window_sec', label: 'Rate Window (sec)' },
   { key: 'rate_limit_rps', label: 'Download Rate (req/sec)' },
+  { key: 'download_bandwidth_limit_kbps', label: 'Bandwidth Cap (KB/s, 0 = off)', type: 'number' },
   { key: 'max_retries', label: 'Max Retries' },
 ]
 

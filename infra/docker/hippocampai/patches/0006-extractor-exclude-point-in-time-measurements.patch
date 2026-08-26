@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: claude <claude@deeveeyant.com>
+Date: Wed, 19 Aug 2026 00:45:00 +0000
+Subject: [PATCH 6/6] extractor: exclude point-in-time measurements, keep the
+ mechanism
+
+0005 stopped the extractor storing hypotheses, live state and discussion
+mechanics. Two independent runs afterwards still leaked the remaining family --
+measurements. "There are currently 86 stale copies" (importance 8) and "The fleet
+holds 571 rows" (importance 5). The first was already false by the time it was
+reported: a sweep and a prune had both moved the count.
+
+A measurement slips past the earlier rules because it is neither a guess nor
+obviously in-flight; it is simply true, briefly. The durable thing is always the
+mechanism that produced the number.
+
+Deliberately paired with an explicit KEEP rule for structural numbers -- hardware
+counts, ports, caps, thresholds, versions -- so the exclusion cannot swallow the
+facts that describe how the system is built.
+---
+--- a/src/hippocampai/pipeline/extractor.py
++++ b/src/hippocampai/pipeline/extractor.py
+@@ -61,9 +61,31 @@
+    what someone is about to do next.
+ 10. PRESERVE NEGATION EXACTLY. "X does not run on Y" must never become "X runs on Y".
+     If a statement is negated, conditional, or hedged, keep that or drop it entirely.
+-11. If nothing in the conversation is durable, return an empty array. An empty result
++11. Measurements and verification results taken AT A MOMENT: counts, tallies, sweep
++    findings, test outcomes, "there are currently N", "X now holds N rows", "zero Y
++    remain", "all checks passed". These are true when observed and stale the next
++    time anyone looks. Store the MECHANISM that produced the number, never the
++    number. This applies even when a trusted colleague states the figure plainly —
++    a confident report of a count is still a count.
++12. DO keep numbers that are STRUCTURAL rather than momentary: hardware counts, port
++    numbers, configured limits, caps, thresholds, versions. Those describe how the
++    system is built, not what it happened to contain at one instant. "The listing
++    endpoint caps at 5000" is durable; "the listing returned 571 rows" is not.
++13. If nothing in the conversation is durable, return an empty array. An empty result
+     is correct and expected — a wrong memory is far worse than a missing one, because
+     it gets injected into every future conversation as if it were true.
++
++MORE EXAMPLES OF WHAT NOT TO EXTRACT:
++User: "there are currently 86 stale copies in the system"
++  -> nothing (a count; it moved before the day was out)
++User: "the fleet namespace holds 571 rows"
++  -> nothing as stated. If the point being made was that the listing endpoint
++     silently caps, store THAT: {"text": "The memory listing endpoint caps its
++     result set, so a caller must request more rows than it expects", ...}
++User: "zero contaminated tags remain in any namespace"
++  -> nothing (a verification result, true only at that moment)
++User: "the epyc box has 4 GPUs and the embedder listens on port 5010"
++  -> KEEP BOTH (structural, not momentary)
+ 
+ EXAMPLES OF WHAT NOT TO EXTRACT:
+ User: "maybe the vectors were never re-embedded, that could explain it"
+-- 
+2.43.0
+

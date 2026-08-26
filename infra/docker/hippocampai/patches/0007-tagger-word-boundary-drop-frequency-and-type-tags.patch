@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: claude <claude@deeveeyant.com>
+Date: Wed, 19 Aug 2026 01:30:00 +0000
+Subject: [PATCH 7/7] tagger: word-boundary topic matching, drop frequency-word
+ and type tags
+
+Auto-generated tags were nonsense on real memories. Three separate causes,
+each verified against stored content:
+
+* Topic keywords were matched as bare substrings, so "strips" matched "trip"
+  (travel), "rework" matched "work", "restore" matched "store" (shopping).
+  Infrastructure notes came back tagged travel and shopping. Now matched on
+  word boundaries.
+* The three most frequent long words were added as tags, yielding "composite,
+  provider, strips" and "memory, system, state". Removed -- it duplicates
+  full-text search and crowds out real tags under the max_tags cap.
+* The memory type was added as a tag despite type being a first-class field.
+  Removed.
+
+The taxonomy itself and the optional LLM suggestion are untouched.
+---
+--- a/src/hippocampai/pipeline/semantic_clustering.py
++++ b/src/hippocampai/pipeline/semantic_clustering.py
+@@ -92,24 +92,27 @@
+         """
+         text_lower = memory.text.lower()
+         suggested = set()
+ 
+-        # Extract keywords (nouns, important words)
+-        words = re.findall(r"\b[a-z]{4,}\b", text_lower)
+-        word_counts = Counter(words)
+-
+-        # Add most common meaningful words
+-        for word, count in word_counts.most_common(3):
+-            if word not in {"that", "this", "with", "from", "have", "been", "were"}:
+-                suggested.add(word)
+-
+-        # Add topic-based tags
++        # NOTE: the three most frequent 4+ letter words used to be added as tags
++        # here. On real memories that produced "composite, provider, strips" and
++        # "memory, system, state" -- no information a full-text search does not
++        # already have, and because the result is capped at max_tags it crowded
++        # out the tags that did mean something. Removed.
++
++        # Topic tags, matched on WORD BOUNDARIES.
++        # Previously this was `kw in text_lower`, a bare substring test, so:
++        #     "strips"  contains "trip"  -> travel
++        #     "rework"  contains "work"  -> work
++        #     "restore" contains "store" -> shopping
++        # which is why infrastructure notes came back tagged travel and shopping.
+         for topic, keywords in self.topic_keywords.items():
+-            if any(kw in text_lower for kw in keywords):
++            if any(re.search(r"\b" + re.escape(kw) + r"\b", text_lower) for kw in keywords):
+                 suggested.add(topic)
+ 
+-        # Add type-based tag
+-        suggested.add(memory.type.value)
++        # The memory TYPE is deliberately NOT added as a tag: it is already a
++        # first-class field on the model, so tagging it duplicates data and
++        # spends one of the max_tags slots.
+ 
+         # LLM-based tag suggestion if available
+         if self.llm and len(suggested) < max_tags:
+             llm_tags = self._llm_suggest_tags(memory.text)
+-- 
+2.43.0
+

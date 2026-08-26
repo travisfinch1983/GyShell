@@ -44,7 +44,20 @@ PORT = 9840
 ANCESTOR_HOPS = 4
 
 
+# All nvidia-smi traffic goes through a cached / single-flight / circuit-broken
+# wrapper when it is installed. A bare subprocess timeout is NOT enough: SIGKILL
+# cannot reap a process stuck in D state inside the nvidia driver, so a scrape
+# that "times out" still leaks its child and the next scrape adds another. That
+# cascade deadlocked px-gpu on 2026-08-17 (91 stuck nvidia-smi holding the RM
+# semaphore, node unrecoverable without a reboot). The wrapper collapses N
+# callers into one real call and refuses to spawn when the driver is wedging.
+# Falls back to plain nvidia-smi if the wrapper is absent.
+NVSMI_WRAPPER = "/usr/local/bin/nvidia-smi-cached"
+
+
 def run(cmd: list[str], timeout: float = 10.0) -> str:
+    if cmd and cmd[0] == "nvidia-smi" and Path(NVSMI_WRAPPER).exists():
+        cmd = [NVSMI_WRAPPER] + list(cmd[1:])
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
     except Exception:

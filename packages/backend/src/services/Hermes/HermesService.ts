@@ -76,6 +76,23 @@ export class HermesService {
     return this.mgmt.getAgentTools(agentId)
   }
 
+  /** Hermes-native TTS (Telegram/gateway channels) — profile config.yaml, not spec. */
+  getHermesTts(agentId: string) {
+    return this.mgmt.getHermesTts(agentId)
+  }
+
+  putHermesTts(agentId: string, patch: { voice?: string; model?: string; baseUrl?: string; speed?: number; autoTts?: boolean }) {
+    return this.mgmt.putHermesTts(agentId, patch)
+  }
+
+  testHermesTts(agentId: string, text?: string) {
+    return this.mgmt.testHermesTts(agentId, text)
+  }
+
+  setHermesTtsAll(autoTts: boolean) {
+    return this.mgmt.setHermesTtsAll(autoTts)
+  }
+
   previewFleetAddresses() {
     return this.mgmt.previewFleetAddresses()
   }

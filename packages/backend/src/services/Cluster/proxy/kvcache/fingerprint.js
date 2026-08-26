@@ -120,3 +120,53 @@ export function computeKvFingerprint(finalCommand, opts = {}) {
 
   return { modelName, slug: base, fp, slotName, optanePath, layout, ctx, stateSeqVersion: STATE_SEQ_VERSION };
 }
+
+// ── vLLM ────────────────────────────────────────────────────────────────────────────────
+// vLLM takes the model POSITIONALLY (`vllm serve <path>`), not via --model, so the llama
+// extractor returns '' for it and every vLLM service would collide on one slot. Kept as a
+// SEPARATE function rather than widening computeKvFingerprint: the llama path is proven and
+// its KV_LAYOUT_PARAMS (cache-type-k/v, flash-attn, rope/yarn) are llama flags that mean
+// nothing to vLLM.
+export function extractVllmModelPath(finalCommand) {
+  const cmd = String(finalCommand || '');
+  // `serve $(mc '/models/...')` — the model-cache helper — or a bare path.
+  // \bserve\s+ cannot match inside --served-model-name ("serve" there is followed by "d").
+  const mc = cmd.match(/\bserve\s+\$\(mc\s+'([^']+)'\)/);
+  if (mc) return mc[1];
+  const plain = cmd.match(/\bserve\s+"?([^"\s\\]+)"?/);
+  return plain ? plain[1] : '';
+}
+
+/**
+ * Stable Optane key for a vLLM launch. Port/GPU/node independent, exactly like the llama
+ * fingerprint — a service that comes back on a different port after a reboot still resolves
+ * to the same directory.
+ *
+ * 🛑 TP IS PART OF THE KEY. Offloaded blocks are written PER TP RANK, so a pool produced at
+ * TP4 is not reusable at TP1 — reusing it would feed a rank the wrong shard. The dirs that
+ * already exist on Optane encode this by hand (`qwen36-35b-a3b-awq-tp1` vs `-tp4`); this
+ * makes it automatic. kv-cache-dtype and dtype are included for the same reason: they change
+ * the bytes on disk.
+ */
+export function computeVllmKvFingerprint(finalCommand, opts = {}) {
+  const cmd = String(finalCommand || '');
+  const base = opts.optaneBase || '/optane-sock1/vllm-kv';
+  const modelPath = extractVllmModelPath(cmd);
+  const parts = modelPath.split('/').filter(Boolean);
+  // Weights are a DIRECTORY for vLLM ("…/Qwen3.8/27B-INT8-W8A16-MTP"); the leaf alone
+  // ("27B-INT8-W8A16-MTP") collides across families, so keep the parent too.
+  const modelName = parts.length >= 2 ? `${parts[parts.length - 2]}/${parts[parts.length - 1]}`
+                                      : (parts[0] || '');
+  const grab = (re) => (cmd.match(re) || [])[1] || '';
+  const tp = grab(/--tensor-parallel-size[ =]+(\d+)/) || '1';
+  const kvDtype = grab(/--kv-cache-dtype[ =]+"?([\w.-]+)"?/) || 'auto';
+  const dtype = grab(/--dtype[ =]+"?([\w.-]+)"?/) || 'auto';
+  const quant = grab(/--quantization[ =]+"?([\w.-]+)"?/) || '';
+
+  const fp = createHash('sha1')
+    .update([modelName, `tp:${tp}`, `kv:${kvDtype}`, `dt:${dtype}`, `q:${quant}`].join('|'))
+    .digest('hex').slice(0, 8);
+  const name = slug(modelName);
+  const dirName = name ? `${name}-tp${tp}-${fp}` : `vllm-tp${tp}-${fp}`;
+  return { modelName, slug: name, fp, tp, kvDtype, dtype, dirName, optaneDir: `${base}/${dirName}` };
+}

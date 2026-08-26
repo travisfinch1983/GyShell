@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: claude <claude@deeveeyant.com>
+Date: Wed, 19 Aug 2026 03:15:00 +0000
+Subject: [PATCH 9/9] api: expose the real tagger for re-tagging stored memories
+
+Adds POST /v1/memories:suggest-tags, returning the tags the CURRENT taxonomy
+would assign to a given text. Read-only.
+
+Needed because the taxonomy changed (0007/0008) and existing memories still
+carry tags from the old one, but nothing exposed the tagger the write path uses.
+The existing /v1/healing/tagging route is NOT a substitute: auto_healing carries
+its own private _suggest_tags(), untouched by those patches, and only fires on
+memories with fewer than two tags -- re-tagging through it would write the old
+behaviour back over the corrected one.
+
+Routed through client.categorizer so there is exactly one taxonomy in play.
+---
+--- a/src/hippocampai/api/app.py
++++ b/src/hippocampai/api/app.py
+@@ -219,8 +219,14 @@
+     metadata: Optional[dict[str, Any]] = None
+     expires_at: Optional[datetime] = None
+ 
+ 
++class SuggestTagsRequest(BaseModel):
++    text: str
++    type: Optional[str] = "fact"
++    max_tags: Optional[int] = 5
++
++
+ class DeleteMemoryRequest(BaseModel):
+     memory_id: str
+     user_id: Optional[str] = None
+ 
+@@ -333,8 +339,37 @@
+         logger.error(f"Extract failed: {e}")
+         raise HTTPException(status_code=500, detail=str(e))
+ 
+ 
++@app.post("/v1/memories:suggest-tags")
++def suggest_tags(
++    request: SuggestTagsRequest, client: MemoryClient = Depends(get_memory_client)
++) -> dict:
++    """Tags the CURRENT taxonomy would assign to this text. Read-only.
++
++    Exists so already-stored memories can be re-tagged after the taxonomy
++    changes, WITHOUT reimplementing it in the caller.
++
++    Deliberately routed through client.categorizer -- the same object
++    client.remember() enriches through. Note that auto_healing keeps a separate
++    private _suggest_tags(); that one is not this one and must not be used for
++    re-tagging.
++    """
++    try:
++        from hippocampai.models.memory import Memory as _Memory, MemoryType as _MemoryType
++
++        try:
++            mem_type = _MemoryType(request.type or "fact")
++        except ValueError:
++            mem_type = _MemoryType.FACT
++        probe = _Memory(text=request.text, user_id="__suggest__", type=mem_type)
++        tags = client.categorizer.suggest_tags(probe, max_tags=request.max_tags or 5)
++        return {"tags": tags, "count": len(tags)}
++    except Exception as e:
++        logger.error(f"suggest-tags failed: {e}")
++        raise HTTPException(status_code=500, detail=str(e))
++
++
+ @app.patch("/v1/memories:update", response_model=Memory)
+ def update_memory(
+     request: UpdateMemoryRequest, client: MemoryClient = Depends(get_memory_client)
+ ) -> Memory:
+-- 
+2.43.0
+

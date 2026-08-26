@@ -19,8 +19,10 @@ export const webFetchSchema = z.object({
 })
 
 export const webSearchSchema = z.object({
-  query: z.string().min(1).describe('Search query string'),
+  query: z.string().min(1).describe('Search query string. Engine bangs work too: prefix with !goc (google), !bi (bing), !yh (yahoo), !ddg (duckduckgo).'),
   maxResults: z.number().int().min(1).max(20).optional().describe('Maximum results (default 10)'),
+  engine: z.enum(['google', 'bing', 'yahoo', 'duckduckgo']).optional()
+    .describe('Preferred search engine (default: the instance mix). Same effect as a query bang.'),
 })
 
 export type WebToolResult =
@@ -160,8 +162,39 @@ export async function runWebSearch(args: unknown, signal?: AbortSignal): Promise
   if (!validated.success) {
     return { kind: 'error', message: `web_search invalid arguments: ${validated.error.message}` }
   }
-  const { query, maxResults } = validated.data
+  const { query, maxResults, engine } = validated.data
   const limit = maxResults ?? 10
+
+  // PRIMARY: the lab's self-hosted SearXNG (no rate limits, engine choice). Raw google is
+  // captcha-blocked from our IP, so 'google' maps to the working google-cse engine (!goc).
+  // Engine can come from the arg OR a bang already in the query (SearXNG parses both).
+  const BANG: Record<string, string> = { google: '!goc', bing: '!bi', yahoo: '!yh', duckduckgo: '!ddg' }
+  const searxQuery = engine && !query.trimStart().startsWith('!') ? `${BANG[engine]} ${query}` : query
+  const searxBase = process.env.AILAB_SEARXNG_URL || 'http://127.0.0.1:8888'
+  try {
+    const sr = await fetch(`${searxBase}/search?q=${encodeURIComponent(searxQuery)}&format=json`, {
+      signal: signal ?? AbortSignal.timeout(25_000), headers: { Accept: 'application/json' },
+    })
+    if (sr.ok) {
+      const data = (await sr.json()) as { results?: Array<{ title?: string; url?: string; content?: string; engine?: string }> }
+      const rs = (data.results ?? []).slice(0, limit)
+      if (rs.length > 0) {
+        const formatted = rs
+          .map((r, i) => `${i + 1}. ${r.title ?? ''}${r.engine ? ` [${r.engine}]` : ''}\n   ${r.url ?? ''}\n   ${(r.content ?? '').slice(0, 300)}`)
+          .join('\n\n')
+        return { kind: 'text', message: `Search: ${searxQuery}\n\n${formatted}` }
+      }
+      // 0 results is a real answer from a working backend — do NOT fall through to the
+      // rate-limited scraper for it; tell the caller honestly.
+      return { kind: 'text', message: `No results for "${searxQuery}" (searxng). Try different terms or another engine bang (!goc !bi !yh !ddg).` }
+    }
+    console.warn(`[web_search] searxng returned HTTP ${sr.status} — falling back to DDG scrape`)
+  } catch (err) {
+    if ((err as any)?.name === 'AbortError') throw err
+    console.warn(`[web_search] searxng unreachable (${err instanceof Error ? err.message : String(err)}) — falling back to DDG scrape`)
+  }
+
+  // FALLBACK: legacy DuckDuckGo HTML scrape (rate-limit prone) — only when SearXNG is down.
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
   try {
     const { status, text } = await fetchWithLimit(url, {}, signal)

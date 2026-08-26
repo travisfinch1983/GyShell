@@ -44,12 +44,68 @@ export function saveKvSettings(s) {
   _settingsCache = null;   // invalidate
 }
 
+/** Stable identity for a service — MODEL-keyed, deliberately port-free.
+ *
+ * 🛑 NOT the port. Ports are assigned at launch, so the same service can come back on a
+ * different port purely because of the order things started after a reboot. Anything keyed on
+ * a port silently loses its settings the first time that happens — which is exactly the class
+ * of bug that took the KV cache offline (settings pinned to `llama-server-5001-<timestamp>`).
+ * The model is what actually identifies the cache's contents.
+ */
+function stableKvKey(svc) { return `${svc.providerId}:${svc.model || ''}`; }
+
+const _kvInheritLogged = new Set();
+
 function svcSettings(svc) {
   const s = loadSettings();
-  const per = (s.perService && s.perService[svc.id]) || {};
+  const bag = s.perService || {};
+  let per = bag[svc.id];
+  let via = null;
+
+  // svc.id embeds the service's CREATION TIMESTAMP (`llama-server-5001-1784752685077`), so
+  // recreating a service — a model swap, a relaunch, a reboot that reorders ports — mints a NEW
+  // id and ORPHANS its settings. The original code then fell through to defaultEnabled (false)
+  // and the KV cache went SILENTLY off: no saves, no restores, a stale Optane pool, and nothing
+  // in the logs to say so. Resolution order below is exact id → model key → any prior instance
+  // of the same provider, and it SAYS so when it inherits.
+  if (!per && svc.model) { per = bag[stableKvKey(svc)]; if (per) via = `model key ${stableKvKey(svc)}`; }
+  if (!per) {
+    // One-time migration for settings written before the model key existed. SAME PORT ONLY —
+    // an earlier draft fell back to "any prior entry for this provider", which resolved a
+    // moved service to the 5007 TWIN's settings (deferToLlama:true). Inheriting a sibling's
+    // experimental config is worse than inheriting nothing, so this stays narrow; port changes
+    // are covered by the model key that gets written just below.
+    const keys = Object.keys(bag);
+    const samePort = keys.filter((k) => k.startsWith(`${svc.providerId}-${svc.port}-`)).sort();
+    if (samePort.length) {
+      const from = samePort[samePort.length - 1];
+      per = bag[from];
+      via = `legacy key ${from}`;
+      // SELF-MIGRATE: persist under the port-free model key so the NEXT time this service comes
+      // up — on any port — it resolves directly instead of depending on a legacy match.
+      if (svc.model) {
+        try {
+          const s2 = loadSettings();
+          s2.perService = s2.perService || {};
+          if (!s2.perService[stableKvKey(svc)]) {
+            s2.perService[stableKvKey(svc)] = per;
+            saveKvSettings(s2);
+            console.warn(`[kv] migrated settings ${from} -> ${stableKvKey(svc)} (port-free key)`);
+          }
+        } catch (e) { /* non-fatal: resolution already succeeded */ }
+      }
+    }
+  }
+  if (via && !_kvInheritLogged.has(svc.id)) {
+    _kvInheritLogged.add(svc.id);
+    console.warn(`[kv] settings for ${svc.id} resolved via ${via} ` +
+                 `(service recreated or re-ported; enabled=${per && per.enabled})`);
+  }
+  per = per || {};
   const enabled = per.enabled != null ? !!per.enabled : !!s.defaultEnabled;
   return { enabled, config: per.config || {} };
 }
+
 
 /** llama.cpp service with its per-service KV toggle ON. Default OFF ⇒ unchanged behavior. */
 export function isKvEligible(svc) {

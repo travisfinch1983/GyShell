@@ -25,6 +25,8 @@ import { AgentNativeTools } from './AgentNativeTools'
 import { AgentSkills } from './AgentSkills'
 import { HermesToolPicker } from './HermesToolPicker'
 import { confirmStore } from '../../stores/confirmStore'
+import { HermesTtsSection } from './HermesTtsSection'
+import { hermesChatStore as chatStore } from '../../stores/HermesChatStore'
 import styles from './Agents.module.scss'
 
 /** Source-tag badge for a catalog model (local models are untagged on the wire —
@@ -302,15 +304,42 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
     setToolDraft('')
   }
 
+  // Speak quick-test replies through a REAL voice path (or not at all):
+  //   hermes = the Telegram/gateway pipeline (POST /hermes-tts/test — profile config.yaml voice)
+  //   ailab  = the chat playback pipeline (chatStore.speakMessage — spec.tts voice)
+  // Two genuinely different systems; the toggle exists so both can be verified by ear.
+  const [testSpeak, setTestSpeak] = useState<'off' | 'hermes' | 'ailab'>('off')
+  const [speakNote, setSpeakNote] = useState('')
+
   const runTest = async () => {
     const t = testText.trim()
     if (!t || testWaiting) return
     setTestText('')
     setTestLog((l) => [...l, { who: 'you', text: t }])
     setTestWaiting(true)
-    const r = await hermesApi.prompt(agentId, t)
+    // wait:true — the default prompt route is fire-and-ack (reply rides /stream), which made
+    // this box print '(empty reply)' forever. Blocking is right for a QUICK test; long
+    // tool-using turns belong in the chat tab.
+    const r = await hermesApi.prompt(agentId, t, { wait: true })
     setTestWaiting(false)
     setTestLog((l) => [...l, r.ok ? { who: 'agent', text: r.reply || '(empty reply)' } : { who: 'error', text: r.error || 'prompt failed' }])
+    const reply = (r.ok && r.reply) ? r.reply.trim() : ''
+    if (reply && testSpeak !== 'off') {
+      setSpeakNote(testSpeak === 'hermes' ? 'Speaking via Hermes TTS (Telegram voice)…' : 'Speaking via AI-Lab TTS (chat voice)…')
+      try {
+        if (testSpeak === 'hermes') {
+          const t = await hermesApi.testHermesTts(agentId, reply)
+          if (!t.ok || !t.audioB64) { setSpeakNote(`Hermes TTS failed: ${t.error ?? 'no audio'}`); return }
+          void new Audio(`data:${t.mime ?? 'audio/ogg'};base64,${t.audioB64}`).play()
+          setSpeakNote('Spoken via Hermes TTS — the Telegram voice.')
+        } else {
+          await chatStore.speakMessage(agentId, reply)
+          setSpeakNote('Spoken via AI-Lab TTS — the chat voice.')
+        }
+      } catch (e) {
+        setSpeakNote(`speak failed: ${String((e as Error).message)}`)
+      }
+    }
   }
 
   const card = (children: React.ReactNode) => <div className={styles.card}>{children}</div>
@@ -639,6 +668,7 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
               </div>
             </div>,
           )}
+          {initialSpec?.agentId && <HermesTtsSection agentId={initialSpec.agentId} />}
         </section>
       )}
 
@@ -782,6 +812,15 @@ export const AgentEditor: React.FC<Props> = observer(({ initialSpec, specSource,
         <section>
           <div className={styles.sectionTitle}>Quick test</div>
           <div className={styles.sectionSub}>One-shot prompt through POST /prompt — interim until the streaming chat surface lands.</div>
+          <div className={styles.formRow}>
+            <span className={styles.label}>Speak replies</span>
+            <select className={styles.input} value={testSpeak} onChange={(e) => { setTestSpeak(e.target.value as 'off' | 'hermes' | 'ailab'); setSpeakNote('') }}>
+              <option value="off">off — text only</option>
+              <option value="hermes">Hermes TTS — the Telegram / gateway voice</option>
+              <option value="ailab">AI-Lab TTS — the chat playback voice</option>
+            </select>
+          </div>
+          {speakNote && <div className={styles.formMsg} style={{ color: 'var(--accent)' }}>{speakNote}</div>}
           {card(
             <>
               <div className={styles.promptLog}>
