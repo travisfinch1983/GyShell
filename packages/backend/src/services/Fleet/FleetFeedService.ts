@@ -106,8 +106,17 @@ export class FleetFeedService {
     return this.call<{ unread: unknown[] }>('GET', `/unread?viewer=${encodeURIComponent(viewer)}`)
   }
 
-  /** Kill switch. Replaces the one that died with ConversationBus — DB-backed in fleetd, so a
-   *  restart cannot silently un-flip it and leave you believing traffic was stopped. */
+  /**
+   * Kill switch for FLEETD DELIVERY. DB-backed in fleetd, so a restart cannot silently un-flip
+   * it and leave you believing traffic was stopped.
+   *
+   * 🛑 SCOPE: this does NOT stop everything. ConversationBus runs a SEPARATE autonomous path
+   * (HermesBusSubscriber: Hermes agents auto-replying to each other) which never touches fleetd
+   * and is governed by its own `autonomousRoutingEnabled` flag at /api/fleet/status + /guard.
+   * Two switches, two paths. Flipping this one off while believing it stopped all agent traffic
+   * is precisely the "a control that lies" failure this guard exists to prevent, so the limit is
+   * documented here rather than discovered later.
+   */
   getGuard() {
     return this.call<{ enabled: boolean; reason: string | null; updated_by: string | null;
                        updated_at: number | null }>('GET', '/guard')
