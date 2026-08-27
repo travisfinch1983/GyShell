@@ -43,7 +43,6 @@ import { createFleetRouter } from '../../services/ConversationBus/fleetHttp'
 import { HermesService } from '../../services/Hermes/HermesService'
 import { createHermesRouter } from '../../services/Hermes/hermesHttp'
 import { createAgentToolsRouter } from '../../services/Agent/agentToolsHttp'
-import { HermesActivityReporter } from '../../services/Hermes/HermesActivityReporter'
 import { HermesBusSubscriber } from '../../services/Hermes/HermesBusSubscriber'
 import { createAutoTerminalConfig } from '../../services/terminal/terminalConnectionSupport'
 import { TerminalCommandDraftService } from '../../services/TerminalCommandDraftService'
@@ -206,10 +205,6 @@ export async function startGyBackend(): Promise<void> {
   // Autonomous, headless inter-agent path: Hermes agents as first-class bus participants.
   // Gated by the `autonomousRoutingEnabled` kill switch (default OFF) — inert until enabled.
   new HermesBusSubscriber(hermesService, conversationBus).start()
-  // Hermes half of fleet activity — Claude Code instances are reported by the
-  // transcript tailer on CT180; these are reported here because the ACP bridge
-  // (with authoritative per-session busy/idle) is in-process.
-  new HermesActivityReporter(hermesService.bridge, conversationBus).start()
   // AI-Lab Universal API Proxy — dedicated HTTP listener fronting running services by slot.
   void universalProxyService
     .start({
