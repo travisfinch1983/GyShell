@@ -37,9 +37,6 @@ import {
 import { ImageAttachmentService } from '../../services/ImageAttachmentService'
 import { TerminalStateStore } from '../../services/terminal/TerminalStateStore'
 import { ConversationBus, JsonlBusStore, AgentRegistry, ContextPackStore } from '../../services/ConversationBus'
-import { createFleetBridge } from '../../services/ConversationBus/fleetBridge'
-import { createBusAgentInvoker } from '../../services/ConversationBus/BusAgentInvoker'
-import { createFleetRouter } from '../../services/ConversationBus/fleetHttp'
 import { HermesService } from '../../services/Hermes/HermesService'
 import { createHermesRouter } from '../../services/Hermes/hermesHttp'
 import { createAgentToolsRouter } from '../../services/Agent/agentToolsHttp'
@@ -161,34 +158,6 @@ export async function startGyBackend(): Promise<void> {
     const entry = agentRegistry.getBySessionId(sessionId)
     return entry ? contextPackStore.assemble(entry) : undefined
   })
-  conversationBus.setInvoker(
-    createBusAgentInvoker({
-      gateway: gatewayService,
-      registry: agentRegistry,
-      loadLastAssistantText: (sessionId) => {
-        const session = chatHistoryService.loadSession(sessionId)
-        if (!session) return null
-        const messages = Array.from(session.messages.values())
-        for (let i = messages.length - 1; i >= 0; i--) {
-          const m = messages[i] as { type?: string; data?: { content?: unknown } }
-          if (m.type !== 'ai') continue
-          const content = m.data?.content
-          if (typeof content === 'string' && content.trim()) return content
-          if (Array.isArray(content)) {
-            const text = content
-              .map((part) => (typeof part === 'object' && part && 'text' in part ? String((part as { text: unknown }).text) : ''))
-              .join('')
-            if (text.trim()) return text
-          }
-        }
-        return null
-      },
-    }),
-  )
-  const fleetBridge = createFleetBridge(conversationBus)
-  conversationBus.on('record', (record) => {
-    gatewayService.broadcastRaw('fleet:record', record)
-  })
   const catalogInstallService = new CatalogInstallService({
     publish: (channel, data) => gatewayService.broadcastRaw(channel, data),
     keyPath: process.env.AILAB_SSH_KEY || path.join(dataDir, 'ssh', 'id_ed25519')
@@ -209,7 +178,6 @@ export async function startGyBackend(): Promise<void> {
   void universalProxyService
     .start({
       dataDir,
-      fleetRouter: createFleetRouter(conversationBus),
         // One kill switch must stop BOTH delivery paths: fleetd delivery, and this autonomous
         // one (HermesBusSubscriber). Governing them separately meant stopping one while
         // believing you had stopped "agent traffic".
@@ -306,7 +274,6 @@ export async function startGyBackend(): Promise<void> {
           get: () => uiSettingsService.get(),
           set: (patch) => uiSettingsService.set(patch)
         },
-        fleetBridge,
         aiProbeBridge: {
           detectTypes: (items) => detectServiceTypes(items)
         },

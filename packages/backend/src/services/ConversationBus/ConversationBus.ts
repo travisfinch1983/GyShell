@@ -8,7 +8,6 @@ import {
   busSendRequestSchema,
   fleetGuardConfigSchema,
   relayInboundMessageSchema,
-  type AgentActivity,
   type AgentRegistryEntry,
   type AgentStatus,
   type BusDeliveryState,
@@ -364,52 +363,6 @@ export class ConversationBus extends EventEmitter {
     this.heartbeats.set(agentId, { at: Date.now(), alive })
   }
 
-  /**
-   * Activity reported by a collector (transcript tailer for Claude Code
-   * instances, ACP-ring reader for Hermes agents). Runtime state, not persisted.
-   */
-  private activity = new Map<string, AgentActivity>()
-
-  /** Beyond this the reading itself is suspect — the COLLECTOR may be down. */
-  private static readonly ACTIVITY_STALE_MS = 120_000
-
-  recordActivity(a: AgentActivity): void {
-    if (!a?.agentId) return
-    // MERGE, don't replace. Collectors ship the `recent` window only when the
-    // agent has newly acted (otherwise idle agents would push hundreds of KB
-    // every poll), so a wholesale replace would erase the window on the very
-    // next report and `available` would sit at 0 forever.
-    const prev = this.activity.get(a.agentId)
-    this.activity.set(a.agentId, {
-      ...a,
-      recent: a.recent ?? prev?.recent,
-    })
-  }
-
-  /**
-   * @param agentId omit for every known agent.
-   * Returns `unknown` rather than inventing a state when no collector has
-   * reported, and downgrades to `unknown` when the reading has gone stale —
-   * a confidently wrong "idle" is what made this whole class of bug invisible.
-   */
-  agentActivity(agentId?: string): AgentActivity[] {
-    const now = Date.now()
-    const stale = (a: AgentActivity): AgentActivity => {
-      const age = now - Date.parse(a.observedAt)
-      if (!Number.isFinite(age) || age < ConversationBus.ACTIVITY_STALE_MS) return a
-      return {
-        ...a,
-        state: 'unknown',
-        lastEventSummary:
-          `${a.lastEventSummary ?? 'n/a'} (STALE: no collector report for ${Math.round(age / 1000)}s)`,
-      }
-    }
-    if (agentId) {
-      const one = this.activity.get(agentId)
-      return one ? [stale(one)] : []
-    }
-    return [...this.activity.values()].map(stale)
-  }
 
   agentStatuses(): AgentStatus[] {
     const now = Date.now()
