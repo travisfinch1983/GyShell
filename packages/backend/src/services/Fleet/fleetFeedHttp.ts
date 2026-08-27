@@ -169,8 +169,14 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
     return ok(res, () => svc.search(q, {
       limit: req.query?.limit ? Number(req.query.limit) : undefined,
       category: req.query?.category as string,
+      // literal stays the default so existing callers are unchanged; semantic and hybrid are
+      // opt-in. All three are public-only — the mode cannot widen visibility.
+      mode: req.query?.mode as 'literal' | 'semantic' | 'hybrid' | undefined,
     }))
   })
+
+  router.post(claim('/api/fleet/reindex'), jsonBody, (req: Req, res: Res) =>
+    ok(res, () => svc.reindex(req.body?.limit ? Number(req.body.limit) : undefined)))
 
   router.get(claim('/api/fleet/directory'), (_req: Req, res: Res) =>
     ok(res, () => svc.directory()))

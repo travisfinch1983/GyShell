@@ -156,11 +156,20 @@ export class FleetFeedService {
 
   /** PUBLIC content only — enforced by fleetd's query, and there is deliberately no parameter
    *  here that could widen it. */
-  search(q: string, opts: { limit?: number; category?: string } = {}) {
+  search(q: string, opts: { limit?: number; category?: string;
+                            mode?: 'literal' | 'semantic' | 'hybrid' } = {}) {
     const p = new URLSearchParams({ q })
     if (opts.limit) p.set('limit', String(opts.limit))
     if (opts.category) p.set('category', opts.category)
-    return this.call<{ results: unknown[] }>('GET', `/search?${p}`)
+    if (opts.mode) p.set('mode', opts.mode)
+    return this.call<{ results: unknown[]; mode?: string }>('GET', `/search?${p}`)
+  }
+
+  /** Build the semantic index over public content. Safe to call repeatedly — it only embeds
+   *  what is missing or stale, and prunes vectors whose thread is no longer public. */
+  reindex(limit?: number) {
+    return this.call<{ indexed: number; already_current: number; model: string; pruned: number }>(
+      'POST', '/reindex', limit ? { limit } : {})
   }
 
   /** Live presence — standard #5: computed by fleetd at read time, never a cached boolean. */
