@@ -26,19 +26,7 @@ type Res = {
  * the kill switch lied. The old router is gone; the guard went with it.)
  */
 
-/**
- * Adapter over ConversationBus's guard. The fleet has TWO delivery paths and they were governed
- * by two unrelated switches: fleetd delivery, and ConversationBus autonomous routing
- * (HermesBusSubscriber — Hermes agents auto-replying to each other, which never touches fleetd).
- * Flipping one while believing it stopped "agent traffic" left the other running.
- */
-export type BusGuard = {
-  get: () => { autonomousRoutingEnabled: boolean }
-  set: (patch: { autonomousRoutingEnabled: boolean }) => { autonomousRoutingEnabled: boolean }
-}
-
-export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedService(),
-                                      busGuard?: BusGuard): unknown {
+export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedService()): unknown {
   const router = express.Router()
   // Measured, not assumed: 16 MiB bodies pass and 26.7 MiB is refused, identically through the
   // backend (17890) and the web host (17889) — the web host does not narrow it.
@@ -114,54 +102,17 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
 
   // Travis-facing kill switch. Read and write, because a control you cannot observe is not a
   // control — the UI has to be able to show that traffic is currently stopped, and why.
-  // ONE switch, BOTH paths. Reports each leg separately so a disagreement is visible rather
-  // than averaged away — if they ever drift, `unified:false` says so instead of quietly
-  // reporting the state of whichever leg was checked last.
-  router.get('/api/fleet/guard', (_req: Req, res: Res) => ok(res, async () => {
-    const g = await svc.getGuard()
-    const autonomous = busGuard ? busGuard.get().autonomousRoutingEnabled : null
-    return { ...g, autonomous_routing: autonomous,
-             unified: autonomous === null ? null : autonomous === g.enabled }
-  }))
+  // ONE switch, ONE path. It spanned two legs while ConversationBus ran a separate
+  // autonomous route; that capability was dropped on 2026-08-27, so the switch is honest
+  // as a single leg rather than reporting a second one that no longer exists.
+  router.get('/api/fleet/guard', (_req: Req, res: Res) => ok(res, () => svc.getGuard()))
   // alias (launch name) — drop once the web build ships canonical paths
-  router.get('/api/fleet/delivery-guard', (_req: Req, res: Res) => ok(res, async () => {
-    const g = await svc.getGuard()
-    const autonomous = busGuard ? busGuard.get().autonomousRoutingEnabled : null
-    return { ...g, autonomous_routing: autonomous,
-             unified: autonomous === null ? null : autonomous === g.enabled }
-  }))
+  router.get('/api/fleet/delivery-guard', (_req: Req, res: Res) => ok(res, () => svc.getGuard()))
 
-  router.post('/api/fleet/guard', jsonBody, (req: Req, res: Res) => ok(res, async () => {
-    const enabled = Boolean(req.body?.enabled)
-    const g = await svc.setGuard(enabled, req.body?.actor ?? 'user', req.body?.reason) as Record<string, unknown>
-    // Set the bus leg SECOND and report it: if this throws, the caller learns the fleet is in a
-    // mixed state rather than getting an ok that covers only half of what they asked for.
-    let autonomous: boolean | null = null
-    let busError: string | undefined
-    if (busGuard) {
-      try { autonomous = busGuard.set({ autonomousRoutingEnabled: enabled }).autonomousRoutingEnabled }
-      catch (e) { busError = (e as Error).message }
-    }
-    return { ...g, autonomous_routing: autonomous,
-             unified: autonomous === null ? null : autonomous === enabled,
-             ...(busError ? { bus_error: busError, stage: 'partial' } : {}) }
-  }))
-  // alias (launch name) — drop once the web build ships canonical paths
-  router.post('/api/fleet/delivery-guard', jsonBody, (req: Req, res: Res) => ok(res, async () => {
-    const enabled = Boolean(req.body?.enabled)
-    const g = await svc.setGuard(enabled, req.body?.actor ?? 'user', req.body?.reason) as Record<string, unknown>
-    // Set the bus leg SECOND and report it: if this throws, the caller learns the fleet is in a
-    // mixed state rather than getting an ok that covers only half of what they asked for.
-    let autonomous: boolean | null = null
-    let busError: string | undefined
-    if (busGuard) {
-      try { autonomous = busGuard.set({ autonomousRoutingEnabled: enabled }).autonomousRoutingEnabled }
-      catch (e) { busError = (e as Error).message }
-    }
-    return { ...g, autonomous_routing: autonomous,
-             unified: autonomous === null ? null : autonomous === enabled,
-             ...(busError ? { bus_error: busError, stage: 'partial' } : {}) }
-  }))
+  const setGuard = (req: Req, res: Res) => ok(res, () =>
+    svc.setGuard(Boolean(req.body?.enabled), req.body?.actor ?? 'user', req.body?.reason))
+  router.post('/api/fleet/guard', jsonBody, setGuard)
+  router.post('/api/fleet/delivery-guard', jsonBody, setGuard)
 
   router.get('/api/fleet/attachment/:id/structured', (req: Req, res: Res) =>
     ok(res, () => svc.getStructured(req.params!.id)))

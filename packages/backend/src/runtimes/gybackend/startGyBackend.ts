@@ -36,11 +36,10 @@ import {
 } from '../../services/Gateway/toolingSummary'
 import { ImageAttachmentService } from '../../services/ImageAttachmentService'
 import { TerminalStateStore } from '../../services/terminal/TerminalStateStore'
-import { ConversationBus, JsonlBusStore, AgentRegistry, ContextPackStore } from '../../services/ConversationBus'
+import { AgentRegistry, ContextPackStore } from '../../services/ConversationBus'
 import { HermesService } from '../../services/Hermes/HermesService'
 import { createHermesRouter } from '../../services/Hermes/hermesHttp'
 import { createAgentToolsRouter } from '../../services/Agent/agentToolsHttp'
-import { HermesBusSubscriber } from '../../services/Hermes/HermesBusSubscriber'
 import { createAutoTerminalConfig } from '../../services/terminal/terminalConnectionSupport'
 import { TerminalCommandDraftService } from '../../services/TerminalCommandDraftService'
 
@@ -133,21 +132,13 @@ export async function startGyBackend(): Promise<void> {
   )
   const terminalCommandDraftService = new TerminalCommandDraftService(terminalService, settingsService)
 
-  // ConversationBus (fleet vertical): broker + append-only log under <dataDir>/fleet/.
-  // Delivery-triggered inference goes through GatewayService.dispatchFromBus and
-  // remains gated behind autonomousRoutingEnabled (default false) until the guards
-  // are reviewed — the invoker being wired does not by itself spend GPU.
+  // ConversationBus was retired on 2026-08-27 — all fleet messaging goes through fleetd.
+  // The two survivors below are kept because neither is messaging plumbing.
   const fleetDir = path.join(dataDir, 'fleet')
   // The agent registry is a LIVE feature seam (per-agent context packs → system prompt),
   // not messaging plumbing — constructed standalone so it survives ConversationBus
   // retirement. Nothing below may reach it through the bus.
   const agentRegistry = new AgentRegistry(path.join(fleetDir, 'registry.json'))
-  const conversationBus = new ConversationBus(
-    new JsonlBusStore(path.join(fleetDir, 'bus.jsonl')),
-    agentRegistry,
-    path.join(fleetDir, 'config.json'),
-    null,
-  )
   // reqs 9-11 (Phase 6): per-agent context packs. Docs live under
   // <fleetDir>/agent-context-packs/<agentId>/<slot>.md; assembled into the
   // system prompt for any run whose session maps to a declared local agent.
@@ -171,26 +162,14 @@ export async function startGyBackend(): Promise<void> {
     providerServicesFile: path.join(dataDir, 'hermes-provider-services.json'),
     supportModelsFile: path.join(dataDir, 'hermes-support-models.json'),
   })
-  // Autonomous, headless inter-agent path: Hermes agents as first-class bus participants.
-  // Gated by the `autonomousRoutingEnabled` kill switch (default OFF) — inert until enabled.
-  new HermesBusSubscriber(hermesService, conversationBus).start()
+  // Autonomous agent-to-agent auto-reply (HermesBusSubscriber) was DROPPED on 2026-08-27.
+  // fleetd already wakes an agent with the message; the agent then decides whether to reply.
+  // Auto-posting a model's output as a reply removed that judgement — which is a security
+  // control, since inbound fleet content is untrusted — and made ping-pong loops structural.
   // AI-Lab Universal API Proxy — dedicated HTTP listener fronting running services by slot.
   void universalProxyService
     .start({
       dataDir,
-        // One kill switch must stop BOTH delivery paths: fleetd delivery, and this autonomous
-        // one (HermesBusSubscriber). Governing them separately meant stopping one while
-        // believing you had stopped "agent traffic".
-        busGuard: {
-          get: () => ({
-            autonomousRoutingEnabled: conversationBus.getGuardConfig().autonomousRoutingEnabled,
-          }),
-          set: (patch: { autonomousRoutingEnabled: boolean }) => ({
-            autonomousRoutingEnabled: conversationBus.setGuardConfig({
-              autonomousRoutingEnabled: patch.autonomousRoutingEnabled,
-            }).autonomousRoutingEnabled,
-          }),
-        },
       hermesRouter: createHermesRouter(hermesService, path.join(dataDir, 'roadmap.md')),
       agentToolsRouter: createAgentToolsRouter({ settingsService, agentService }),
     })

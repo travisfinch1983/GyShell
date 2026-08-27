@@ -34,8 +34,6 @@ export class UniversalProxyService {
   private lanIp = '127.0.0.1'
   private fullServices: unknown = null
   private vectorList: unknown = null
-  /** ConversationBus guard adapter — lets the ONE kill switch stop the autonomous path too. */
-  private busGuard: unknown = null
   /** AI-Lab x Hermes control-plane HTTP surface (createHermesRouter) — set via start opts. */
   private hermesRouter: unknown = null
   private agentToolsRouter: unknown = null
@@ -101,8 +99,7 @@ export class UniversalProxyService {
       conn.connect({ host, port: 22, username: 'root', privateKey: key, readyTimeout: opts.timeout || 12000, hostVerifier: () => true })
     })
 
-  async start(opts: { dataDir?: string; host?: string; port?: number; hermesRouter?: unknown; agentToolsRouter?: unknown; busGuard?: unknown } = {}): Promise<void> {
-    this.busGuard = opts.busGuard ?? this.busGuard
+  async start(opts: { dataDir?: string; host?: string; port?: number; hermesRouter?: unknown; agentToolsRouter?: unknown } = {}): Promise<void> {
     this.hermesRouter = opts.hermesRouter ?? this.hermesRouter
     this.agentToolsRouter = opts.agentToolsRouter ?? this.agentToolsRouter
     this.dataDir = opts.dataDir || this.dataDir
@@ -307,7 +304,7 @@ export class UniversalProxyService {
     // /api/fleet/* since the ConversationBus router retired (bus-retirement 3/5).
     {
       const { createFleetFeedRouter } = await import('../Fleet/fleetFeedHttp.js')
-      app.use(createFleetFeedRouter(undefined, this.busGuard as never))
+      app.use(createFleetFeedRouter())
     }
     // AI-Lab x Hermes control plane (createHermesRouter): /api/hermes/* — before the broad /api cluster router.
     if (this.hermesRouter) {
