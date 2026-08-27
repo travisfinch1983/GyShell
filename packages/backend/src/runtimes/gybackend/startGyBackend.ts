@@ -142,24 +142,30 @@ export async function startGyBackend(): Promise<void> {
   // remains gated behind autonomousRoutingEnabled (default false) until the guards
   // are reviewed — the invoker being wired does not by itself spend GPU.
   const fleetDir = path.join(dataDir, 'fleet')
+  // The agent registry is a LIVE feature seam (per-agent context packs → system prompt),
+  // not messaging plumbing — constructed standalone so it survives ConversationBus
+  // retirement. Nothing below may reach it through the bus.
+  const agentRegistry = new AgentRegistry(path.join(fleetDir, 'registry.json'))
   const conversationBus = new ConversationBus(
     new JsonlBusStore(path.join(fleetDir, 'bus.jsonl')),
-    new AgentRegistry(path.join(fleetDir, 'registry.json')),
+    agentRegistry,
     path.join(fleetDir, 'config.json'),
     null,
   )
   // reqs 9-11 (Phase 6): per-agent context packs. Docs live under
   // <fleetDir>/agent-context-packs/<agentId>/<slot>.md; assembled into the
   // system prompt for any run whose session maps to a declared local agent.
+  // (Directory being empty today means "feature awaiting content", not dead —
+  // see contextPackSeam.extreme.spec.ts for the seam's regression coverage.)
   const contextPackStore = new ContextPackStore(path.join(fleetDir, 'agent-context-packs'))
   agentService.setContextPackProvider((sessionId) => {
-    const entry = conversationBus.registry.getBySessionId(sessionId)
+    const entry = agentRegistry.getBySessionId(sessionId)
     return entry ? contextPackStore.assemble(entry) : undefined
   })
   conversationBus.setInvoker(
     createBusAgentInvoker({
       gateway: gatewayService,
-      registry: conversationBus.registry,
+      registry: agentRegistry,
       loadLastAssistantText: (sessionId) => {
         const session = chatHistoryService.loadSession(sessionId)
         if (!session) return null
