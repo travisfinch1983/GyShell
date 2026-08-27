@@ -1,7 +1,7 @@
 /**
  * Fleet FEED contracts (messaging v2).
  *
- * These describe the /api/fleet/threads|thread|post|search|... surface, which proxies fleetd
+ * These describe the /api/fleet/feed|thread|post|search|... surface, which proxies fleetd
  * (the canonical SQLite store on claude1:17900). They are DELIBERATELY separate from
  * ./contracts, which describes the older ConversationBus vertical (busEnvelope, agentActivity,
  * afterSeq replay). The two coexist until the reworked Fleet Feed tab replaces the old one.
@@ -219,8 +219,8 @@ export type FeedUnread = z.infer<typeof feedUnreadSchema>
 
 /**
  * The delivery kill switch — Travis-facing, and the replacement for the one that dies with
- * ConversationBus. Served at /api/fleet/delivery-guard, NOT /api/fleet/guard: that path is
- * still claimed by the old router, which is mounted first and would shadow this one.
+ * ConversationBus. Served at /api/fleet/guard since the old router retired
+ * (bus-retirement 5/5); /api/fleet/delivery-guard remains a temporary alias.
  */
 export const feedGuardSchema = z.object({
   enabled: z.boolean(),

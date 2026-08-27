@@ -3,9 +3,10 @@
  * fleet-channel docs/FEED_CONTRACT.md + shared/fleet/feed-contracts.ts).
  * Same pattern as hermesApi.ts: ALL endpoint knowledge lives here.
  *
- * Route names avoid the ConversationBus router's claims (it is mounted first
- * and Express shadows silently): threads NOT feed, message NOT send,
- * directory NOT agents, delivery-guard NOT guard.
+ * Canonical route names (/feed, /send, /agents, /guard) — the ConversationBus
+ * router whose claims forced the launch-era names (threads/message/directory/
+ * delivery-guard) retired in bus-retirement 3/5; the backend keeps those as
+ * temporary aliases for bundles built before this rename.
  *
  * JSON rides the cluster bridge (standard #1 — the browser never talks to
  * fleetd or any 10.0.0.x address). Attachment BYTES are the one
@@ -45,7 +46,7 @@ export type {
 } from '@gyshell/shared'
 export { feedSecondsToDate } from '@gyshell/shared'
 
-/** Feed list scope — a query concept of the /threads route, not a stored shape. */
+/** Feed list scope — a query concept of the /feed route, not a stored shape. */
 export type FeedScope = 'public' | 'mine' | 'all'
 
 /** Outbound attachment riding inline on message/post (FeedAttachmentRequest minus message_id — no post-hoc race). */
@@ -97,7 +98,7 @@ export const fleetFeedApi = {
     cursor?: string
   }): Promise<FeedList> {
     return get(
-      `/api/fleet/threads${q({
+      `/api/fleet/feed${q({
         scope: opts.scope,
         category: opts.category,
         kind: opts.kind,
@@ -149,7 +150,7 @@ export const fleetFeedApi = {
     parent_id?: string
     attachments?: FeedAttachmentInput[]
   }): Promise<any> {
-    return post('/api/fleet/message', { sender: FLEET_VIEWER, ...input })
+    return post('/api/fleet/send', { sender: FLEET_VIEWER, ...input })
   },
 
   async setVisibility(threadId: string, visibility: FeedVisibility): Promise<any> {
@@ -171,16 +172,16 @@ export const fleetFeedApi = {
   },
 
   async directory(): Promise<FeedDirectoryEntry[]> {
-    const r = await get('/api/fleet/directory')
+    const r = await get('/api/fleet/agents')
     return (r?.agents ?? r?.directory ?? r ?? []) as FeedDirectoryEntry[]
   },
 
   async guard(): Promise<FeedGuard> {
-    return get('/api/fleet/delivery-guard')
+    return get('/api/fleet/guard')
   },
 
   async setGuard(enabled: boolean, reason?: string): Promise<FeedGuard> {
-    return post('/api/fleet/delivery-guard', { enabled, actor: FLEET_VIEWER, reason })
+    return post('/api/fleet/guard', { enabled, actor: FLEET_VIEWER, reason })
   },
 
   /** Flowchart machine-readable form (pixels are useless to another agent). */
