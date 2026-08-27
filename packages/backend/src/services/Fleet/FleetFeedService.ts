@@ -24,7 +24,9 @@ export class FleetFeedService {
 
   constructor(cfg: FleetFeedConfig = {}) {
     // env first, then explicit config, then a derived default — see standard #6.
-    const host = process.env.FLEETD_HOST ?? '10.0.0.161'
+    // fleetd moved into this container on 2026-08-27 — it used to live in claude1's own
+    // container, which made one agent's box a dependency for the whole fleet's messaging.
+    const host = process.env.FLEETD_HOST ?? '127.0.0.1'
     const port = process.env.FLEETD_PORT ?? '17900'
     this.base = (process.env.FLEETD_URL ?? cfg.baseUrl ?? `http://${host}:${port}`).replace(/\/+$/, '')
     this.timeoutMs = cfg.timeoutMs ?? 20000
