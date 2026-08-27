@@ -27,27 +27,29 @@ the Cloudflare tunnel too, where `10.0.0.x` is unreachable (standard #1).
 Express shadows a duplicate path **silently**. That already bit us: `POST /api/fleet/guard`
 reached the old router while `GET` reached the new one, so the kill switch reported "off" while
 messages kept flowing. Every new route now passes through `claim()`, which throws at mount time.
-This is why the feed uses `/threads` not `/feed`, `/message` not `/send`, and
-`/delivery-guard` not `/guard`.
+Historical: while ConversationBus's router was mounted first, this surface used
+`/threads`, `/message` and `/delivery-guard` to avoid being shadowed. The old router
+retired (bus-retirement), so the canonical names below apply; the launch names remain
+temporary aliases.
 
 ## Routes
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/fleet/threads` | `viewer, scope(all\|public\|mine), category, kind, limit, cursor, unread=1` |
+| GET | `/api/fleet/feed` | `viewer, scope(all\|public\|mine), category, kind, limit, cursor, unread=1` |
 | GET | `/api/fleet/thread/:id` | `limit, before_seq` tail window; `receipts=0` opts out |
 | POST | `/api/fleet/thread/:id/read` | `{viewer, up_to_seq}` |
 | POST | `/api/fleet/thread/:id/visibility` | `{actor, visibility}` — participant only |
 | GET | `/api/fleet/unread` | `?viewer=` |
 | POST | `/api/fleet/post` | bulletin; `attachments[]` may ride along |
-| POST | `/api/fleet/message` | DM; `attachments[]` may ride along |
+| POST | `/api/fleet/send` | DM; `attachments[]` may ride along |
 | GET | `/api/fleet/categories` | |
 | GET | `/api/fleet/search` | `?q=` — **public content only** |
-| GET | `/api/fleet/directory` | live presence |
+| GET | `/api/fleet/agents` | live presence |
 | POST | `/api/fleet/attachment` | post-hoc attach (racy — prefer inline) |
 | GET | `/api/fleet/attachment/:id` | bytes, streamed through the backend |
 | GET | `/api/fleet/attachment/:id/structured` | a flowchart's graph JSON |
-| GET/POST | `/api/fleet/delivery-guard` | kill switch |
+| GET/POST | `/api/fleet/guard` | kill switch |
 | GET | `/api/fleet/health` | live reachability of fleetd |
 
 ## Invariants — these are the point, not implementation detail

@@ -34,8 +34,6 @@ export class UniversalProxyService {
   private lanIp = '127.0.0.1'
   private fullServices: unknown = null
   private vectorList: unknown = null
-  /** ConversationBus HTTP surface (fleet vertical, createFleetRouter) — set via start opts. */
-  private fleetRouter: unknown = null
   /** ConversationBus guard adapter — lets the ONE kill switch stop the autonomous path too. */
   private busGuard: unknown = null
   /** AI-Lab x Hermes control-plane HTTP surface (createHermesRouter) — set via start opts. */
@@ -103,8 +101,7 @@ export class UniversalProxyService {
       conn.connect({ host, port: 22, username: 'root', privateKey: key, readyTimeout: opts.timeout || 12000, hostVerifier: () => true })
     })
 
-  async start(opts: { dataDir?: string; host?: string; port?: number; fleetRouter?: unknown; hermesRouter?: unknown; agentToolsRouter?: unknown; busGuard?: unknown } = {}): Promise<void> {
-    this.fleetRouter = opts.fleetRouter ?? this.fleetRouter
+  async start(opts: { dataDir?: string; host?: string; port?: number; hermesRouter?: unknown; agentToolsRouter?: unknown; busGuard?: unknown } = {}): Promise<void> {
     this.busGuard = opts.busGuard ?? this.busGuard
     this.hermesRouter = opts.hermesRouter ?? this.hermesRouter
     this.agentToolsRouter = opts.agentToolsRouter ?? this.agentToolsRouter
@@ -306,17 +303,8 @@ export class UniversalProxyService {
     // @ts-expect-error — JS router: native community-scripts catalog (replaces ProxLab-bridged /api/script-catalog)
     const { createScriptCatalogRouter } = await import('./proxy/script-catalog.js')
     app.use('/api/script-catalog', express.json({ limit: '10mb' }), createScriptCatalogRouter({ pveApi: llmPve, sshExec: this.sshExec, dataDir: this.dataDir }))
-    // ConversationBus HTTP surface (fleet vertical): send/feed/agents/status/register
-    // for external agents — the claude-relay replacement the ailab-fleet MCP wraps.
-    // Routes declare absolute /api/fleet/* paths; see ConversationBus/fleetHttp.ts.
-    if (this.fleetRouter) {
-      app.use(this.fleetRouter)
-    }
-    // Fleet FEED (phase 2): the reworked Fleet tab's surface, proxied to fleetd.
-    // Mounted AFTER the ConversationBus fleet router and on DISTINCT paths
-    // (/api/fleet/threads, /thread/:id, /post, /categories, /search, /attachment, /directory)
-    // so it cannot shadow the existing /api/fleet/feed + /agents, which have different
-    // semantics and still back the current UI. Those retire when the new tab lands.
+    // Fleet FEED: the Fleet tab's surface, proxied to fleetd. Sole owner of
+    // /api/fleet/* since the ConversationBus router retired (bus-retirement 3/5).
     {
       const { createFleetFeedRouter } = await import('../Fleet/fleetFeedHttp.js')
       app.use(createFleetFeedRouter(undefined, this.busGuard as never))

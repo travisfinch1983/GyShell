@@ -37,13 +37,9 @@ import {
 import { ImageAttachmentService } from '../../services/ImageAttachmentService'
 import { TerminalStateStore } from '../../services/terminal/TerminalStateStore'
 import { ConversationBus, JsonlBusStore, AgentRegistry, ContextPackStore } from '../../services/ConversationBus'
-import { createFleetBridge } from '../../services/ConversationBus/fleetBridge'
-import { createBusAgentInvoker } from '../../services/ConversationBus/BusAgentInvoker'
-import { createFleetRouter } from '../../services/ConversationBus/fleetHttp'
 import { HermesService } from '../../services/Hermes/HermesService'
 import { createHermesRouter } from '../../services/Hermes/hermesHttp'
 import { createAgentToolsRouter } from '../../services/Agent/agentToolsHttp'
-import { HermesActivityReporter } from '../../services/Hermes/HermesActivityReporter'
 import { HermesBusSubscriber } from '../../services/Hermes/HermesBusSubscriber'
 import { createAutoTerminalConfig } from '../../services/terminal/terminalConnectionSupport'
 import { TerminalCommandDraftService } from '../../services/TerminalCommandDraftService'
@@ -142,47 +138,25 @@ export async function startGyBackend(): Promise<void> {
   // remains gated behind autonomousRoutingEnabled (default false) until the guards
   // are reviewed — the invoker being wired does not by itself spend GPU.
   const fleetDir = path.join(dataDir, 'fleet')
+  // The agent registry is a LIVE feature seam (per-agent context packs → system prompt),
+  // not messaging plumbing — constructed standalone so it survives ConversationBus
+  // retirement. Nothing below may reach it through the bus.
+  const agentRegistry = new AgentRegistry(path.join(fleetDir, 'registry.json'))
   const conversationBus = new ConversationBus(
     new JsonlBusStore(path.join(fleetDir, 'bus.jsonl')),
-    new AgentRegistry(path.join(fleetDir, 'registry.json')),
+    agentRegistry,
     path.join(fleetDir, 'config.json'),
     null,
   )
   // reqs 9-11 (Phase 6): per-agent context packs. Docs live under
   // <fleetDir>/agent-context-packs/<agentId>/<slot>.md; assembled into the
   // system prompt for any run whose session maps to a declared local agent.
+  // (Directory being empty today means "feature awaiting content", not dead —
+  // see contextPackSeam.extreme.spec.ts for the seam's regression coverage.)
   const contextPackStore = new ContextPackStore(path.join(fleetDir, 'agent-context-packs'))
   agentService.setContextPackProvider((sessionId) => {
-    const entry = conversationBus.registry.getBySessionId(sessionId)
+    const entry = agentRegistry.getBySessionId(sessionId)
     return entry ? contextPackStore.assemble(entry) : undefined
-  })
-  conversationBus.setInvoker(
-    createBusAgentInvoker({
-      gateway: gatewayService,
-      registry: conversationBus.registry,
-      loadLastAssistantText: (sessionId) => {
-        const session = chatHistoryService.loadSession(sessionId)
-        if (!session) return null
-        const messages = Array.from(session.messages.values())
-        for (let i = messages.length - 1; i >= 0; i--) {
-          const m = messages[i] as { type?: string; data?: { content?: unknown } }
-          if (m.type !== 'ai') continue
-          const content = m.data?.content
-          if (typeof content === 'string' && content.trim()) return content
-          if (Array.isArray(content)) {
-            const text = content
-              .map((part) => (typeof part === 'object' && part && 'text' in part ? String((part as { text: unknown }).text) : ''))
-              .join('')
-            if (text.trim()) return text
-          }
-        }
-        return null
-      },
-    }),
-  )
-  const fleetBridge = createFleetBridge(conversationBus)
-  conversationBus.on('record', (record) => {
-    gatewayService.broadcastRaw('fleet:record', record)
   })
   const catalogInstallService = new CatalogInstallService({
     publish: (channel, data) => gatewayService.broadcastRaw(channel, data),
@@ -200,15 +174,10 @@ export async function startGyBackend(): Promise<void> {
   // Autonomous, headless inter-agent path: Hermes agents as first-class bus participants.
   // Gated by the `autonomousRoutingEnabled` kill switch (default OFF) — inert until enabled.
   new HermesBusSubscriber(hermesService, conversationBus).start()
-  // Hermes half of fleet activity — Claude Code instances are reported by the
-  // transcript tailer on CT180; these are reported here because the ACP bridge
-  // (with authoritative per-session busy/idle) is in-process.
-  new HermesActivityReporter(hermesService.bridge, conversationBus).start()
   // AI-Lab Universal API Proxy — dedicated HTTP listener fronting running services by slot.
   void universalProxyService
     .start({
       dataDir,
-      fleetRouter: createFleetRouter(conversationBus),
         // One kill switch must stop BOTH delivery paths: fleetd delivery, and this autonomous
         // one (HermesBusSubscriber). Governing them separately meant stopping one while
         // believing you had stopped "agent traffic".
@@ -305,7 +274,6 @@ export async function startGyBackend(): Promise<void> {
           get: () => uiSettingsService.get(),
           set: (patch) => uiSettingsService.set(patch)
         },
-        fleetBridge,
         aiProbeBridge: {
           detectTypes: (items) => detectServiceTypes(items)
         },
