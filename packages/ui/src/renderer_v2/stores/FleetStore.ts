@@ -17,6 +17,15 @@ import {
 
 // claude1's call (contract review item 2): polling stays for now, but cheap —
 // cursor + unread ride the feed request; revisit SSE once the tab's shape settles.
+/** One sidebar entry per exact participant set, its threads newest-first. */
+export interface FeedThreadGroup {
+  key: string
+  participants: string[]
+  threads: FeedThread[]
+  latest: FeedThread
+  unread: number
+}
+
 const FEED_POLL_MS = 20_000
 const THREAD_POLL_MS = 10_000
 const THREAD_PAGE = 80
@@ -78,12 +87,48 @@ class FleetStore {
     )
   }
 
+  /**
+   * Sidebar grouping (Travis): ONE entry per exact participant SET — a
+   * three-way focused-broadcast thread is its own group, never collapsed into
+   * either pair. Grouping runs over the ACCUMULATED thread list, not per page,
+   * so cursor paging can never split a group into two rendered entries; and
+   * because the feed arrives newest-first, every group's newest thread is
+   * always loaded, so group ordering (max updated_at desc) stays correct
+   * mid-pagination.
+   */
+  get groupedThreads(): FeedThreadGroup[] {
+    const map = new Map<string, FeedThread[]>()
+    for (const t of this.visibleThreads) {
+      const key = [...t.participants].sort().join('|') || '(unaddressed)'
+      const list = map.get(key)
+      if (list) list.push(t)
+      else map.set(key, [t])
+    }
+    const groups: FeedThreadGroup[] = []
+    for (const [key, threads] of map) {
+      threads.sort((a, b) => b.updated_at - a.updated_at)
+      groups.push({
+        key,
+        participants: [...threads[0].participants].sort(),
+        threads,
+        latest: threads[0],
+        unread: threads.reduce((n, t) => n + this.unreadOf(t), 0),
+      })
+    }
+    groups.sort((a, b) => b.latest.updated_at - a.latest.updated_at)
+    return groups
+  }
+
   unreadOf(t: FeedThread): number {
     return t.unread_count ?? 0
   }
 
   get unreadTotal(): number {
     return this.threads.reduce((n, t) => n + this.unreadOf(t), 0)
+  }
+
+  displayName(agentId: string): string {
+    return this.agents.find((a) => a.agent_id === agentId)?.display_name || agentId
   }
 
   isOnline(a: FeedDirectoryEntry): boolean {

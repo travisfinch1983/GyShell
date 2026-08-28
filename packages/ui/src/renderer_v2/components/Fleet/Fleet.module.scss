@@ -413,6 +413,26 @@
   white-space: nowrap;
 }
 
+.groupHead {
+  .threadTitle { font-weight: 700; }
+}
+
+.nestedRows {
+  border-left: 2px solid var(--border);
+  margin-left: 10px;
+  background: color-mix(in srgb, var(--control-bg) 40%, transparent);
+}
+
+.threadRow.nested {
+  padding-left: 14px;
+  border-bottom: 1px dashed var(--border);
+
+  .threadTitle {
+    font-weight: 400;
+    font-size: 12px;
+  }
+}
+
 .unreadDot {
   min-width: 15px;
   height: 15px;

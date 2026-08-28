@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import {
+  ChevronDown,
+  ChevronRight,
   FileText,
   Globe,
   Image as ImageIcon,
@@ -16,7 +18,7 @@ import {
   Workflow,
   X,
 } from 'lucide-react'
-import { fleetStore as store } from '../../stores/FleetStore'
+import { fleetStore as store, type FeedThreadGroup } from '../../stores/FleetStore'
 import {
   feedSecondsToDate,
   fileToAttachment,
@@ -197,35 +199,92 @@ const MessageRow: React.FC<{ msg: FeedMessage; onReply: (msg: FeedMessage) => vo
   )
 }
 
-const ThreadRow: React.FC<{ t: FeedThread; active: boolean; onOpen: () => void }> = observer(({ t, active, onOpen }) => {
-  const unread = store.unreadOf(t)
+const ThreadRow: React.FC<{ t: FeedThread; active: boolean; nested?: boolean; onOpen: () => void }> = observer(
+  ({ t, active, nested, onOpen }) => {
+    const unread = store.unreadOf(t)
+    return (
+      <button
+        type="button"
+        className={`${styles.threadRow} ${active ? styles.active : ''} ${nested ? styles.nested : ''}`}
+        onClick={onOpen}
+      >
+        <div className={styles.threadRowHead}>
+          {!nested &&
+            (t.kind === 'post' ? (
+              <span className={`${styles.kindBadge} ${styles.post}`}>
+                <Pin size={9} /> {t.category ?? 'post'}
+              </span>
+            ) : (
+              <span className={styles.kindBadge}>
+                <MessageSquare size={9} /> dm
+              </span>
+            ))}
+          <VisibilityBadge visibility={t.visibility} />
+          {unread > 0 && (
+            <span className={styles.unreadDot} title={`${unread} unread`}>
+              {unread > 9 ? '9+' : unread}
+            </span>
+          )}
+          <span className={styles.time}>{fmtTime(t.updated_at)}</span>
+        </div>
+        <div className={styles.threadTitle}>
+          {nested ? t.subject || t.last_snippet || '(conversation)' : threadTitle(t)}
+        </div>
+        <div className={styles.threadMeta}>
+          {t.message_count} msg{t.message_count === 1 ? '' : 's'}
+          {t.last_sender ? ` · @${t.last_sender}` : ''}
+          {!nested && t.last_snippet ? ` — ${t.last_snippet}` : ''}
+        </div>
+      </button>
+    )
+  },
+)
+
+/**
+ * One sidebar entry per participant set (Travis's grouping ask). A single-thread
+ * group behaves exactly like a plain thread row — no pointless expansion hop;
+ * multi-thread groups expand to their conversations, newest reply first.
+ */
+const GroupRow: React.FC<{
+  group: FeedThreadGroup
+  expanded: boolean
+  onToggle: () => void
+}> = observer(({ group, expanded, onToggle }) => {
+  const names = group.participants.map((p) => (p === FLEET_VIEWER ? 'you' : store.displayName(p)))
+  const label = names.join(names.length > 2 ? ' + ' : ' ↔ ')
   return (
-    <button type="button" className={`${styles.threadRow} ${active ? styles.active : ''}`} onClick={onOpen}>
-      <div className={styles.threadRowHead}>
-        {t.kind === 'post' ? (
-          <span className={`${styles.kindBadge} ${styles.post}`}>
-            <Pin size={9} /> {t.category ?? 'post'}
-          </span>
-        ) : (
-          <span className={styles.kindBadge}>
-            <MessageSquare size={9} /> dm
-          </span>
-        )}
-        <VisibilityBadge visibility={t.visibility} />
-        {unread > 0 && (
-          <span className={styles.unreadDot} title={`${unread} unread`}>
-            {unread > 9 ? '9+' : unread}
-          </span>
-        )}
-        <span className={styles.time}>{fmtTime(t.updated_at)}</span>
-      </div>
-      <div className={styles.threadTitle}>{threadTitle(t)}</div>
-      <div className={styles.threadMeta}>
-        {t.message_count} msg{t.message_count === 1 ? '' : 's'}
-        {t.last_sender ? ` · @${t.last_sender}` : ''}
-        {t.last_snippet ? ` — ${t.last_snippet}` : ''}
-      </div>
-    </button>
+    <>
+      <button type="button" className={`${styles.threadRow} ${styles.groupHead}`} onClick={onToggle}>
+        <div className={styles.threadRowHead}>
+          {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          <span className={styles.kindBadge}>{group.threads.length} threads</span>
+          {group.unread > 0 && (
+            <span className={styles.unreadDot} title={`${group.unread} unread`}>
+              {group.unread > 9 ? '9+' : group.unread}
+            </span>
+          )}
+          <span className={styles.time}>{fmtTime(group.latest.updated_at)}</span>
+        </div>
+        <div className={styles.threadTitle}>{label}</div>
+        <div className={styles.threadMeta}>
+          {group.latest.last_sender ? `@${group.latest.last_sender}` : ''}
+          {group.latest.last_snippet ? ` — ${group.latest.last_snippet}` : ''}
+        </div>
+      </button>
+      {expanded && (
+        <div className={styles.nestedRows}>
+          {group.threads.map((t) => (
+            <ThreadRow
+              key={t.thread_id}
+              t={t}
+              nested
+              active={t.thread_id === store.selectedThreadId}
+              onOpen={() => void store.openThread(t.thread_id)}
+            />
+          ))}
+        </div>
+      )}
+    </>
   )
 })
 
@@ -494,10 +553,20 @@ const ThreadView: React.FC = observer(() => {
 export const FleetPanel: React.FC = observer(() => {
   const [compose, setCompose] = useState<'post' | 'dm' | null>(null)
   const [searchDraft, setSearchDraft] = useState('')
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     void store.ensureLoaded()
   }, [])
+
+  // Opening a thread (e.g. from search results) auto-expands its group so the
+  // sidebar never shows a selected thread hidden inside a collapsed entry.
+  const selectedId = store.selectedThreadId
+  useEffect(() => {
+    if (!selectedId) return
+    const g = store.groupedThreads.find((grp) => grp.threads.some((t) => t.thread_id === selectedId))
+    if (g && g.threads.length > 1) setExpandedGroups((prev) => (prev.has(g.key) ? prev : new Set(prev).add(g.key)))
+  }, [selectedId])
 
   if (!store.available) {
     return (
@@ -662,14 +731,30 @@ export const FleetPanel: React.FC = observer(() => {
               <div className={styles.listNote}>{store.loaded ? 'No threads yet.' : 'Loading…'}</div>
             ) : (
               <>
-                {store.visibleThreads.map((t) => (
-                  <ThreadRow
-                    key={t.thread_id}
-                    t={t}
-                    active={t.thread_id === store.selectedThreadId}
-                    onOpen={() => void store.openThread(t.thread_id)}
-                  />
-                ))}
+                {store.groupedThreads.map((g) =>
+                  g.threads.length === 1 ? (
+                    <ThreadRow
+                      key={g.threads[0].thread_id}
+                      t={g.threads[0]}
+                      active={g.threads[0].thread_id === store.selectedThreadId}
+                      onOpen={() => void store.openThread(g.threads[0].thread_id)}
+                    />
+                  ) : (
+                    <GroupRow
+                      key={g.key}
+                      group={g}
+                      expanded={expandedGroups.has(g.key)}
+                      onToggle={() =>
+                        setExpandedGroups((prev) => {
+                          const next = new Set(prev)
+                          if (next.has(g.key)) next.delete(g.key)
+                          else next.add(g.key)
+                          return next
+                        })
+                      }
+                    />
+                  ),
+                )}
                 {store.feedHasMore && (
                   <button type="button" className={styles.loadMoreBtn} onClick={() => void store.loadMoreThreads()}>
                     ↓ load more threads
