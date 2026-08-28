@@ -1037,7 +1037,11 @@ export class HermesManagementService {
 
     // Fleet directory — so the agent is addressable and discoverable via fleet_directory.
     try {
-      const fleetd = process.env.FLEETD_URL || 'http://10.0.0.161:17900'
+      // fleetd moved into THIS container on 2026-08-27. The old default pointed at
+      // claude1 and silently stopped working once the transitional bridge was removed —
+      // and registration is caught+warned, so a new agent looked created and simply was
+      // not addressable by anyone.
+      const fleetd = process.env.FLEETD_URL || 'http://127.0.0.1:17900'
       await fetch(`${fleetd}/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
