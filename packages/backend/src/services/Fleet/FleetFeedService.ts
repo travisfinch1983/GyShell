@@ -34,6 +34,14 @@ export class FleetFeedService {
 
   get endpoint(): string { return this.base }
 
+  /** Operator token — this backend IS Travis's surface, so the Feed shows him ALL fleet
+   *  traffic including agent-to-agent DMs he does not participate in. Agents never hold this,
+   *  so agent-to-agent privacy is untouched. Unset = fleetd refuses the operator view. */
+  private get operatorHeaders(): Record<string, string> {
+    const tok = process.env.FLEET_OPERATOR_TOKEN
+    return tok ? { 'X-Fleet-Operator': tok } : {}
+  }
+
   /** Raw call. Surfaces fleetd's own status + stage rather than flattening everything to 500 —
    *  a validation refusal ("you are not a participant") must not look like a server fault. */
   private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -41,7 +49,7 @@ export class FleetFeedService {
     try {
       res = await fetch(this.base + path, {
         method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.operatorHeaders },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(this.timeoutMs),
       })
@@ -193,7 +201,7 @@ export class FleetFeedService {
     let res: Response
     try {
       res = await fetch(`${this.base}/attachment/${encodeURIComponent(id)}`,
-                        { signal: AbortSignal.timeout(this.timeoutMs) })
+                        { headers: this.operatorHeaders, signal: AbortSignal.timeout(this.timeoutMs) })
     } catch (e) {
       throw new FleetFeedError(`cannot reach fleetd at ${this.base}: ${(e as Error).message}`,
                                503, 'transport')

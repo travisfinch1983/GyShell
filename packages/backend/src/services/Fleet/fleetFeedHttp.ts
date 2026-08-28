@@ -73,15 +73,6 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
     cursor: req.query?.cursor as string,          // opaque — pass next_cursor straight back
     unread: req.query?.unread === '1',
   })))
-  // alias (launch name) — drop once the web build ships canonical paths
-  router.get('/api/fleet/threads', (req: Req, res: Res) => ok(res, () => svc.listFeed({
-    viewer: req.query?.viewer as string, scope: req.query?.scope as string,
-    category: req.query?.category as string, kind: req.query?.kind as string,
-    limit: req.query?.limit ? Number(req.query.limit) : undefined,
-    before: req.query?.before ? Number(req.query.before) : undefined,
-    cursor: req.query?.cursor as string,          // opaque — pass next_cursor straight back
-    unread: req.query?.unread === '1',
-  })))
 
   router.get('/api/fleet/thread/:id', (req: Req, res: Res) => ok(res, () => svc.readThread(
     req.params!.id, {
@@ -106,13 +97,10 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
   // autonomous route; that capability was dropped on 2026-08-27, so the switch is honest
   // as a single leg rather than reporting a second one that no longer exists.
   router.get('/api/fleet/guard', (_req: Req, res: Res) => ok(res, () => svc.getGuard()))
-  // alias (launch name) — drop once the web build ships canonical paths
-  router.get('/api/fleet/delivery-guard', (_req: Req, res: Res) => ok(res, () => svc.getGuard()))
 
   const setGuard = (req: Req, res: Res) => ok(res, () =>
     svc.setGuard(Boolean(req.body?.enabled), req.body?.actor ?? 'user', req.body?.reason))
   router.post('/api/fleet/guard', jsonBody, setGuard)
-  router.post('/api/fleet/delivery-guard', jsonBody, setGuard)
 
   router.get('/api/fleet/attachment/:id/structured', (req: Req, res: Res) =>
     ok(res, () => svc.getStructured(req.params!.id)))
@@ -121,9 +109,6 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
     ok(res, () => svc.post(req.body)))
 
   router.post('/api/fleet/send', jsonBody, (req: Req, res: Res) =>
-    ok(res, () => svc.send(req.body)))
-  // alias (launch name) — drop once the web build ships canonical paths
-  router.post('/api/fleet/message', jsonBody, (req: Req, res: Res) =>
     ok(res, () => svc.send(req.body)))
 
   router.post('/api/fleet/thread/:id/visibility', jsonBody, (req: Req, res: Res) =>
@@ -150,9 +135,6 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
     ok(res, () => svc.reindex(req.body?.limit ? Number(req.body.limit) : undefined)))
 
   router.get('/api/fleet/agents', (_req: Req, res: Res) =>
-    ok(res, () => svc.directory()))
-  // alias (launch name) — drop once the web build ships canonical paths
-  router.get('/api/fleet/directory', (_req: Req, res: Res) =>
     ok(res, () => svc.directory()))
 
   router.post('/api/fleet/attachment', jsonBody, (req: Req, res: Res) =>
