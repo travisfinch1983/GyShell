@@ -29,6 +29,7 @@ export interface FeedThreadGroup {
 const FEED_POLL_MS = 20_000
 const THREAD_POLL_MS = 10_000
 const THREAD_PAGE = 80
+const EXPANDED_KEY = 'fleet-feed-expanded-groups'
 
 /** Presence is heartbeat age at read time (standard #5) — never a stored boolean. */
 const PRESENCE_FRESH_MS = 120_000
@@ -71,12 +72,60 @@ class FleetStore {
   /** Quiet one-line note (muted, not an error) — e.g. a thread deleted under the tab. */
   notice: string | null = null
 
+  /**
+   * Sidebar expansion state (Travis): every group defaults COLLAPSED, and what
+   * he sets persists in both directions — stored state wins, the default only
+   * applies to a group never touched. Nothing auto-expands: a stable sidebar
+   * that never re-opens what he closed beats saving a click.
+   */
+  expandedGroups = new Set<string>()
+
   private feedTimer: ReturnType<typeof setInterval> | null = null
   private threadTimer: ReturnType<typeof setInterval> | null = null
   private loading: Promise<void> | null = null
 
   constructor() {
     makeAutoObservable(this)
+    try {
+      const raw = JSON.parse(localStorage.getItem(EXPANDED_KEY) ?? '[]')
+      if (Array.isArray(raw)) this.expandedGroups = new Set(raw.filter((k) => typeof k === 'string'))
+    } catch {
+      /* corrupted state — everything simply starts collapsed */
+    }
+  }
+
+  isExpanded(key: string): boolean {
+    return this.expandedGroups.has(key)
+  }
+
+  toggleGroup(key: string): void {
+    if (this.expandedGroups.has(key)) this.expandedGroups.delete(key)
+    else this.expandedGroups.add(key)
+    this.persistExpanded()
+  }
+
+  private persistExpanded(): void {
+    try {
+      localStorage.setItem(EXPANDED_KEY, JSON.stringify([...this.expandedGroups]))
+    } catch {
+      /* private mode etc. — expansion just won't survive reload */
+    }
+  }
+
+  /**
+   * Keys for groups that no longer exist must not accumulate forever — but
+   * prune only when the feed is COMPLETE: with more pages unloaded, a stored
+   * key may belong to a group further down, and dropping it would silently
+   * discard the user's choice.
+   */
+  private pruneExpanded(): void {
+    if (this.feedHasMore) return
+    const live = new Set(this.groupedThreads.map((g) => g.key))
+    const keep = [...this.expandedGroups].filter((k) => live.has(k))
+    if (keep.length !== this.expandedGroups.size) {
+      this.expandedGroups = new Set(keep)
+      this.persistExpanded()
+    }
   }
 
   get visibleThreads(): FeedThread[] {
@@ -189,6 +238,7 @@ class FleetStore {
         this.feedHasMore = list.has_more
         this.feedCursor = list.next_cursor
         this.error = null
+        this.pruneExpanded()
       })
     } catch (e) {
       runInAction(() => {
