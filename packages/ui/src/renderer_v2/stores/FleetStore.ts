@@ -68,6 +68,8 @@ class FleetStore {
   available = true
   /** Last feed/thread error — rendered in-page, cleared on next success. */
   error: string | null = null
+  /** Quiet one-line note (muted, not an error) — e.g. a thread deleted under the tab. */
+  notice: string | null = null
 
   private feedTimer: ReturnType<typeof setInterval> | null = null
   private threadTimer: ReturnType<typeof setInterval> | null = null
@@ -260,6 +262,10 @@ class FleetStore {
     })
   }
 
+  clearNotice(): void {
+    this.notice = null
+  }
+
   setScope(scope: FeedScope): void {
     this.scope = scope
     void this.refreshFeed()
@@ -276,6 +282,7 @@ class FleetStore {
   }
 
   async openThread(threadId: string): Promise<void> {
+    this.notice = null
     this.selectedThreadId = threadId
     this.threadLoading = true
     this.stopThreadPoll()
@@ -300,6 +307,25 @@ class FleetStore {
   private stopThreadPoll(): void {
     if (this.threadTimer) clearInterval(this.threadTimer)
     this.threadTimer = null
+  }
+
+  /**
+   * A thread disappearing underneath the tab is a normal outcome (someone
+   * deleted it), not a fault: drop it, clear the selection, quiet note —
+   * never an INTERNAL_ERROR banner. Detection rides the "HTTP 404 — …"
+   * prefix ClusterService now stamps on request errors, so this never
+   * string-matches fleetd's wording.
+   */
+  private handleThreadGone(id: string): void {
+    this.threads = this.threads.filter((t) => t.thread_id !== id)
+    if (this.selectedThreadId === id) {
+      this.closeThread()
+      this.notice = 'That conversation no longer exists — removed from the list.'
+    }
+  }
+
+  private static isGone(e: unknown): boolean {
+    return e instanceof Error && /^HTTP 404\b/.test(e.message)
   }
 
   private async refreshThread(): Promise<void> {
@@ -328,7 +354,8 @@ class FleetStore {
       if (maxSeq !== undefined) await this.markRead(id, maxSeq)
     } catch (e) {
       runInAction(() => {
-        if (this.selectedThreadId === id) this.error = e instanceof Error ? e.message : String(e)
+        if (FleetStore.isGone(e)) this.handleThreadGone(id)
+        else if (this.selectedThreadId === id) this.error = e instanceof Error ? e.message : String(e)
       })
     }
   }
@@ -349,7 +376,8 @@ class FleetStore {
       })
     } catch (e) {
       runInAction(() => {
-        this.error = e instanceof Error ? e.message : String(e)
+        if (FleetStore.isGone(e)) this.handleThreadGone(id)
+        else this.error = e instanceof Error ? e.message : String(e)
       })
     } finally {
       runInAction(() => {

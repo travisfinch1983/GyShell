@@ -241,9 +241,13 @@ const ThreadRow: React.FC<{ t: FeedThread; active: boolean; nested?: boolean; on
 )
 
 /**
- * One sidebar entry per participant set (Travis's grouping ask). A single-thread
- * group behaves exactly like a plain thread row — no pointless expansion hop;
- * multi-thread groups expand to their conversations, newest reply first.
+ * One sidebar entry per participant set (Travis's grouping ask). EVERY group
+ * renders its pair card — even with one conversation — because the pair
+ * identity is the primary information in a fleet feed; a bare thread row
+ * forces opening the conversation just to learn who it's between (Travis's
+ * correction of the first cut). Single-thread groups start expanded so the
+ * card costs no extra click; multi-thread groups expand on demand, newest
+ * reply first.
  */
 const GroupRow: React.FC<{
   group: FeedThreadGroup
@@ -257,7 +261,9 @@ const GroupRow: React.FC<{
       <button type="button" className={`${styles.threadRow} ${styles.groupHead}`} onClick={onToggle}>
         <div className={styles.threadRowHead}>
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          <span className={styles.kindBadge}>{group.threads.length} threads</span>
+          <span className={styles.kindBadge}>
+            {group.threads.length} thread{group.threads.length === 1 ? '' : 's'}
+          </span>
           {group.unread > 0 && (
             <span className={styles.unreadDot} title={`${group.unread} unread`}>
               {group.unread > 9 ? '9+' : group.unread}
@@ -553,7 +559,7 @@ const ThreadView: React.FC = observer(() => {
 export const FleetPanel: React.FC = observer(() => {
   const [compose, setCompose] = useState<'post' | 'dm' | null>(null)
   const [searchDraft, setSearchDraft] = useState('')
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+  const [toggledGroups, setToggledGroups] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     void store.ensureLoaded()
@@ -565,7 +571,17 @@ export const FleetPanel: React.FC = observer(() => {
   useEffect(() => {
     if (!selectedId) return
     const g = store.groupedThreads.find((grp) => grp.threads.some((t) => t.thread_id === selectedId))
-    if (g && g.threads.length > 1) setExpandedGroups((prev) => (prev.has(g.key) ? prev : new Set(prev).add(g.key)))
+    if (!g) return
+    const defaultExpanded = g.threads.length === 1
+    // collapsed = default XOR toggled; remove the toggle if it's what collapses it
+    setToggledGroups((prev) => {
+      const expanded = prev.has(g.key) ? !defaultExpanded : defaultExpanded
+      if (expanded) return prev
+      const next = new Set(prev)
+      if (next.has(g.key)) next.delete(g.key)
+      else next.add(g.key)
+      return next
+    })
   }, [selectedId])
 
   if (!store.available) {
@@ -660,6 +676,14 @@ export const FleetPanel: React.FC = observer(() => {
       </div>
 
       {store.error && <div className={styles.errorBanner}>fleet feed: {store.error}</div>}
+      {store.notice && (
+        <div className={styles.noticeBanner}>
+          {store.notice}
+          <button type="button" className={styles.iconBtn} onClick={() => store.clearNotice()}>
+            <X size={11} />
+          </button>
+        </div>
+      )}
 
       <div className={styles.layout}>
         <div className={styles.threadList}>
@@ -731,21 +755,20 @@ export const FleetPanel: React.FC = observer(() => {
               <div className={styles.listNote}>{store.loaded ? 'No threads yet.' : 'Loading…'}</div>
             ) : (
               <>
-                {store.groupedThreads.map((g) =>
-                  g.threads.length === 1 ? (
-                    <ThreadRow
-                      key={g.threads[0].thread_id}
-                      t={g.threads[0]}
-                      active={g.threads[0].thread_id === store.selectedThreadId}
-                      onOpen={() => void store.openThread(g.threads[0].thread_id)}
-                    />
-                  ) : (
+                {store.groupedThreads.map((g) => {
+                  // Single-thread groups default EXPANDED (the card is identity, the
+                  // nested row is the conversation — both visible, zero clicks);
+                  // multi-thread groups default collapsed. The toggle set stores
+                  // deviations from the default, so both kinds stay toggleable.
+                  const defaultExpanded = g.threads.length === 1
+                  const expanded = toggledGroups.has(g.key) ? !defaultExpanded : defaultExpanded
+                  return (
                     <GroupRow
                       key={g.key}
                       group={g}
-                      expanded={expandedGroups.has(g.key)}
+                      expanded={expanded}
                       onToggle={() =>
-                        setExpandedGroups((prev) => {
+                        setToggledGroups((prev) => {
                           const next = new Set(prev)
                           if (next.has(g.key)) next.delete(g.key)
                           else next.add(g.key)
@@ -753,8 +776,8 @@ export const FleetPanel: React.FC = observer(() => {
                         })
                       }
                     />
-                  ),
-                )}
+                  )
+                })}
                 {store.feedHasMore && (
                   <button type="button" className={styles.loadMoreBtn} onClick={() => void store.loadMoreThreads()}>
                     ↓ load more threads
