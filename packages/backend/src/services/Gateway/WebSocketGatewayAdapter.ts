@@ -289,6 +289,28 @@ export interface WebSocketGatewayAdapterOptions {
   logger?: IWebSocketGatewayAdapterLogger;
 }
 
+/**
+ * Map an upstream HTTP status onto an RPC error code.
+ *
+ * 4xx is the caller's situation — gone, refused, malformed — and must not be reported as an
+ * internal fault. 5xx genuinely IS one, so it keeps INTERNAL_ERROR. Codes are free-form
+ * strings here and nothing in the UI branches on them today, so widening the vocabulary is
+ * additive: existing handlers see a more accurate code, none see a missing one.
+ */
+function rpcCodeForHttpStatus(status: number): string {
+  switch (status) {
+    case 400: return 'BAD_REQUEST';
+    case 401: return 'UNAUTHORIZED';
+    case 403: return 'FORBIDDEN';
+    case 404: return 'NOT_FOUND';
+    case 409: return 'CONFLICT';
+    case 413: return 'PAYLOAD_TOO_LARGE';
+    case 429: return 'RATE_LIMITED';
+    default:
+      return status >= 400 && status < 500 ? 'BAD_REQUEST' : 'INTERNAL_ERROR';
+  }
+}
+
 class WebSocketRpcError extends Error {
   constructor(
     public readonly code: string,
@@ -1656,7 +1678,17 @@ export class WebSocketGatewayAdapter {
 
   private normalizeRpcError(error: unknown): WebSocketRpcError {
     if (error instanceof WebSocketRpcError) return error;
-    if (error instanceof Error) return new WebSocketRpcError('INTERNAL_ERROR', error.message);
+    if (error instanceof Error) {
+      // An upstream HTTP status is NOT an internal fault. ClusterService attaches `status` to
+      // failures from the proxied cluster API, so a 404 — a tab holding the id of something
+      // since deleted — used to reach the user as "INTERNAL_ERROR", which reads as a crash
+      // rather than "that thing is gone".
+      const status = (error as Error & { status?: unknown }).status;
+      if (typeof status === 'number') {
+        return new WebSocketRpcError(rpcCodeForHttpStatus(status), error.message);
+      }
+      return new WebSocketRpcError('INTERNAL_ERROR', error.message);
+    }
     return new WebSocketRpcError('INTERNAL_ERROR', 'Unexpected websocket adapter error.');
   }
 
