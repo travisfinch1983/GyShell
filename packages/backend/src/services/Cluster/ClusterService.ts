@@ -59,7 +59,16 @@ export class ClusterService {
       const data = text ? safeJson(text) : null
       if (!resp.ok) {
         const msg = (data && (data as any).error) || `${resp.status} ${resp.statusText}`
-        throw new Error(`ProxLab ${method} ${path}: ${msg}`)
+        // Carry the STATUS. The websocket adapter normalises any plain Error to
+        // INTERNAL_ERROR, so without this a perfectly ordinary 404 — a thread that was
+        // deleted while a tab held its id — reaches the user as an internal fault. The
+        // status lets a caller tell "gone" from "broken" without string-matching a message.
+        const err = new Error(`HTTP ${resp.status} — ${method} ${path}: ${msg}`) as Error & {
+          status?: number; path?: string
+        }
+        err.status = resp.status
+        err.path = path
+        throw err
       }
       return data
     } finally {
