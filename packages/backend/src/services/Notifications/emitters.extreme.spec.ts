@@ -4,6 +4,12 @@
  * The KV-dead detector is exercised directly (pure function of a row).
  * Run: tsx packages/backend/src/services/Notifications/emitters.extreme.spec.ts
  */
+// 🛑 Instantiating NotificationsService ARMS REAL OUTBOUND ROUTING: notify() fleet-DMs the
+// maintenance agent, and a scratch dataDir isolates storage but NOT the network. An unguarded
+// run of this spec delivers synthetic alarms into a live agent's session (claude1 did exactly
+// that with a probe harness on 2026-08-30). Storage isolation is not isolation.
+if (process.env.ALLOW_ROUTE !== '1') process.env.AILAB_MAINTAINER_AGENT = 'off'
+
 // @ts-expect-error — ported JS module, no types
 import { LlmMetricsPoller } from '../Cluster/proxy/llm/services/metrics-poller.js'
 import { mkdtempSync } from 'node:fs'
