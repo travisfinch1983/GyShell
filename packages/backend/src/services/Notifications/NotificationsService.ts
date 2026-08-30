@@ -40,6 +40,8 @@ export interface NotifyEvent {
   acked?: boolean
   /** How many times this exact event has been raised while unacked (≥2 = a repeat). */
   occurrences?: number
+  /** Occurrences whose wake-up was suppressed by the coalesce window (recorded, not silent). */
+  routeCoalesced?: number
   /** When the most recent occurrence arrived (ts stays the FIRST). */
   lastTs?: string
 }
@@ -481,7 +483,15 @@ export class NotificationsService {
     const now = Date.now()
     const last = this.recentRoutes.get(key) ?? 0
     const windowMs = Number(process.env.AILAB_MAINTAINER_COALESCE_MS || 30 * 60 * 1000)
-    if (now - last < windowMs) return
+    if (now - last < windowMs) {
+      // The skip used to be silent, so "suppressed by the window" and "routed"
+      // looked identical afterwards. Record it ON the event and in the ring —
+      // the panel can then say this occurrence did not wake anyone.
+      evt.routeCoalesced = (evt.routeCoalesced ?? 0) + 1
+      this.schedulePersist()
+      this.debug('notify-routing', `coalesced (window ${Math.round(windowMs / 60000)}m) — not re-waking for [${evt.severity}] ${key}`)
+      return
+    }
     this.recentRoutes.set(key, now)
     if (this.recentRoutes.size > 500) {
       for (const [k, t] of this.recentRoutes) if (now - t > windowMs) this.recentRoutes.delete(k)
@@ -512,9 +522,74 @@ export class NotificationsService {
       signal: AbortSignal.timeout(8000),
     })
       .then(async (r) => {
-        if (!r.ok) console.warn(`[notify-route] ${to}: fleetd HTTP ${r.status} — ${(await r.text()).slice(0, 200)}`)
+        if (!r.ok) {
+          console.warn(`[notify-route] ${to}: fleetd HTTP ${r.status} — ${(await r.text()).slice(0, 200)}`)
+          this.reportRouteFailure(`fleetd answered HTTP ${r.status} for the wake-up about [${evt.severity}] ${evt.source}: ${evt.message}`)
+          return
+        }
+        // r.ok only means the HTTP call landed. The per-recipient receipt in the
+        // body is where delivery actually lives — read it, under the HARD RULE:
+        //   failed    → a real failure, report it (locally).
+        //   delivered → success.
+        //   queued    → SUCCESS WITH LATENCY, silent (debug at most). Travis's
+        //               standing rule: fleetd says "queued — recipient offline"
+        //               for agents that answer within the minute, so treating it
+        //               as undelivered would manufacture a steady stream of
+        //               false alarms about working agents — the exact class this
+        //               sweep removes, added by the emitter meant to detect it.
+        //               The honest deeper signal is fleetd's own wake-inference
+        //               sweep; no second one is invented here.
+        try {
+          const resp = await r.json() as { recipients?: Record<string, { state?: string; detail?: string }> }
+          const receipt = resp?.recipients?.[to]
+          if (!receipt) { this.routeSucceeded(); return }
+          if (receipt.state === 'failed') {
+            console.warn(`[notify-route] ${to}: receipt FAILED — ${receipt.detail ?? 'no detail'}`)
+            this.reportRouteFailure(`fleetd accepted the send but the receipt for '${to}' came back failed (${receipt.detail ?? 'no detail'}) for [${evt.severity}] ${evt.source}: ${evt.message}`)
+          } else {
+            if (receipt.state === 'queued') this.debug('notify-routing', `receipt queued for ${to} (normal latency, not a failure)`)
+            this.routeSucceeded()
+          }
+        } catch { this.routeSucceeded() /* an unparseable receipt is not evidence of failure */ }
       })
-      .catch((e) => console.warn(`[notify-route] ${to}: not delivered — ${(e as Error)?.message || e}`))
+      .catch((e) => {
+        console.warn(`[notify-route] ${to}: not delivered — ${(e as Error)?.message || e}`)
+        this.reportRouteFailure(`fleetd was unreachable for the wake-up about [${evt.severity}] ${evt.source}: ${evt.message} (${(e as Error)?.message || e})`)
+      })
+  }
+
+  /** Latch for route-failure self-reports: one event per outage, re-armed by success. */
+  private routeFailureReported = false
+
+  private routeSucceeded(): void {
+    this.routeFailureReported = false
+  }
+
+  /**
+   * The alarm path failing must become a VISIBLE event — console.warn was the
+   * exact FAIL-into-an-unread-file shape this system exists to remove — but a
+   * LOCAL-ONLY one: an alarm about the alarm path must not attempt the alarm
+   * path. Tonight's field-name false positive is the worked example — had it
+   * routed, it would have travelled through the channel it claimed was broken.
+   * Latched: one event per outage, re-armed when a route succeeds again.
+   */
+  private reportRouteFailure(detail: string): void {
+    if (this.routeFailureReported) return
+    this.routeFailureReported = true
+    const evt: NotifyEvent = {
+      id: `${Date.now().toString(36)}-${(this.seq++).toString(36)}`,
+      ts: new Date().toISOString(),
+      acked: false,
+      severity: 'warning',
+      source: 'notify-route',
+      message: 'Forwarding to the maintenance agent is failing',
+      detail: `${detail}. Events keep recording and badging here; only the wake-up is affected. This event is deliberately local-only.`,
+    }
+    this.events.push(evt)
+    if (this.events.length > EVENT_CAP) this.events.splice(0, this.events.length - EVENT_CAP)
+    this.schedulePersist()
+    this.broadcast('notify:event', evt)
+    // Deliberately NO routeToMaintainer call.
   }
 
   /** Informational debug line for the live console — ring only, never badged. */

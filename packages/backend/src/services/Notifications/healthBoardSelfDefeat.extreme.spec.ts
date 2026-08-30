@@ -162,6 +162,90 @@ async function main(): Promise<void> {
   ok(svc5.notify({ severity: 'warning', source: 'cluster-inventory', message: 'a different fact' }).id !== third.id,
     'a different message is never merged — dedup is identity, not proximity')
 
+  // ── routeToMaintainer: receipts, self-delivery, coalesce recording ────────
+  // The HARD RULE (Travis, via claude1): failed = failure; delivered = success;
+  // queued = SUCCESS WITH LATENCY and must be silent — fleetd says "queued —
+  // recipient offline" for agents that answer within the minute, so alarming on
+  // it would manufacture false alarms about working agents. And a route-failure
+  // report is LOCAL-ONLY: an alarm about the alarm path must not attempt it.
+  const svc6 = new NotificationsService(mkdtempSync(join(tmpdir(), 'notif6-')), () => {})
+  let sendResponse: any = null
+  let sendCalls = 0
+  ;(globalThis as any).fetch = async (url: string) => {
+    if (String(url).includes('/send')) {
+      sendCalls++
+      if (sendResponse === 'unreachable') throw new Error('ECONNREFUSED')
+      return { ok: true, json: async () => sendResponse, text: async () => '' } as any
+    }
+    outbound.push(String(url)); throw new Error('spec: blocked')
+  }
+  const settle = () => wait(80)
+
+  sendResponse = { recipients: { 'maintenance-claude': { state: 'queued', detail: 'recipient offline' } } }
+  svc6.notify({ severity: 'warning', source: 'spec-src', message: 'queued case' })
+  await settle()
+  ok(!svc6.state().events.some((e) => e.source === 'notify-route'),
+    'HARD RULE: a queued receipt raises NOTHING — success with latency, never an offline alarm')
+
+  sendResponse = { recipients: { 'maintenance-claude': { state: 'failed', detail: 'no adapter' } } }
+  svc6.notify({ severity: 'warning', source: 'spec-src', message: 'failed case' })
+  await settle()
+  const routeEvts = () => svc6.state().events.filter((e) => e.source === 'notify-route')
+  ok(routeEvts().length === 1 && (routeEvts()[0].detail ?? '').includes('no adapter'),
+    'a FAILED receipt raises one local event carrying the receipt detail')
+
+  sendResponse = 'unreachable'
+  svc6.notify({ severity: 'error', source: 'spec-src', message: 'transport down case' })
+  await settle()
+  ok(routeEvts().length === 1,
+    'a second route failure while latched does not stack — one event per outage')
+  const callsBefore = sendCalls
+  await settle()
+  ok(sendCalls === callsBefore,
+    'the route-failure event itself never attempts the route — LOCAL-ONLY is structural, not situational')
+
+  sendResponse = { recipients: { 'maintenance-claude': { state: 'delivered' } } }
+  svc6.notify({ severity: 'warning', source: 'spec-src', message: 'recovery case' })
+  await settle()
+  sendResponse = 'unreachable'
+  svc6.notify({ severity: 'warning', source: 'spec-src', message: 'second outage case' })
+  await settle()
+  ok(routeEvts().length === 2, 'a successful route RE-ARMS the latch — a new outage reports again')
+
+  // coalesce recording: same source+message within the window → merged event
+  // carries routeCoalesced instead of the skip being silent.
+  sendResponse = { recipients: { 'maintenance-claude': { state: 'delivered' } } }
+  svc6.notify({ severity: 'warning', source: 'spec-src', message: 'coalesce case' })
+  await settle()
+  const merged = svc6.notify({ severity: 'warning', source: 'spec-src', message: 'coalesce case' })
+  await settle()
+  ok((merged.routeCoalesced ?? 0) >= 1,
+    'a window-suppressed wake-up is RECORDED on the event — suppressed and routed no longer look identical')
+
+  // ── /emit truncation is marked in the response ────────────────────────────
+  // @ts-expect-error — express ships untyped in this repo (same pattern as the routers)
+  const express = (await import('express')).default
+  const http = await import('node:http')
+  const { createNotificationsRouter } = await import('./notificationsHttp')
+  const app = express()
+  app.use(createNotificationsRouter(svc6 as never))
+  const srv = http.createServer(app)
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r))
+  const port = (srv.address() as { port: number }).port
+  const post = (body: unknown) => new Promise<any>((resolve, reject) => {
+    const data = JSON.stringify(body)
+    const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/api/notifications/emit', headers: { 'Content-Type': 'application/json' } }, (res) => {
+      let buf = ''; res.on('data', (c) => buf += c); res.on('end', () => resolve(JSON.parse(buf)))
+    })
+    req.on('error', reject); req.write(data); req.end()
+  })
+  let r5 = await post({ severity: 'warning', source: 'x'.repeat(80), message: 'm'.repeat(600), detail: 'd'.repeat(5000) })
+  ok(Array.isArray(r5.truncated) && r5.truncated.join(',') === 'source,message,detail',
+    '/emit NAMES every field it cut — the caller is told the panel does not hold what it sent')
+  r5 = await post({ severity: 'warning', source: 'short', message: 'fits fine' })
+  ok(r5.truncated === undefined, 'a fitting payload carries no truncated field — no noise on normal state')
+  srv.close()
+
   console.log(`\n${n} assertions passed; outbound calls attempted: ${outbound.length} (all blocked)`)
   process.exit(0)
 }

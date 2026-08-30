@@ -54,11 +54,21 @@ export function createNotificationsRouter(svc: NotificationsService): express.Ro
     if (!source || !message) {
       return res.status(400).json({ ok: false, error: 'source and message are required' })
     }
+    // Truncation happens either way (a 200k detail must not balloon the store),
+    // but silently rewriting a caller's content is the lying-response shape:
+    // the caller believes the panel holds what it sent. Say which fields were
+    // cut, so a script author can see it in the response they already read.
+    const detailRaw = b.detail !== undefined ? String(b.detail) : undefined
+    const truncated = [
+      source.length > 64 ? 'source' : '',
+      message.length > 500 ? 'message' : '',
+      detailRaw !== undefined && detailRaw.length > 4000 ? 'detail' : '',
+    ].filter(Boolean)
     const evt = svc.notify({
       severity, source: source.slice(0, 64), message: message.slice(0, 500),
-      detail: b.detail !== undefined ? String(b.detail).slice(0, 4000) : undefined,
+      detail: detailRaw !== undefined ? detailRaw.slice(0, 4000) : undefined,
     })
-    res.json({ ok: true, id: evt.id })
+    res.json({ ok: true, id: evt.id, ...(truncated.length ? { truncated } : {}) })
   })
 
   router.post('/api/notifications/debug', json, (req: Req, res: Res) => {
