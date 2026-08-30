@@ -73,8 +73,15 @@ export interface HealthState {
  * A dependency must fail this many probes in a row before it is called DOWN.
  * At the default 30s interval that is a minute of real failure, which a genuine
  * outage survives easily and a slow response does not.
+ *
+ * Read per call, not once at module load: an env value captured at import time
+ * cannot be overridden by a test that imports the module, which quietly makes the
+ * knob untestable from the only place that needs to turn it.
  */
-const DEFAULT_CONFIRMATIONS = Number(process.env.AILAB_HEALTH_CONFIRMATIONS ?? 2)
+function defaultConfirmations(): number {
+  const n = Number(process.env.AILAB_HEALTH_CONFIRMATIONS ?? 2)
+  return Number.isFinite(n) && n >= 1 ? n : 2
+}
 
 const EVENT_CAP = 1000
 const DEBUG_CAP = 500
@@ -401,7 +408,7 @@ export class NotificationsService {
       if (r.status === 'down') {
         const streak = (this.downStreak.get(r.id) ?? 0) + 1
         this.downStreak.set(r.id, streak)
-        const needed = byId.get(r.id)?.confirmations ?? DEFAULT_CONFIRMATIONS
+        const needed = byId.get(r.id)?.confirmations ?? defaultConfirmations()
         if (streak >= needed) {
           // Latched: re-raising every 30s for one ongoing outage is a pager loop.
           if (!this.alarmed.has(r.id)) {
