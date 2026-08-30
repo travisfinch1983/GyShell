@@ -262,6 +262,10 @@ export const PagesPanel: React.FC = observer(() => {
                   <div className={styles.rowMeta}>
                     {fmtTime(j.updatedAt)}{j.author ? ` · ${j.author}` : ''}
                     {j.revisions?.length ? ` · ${j.revisions.length} revision(s)` : ''}
+                    {j.keys?.length ? ` · ${j.keys.join(' ')}` : ''}
+                    {/* An entry that cannot serve as a prior occurrence says so
+                        here too, so the list never implies a coverage it lacks. */}
+                    {j.excludedFromCounts ? ' · record only, not counted' : ''}
                   </div>
                   {j.notes && <div className={styles.journalLine}>{j.notes.replace(/\n+/g, ' ').slice(0, 160)}</div>}
                   {j.reportIds?.length > 0 && (

@@ -176,14 +176,23 @@ function addJournalTools(mcp, author) {
     'journal_new',
     'Start a journal entry when you START work — not after. The journal is your memory across context windows: an entry you meant to write later is one you will not remember to write. The reply tells you how many times you have logged this same issue before.',
     {
-      issue: z.string().min(1).max(200).describe('short name of what you are looking at'),
+      issue: z.string().min(1).max(200).describe('short name of what you are looking at — display text, free to reword later'),
+      key: z.string().max(120).describe("REQUIRED for anything an emitter reported: 'source:subject' — the source AND the specific thing affected, e.g. 'health:qdrant', 'optane-pruner:pool-a', 'model-bindings:qwen3-30b'. NEVER a bare source ('health' covers a dozen dependencies, so it would report a brand-new outage as one you already dismissed) and NEVER a joined list ('pool-a, pool-b' changes as pools are fixed). Both are refused. Take source and subject from the alert's own fields, not its message text — messages interpolate counts and ids, so prose matching silently misses repeats. ONE ENTRY PER SUBJECT: if three pools are affected, that is three entries. Omit only for self-directed work with no emitter behind it, and expect a weaker, text-matched count."),
       notes: z.string().max(20000).optional().describe('what you know so far'),
       status: z.enum(['open', 'resolved', 'no-action']).optional().describe("default open; 'no-action' = looked at it, nothing to repair"),
       report_ids: z.array(z.string()).optional(),
       links: z.array(z.string()).optional().describe('notification ids, services, hosts'),
     },
-    async ({ issue, notes, status, report_ids, links }) => {
-      const r = await api('POST', '/api/journal', { issue, notes, status, reportIds: report_ids, links, author })
+    async ({ issue, key, notes, status, report_ids, links }) => {
+      const r = await api('POST', '/api/journal', { issue, key, notes, status, reportIds: report_ids, links, author })
+      if (r.priorSimilar) {
+        const per = Object.entries(r.perKey ?? {}).filter(([, n]) => n > 0)
+          .map(([k, n]) => `${k} ×${n}`).join(', ')
+        return text(`logged ${r.id} (author: ${author}).\n` +
+          `⚠ SEEN BEFORE: ${r.priorSimilar} prior entr${r.priorSimilar === 1 ? 'y' : 'ies'}` +
+          `${per ? ` — ${per}` : ''} (matched by ${r.matchedBy}).\n` +
+          `${r.keyed ? 'Look at those before treating this as new.' : 'This count came from TEXT matching and may be wrong in either direction — pass a source:subject key for a reliable one.'}`)
+      }
       const repeat = r.priorSimilar > 0
         ? `\n⚠ You have logged this same issue ${r.priorSimilar} time(s) before. A recurring problem is itself a finding — check what you did last time before repeating it.`
         : ''
@@ -212,14 +221,15 @@ function addJournalTools(mcp, author) {
     'Correct an entry: replaces fields outright. The previous text is KEPT as a revision, so a correction never erases what the log used to say. Prefer journal_append for adding as you go.',
     {
       id: z.string(),
-      issue: z.string().max(200).optional(),
+      issue: z.string().max(200).optional().describe('reword freely — repeat counting keys on `key`, not this'),
+      key: z.string().max(120).optional().describe("ADD a 'source:subject' identity (e.g. backfilling an older entry). Keys accumulate — adding one never removes another — so this cannot erase an entry's history. Do not invent a key an alert never carried: an entry that cannot honestly match is better left uncounted than given a fabricated identity."),
       notes: z.string().max(20000).optional(),
       status: z.enum(['open', 'resolved', 'no-action']).optional(),
       report_ids: z.array(z.string()).optional(),
       links: z.array(z.string()).optional(),
     },
-    async ({ id, issue, notes, status, report_ids, links }) => {
-      const r = await api('PATCH', `/api/journal/${enc(id)}`, { issue, notes, status, reportIds: report_ids, links, author })
+    async ({ id, issue, key, notes, status, report_ids, links }) => {
+      const r = await api('PATCH', `/api/journal/${enc(id)}`, { issue, key, notes, status, reportIds: report_ids, links, author })
       return text(`updated ${id} (${r.revisions} revision(s) kept).`)
     },
   )
@@ -235,12 +245,21 @@ function addJournalTools(mcp, author) {
     async ({ q: query, status, limit }) => {
       const r = await api('GET', `/api/journal${q({ q: query, status })}`)
       const entries = (r.entries ?? []).slice(0, limit ?? 40)
-      if (!entries.length) return text('(no matching journal entries)')
+      let gapNote = ''
+      try {
+        const g = await api('GET', '/api/journal/gaps')
+        if (g.unlogged?.length) {
+          gapNote = `\n\n⚠ ${g.unlogged.length} report(s) have no journal entry — the log will not find them next time: ` +
+            g.unlogged.slice(0, 8).map((u) => u.id).join(', ')
+        }
+      } catch { /* gaps are a nicety; never fail the read for them */ }
+      if (!entries.length) return text(`(no matching journal entries)${gapNote}`)
       return text(entries.map((e) =>
         `${e.updatedAt} · [${e.status}] ${e.issue} (${e.id})` +
         `${e.reportIds?.length ? ` · reports: ${e.reportIds.join(', ')}` : ''}` +
+        `${e.excludedFromCounts ? '\n    (record only — not counted as a prior occurrence)' : ''}` +
         `${e.notes ? `\n    ${String(e.notes).replace(/\n+/g, ' ').slice(0, 200)}` : ''}`,
-      ).join('\n'))
+      ).join('\n') + gapNote)
     },
   )
 
