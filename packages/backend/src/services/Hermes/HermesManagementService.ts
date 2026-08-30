@@ -1,6 +1,6 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, rmSync, copyFileSync } from 'fs'
 import { dirname } from 'path'
 import type { HermesAgentSpec, ProviderService } from '@gyshell/shared'
 import { PROVIDER_SERVICE_CAPS } from '@gyshell/shared'
@@ -158,8 +158,18 @@ function shq(s: string): string {
 
 /** Write JSON atomically: tmp file + rename, so a crash mid-write can't truncate the store and
  *  concurrent readers never see a partial file (M5). Same-filesystem rename is atomic. */
-function atomicWriteJson(path: string, data: unknown): void {
+function atomicWriteJson(path: string, data: unknown, opts?: { keepPrev?: boolean }): void {
   mkdirSync(dirname(path), { recursive: true })
+  // One generation of history. The support-models fallback loss could not even
+  // be DIAGNOSED — multiple writers, one file, no .bak, so "which write dropped
+  // it" had no answer by construction (maintenance-claude, 2026-08-30). A
+  // single .prev per write is not versioning, but it turns "silently
+  // unrecoverable" into "diff two files".
+  if (opts?.keepPrev && existsSync(path)) {
+    try { copyFileSync(path, `${path}.prev`) } catch (e) {
+      console.warn(`[atomicWrite] could not keep ${path}.prev:`, (e as Error)?.message || e)
+    }
+  }
   const tmp = `${path}.tmp`
   writeFileSync(tmp, JSON.stringify(data, null, 2))
   renameSync(tmp, path)
@@ -515,31 +525,74 @@ export class HermesManagementService {
   /** Persist the full role map; apply the MODEL routing for `applyKeys` (changed model-bearing
    *  roles) to every agent. description/recommendation are UI-only (never pushed to Hermes). */
   async setSupportModels(roles: SupportModelRoles, applyKeys?: string[]): Promise<{ agentsUpdated: number; restarted?: Array<{ service: string; role: string; ok: boolean; error?: string }> }> {
-    const clean: SupportModelRoles = {}
+    /**
+     * 🛑 MERGE, never replace. This used to rebuild the whole file from the
+     * incoming payload: a role absent from the payload vanished, and a field
+     * the caller didn't send (fallbackModel, timeout…) was stripped from roles
+     * it DID send — so a partial save could silently drop configured fallbacks,
+     * with no history to prove it afterwards (maintenance-claude, 2026-08-30,
+     * after Travis found two roles' fallbacks gone). The file is shared state
+     * written by the UI, the failover watch and (once) a test harness; replace
+     * semantics on shared state is how one writer eats another's fields.
+     *
+     * Now: existing roles are the base; the payload updates only the roles it
+     * names, field-by-field, with `null` as the explicit "clear this field"
+     * marker and dropped fallbacks REPORTED. A role can only be deleted by an
+     * explicit `null` role, never by omission.
+     */
+    const existing = this.loadSupportModels()
+    const clean: SupportModelRoles = { ...existing }
+    const droppedFallbacks: string[] = []
     for (const [key, r] of Object.entries(roles)) {
+      if (r === null) { delete clean[key]; continue }   // explicit delete only
       if (!r) continue
-      const entry: SupportModelRole = {}
-      if (r.model) { entry.provider = r.provider || 'ailab'; entry.model = r.model }
+      const prev = (existing[key] ?? {}) as SupportModelRole
+      const entry: SupportModelRole = { ...prev }
+      if (r.model !== undefined) {
+        if (r.model) { entry.provider = r.provider || entry.provider || 'ailab'; entry.model = r.model }
+        else { delete entry.model; delete entry.provider }
+      } else if (r.provider) entry.provider = r.provider
       // primaryModel defaults to model on first write, so a role saved before failover existed
       // still records an intent to return to.
-      if (r.primaryModel || r.model) entry.primaryModel = r.primaryModel || r.model
-      if (r.fallbackModel) entry.fallbackModel = r.fallbackModel
-      if (r.description) entry.description = r.description
-      if (r.recommendation) entry.recommendation = r.recommendation
+      if (r.primaryModel || r.model) entry.primaryModel = r.primaryModel || r.model || entry.primaryModel
+      if (r.fallbackModel !== undefined) {
+        if (r.fallbackModel) entry.fallbackModel = r.fallbackModel
+        else {
+          if (prev.fallbackModel) droppedFallbacks.push(`${key} (was ${prev.fallbackModel})`)
+          delete entry.fallbackModel
+        }
+      }
+      if (r.description !== undefined) { if (r.description) entry.description = r.description; else delete entry.description }
+      if (r.recommendation !== undefined) { if (r.recommendation) entry.recommendation = r.recommendation; else delete entry.recommendation }
       if (typeof r.timeout === 'number' && r.timeout > 0) entry.timeout = r.timeout
+      else if (r.timeout === null || r.timeout === 0) delete entry.timeout
       if (r.noThink !== undefined) entry.noThink = !!r.noThink
       if (Object.keys(entry).length) clean[key] = entry
+      else delete clean[key]
+    }
+    if (droppedFallbacks.length) {
+      // Clearing a fallback is legal but must never be silent — a role without
+      // one fails hard instead of failing over, which is a behaviour change.
+      console.warn(`[support-models] payload CLEARED fallbackModel on: ${droppedFallbacks.join(', ')}`)
+      this.cfg.notify?.({
+        severity: 'warning', source: 'support-models',
+        message: 'A support-model save cleared configured fallbacks',
+        detail: `Cleared: ${droppedFallbacks.join(', ')}. If this was not intended, the previous value is in the .prev file next to the config.`,
+      })
     }
     // Capture the PREVIOUS models before overwriting, so a container is recreated only when the
     // model actually changed. Every field edit (description, recommendation) goes through this
     // same path; restarting two containers because someone fixed a typo would be indefensible.
     const before: Record<string, string> = {}
     try {
-      for (const [k, r] of Object.entries(this.loadSupportModels())) before[k] = (r as SupportModelRole)?.model || ''
+      for (const [k, r] of Object.entries(existing)) before[k] = (r as SupportModelRole)?.model || ''
     } catch { /* first write, or unreadable — treat every key as changed */ }
 
-    if (this.cfg.supportModelsFile) atomicWriteJson(this.cfg.supportModelsFile, clean)
-    const keys = (applyKeys && applyKeys.length ? applyKeys : Object.keys(clean))
+    if (this.cfg.supportModelsFile) atomicWriteJson(this.cfg.supportModelsFile, clean, { keepPrev: true })
+    // Default apply scope = the roles the PAYLOAD named, not the whole file:
+    // under merge semantics `clean` now holds every persisted role, and
+    // re-applying all of them on a one-role save would be 20x the ssh traffic.
+    const keys = (applyKeys && applyKeys.length ? applyKeys : Object.keys(roles).filter((k) => roles[k] !== null))
     if (!keys.length) return { agentsUpdated: 0 }
 
     // The provider default also lives in the GLOBAL config, which no per-agent apply reaches.
