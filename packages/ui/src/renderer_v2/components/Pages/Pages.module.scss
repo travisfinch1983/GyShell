@@ -436,3 +436,67 @@
 .st_open { border-color: #e5a50a; color: #e5a50a; }
 .st_resolved { border-color: var(--success); color: var(--success); }
 .st_no-action { border-color: var(--fg-faint); color: var(--fg-muted); }
+
+/* ── Journal: one continuous scrollable log ─────────────────────────────────
+   The sidebar indexes weeks; this is the body those weeks scroll to. */
+.journalScroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 18px 40px;
+  min-height: 0;
+}
+
+.journalWeek {
+  /* scroll-margin so a jumped-to week clears the sticky heading above it */
+  scroll-margin-top: 8px;
+  padding-top: 4px;
+}
+
+.weekHead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 10px 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.journalEntry {
+  padding: 12px 0 14px;
+  border-bottom: 1px solid var(--border-faint, var(--border));
+
+  &:last-child { border-bottom: none; }
+}
+
+.entryHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.entryIssue {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.entryNotes {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--fg-secondary, var(--fg));
+  /* Preserve the log's own line breaks: appends are timestamped lines and
+     collapsing them would run separate observations together. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

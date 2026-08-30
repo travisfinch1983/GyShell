@@ -24,6 +24,7 @@ EXTENDED / written back — never replaced — and every agent is verified after
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -32,7 +33,24 @@ import urllib.request
 GW = os.environ.get("MCPJUNGLE_URL", "http://127.0.0.1:8080")
 API = os.environ.get("AILAB_API_URL", "http://127.0.0.1:17890")
 MCP = os.environ.get("AILAB_AUTHORING_MCP_URL", "http://127.0.0.1:9848")
-MCPJUNGLE_BIN = os.environ.get("MCPJUNGLE_BIN", "mcpjungle")
+
+def resolve_mcpjungle():
+    """Resolve the binary EXPLICITLY rather than trusting the caller's PATH.
+
+    It is not on PATH on CT152 -- it lives at /opt/ai-lab-mcp/mcpjungle -- and a
+    bare "mcpjungle" produced the worst possible combination: every force-refresh
+    failed while the registrations themselves appeared to succeed, so a run looked
+    like progress while every existing server kept serving its stale tool schema
+    (claude1, cost him a failed deploy run, 2026-08-30).
+    """
+    for c in (os.environ.get("MCPJUNGLE_BIN"), "/opt/ai-lab-mcp/mcpjungle",
+              "/usr/local/bin/mcpjungle", shutil.which("mcpjungle")):
+        if c and os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+MCPJUNGLE_BIN = resolve_mcpjungle()
 # Journal is a working log, so it belongs to the agents that keep one.
 JOURNAL_AGENTS = [a.strip() for a in os.environ.get(
     "AILAB_JOURNAL_AGENTS", "maintenance-claude").split(",") if a.strip()]
@@ -88,8 +106,8 @@ def register(name, url, description, force):
         if p.returncode != 0:
             print(f"    register --force failed: {(p.stderr or p.stdout).strip()[:200]}")
         return p.returncode == 0
-    except FileNotFoundError:
-        print(f"    {MCPJUNGLE_BIN} not on PATH — cannot force-refresh {name}")
+    except (FileNotFoundError, TypeError):
+        print(f"    mcpjungle binary not found — cannot force-refresh {name}")
         return False
     finally:
         try:
@@ -99,6 +117,16 @@ def register(name, url, description, force):
 
 
 def main():
+    if MCPJUNGLE_BIN:
+        print(f"mcpjungle: {MCPJUNGLE_BIN}")
+    else:
+        # Not fatal on a first run (nothing to force-refresh yet), but every
+        # existing server will keep serving its cached schema, so say it loudly.
+        print("WARNING: mcpjungle binary not found (looked at $MCPJUNGLE_BIN, "
+              "/opt/ai-lab-mcp/mcpjungle, /usr/local/bin/mcpjungle, PATH).\n"
+              "         EXISTING servers cannot be force-refreshed and will keep "
+              "serving their cached tool schemas.\n")
+
     s, health = call("GET", f"{MCP}/health", timeout=5)
     if s != 200:
         print(f"FATAL: authoring MCP not healthy at {MCP} ({s}) — start it first")
@@ -194,7 +222,20 @@ def main():
             print(f"  ! {agent}: VERIFY FAILED — expected {sorted(expected)}, gateway shows {sorted(have)}")
             failed += 1
 
-    print(f"\ndone: {ok} ok, {failed} failed")
+    # 🛑 FINAL CHECK: the run must not be able to report success while the agent a
+    # toolset was BUILT FOR has none of it. The previous version printed "20 ok, 0
+    # failed" having provisioned the journal for nobody -- every agent it attempted
+    # succeeded, and the one that mattered was never attempted. Per-item success is
+    # not coverage, so coverage is asserted separately, through the gateway.
+    unserved = [a for a in JOURNAL_AGENTS if not gateway_tools(f"journal-{a}")]
+    if unserved:
+        print(f"\n! JOURNAL OWNERS WITHOUT JOURNAL TOOLS: {', '.join(unserved)}")
+        print("  (named in AILAB_JOURNAL_AGENTS but the gateway serves them no journal-* tools)")
+        failed += len(unserved)
+    else:
+        print(f"\njournal owners verified through the gateway: {', '.join(JOURNAL_AGENTS)}")
+
+    print(f"done: {ok} ok, {failed} failed")
     sys.exit(1 if failed else 0)
 
 
