@@ -292,7 +292,7 @@ async function main(): Promise<void> {
   const idxWarn = emitted.filter((e) => e.source === 'journal-rag')
   assert(idxWarn.length > 0,
     'the index failure LEAVES THE PROCESS as a notification — indexed:false alone is read only by the calling agent')
-  assert(idxWarn[0].severity === 'warning' && idxWarn[0].detail?.includes('safe and readable'),
+  assert(idxWarn[0].severity === 'warning' && (idxWarn[0].detail ?? '').includes('safe and readable'),
     'and says the entry is safe, so a degraded index is not mistaken for lost work')
 
   r = await call('GET', '/api/journal-search?q=anything')
