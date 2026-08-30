@@ -105,6 +105,36 @@ async function main(): Promise<void> {
   ok(!!drift && (drift.detail ?? '').includes('mcpjungle'),
     'and the detail NAMES the unprobed checks')
 
+  // ── maintainer validation: the REAL directory shape, pinned ───────────────
+  // claude1's e1db49d: fleetd returns agent_id / display_name; the original
+  // check compared id / name — fields ASSUMED, not observed — so every row
+  // evaluated undefined and a 30-agent directory read as "recipient missing".
+  // The emitter cried wolf on its first real boot, and only the suspension
+  // kept the false alarm from delivering THROUGH the path it claimed broken.
+  // These assertions pin the real field names so the guess cannot come back.
+  ;(globalThis as any).fetch = async (url: string) => {
+    if (String(url).includes('/directory')) {
+      return { ok: true, json: async () => ({ agents: [
+        { agent_id: 'maintenance-claude', display_name: 'Maintenance Claude' },
+        { agent_id: 'claude1', display_name: 'claude1' },
+      ] }) } as any
+    }
+    outbound.push(String(url)); throw new Error('spec: outbound blocked')
+  }
+  const evCount = svc.state().events.length
+  await (svc as any).validateMaintainer()
+  ok(svc.state().events.length === evCount,
+    'a recipient present under agent_id/display_name raises NOTHING — the real fleetd shape resolves')
+  ;(globalThis as any).fetch = async (url: string) => {
+    if (String(url).includes('/directory')) {
+      return { ok: true, json: async () => ({ agents: [{ agent_id: 'someone-else', display_name: 'X' }] }) } as any
+    }
+    outbound.push(String(url)); throw new Error('spec: outbound blocked')
+  }
+  await (svc as any).validateMaintainer()
+  ok(svc.state().events.some((e) => e.message.includes("not in the fleet directory")),
+    'a recipient GENUINELY absent from a non-empty directory still warns — the pair that proves the fix is not just quieter')
+
   // ── a healthy install stays quiet ─────────────────────────────────────────
   const dataDir4 = mkdtempSync(join(tmpdir(), 'notif4-'))
   const svc4 = new NotificationsService(dataDir4, () => {})   // seeds defaults itself
