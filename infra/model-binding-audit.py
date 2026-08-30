@@ -137,6 +137,19 @@ def routes_via_proxy(b):
         return False
     return True
 
+def emit(severity: str, source: str, message: str, detail: str = "") -> None:
+    """Best-effort notification. Never raises: an audit that dies because it could not REPORT
+    would be worse than one that stays quiet."""
+    try:
+        body = json.dumps({"severity": severity, "source": source,
+                           "message": message, "detail": detail}).encode()
+        req = urllib.request.Request(f"{PROXY}/api/notifications/emit", body,
+                                     {"Content-Type": "application/json"}, method="POST")
+        urllib.request.urlopen(req, timeout=8).read()
+    except Exception as e:
+        print(f"(notification not sent: {e})", file=sys.stderr)
+
+
 def main():
     try:
         exact, bare = served()
@@ -200,6 +213,19 @@ def main():
         print("failing silently right now. Fix the binding or start the model.")
     else:
         print("All bindings resolve to a served model.")
+
+    # --emit raises the result into the notifications panel. Only a FAILURE is reported: a clean
+    # sweep is the normal state and an event for it would be noise, which is how a panel earns
+    # being ignored. Reporting never affects the exit code or the audit itself.
+    if "--emit" in sys.argv and dead:
+        worst = [r for r in rows if r["status"] == "DEAD"]
+        by_model: dict = {}
+        for r in worst:
+            by_model.setdefault(r["value"], []).append(f"{r['source']} {r['path']}")
+        lines = [f"{m} ({len(v)} binding{'' if len(v) == 1 else 's'})" for m, v in sorted(by_model.items())]
+        emit("warning", "model-bindings",
+             f"{dead} model binding(s) name a model that is not being served",
+             "; ".join(lines)[:600])
     return 1 if dead else 0
 
 if __name__ == "__main__":
