@@ -42,6 +42,7 @@ import { ProxySettingsPanel } from "./ProxySettingsPanel";
 import { AgentsPanel } from "./AgentsPanel";
 import { AgentsSettings } from "../Agents/AgentsSettings";
 import { TtsSettingsPanel } from "./TtsSettingsPanel";
+import { ErrorBoundary } from "../ErrorBoundary";
 import "./TtsSettingsPanel.scss";
 import { FtpSettingsPanel } from "./FtpSettingsPanel";
 import { uiPrefsStore } from "../../stores/uiPrefsStore";
@@ -1669,7 +1670,9 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
           ) : null}
 
             {store.settingsSection === "tts" ? (
-              <TtsSettingsPanel store={store} />
+              <ErrorBoundary label="Support Models">
+                <TtsSettingsPanel store={store} />
+              </ErrorBoundary>
             ) : null}
 
             {store.settingsSection === "tools" ? <ToolsPanel store={store} /> : null}

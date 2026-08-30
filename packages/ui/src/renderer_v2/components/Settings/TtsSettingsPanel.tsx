@@ -452,17 +452,26 @@ const EditableLine: React.FC<{
  */
 const AgentBreakdown: React.FC<{ task: AuxTask }> = ({ task }) => {
   const [open, setOpen] = useState(false)
+  // Every array is defaulted rather than dereferenced. This panel can legitimately receive a
+  // payload shaped by an OLDER backend: the tab persists its last response to localStorage and
+  // renders from it before the network reply lands, so a cached payload written before a field
+  // existed is a normal input, not a corrupt one. Reading follows.length directly threw
+  // "Cannot read properties of undefined" and took the whole page down with it.
   const b = task.breakdown
-  if (!b || (!b.follows.length && !b.overrides.length && !b.autos.length && !b.templates.length)) return null
+  const follows = b?.follows ?? []
+  const overrides = b?.overrides ?? []
+  const autos = b?.autos ?? []
+  const templates = b?.templates ?? []
+  if (!follows.length && !overrides.length && !autos.length && !templates.length) return null
 
   const managed = !!task.capabilityManaged
   const autoMeans = managed
     ? 'uses its own model (already vision-capable, so no describer is needed)'
     : "no model set — falls back to the agent's own model"
   const parts: string[] = []
-  if (b.follows.length) parts.push(`${b.follows.length} using this card's model`)
-  if (b.autos.length) parts.push(`${b.autos.length} on Auto`)
-  if (b.overrides.length) parts.push(`${b.overrides.length} with a different model`)
+  if (follows.length) parts.push(`${follows.length} using this card's model`)
+  if (autos.length) parts.push(`${autos.length} on Auto`)
+  if (overrides.length) parts.push(`${overrides.length} with a different model`)
   const summary = parts.length ? parts.join(' · ') : 'no agents'
 
   const row: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', gap: 10, padding: '2px 0' }
@@ -482,32 +491,32 @@ const AgentBreakdown: React.FC<{ task: AuxTask }> = ({ task }) => {
       {open && (
         <div style={{ fontSize: 11, lineHeight: 1.5, padding: '6px 9px', marginTop: 4, borderRadius: 6,
                       border: '1px solid var(--border)', background: 'var(--bg-elev, rgba(128,128,128,.06))' }}>
-          {b.follows.length > 0 && (
+          {follows.length > 0 && (
             <>
               <div style={{ fontWeight: 600, marginBottom: 2 }}>
                 {managed ? 'Using this card’s model (their own model cannot see images)' : 'Using this card’s model'}
               </div>
-              <div style={{ opacity: .75 }}>{b.follows.join(', ')}</div>
+              <div style={{ opacity: .75 }}>{follows.join(', ')}</div>
             </>
           )}
-          {b.overrides.length > 0 && (
+          {overrides.length > 0 && (
             <>
               <div style={{ fontWeight: 600, margin: '6px 0 2px' }}>Set to something else (a real override)</div>
-              {b.overrides.map(({ agent, model }) => (
+              {overrides.map(({ agent, model }) => (
                 <div key={agent} style={row}><span>{agent}</span><span style={{ opacity: .75 }}>{model}</span></div>
               ))}
             </>
           )}
-          {b.autos.length > 0 && (
+          {autos.length > 0 && (
             <>
               <div style={{ fontWeight: 600, margin: '6px 0 2px' }}>Auto — {autoMeans}</div>
-              <div style={{ opacity: .75 }}>{b.autos.join(', ')}</div>
+              <div style={{ opacity: .75 }}>{autos.join(', ')}</div>
             </>
           )}
-          {b.templates.length > 0 && (
+          {templates.length > 0 && (
             <>
               <div style={{ fontWeight: 600, margin: '6px 0 2px' }}>Templates (not real agents, never applied to)</div>
-              <div style={{ opacity: .6 }}>{b.templates.map((t) => t.agent).join(', ')}</div>
+              <div style={{ opacity: .6 }}>{templates.map((t) => t.agent).join(', ')}</div>
             </>
           )}
         </div>
@@ -673,7 +682,9 @@ const SupportModelSection: React.FC<{
 // "loading" each time. The backend already version-caches the aux list; this keeps it warm on the
 // client for the page session (a full page reload re-fetches once).
 type SmData = { tasks: AuxTask[]; roles: Record<string, SupportModelRole>; catalog: CatalogModelWithCaps[] }
-const SM_LS_KEY = 'ai-lab-support-models-cache-v1'
+// v2: the cached payload gained breakdown fields. Bumping the key discards pre-change
+// payloads instead of rendering them — the defaults above make that survivable either way.
+const SM_LS_KEY = 'ai-lab-support-models-cache-v2'
 function smLoadPersisted(): SmData | null {
   try { const s = localStorage.getItem(SM_LS_KEY); return s ? (JSON.parse(s) as SmData) : null } catch { return null }
 }
