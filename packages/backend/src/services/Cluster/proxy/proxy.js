@@ -20,6 +20,8 @@
  */
 
 import { Router } from 'express';
+import * as fsForState from 'fs';
+import { loadJsonState } from './lib/notify.js';
 import http from 'http';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
@@ -327,10 +329,8 @@ const HEALTH_CACHE_TTL = 10_000; // 10 seconds
 const externalServicesFile = join(PROXY_DATA_DIR, 'external-services.json');
 
 function loadExternalServices() {
-  try {
-    if (existsSync(externalServicesFile)) return JSON.parse(readFileSync(externalServicesFile, 'utf-8'));
-  } catch {}
-  return [];
+  return loadJsonState(fsForState, externalServicesFile, [],
+    { source: 'external-models', what: 'External model sources (Claude/DeepSeek/OpenRouter…)' });
 }
 
 function saveExternalServices(svcs) {

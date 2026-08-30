@@ -4,6 +4,7 @@
 /* eslint-disable */
 // @ts-nocheck
 import express from 'express'
+import { emitNotification, emitOnce } from './lib/notify.js';
 import multer from 'multer'
 import { readFile as readFileAsync, readdir, stat } from 'node:fs/promises'
 import { extname, join, resolve as pathResolve, dirname, basename } from 'node:path'
@@ -303,6 +304,15 @@ function processRagQueue() {
         console.error(`[rag-queue] SKIPPED update '${next.collection}': runRagUpdate is not `
           + `implemented, so this collection is NOT being refreshed. This is why codebase-RAG `
           + `auto-update does nothing. Skipping instead of crashing the backend.`);
+        // Once per process, not per collection: the guard above stopped the
+        // nightly crash but kept the SILENCE — update-all answers 200 {queued:N}
+        // while all N are guaranteed to land here. Say it where someone looks.
+        emitOnce('rag-update-unimplemented', 'warning', 'codebase-rag',
+          'Codebase-RAG auto-update is queueing work that is silently discarded',
+          `Collection '${next.collection}' (and every other queued update) is dropped because `
+          + `runRagUpdate is not implemented. update-all keeps reporting {queued:N} as success, `
+          + `so stale collections look like a search-quality problem, not a fault. This lane `
+          + `already crashed the backend nightly 2026-08-16→20 without anyone noticing.`);
         return;
       }
       runRagUpdate(next.collection);
@@ -1245,7 +1255,16 @@ app.post('/api/ai/rag/update-all', async (req, res) => {
       queued++;
     }
     if (!ragJob.active && ragQueue.length > 0) processRagQueue();
-    res.json({ queued, collections: manifest.map(c => c.name) });
+    // Tell the caller the truth about what will actually happen — a 200 that
+    // counts discarded work as queued is how this stayed dark. willRun stays
+    // accurate automatically the day runRagUpdate lands.
+    const willRun = typeof runRagUpdate === 'function';
+    if (queued > 0 && !willRun) {
+      void emitNotification('warning', 'codebase-rag',
+        'RAG update-all queued collections that will all be skipped',
+        `${queued} update item(s) queued this run; runRagUpdate is not implemented, so none will refresh.`);
+    }
+    res.json({ queued, willRun, collections: manifest.map(c => c.name) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
