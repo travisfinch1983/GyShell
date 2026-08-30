@@ -4,6 +4,9 @@
 // maintainer route is disarmed: see feedback on the harness that woke maintenance-claude.
 process.env.AILAB_MAINTAINER_AGENT = 'off'
 process.env.UNIFIED_MEMORY_URL = 'http://127.0.0.1:9'   // dead: forces the index to fail
+// @ts-ignore -- express has no types installed repo-wide (same as notesHttp/svgsHttp).
+// @ts-ignore is deliberate over @ts-expect-error: if types are ever added, an expect-error
+// would itself become an unused-directive error and break the baseline it protects.
 import express from 'express'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

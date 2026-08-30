@@ -116,6 +116,12 @@ export const journalEntrySchema = z.object({
   whyNoAction: z.string().optional(),
   author: z.string().optional(),
   version: z.number().int().positive().optional(),
+  /**
+   * The trail back to the source: event ids, service names, commits, related pages.
+   * Stored on both reports and notes, so dropping it here made it unreachable --
+   * a link recorded and never shown is indistinguishable from one never recorded.
+   */
+  links: z.array(z.string()).default([]),
 })
 export type JournalEntry = z.infer<typeof journalEntrySchema>
 

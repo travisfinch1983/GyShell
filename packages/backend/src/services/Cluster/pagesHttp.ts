@@ -255,6 +255,7 @@ export function createPagesRouter(dataDir: string, notify?: NotifyFn): express.R
         fix: m.report!.fix,
         author: m.authors[m.authors.length - 1],
         version: m.currentVersion,
+        links: m.report!.links ?? [],
       }))
     const fromNotes: JournalEntry[] = loadNotes()
       .filter((n) => !category || n.category === category)
@@ -267,6 +268,7 @@ export function createPagesRouter(dataDir: string, notify?: NotifyFn): express.R
         cause: n.cause,
         whyNoAction: n.whyNoAction,
         author: n.author,
+        links: n.links ?? [],
       }))
     const entries = [...fromReports, ...fromNotes].sort((a, b) => b.receivedAt.localeCompare(a.receivedAt))
     res.json({ entries })

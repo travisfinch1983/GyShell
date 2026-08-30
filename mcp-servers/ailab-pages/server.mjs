@@ -190,7 +190,7 @@ function buildServer(author) {
       category: z.string().describe('one of report_categories'),
       issue: z.string().min(1).max(200).describe('short name of what was reported'),
       cause: z.string().max(500).optional().describe('one line: what it turned out to be'),
-      why_no_action: z.string().min(1).max(500).describe('why nothing was repaired — the field that makes the dismissal reviewable later'),
+      why_no_action: z.string().min(1).max(500).describe('why nothing was repaired — the field that makes the dismissal reviewable later. MAX 500 CHARACTERS, enforced: keep it to the reason, not the investigation.'),
       links: z.array(z.string()).optional().describe('notification ids, service names'),
     },
     async ({ category, issue, cause, why_no_action, links }) => {
@@ -207,7 +207,7 @@ function buildServer(author) {
 
   mcp.tool(
     'journal_read',
-    'The maintenance journal: every report as one skimmable line (when, issue, cause, fix, report id). Purpose is memory ACROSS context windows — read it to spot a repeat problem you have no memory of fixing.',
+    'The maintenance journal: every report AND every no-repair note as one skimmable line (when, issue, cause, fix or why-no-action, links, report id). Purpose is memory ACROSS context windows — read it to spot a repeat problem you have no memory of fixing.',
     { category: z.string().optional(), limit: z.number().int().positive().max(200).optional() },
     async ({ category, limit }) => {
       const r = await api('GET', `/api/pages/journal${q({ category })}`)
@@ -218,7 +218,8 @@ function buildServer(author) {
         `${e.cause ? ` · cause: ${e.cause}` : ''}` +
         (e.kind === 'note'
           ? ` · NO REPAIR: ${e.whyNoAction}${e.author ? ` (${e.author})` : ''}`
-          : `${e.fix ? ` · fix: ${e.fix}` : ''} · report: ${e.pageId} (v${e.version}${e.author ? `, ${e.author}` : ''})`),
+          : `${e.fix ? ` · fix: ${e.fix}` : ''} · report: ${e.pageId} (v${e.version}${e.author ? `, ${e.author}` : ''})`) +
+        `${e.links?.length ? ` · links: ${e.links.join(', ')}` : ''}`,
       ).join('\n'))
     },
   )
