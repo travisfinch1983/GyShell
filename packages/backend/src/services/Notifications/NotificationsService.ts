@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve as dnsResolve } from 'node:dns/promises'
 import path from 'node:path'
 
@@ -120,19 +120,48 @@ export class NotificationsService {
   private checks: HealthCheckConfig[] = []
   private timer: ReturnType<typeof setInterval> | null = null
   private persistTimer: ReturnType<typeof setTimeout> | null = null
+  private persistFailedReported = false
   private seq = 0
+
+  /** Deferred self-reports queued during construction — raised only AFTER the
+   *  routing (suspension) state has loaded, so a config problem found at boot
+   *  can never wake the maintainer through a not-yet-loaded suspension. */
+  private readonly bootReports: Array<{ severity: NotifySeverity; source: string; message: string; detail?: string }> = []
 
   constructor(
     private readonly dataDir: string,
     /** gatewayService.broadcastRaw — the one live transport. */
     private readonly broadcast: (channel: string, data: unknown) => void,
-    private readonly intervalMs = Number(process.env.AILAB_HEALTH_INTERVAL_MS ?? 30_000),
+    intervalMs = Number(process.env.AILAB_HEALTH_INTERVAL_MS ?? 30_000),
   ) {
+    // 🛑 Clamp, never trust: Number('30s') is NaN, and setInterval(fn, NaN)
+    // fires every ~1ms — a probe STORM from a typo'd env var, with state()
+    // reporting NaN to the panel. Below 5s the probes overlap their own
+    // timeouts. Both are config mistakes the board must survive, not obey.
+    if (!Number.isFinite(intervalMs) || intervalMs < 5_000) {
+      const bad = intervalMs
+      intervalMs = 30_000
+      this.bootReports.push({
+        severity: 'warning', source: 'health-board',
+        message: 'Health probe interval was invalid — clamped to 30s',
+        detail: `AILAB_HEALTH_INTERVAL_MS resolved to ${String(bad)}; anything non-numeric or under 5000ms would probe-storm or overlap timeouts. Running at 30000ms instead.`,
+      })
+      console.warn(`[notifications] invalid AILAB_HEALTH_INTERVAL_MS (${String(bad)}) — clamped to 30000`)
+    }
+    this.intervalMs = intervalMs
     mkdirSync(this.dir(), { recursive: true })
+    // Routing FIRST: everything after this may queue a boot report, and the
+    // flush below must see the persisted suspension before anything routes.
+    this.loadRouting()
     this.loadEvents()
     this.loadChecks()
-    this.loadRouting()
+    setTimeout(() => {
+      for (const r of this.bootReports) this.notify(r)
+      this.bootReports.length = 0
+    }, 1_000)
   }
+
+  private readonly intervalMs: number
 
   private dir(): string {
     return path.join(this.dataDir, 'notifications')
@@ -165,6 +194,34 @@ export class NotificationsService {
     } catch (e) {
       console.warn('[notify] could not persist routing state:', (e as Error)?.message)
     }
+  }
+
+  /**
+   * The maintainer name is config pointing at an agent — and config naming
+   * something that does not exist is this estate's oldest silent failure: a
+   * renamed or deleted agent turns every alarm into a console.warn. Checked
+   * once at start against the fleet directory. Cannot-check ≠ failed: an
+   * unreachable directory is not evidence about the agent, so it stays quiet.
+   */
+  private async validateMaintainer(): Promise<void> {
+    if (this.envDisabled()) return
+    const to = process.env.AILAB_MAINTAINER_AGENT || 'maintenance-claude'
+    const fleetd = process.env.FLEETD_URL || 'http://127.0.0.1:17900'
+    try {
+      const r = await fetch(`${fleetd}/directory`, { signal: AbortSignal.timeout(8000) })
+      if (!r.ok) return
+      const dir = await r.json() as { agents?: Array<{ id?: string; name?: string }> } | Array<{ id?: string; name?: string }>
+      const rows = Array.isArray(dir) ? dir : (dir.agents ?? [])
+      if (!rows.length) return   // an empty listing is not proof of absence
+      const known = rows.some((a) => a.id === to || a.name === to)
+      if (!known) {
+        this.notify({
+          severity: 'warning', source: 'health-board',
+          message: `Alarm recipient '${to}' is not in the fleet directory`,
+          detail: `Every warning+ event routes to '${to}', but fleetd's directory does not list it — a renamed or deleted agent means alarms deliver to nobody while looking sent. Fix AILAB_MAINTAINER_AGENT or restore the agent.`,
+        })
+      }
+    } catch { /* directory unreachable — the fleetd health dot owns that story */ }
   }
 
   /** Whether the env var hard-disables routing regardless of the runtime toggle. */
@@ -226,7 +283,19 @@ export class NotificationsService {
         if (Array.isArray(raw)) this.events = raw.slice(-EVENT_CAP)
       }
     } catch (e) {
+      // Starting empty LOSES unacked events — including criticals nobody has
+      // seen — which defeats the stated "events survive restarts" guarantee.
+      // Keep the corrupt bytes and say what happened, in-band: the panel
+      // showing a fresh empty list is otherwise indistinguishable from a
+      // healthy quiet night.
+      let saved = ''
+      try { copyFileSync(this.eventsFile(), `${this.eventsFile()}.corrupt-${Date.now()}`); saved = 'preserved beside it' } catch { saved = 'and backing it up ALSO failed' }
       console.warn('[notifications] events file unreadable, starting empty:', (e as Error).message)
+      this.bootReports.push({
+        severity: 'warning', source: 'health-board',
+        message: 'Event history was unreadable and has been reset',
+        detail: `events.json failed to parse (${(e as Error).message}); the corrupt file is ${saved}. Any unacked events from before this restart — including criticals — are no longer badged. An empty panel right now means LOST, not quiet.`,
+      })
     }
   }
 
@@ -239,9 +308,40 @@ export class NotificationsService {
       }
       const raw = JSON.parse(readFileSync(this.checksFile(), 'utf8'))
       this.checks = Array.isArray(raw?.checks) ? raw.checks : DEFAULT_CHECKS
+      if (this.checks.length === 0) {
+        // [] is valid JSON and a dead board: probeAll() iterates nothing,
+        // forever, and no dot ever turns any colour again. Respect the file
+        // (an operator may truly want it off) but never silently.
+        this.bootReports.push({
+          severity: 'warning', source: 'health-board',
+          message: 'Health board has ZERO checks configured — nothing is being probed',
+          detail: `${this.checksFile()} holds an empty checks array. Every dependency dot is gone and no down-detection is running. If this is deliberate, ack this; if not, delete the file to re-seed the defaults on next restart.`,
+        })
+      } else {
+        // Seed-once means a dependency added to DEFAULT_CHECKS later is never
+        // probed on an existing install — the board looks complete and simply
+        // lacks a dot for the new thing, which nobody notices by looking.
+        const present = new Set(this.checks.map((c) => c.id))
+        const missing = DEFAULT_CHECKS.filter((c) => !present.has(c.id)).map((c) => c.id)
+        if (missing.length) {
+          console.warn(`[notifications] default checks absent from on-disk config (operator-removed or added since seeding): ${missing.join(', ')}`)
+          this.bootReports.push({
+            severity: 'info', source: 'health-board',
+            message: 'Default health checks are absent from the configured set',
+            detail: `Not probed: ${missing.join(', ')}. The config was seeded once and is operator-owned, so these are either deliberately removed (fine — ack this) or were added to the defaults AFTER this install seeded and silently never started running. Add them to ${this.checksFile()} if wanted.`,
+          })
+        }
+      }
     } catch (e) {
+      let saved = ''
+      try { copyFileSync(this.checksFile(), `${this.checksFile()}.corrupt-${Date.now()}`); saved = `; the file is preserved beside it` } catch { /* reported below regardless */ }
       console.warn('[notifications] health config unreadable, using defaults:', (e as Error).message)
       this.checks = DEFAULT_CHECKS
+      this.bootReports.push({
+        severity: 'warning', source: 'health-board',
+        message: 'Health config was unreadable — running on built-in defaults',
+        detail: `${this.checksFile()} failed to parse (${(e as Error).message})${saved}. Any operator edits (custom targets, removed checks) are NOT in effect until the file is repaired.`,
+      })
     }
   }
 
@@ -251,8 +351,20 @@ export class NotificationsService {
       this.persistTimer = null
       try {
         writeFileSync(this.eventsFile(), JSON.stringify(this.events.slice(-EVENT_CAP), null, 2))
+        this.persistFailedReported = false
       } catch (e) {
         console.warn('[notifications] persist failed:', (e as Error).message)
+        if (!this.persistFailedReported) {
+          // Once per outage, in-band: with persistence down, every event lives
+          // only in memory and the next restart erases the record — the
+          // "survives restarts" guarantee is off and the panel cannot tell.
+          this.persistFailedReported = true
+          this.notify({
+            severity: 'warning', source: 'health-board',
+            message: 'Event persistence is failing — history will not survive a restart',
+            detail: `writeFileSync(${this.eventsFile()}) failed: ${(e as Error).message}. Events keep working in memory; a restart during this condition loses them.`,
+          })
+        }
       }
     }, 500)
   }
@@ -446,6 +558,7 @@ export class NotificationsService {
     if (this.timer) return
     void this.probeAll()
     this.timer = setInterval(() => void this.probeAll(), this.intervalMs)
+    void this.validateMaintainer()
   }
 
   stop(): void {
