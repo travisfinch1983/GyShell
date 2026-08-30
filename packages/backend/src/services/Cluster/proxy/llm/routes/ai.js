@@ -2321,7 +2321,28 @@ if out: print(json.dumps(out))
       //
       // Each is set only if not already present, so a launch template or operator can still
       // override any of them without editing this file.
-      vllmEnvPreamble = `# ── 1Cat-vLLM SM70 runtime env (auto-emitted; override by exporting these first) ──
+      // The CUDA TOOLCHAIN must be on PATH, and this is not optional for GDN models.
+      // VLLM_SM70_QWEN_GDN_FULL_FORWARD makes the GDN path JIT-compile TileLang kernels at
+      // REQUEST time, and tilelang.determine_target() locates CUDA through nvcc.find_cuda_path()
+      // -- i.e. nvcc on PATH -- NOT through torch.cuda.is_available(). Invoking the env's vllm by
+      // absolute path does not put the env on PATH, so nvcc is invisible even though it ships
+      // inside the env.
+      //
+      // The failure is nasty precisely because it is not a startup failure: any kernel shape that
+      // is not already in ~/.tilelang dies with "No CUDA or HIP or MPS available" -> worker
+      // exception -> EngineDeadError -> HTTP 500, while /v1/models keeps answering 200. A service
+      // can look healthy for days on a warm cache and then fall over on an unusual prompt shape.
+      const vllmEnvPrefix = (finalCommand.match(/(\/[^\s"']*)\/bin\/vllm\b/) || [])[1] || '';
+      const cudaEnv = vllmEnvPrefix
+        ? `# CUDA toolchain: tilelang JIT resolves CUDA via nvcc on PATH, not via torch.
+case ":$PATH:" in *":${vllmEnvPrefix}/bin:"*) ;; *) export PATH="${vllmEnvPrefix}/bin:$PATH" ;; esac
+# CUDA_HOME is set UNCONDITIONALLY, unlike the tunables below: an inherited value from another
+# conda env (observed in practice: /opt/conda/envs/alltalk) points the toolchain at the wrong
+# CUDA, and a wrong CUDA_HOME is worse than an unset one.
+export CUDA_HOME="${vllmEnvPrefix}"
+`
+        : '';
+      vllmEnvPreamble = cudaEnv + `# ── 1Cat-vLLM SM70 runtime env (auto-emitted; override by exporting these first) ──
 : "\${VLLM_DISABLED_KERNELS:=MarlinLinearKernel}"; export VLLM_DISABLED_KERNELS
 : "\${VLLM_SM70_QUANT_BACKEND:=turbomind}"; export VLLM_SM70_QUANT_BACKEND
 : "\${VLLM_SM70_QWEN_GDN_FULL_FORWARD:=1}"; export VLLM_SM70_QWEN_GDN_FULL_FORWARD
