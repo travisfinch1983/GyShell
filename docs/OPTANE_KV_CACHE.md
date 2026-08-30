@@ -73,10 +73,11 @@ The partial-hit policy is **serve-partial** (final, 2026-08-30): a partial prefi
 served as-is. The earlier **refuse-partial** policy — zero the hit and recompute whenever
 coverage wasn't total — was a *workaround* for the store-before-write corruption, not a
 design choice; once MAMBAFIX fixed the actual cause (§3.1), the restriction protected
-against nothing. Measured consequence: the relaxation is **inert in practice** —
-serve-partial events = 0 in the verification reruns, because MAMBAFIX removed the
-tail-block partial case that used to produce them. It removes a restriction we no longer
-need rather than unlocking new hits.
+against nothing. Measured under the relaxed policy itself (acceptance gate, 2026-08-30):
+**13/13 restores byte-exact across 3 conversations with MTP on, 0 failures,
+serve-full 13 / serve-partial 0** — the relaxation is inert in practice, because MAMBAFIX
+removed the tail-block partial case that used to produce partial hits. It removes a
+restriction we no longer need rather than unlocking new hits.
 
 ### 3.4 HOTNESS — eviction that knows what's warm
 
@@ -142,6 +143,17 @@ guard.**
 1. **Use the counters, never wall-clock.** `/metrics` →
    `vllm:external_prefix_cache_{hits,queries}_total`. An 11.9× speedup with
    `external_prefix_cache_hits_total == 0` is a pure GPU-cache hit, not the tier stack.
+   Naming caveat: `external_prefix_cache_hits_total` counts hits served by the
+   **connector as a whole — RAM tier + Optane together**. AI-Lab's `optaneHits` field
+   wraps this same counter; do not read that column as an Optane-specific hit rate.
+1b. **The byte counters are the liveness signature** (AI-Lab scrapes them since
+   `f3ba371`: `vllm:kv_offload_total_bytes_total` / `_time_total` by transfer_type →
+   `cum_kvOffloadStoredBytes/RestoredBytes/StoredSec/RestoredSec`). **Stored** bytes
+   climb as soon as the connector is wired at all; **restored** bytes climb only on an
+   actual hit. *"Restored pinned at 0 while stored grows" is the precise signature of a
+   cache that is present but dead* — the failure mode that went unnoticed for months
+   before these were read. Healthy reference (27B, 2026-08-30): 499.7 GB stored,
+   15.8 GB restored.
 2. **The only discriminating correctness test is a needle at depth after a restart.**
    Plant a fact deep in a long context, restart the engine, ask for it. Hit rates,
    throughput, spot checks and even token-exact single-turn diffs have all passed while
