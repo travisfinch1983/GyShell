@@ -231,6 +231,11 @@ export class NotificationsService {
       `\n\nThis is an automated notification, not a person asking. Triage it: fix it, defer it to`,
       ` Travis on Telegram if you need his input, or journal-and-ack it if it is real but not`,
       ` actionable. Ack it either way so it stops badging.`,
+      // This identity can send but not receive: fleetd dispatches inbound by agent kind, and
+      // the kind this emitter is registered under has no adapter. Saying so costs two lines
+      // and saves the reader discovering it by having a reply vanish.
+      `\n\nDo not reply to this thread — this emitter is send-only and your reply will not`,
+      ` route. Report outcomes to claude1 instead.`,
     ].join('')
 
     void fetch(`${fleetd}/send`, {
