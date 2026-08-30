@@ -90,25 +90,66 @@ export async function indexReport(input: ReportVectorInput): Promise<void> {
 }
 
 /**
- * Index a journal note into the same collection as its category's reports, so
- * one search answers both "was this ever repaired?" and "did I already decide
- * this needs no repair?". Prefixed NOTE so a hit is self-describing.
+ * Index a journal entry so dismissals stay FINDABLE.
+ *
+ * 🛑 Why this exists at all, given keys. Keys answer "is this the same event,
+ * and how many times?" — precise, but you can only look up a key you already
+ * know. Semantic search answers "is there anything related I should read
+ * first?", which is the question an agent has BEFORE it has identified
+ * anything. The two are not substitutes.
+ *
+ * It matters most for the third triage outcome. A no-action dismissal produces
+ * no report by definition, so it is invisible to report_search entirely — and
+ * without this it would be reachable only by exact key or substring `?q=`.
+ * Substring matching fails on rewording, which is the precise failure this
+ * surface spent a whole review eliminating from occurrence counting; leaving it
+ * as the only discovery path would have reintroduced it one door down
+ * (2026-08-30, decided after claude1 flagged the split had dropped it).
+ *
+ * Its own collection, not the reports one: the toolsets are deliberately
+ * separate, and an agent holding Reports without Journal should not have
+ * another agent's working log surfacing in its report searches.
  */
-export async function indexNote(input: { collection: string; note: { id: string; category: string; issue: string; cause?: string; whyNoAction: string; author?: string; createdAt: string } }): Promise<void> {
-  const n = input.note
+export const journalCollection = (): string =>
+  process.env.AILAB_JOURNAL_COLLECTION || 'ailab_journal'
+
+export interface JournalVectorInput {
+  id: string
+  issue: string
+  originalIssue?: string
+  status: string
+  notes: string
+  keys?: string[]
+  reportIds?: string[]
+  author?: string
+  createdAt: string
+}
+
+export async function indexJournalEntry(entry: JournalVectorInput): Promise<void> {
   const text = [
-    `NOTE (no repair made): ${n.issue}`,
-    `category: ${n.category}`,
-    n.cause ? `cause: ${n.cause}` : '',
-    `why no action: ${n.whyNoAction}`,
-    `noted at: ${n.createdAt}`,
+    `JOURNAL (${entry.status}): ${entry.issue}`,
+    entry.originalIssue && entry.originalIssue !== entry.issue ? `filed as: ${entry.originalIssue}` : '',
+    entry.keys?.length ? `keys: ${entry.keys.join(', ')}` : '',
+    entry.reportIds?.length ? `reports: ${entry.reportIds.join(', ')}` : '',
+    `logged at: ${entry.createdAt}`,
+    '',
+    entry.notes,
   ].filter(Boolean).join('\n')
   await callTool('collection_store', {
-    collection: input.collection,
+    collection: journalCollection(),
     text,
-    doc_id: n.id,
-    metadata: JSON.stringify({ kind: 'journal-note', note_id: n.id, category: n.category, issue: n.issue, author: n.author ?? '' }),
+    // doc_id is the ENTRY id, so re-indexing an edited entry replaces it rather
+    // than leaving a stale copy of the old wording in search results.
+    doc_id: entry.id,
+    metadata: JSON.stringify({
+      kind: 'journal-entry', entry_id: entry.id, status: entry.status,
+      issue: entry.issue, keys: (entry.keys ?? []).join(','), author: entry.author ?? '',
+    }),
   })
+}
+
+export async function searchJournal(query: string, limit = 10): Promise<unknown> {
+  return callTool('collection_search', { collection: journalCollection(), query, limit })
 }
 
 export async function searchReports(collection: string, query: string, limit = 10): Promise<unknown> {

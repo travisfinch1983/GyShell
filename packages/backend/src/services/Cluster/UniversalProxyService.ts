@@ -331,7 +331,11 @@ export class UniversalProxyService {
     // Reports and the Journal are their OWN surfaces, not sub-paths of pages:
     // three separate things, three separate toolsets (Travis 2026-08-30).
     app.use(createReportsRouter(this.dataDir))
-    app.use(createJournalRouter(this.dataDir))
+    // Pass notify so a degraded journal index leaves the process instead of
+    // living only in the response of whichever agent happened to make the call.
+    app.use(createJournalRouter(this.dataDir, this.notifications
+      ? (i) => (this.notifications as never as { notify: (x: unknown) => unknown }).notify(i)
+      : undefined))
     // Notifications: /api/notifications/* — state, emit (the estate-wide cheap path), ack, debug.
     if (this.notifications) {
       const { createNotificationsRouter } = await import('../Notifications/notificationsHttp')

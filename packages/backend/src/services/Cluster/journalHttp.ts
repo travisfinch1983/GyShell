@@ -29,7 +29,15 @@ type Res = express.Response
  * Entries link to reports rather than containing them: the journal answers
  * "have I seen this before, and what did I do?", the report holds the detail.
  */
-export function createJournalRouter(dataDir: string): express.Router {
+/**
+ * Emitted on index failure. Same shape claude1 is using for the reports router,
+ * so both surfaces report a degraded index the same way.
+ */
+export type NotifyFn = (input: {
+  severity: 'info' | 'warning' | 'error'; source: string; message: string; detail?: string
+}) => unknown
+
+export function createJournalRouter(dataDir: string, notify?: NotifyFn): express.Router {
   const router = express.Router()
   const json = express.json({ limit: '1mb' })
   const file = path.join(dataDir, 'journal.json')
@@ -143,6 +151,35 @@ export function createJournalRouter(dataDir: string): express.Router {
   }
   const stamp = (): string => new Date().toISOString()
 
+  /**
+   * Vectorise, never blocking the write. An entry that saved but did not index
+   * is a working entry with degraded search; a write refused because the
+   * indexer was down would lose the operator's work — and the journal exists
+   * precisely to survive the moment the operator's context does not.
+   *
+   * The failure has to leave the process, though: `indexed:false` in the
+   * response is read only by whichever agent made the call, so a silently
+   * unsearchable journal would look identical to an empty one. That is the same
+   * shape of invisibility as the rename that orphaned the notes.
+   */
+  const index = async (entry: JournalEntry): Promise<{ indexed: boolean; indexError?: string }> => {
+    try {
+      const { indexJournalEntry } = await import('./reportsRag')
+      await indexJournalEntry(entry)
+      return { indexed: true }
+    } catch (e) {
+      const indexError = (e as Error).message
+      console.warn(`[journal] ${entry.id} saved but NOT indexed:`, indexError)
+      notify?.({
+        severity: 'warning', source: 'journal-rag',
+        message: `Journal entry ${entry.id} saved but not indexed`,
+        detail: `"${entry.issue}" did not reach the ${process.env.AILAB_JOURNAL_COLLECTION || 'ailab_journal'} collection: ${indexError}. ` +
+          `The entry is safe and readable; semantic search will not find it until it is re-indexed.`,
+      })
+      return { indexed: false, indexError }
+    }
+  }
+
   migrateNotes()
 
   /** Newest first; ?status= and ?q= narrow it. The log is for looking things up. */
@@ -180,6 +217,16 @@ export function createJournalRouter(dataDir: string): express.Router {
     } catch (e) { fail(res, 500, String((e as Error).message)) }
   })
 
+  /** Semantic search — the "have I decided something like this before?" path. */
+  router.get('/api/journal-search', async (req: Req, res: Res) => {
+    const q = String(req.query.q ?? '').trim()
+    if (!q) return fail(res, 400, 'q is required')
+    try {
+      const { searchJournal } = await import('./reportsRag')
+      res.json({ ok: true, results: await searchJournal(q, Number(req.query.limit) || 10) })
+    } catch (e) { fail(res, 502, `journal search unavailable: ${(e as Error).message}`) }
+  })
+
   router.get('/api/journal/:id', (req: Req, res: Res) => {
     const entry = load().find((e) => e.id === req.params.id)
     if (!entry) return fail(res, 404, `no journal entry ${req.params.id}`)
@@ -191,7 +238,7 @@ export function createJournalRouter(dataDir: string): express.Router {
    * — because spotting the REPEAT is the journal's whole purpose, and a signal
    * that requires curiosity to discover is one that gets missed.
    */
-  router.post('/api/journal', json, (req: Req, res: Res) => {
+  router.post('/api/journal', json, async (req: Req, res: Res) => {
     const parsed = journalCreateRequestSchema.safeParse(req.body)
     if (!parsed.success) return fail(res, 400, `bad entry: ${parsed.error.issues[0]?.message}`)
     // A bare source ("health") is REFUSED, never defaulted: it would match every
@@ -243,12 +290,13 @@ export function createJournalRouter(dataDir: string): express.Router {
         : priorSimilar === 0 ? 'key' : 'key'
       entries.push(entry)
       save(entries)
-      res.json({ ok: true, id: entry.id, priorSimilar, perKey, matchedBy, keyed: entry.keys.length > 0 })
+      const idx = await index(entry)
+      res.json({ ok: true, id: entry.id, priorSimilar, perKey, matchedBy, keyed: entry.keys.length > 0, ...idx })
     } catch (e) { fail(res, 500, String((e as Error).message)) }
   })
 
   /** Append — the "one more line as I go" path; never resends the body. */
-  router.post('/api/journal/:id/append', json, (req: Req, res: Res) => {
+  router.post('/api/journal/:id/append', json, async (req: Req, res: Res) => {
     const parsed = journalAppendRequestSchema.safeParse(req.body)
     if (!parsed.success) return fail(res, 400, `bad append: ${parsed.error.issues[0]?.message}`)
     try {
@@ -264,12 +312,14 @@ export function createJournalRouter(dataDir: string): express.Router {
       entry.updatedAt = now
       if (parsed.data.author) entry.author = parsed.data.author
       save(entries)
-      res.json({ ok: true, id: entry.id, status: entry.status })
+      // Re-index: doc_id is the entry id, so this replaces rather than duplicates.
+      const idx = await index(entry)
+      res.json({ ok: true, id: entry.id, status: entry.status, ...idx })
     } catch (e) { fail(res, 500, String((e as Error).message)) }
   })
 
   /** Update — replaces fields; the previous body is kept as a revision. */
-  router.patch('/api/journal/:id', json, (req: Req, res: Res) => {
+  router.patch('/api/journal/:id', json, async (req: Req, res: Res) => {
     const parsed = journalUpdateRequestSchema.safeParse(req.body)
     if (!parsed.success) return fail(res, 400, `bad update: ${parsed.error.issues[0]?.message}`)
     try {
@@ -293,7 +343,8 @@ export function createJournalRouter(dataDir: string): express.Router {
       if (d.author) entry.author = d.author
       entry.updatedAt = stamp()
       save(entries)
-      res.json({ ok: true, id: entry.id, revisions: entry.revisions.length })
+      const idx = await index(entry)
+      res.json({ ok: true, id: entry.id, revisions: entry.revisions.length, ...idx })
     } catch (e) { fail(res, 500, String((e as Error).message)) }
   })
 

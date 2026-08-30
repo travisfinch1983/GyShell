@@ -29,6 +29,17 @@ const assert = (cond: boolean, msg: string): void => {
   console.log(`  ok — ${msg}`)
 }
 
+// 🛑 Point the indexer at a dead port BEFORE anything can call it. A scratch
+// dataDir isolates STORAGE, not the network: the default memory URL is a real
+// service on this machine, and a spec that vectorises its fixtures would write
+// test entries into the live collection. reportsRag reads this per call rather
+// than at import, which is the only reason setting it here works at all.
+process.env.UNIFIED_MEMORY_URL = 'http://127.0.0.1:9'
+process.env.AILAB_JOURNAL_COLLECTION = 'spec_journal_never_written'
+
+/** Every notify the router emits — asserted on, and never leaving the process. */
+const emitted: Array<{ severity: string; source: string; message: string; detail?: string }> = []
+
 const dataDir = mkdtempSync(join(tmpdir(), 'journal-spec-'))
 
 // Seed the OLD store, in its real shape, before the router is constructed: the
@@ -55,7 +66,7 @@ writeFileSync(join(dataDir, 'journal-notes.json'), JSON.stringify({
 }))
 
 const app = express()
-app.use(createJournalRouter(dataDir))
+app.use(createJournalRouter(dataDir, (i) => emitted.push(i)))
 const server = http.createServer(app)
 
 const call = (method: string, path: string, body?: unknown): Promise<{ status: number; json: any }> =>
@@ -78,6 +89,8 @@ const call = (method: string, path: string, body?: unknown): Promise<{ status: n
     if (data) req.write(data)
     req.end()
   })
+
+const load = (): any[] => JSON.parse(readFileSync(join(dataDir, 'journal.json'), 'utf8')).entries
 
 async function main(): Promise<void> {
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
@@ -107,7 +120,7 @@ async function main(): Promise<void> {
   assert(existsSync(join(dataDir, 'journal-notes.json.migrated')), 'old file KEPT as .migrated, not deleted')
 
   // Idempotent: a second construction must not duplicate rows.
-  const app2 = express(); app2.use(createJournalRouter(dataDir))
+  const app2 = express(); app2.use(createJournalRouter(dataDir, (i) => emitted.push(i)))
   const again = JSON.parse(readFileSync(join(dataDir, 'journal.json'), 'utf8'))
   assert(again.entries.filter((e: any) => e.id === 'note-mtg2c927-vx4e').length === 1,
     'constructing the router twice does not duplicate migrated rows')
@@ -261,6 +274,29 @@ async function main(): Promise<void> {
   })
   assert(r.json.priorSimilar === optaneRepeats + 1,
     'later real occurrences count each other normally — exclusion is per-entry, not a dead key')
+
+  // ── INDEXING ──────────────────────────────────────────────────────────────
+  // Dismissals produce no report, so report_search cannot reach them; without
+  // vectorising the journal they would be findable only by exact key (which you
+  // must already know) or substring (which fails on rewording — the exact defect
+  // just removed from counting). So entries are indexed. The indexer is pointed
+  // at a dead port here, which makes this also the failure-path test.
+  console.log('\n[indexing]')
+  r = await call('POST', '/api/journal', { issue: 'indexing probe', key: 'spec:probe', author: 'spec' })
+  assert(r.status === 200 && r.json.ok, 'a write SUCCEEDS even when the indexer is unreachable')
+  assert(r.json.indexed === false && !!r.json.indexError,
+    'and reports indexed:false with the cause rather than pretending it worked')
+  r = await call('GET', '/api/journal/gaps')
+  assert(load().some((e: any) => e.issue === 'indexing probe'), 'the entry is durably stored despite the index failure')
+
+  const idxWarn = emitted.filter((e) => e.source === 'journal-rag')
+  assert(idxWarn.length > 0,
+    'the index failure LEAVES THE PROCESS as a notification — indexed:false alone is read only by the calling agent')
+  assert(idxWarn[0].severity === 'warning' && idxWarn[0].detail?.includes('safe and readable'),
+    'and says the entry is safe, so a degraded index is not mistaken for lost work')
+
+  r = await call('GET', '/api/journal-search?q=anything')
+  assert(r.status === 502, 'search reports the indexer being down rather than returning an empty result set')
 
   console.log('\n[gaps]')
   r = await call('GET', '/api/journal/gaps')

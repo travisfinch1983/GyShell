@@ -274,6 +274,18 @@ function addJournalTools(mcp, author) {
         `\n\n${e.notes || '(no notes yet)'}` +
         `${e.revisions?.length ? `\n\n--- ${e.revisions.length} earlier revision(s) kept ---\n` + e.revisions.map((v) => `[${v.at}] ${String(v.previous).slice(0, 300)}`).join('\n') : ''}`)
     })
+  mcp.tool(
+    'journal_search',
+    'Search the journal SEMANTICALLY — "have I looked at something like this before, and what did I decide?". Use this BEFORE investigating something that feels familiar. Unlike the repeat count, which needs a key you already know, this finds entries whose wording differs from yours — including no-action dismissals, which file no report and so never appear in report_search.',
+    { query: z.string().min(1).describe('describe the problem in your own words'), limit: z.number().int().positive().max(50).optional() },
+    async ({ query, limit }) => {
+      const r = await api('GET', `/api/journal-search${q({ q: query, limit })}`)
+      const hits = r.results?.results ?? r.results ?? []
+      if (!Array.isArray(hits) || !hits.length) return text('(no similar journal entries)')
+      return text(hits.map((h) => `- ${String(h.text ?? h.document ?? JSON.stringify(h)).replace(/\n+/g, ' ').slice(0, 300)}`).join('\n'))
+    },
+  )
+
 }
 
 const TOOLSETS = {
