@@ -7,9 +7,15 @@ import {
   pageIdSchema,
   pageRestoreRequestSchema,
   pageWriteRequestSchema,
+  journalNoteRequestSchema,
+  reportCategorySchema,
+  type JournalEntry,
+  type JournalNote,
   type PageMeta,
   type PageVersionInfo,
+  type ReportCategory,
 } from '@gyshell/shared'
+import { indexNote, indexReport, searchReports } from './reportsRag'
 
 type Req = express.Request
 type Res = express.Response
@@ -136,6 +142,199 @@ export function createPagesRouter(dataDir: string): express.Router {
       }
     })
 
+  // ── Report categories ──────────────────────────────────────────────────
+  // Config, NOT a hardcoded enum: categories are first-class and extensible
+  // (Travis: "generally, not just for maintenance"). Seeded once, then the file
+  // is the truth. Templates are STARTING points to modify — never a schema that
+  // rejects a report for not matching.
+  const categoriesFile = path.join(dataDir, 'report-categories.json')
+  const DEFAULT_CATEGORIES: ReportCategory[] = [
+    {
+      id: 'maintenance', label: 'Maintenance', collection: 'reports_maintenance',
+      description: 'Repairs to warnings and errors raised by the notifications panel.',
+      template: [
+        '# <short issue name>',
+        '',
+        '## What was reported',
+        '<the notification / symptom, verbatim where possible>',
+        '',
+        '## What was actually wrong',
+        '<root cause — the thing that was true, not the first theory>',
+        '',
+        '## What I changed',
+        '<commands, files, config; enough for someone else to repeat or revert it>',
+        '',
+        '## How I verified the fix',
+        '<the evidence. a check that only passes because it was re-run is not evidence>',
+        '',
+        '## Anything still open',
+        '<follow-ups, or "nothing">',
+      ].join('\n'),
+    },
+    {
+      id: 'incident', label: 'Incident', collection: 'reports_incident',
+      description: 'Outages and degradations, including ones that resolved themselves.',
+      template: ['# <incident name>', '', '## Impact', '', '## Timeline', '', '## Cause', '', '## Fix / mitigation', '', '## Prevention'].join('\n'),
+    },
+    {
+      id: 'research', label: 'Research', collection: 'reports_research',
+      description: 'Findings from investigation work — upstream digs, benchmarks, evaluations.',
+      template: ['# <question investigated>', '', '## Answer', '', '## Evidence', '', '## What I could not determine', '', '## Sources'].join('\n'),
+    },
+  ]
+
+  const loadCategories = (): ReportCategory[] => {
+    try {
+      if (!existsSync(categoriesFile)) {
+        writeFileSync(categoriesFile, JSON.stringify({ categories: DEFAULT_CATEGORIES }, null, 2))
+      }
+      const raw = JSON.parse(readFileSync(categoriesFile, 'utf8'))
+      const list = Array.isArray(raw?.categories) ? raw.categories : DEFAULT_CATEGORIES
+      return list.map((c: unknown) => reportCategorySchema.parse(c))
+    } catch (e) {
+      console.warn('[pages] report categories unreadable, using defaults:', (e as Error).message)
+      return DEFAULT_CATEGORIES
+    }
+  }
+
+  const allMetas = (): PageMeta[] => {
+    try {
+      ensure()
+      return readdirSync(root, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
+        .map((d) => readMeta(d.name))
+        .filter((m): m is PageMeta => m !== null)
+    } catch { return [] }
+  }
+
+  router.get('/api/pages/report-categories', (_req: Req, res: Res) => {
+    res.json({ categories: loadCategories() })
+  })
+
+  /**
+   * The journal (Travis): one running, skimmable list — when, what broke, why,
+   * how it was fixed, and a link to the full report.
+   *
+   * DERIVED from the reports themselves rather than maintained as a second
+   * document: filing a report IS filing its journal entry, so the journal can
+   * never desync from reality and can never be forgotten. Every entry therefore
+   * carries a report link by construction.
+   */
+  // Journal NOTES — the third triage outcome, "noted, nothing repaired".
+  // Append-only file: a dismissal is a fact about the past, so it is never edited.
+  const notesFile = path.join(dataDir, 'journal-notes.json')
+  const loadNotes = (): JournalNote[] => {
+    try {
+      if (!existsSync(notesFile)) return []
+      const raw = JSON.parse(readFileSync(notesFile, 'utf8'))
+      return Array.isArray(raw?.notes) ? raw.notes : []
+    } catch (e) {
+      console.warn('[pages] journal notes unreadable:', (e as Error).message)
+      return []
+    }
+  }
+
+  router.get('/api/pages/journal', (req: Req, res: Res) => {
+    const category = req.query.category ? String(req.query.category) : null
+    // Reports contribute derived entries; notes contribute first-class ones. The
+    // journal is therefore complete BY CONSTRUCTION rather than complete-for-repairs:
+    // the entries nobody remembers (recurring benign events) are exactly the notes.
+    const fromReports: JournalEntry[] = allMetas()
+      .filter((m) => m.kind === 'report' && m.report?.issue)
+      .filter((m) => !category || m.category === category)
+      .map((m) => ({
+        kind: 'report' as const,
+        pageId: m.id,
+        category: m.category ?? '(uncategorised)',
+        receivedAt: m.updatedAt,
+        issue: m.report!.issue,
+        cause: m.report!.cause,
+        fix: m.report!.fix,
+        author: m.authors[m.authors.length - 1],
+        version: m.currentVersion,
+      }))
+    const fromNotes: JournalEntry[] = loadNotes()
+      .filter((n) => !category || n.category === category)
+      .map((n) => ({
+        kind: 'note' as const,
+        noteId: n.id,
+        category: n.category,
+        receivedAt: n.createdAt,
+        issue: n.issue,
+        cause: n.cause,
+        whyNoAction: n.whyNoAction,
+        author: n.author,
+      }))
+    const entries = [...fromReports, ...fromNotes].sort((a, b) => b.receivedAt.localeCompare(a.receivedAt))
+    res.json({ entries })
+  })
+
+  /**
+   * File a journal note. Returns `priorSimilar` — how many times something like
+   * this has already been noted — because spotting the REPEAT is the whole
+   * reason the journal exists; making the agent search separately to learn it
+   * would mean it usually doesn't.
+   */
+  router.post('/api/pages/journal/note', json, async (req: Req, res: Res) => {
+    const parsed = journalNoteRequestSchema.safeParse(req.body)
+    if (!parsed.success) return fail(res, 400, `bad note: ${parsed.error.issues[0]?.message}`)
+    const cats = loadCategories()
+    const cat = cats.find((c) => c.id === parsed.data.category)
+    if (!cat) return fail(res, 400, `note requires a known category (have: ${cats.map((c) => c.id).join(', ')})`)
+    try {
+      const notes = loadNotes()
+      const note: JournalNote = {
+        ...parsed.data,
+        id: `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        createdAt: new Date().toISOString(),
+      }
+      notes.push(note)
+      writeFileSync(notesFile, JSON.stringify({ notes }, null, 2))
+
+      // How often has this been dismissed before? Text match on the issue is
+      // deliberate: cheap, exact enough for "have I seen this", and it works
+      // even when the vector store is unavailable.
+      const priorSimilar = notes.filter(
+        (n) => n.id !== note.id && n.issue.trim().toLowerCase() === note.issue.trim().toLowerCase(),
+      ).length
+
+      let indexed: boolean | undefined
+      let indexError: string | undefined
+      try {
+        await indexNote({ collection: cat.collection, note })
+        indexed = true
+      } catch (e) {
+        indexed = false
+        indexError = (e as Error).message
+        console.warn(`[pages] journal note ${note.id} saved but NOT indexed:`, indexError)
+      }
+      res.json({ ok: true, id: note.id, priorSimilar, indexed, indexError })
+    } catch (e) { fail(res, 500, String((e as Error).message)) }
+  })
+
+  /** Semantic search across one category's collection (or all of them). */
+  router.get('/api/pages/report-search', async (req: Req, res: Res) => {
+    const q = String(req.query.q ?? '').trim()
+    if (!q) return fail(res, 400, 'q is required')
+    const cats = loadCategories()
+    const wanted = req.query.category
+      ? cats.filter((c) => c.id === String(req.query.category))
+      : cats
+    if (!wanted.length) return fail(res, 404, 'no such category')
+    try {
+      const results = await Promise.all(wanted.map(async (c) => {
+        try {
+          return { category: c.id, ...(await searchReports(c.collection, q) as object) }
+        } catch (e) {
+          // A collection that cannot be searched is reported as such, never as
+          // "no results" — an empty answer would read as "nothing matches".
+          return { category: c.id, error: String((e as Error).message) }
+        }
+      }))
+      res.json({ query: q, collections: results })
+    } catch (e) { fail(res, 500, String((e as Error).message)) }
+  })
+
   // List: newest first, without the per-page version arrays.
   router.get('/api/pages', (_req: Req, res: Res) => {
     try {
@@ -177,19 +376,34 @@ export function createPagesRouter(dataDir: string): express.Router {
   })
 
   // Write: append-only — every write is a new version; id is created on first write.
-  router.put('/api/pages/:id', json, (req: Req, res: Res) => {
+  router.put('/api/pages/:id', json, async (req: Req, res: Res) => {
     const id = req.params.id
     if (!pageIdSchema.safeParse(id).success) return fail(res, 400, 'bad page id')
     const parsed = pageWriteRequestSchema.safeParse(req.body)
     if (!parsed.success) return fail(res, 400, `bad write: ${parsed.error.issues[0]?.message}`)
-    const { title, contentType, body, author } = parsed.data
+    const { title, contentType, body, author, kind, category, report } = parsed.data
+    // A report needs a REAL category and an issue line — the category selects the
+    // RAG collection and the issue is the journal's primary column, so neither can
+    // be guessed later. Documents ignore both.
+    const isReport = kind === 'report'
+    if (isReport) {
+      const cats = loadCategories()
+      if (!category || !cats.some((c) => c.id === category)) {
+        return fail(res, 400, `report requires a known category (have: ${cats.map((c) => c.id).join(', ')})`)
+      }
+      if (!report?.issue?.trim()) return fail(res, 400, 'report requires report.issue (the journal line)')
+    }
     try {
       ensure()
       let meta = readMeta(id)
       const now = new Date().toISOString()
       if (!meta) {
         mkdirSync(pageDir(id), { recursive: true })
-        meta = { id, title, contentType, createdAt: now, updatedAt: now, currentVersion: 0, authors: [], versions: [] }
+        meta = { id, title, contentType, kind: isReport ? 'report' : 'document', createdAt: now, updatedAt: now, currentVersion: 0, authors: [], versions: [] }
+      }
+      // A page never silently changes kind: a report stays a report.
+      if (meta.kind === 'report' && !isReport && meta.currentVersion > 0) {
+        return fail(res, 400, `${id} is a report — write it with kind:'report' (a report must not be demoted to a document)`)
       }
       const version = meta.currentVersion + 1
       const html = renderHtml(contentType, body)
@@ -199,9 +413,37 @@ export function createPagesRouter(dataDir: string): express.Router {
         version, title, contentType, author, createdAt: now, bytes: Buffer.byteLength(html),
       }
       const versions = [...meta.versions, info]
-      meta = { ...meta, title, contentType, updatedAt: now, currentVersion: version, versions, authors: deriveAuthors(versions) }
+      meta = {
+        ...meta, title, contentType, updatedAt: now, currentVersion: version, versions,
+        authors: deriveAuthors(versions),
+        ...(isReport ? { kind: 'report' as const, category, report } : {}),
+      }
       writeFileSync(metaFile(id), JSON.stringify(meta, null, 2))
-      res.json({ ok: true, id, version, authors: meta.authors })
+
+      // Vectorise AFTER the write and never blocking it: a report that saved but
+      // did not index is a working report with degraded search, whereas refusing
+      // the write because the indexer is down would lose the operator's work.
+      // The failure is REPORTED rather than swallowed.
+      let indexed: boolean | undefined
+      let indexError: string | undefined
+      if (isReport && category && report) {
+        const cat = loadCategories().find((c) => c.id === category)
+        if (cat) {
+          try {
+            await indexReport({
+              collection: cat.collection, pageId: id, title, category,
+              issue: report.issue, cause: report.cause, fix: report.fix,
+              author, version, body,
+            })
+            indexed = true
+          } catch (e) {
+            indexed = false
+            indexError = (e as Error).message
+            console.warn(`[pages] report ${id} saved but NOT indexed:`, indexError)
+          }
+        }
+      }
+      res.json({ ok: true, id, version, authors: meta.authors, indexed, indexError })
     } catch (e) { fail(res, 500, String((e as Error).message)) }
   })
 

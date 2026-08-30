@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import {
   BookOpen,
+  Search,
   Check,
   Copy,
   FileCode,
@@ -31,23 +32,40 @@ function currentTheme(): 'light' | 'dark' {
 
 /** In-page editor overlay (standard #2 — no native dialogs). Plain source, deliberately not a WYSIWYG. */
 const EditOverlay: React.FC<{
-  initial?: { id: string; title: string; contentType: PageContentType; body: string }
+  initial?: { id: string; title: string; contentType: PageContentType; body: string; kind?: string; category?: string; issue?: string; cause?: string; fix?: string }
+  asReport?: boolean
   onClose: () => void
-}> = observer(({ initial, onClose }) => {
+}> = observer(({ initial, asReport, onClose }) => {
   const [id, setId] = useState(initial?.id ?? '')
   const [title, setTitle] = useState(initial?.title ?? '')
   const [contentType, setContentType] = useState<PageContentType>(initial?.contentType ?? 'markdown')
   const [body, setBody] = useState(initial?.body ?? '')
+  const isReport = asReport || initial?.kind === 'report'
+  const [category, setCategory] = useState(initial?.category ?? store.categoryFilter ?? store.categories[0]?.id ?? '')
+  const [issue, setIssue] = useState(initial?.issue ?? '')
+  const [cause, setCause] = useState(initial?.cause ?? '')
+  const [fix, setFix] = useState(initial?.fix ?? '')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
+  // Starting template, not a schema: loaded once when the body is still empty so
+  // it can be edited or deleted wholesale.
+  useEffect(() => {
+    if (!isReport || initial || body.trim()) return
+    const tpl = store.categories.find((c) => c.id === category)?.template
+    if (tpl) setBody(tpl)
+  }, [isReport, category])
+
   const canSave = /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(id) && title.trim() && body.trim() && !busy
+    && (!isReport || (!!category && !!issue.trim()))
   const save = async () => {
     if (!canSave) return
     setBusy(true)
     setErr(null)
     try {
-      await store.write(id, { title: title.trim(), contentType, body })
+      await store.write(id, isReport
+        ? { title: title.trim(), contentType, body, kind: 'report', category, report: { issue: issue.trim(), cause: cause.trim() || undefined, fix: fix.trim() || undefined, links: [] } }
+        : { title: title.trim(), contentType, body })
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -60,7 +78,7 @@ const EditOverlay: React.FC<{
     <div className={styles.overlay}>
       <div className={styles.overlayCard}>
         <div className={styles.overlayHead}>
-          <span>{initial ? `Edit ${initial.id} (writes a new version)` : 'New page'}</span>
+          <span>{initial ? `Edit ${initial.id} (writes a new version)` : isReport ? 'New report' : 'New page'}</span>
           <button type="button" className={styles.iconBtn} onClick={onClose}>
             <X size={14} />
           </button>
@@ -83,6 +101,27 @@ const EditOverlay: React.FC<{
           </select>
         </div>
         <input className={styles.field} placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} />
+        {isReport && (
+          <>
+            <div className={styles.formRow}>
+              <select className={styles.field} value={category} onChange={(e) => setCategory(e.target.value)}>
+                {store.categories.map((c) => (
+                  <option key={c.id} value={c.id}>{c.label}</option>
+                ))}
+              </select>
+              <input
+                className={styles.field}
+                placeholder="Issue (the journal line) *"
+                value={issue}
+                onChange={(e) => setIssue(e.target.value)}
+              />
+            </div>
+            <div className={styles.formRow}>
+              <input className={styles.field} placeholder="Cause (one line)" value={cause} onChange={(e) => setCause(e.target.value)} />
+              <input className={styles.field} placeholder="Fix (one line)" value={fix} onChange={(e) => setFix(e.target.value)} />
+            </div>
+          </>
+        )}
         <textarea
           className={styles.editor}
           placeholder={contentType === 'markdown' ? '# Markdown source…' : '<!-- HTML source… -->'}
@@ -111,6 +150,7 @@ export const PagesPanel: React.FC = observer(() => {
   const [copied, setCopied] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [probe, setProbe] = useState<null | 'running' | { pass: boolean; summary: string }>(null)
+  const [searchDraft, setSearchDraft] = useState('')
 
   useEffect(() => {
     void store.ensureLoaded()
@@ -182,21 +222,136 @@ export const PagesPanel: React.FC = observer(() => {
           <span className={styles.title}>
             <BookOpen size={15} /> Pages
           </span>
-          <button type="button" className={styles.iconBtn} title="Refresh" onClick={() => void store.refresh()}>
+          <button type="button" className={styles.iconBtn} title="Refresh" onClick={() => { void store.refresh(); if (store.view === 'journal') void store.loadJournal() }}>
             <RefreshCw size={13} />
           </button>
           <button type="button" className={styles.newBtn} onClick={() => setEditing('new')}>
-            <Plus size={12} /> New
+            <Plus size={12} /> {store.view === 'documents' ? 'New' : 'New report'}
           </button>
         </div>
+        <div className={styles.subTabs}>
+          {([['documents', 'Documents'], ['reports', 'Reports'], ['journal', 'Journal']] as const).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={`${styles.subTab} ${store.view === id ? styles.subTabActive : ''}`}
+              onClick={() => store.setView(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {store.view !== 'documents' && store.categories.length > 0 && (
+          <div className={styles.catRow}>
+            <button
+              type="button"
+              className={`${styles.catChip} ${store.categoryFilter === null ? styles.catActive : ''}`}
+              onClick={() => store.setCategoryFilter(null)}
+            >
+              all
+            </button>
+            {store.categories.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                title={c.description}
+                className={`${styles.catChip} ${store.categoryFilter === c.id ? styles.catActive : ''}`}
+                onClick={() => store.setCategoryFilter(store.categoryFilter === c.id ? null : c.id)}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+        )}
+        {store.view === 'reports' && (
+          <div className={styles.searchRow}>
+            <Search size={12} />
+            <input
+              className={styles.searchInput}
+              placeholder="Search reports (semantic)…"
+              value={searchDraft}
+              onChange={(e) => setSearchDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void store.searchReports(searchDraft)
+                if (e.key === 'Escape') { setSearchDraft(''); store.clearSearch() }
+              }}
+            />
+            {store.searchResults !== null && (
+              <button type="button" className={styles.iconBtn} onClick={() => { setSearchDraft(''); store.clearSearch() }}>
+                <X size={12} />
+              </button>
+            )}
+          </div>
+        )}
         {store.error && <div className={styles.errorNote}>{store.error}</div>}
         <div className={styles.rows}>
-          {store.pages.length === 0 ? (
+          {store.view === 'journal' ? (
+            store.journal.length === 0 ? (
+              <div className={styles.empty}>
+                The journal is empty. It fills itself: every filed report contributes a line, and
+                so does every "looked at it, nothing to repair" note — the entries nobody
+                remembers otherwise.
+              </div>
+            ) : (
+              store.journal.map((j) => (
+                <button
+                  key={j.kind === 'note' ? j.noteId : `${j.pageId}-${j.version}`}
+                  type="button"
+                  className={`${styles.row} ${j.pageId && j.pageId === store.selectedId ? styles.active : ''}`}
+                  onClick={() => {
+                    if (!j.pageId) return   // a note has no report to open — it IS the record
+                    setProbe(null); setShowSource(false); void store.open(j.pageId)
+                  }}
+                >
+                  <div className={styles.rowTitle}>
+                    {j.kind === 'note' && <span className={styles.noteBadge}>no repair</span>}
+                    {j.issue}
+                  </div>
+                  <div className={styles.rowMeta}>
+                    {fmtTime(j.receivedAt)} · {store.categoryLabel(j.category)}
+                    {j.author ? ` · ${j.author}` : ''}
+                  </div>
+                  {j.cause && <div className={styles.journalLine}>cause: {j.cause}</div>}
+                  {j.fix && <div className={styles.journalLine}>fix: {j.fix}</div>}
+                  {j.whyNoAction && <div className={styles.journalLine}>why no action: {j.whyNoAction}</div>}
+                  {j.pageId ? (
+                    <div className={styles.journalLink}>report: {j.pageId} (v{j.version})</div>
+                  ) : (
+                    <div className={styles.journalNoteLink}>noted only — nothing was repaired</div>
+                  )}
+                </button>
+              ))
+            )
+          ) : store.view === 'reports' && store.searchResults !== null ? (
+            <>
+              <div className={styles.empty} style={{ padding: '8px 12px', textAlign: 'left' }}>
+                {store.searching ? 'Searching…' : `${store.searchResults.length} semantic match(es)`}
+              </div>
+              {store.searchResults.map((r, i) => (
+                r.error ? (
+                  <div key={`err-${i}`} className={styles.errorNote}>{r.category}: search unavailable — {r.error}</div>
+                ) : (
+                  <button
+                    key={`${r.pageId}-${i}`}
+                    type="button"
+                    className={styles.row}
+                    onClick={() => r.pageId && void store.open(r.pageId)}
+                  >
+                    <div className={styles.rowTitle}>{r.pageId}</div>
+                    <div className={styles.rowMeta}>{store.categoryLabel(r.category)}{r.score !== undefined ? ` · score ${r.score}` : ''}</div>
+                    <div className={styles.journalLine}>{String(r.text ?? '').slice(0, 160)}</div>
+                  </button>
+                )
+              ))}
+            </>
+          ) : (store.view === 'reports' ? store.reports : store.documents).length === 0 ? (
             <div className={styles.empty}>
-              No pages yet. Agents write them via the pages API; you can also create one here.
+              {store.view === 'reports'
+                ? 'No reports yet. Agents file them with report_write; each one is vectorised into its category for semantic search.'
+                : 'No documents yet. Agents write them via the pages API; you can also create one here.'}
             </div>
           ) : (
-            store.pages.map((p) => (
+            (store.view === 'reports' ? store.reports : store.documents).map((p) => (
               <button
                 key={p.id}
                 type="button"
@@ -214,6 +369,9 @@ export const PagesPanel: React.FC = observer(() => {
                   {p.currentVersion}
                   {p.versionCount > 1 ? ` (${p.versionCount} versions)` : ''} · {fmtTime(p.updatedAt)}
                 </div>
+                {p.kind === 'report' && p.category && (
+                  <div className={styles.rowMeta}>{store.categoryLabel(p.category)}{p.report?.issue ? ` · ${p.report.issue}` : ''}</div>
+                )}
                 {p.authors.length > 0 && <div className={styles.rowMeta}>by {p.authors.join(' + ')}</div>}
               </button>
             ))
@@ -324,9 +482,14 @@ export const PagesPanel: React.FC = observer(() => {
 
       {editing && (
         <EditOverlay
+          asReport={editing === 'new' && store.view !== 'documents'}
           initial={
             editing === 'edit' && cur
-              ? { id: cur.meta.id, title: cur.meta.title, contentType: cur.meta.contentType, body: cur.source }
+              ? {
+                  id: cur.meta.id, title: cur.meta.title, contentType: cur.meta.contentType, body: cur.source,
+                  kind: cur.meta.kind, category: cur.meta.category,
+                  issue: cur.meta.report?.issue, cause: cur.meta.report?.cause, fix: cur.meta.report?.fix,
+                }
               : undefined
           }
           onClose={() => setEditing(null)}

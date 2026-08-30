@@ -27,6 +27,11 @@ const BASE = (process.env.AILAB_API_URL ?? 'http://127.0.0.1:17890').replace(/\/
 const PORT = Number(process.env.AILAB_PAGES_MCP_PORT ?? 9848)
 const TIMEOUT = Number(process.env.AILAB_API_TIMEOUT_MS ?? 15000)
 const enc = (s) => encodeURIComponent(String(s))
+const q = (params) => {
+  const parts = Object.entries(params).filter(([, v]) => v !== undefined && v !== '')
+    .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
+  return parts.length ? `?${parts.join('&')}` : ''
+}
 
 async function api(method, path, body) {
   const res = await fetch(`${BASE}${path}`, {
@@ -100,10 +105,123 @@ function buildServer(author) {
     if (!r.pages?.length) return text('(no pages)')
     return text(
       r.pages
-        .map((p) => `${p.id} — "${p.title}" v${p.currentVersion} (${p.versionCount} versions) · ${p.contentType} · authors: ${(p.authors ?? []).join(', ') || 'unknown'} · updated ${p.updatedAt}`)
+        .map((p) => `${p.id} — "${p.title}" v${p.currentVersion} (${p.versionCount} versions) · ${p.kind ?? 'document'}${p.category ? `/${p.category}` : ''} · authors: ${(p.authors ?? []).join(', ') || 'unknown'} · updated ${p.updatedAt}`)
         .join('\n'),
     )
   })
+
+  // ── Reports ────────────────────────────────────────────────────────────────
+  // A report is a page with a CATEGORY (its own RAG collection) and the summary
+  // fields the journal is derived from. Category is validated against the live
+  // list server-side, so "which category" cannot be silently wrong — the same
+  // principle that makes authorship unspoofable.
+
+  mcp.tool(
+    'report_categories',
+    'List report categories and their STARTING templates. Call this before report_write: the template is a beginning to adapt, never a schema you must match.',
+    {},
+    async () => {
+      const r = await api('GET', '/api/pages/report-categories')
+      const rows = (r.categories ?? []).map(
+        (c) => `${c.id} — ${c.label}${c.description ? `: ${c.description}` : ''}`,
+      )
+      return text(`report categories:\n${rows.join('\n')}\n\n(call report_template for a category's starting template)`)
+    },
+  )
+
+  mcp.tool(
+    'report_template',
+    "Get one category's starting template — copy it, then change whatever the report needs. Sections that do not apply should be removed rather than left empty.",
+    { category: z.string() },
+    async ({ category }) => {
+      const r = await api('GET', '/api/pages/report-categories')
+      const cat = (r.categories ?? []).find((c) => c.id === category)
+      if (!cat) return text(`no such category '${category}'. Available: ${(r.categories ?? []).map((c) => c.id).join(', ')}`)
+      return text(`template for ${cat.id} (${cat.label}) — a STARTING point, modify freely:\n\n${cat.template}`)
+    },
+  )
+
+  mcp.tool(
+    'report_write',
+    'File a report (or add a version to an existing one). Reports are versioned append-only and vectorised into their category\'s searchable collection. issue/cause/fix become the journal line — keep them to one line each; the detail belongs in the body.',
+    {
+      id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/).describe('report slug, e.g. maintenance-optane-pruner-20260830'),
+      title: z.string().min(1).max(200),
+      category: z.string().describe('must be one of report_categories'),
+      issue: z.string().min(1).max(200).describe('short problem name — the journal\'s primary column'),
+      cause: z.string().max(500).optional().describe('one line: what was actually wrong'),
+      fix: z.string().max(500).optional().describe('one line: what you did about it'),
+      links: z.array(z.string()).optional().describe('notification ids, service names, URLs, related page ids'),
+      body: z.string().max(4 * 1024 * 1024).describe('the full report, markdown'),
+    },
+    async ({ id, title, category, issue, cause, fix, links, body }) => {
+      const r = await api('PUT', `/api/pages/${enc(id)}`, {
+        title, body, contentType: 'markdown', author, kind: 'report', category,
+        report: { issue, cause, fix, links: links ?? [] },
+      })
+      const idx = r.indexed === false
+        ? `\n⚠ saved but NOT vectorised (${r.indexError}) — the report is fine, semantic search will miss it until re-filed.`
+        : ''
+      return text(`filed report ${id} v${r.version} in ${category} (author: ${author}). Journal entry created automatically.${idx}`)
+    },
+  )
+
+  mcp.tool(
+    'report_search',
+    'Semantic search across report collections. Use this BEFORE investigating a problem — a prior repair of the same issue is the fastest fix available.',
+    { query: z.string().min(1), category: z.string().optional().describe('omit to search every category') },
+    async ({ query, category }) => {
+      const r = await api('GET', `/api/pages/report-search${q({ q: query, category })}`)
+      const out = []
+      for (const c of r.collections ?? []) {
+        if (c.error) { out.push(`${c.category}: (search unavailable: ${c.error})`); continue }
+        for (const hit of c.results ?? []) {
+          out.push(`[${c.category}] ${hit.doc_id ?? '?'} (score ${hit.score ?? '?'}): ${String(hit.text ?? '').slice(0, 240).replace(/\n/g, ' ')}`)
+        }
+      }
+      return text(out.length ? out.join('\n') : `no report matches for '${query}'`)
+    },
+  )
+
+  mcp.tool(
+    'journal_note',
+    'Record a triage outcome that needed NO repair — a benign or upstream cause you looked at and dismissed. Use this whenever you ack something without filing a report: it is the only way the dismissal survives your context window, and the reply tells you how many times you have dismissed this same thing before.',
+    {
+      category: z.string().describe('one of report_categories'),
+      issue: z.string().min(1).max(200).describe('short name of what was reported'),
+      cause: z.string().max(500).optional().describe('one line: what it turned out to be'),
+      why_no_action: z.string().min(1).max(500).describe('why nothing was repaired — the field that makes the dismissal reviewable later'),
+      links: z.array(z.string()).optional().describe('notification ids, service names'),
+    },
+    async ({ category, issue, cause, why_no_action, links }) => {
+      const r = await api('POST', '/api/pages/journal/note', {
+        category, issue, cause, whyNoAction: why_no_action, links: links ?? [], author,
+      })
+      const repeat = r.priorSimilar > 0
+        ? `\n⚠ You have noted this same issue ${r.priorSimilar} time(s) before. A recurring "no action needed" is itself a finding — consider whether the alert threshold is wrong, or file a report.`
+        : ''
+      const idx = r.indexed === false ? `\n⚠ saved but NOT vectorised (${r.indexError}) — search will miss it.` : ''
+      return text(`journal note ${r.id} recorded in ${category} (author: ${author}). No report filed.${repeat}${idx}`)
+    },
+  )
+
+  mcp.tool(
+    'journal_read',
+    'The maintenance journal: every report as one skimmable line (when, issue, cause, fix, report id). Purpose is memory ACROSS context windows — read it to spot a repeat problem you have no memory of fixing.',
+    { category: z.string().optional(), limit: z.number().int().positive().max(200).optional() },
+    async ({ category, limit }) => {
+      const r = await api('GET', `/api/pages/journal${q({ category })}`)
+      const entries = (r.entries ?? []).slice(0, limit ?? 50)
+      if (!entries.length) return text('(journal is empty — no reports filed yet)')
+      return text(entries.map((e) =>
+        `${e.receivedAt} · [${e.category}] ${e.issue}` +
+        `${e.cause ? ` · cause: ${e.cause}` : ''}` +
+        (e.kind === 'note'
+          ? ` · NO REPAIR: ${e.whyNoAction}${e.author ? ` (${e.author})` : ''}`
+          : `${e.fix ? ` · fix: ${e.fix}` : ''} · report: ${e.pageId} (v${e.version}${e.author ? `, ${e.author}` : ''})`),
+      ).join('\n'))
+    },
+  )
 
   return mcp
 }
