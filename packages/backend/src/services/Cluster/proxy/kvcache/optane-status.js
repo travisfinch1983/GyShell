@@ -20,6 +20,9 @@ import { KvIndex } from './index-store.js';
 
 const KV_DATA_DIR = process.env.AILAB_KV_DATA_DIR || '/opt/ai-lab/.gybackend-data/kvcache';
 const VLLM_OPTANE_BASE = process.env.AILAB_VLLM_OPTANE_BASE || '/optane-sock1/vllm-kv';
+// llama.cpp lives on the OTHER Optane namespace — one device per CPU socket, deliberately
+// not shared with vLLM. Both are reported so the panel covers the whole fleet.
+const LLAMA_OPTANE_BASE = process.env.AILAB_LLAMA_OPTANE_BASE || '/optane-sock0/kvcache';
 
 const COLLECTOR = String.raw`
 # Runs ON a GPU node. Emits ONE JSON blob describing the Optane KV state.
@@ -142,7 +145,12 @@ def scrape(port):
         out['error'] = str(e)
     return out
 
-base = sys.argv[1] if len(sys.argv) > 1 else '/optane-sock1/vllm-kv'
+# Both Optane namespaces are scanned, not just the vLLM one: llama.cpp keeps its pools on
+# /optane-sock0/kvcache and vLLM on /optane-sock1/vllm-kv. Scanning the BASES rather than only
+# the dirs live engines point at means a stopped service's pools -- which still occupy the
+# device -- stay visible, and both namespaces report capacity even when nothing is running.
+bases = [a for a in sys.argv[1:] if a] or ['/optane-sock1/vllm-kv', '/optane-sock0/kvcache']
+base = bases[0]
 procs = engines()
 for p in procs:
     if p['engine'] == 'vllm' and p.get('port'):
@@ -151,11 +159,17 @@ for p in procs:
 # Pools: every directory under the configured base, PLUS any directory a live engine points at
 # outside it (so a hand-configured service still shows up rather than silently missing).
 dirs = []
-if os.path.isdir(base):
-    dirs += [os.path.join(base, e) for e in sorted(os.listdir(base)) if os.path.isdir(os.path.join(base, e))]
+for b in bases:
+    if os.path.isdir(b):
+        dirs += [os.path.join(b, e) for e in sorted(os.listdir(b))
+                 if os.path.isdir(os.path.join(b, e)) and os.path.join(b, e) not in dirs]
+# llama.cpp keeps its pools on the OTHER Optane namespace (/optane-sock0/kvcache/<slot>), so a
+# base-directory scan alone shows only half the fleet. Take the directory each live engine
+# actually points at, whatever the engine — that also picks up the sock0 filesystem below, so
+# capacity is reported for both namespaces rather than just the vLLM one.
 for p in procs:
     d = p.get('kvDir')
-    if d and p['engine'] == 'vllm' and os.path.isdir(d) and d not in dirs:
+    if d and os.path.isdir(d) and d not in dirs:
         dirs.append(d)
 
 pools = [dirstat(d) for d in dirs]
@@ -168,7 +182,7 @@ for p in pools:
 # dashboard look like there is far more capacity than exists.
 mounts = []
 seen = set()
-for cand in ([base] + [p['path'] for p in pools] + ['/dev/shm']):
+for cand in (bases + [p['path'] for p in pools] + ['/dev/shm']):
     try:
         mp = os.path.realpath(cand)
         dev = os.stat(mp).st_dev
@@ -229,7 +243,7 @@ export async function collectOptaneStatus(sshService, services = []) {
     const svcOnHost = services.filter((s) => s.containerIp === host);
     const node = svcOnHost[0]?.node || null;
     try {
-      const r = await sshService.exec(host, `echo ${b64} | base64 -d | python3 - ${VLLM_OPTANE_BASE}`, { timeout: 30000 });
+      const r = await sshService.exec(host, `echo ${b64} | base64 -d | python3 - ${VLLM_OPTANE_BASE} ${LLAMA_OPTANE_BASE}`, { timeout: 30000 });
       if (r.code !== 0) return { host, node, error: (r.stderr || r.stdout || `exit ${r.code}`).slice(0, 400) };
       return { host, node, ...JSON.parse(r.stdout) };
     } catch (e) {
@@ -253,6 +267,7 @@ export async function collectOptaneStatus(sshService, services = []) {
   return {
     generatedAt: Date.now(),
     vllmOptaneBase: VLLM_OPTANE_BASE,
+    llamaOptaneBase: LLAMA_OPTANE_BASE,
     nodes,
     snapshots: getKvSnapshots({ limit: 100 }),
   };
