@@ -12,6 +12,9 @@ export interface HermesServiceConfig {
   providerServicesFile?: string
   /** JSON file where global Support-Models roles persist. */
   supportModelsFile?: string
+  /** Notifications sink — surfaces failover / failed-recreate / unserved-binding conditions
+   *  that were previously journal-only. Optional: absent means the old console-warn behaviour. */
+  notify?: (e: { severity: 'info' | 'warning' | 'error' | 'critical'; source: string; message: string; detail?: string }) => void
 }
 
 /**
@@ -31,7 +34,7 @@ export class HermesService {
   private readonly pendingCaptures = new Map<string, (image: string) => void>()
 
   constructor(cfg: HermesServiceConfig) {
-    this.mgmt = new HermesManagementService({ host: cfg.host, sshKeyPath: cfg.sshKeyPath, specsFile: cfg.specsFile, providerServicesFile: cfg.providerServicesFile, supportModelsFile: cfg.supportModelsFile })
+    this.mgmt = new HermesManagementService({ host: cfg.host, sshKeyPath: cfg.sshKeyPath, specsFile: cfg.specsFile, providerServicesFile: cfg.providerServicesFile, supportModelsFile: cfg.supportModelsFile, notify: cfg.notify })
     // Keep each support role on its own backup while its primary is unreachable. Idempotent, and
     // a no-op for every role that has no backup configured.
     this.mgmt.startFailoverWatch()

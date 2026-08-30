@@ -17,6 +17,7 @@ import { GlobalChat } from './components/Chat/GlobalChat'
 import { AgentChatPanel } from './components/AgentChat/AgentChatPanel'
 import { FlowchartPanel } from './components/Flowchart/FlowchartPanel'
 import { PagesPanel } from './components/Pages/PagesPanel'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { SvgPanel } from './components/Svg/SvgPanel'
 import { FleetPanel } from './components/Fleet/FleetPanel'
 import { AddonsPanel } from './components/Addons/AddonsPanel'
@@ -243,35 +244,115 @@ export const App: React.FC = observer(() => {
             <TerminalWorkspace store={store} />
           </div>
 
-          {primaryTab === 'home' && <HomePanel />}
-          {primaryTab === 'chat' && <AgentChatPanel />}
-          {primaryTab === 'claude' && <ClaudePanel />}
-          {primaryTab === 'cluster' && <ClusterPanel />}
+          {primaryTab === 'home' && (
+            <ErrorBoundary label="The home tab">
+              <HomePanel />
+            </ErrorBoundary>
+          )}
+          {primaryTab === 'chat' && (
+            <ErrorBoundary label="The chat tab">
+              <AgentChatPanel />
+            </ErrorBoundary>
+          )}
+          {primaryTab === 'claude' && (
+            <ErrorBoundary label="The claude tab">
+              <ClaudePanel />
+            </ErrorBoundary>
+          )}
+          {primaryTab === 'cluster' && (
+            <ErrorBoundary label="The cluster tab">
+              <ClusterPanel />
+            </ErrorBoundary>
+          )}
 
-          {primaryTab === 'services' && <ServicesPanel />}
+          {primaryTab === 'services' && (
+            <ErrorBoundary label="The services tab">
+              <ServicesPanel />
+            </ErrorBoundary>
+          )}
 
-          {primaryTab === 'helper-scripts' && <ScriptsTabPanel />}
+          {primaryTab === 'helper-scripts' && (
+            <ErrorBoundary label="The helper-scripts tab">
+              <ScriptsTabPanel />
+            </ErrorBoundary>
+          )}
 
-          {primaryTab === 'ai-services' && <AiServicesPanel />}
+          {primaryTab === 'ai-services' && (
+            <ErrorBoundary label="The ai-services tab">
+              <AiServicesPanel />
+            </ErrorBoundary>
+          )}
 
-          {primaryTab === 'ai-llm' && <AiLlmPanel />}
-          {primaryTab === 'ai-image' && <AiImagePanel />}
-          {primaryTab === 'ai-tts-stt' && <AiTtsSttPanel />}
-          {primaryTab === 'ai-tools' && <AiToolsPanel />}
+          {primaryTab === 'ai-llm' && (
+            <ErrorBoundary label="The ai-llm tab">
+              <AiLlmPanel />
+            </ErrorBoundary>
+          )}
+          {primaryTab === 'ai-image' && (
+            <ErrorBoundary label="The ai-image tab">
+              <AiImagePanel />
+            </ErrorBoundary>
+          )}
+          {primaryTab === 'ai-tts-stt' && (
+            <ErrorBoundary label="The ai-tts-stt tab">
+              <AiTtsSttPanel />
+            </ErrorBoundary>
+          )}
+          {primaryTab === 'ai-tools' && (
+            <ErrorBoundary label="The ai-tools tab">
+              <AiToolsPanel />
+            </ErrorBoundary>
+          )}
 
-          {primaryTab === 'model-downloads' && <ModelDownloadsPanel />}
+          {primaryTab === 'model-downloads' && (
+            <ErrorBoundary label="The model-downloads tab">
+              <ModelDownloadsPanel />
+            </ErrorBoundary>
+          )}
 
-          {primaryTab === 'logs' && <LogsPanel />}
+          {primaryTab === 'logs' && (
+            <ErrorBoundary label="The logs tab">
+              <LogsPanel />
+            </ErrorBoundary>
+          )}
 
-          {primaryTab === 'fleet' && <FleetPanel />}
+          {primaryTab === 'fleet' && (
+            <ErrorBoundary label="The fleet tab">
+              <FleetPanel />
+            </ErrorBoundary>
+          )}
 
-          {primaryTab === 'addons' && <AddonsPanel />}
+          {primaryTab === 'addons' && (
+            <ErrorBoundary label="The addons tab">
+              <AddonsPanel />
+            </ErrorBoundary>
+          )}
 
-          {primaryTab === 'flowchart' && <FlowchartPanel />}
-          {primaryTab === 'pages' && <PagesPanel />}
-          {primaryTab === 'svg' && <SvgPanel />}
-          {primaryTab === 'files' && <FilesPanel />}
-          {primaryTab === 'roadmap' && <RoadmapPanel />}
+          {primaryTab === 'flowchart' && (
+            <ErrorBoundary label="The flowchart tab">
+              <FlowchartPanel />
+            </ErrorBoundary>
+          )}
+          {primaryTab === 'pages' && (
+            <ErrorBoundary label="The pages tab">
+              <PagesPanel />
+            </ErrorBoundary>
+          )}
+          {primaryTab === 'svg' && (
+            <ErrorBoundary label="The svg tab">
+              <SvgPanel />
+            </ErrorBoundary>
+          )}
+          {primaryTab === 'files' && (
+            <ErrorBoundary label="The files tab">
+              <FilesPanel />
+            </ErrorBoundary>
+          )}
+          {primaryTab === 'roadmap' && (
+            <ErrorBoundary label="The roadmap tab">
+              <RoadmapPanel />
+            </ErrorBoundary>
+          )}
 
           {/* Global chat overlay — toggled independently from the model sidebar. */}
           <GlobalChat store={store} visible={chatOpen} />

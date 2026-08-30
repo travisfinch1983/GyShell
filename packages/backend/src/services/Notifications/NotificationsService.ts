@@ -182,7 +182,18 @@ export class NotificationsService {
    *  anything else the proxy emits; unrecognised types pass through as debug. */
   ingestAiEvent(msg: { type?: string; [k: string]: unknown }): void {
     const type = String(msg?.type ?? 'unknown')
-    if (type === 'watchdog-never-healthy') {
+    if (type === 'notify') {
+      // Generic passthrough: the ported JS routers (ai.js and everything it owns —
+      // metrics poller, watchdog, cache reconciler) can raise a real notification
+      // through the transport they already have, with no new dependency and no HTTP hop.
+      const sev = String(msg.severity ?? 'warning')
+      this.notify({
+        severity: (['info', 'warning', 'error', 'critical'].includes(sev) ? sev : 'warning') as NotifySeverity,
+        source: String(msg.source ?? 'ai'),
+        message: String(msg.message ?? '(no message)'),
+        detail: msg.detail === undefined ? undefined : String(msg.detail),
+      })
+    } else if (type === 'watchdog-never-healthy') {
       this.notify({
         severity: 'error', source: 'watchdog',
         message: `service ${msg.name ?? msg.serviceId} never became healthy`,

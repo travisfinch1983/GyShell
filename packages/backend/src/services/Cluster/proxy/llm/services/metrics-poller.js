@@ -51,7 +51,38 @@ function promSumLabeled(text, name, label, value) {
 }
 
 export class LlmMetricsPoller {
-  constructor({ dataDir, gpuMonitor, getActiveServices, getServiceHistory, interval = 20000 }) {
+  /**
+   * KV offload wired-but-DEAD detector.
+   *
+   * Stored bytes climb as soon as a connector is attached; restored bytes climb only on a
+   * real hit. "Restored flat while stored grows" is therefore the precise signature of a
+   * cache that exists, costs disk, and returns nothing — the shape that hid for MONTHS
+   * because the counters were published and nobody read them.
+   *
+   * Two guards against crying wolf: a FLOOR (a cold engine that has served nothing yet is
+   * not evidence of anything) and once-per-row latching (a standing condition must not
+   * re-alarm every 20s poll). Recovery unlatches, so a later genuine failure still fires.
+   */
+  _checkKvOffloadDead(row) {
+    if (!this.notify) return;
+    const FLOOR_BYTES = 5 * 1024 * 1024 * 1024;   // ~5GB stored before we judge
+    const stored = row.cum_kvOffloadStoredBytes || 0;
+    const restored = row.cum_kvOffloadRestoredBytes || 0;
+    if (restored > 0) { row._kvDeadFlagged = false; return; }   // it earns its keep — unlatch
+    if (stored < FLOOR_BYTES) return;                            // too early to judge
+    if (row._kvDeadFlagged) return;                              // already reported
+    row._kvDeadFlagged = true;
+    const gb = (stored / 1024 / 1024 / 1024).toFixed(1);
+    this.notify({
+      severity: 'error',
+      source: 'kv-offload',
+      message: `KV offload is storing but never restoring on ${row.model || row.currentServiceId || 'a service'} — ${gb} GB written, 0 bytes restored`,
+      detail: 'Stored bytes climb whenever the connector is attached; restored bytes climb only on a real hit. Zero restored past the 5GB floor means the cache is present but dead (wrong block hashes, PYTHONHASHSEED unset, or a restore path that never matches).',
+    });
+  }
+
+  constructor({ dataDir, gpuMonitor, getActiveServices, getServiceHistory, interval = 20000, notify = null }) {
+    this.notify = notify;
     this.file = join(dataDir, 'llm-metrics.json')
     this.gpuConfigFile = join(dataDir, 'gpu-config.json')
     this.gpuMonitor = gpuMonitor
@@ -356,6 +387,7 @@ export class LlmMetricsPoller {
           this._accum(row, 'kvOffloadRestoredBytes', m.kvOffloadRestoredBytes, runId)
           this._accum(row, 'kvOffloadStoredSec', m.kvOffloadStoredSec, runId)
           this._accum(row, 'kvOffloadRestoredSec', m.kvOffloadRestoredSec, runId)
+          this._checkKvOffloadDead(row);
         }
         row._lastRun = runId
         // Long-term rate = accumulated tokens / accumulated PHASE time (reset-able, excludes idle) —

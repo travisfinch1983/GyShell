@@ -169,6 +169,8 @@ export async function startGyBackend(): Promise<void> {
     specsFile: path.join(dataDir, 'hermes-agent-specs.json'),
     providerServicesFile: path.join(dataDir, 'hermes-provider-services.json'),
     supportModelsFile: path.join(dataDir, 'hermes-support-models.json'),
+    // Failover / failed-recreate / unserved-binding events were journal-only until now.
+    notify: (e) => notificationsService.notify(e),
   })
   // Autonomous agent-to-agent auto-reply (HermesBusSubscriber) was DROPPED on 2026-08-27.
   // fleetd already wakes an agent with the message; the agent then decides whether to reply.

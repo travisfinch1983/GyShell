@@ -8016,6 +8016,9 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
       getActiveServices: () => loadActiveServices(), // full records (config + isTts/etc flags)
       getServiceHistory: () => loadServiceHistory(),
       interval: 20000,
+      // Notifications sink — rides the existing broadcast(), so the poller needs no new
+      // dependency. Consumed by NotificationsService.ingestAiEvent's 'notify' passthrough.
+      notify: (e) => broadcast({ type: 'notify', ...e }),
     });
     metricsPoller.start();
   } catch (e) { console.warn('[ai] LLM metrics poller failed to start:', e?.message); }

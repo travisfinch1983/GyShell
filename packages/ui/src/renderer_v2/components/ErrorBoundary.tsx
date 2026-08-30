@@ -24,7 +24,19 @@ export class ErrorBoundary extends React.Component<Props, State> {
   componentDidCatch(error: Error, info: React.ErrorInfo): void {
     // Keep the console path: the stack is what makes this diagnosable, and the panel below
     // deliberately shows only the message.
-    console.error(`[ui] ${this.props.label || 'section'} failed to render:`, error, info.componentStack)
+    const label = this.props.label || 'section'
+    console.error(`[ui] ${label} failed to render:`, error, info.componentStack)
+    // ...and RAISE it. The UI knows precisely when a section died; until now that knowledge
+    // reached only the browser console, which is a silent failure by any other name. Best
+    // effort by design: a boundary must never throw from its own error path.
+    try {
+      void (window as any).gyshell?.cluster?.request?.('POST', '/api/notifications/emit', {
+        severity: 'error',
+        source: 'ui',
+        message: `${label} failed to render: ${error.message}`,
+        detail: String(info.componentStack || '').slice(0, 3000),
+      })
+    } catch { /* reporting must not compound the failure */ }
   }
 
   render(): React.ReactNode {

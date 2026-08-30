@@ -42,6 +42,12 @@ export interface HermesManagementConfig {
   providerServicesFile?: string
   /** JSON file where global Support-Models roles (Vision Description describer, etc.) persist. */
   supportModelsFile?: string
+  /**
+   * Notifications sink (optional). Conditions here have historically been visible ONLY as
+   * console.warn in the journal — a failover or a failed container recreate looks like success
+   * from the UI. Typed in-process call, no HTTP hop.
+   */
+  notify?: (e: { severity: 'info' | 'warning' | 'error' | 'critical'; source: string; message: string; detail?: string }) => void
 }
 
 /** One Support-Models assignment (a model wired to a Hermes `auxiliary.<key>` role).
@@ -377,6 +383,17 @@ export class HermesManagementService {
     // change does — reusing the existing path rather than a second mechanism that could drift.
     await this.recreateExternalConsumers([key], { [key]: previous }, roles)
     console.warn(`[failover] ${key}: '${previous}' -> '${model}' (${why})`)
+    // A support-model failover is a real state change the operator must see: the role is now
+    // running on a DIFFERENT model than chosen. Recovery back to the primary is informational.
+    const recovered = why.includes('reachable again')
+    this.cfg.notify?.({
+      severity: recovered ? 'info' : 'warning',
+      source: 'support-models',
+      message: recovered
+        ? `${key} recovered to primary model '${model}'`
+        : `${key} failed over to '${model}' (was '${previous}')`,
+      detail: why,
+    })
   }
 
   /**
@@ -425,12 +442,59 @@ export class HermesManagementService {
     }
   }
 
+  /**
+   * Support-model bindings that name a model the proxy does not serve. This is the
+   * silent-no-op class: memory extraction, vision description or compaction quietly
+   * does nothing because its role points at a model that isn't there.
+   *
+   * 🛑 SCOPED BY PROVIDER, NOT BY A ROLE BLOCKLIST. claude1's first estate-wide audit
+   * reported 36 failures, nearly all false, by judging TTS/STT/embed bindings against the
+   * LLM proxy's model list — different services, different catalogues. A hardcoded
+   * "non-LLM roles" list would just be a guess that rots; instead only roles explicitly
+   * routed through the LLM proxy (provider 'ailab') are judged against that proxy's
+   * catalogue. Anything else is not this check's business. And when the proxy cannot be
+   * read at all we return silently: "cannot check" is not "failed".
+   */
+  private lastUnservedKey = ''
+  async checkModelBindings(): Promise<void> {
+    let served: Set<string>
+    try {
+      served = await this.servedModels()
+    } catch {
+      return // cannot see ≠ broken
+    }
+    if (served.size === 0) return
+
+    const unserved: string[] = []
+    for (const [key, role] of Object.entries(this.loadSupportModels())) {
+      if ((role?.provider || '') !== 'ailab') continue   // judged against the wrong catalogue otherwise
+      const model = role?.model || ''
+      if (!model || model === 'auto') continue
+      if (!served.has(model)) unserved.push(`${key} → '${model}'`)
+    }
+    // Fire on CHANGE only; a standing misconfiguration must not re-alarm every pass.
+    const sig = unserved.sort().join(' | ')
+    if (sig === this.lastUnservedKey) return
+    this.lastUnservedKey = sig
+    if (!unserved.length) return
+    this.cfg.notify?.({
+      severity: 'error',
+      source: 'model-bindings',
+      message: `${unserved.length} support-model role(s) name a model the proxy does not serve — those roles are silent no-ops`,
+      detail: unserved.join('\n'),
+    })
+  }
+
   /** Start the failover watcher. Idempotent. */
   startFailoverWatch(intervalMs = 30000): void {
     if (this.failoverTimer) return
     this.failoverTimer = setInterval(() => {
       void this.checkSupportModelFailover().catch((e) =>
         console.warn('[failover] pass failed:', (e as Error)?.message || e))
+      // Same cadence, same served-model read: a binding that names an unserved model is
+      // the silent-no-op twin of a failover and belongs on the same watch.
+      void this.checkModelBindings().catch((e) =>
+        console.warn('[model-bindings] pass failed:', (e as Error)?.message || e))
     }, intervalMs)
     console.log(`[failover] support-model failover watch started (every ${Math.round(intervalMs / 1000)}s, 3 confirmations to switch)`)
   }
@@ -528,6 +592,14 @@ export class HermesManagementService {
         // Report rather than throw: the model assignment IS saved, and a failed restart must be
         // visible instead of turning a successful save into an error the operator can't interpret.
         console.warn(`[support-models] recreate of ${svc} failed:`, error)
+        // The exact silent-success shape: the assignment SAVED, so the UI shows the new model,
+        // while the container keeps serving the old one until someone notices. Orange.
+        this.cfg.notify?.({
+          severity: 'error',
+          source: 'support-models',
+          message: `${svc} did not restart — it is still running the OLD model despite the ${role} assignment being saved`,
+          detail: error,
+        })
         out.push({ service: svc, role, ok: false, error })
       }
     }
