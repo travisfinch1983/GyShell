@@ -1118,6 +1118,7 @@ export class HermesManagementService {
         .map((t) => t.split('__')[0])
         .filter((p) => p.startsWith('memory')))]
       const hasFleet = current.some((t) => t.startsWith('fleet__'))
+      const hasPages = current.some((t) => t.startsWith('pages-'))
 
       if (existingMem.length === 0) {
         const memUrl = `${process.env.UNIFIED_MEMORY_URL || 'http://127.0.0.1:9847'}/u/${ns}/mcp`
@@ -1137,9 +1138,30 @@ export class HermesManagementService {
         }
       }
 
+      // Pages authoring (Travis 2026-08-30): identity is PROGRAMMATIC — same per-caller
+      // routing pattern as memory, so the recorded author is derived from the registered
+      // path, never typed by the agent. Same both-halves-or-neither rule as memory.
+      const pagesSrv = `pages-${agentId}`
+      if (!hasPages) {
+        const pagesUrl = `${process.env.AILAB_PAGES_MCP_URL || 'http://127.0.0.1:9848'}/u/${ns}/mcp`
+        const res = await fetch(`${gw}/api/v0/servers`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: pagesSrv, transport: 'streamable_http', url: pagesUrl, session_mode: 'stateless',
+            description: `${agentId}-scoped Pages authoring (page_write/get/list) — authorship recorded from this path, not a tool argument.`,
+          }),
+          signal: AbortSignal.timeout(15000),
+        })
+        if (!res.ok && res.status !== 409 && res.status !== 400) {
+          console.warn(`[agent-provision] ${agentId}: could not register ${pagesSrv} (HTTP ${res.status}) — pages tools omitted this pass`)
+        }
+      }
+
       const want = [...current]
       if (existingMem.length === 0) want.push(memSrv)   // bare server name expands to all its tools
       if (!hasFleet) want.push('fleet')
+      if (!hasPages) want.push(pagesSrv)
       if (want.length === current.length) return        // already complete
 
       const reg = await loadToolRegistry(gw)

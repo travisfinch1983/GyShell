@@ -39,6 +39,13 @@ export const pageMetaSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   currentVersion: z.number().int().positive(),
+  /**
+   * Distinct contributors in first-seen order — the creator first, then every
+   * later co-author. Derived from the per-version author records, which are
+   * ALSO the per-edit audit trail ("who made this individual change" is the
+   * version history, no extra machinery).
+   */
+  authors: z.array(z.string()).default([]),
   versions: z.array(pageVersionInfoSchema),
 })
 export type PageMeta = z.infer<typeof pageMetaSchema>

@@ -43,9 +43,16 @@ export function createPagesRouter(dataDir: string): express.Router {
 
   const fail = (res: Res, code: number, error: string) => res.status(code).json({ ok: false, error })
 
+  /** Distinct version authors, creator first — also backfills metas written before the field existed. */
+  const deriveAuthors = (versions: PageVersionInfo[]): string[] =>
+    [...new Set(versions.map((v) => v.author).filter((a): a is string => !!a))]
+
   const readMeta = (id: string): PageMeta | null => {
     if (!existsSync(metaFile(id))) return null
-    try { return JSON.parse(readFileSync(metaFile(id), 'utf8')) as PageMeta } catch { return null }
+    try {
+      const meta = JSON.parse(readFileSync(metaFile(id), 'utf8')) as PageMeta
+      return { ...meta, authors: meta.authors ?? deriveAuthors(meta.versions) }
+    } catch { return null }
   }
 
   const renderHtml = (contentType: string, body: string): string =>
@@ -182,7 +189,7 @@ export function createPagesRouter(dataDir: string): express.Router {
       const now = new Date().toISOString()
       if (!meta) {
         mkdirSync(pageDir(id), { recursive: true })
-        meta = { id, title, contentType, createdAt: now, updatedAt: now, currentVersion: 0, versions: [] }
+        meta = { id, title, contentType, createdAt: now, updatedAt: now, currentVersion: 0, authors: [], versions: [] }
       }
       const version = meta.currentVersion + 1
       const html = renderHtml(contentType, body)
@@ -191,9 +198,10 @@ export function createPagesRouter(dataDir: string): express.Router {
       const info: PageVersionInfo = {
         version, title, contentType, author, createdAt: now, bytes: Buffer.byteLength(html),
       }
-      meta = { ...meta, title, contentType, updatedAt: now, currentVersion: version, versions: [...meta.versions, info] }
+      const versions = [...meta.versions, info]
+      meta = { ...meta, title, contentType, updatedAt: now, currentVersion: version, versions, authors: deriveAuthors(versions) }
       writeFileSync(metaFile(id), JSON.stringify(meta, null, 2))
-      res.json({ ok: true, id, version })
+      res.json({ ok: true, id, version, authors: meta.authors })
     } catch (e) { fail(res, 500, String((e as Error).message)) }
   })
 
@@ -216,9 +224,10 @@ export function createPagesRouter(dataDir: string): express.Router {
         writeFileSync(srcFile(id, version), readFileSync(srcFile(id, from.version)))
       }
       const info: PageVersionInfo = { ...from, version, createdAt: now, restoredFrom: from.version }
+      const versions = [...meta.versions, info]
       const next: PageMeta = {
         ...meta, title: from.title, contentType: from.contentType,
-        updatedAt: now, currentVersion: version, versions: [...meta.versions, info],
+        updatedAt: now, currentVersion: version, versions, authors: deriveAuthors(versions),
       }
       writeFileSync(metaFile(id), JSON.stringify(next, null, 2))
       res.json({ ok: true, id, version, restoredFrom: from.version })
