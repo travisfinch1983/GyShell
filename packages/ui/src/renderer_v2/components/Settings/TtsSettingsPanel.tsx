@@ -520,7 +520,7 @@ const SupportModelSection: React.FC<{
   task: AuxTask
   role?: SupportModelRole
   catalog: CatalogModelWithCaps[]
-  onSave: (key: string, patch: { model?: string; description?: string; recommendation?: string; timeout?: number; noThink?: boolean }) => Promise<{ ok: boolean; agentsUpdated?: number; error?: string }>
+  onSave: (key: string, patch: { model?: string; fallbackModel?: string; description?: string; recommendation?: string; timeout?: number; noThink?: boolean }) => Promise<{ ok: boolean; agentsUpdated?: number; error?: string }>
 }> = ({ task, role, catalog, onSave }) => {
   // Seed from the LIVE per-agent value. Seeding from the stored overlay (role?.model) is
   // what made roles with a stale config render as "Auto" — the drift was unshowable.
@@ -528,6 +528,7 @@ const SupportModelSection: React.FC<{
   const [model, setModel] = useState(task.cardModel ?? role?.model ?? '')
   const [desc, setDesc] = useState(task.description)
   const [rec, setRec] = useState(task.recommendation)
+  const [fallback, setFallback] = useState(task.fallbackModel ?? '')
   const [noThink, setNoThink] = useState(!!role?.noThink)
   const [saving, setSaving] = useState('')
   const [status, setStatus] = useState('')
@@ -543,6 +544,14 @@ const SupportModelSection: React.FC<{
     setStatus(r.ok
       ? (m ? `saved${typeof r.agentsUpdated === 'number' ? ` — ${r.agentsUpdated} agent${r.agentsUpdated === 1 ? '' : 's'}` : ''}` : 'cleared → Auto (main model)')
       : `save failed${r.error ? ` — ${r.error}` : ''}`)
+  }
+  // Saving a backup changes nothing that is running: it only matters if the primary later
+  // becomes unreachable, so there is no re-apply and no restart here.
+  const saveFallback = async (m: string) => {
+    setFallback(m); setSaving('fallback'); setStatus('')
+    const r = await onSave(task.key, { fallbackModel: m })
+    setSaving('')
+    setStatus(r.ok ? (m ? 'backup saved' : 'backup cleared') : `save failed${r.error ? ` — ${r.error}` : ''}`)
   }
   const saveMeta = async (field: 'description' | 'recommendation', val: string) => {
     setSaving(field); await onSave(task.key, { [field]: val }); setSaving('')
@@ -607,6 +616,26 @@ const SupportModelSection: React.FC<{
             {saving === "model" ? "Applying…" : "Re-apply to all agents"}
           </button>
         </div>
+        {task.failedOver && (
+          <div style={{ fontSize: 11, lineHeight: 1.45, padding: '6px 8px', margin: '0 0 7px', borderRadius: 6,
+                        border: '1px solid rgba(255,170,60,.45)', background: 'rgba(255,170,60,.12)', color: '#ffb347' }}>
+            <strong>Failed over.</strong> {task.cardModel} is unreachable, so this role is running on{' '}
+            <strong>{task.activeModel}</strong>. It switches back on its own once the primary returns.
+          </div>
+        )}
+        {!task.proxyLevel && !task.providerDefault && (
+          <div className="tts-field">
+            <label>Backup model{saving === 'fallback' ? ' (saving…)' : ''}</label>
+            <select value={fallback} onChange={(e) => void saveFallback(e.target.value)} className="tts-select" disabled={saving === 'fallback'}>
+              <option value="">None — this role stops working if its model goes away</option>
+              {options.map((id) => <option key={id} value={id}>{id}</option>)}
+            </select>
+            <span className="tts-hint">
+              Used only while the model above is unreachable — taking it down for testing moves this
+              role here instead of breaking it. Each role has its own, so they need not share one.
+            </span>
+          </div>
+        )}
         <div className="tts-field-row" style={{ marginBottom: 7 }}>
           <label
             className="tts-toggle"

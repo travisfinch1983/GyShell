@@ -46,7 +46,25 @@ export interface HermesManagementConfig {
 
 /** One Support-Models assignment (a model wired to a Hermes `auxiliary.<key>` role).
  *  `description`/`recommendation` are AI-Lab-side UI metadata (NOT sent to Hermes). */
-export interface SupportModelRole { provider?: string; model?: string; description?: string; recommendation?: string; timeout?: number; noThink?: boolean }
+export interface SupportModelRole {
+  provider?: string
+  /** The model IN USE RIGHT NOW. Normally equals primaryModel; during a failover it is
+   *  fallbackModel. It is this field the containers read at start (HippocampAI's LLM_MODEL,
+   *  OpenViking's vlm.model), so a failover has to move it — their entrypoints are baked into
+   *  the images and cannot be taught about a second field. */
+  model?: string
+  /** What the OPERATOR chose — the model to return to when it is reachable again. Failover
+   *  never touches this, so the intent survives however long the primary is down. */
+  primaryModel?: string
+  /** Per-role backup. Used only while primaryModel is unreachable. Roles may share a primary
+   *  and still have different backups: the swap happens here, where the ROLE still exists,
+   *  rather than in the proxy, where a request is only ever a model name. */
+  fallbackModel?: string
+  description?: string
+  recommendation?: string
+  timeout?: number
+  noThink?: boolean
+}
 /** Global "Support Models" assignments keyed by Hermes auxiliary task key (vision, compression,
  *  web_extract, ...). Legacy visionDescription/compaction keys are migrated on read. */
 export type SupportModelRoles = Record<string, SupportModelRole>
@@ -273,7 +291,7 @@ export class HermesManagementService {
       b.autos.sort(); b.follows.sort()
       return b
     }
-    const rows: Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean; external: boolean; capabilityManaged: boolean; providerDefault: boolean; proxyLevel: boolean; cardModel: string; current: string; drift: boolean; perAgent: Record<string, string>; breakdown: Breakdown }> = []
+    const rows: Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean; external: boolean; capabilityManaged: boolean; providerDefault: boolean; proxyLevel: boolean; cardModel: string; fallbackModel: string; activeModel: string; failedOver: boolean; current: string; drift: boolean; perAgent: Record<string, string>; breakdown: Breakdown }> = []
     const add = (key: string, label: string, hermesDesc: string) => {
       if (seen.has(key)) return
       seen.add(key)
@@ -293,7 +311,10 @@ export class HermesManagementService {
       // The original reason for reading live state — that a config set outside this UI was
       // otherwise invisible — is now served by the per-agent breakdown, which reports reality
       // without the control having to impersonate it. A setting is a setting.
-      const cardModel = s.model || ''
+      // The card shows the OPERATOR's choice, not whatever is temporarily active.
+      const cardModel = s.primaryModel || s.model || ''
+      const activeModel = s.model || ''
+      const failedOver = !!(s.fallbackModel && activeModel && cardModel && activeModel !== cardModel)
       rows.push({
         key, label,
         description: (s.description || def.description || hermesDesc || '').trim(),
@@ -305,6 +326,9 @@ export class HermesManagementService {
         proxyLevel: PROXY_LEVEL_ROLES.has(key),
         current: live.current,   // still the LIVE consensus — drift detection depends on it
         cardModel,
+        fallbackModel: s.fallbackModel || '',
+        activeModel,
+        failedOver,
         // Capability-managed roles are SUPPOSED to differ per agent — not drift.
         drift: capabilityManaged ? false : live.drift,
         perAgent: live.perAgent,
@@ -316,6 +340,101 @@ export class HermesManagementService {
     return rows
   }
 
+  // ─── Per-role failover ──────────────────────────────────────────────────────────────────
+  // Why this lives here and not in the proxy: by the time a request reaches the proxy the role
+  // has already been resolved into a model name, so the proxy can only ever key a backup on the
+  // MODEL. Roles that share a primary would be forced to share a backup. Acting at the config
+  // layer — where the role still exists — makes the backup genuinely per-role, and reaches every
+  // consumer (Hermes agents AND the containers) without any protocol change.
+  private failoverObs = new Map<string, { state: 'up' | 'down'; count: number }>()
+  private failoverTimer: ReturnType<typeof setInterval> | null = null
+
+  /** Models the proxy is actually serving right now — the same authority the binding audit uses. */
+  private async servedModels(): Promise<Set<string>> {
+    const url = `${process.env.AILAB_PROXY_URL || 'http://127.0.0.1:17890'}/api/proxy/llm/v1/models`
+    const r = await fetch(url, { signal: AbortSignal.timeout(15000) })
+    if (!r.ok) throw new Error(`model list HTTP ${r.status}`)
+    const body = (await r.json()) as { data?: Array<{ id?: string }> }
+    return new Set((body.data || []).map((m) => String(m.id || '')).filter(Boolean))
+  }
+
+  /** Apply a model to a role WITHOUT changing what the operator chose. */
+  private async applyEffectiveModel(key: string, model: string, why: string): Promise<void> {
+    const roles = this.loadSupportModels()
+    const role = roles[key]
+    if (!role) return
+    const previous = role.model || ''
+    if (previous === model) return
+    roles[key] = { ...role, model }                    // primaryModel deliberately untouched
+    if (this.cfg.supportModelsFile) atomicWriteJson(this.cfg.supportModelsFile, roles)
+
+    const agents = await this.listAgents()
+    await Promise.all(agents.map(async (id) => {
+      try { await this.applyRoleConfig(id, key, roles[key]) }
+      catch (e) { console.warn(`[failover] ${key}: agent ${id} not updated:`, (e as Error)?.message || e) }
+    }))
+    // External consumers read the file at START, so they need the recreate the same way a manual
+    // change does — reusing the existing path rather than a second mechanism that could drift.
+    await this.recreateExternalConsumers([key], { [key]: previous }, roles)
+    console.warn(`[failover] ${key}: '${previous}' -> '${model}' (${why})`)
+  }
+
+  /**
+   * One pass: for every role with a backup, keep it on the primary when that is reachable and on
+   * the backup when it is not.
+   *
+   * Hysteresis is not optional here. A model restart makes the primary briefly unreachable, and
+   * without it every restart would rewrite 20 agent configs and recreate two containers, twice —
+   * once away and once back. FAILOVER_CONFIRMATIONS consecutive agreeing observations are
+   * required before acting, in BOTH directions.
+   */
+  async checkSupportModelFailover(): Promise<void> {
+    const FAILOVER_CONFIRMATIONS = 3
+    let served: Set<string>
+    try {
+      served = await this.servedModels()
+    } catch (e) {
+      // Never fail over on our own inability to see: an unreachable proxy is not evidence that a
+      // model is down, and acting on it would swap every role during a transient blip.
+      console.warn('[failover] cannot read the served-model list; leaving assignments alone:', (e as Error)?.message || e)
+      return
+    }
+    if (served.size === 0) return
+
+    for (const [key, role] of Object.entries(this.loadSupportModels())) {
+      const primary = role.primaryModel || role.model || ''
+      const backup = role.fallbackModel || ''
+      if (!primary || !backup) { this.failoverObs.delete(key); continue }
+
+      const want: 'up' | 'down' = served.has(primary) ? 'up' : 'down'
+      const obs = this.failoverObs.get(key)
+      const next = obs && obs.state === want ? { state: want, count: obs.count + 1 } : { state: want, count: 1 }
+      this.failoverObs.set(key, next)
+      if (next.count < FAILOVER_CONFIRMATIONS) continue
+
+      const active = role.model || ''
+      if (want === 'up' && active !== primary) {
+        await this.applyEffectiveModel(key, primary, 'primary is reachable again')
+      } else if (want === 'down' && active !== backup) {
+        if (!served.has(backup)) {
+          console.warn(`[failover] ${key}: primary '${primary}' is down and backup '${backup}' is not served either — leaving as-is`)
+          continue
+        }
+        await this.applyEffectiveModel(key, backup, `primary '${primary}' unreachable`)
+      }
+    }
+  }
+
+  /** Start the failover watcher. Idempotent. */
+  startFailoverWatch(intervalMs = 30000): void {
+    if (this.failoverTimer) return
+    this.failoverTimer = setInterval(() => {
+      void this.checkSupportModelFailover().catch((e) =>
+        console.warn('[failover] pass failed:', (e as Error)?.message || e))
+    }, intervalMs)
+    console.log(`[failover] support-model failover watch started (every ${Math.round(intervalMs / 1000)}s, 3 confirmations to switch)`)
+  }
+
   /** Persist the full role map; apply the MODEL routing for `applyKeys` (changed model-bearing
    *  roles) to every agent. description/recommendation are UI-only (never pushed to Hermes). */
   async setSupportModels(roles: SupportModelRoles, applyKeys?: string[]): Promise<{ agentsUpdated: number; restarted?: Array<{ service: string; role: string; ok: boolean; error?: string }> }> {
@@ -324,6 +443,10 @@ export class HermesManagementService {
       if (!r) continue
       const entry: SupportModelRole = {}
       if (r.model) { entry.provider = r.provider || 'ailab'; entry.model = r.model }
+      // primaryModel defaults to model on first write, so a role saved before failover existed
+      // still records an intent to return to.
+      if (r.primaryModel || r.model) entry.primaryModel = r.primaryModel || r.model
+      if (r.fallbackModel) entry.fallbackModel = r.fallbackModel
       if (r.description) entry.description = r.description
       if (r.recommendation) entry.recommendation = r.recommendation
       if (typeof r.timeout === 'number' && r.timeout > 0) entry.timeout = r.timeout

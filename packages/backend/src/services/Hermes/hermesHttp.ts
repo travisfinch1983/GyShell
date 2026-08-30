@@ -627,9 +627,19 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
         if ('model' in patch) {
           applyKeys.push(key)
           if (typeof patch.model === 'string' && patch.model) {
+            // An operator choosing a model sets BOTH: the effective model and the intent to
+            // return to it. Choosing explicitly also ends any failover in progress.
             cur.model = patch.model
+            cur.primaryModel = patch.model
             cur.provider = typeof patch.provider === 'string' && patch.provider ? patch.provider : (cur.provider || 'ailab')
-          } else { delete cur.model; delete cur.provider }
+          } else { delete cur.model; delete cur.provider; delete cur.primaryModel }
+        }
+        if ('fallbackModel' in patch) {
+          const fb = patch.fallbackModel
+          if (typeof fb === 'string' && fb) cur.fallbackModel = fb
+          else delete cur.fallbackModel
+          // Not an applyKey: a backup does not change what is running right now. It only takes
+          // effect if the primary later becomes unreachable.
         }
         if ('description' in patch) { const d = patch.description; if (typeof d === 'string' && d.trim()) cur.description = d; else delete cur.description }
         if ('recommendation' in patch) { const rc = patch.recommendation; if (typeof rc === 'string' && rc.trim()) cur.recommendation = rc; else delete cur.recommendation }
@@ -637,7 +647,7 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
         if ('noThink' in patch) { applyKeys.push(key); cur.noThink = !!patch.noThink }
         if (Object.keys(cur).length) roles[key] = cur; else delete roles[key]
       }
-      const r = await hermes.setSupportModels(roles as Record<string, { provider?: string; model?: string; description?: string; recommendation?: string; timeout?: number; noThink?: boolean }>, [...new Set(applyKeys)])
+      const r = await hermes.setSupportModels(roles as Record<string, { provider?: string; model?: string; primaryModel?: string; fallbackModel?: string; description?: string; recommendation?: string; timeout?: number; noThink?: boolean }>, [...new Set(applyKeys)])
       res.json({ ok: true, ...r })
     } catch (e) { res.status(400).json({ error: String((e as Error).message) }) }
   })

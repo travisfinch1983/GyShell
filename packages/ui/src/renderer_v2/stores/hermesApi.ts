@@ -52,6 +52,11 @@ export interface AuxTask {
    *  carry. For a capability-managed role the agents are supposed to differ, so a consensus
    *  reading is meaningless and this is the only honest value to display. */
   cardModel?: string
+  /** Per-role backup, used only while the primary is unreachable. */
+  fallbackModel?: string
+  /** What is applied RIGHT NOW — differs from cardModel only during a failover. */
+  activeModel?: string
+  failedOver?: boolean
   /** perAgent split into what it MEANS, computed backend-side so template profiles (which are
    *  never applied to) are labelled rather than looking like drift. */
   breakdown?: {

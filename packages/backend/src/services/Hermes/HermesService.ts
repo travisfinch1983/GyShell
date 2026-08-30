@@ -32,6 +32,9 @@ export class HermesService {
 
   constructor(cfg: HermesServiceConfig) {
     this.mgmt = new HermesManagementService({ host: cfg.host, sshKeyPath: cfg.sshKeyPath, specsFile: cfg.specsFile, providerServicesFile: cfg.providerServicesFile, supportModelsFile: cfg.supportModelsFile })
+    // Keep each support role on its own backup while its primary is unreachable. Idempotent, and
+    // a no-op for every role that has no backup configured.
+    this.mgmt.startFailoverWatch()
     this.bridge = new HermesAcpBridge({ host: cfg.host, sshKeyPath: cfg.sshKeyPath })
   }
 
