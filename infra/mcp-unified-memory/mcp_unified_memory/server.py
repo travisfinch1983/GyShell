@@ -36,6 +36,52 @@ HIPPOCAMPAI_USER = os.environ.get("HIPPOCAMPAI_USER", "claude")
 # tools fall back to it when no explicit user_id argument is given. In stdio
 # mode (the gateway) it stays unset and HIPPOCAMPAI_USER is the default.
 import contextvars
+
+
+# ── degradation emitter ─────────────────────────────────────────────────────────
+# 🛑 Every silent-degradation path in this file has the same anatomy: the feature
+# keeps answering (un-reranked order, base-collection recall, hippo-only results),
+# so nothing looks broken while the answer quality quietly changes. print() goes
+# to journald, which is where the reranker at 10.0.0.140 died unnoticed once
+# already. These transitions must reach the notifications panel.
+#
+# Latched per subject: fires on the transition into failure (threshold crossed),
+# once, and re-arms only after a success. Never raises — a degradation report
+# must not be able to degrade anything itself.
+_AILAB_API = os.environ.get("AILAB_API_URL", "http://127.0.0.1:17890").rstrip("/")
+_EMIT_THRESHOLD = 3
+_emit_streaks: dict = {}
+_emit_lock = threading.Lock()
+
+
+def _emit(severity: str, message: str, detail: str = "") -> None:
+    try:
+        import urllib.request
+        body = json.dumps({"severity": severity, "source": "unified-memory",
+                           "message": message, "detail": detail}).encode()
+        req = urllib.request.Request(_AILAB_API + "/api/notifications/emit", body,
+                                     {"Content-Type": "application/json"}, method="POST")
+        urllib.request.urlopen(req, timeout=3).read()
+    except Exception as e:
+        print(f"[unified-memory] NOTIFY LOST ({e}): {severity}: {message}")
+
+
+def _degraded(subject: str, ok: bool, message: str = "", detail: str = "") -> None:
+    """Record one outcome for `subject`; emit on the latched transitions only."""
+    with _emit_lock:
+        streak = _emit_streaks.get(subject, 0)
+        if ok:
+            if streak >= _EMIT_THRESHOLD:
+                _emit("info", f"unified-memory: {subject} recovered",
+                      f"Working again after {streak} consecutive failures.")
+            _emit_streaks[subject] = 0
+            return
+        streak += 1
+        _emit_streaks[subject] = streak
+        fire = streak == _EMIT_THRESHOLD
+    if fire:
+        _emit("warning", message or f"unified-memory: {subject} degraded", detail)
+
 _CALLER_USER: "contextvars.ContextVar[str]" = contextvars.ContextVar("memory_caller_user", default="")
 
 
@@ -292,6 +338,13 @@ def embed_fingerprint(base_url: str = "", model_id: str = "") -> str:
             fp = hashlib.sha1(f"{mid}|{entry.get('root','')}".encode()).hexdigest()[:12]
     except Exception as e:
         print(f"[unified-memory] fingerprint probe failed for {base}: {e}")
+        _degraded("embed-fingerprint", False,
+                  "Embed fingerprint probe failing — recall may be querying the WRONG collections",
+                  f"{e}. With no fingerprint, collection routing falls through to the base names, "
+                  "which the manifest's 'unresolved' block says do not match the active query "
+                  "encoder. Recall answers normally but from vectors of a different embedding model.")
+    if fp:
+        _degraded("embed-fingerprint", True)
     _fp_cache[key] = (fp, now + _FP_TTL)
     return fp
 
@@ -859,6 +912,13 @@ def rerank(query: str, results: list) -> list:
             timeout=15.0,
         )
         if resp.status_code != 200:
+            # This branch was FULLY silent — not even a print — while returning
+            # the un-reranked order as if nothing happened.
+            _degraded("reranker", False,
+                      "Recall reranker is down — results served in raw RRF order",
+                      f"HTTP {resp.status_code} from {cfg['rerank_url']}. Every recall in the fleet "
+                      "is degraded to fused-but-unreranked order; answers look normal, just worse. "
+                      "The reranker has died unnoticed before (10.0.0.140 decommission).")
             return results
 
         reranked = resp.json().get("results", [])
@@ -869,9 +929,14 @@ def rerank(query: str, results: list) -> list:
         for i, r in enumerate(text_results):
             r["reranker_score"] = score_map.get(i, 0)
 
+        _degraded("reranker", True)
         return sorted(text_results, key=lambda x: x.get("reranker_score", 0), reverse=True)
     except Exception as e:
         print(f"[unified-memory] Reranking failed: {e}")
+        _degraded("reranker", False,
+                  "Recall reranker is unreachable — results served in raw RRF order",
+                  f"{e}. Every recall in the fleet is degraded; the outage is invisible at the "
+                  "recall surface because answers still arrive.")
         return results
 
 

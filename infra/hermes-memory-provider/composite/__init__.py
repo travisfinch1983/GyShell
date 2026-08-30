@@ -35,6 +35,7 @@ import os
 import re
 import threading
 import time
+import sys
 import urllib.request
 from typing import Any, Dict, List, Optional
 
@@ -58,8 +59,11 @@ def _notify(severity, message, detail=""):
         req = urllib.request.Request(_AILAB_API + "/api/notifications/emit", body,
                                      {"Content-Type": "application/json"}, method="POST")
         urllib.request.urlopen(req, timeout=3).read()
-    except Exception:
-        pass
+    except Exception as e:
+        # The report about a dark lane must not itself vanish darkly: if the
+        # backend is unreachable, at least journald gets one line saying a
+        # notification was LOST, not merely that a lane failed.
+        print(f"[memory-composite] NOTIFY LOST ({e}): {severity}: {message}", file=sys.stderr)
 
 
 _LANES = ("hippocampai", "openviking")
@@ -121,6 +125,8 @@ class CompositeProvider(MemoryProvider):
         self._session_id = ""
         self._user_id = ""
         self._tool_owner: Dict[str, str] = {}
+        self._lane_failures: Dict[str, int] = {}
+        self._recall_failures = 0
         self._lock = threading.Lock()
         # (query, text) rather than a bare string: a warm is only valid for the
         # message it was recalled with. See _warm()/prefetch().
@@ -137,14 +143,42 @@ class CompositeProvider(MemoryProvider):
 
     # -- fan-out helper (writes / lifecycle / tools) ---------------------------
 
+    # Consecutive-failure latches, per lane. Transition-only: the emit fires when
+    # a lane crosses the threshold, once, and again only after it has recovered.
+    # 🛑 This is the 12-day case: the init-time emits above cover a lane that is
+    # dark at startup, but OpenViking was HEALTHY at init and died later — every
+    # call after that was a logger.warning into a per-profile log nobody opens,
+    # while the other lane silently covered. Runtime failure must transition into
+    # an event a human sees.
+    _LANE_FAIL_THRESHOLD = 3
+
+    def _lane_result(self, lane: str, ok: bool, err: str = "") -> None:
+        streak = self._lane_failures.get(lane, 0)
+        if ok:
+            if streak >= self._LANE_FAIL_THRESHOLD:
+                _notify("info", f"Memory lane '{lane}' recovered",
+                        f"Writes are reaching {lane} again after {streak} consecutive failures.")
+            self._lane_failures[lane] = 0
+            return
+        streak += 1
+        self._lane_failures[lane] = streak
+        if streak == self._LANE_FAIL_THRESHOLD:
+            _notify("warning", f"Memory lane '{lane}' is failing at runtime",
+                    f"{streak} consecutive write-path failures (latest: {err[:300]}). The lane "
+                    "initialized healthy, so the board shows green and the other lane keeps "
+                    "serving — nothing LOOKS broken, which is exactly how a lane stays dark "
+                    "for days. New memories are not reaching this lane.")
+
     def _each(self, method: str, *args, **kwargs) -> Dict[str, Any]:
         """Call method on every write lane, isolating failures per lane."""
         out: Dict[str, Any] = {}
         for lane, child in self._children.items():
             try:
                 out[lane] = getattr(child, method)(*args, **kwargs)
+                self._lane_result(lane, True)
             except Exception as e:  # noqa: BLE001 — one lane must not sink the other
                 logger.warning("composite: lane %s %s failed: %s", lane, method, e)
+                self._lane_result(lane, False, str(e))
         return out
 
     # -- core lifecycle --------------------------------------------------------
@@ -153,6 +187,8 @@ class CompositeProvider(MemoryProvider):
         return True  # config-only; lanes decide for themselves at initialize()
 
     def initialize(self, session_id: str, **kwargs) -> None:
+        self._lane_failures.clear()
+        self._recall_failures = 0
         self._session_id = session_id
         self._hermes_home = kwargs.get("hermes_home", "") or os.path.expanduser("~/.hermes")
         agent = kwargs.get("agent_identity", "") or "hermes"
@@ -203,8 +239,20 @@ class CompositeProvider(MemoryProvider):
                 headers={"Content-Type": "application/json"}, method="POST")
             with urllib.request.urlopen(req, timeout=_PREFETCH_DEADLINE_SECS) as r:
                 results = json.loads(r.read()).get("results", [])
+            if self._recall_failures >= self._LANE_FAIL_THRESHOLD:
+                _notify("info", "Unified memory recall recovered",
+                        f"Recall is answering again after {self._recall_failures} consecutive failures.")
+            self._recall_failures = 0
         except Exception as e:  # noqa: BLE001 — unified MCP down → no injection this turn
-            logger.debug("composite: unified recall unavailable (%s)", e)
+            self._recall_failures += 1
+            if self._recall_failures == self._LANE_FAIL_THRESHOLD:
+                # debug-level was the bug: with :9847 down every turn silently ran
+                # memory-less while the system prompt asserted memory is ACTIVE.
+                _notify("warning", "Unified memory recall is unavailable",
+                        f"{self._recall_failures} consecutive recall failures ({str(e)[:200]}). "
+                        "Agents are running with ZERO injected memory while their prompt still "
+                        "claims memory is active. Capture lanes are unaffected.")
+            logger.warning("composite: unified recall unavailable (%s)", e)
             return ""
         lines = []
         for m in results:
