@@ -201,4 +201,22 @@ export class KvIndex {
   versionMismatched(currentVersion) { return this._verMis.all(currentVersion); }
 
   close() { this.db.close(); }
+
+  /**
+   * Snapshots ranked by how often each has ACTUALLY been restored (hit_count), not by size or
+   * age. This is the ordering the Optane dashboard is built around: the snapshots earning their
+   * Optane space belong at the top, and the never-restored ones are the eviction candidates.
+   */
+  topSnapshots(modelFp, limit = 100) {
+    return this.db.prepare(
+      "SELECT hash, model_fp, n_tokens, bytes, kind, created_at, last_used, hit_count " +
+      "FROM caches WHERE model_fp = ? ORDER BY hit_count DESC, last_used DESC LIMIT ?"
+    ).all(modelFp, limit);
+  }
+
+  /** Every model_fp present in this DB (one file can hold more than one after a rekey). */
+  modelFps() {
+    return this.db.prepare("SELECT DISTINCT model_fp FROM caches").all().map((r) => r.model_fp);
+  }
+
 }

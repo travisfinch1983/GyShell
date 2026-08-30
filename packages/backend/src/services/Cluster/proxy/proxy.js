@@ -36,6 +36,7 @@ import { listBackends, emptyReason, nextIndex, createHealthCache,
 import { getPipelineConfig, savePipelineConfig, applyPipelineDefaults,
          PIPELINE_DEFAULTS } from './audio-pipeline.js';
 import { isKvEligible, getOrchestrator, getKvSettings, saveKvSettings, getAllKvStats, getKvIndexStats, reapNow, resetOrchestratorCache } from './kvcache/integration.js';
+import { collectOptaneStatus } from './kvcache/optane-status.js';
 
 // ─── kvcache-proxy companion detection ──────────────────────────────────
 // Convention: each LLM service that has a kvcache-proxy companion listens
@@ -1559,6 +1560,16 @@ export function createProxyRouter(sshService) {
           port: svc.port, containerIp: svc.containerIp, node: svc.node, slots: svc.slots,
         }));
       res.json({ eligible, services: await getAllKvStats(), pools: getKvIndexStats(), settings: getKvSettings() });
+    } catch (e) { res.status(500).json({ error: e?.message || String(e) }); }
+  });
+  // Whole-fleet Optane KV view for the AI Metrics tab: which running services actually have the
+  // cache attached (read from process cmdlines on the node, not from config), per-pool capacity
+  // and usage, and stored snapshots ranked by restore count. Deliberately separate from
+  // /kvcache/stats, which is llama.cpp-only and reports live orchestrator counters.
+  router.get('/kvcache/optane', async (_req, res) => {
+    try {
+      const svcs = findServicesByType('llm').filter((s) => s.containerIp && s.port);
+      res.json(await collectOptaneStatus(sshService, svcs));
     } catch (e) { res.status(500).json({ error: e?.message || String(e) }); }
   });
   router.get('/kvcache/settings', (_req, res) => res.json(getKvSettings()));

@@ -5,6 +5,7 @@ import { aiServicesStore as store } from '../../stores/AiServicesStore'
 import { LlmMetricsDashboard } from './LlmMetricsDashboard'
 import { ClaudeMaxMetricsDashboard } from './ClaudeMaxMetricsDashboard'
 import { KvCacheDashboard } from './KvCacheDashboard'
+import { OptaneCacheDashboard } from './OptaneCacheDashboard'
 import styles from './AiServices.module.scss'
 
 const PoolView: React.FC = observer(() => (
@@ -66,6 +67,7 @@ export const AiServicesPanel: React.FC = observer(() => {
       <div className={styles.body}>
         <PoolView />
         <LlmMetricsDashboard />
+        <OptaneCacheDashboard />
         <KvCacheDashboard />
         <ClaudeMaxMetricsDashboard />
       </div>
