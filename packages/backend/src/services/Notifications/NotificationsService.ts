@@ -167,7 +167,64 @@ export class NotificationsService {
     if (this.events.length > EVENT_CAP) this.events.splice(0, this.events.length - EVENT_CAP)
     this.schedulePersist()
     this.broadcast('notify:event', evt)
+    this.routeToMaintainer(evt)
     return evt
+  }
+
+  /**
+   * Wake the maintenance agent for anything actionable.
+   *
+   * A panel only helps someone who is looking at it. Routing the event as a fleet message is what
+   * turns "visible if you check" into "someone is told" — which is the actual complaint these
+   * systems exist to answer.
+   *
+   * Three deliberate limits:
+   *  - info is NOT routed. Only warning/error/critical. Waking an agent for "proxy recovered"
+   *    would make the channel worthless within a day.
+   *  - identical events are coalesced. A failing dependency re-raises on every probe cycle, and a
+   *    hundred wake-ups for one fault is indistinguishable from an attack on the agent's context.
+   *  - failure to route is logged and swallowed. Notification delivery must never be able to
+   *    break the thing that raised the notification.
+   */
+  private recentRoutes = new Map<string, number>()
+  private routeToMaintainer(evt: NotifyEvent): void {
+    if (evt.severity === 'info') return
+    const to = process.env.AILAB_MAINTAINER_AGENT || 'maintenance-claude'
+    if (!to || to === 'off') return
+
+    const key = `${evt.source}::${evt.message}`
+    const now = Date.now()
+    const last = this.recentRoutes.get(key) ?? 0
+    const windowMs = Number(process.env.AILAB_MAINTAINER_COALESCE_MS || 30 * 60 * 1000)
+    if (now - last < windowMs) return
+    this.recentRoutes.set(key, now)
+    if (this.recentRoutes.size > 500) {
+      for (const [k, t] of this.recentRoutes) if (now - t > windowMs) this.recentRoutes.delete(k)
+    }
+
+    const fleetd = process.env.FLEETD_URL || 'http://127.0.0.1:17900'
+    const body = [
+      `[${evt.severity.toUpperCase()}] ${evt.message}`,
+      evt.detail ? `\n${evt.detail}` : '',
+      `\n\nsource: ${evt.source}   raised: ${evt.ts}   event id: ${evt.id}`,
+      `\n\nThis is an automated notification, not a person asking. Triage it: fix it, defer it to`,
+      ` Travis on Telegram if you need his input, or journal-and-ack it if it is real but not`,
+      ` actionable. Ack it either way so it stops badging.`,
+    ].join('')
+
+    void fetch(`${fleetd}/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sender: process.env.AILAB_NOTIFY_SENDER || 'ai-lab-notifications',
+        to: [to], kind: 'dm', body,
+      }),
+      signal: AbortSignal.timeout(8000),
+    })
+      .then(async (r) => {
+        if (!r.ok) console.warn(`[notify-route] ${to}: fleetd HTTP ${r.status} — ${(await r.text()).slice(0, 200)}`)
+      })
+      .catch((e) => console.warn(`[notify-route] ${to}: not delivered — ${(e as Error)?.message || e}`))
   }
 
   /** Informational debug line for the live console — ring only, never badged. */
