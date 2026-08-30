@@ -13,6 +13,9 @@ const TYPE_COLORS: Record<string, string> = {
 const STATUS: Record<string, { label: string; cls: string }> = {
   running: { label: 'Running', cls: 'stRun' },
   suspended: { label: 'Suspended', cls: 'stSusp' },
+  // Suspended by the operator, but the unit is actually running (#263) — it is consuming
+  // VRAM and answering requests while the card claims it is parked.
+  conflict: { label: 'Suspended · RUNNING', cls: 'stConflict' },
   down: { label: 'Down', cls: 'stDown' },
   unknown: { label: '…', cls: 'stUnknown' },
 }

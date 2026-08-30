@@ -78,6 +78,7 @@
 .stRun { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
 .stSusp { background: color-mix(in srgb, #e0a832 20%, transparent); color: #e0a832; }
 .stDown { background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); }
+.stConflict { background: color-mix(in srgb, var(--danger) 26%, transparent); color: var(--danger); outline: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); }
 .stUnknown { background: var(--control-bg); color: var(--fg-faint); }
 .tps { color: var(--success); }
 

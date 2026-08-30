@@ -244,11 +244,20 @@ export class AiServicesStore {
   }
 
   /** Running | suspended | down | unknown — derived from /stats. */
-  statusOf(id: string): 'running' | 'suspended' | 'down' | 'unknown' {
+  statusOf(id: string): 'running' | 'suspended' | 'conflict' | 'down' | 'unknown' {
     const st = this.statsById[id]
     if (!st) return 'unknown'
-    // Operator suspend intent is authoritative — the backend keeps svc.suspended set even if the
-    // unit momentarily reports active (#263), so show Suspended regardless of a transient alive state.
+    // Operator suspend intent stays authoritative — the backend deliberately keeps svc.suspended
+    // set even when the unit reports active (#263), so an out-of-band start never silently
+    // un-suspends a service the operator parked.
+    //
+    // But that intent must not HIDE the machine's actual state. The original code returned
+    // 'suspended' on the assumption that an alive suspended unit was transient; when it is not
+    // transient — someone ran `systemctl start` directly, or the unit came back another way — the
+    // card read "Suspended" while the process was up and holding VRAM, with no way to tell from
+    // the UI. The backend already computes suspendConflict for exactly this, and nothing rendered
+    // it. Surface it as its own state so the conflict is visible instead of merely detected.
+    if (st.suspendConflict) return 'conflict'
     if (st.suspended) return 'suspended'
     if (st.alive) return 'running'
     if (st.systemdState === 'inactive') return 'suspended'
