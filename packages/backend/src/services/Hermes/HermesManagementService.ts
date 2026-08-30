@@ -1000,7 +1000,18 @@ export class HermesManagementService {
       const hasFleet = current.some((t) => t.startsWith('fleet__'))
       const hasPages = current.some((t) => t.startsWith('pages-'))
 
-      if (existingMem.length === 0) {
+      // Which servers ALREADY exist — asked, not inferred from status codes: a duplicate
+      // registration returns 500 "UNIQUE constraint failed", not 409 (found live by
+      // provision_all.py against real MCPJungle). Treating that 500 as failure made a
+      // registered-server-with-lost-group-update state permanently unconvergeable.
+      let registered = new Set<string>()
+      try {
+        const list = await (await fetch(`${gw}/api/v0/servers`, { signal: AbortSignal.timeout(8000) }))
+          .json() as Array<{ name: string }>
+        registered = new Set(list.map((s) => s.name))
+      } catch { /* list unavailable — POSTs below still tolerate explicit duplicates */ }
+
+      if (existingMem.length === 0 && !registered.has(memSrv)) {
         const memUrl = `${process.env.UNIFIED_MEMORY_URL || 'http://127.0.0.1:9847'}/u/${ns}/mcp`
         const res = await fetch(`${gw}/api/v0/servers`, {
           method: 'POST',
@@ -1022,7 +1033,7 @@ export class HermesManagementService {
       // routing pattern as memory, so the recorded author is derived from the registered
       // path, never typed by the agent. Same both-halves-or-neither rule as memory.
       const pagesSrv = `pages-${agentId}`
-      if (!hasPages) {
+      if (!hasPages && !registered.has(pagesSrv)) {
         const pagesUrl = `${process.env.AILAB_PAGES_MCP_URL || 'http://127.0.0.1:9848'}/u/${ns}/mcp`
         const res = await fetch(`${gw}/api/v0/servers`, {
           method: 'POST',
@@ -1034,7 +1045,7 @@ export class HermesManagementService {
           signal: AbortSignal.timeout(15000),
         })
         if (!res.ok && res.status !== 409 && res.status !== 400) {
-          console.warn(`[agent-provision] ${agentId}: could not register ${pagesSrv} (HTTP ${res.status}) — pages tools omitted this pass`)
+          console.warn(`[agent-provision] ${agentId}: could not register ${pagesSrv} (HTTP ${res.status}) — pages tools will retry on next create/edit`)
         }
       }
 
@@ -1046,6 +1057,12 @@ export class HermesManagementService {
 
       const reg = await loadToolRegistry(gw)
       const sel = resolveSelection(want, reg)
+      // A just-registered server whose tools aren't discovered yet resolves as unknown and
+      // silently drops out of `included` — the write below is then a no-op for it. That is
+      // eventual convergence (this hook re-runs on every create/edit), not failure, but say so.
+      if (sel.unknown.length) {
+        console.warn(`[agent-provision] ${agentId}: awaiting gateway tool discovery for: ${sel.unknown.join(', ')} — will converge on next create/edit`)
+      }
       if (sel.included.length < current.length) {
         console.warn(`[agent-provision] ${agentId}: refusing to write a SMALLER tool group (${current.length} -> ${sel.included.length})`)
         return
