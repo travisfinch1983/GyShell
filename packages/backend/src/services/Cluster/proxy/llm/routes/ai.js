@@ -2341,6 +2341,13 @@ if out: print(json.dumps(out))
         console.log('[svc-launch] vLLM KV offload: launch already carries its own KV config; leaving untouched');
       } else {
         const { optaneDir, modelName, tp, fp } = computeVllmKvFingerprint(finalCommand);
+        // An unparsed model name would key every service at this TP/dtype to the SAME pool.
+        // Block keys hash tokens, not weights, so a shared pool across models can hand a rank
+        // another model's KV for identical text. Refuse to wire rather than share.
+        if (!modelName) {
+          console.log('[svc-launch] vLLM KV offload: could not identify the model in this command; refusing to wire a shared pool');
+          kvPreamble = '';
+        } else {
         const optaneBase = optaneDir.slice(0, optaneDir.lastIndexOf('/'));
         // The conda env is whatever the template invokes, never assumed: derive the prefix from
         // the vllm binary in the command so a differently-named env still resolves correctly.
@@ -2411,6 +2418,7 @@ fi
         // Empty-array expansion is guarded so the launch still works under `set -u`.
         finalCommand = finalCommand.replace(/\s+$/, '') + ' ${KV_ARGS[@]+"${KV_ARGS[@]}"}';
         console.log(`[svc-launch] vLLM Optane KV -> ${optaneDir} (model=${modelName} tp=${tp} fp=${fp}, RAM tier <=${maxGib}GiB, gated on patch marker)`);
+        }
       }
     }
 

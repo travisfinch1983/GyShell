@@ -1,4 +1,4 @@
-import { computeKvFingerprint } from './fingerprint.js';
+import { computeKvFingerprint, computeVllmKvFingerprint } from './fingerprint.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log('  FAIL:', m); } };
@@ -35,6 +35,53 @@ ok(fp(base.replace('--cache-type-k q8_0', '--cache-type-k f16'), { port: 5001 })
 // 7) checkpoint-min-step (content, not structure) must NOT be picked up by the ctx-checkpoints regex
 const withMinStep = base + ' --checkpoint-min-step 4096';
 ok(fp(withMinStep, { port: 5001 }) === fp(withMinStep.replace('--checkpoint-min-step 4096', '--checkpoint-min-step 8192'), { port: 5001 }), 'checkpoint-min-step ignored (not a KV_LAYOUT_PARAM, no regex bleed)');
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// vLLM fingerprint — the model is POSITIONAL (`vllm serve <path>`), so unlike the
+// llama.cpp `--model <path>` form it is exposed to line-continuation formatting.
+// ─────────────────────────────────────────────────────────────────────────────
+const vfp = (cmd) => computeVllmKvFingerprint(cmd);
+
+// A generated launcher: every flag on its own line, trailing backslashes, model wrapped in the
+// model-cache helper. This is the shape that actually reaches computeVllmKvFingerprint.
+const vBase = [
+  "/opt/conda/envs/1cat-vllm-sm70-130/bin/vllm serve \\",
+  "  $(mc '/models/Qwen3.8/27B-INT8-W8A16-MTP') \\",
+  '  --port 5003 \\',
+  '  --tensor-parallel-size 4 \\',
+  '  --dtype half \\',
+  '  --served-model-name Qwen3.8-27B-INT8-MM-Think_Preserve-256k',
+].join('\n');
+
+// 8) REGRESSION: `serve` is followed by "\<newline>", and a backslash is not \s. Before the fix
+// the match failed, modelName came back '', and the key collapsed to a generic `vllm-tp4-<hash>`
+// SHARED by every vLLM service at that TP/dtype. Block keys hash tokens rather than weights, so
+// a shared pool can hand a rank another model's KV for identical text.
+ok(vfp(vBase).modelName === 'Qwen3.8/27B-INT8-W8A16-MTP', 'multi-line launcher → model name parsed (line continuations unfolded)');
+ok(!vfp(vBase).dirName.startsWith('vllm-tp'), 'multi-line launcher → model-specific dir, not the generic fallback');
+
+// 9) the single-line form must keep working
+const vOneLine = "/opt/.../bin/vllm serve /models/Qwen3.8/27B-INT8-W8A16-MTP --tensor-parallel-size 4 --dtype half";
+ok(vfp(vOneLine).modelName === 'Qwen3.8/27B-INT8-W8A16-MTP', 'single-line launcher → model name parsed');
+
+// 10) two DIFFERENT models at the same TP/dtype must never land in the same pool — the exact
+// collision the empty-name fallback used to cause.
+const vOther = vBase.replace('Qwen3.8/27B-INT8-W8A16-MTP', 'Qwen3.5/9B-INT8');
+ok(vfp(vOther).optaneDir !== vfp(vBase).optaneDir, 'different model → DIFFERENT optane dir');
+
+// 11) TP is part of the key: offloaded blocks are written per rank, so a TP4 pool is not
+// reusable at TP1.
+ok(vfp(vBase.replace('--tensor-parallel-size 4', '--tensor-parallel-size 1')).fp !== vfp(vBase).fp, 'different TP → DIFFERENT fp');
+
+// 12) dtype changes the bytes on disk
+ok(vfp(vBase.replace('--dtype half', '--dtype bfloat16')).fp !== vfp(vBase).fp, 'different dtype → DIFFERENT fp');
+
+// 13) port must NOT be in the key — a service that returns on another port still finds its blocks
+ok(vfp(vBase.replace('--port 5003', '--port 5011')).optaneDir === vfp(vBase).optaneDir, 'different port → SAME optane dir');
+
+// 14) --served-model-name is cosmetic and must not shift the key
+ok(vfp(vBase.replace('Qwen3.8-27B-INT8-MM-Think_Preserve-256k', 'some-alias')).optaneDir === vfp(vBase).optaneDir, 'served-model-name change → SAME optane dir');
 
 console.log(`\nfingerprint: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

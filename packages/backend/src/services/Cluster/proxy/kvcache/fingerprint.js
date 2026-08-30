@@ -128,7 +128,14 @@ export function computeKvFingerprint(finalCommand, opts = {}) {
 // its KV_LAYOUT_PARAMS (cache-type-k/v, flash-attn, rope/yarn) are llama flags that mean
 // nothing to vLLM.
 export function extractVllmModelPath(finalCommand) {
-  const cmd = String(finalCommand || '');
+  // Generated launchers put every flag on its own line with a trailing backslash, so in a real
+  // command `serve` is followed by "\\\n  " and not by a plain space. A backslash is not \s, so
+  // matching the raw text silently fails and the model name comes back EMPTY -- which degrades
+  // the key to a generic `vllm-tp<N>-<hash>` shared by every vLLM service at that TP/dtype.
+  // That is a correctness bug, not a cosmetic one: block keys are hashes of TOKENS, so two
+  // different models can produce the same key for the same text while their KV bytes differ.
+  // Unfold continuations before matching.
+  const cmd = String(finalCommand || '').replace(/\\\r?\n\s*/g, ' ');
   // `serve $(mc '/models/...')` — the model-cache helper — or a bare path.
   // \bserve\s+ cannot match inside --served-model-name ("serve" there is followed by "d").
   const mc = cmd.match(/\bserve\s+\$\(mc\s+'([^']+)'\)/);
