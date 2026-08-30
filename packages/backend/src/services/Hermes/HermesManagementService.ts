@@ -455,7 +455,12 @@ export class HermesManagementService {
    * catalogue. Anything else is not this check's business. And when the proxy cannot be
    * read at all we return silently: "cannot check" is not "failed".
    */
-  private lastUnservedKey = ''
+  /**
+   * Roles we have already alarmed on, keyed by ROLE — not a joined signature of all of
+   * them. A signature changes whenever ANY role changes, so fixing one role re-alarms
+   * the others, and a role that stays broken goes quiet the moment a second one breaks.
+   */
+  private unservedAlarmed = new Set<string>()
   async checkModelBindings(): Promise<void> {
     let served: Set<string>
     try {
@@ -465,24 +470,32 @@ export class HermesManagementService {
     }
     if (served.size === 0) return
 
-    const unserved: string[] = []
+    const unserved: Array<{ key: string; model: string }> = []
     for (const [key, role] of Object.entries(this.loadSupportModels())) {
       if ((role?.provider || '') !== 'ailab') continue   // judged against the wrong catalogue otherwise
       const model = role?.model || ''
       if (!model || model === 'auto') continue
-      if (!served.has(model)) unserved.push(`${key} → '${model}'`)
+      if (!served.has(model)) unserved.push({ key, model })
     }
-    // Fire on CHANGE only; a standing misconfiguration must not re-alarm every pass.
-    const sig = unserved.sort().join(' | ')
-    if (sig === this.lastUnservedKey) return
-    this.lastUnservedKey = sig
-    if (!unserved.length) return
-    this.cfg.notify?.({
-      severity: 'error',
-      source: 'model-bindings',
-      message: `${unserved.length} support-model role(s) name a model the proxy does not serve — those roles are silent no-ops`,
-      detail: unserved.join('\n'),
-    })
+    // ONE EVENT PER ROLE, never an aggregate. An aggregate message has to interpolate a
+    // count or a joined list, and both change as roles are fixed — so a role that is STILL
+    // broken next pass produces a different message than last pass and reads as new, while
+    // the count itself says nothing about WHICH role. Per role the subject is the role.
+    const nowUnserved = new Map(unserved.map((u) => [u.key, u.model]))
+    for (const [key, model] of nowUnserved) {
+      // Fire on CHANGE only; a standing misconfiguration must not re-alarm every pass.
+      if (this.unservedAlarmed.has(key)) continue
+      this.unservedAlarmed.add(key)
+      this.cfg.notify?.({
+        severity: 'error',
+        source: 'model-bindings',
+        message: `Support-model role '${key}' names a model the proxy does not serve — that role is a silent no-op`,
+        detail: `'${model}' is not among the served models. The role is configured and runs, but does nothing.`,
+      })
+    }
+    // Forget roles that are no longer broken, so a genuine RECURRENCE alarms again rather
+    // than being suppressed forever by the first occurrence.
+    for (const key of [...this.unservedAlarmed]) if (!nowUnserved.has(key)) this.unservedAlarmed.delete(key)
   }
 
   /** Start the failover watcher. Idempotent. */

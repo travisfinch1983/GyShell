@@ -222,10 +222,16 @@ def main():
         by_model: dict = {}
         for r in worst:
             by_model.setdefault(r["value"], []).append(f"{r['source']} {r['path']}")
-        lines = [f"{m} ({len(v)} binding{'' if len(v) == 1 else 's'})" for m, v in sorted(by_model.items())]
-        emit("warning", "model-bindings",
-             f"{dead} model binding(s) name a model that is not being served",
-             "; ".join(lines)[:600])
+        # ONE EVENT PER MODEL, never an aggregate. An aggregate has to interpolate a count,
+        # and the count changes as bindings are fixed -- so the model still unserved on the
+        # next run produces a different message than it did on the last one and reads as new.
+        # The model is also the right subject rather than the binding: fixing the model fixes
+        # every binding that names it, so N bindings on one model is one problem, not N.
+        for model, bindings in sorted(by_model.items()):
+            emit("warning", "model-bindings",
+                 f"Model binding names a model that is not being served: {model}",
+                 f"{len(bindings)} binding{'' if len(bindings) == 1 else 's'} name it and are "
+                 f"failing silently: {'; '.join(sorted(bindings))}"[:600])
     return 1 if dead else 0
 
 if __name__ == "__main__":
