@@ -2440,8 +2440,15 @@ else
   fi
 fi
 `;
+        // Strip trailing whitespace AND any line-continuation backslash before appending.
+        // A generated command ends with "\\\n"; removing only the whitespace leaves the
+        // backslash, so appending " ${KV_ARGS...}" produces "\\ " — an ESCAPED SPACE that glues
+        // onto the first flag and hands vLLM an argument literally beginning with a space
+        // ("unrecognized arguments:  --no-disable-hybrid-kv-cache-manager", note the double
+        // space). Only the FIRST injected flag is corrupted, which is why the other two parsed
+        // fine and the failure looked like an unsupported flag rather than a quoting bug.
         // Empty-array expansion is guarded so the launch still works under `set -u`.
-        finalCommand = finalCommand.replace(/\s+$/, '') + ' ${KV_ARGS[@]+"${KV_ARGS[@]}"}';
+        finalCommand = finalCommand.replace(/[\s\\]+$/, '') + ' ${KV_ARGS[@]+"${KV_ARGS[@]}"}';
         console.log(`[svc-launch] vLLM Optane KV -> ${optaneDir} (model=${modelName} tp=${tp} fp=${fp}, RAM tier <=${maxGib}GiB, gated on patch marker)`);
         }
       }
