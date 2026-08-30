@@ -15,7 +15,7 @@ import {
 } from 'lucide-react'
 import type { PageContentType } from '@gyshell/shared'
 import { pagesStore as store } from '../../stores/PagesStore'
-import { buildPageSrcdoc, PAGE_SANDBOX, SANDBOX_PROBE_HTML } from '../../lib/pageSandbox'
+import { buildPageSrcdoc, needsMermaid, PAGE_SANDBOX, SANDBOX_PROBE_HTML } from '../../lib/pageSandbox'
 import styles from './Pages.module.scss'
 
 function fmtTime(iso: string): string {
@@ -132,11 +132,28 @@ export const PagesPanel: React.FC = observer(() => {
     return () => window.removeEventListener('message', onMsg)
   }, [])
 
+  // Mermaid is ~3.4MB, so it loads as a lazy chunk the FIRST time a page needs
+  // it, then rides inline into the sandbox (the CSP forbids external scripts —
+  // the library travels as source text, never a URL).
+  const [mermaidLib, setMermaidLib] = useState<string | null>(null)
+  const wantMermaid = !!store.current && needsMermaid(store.current.html)
+  useEffect(() => {
+    if (!wantMermaid || mermaidLib) return
+    let cancelled = false
+    void import('mermaid/dist/mermaid.min.js?raw').then((m) => {
+      if (!cancelled) setMermaidLib(m.default)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [wantMermaid, mermaidLib])
+
   const doc = useMemo(() => {
     if (probe === 'running') return buildPageSrcdoc(SANDBOX_PROBE_HTML, currentTheme())
     if (!store.current) return null
-    return buildPageSrcdoc(store.current.html, currentTheme())
-  }, [store.current, probe])
+    if (wantMermaid && !mermaidLib) return buildPageSrcdoc('<p>Loading diagram renderer…</p>', currentTheme())
+    return buildPageSrcdoc(store.current.html, currentTheme(), wantMermaid ? mermaidLib ?? undefined : undefined)
+  }, [store.current, probe, wantMermaid, mermaidLib])
 
   if (!store.available) {
     return (

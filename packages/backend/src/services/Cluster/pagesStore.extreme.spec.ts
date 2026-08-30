@@ -83,6 +83,30 @@ async function main(): Promise<void> {
   const trash = readdirSync(join(dataDir, 'pages', '.trash'))
   assert(trash.some((d) => d.startsWith('spec-page-')), 'page recoverable from .trash')
 
+  // Embeds resolve at READ time: {{svg:ID}} inlines the stored markup,
+  // {{flowchart:ID}} becomes mermaid source, unknown ids become visible
+  // placeholders, and stored files keep the tokens (so diagram edits propagate).
+  const { mkdirSync: mkd, writeFileSync: wf } = await import('node:fs')
+  mkd(join(dataDir, 'svgs'), { recursive: true })
+  wf(join(dataDir, 'svgs', 'spec-svg.svg'), '<svg xmlns="http://www.w3.org/2000/svg"><rect id="SPEC_RECT"/></svg>')
+  mkd(join(dataDir, 'flowcharts'), { recursive: true })
+  wf(join(dataDir, 'flowcharts', 'spec-chart.json'), JSON.stringify({
+    id: 'spec-chart', name: 'Spec Chart',
+    graph: { direction: 'LR', nodes: [{ id: 'a', label: 'Alpha' }, { id: 'b', label: 'Beta' }], edges: [{ from: 'a', to: 'b', label: 'goes' }] },
+  }))
+  r = await call('PUT', '/api/pages/embed-page', {
+    title: 'Embeds', contentType: 'markdown',
+    body: 'Before\n\n{{flowchart:spec-chart}}\n\n{{svg:spec-svg}}\n\n{{svg:no-such}}\n',
+  })
+  assert(r.json.version === 1, 'embed page written')
+  r = await call('GET', '/api/pages/embed-page')
+  assert(r.json.html.includes('class="mermaid"') && r.json.html.includes('flowchart LR'), 'flowchart embed → mermaid')
+  // mermaid source is HTML-escaped inside the <pre> (the frame reads textContent back)
+  assert(r.json.html.includes('--&gt;|"goes"|'), 'edge label carried into mermaid (escaped form)')
+  assert(r.json.html.includes('SPEC_RECT'), 'svg embed inlined')
+  assert(r.json.html.includes('[missing svg: no-such]'), 'unknown embed is a visible placeholder')
+  assert(r.json.source.includes('{{flowchart:spec-chart}}'), 'stored source keeps the token (read-time resolution)')
+
   // Bad ids and bad bodies are refusals, not crashes.
   r = await call('PUT', '/api/pages/../evil', { title: 'x', contentType: 'html', body: 'x' })
   assert(r.status === 400 || r.status === 404, 'path traversal id refused')
