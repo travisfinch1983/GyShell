@@ -177,6 +177,17 @@ export class NotificationsService {
   }
 
   /** Record + broadcast a warning/error/critical (or info) event. */
+  /**
+   * Record an event, badge it, and -- for anything above info -- fleet-DM the
+   * maintenance agent.
+   *
+   * ⚠ This has an OUTBOUND SIDE EFFECT. Any code that constructs this service and
+   * calls notify() will wake a real agent, including a test harness pointed at a
+   * scratch dataDir: the data is isolated, the network call is not. A probe test
+   * did exactly that and delivered a synthetic "Test dep is DOWN" to the
+   * maintenance agent. Set AILAB_MAINTAINER_AGENT=off in any non-production
+   * instantiation.
+   */
   notify(input: { severity: NotifySeverity; source: string; message: string; detail?: string }): NotifyEvent {
     const evt: NotifyEvent = {
       id: `${Date.now().toString(36)}-${(this.seq++).toString(36)}`,
