@@ -1,4 +1,5 @@
 import os from 'os'
+import { TransitionLatch } from './notifyLocal'
 import type { TerminalService } from './TerminalService'
 import type {
   ResourceSnapshot,
@@ -12,6 +13,17 @@ import type {
   ResourceSystemSnapshot,
   TerminalTab,
 } from '../types'
+
+/**
+ * Monitor-shape emitters. Two latches because two counting regimes: sections
+ * and dead-sources are PRE-COUNTED (trackSnapshotHealth fires the latch only
+ * at its own threshold moment, so the latch just dedupes + handles recovery),
+ * while collect exceptions feed the latch RAW every poll and need the latch
+ * itself to hold the 3-consecutive rule — otherwise a single transient throw
+ * would warn per-blip.
+ */
+const monitorLatch = new TransitionLatch(1, 'monitor')
+const monitorExcLatch = new TransitionLatch(3, 'monitor')
 
 const DEFAULT_POLL_INTERVAL_MS = 2000
 const MIN_POLL_INTERVAL_MS = 500
@@ -82,6 +94,13 @@ interface MonitorSession {
   previousNetCounters?: NetCounters
   previousSampleTime?: number
   targetPlatform?: MonitorTargetPlatform
+  /** Sections that have EVER carried data this session — the precondition for
+   *  the vanished-section latch (a host with no GPU must never alarm). */
+  populatedSections?: Set<string>
+  /** Consecutive polls each previously-populated section has come back empty. */
+  emptySectionStreaks?: Map<string, number>
+  /** Consecutive snapshots that failed outright (exec null / dead terminal). */
+  failedSnapshotStreak?: number
 }
 
 type CollectedSnapshot = Omit<ResourceSnapshot, 'timestamp' | 'terminalId' | 'system'> & {
@@ -363,6 +382,10 @@ export class ResourceMonitorService {
       }
       const sourceTerminalId = session.sourceTerminalId || terminalIds[0]
       const snapshot = await this.collectSnapshot(sourceTerminalId)
+      // A completed collect re-arms the exception latch (the catch below can
+      // never observe recovery itself — success skips it by definition).
+      monitorExcLatch.result(`collect:${sourceKey}`, true, 'Monitor collection is failing for a source', '')
+      this.trackSnapshotHealth(session, snapshot)
       if (this.publisher) {
         terminalIds.forEach((terminalId) => {
           this.publisher?.(
@@ -371,8 +394,72 @@ export class ResourceMonitorService {
           )
         })
       }
+    } catch (e) {
+      // try/finally with NO catch meant a throw here escaped as an unhandled
+      // rejection off the void interval call — snapshots stopped for a tick
+      // (or for good) with zero output anywhere.
+      console.warn(`[monitor] collect failed for ${sourceKey}: ${(e as Error)?.message ?? e}`)
+      monitorExcLatch.result(`collect:${sourceKey}`, false,
+        'Monitor collection is failing for a source',
+        `Source '${sourceKey}': ${(e as Error)?.message ?? e}. The panel keeps showing its last snapshot, which now ages silently.`)
     } finally {
       session.inFlight = false
+    }
+  }
+
+  /**
+   * The empty-section and dead-source latches. The shapes that made this
+   * necessary: a broken nvidia-smi (NVML mismatch after a driver update)
+   * produces an EMPTY gpu section with no error — byte-identical to "this box
+   * has no GPU" — and the panel renders the last good frame as live; and a
+   * poller can outlive its terminal, erroring every 2s forever, invisibly.
+   * Latched: a section only alarms if it was populated before and has been
+   * empty 3 consecutive polls; a source only alarms after 5 consecutive
+   * failed snapshots. Nothing fires per-blip, nothing fires on a host that
+   * never had the section.
+   */
+  private trackSnapshotHealth(session: MonitorSession, snapshot: CollectedSnapshot): void {
+    if (snapshot.error) {
+      session.failedSnapshotStreak = (session.failedSnapshotStreak ?? 0) + 1
+      if (session.failedSnapshotStreak === 5) {
+        console.warn(`[monitor] ${session.sourceKey}: 5 consecutive failed snapshots (${snapshot.error})`)
+        monitorLatch.result(`source:${session.sourceKey}`, false,
+          'A monitor source has stopped producing snapshots',
+          `Source '${session.sourceKey}' failed 5 consecutive polls (latest: ${snapshot.error}). The panel is showing stale data as live.`)
+      }
+      return
+    }
+    if ((session.failedSnapshotStreak ?? 0) >= 5) {
+      monitorLatch.result(`source:${session.sourceKey}`, true, 'A monitor source has stopped producing snapshots', '')
+    }
+    session.failedSnapshotStreak = 0
+
+    const populated = (session.populatedSections ??= new Set<string>())
+    const streaks = (session.emptySectionStreaks ??= new Map<string, number>())
+    const sections: Array<[string, boolean]> = [
+      ['gpus', (snapshot.gpus?.length ?? 0) > 0],
+      ['disks', (snapshot.disks?.length ?? 0) > 0],
+      ['network', (snapshot.network?.length ?? 0) > 0],
+      ['processes', (snapshot.processes?.length ?? 0) > 0],
+    ]
+    for (const [name, hasData] of sections) {
+      if (hasData) {
+        if ((streaks.get(name) ?? 0) >= 3) {
+          monitorLatch.result(`${session.sourceKey}:${name}`, true, `Monitor section '${name}' vanished from a source`, '')
+        }
+        populated.add(name)
+        streaks.set(name, 0)
+        continue
+      }
+      if (!populated.has(name)) continue   // never had it — a host without a GPU must not alarm
+      const streak = (streaks.get(name) ?? 0) + 1
+      streaks.set(name, streak)
+      if (streak === 3) {
+        console.warn(`[monitor] ${session.sourceKey}: section '${name}' empty 3 consecutive polls after being populated`)
+        monitorLatch.result(`${session.sourceKey}:${name}`, false,
+          `Monitor section '${name}' vanished from a source`,
+          `Source '${session.sourceKey}': '${name}' carried data earlier this session and has been empty for 3 consecutive polls with NO error reported. For gpus the classic cause is nvidia-smi breaking (NVML/driver mismatch) — which is byte-identical to "no GPU" without this check.`)
+      }
     }
   }
 

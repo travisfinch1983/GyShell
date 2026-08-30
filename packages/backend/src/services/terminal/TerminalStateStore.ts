@@ -1,7 +1,10 @@
 import fs from 'node:fs'
+import { TransitionLatch } from '../notifyLocal'
 import path from 'node:path'
 import type { TerminalConfig } from '../../types'
 import { normalizePersistedTerminalConfig } from './terminalConnectionSupport'
+
+const stateLatch = new TransitionLatch(1, 'terminal-state')
 
 export interface PersistedTerminalRecord {
   id: string
@@ -46,13 +49,23 @@ const normalizePayload = (raw: unknown): PersistedTerminalStatePayload => {
   const seen = new Set<string>()
   const terminals: PersistedTerminalRecord[] = []
   const input = Array.isArray(raw.terminals) ? raw.terminals : []
+  let dropped = 0
   input.forEach((item) => {
     const normalized = normalizeRecord(item)
-    if (!normalized) return
+    if (!normalized) { dropped += 1; return }
     if (seen.has(normalized.id)) return
-    seen.add(normalized.id)
     terminals.push(normalized)
+    seen.add(normalized.id)
   })
+  if (dropped > 0) {
+    // The next persist writes the REDUCED set over the file, so a schema drift
+    // that rejects records erases saved tabs permanently — and this count is
+    // the only witness before that write happens. Announce BEFORE the prune.
+    console.warn(`[terminal-state] dropped ${dropped} of ${input.length} persisted terminal record(s) on load — the next save makes this permanent`)
+    stateLatch.once('records-dropped', 'warning',
+      'Saved terminal tabs were dropped while loading',
+      `${dropped} of ${input.length} persisted record(s) failed validation and will be pruned on the next save (schema drift is the usual cause). If tabs are missing, recover them from the state file backup NOW — the prune overwrites it.`)
+  }
 
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,

@@ -1,4 +1,5 @@
 import * as ssh2 from 'ssh2'
+import { TransitionLatch } from './notifyLocal'
 import * as fs from 'fs'
 import * as net from 'net'
 import { dirname } from 'node:path'
@@ -19,6 +20,9 @@ import {
   type SftpTransferDirection,
   type SftpTransferProfile
 } from './ssh/SftpAdaptiveTransferTuner'
+
+/** SSH session-shape emitters: one event per subject, never per attempt. */
+const sshLatch = new TransitionLatch(3, 'ssh-session')
 
 const GYSHELL_READY_MARKER = '__GYSHELL_READY__'
 
@@ -85,10 +89,23 @@ export class SSHBackend implements TerminalBackend {
     if (!instance) return null
     try {
       return await this.execCollect(instance.client, command, timeoutMs, options)
-    } catch {
+    } catch (e) {
+      // This is the SOLE feed for the monitor panel: swallowing here meant a
+      // 10s monitor-command timeout every 2s produced zero backend output and
+      // the panel just went stale. One warn per session per minute — enough to
+      // name the cause without flooding on a 2s poll.
+      const now = Date.now()
+      const last = this.execWarnAt.get(ptyId) ?? 0
+      if (now - last > 60_000) {
+        this.execWarnAt.set(ptyId, now)
+        console.warn(`[SSH] execOnSession failed on ${ptyId}: ${(e as Error)?.message ?? e} (cmd: ${command.slice(0, 80)}…)`)
+      }
       return null
     }
   }
+
+  /** Per-session rate limit for execOnSession failure logging (2s poll cadence). */
+  private readonly execWarnAt = new Map<string, number>()
 
   private stripReadyMarker(chunk: string): string {
     if (!chunk.includes(GYSHELL_READY_MARKER)) return chunk
@@ -113,6 +130,13 @@ export class SSHBackend implements TerminalBackend {
     }
     const nextAttempt = (instance.systemInfoRetryCount || 0) + 1
     if (nextAttempt > SSHBackend.SYSTEM_INFO_RETRY_MAX_ATTEMPTS) {
+      // Giving up permanently was invisible across four swallowed layers — the
+      // monitor header just stayed blank forever with nothing saying why. Once,
+      // at the moment the cap is hit.
+      console.warn(`[SSH] ${ptyId}: systemInfo abandoned after ${SSHBackend.SYSTEM_INFO_RETRY_MAX_ATTEMPTS} attempts — host details stay blank for this session`)
+      sshLatch.once(`sysinfo-abandoned:${ptyId}`, 'warning',
+        'Host details unavailable for a session — retries exhausted',
+        `Session '${ptyId}': getSystemInfo failed ${SSHBackend.SYSTEM_INFO_RETRY_MAX_ATTEMPTS} times and will not retry again. The monitor header (hostname/OS/arch/shell) stays blank; the connection itself still works.`)
       return
     }
     instance.systemInfoRetryCount = nextAttempt
@@ -135,10 +159,11 @@ export class SSHBackend implements TerminalBackend {
     command: string,
     timeoutMs = 6000,
     options?: TerminalExecOptions
-  ): Promise<{ stdout: string; stderr: string }> {
+  ): Promise<{ stdout: string; stderr: string; code: number | null }> {
     return await new Promise((resolve, reject) => {
       let stdout = ''
       let stderr = ''
+      let code: number | null = null
       let settled = false
 
       const timer = setTimeout(() => {
@@ -160,11 +185,15 @@ export class SSHBackend implements TerminalBackend {
         stream.stderr.on('data', (d: Buffer) => {
           stderr += d.toString('utf8')
         })
-        stream.on('close', () => {
+        // Capture the exit code: without it, a remote command exiting 127 was
+        // byte-identical to one exiting 0 with no output — the structural root
+        // of every "empty monitor section" ambiguity downstream.
+        stream.on('exit', (c: number | null) => { code = c })
+        stream.on('close', (c?: number | null) => {
           if (settled) return
           settled = true
           clearTimeout(timer)
-          resolve({ stdout, stderr })
+          resolve({ stdout, stderr, code: typeof c === 'number' ? c : code })
         })
         if (options?.stdin !== undefined) {
           try {
@@ -581,6 +610,7 @@ Write-Output "__GYSHELL_READY__"
           // We continue anyway to allow shell access
         }
 
+        let unameProbeFailed = false
         try {
           emit('\x1b[36m▹ Detecting remote OS...\x1b[0m\r\n')
           console.log(`[SSH] Detecting remote OS...`)
@@ -590,7 +620,7 @@ Write-Output "__GYSHELL_READY__"
             instance.remoteOs = 'unix'
           }
         } catch {
-          // ignore
+          unameProbeFailed = true
         }
         if (!instance.remoteOs) {
           try {
@@ -598,10 +628,22 @@ Write-Output "__GYSHELL_READY__"
             const v = (ver.stdout || ver.stderr || '').toLowerCase()
             if (v.includes('windows')) instance.remoteOs = 'windows'
           } catch {
-            // ignore
+            // expected on unix hosts; only meaningful when BOTH probes failed
           }
         }
-        if (!instance.remoteOs) instance.remoteOs = 'unix'
+        if (!instance.remoteOs) {
+          instance.remoteOs = 'unix'
+          if (unameProbeFailed) {
+            // BOTH probes failed and the default was applied blind. Every
+            // downstream command family (monitor sections, systeminfo, the
+            // injection script) now targets a GUESSED OS — and if the guess is
+            // wrong, all of it returns empty output that reads as "no data".
+            console.warn(`[SSH] ${config.id}: remote OS defaulted to 'unix' — BOTH detection probes failed (slow link? restricted shell?)`)
+            sshLatch.once(`os-default:${config.id}`, 'warning',
+              'Remote OS detection failed — session is running on a guess',
+              `Session '${config.id}' (${config.host}): uname and cmd.exe probes both failed, defaulting to unix. If the guess is wrong, the monitor and system info will show empty data rather than errors.`)
+          }
+        }
         console.log(`[SSH] Remote OS detected: ${instance.remoteOs}`)
 
         try {

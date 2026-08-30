@@ -1,3 +1,7 @@
+import { TransitionLatch } from '../notifyLocal'
+
+const sftpLatch = new TransitionLatch(3, 'sftp')
+
 export type SftpTransferDirection = 'upload' | 'download'
 
 export interface SftpTransferProfile {
@@ -140,6 +144,7 @@ export class SftpAdaptiveTransferTuner {
 
     stats.attempts += 1
     stats.successes += 1
+    if (stats.consecutiveFailures >= 3) sftpLatch.rearm(`degraded:${endpointKey}:${direction}`)
     stats.consecutiveFailures = 0
     stats.lastSuccessAt = Date.now()
     if (observedBytesPerSec > 0) {
@@ -159,6 +164,17 @@ export class SftpAdaptiveTransferTuner {
     stats.failures += 1
     stats.consecutiveFailures += 1
     state.profileStats.set(profileId, stats)
+    // The tuner has always COUNTED this and never surfaced it: every failure
+    // silently ran the stream fallback and returned success, so a 32-way
+    // parallel transfer and a single-stream crawl were indistinguishable to
+    // the caller. Three consecutive = the fast path is off for this endpoint,
+    // not a blip. Endpoint key only — never credentials.
+    if (stats.consecutiveFailures === 3) {
+      console.warn(`[sftp-tuner] ${endpointKey}/${direction}: fast transfer failed 3 consecutive times — running degraded on the stream fallback`)
+      sftpLatch.once(`degraded:${endpointKey}:${direction}`, 'warning',
+        'SFTP fast transfer is degraded for an endpoint',
+        `${endpointKey} (${direction}): 3 consecutive fast-path failures; transfers still complete via the single-stream fallback, just slower.`)
+    }
   }
 
   private getDirectionState(endpointKey: string, direction: SftpTransferDirection): SftpDirectionState {
