@@ -1164,6 +1164,42 @@ print(n if n else '')
               ;;
           esac
         done
+        # FALLBACK: weights directly in the VARIANT directory, with no format subdirectory.
+        # The loop above only recognises family/variant/FORMAT layouts, so a checkpoint stored as
+        # family/variant (config.json + *.safetensors at the variant level) produced an empty
+        # format list and was dropped by the emit guard below -- invisible in the
+        # model picker, with nothing logged. Observed on Qwen3.8/27B-INT8-W8A16-MTP, which could
+        # not be selected or saved into a launch template at all.
+        # Format and bit width are read from config.json exactly as the BF16 branch does, so such
+        # a model lands in the same format/quant shape as its siblings.
+        if [ -z "$formats" ] && has_model_files "$variant_dir"; then
+          cfg_file="$variant_dir/config.json"
+          base_fmt="BF16"
+          sub="full"
+          if [ -f "$cfg_file" ]; then
+            dt=$(python3 -c "
+import json,sys
+c=json.load(open(sys.argv[1]))
+t=c.get('text_config') or {}
+d=str(c.get('torch_dtype') or c.get('dtype') or t.get('torch_dtype') or t.get('dtype') or '').lower()
+print('FP16' if d.startswith('float16') else 'BF16')
+" "$cfg_file" 2>/dev/null)
+            [ -n "$dt" ] && base_fmt="$dt"
+            nbits=$(python3 -c "
+import json,sys
+c=json.load(open(sys.argv[1]))
+q=c.get('quantization_config') or (c.get('text_config') or {}).get('quantization_config') or {}
+n=q.get('bits')
+if not n:
+    g=(q.get('config_groups') or {}).get('group_0') or {}
+    n=(g.get('weights') or {}).get('num_bits')
+print(n if n else '')
+" "$cfg_file" 2>/dev/null)
+            [ -n "$nbits" ] && sub="$nbits-bit"
+          fi
+          size=$(du -sm "$variant_dir" 2>/dev/null | cut -f1)
+          formats="$formats\${TAB}$base_fmt/$sub:$variant_dir:$size"
+        fi
         # Extract architecture metadata from config.json if present
         arch=""
         if [ -n "$formats" ]; then
@@ -6207,6 +6243,32 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
     data.templates.push(template);
     saveLaunchTemplates(data);
     res.json(template);
+  });
+
+  /**
+   * POST /templates/bulk-delete — Remove several launch templates in one call.
+   *
+   * Deleting one at a time through the single-id route means N round trips and N rewrites of
+   * launch-templates.json, and a failure halfway leaves the caller unsure what was removed. This
+   * resolves every id against the CURRENT file, applies the whole set in one write, and reports
+   * ids it could not find rather than failing the batch: a template already gone is the outcome
+   * the caller wanted, not an error worth aborting on.
+   */
+  router.post('/templates/bulk-delete', (req, res) => {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter((x) => typeof x === 'string' && x) : null;
+    if (!ids || ids.length === 0) return res.status(400).json({ error: 'ids must be a non-empty array' });
+
+    const data = loadLaunchTemplates();
+    const wanted = new Set(ids);
+    const before = data.templates.length;
+    const removed = data.templates.filter((t) => wanted.has(t.id)).map((t) => ({ id: t.id, name: t.name }));
+    data.templates = data.templates.filter((t) => !wanted.has(t.id));
+    const notFound = ids.filter((id) => !removed.some((r) => r.id === id));
+
+    if (removed.length > 0) saveLaunchTemplates(data);
+    console.log(`[templates] bulk-delete removed ${removed.length}/${ids.length} (${before} -> ${data.templates.length})`
+      + (notFound.length ? `; not found: ${notFound.join(', ')}` : ''));
+    res.json({ deleted: removed.length, removed, notFound, remaining: data.templates.length });
   });
 
   /** DELETE /templates/:id — Remove a launch template */

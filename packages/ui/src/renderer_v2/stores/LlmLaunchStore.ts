@@ -111,6 +111,10 @@ export class LlmLaunchStore {
   // saved launch templates
   savedTemplates: any[] = []
   loadedTemplateId: string | null = null
+  /** Ids ticked for bulk actions. Selection is deliberately NOT persisted: it is a transient
+   *  gesture, and a selection surviving a reload would make a later bulk delete act on rows the
+   *  operator can no longer see. */
+  selectedTemplateIds: string[] = []
 
   constructor() {
     makeAutoObservable(this)
@@ -271,6 +275,37 @@ export class LlmLaunchStore {
       runInAction(() => { if (this.loadedTemplateId === id) this.loadedTemplateId = null })
       await this.reloadTemplates()
     } catch (e: any) { runInAction(() => { this.launchErr = 'Delete failed: ' + (e?.message || e) }) }
+  }
+
+  isTemplateSelected(id: string): boolean { return this.selectedTemplateIds.includes(id) }
+
+  toggleTemplateSelected(id: string): void {
+    this.selectedTemplateIds = this.selectedTemplateIds.includes(id)
+      ? this.selectedTemplateIds.filter((x) => x !== id)
+      : [...this.selectedTemplateIds, id]
+  }
+
+  /** Select/clear exactly the rows currently visible, so a filtered view cannot select rows
+   *  the operator is not looking at. */
+  setTemplateSelection(ids: string[]): void { this.selectedTemplateIds = [...new Set(ids)] }
+  clearTemplateSelection(): void { this.selectedTemplateIds = [] }
+
+  async deleteSelectedTemplates(): Promise<number> {
+    const ids = [...this.selectedTemplateIds]
+    if (ids.length === 0) return 0
+    try {
+      const r: any = await bridge().request('POST', '/api/ai/templates/bulk-delete', { ids })
+      runInAction(() => {
+        if (this.loadedTemplateId && ids.includes(this.loadedTemplateId)) this.loadedTemplateId = null
+        this.selectedTemplateIds = []
+        this.launchMsg = `Deleted ${r?.deleted ?? ids.length} template${(r?.deleted ?? ids.length) === 1 ? '' : 's'}`
+      })
+      await this.reloadTemplates()
+      return r?.deleted ?? ids.length
+    } catch (e: any) {
+      runInAction(() => { this.launchErr = 'Bulk delete failed: ' + (e?.message || e) })
+      return 0
+    }
   }
 
   // ─── derived ───

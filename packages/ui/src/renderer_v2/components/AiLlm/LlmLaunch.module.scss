@@ -102,3 +102,12 @@
 .tplIcon { display: inline-flex; align-items: center; border: none; background: none; color: var(--fg-muted); cursor: pointer; padding: 3px; border-radius: 4px; &:hover { background: var(--control-bg); color: var(--fg); } }
 .tplIconDanger { display: inline-flex; align-items: center; border: none; background: none; color: var(--fg-muted); cursor: pointer; padding: 3px; border-radius: 4px; &:hover { background: color-mix(in srgb, var(--danger,#f87171) 18%, transparent); color: var(--danger,#f87171); } }
 .tplLoad { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--control-bg); color: var(--fg); cursor: pointer; &:hover { border-color: var(--accent); } }
+
+
+/* ── Saved-template bulk selection ───────────────────────────────────────── */
+.bulkBar { display: inline-flex; align-items: center; gap: 6px; margin-right: 10px; }
+.bulkCheck { display: inline-flex; align-items: center; cursor: pointer; }
+.tplCheck { flex: 0 0 auto; margin: 0 2px 0 0; cursor: pointer; }
+/* Selected rows are tinted rather than outlined, so the active-template highlight
+   (tplRowActive) stays readable on a row that is also selected. */
+.tplRowSelected { background: color-mix(in srgb, var(--accent, #5a9) 14%, transparent); }

@@ -1,6 +1,6 @@
 import React from 'react'
 import { observer } from 'mobx-react-lite'
-import { Rocket, Server, RefreshCw, Cpu, Pencil, Trash2, Check, Save, FilePlus, Upload } from 'lucide-react'
+import { Rocket, Server, RefreshCw, Cpu, Pencil, Trash2, Check, Save, FilePlus, Upload, X } from 'lucide-react'
 import { llmLaunchStore as store, type QuantRow } from '../../stores/LlmLaunchStore'
 import { confirmStore } from '../../stores/confirmStore'
 import { promptStore } from '../../stores/promptStore'
@@ -134,11 +134,48 @@ const TemplateList: React.FC = observer(() => {
   const providers = [...new Set(store.savedTemplates.map((t) => t.providerId).filter(Boolean))].sort()
   const toggle = (p: string) => setHidden((prev) => { const n = new Set(prev); n.has(p) ? n.delete(p) : n.add(p); return n })
   const visible = store.savedTemplates.filter((t) => !hidden.has(t.providerId))
+  // Bulk selection operates on the VISIBLE rows only. Select-all across hidden backends would
+  // delete templates the operator cannot see, which is the one outcome a bulk action must not have.
+  const visibleIds = visible.map((t) => t.id)
+  const selected = store.selectedTemplateIds.filter((id) => visibleIds.includes(id))
+  const allVisibleSelected = visibleIds.length > 0 && selected.length === visibleIds.length
+  const bulkDelete = async () => {
+    if (selected.length === 0) return
+    const names = visible.filter((t) => selected.includes(t.id)).map((t) => t.name)
+    const preview = names.slice(0, 8).map((n) => `  • ${n}`).join('\n')
+    const more = names.length > 8 ? `\n  …and ${names.length - 8} more` : ''
+    if (await confirmStore.confirm({
+      title: `Delete ${selected.length} template${selected.length === 1 ? '' : 's'}`,
+      message: `This cannot be undone.\n\n${preview}${more}`,
+      confirmText: `Delete ${selected.length}`,
+    })) await store.deleteSelectedTemplates()
+  }
   return (
     <section className={styles.card}>
       <div className={styles.cardHead}>
         Saved Templates <span className={styles.muted}>({visible.length}{hidden.size ? ` / ${store.savedTemplates.length}` : ''})</span>
         <span className={styles.spacer} />
+        {visibleIds.length > 0 && (
+          <span className={styles.bulkBar}>
+            <label className={styles.bulkCheck} title={allVisibleSelected ? 'Clear selection' : 'Select all visible templates'}>
+              <input
+                type="checkbox"
+                checked={allVisibleSelected}
+                ref={(el) => { if (el) el.indeterminate = selected.length > 0 && !allVisibleSelected }}
+                onChange={() => allVisibleSelected ? store.clearTemplateSelection() : store.setTemplateSelection(visibleIds)}
+              />
+            </label>
+            {selected.length > 0 && (
+              <>
+                <span className={styles.muted}>{selected.length} selected</span>
+                <button className={styles.tplIconDanger} title={`Delete ${selected.length} selected template(s)`} onClick={() => void bulkDelete()}>
+                  <Trash2 size={13} /> Delete
+                </button>
+                <button className={styles.tplIcon} title="Clear selection" onClick={() => store.clearTemplateSelection()}><X size={13} /></button>
+              </>
+            )}
+          </span>
+        )}
         <span className={styles.filterBadges}>
           {providers.map((p) => {
             const off = hidden.has(p)
@@ -156,7 +193,14 @@ const TemplateList: React.FC = observer(() => {
           const ctx = contextOf(t)
           const fam = [t.family, t.variant].filter(Boolean).join(' ')
           return (
-            <div key={t.id} className={`${styles.tplRow} ${loaded ? styles.tplRowActive : ''}`}>
+            <div key={t.id} className={`${styles.tplRow} ${loaded ? styles.tplRowActive : ''} ${store.isTemplateSelected(t.id) ? styles.tplRowSelected : ''}`}>
+              <input
+                type="checkbox"
+                className={styles.tplCheck}
+                checked={store.isTemplateSelected(t.id)}
+                title="Select for bulk actions"
+                onChange={() => store.toggleTemplateSelected(t.id)}
+              />
               {editId === t.id ? (
                 <input
                   className={styles.tplNameInput} autoFocus value={editName}
