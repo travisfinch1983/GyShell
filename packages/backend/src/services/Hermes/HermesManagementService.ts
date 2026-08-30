@@ -2600,14 +2600,49 @@ private static readonly LINTED_DOCS = [
   'memories/MEMORY.md',
 ]
 
+/** Text files worth scanning inside a skill — code included: the ask-claude
+ *  relay URL lived in a .py, not a doc. Size-capped so a stray blob cannot
+ *  stall the lint. */
+private static readonly SKILL_FILE_GLOBS =
+  `\\( -name '*.md' -o -name '*.py' -o -name '*.sh' -o -name '*.yaml' -o -name '*.yml' -o -name '*.json' -o -name '*.txt' \\) -size -200k`
+
 /**
- * Scan a profile's core docs for dead references. Reports; does NOT rewrite —
- * a generator that silently edits an agent's persona is worse than one that
- * complains. Never throws: a broken lint must not block agent creation.
+ * Scan a profile's core docs AND its skills — plus the global skills root —
+ * for dead references. Reports; does NOT rewrite — a generator that silently
+ * edits an agent's persona is worse than one that complains. Never throws: a
+ * broken lint must not block agent creation.
+ *
+ * 🛑 WHY SKILLS: the ask-claude skill sat installed in SEVEN places carrying
+ * the dead relay endpoint 10.0.0.161:6277 — a documented escalation procedure
+ * that silently discarded everything sent through it — while this very token
+ * list named ask-claude, claude-relay AND that exact IP:port. The list was
+ * right; the scan surface was too narrow: docs only, never skills/**, and
+ * Hermes auto-discovers skills/custom regardless of registration, so an
+ * unscanned skill is LIVE (claude1, 2026-08-30).
+ *
+ * 🛑 WHY scannedRoots IS RETURNED: "no findings" and "did not look there" must
+ * be different answers — the docs-only scan reported clean for weeks while the
+ * thing it was written to catch sat one directory over. The surface walked is
+ * part of the result, not an implementation detail. That is the same gap one
+ * level up from the one it hid.
  */
-async lintProfileDocs(agentId: string): Promise<Array<{ file: string; line: number; token: string; text: string }>> {
+async lintProfileDocs(agentId: string): Promise<{
+  findings: Array<{ file: string; line: number; token: string; text: string }>
+  scannedRoots: string[]
+}> {
   const findings: Array<{ file: string; line: number; token: string; text: string }> = []
+  const scannedRoots: string[] = []
   const home = this.profileHome(agentId)
+
+  const scanBody = (fileLabel: string, body: string): void => {
+    body.split('\n').forEach((text, i) => {
+      if (HermesManagementService.DOC_NEGATION_CONTEXT.test(text)) return
+      for (const [token, re] of HermesManagementService.FORBIDDEN_DOC_TOKENS) {
+        if (re.test(text)) findings.push({ file: fileLabel, line: i + 1, token, text: text.trim().slice(0, 180) })
+      }
+    })
+  }
+
   for (const rel of HermesManagementService.LINTED_DOCS) {
     let body = ''
     try {
@@ -2616,14 +2651,46 @@ async lintProfileDocs(agentId: string): Promise<Array<{ file: string; line: numb
       continue
     }
     if (!body.trim()) continue
-    body.split('\n').forEach((text, i) => {
-      if (HermesManagementService.DOC_NEGATION_CONTEXT.test(text)) return
-      for (const [token, re] of HermesManagementService.FORBIDDEN_DOC_TOKENS) {
-        if (re.test(text)) findings.push({ file: rel, line: i + 1, token, text: text.trim().slice(0, 180) })
-      }
-    })
+    scanBody(rel, body)
   }
-  return findings
+  scannedRoots.push(`core docs (${HermesManagementService.LINTED_DOCS.length} files under ${home})`)
+
+  // Skills: the profile's own tree, plus the global root every profile can
+  // load from. One ssh round-trip per root: find the text files, dump each
+  // behind a marker line, split locally.
+  const globalSkills = `${this.profileHomeBase.replace(/\/profiles\/?$/, '')}/skills`
+  const skillRoots: Array<{ label: string; path: string }> = [
+    { label: `skills (${home}/skills)`, path: `${home}/skills` },
+    { label: `GLOBAL skills (${globalSkills})`, path: globalSkills },
+  ]
+  for (const root of skillRoots) {
+    try {
+      const present = (await this.ssh(`test -d ${shq(root.path)} && echo yes || echo no`)).trim() === 'yes'
+      if (!present) {
+        scannedRoots.push(`${root.label} — ABSENT, nothing to scan`)
+        continue
+      }
+      const dump = await this.ssh(
+        `find ${shq(root.path)} -type f ${HermesManagementService.SKILL_FILE_GLOBS} 2>/dev/null | head -300 | ` +
+          `while IFS= read -r f; do printf '===FILE===%s\\n' "$f"; cat "$f" 2>/dev/null; done`,
+      )
+      let fileCount = 0
+      for (const chunk of dump.split('===FILE===').slice(1)) {
+        const nl = chunk.indexOf('\n')
+        if (nl < 0) continue
+        fileCount++
+        const abs = chunk.slice(0, nl).trim()
+        const label = abs.startsWith(root.path) ? abs.slice(root.path.length + 1) : abs
+        scanBody(`${root.path === globalSkills ? 'GLOBAL:' : 'skills/'}${label}`, chunk.slice(nl + 1))
+      }
+      scannedRoots.push(`${root.label} — ${fileCount} file(s) scanned`)
+    } catch (e) {
+      // A root that could not be walked is stated, never silently skipped —
+      // silently narrowing the surface is how this class survived before.
+      scannedRoots.push(`${root.label} — SCAN FAILED (${String((e as Error)?.message ?? e).slice(0, 120)})`)
+    }
+  }
+  return { findings, scannedRoots }
 }
 
   async applySpec(spec: HermesAgentSpec): Promise<{
@@ -2773,7 +2840,11 @@ async lintProfileDocs(agentId: string): Promise<Array<{ file: string; line: numb
     // that quietly edits someone's persona, would be worse than the bug.
     let docIssues: Array<{ file: string; line: number; token: string; text: string }> = []
     try {
-      docIssues = await this.lintProfileDocs(id)
+      const lint = await this.lintProfileDocs(id)
+      docIssues = lint.findings
+      // The surface is part of the result: "clean" only means anything next to
+      // WHAT was looked at (a root that is absent or unreadable says so here).
+      console.log(`[hermes] doc-lint surface for ${id}: ${lint.scannedRoots.join(' · ')}`)
       if (docIssues.length) {
         console.warn(
           `[hermes] DOC-LINT: ${docIssues.length} dead reference(s) in ${id}'s core docs — ` +
