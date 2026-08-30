@@ -7,7 +7,7 @@ import { PROVIDER_SERVICE_CAPS } from '@gyshell/shared'
 // @ts-expect-error — proxy capability resolver ships as untyped JS (same pattern as the other proxy/*.js imports)
 import { resolveModelCapabilities } from '../Cluster/proxy/model-capabilities.js'
 import { clusterSettingsService } from '../Cluster/ClusterSettingsService'
-import { loadToolRegistry, resolveSelection, unknownToolsError, readToolGroup, writeToolGroup } from '../mcp/toolGroups.js'
+import { loadToolRegistry, resolveSelection, unknownToolsError, readToolGroup, readToolGroupStatus, writeToolGroup } from '../mcp/toolGroups.js'
 import { nonGatewayExecutableNativeTools } from '../Agent/nativeToolsHttp.js'
 
 const execFileAsync = promisify(execFile)
@@ -177,6 +177,8 @@ function atomicWriteJson(path: string, data: unknown, opts?: { keepPrev?: boolea
 
 export class HermesManagementService {
   private readonly user: string
+  /** Vision-skip notifications already sent this process (one per agent, not per apply). */
+  private readonly warnedVisionSkip = new Set<string>()
   private readonly hermesBin: string
   private readonly profileHomeBase: string
   /** Cache of Hermes' live _all_aux_tasks() list — the expensive ssh+python pull. Keyed by the
@@ -752,7 +754,24 @@ export class HermesManagementService {
     }
     if (key === 'vision') {
       const model = this.getSpec(agentId)?.model
-      if (model) await this.applyVisionConfig(agentId, model)
+      if (model) {
+        await this.applyVisionConfig(agentId, model)
+      } else {
+        // No persisted spec (agents created directly in Hermes exist — that is
+        // why reconstructSpec does). Skipping is correct; skipping SILENTLY
+        // while setSupportModels counts the agent in agentsUpdated is the
+        // "20 ok, 0 failed" family: the apply reports success for an agent it
+        // never touched. Say it once per agent per process.
+        console.warn(`[support-roles] ${agentId}: vision role NOT applied — no persisted spec, model unknown`)
+        if (!this.warnedVisionSkip.has(agentId)) {
+          this.warnedVisionSkip.add(agentId)
+          this.cfg.notify?.({
+            severity: 'warning', source: 'support-roles',
+            message: `Vision role not applied to agent '${agentId}'`,
+            detail: `The agent has no persisted AI-Lab spec, so its main model is unknown and the vision describer cannot be routed. The apply run still counts it as updated. Edit the agent once in AI-Lab (persisting a spec) to fix.`,
+          })
+        }
+      }
       return
     }
     if (role?.model) {
@@ -1479,6 +1498,11 @@ export class HermesManagementService {
         // 409/400 = already registered; that is success for our purposes.
         if (!res.ok && res.status !== 409 && res.status !== 400) {
           console.warn(`[agent-provision] ${agentId}: could not register ${memSrv} (HTTP ${res.status}) — MEMORY TOOLS WILL BE OMITTED rather than pointed at the shared namespace`)
+          this.cfg.notify?.({
+            severity: 'error', source: 'agent-provision',
+            message: `Agent '${agentId}' was created without memory tools`,
+            detail: `Registering ${memSrv} at the gateway failed (HTTP ${res.status}). The agent works otherwise, which is exactly why nobody would notice. Omission is deliberate — pointing it at the shared namespace would be worse. Re-save the agent or run provision_all.py to retry.`,
+          })
           return
         }
       }
@@ -1495,7 +1519,16 @@ export class HermesManagementService {
       for (const ts of toolsets) {
         const srv = `${ts}-${agentId}`
         authoringServers.push(srv)
-        if (current.some((t) => t.startsWith(`${srv}__`)) || registered.has(srv)) continue
+        if (current.some((t) => t.startsWith(`${srv}__`)) || registered.has(srv)) {
+          // Already registered — but MCPJungle caches tool schemas AT
+          // REGISTRATION, so if this server's toolset changed since, the agent
+          // keeps seeing the stale schema until provision_all.py --force
+          // re-registers it. This path deliberately does NOT force (an edit
+          // must not churn every server); it now at least leaves a trace so a
+          // "tools didn't update" hunt starts here instead of nowhere.
+          console.log(`[agent-provision] ${agentId}: ${srv} already registered — schema NOT refreshed (provision_all.py force-refreshes)`)
+          continue
+        }
         const res = await fetch(`${gw}/api/v0/servers`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1565,14 +1598,12 @@ export class HermesManagementService {
       `for n in composite hippocampai; do mkdir -p ${shq(home)}/plugins/"$n" && ` +
         `cp -f ${shq(tmpl)}/"$n"/__init__.py ${shq(home)}/plugins/"$n"/__init__.py 2>/dev/null || true; done`,
     )
-    // 1b. Fleet skill: ask-claude — lets the agent report bugs / permission issues / blockers
-    // to claude1 (the maintainer) over the fleet bus. Copied from the `default` profile so every
-    // new agent gets the escalation channel by default.
-    const skillSrc = `${this.profileHomeBase}/${HermesManagementService.MEMORY_TEMPLATE_PROFILE}/skills/custom/ask-claude`
-    await this.ssh(
-      `test -d ${shq(skillSrc)} && mkdir -p ${shq(home)}/skills/custom && ` +
-        `cp -rf ${shq(skillSrc)} ${shq(home)}/skills/custom/ 2>/dev/null || true`,
-    )
+    // (ask-claude provisioning REMOVED, 2026-08-30. The skill was deleted —
+    // escalation is fleet_send — and this very file lists the token in
+    // FORBIDDEN_DOC_TOKENS. The block survived as `test -d … || true`: a pure
+    // silent no-op provisioning a channel the codebase declares gone, and by
+    // construction its failure could never be logged. Config must not name
+    // things that do not exist.)
     // 2. memory.provider = composite (dedupe shadowing provider keys; add a memory block if absent).
     const script = [
       'import sys',
@@ -1824,8 +1855,23 @@ export class HermesManagementService {
 
     // Snapshot the previous membership to disk first. Recovering Wren's group was only possible
     // because Hermes happens to log its registration line — luck, not design. This fixes that.
-    const previous = await readToolGroup(gw, group)
-    if (previous && previous.length) this.backupToolGroup(agentId, previous)
+    const prevStatus = await readToolGroupStatus(gw, group)
+    const previous = prevStatus.tools
+    if (previous && previous.length) {
+      this.backupToolGroup(agentId, previous)
+    } else if (previous === null && !prevStatus.missing) {
+      // The READ failed (gateway blip) — distinct from 404/"no group yet",
+      // which is the normal first-sync path and must not alarm. A flaky
+      // gateway is exactly when the pre-write snapshot matters most.
+      // Proceeding is still right (refusing would make a blip block every tool
+      // edit), but the skipped snapshot must not be silent.
+      console.warn(`[hermes-tools] ${group}: could not read previous membership — writing WITHOUT a backup snapshot`)
+      this.cfg.notify?.({
+        severity: 'warning', source: 'hermes-tools',
+        message: `Tool group for '${agentId}' was rewritten without a backup`,
+        detail: `Reading the previous membership from the gateway failed, so this write has no pre-image on disk. If the new set is wrong, recovery needs the previous backup generation instead. The safety net exists because of the 2026-07-25 Wren tool loss; when it cannot engage, it says so.`,
+      })
+    }
 
     await writeToolGroup(gw, group, `AI-Lab tool set for ${agentId}`, included)
 
@@ -2048,6 +2094,20 @@ export class HermesManagementService {
     const src = `${this.profileHomeBase}/default/workspace`
     const dst = `${this.profileHome(agentId)}/workspace`
     await this.ssh(`mkdir -p ${shq(dst)} && cp -Pn ${shq(src)}/*.md ${shq(dst)}/ 2>/dev/null || true`)
+    // `cp -Pn || true` is the right resilience and the perfect hiding place: if
+    // the template path moves, every new agent gets an EMPTY workspace, the
+    // doc-lint reads empty files and finds nothing, and applySpec still returns
+    // created:true — two safety nets both passing on a broken agent. So count
+    // what actually landed rather than trusting the copy.
+    const count = Number((await this.ssh(`ls ${shq(dst)}/*.md 2>/dev/null | wc -l`)).trim() || '0')
+    if (count === 0) {
+      console.warn(`[agent-provision] ${agentId}: workspace is EMPTY after template copy — template at ${src} missing or empty`)
+      this.cfg.notify?.({
+        severity: 'warning', source: 'agent-provision',
+        message: `Agent '${agentId}' was created with an empty workspace`,
+        detail: `Template copy from ${src} produced zero .md files. The agent boots with no SOUL/AGENTS docs, and the doc-lint cannot catch it (it reads empty files and finds nothing). Check that the default profile's workspace still exists at that path.`,
+      })
+    }
   }
 
   /** Copy a doc from the `default` template store into an agent's workspace (the per-agent
@@ -2859,6 +2919,16 @@ async lintProfileDocs(agentId: string): Promise<Array<{ file: string; line: numb
       console.error(
         `[hermes-mgmt] OpenViking key provisioning FAILED for ${agentId}: ${String((e as Error)?.message ?? e)}`,
       )
+      // console.error reaches journald; the CALLER sees created:true and the
+      // route answers ok:true, so without this the agent runs with no
+      // OpenViking key and nobody holding the UI knows. Error severity: the
+      // refusal to fall back to an inherited key is correct, but it means
+      // memory capture for this agent is OFF until someone re-runs the apply.
+      this.cfg.notify?.({
+        severity: 'error', source: 'agent-provision',
+        message: `Agent '${agentId}' has no OpenViking memory key`,
+        detail: `Key provisioning failed (${String((e as Error)?.message ?? e).slice(0, 300)}). The agent was still created/updated and everything else works, but OpenViking capture is dark for it. Deliberately NOT falling back to an inherited key — that writes into another agent's namespace. Re-save the agent to retry.`,
+      })
     }
   }
 

@@ -94,13 +94,27 @@ export async function writeToolGroup(
 
 /** Read a group's current membership, or null if it does not exist. */
 export async function readToolGroup(gatewayBase: string, group: string, timeoutMs = 8000): Promise<string[] | null> {
+  return (await readToolGroupStatus(gatewayBase, group, timeoutMs)).tools
+}
+
+/**
+ * Like readToolGroup, but keeps "the group does not exist" (404 — normal on an
+ * agent's very first sync) distinguishable from "the read FAILED" (gateway
+ * down/blip). Collapsing both to null made the pre-write backup skip silently
+ * on exactly the flaky-gateway case it exists for, while any fix that emitted
+ * on bare null would have alarmed on every first-time agent instead.
+ */
+export async function readToolGroupStatus(
+  gatewayBase: string, group: string, timeoutMs = 8000,
+): Promise<{ tools: string[] | null; missing: boolean }> {
   const gw = gatewayBase.replace(/\/+$/, '')
   try {
     const r = await fetch(`${gw}/api/v0/tool-groups/${group}`, { signal: AbortSignal.timeout(timeoutMs) })
-    if (!r.ok) return null
-    return ((await r.json()) as { included_tools?: string[] })?.included_tools ?? null
+    if (r.status === 404) return { tools: null, missing: true }
+    if (!r.ok) return { tools: null, missing: false }
+    return { tools: ((await r.json()) as { included_tools?: string[] })?.included_tools ?? null, missing: false }
   } catch {
-    return null
+    return { tools: null, missing: false }
   }
 }
 

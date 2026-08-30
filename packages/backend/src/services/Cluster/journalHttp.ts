@@ -152,6 +152,21 @@ export function createJournalRouter(dataDir: string, notify?: NotifyFn): express
   const stamp = (): string => new Date().toISOString()
 
   /**
+   * reportIds the report store does not hold. The gaps endpoint protects the
+   * READER direction (reports no entry cites); this protects the WRITER: an
+   * entry could cite a report that does not exist and nothing would ever say
+   * so — the citation renders as a chip that 404s when clicked, and the
+   * "cited in journal" backlink simply never appears (maintenance-claude,
+   * 2026-08-30, after catching a fixture id presented as live state). A
+   * WARNING, not a refusal: filing the entry before the report is a
+   * legitimate order of operations.
+   */
+  const unknownReports = (ids: string[] | undefined): string[] => {
+    if (!ids?.length) return []
+    return ids.filter((rid) => !existsSync(path.join(dataDir, 'reports', rid, 'meta.json')))
+  }
+
+  /**
    * Vectorise, never blocking the write. An entry that saved but did not index
    * is a working entry with degraded search; a write refused because the
    * indexer was down would lose the operator's work — and the journal exists
@@ -291,7 +306,8 @@ export function createJournalRouter(dataDir: string, notify?: NotifyFn): express
       entries.push(entry)
       save(entries)
       const idx = await index(entry)
-      res.json({ ok: true, id: entry.id, priorSimilar, perKey, matchedBy, keyed: entry.keys.length > 0, ...idx })
+      const unknownReportIds = unknownReports(entry.reportIds)
+      res.json({ ok: true, id: entry.id, priorSimilar, perKey, matchedBy, keyed: entry.keys.length > 0, ...idx, ...(unknownReportIds.length ? { unknownReportIds } : {}) })
     } catch (e) { fail(res, 500, String((e as Error).message)) }
   })
 
@@ -314,7 +330,8 @@ export function createJournalRouter(dataDir: string, notify?: NotifyFn): express
       save(entries)
       // Re-index: doc_id is the entry id, so this replaces rather than duplicates.
       const idx = await index(entry)
-      res.json({ ok: true, id: entry.id, status: entry.status, ...idx })
+      const unknownReportIds = unknownReports(entry.reportIds)
+      res.json({ ok: true, id: entry.id, status: entry.status, ...idx, ...(unknownReportIds.length ? { unknownReportIds } : {}) })
     } catch (e) { fail(res, 500, String((e as Error).message)) }
   })
 
@@ -344,7 +361,8 @@ export function createJournalRouter(dataDir: string, notify?: NotifyFn): express
       entry.updatedAt = stamp()
       save(entries)
       const idx = await index(entry)
-      res.json({ ok: true, id: entry.id, revisions: entry.revisions.length, ...idx })
+      const unknownReportIds = unknownReports(entry.reportIds)
+      res.json({ ok: true, id: entry.id, revisions: entry.revisions.length, ...idx, ...(unknownReportIds.length ? { unknownReportIds } : {}) })
     } catch (e) { fail(res, 500, String((e as Error).message)) }
   })
 

@@ -14,7 +14,7 @@
  * assessment of his tests, 2026-08-30). A suite that only proves things match
  * cannot tell you whether matching means anything.
  */
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import http from 'node:http'
@@ -301,6 +301,33 @@ async function main(): Promise<void> {
   console.log('\n[gaps]')
   r = await call('GET', '/api/journal/gaps')
   assert(r.status === 200 && Array.isArray(r.json.unlogged), 'unlogged reports are detectable, not merely searchable')
+
+  // ── DANGLING CITATIONS (the writer-side mirror of the reader's banner) ────
+  // The gaps endpoint checks reports-no-entry-cites; this checks the inverse:
+  // an entry citing a report the store does not hold. Found the honest way —
+  // a fixture id was presented as a live route, and nothing in the authoring
+  // path could have said otherwise (maintenance-claude + claude1, 2026-08-30).
+  // A WARNING, never a refusal: filing the entry first is a legitimate order.
+  console.log('\n[dangling citations]')
+  r = await call('POST', '/api/journal', {
+    issue: 'cites a report that does not exist', reportIds: ['no-such-report'], author: 'spec',
+  })
+  assert(r.status === 200 && r.json.ok, 'citing an unknown report still files the entry (warning, not refusal)')
+  assert(Array.isArray(r.json.unknownReportIds) && r.json.unknownReportIds.includes('no-such-report'),
+    'and the response NAMES the id that resolves to nothing — the writer is told at authoring time')
+
+  mkdirSync(join(dataDir, 'reports', 'real-report'), { recursive: true })
+  writeFileSync(join(dataDir, 'reports', 'real-report', 'meta.json'), JSON.stringify({ id: 'real-report' }))
+  r = await call('POST', '/api/journal', {
+    issue: 'cites a real report', reportIds: ['real-report'], author: 'spec',
+  })
+  assert(r.json.unknownReportIds === undefined, 'a citation that resolves is NOT flagged — no crying wolf')
+
+  r = await call('POST', '/api/journal', {
+    issue: 'one real, one dangling', reportIds: ['real-report', 'gone-report'], author: 'spec',
+  })
+  assert(r.json.unknownReportIds?.length === 1 && r.json.unknownReportIds[0] === 'gone-report',
+    'mixed citations flag ONLY the dangling one')
 
   console.log(`\n${passed} assertions passed`)
   server.close()

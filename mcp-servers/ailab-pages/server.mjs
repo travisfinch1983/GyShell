@@ -185,13 +185,16 @@ function addJournalTools(mcp, author) {
     },
     async ({ issue, key, notes, status, report_ids, links }) => {
       const r = await api('POST', '/api/journal', { issue, key, notes, status, reportIds: report_ids, links, author })
+      const dangling = r.unknownReportIds?.length
+        ? `\n⚠ report id(s) not found in the report store: ${r.unknownReportIds.join(', ')} — fine if you are about to file them; otherwise the citation points at nothing.`
+        : ''
       if (r.priorSimilar) {
         const per = Object.entries(r.perKey ?? {}).filter(([, n]) => n > 0)
           .map(([k, n]) => `${k} ×${n}`).join(', ')
         return text(`logged ${r.id} (author: ${author}).\n` +
           `⚠ SEEN BEFORE: ${r.priorSimilar} prior entr${r.priorSimilar === 1 ? 'y' : 'ies'}` +
           `${per ? ` — ${per}` : ''} (matched by ${r.matchedBy}).\n` +
-          `${r.keyed ? 'Look at those before treating this as new.' : 'This count came from TEXT matching and may be wrong in either direction — pass a source:subject key for a reliable one.'}`)
+          `${r.keyed ? 'Look at those before treating this as new.' : 'This count came from TEXT matching and may be wrong in either direction — pass a source:subject key for a reliable one.'}${dangling}`)
       }
       const repeat = r.priorSimilar > 0
         ? `\n⚠ You have logged this same issue ${r.priorSimilar} time(s) before. A recurring problem is itself a finding — check what you did last time before repeating it.`
