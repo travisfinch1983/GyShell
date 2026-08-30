@@ -556,6 +556,9 @@ const SupportModelSection: React.FC<{
         {!task.shared && !task.external && (
           <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: 'rgba(120,130,255,.18)', color: '#9aa6ff', letterSpacing: '.04em' }}>HERMES</span>
         )}
+        {task.proxyLevel && (
+          <span title="Read by the AI-Lab proxy itself, not by Hermes and not by a container. Never written into an agent's config." style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: 'rgba(150,140,255,.18)', color: '#a99cff', letterSpacing: '.04em' }}>PROXY</span>
+        )}
         {task.providerDefault && (
           <span title="Sets providers.ailab.default_model — the model used when a call selects the AI-Lab provider without naming one. An agent with its own model is unaffected." style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: 'rgba(90,200,160,.18)', color: '#5ac8a0', letterSpacing: '.04em' }}>FALLBACK</span>
         )}
@@ -580,6 +583,7 @@ const SupportModelSection: React.FC<{
           <select value={model} onChange={(e) => saveModel(e.target.value)} className="tts-select" disabled={saving === 'model'}>
             <option value="">{task.external ? 'Auto — NOT SUPPORTED by this consumer'
               : task.providerDefault ? 'None — leave the provider without a default'
+              : task.proxyLevel ? 'None — an unreachable model returns 503 instead of falling back'
               : 'Auto — agent’s own main model'}</option>
             {options.map((id) => <option key={id} value={id}>{id}</option>)}
           </select>

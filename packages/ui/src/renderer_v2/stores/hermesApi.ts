@@ -46,6 +46,8 @@ export interface AuxTask {
   perAgent?: Record<string, string>
   /** Sets `providers.ailab.default_model` rather than an `auxiliary.<key>` role. */
   providerDefault?: boolean
+  /** Consumed by the AI-Lab proxy itself; never written to an agent. */
+  proxyLevel?: boolean
   /** perAgent split into what it MEANS, computed backend-side so template profiles (which are
    *  never applied to) are labelled rather than looking like drift. */
   breakdown?: {

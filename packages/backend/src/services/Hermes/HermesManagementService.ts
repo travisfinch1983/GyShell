@@ -70,6 +70,11 @@ export const CAPABILITY_MANAGED_ROLES = new Set<string>(['vision'])
  *  naming a model. It was previously editable only by hand in config.yaml on the host, across the
  *  global file and every profile, which meant it silently kept naming a retired model. */
 export const PROVIDER_DEFAULT_ROLES = new Set<string>(['default_model'])
+
+/** Roles consumed by the AI-Lab PROXY itself, not by Hermes and not by a container. They are
+ *  stored in the support-models file (the proxy reads it directly) and must never be written
+ *  into an agent's `auxiliary.<key>` — there is no such aux task. */
+export const PROXY_LEVEL_ROLES = new Set<string>(['fallback_model'])
 /** The config path a provider-default role writes. */
 const PROVIDER_DEFAULT_PATH = 'providers.ailab.default_model'
 
@@ -93,12 +98,14 @@ const AUX_TASK_SUPPLEMENT: Array<{ key: string; label: string; description: stri
   { key: 'goal_judge', label: 'Goal Judge', description: 'Judges progress in the /goal tracking loop.' },
   { key: 'session_search', label: 'Session Search', description: 'Searches and ranks your past sessions.' },
   { key: 'monitor', label: 'Monitor', description: 'Classifies items for cron monitors and alerts.' },
+  { key: 'fallback_model', label: 'Backup Model (proxy fallback)', description: 'Used by the AI-Lab proxy when an assigned model is NOT reachable — offline, unloaded, or taken down for testing. Pick something always-available (a cheap API model) and background work keeps running instead of failing. The substitution is never silent: it is logged and the response carries X-AILab-Fallback-From/To. A named model is only ever replaced by THIS model, never by an arbitrary one.' },
   { key: 'default_model', label: 'Default Model (AI-Lab provider)', description: 'Fallback model for the AI-Lab provider — used when a call selects the provider without naming a model. Written to providers.ailab.default_model in the global config and every agent profile. Not a Hermes aux task; an agent with its own model is unaffected.' },
   { key: 'memory_extraction', label: 'Memory Extraction (HippocampAI)', description: 'EXTERNAL consumer: HippocampAI distills durable memories and runs conflict checks; reads this as LLM_MODEL. Not a Hermes aux role — needs a concrete model, never Auto.' },
   { key: 'memory_vlm', label: 'Memory VLM (OpenViking)', description: 'EXTERNAL consumer: OpenViking vision-language model (vlm.model). Not a Hermes aux role — needs a concrete model, never Auto.' },
 ]
 /** AI-Lab-authored per-role defaults. Precedence: user override (stored) > this default > Hermes short desc. */
 const AUX_ROLE_DEFAULTS: Record<string, { description?: string; recommendation?: string }> = {
+  fallback_model: { recommendation: 'A cheap, always-online API model \u2014 it stands in for ANY unreachable model, so favour availability and price over quality. Leave unset to keep the old behaviour: an unreachable model returns 503 rather than being substituted.' },
   default_model: { recommendation: 'A general-purpose model you are happy to have answer anything that does not name a model explicitly. This is a FALLBACK, not the agents\u2019 model \u2014 each agent\u2019s own selection still wins.' },
   vision: { recommendation: 'Vision-capable model (or a strong describer). Context \u2265 32k. Only used by text-only agents that need images described.' },
   compression: { recommendation: 'Strong summarizer; long context ideal (\u2265 128k) since it reads large transcripts. A fast, always-warm local model works well.' },
@@ -260,7 +267,7 @@ export class HermesManagementService {
       b.autos.sort()
       return b
     }
-    const rows: Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean; external: boolean; capabilityManaged: boolean; providerDefault: boolean; current: string; drift: boolean; perAgent: Record<string, string>; breakdown: Breakdown }> = []
+    const rows: Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean; external: boolean; capabilityManaged: boolean; providerDefault: boolean; proxyLevel: boolean; current: string; drift: boolean; perAgent: Record<string, string>; breakdown: Breakdown }> = []
     const add = (key: string, label: string, hermesDesc: string) => {
       if (seen.has(key)) return
       seen.add(key)
@@ -268,8 +275,8 @@ export class HermesManagementService {
       const s = stored[key] || {}
       const external = EXTERNAL_SUPPORT_ROLES.has(key)
       const capabilityManaged = CAPABILITY_MANAGED_ROLES.has(key)
-      // External roles have no per-agent Hermes config; the stored overlay IS their truth.
-      const live = external
+      // External and proxy-level roles have no per-agent Hermes config; the overlay IS their truth.
+      const live = (external || PROXY_LEVEL_ROLES.has(key))
         ? { current: s.model || '', drift: false, perAgent: {} as Record<string, string> }
         : liveFor(key)
       rows.push({
@@ -280,6 +287,7 @@ export class HermesManagementService {
         external,
         capabilityManaged,
         providerDefault: PROVIDER_DEFAULT_ROLES.has(key),
+        proxyLevel: PROXY_LEVEL_ROLES.has(key),
         current: live.current,
         // Capability-managed roles are SUPPOSED to differ per agent — not drift.
         drift: capabilityManaged ? false : live.drift,
@@ -395,6 +403,9 @@ export class HermesManagementService {
     // them into auxiliary.<key> would invent a phantom role on every agent. The stored
     // support-models file is their only channel.
     if (EXTERNAL_SUPPORT_ROLES.has(key)) return
+    // Proxy-level roles are read straight from the support-models file by the proxy. Writing
+    // auxiliary.fallback_model onto 20 agents would invent a Hermes task that does not exist.
+    if (PROXY_LEVEL_ROLES.has(key)) return
     // Provider-default roles write the PROVIDER's fallback, not an aux task. Clearing it is a
     // real choice (fall back to whatever Hermes' own default is), so an empty value unsets.
     if (PROVIDER_DEFAULT_ROLES.has(key)) {

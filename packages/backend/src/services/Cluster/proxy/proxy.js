@@ -1327,6 +1327,53 @@ function proxyBuffered(req, res, targetHost, targetPort, targetPath, body, captu
  * Find a service by type, checking managed services first, then external.
  * Returns { host, port } for both types.
  */
+
+// ─── Configured backup model ─────────────────────────────────────────────────────────────────
+// The rule this proxy has always enforced is "never reroute a NAMED model to an ARBITRARY one" —
+// silently answering from a different model is worse than an error, because the caller cannot
+// tell. That rule is kept. What changes is that an operator can now name ONE explicit backup, so
+// taking the local LLM services down for testing degrades to a cheap API model instead of
+// breaking every background job. The 503 below already told operators to "assign an online
+// fallback model"; this is the setting that sentence assumed.
+//
+// Deliberately visible, never silent: every substitution logs and sets response headers naming
+// both models, so a run that used the backup can be identified after the fact.
+const SUPPORT_MODELS_FILE = process.env.AILAB_SUPPORT_MODELS
+  || '/opt/ai-lab/.gybackend-data/hermes-support-models.json';
+let _fallbackCache = { model: '', ts: 0 };
+function configuredFallbackModel() {
+  const now = Date.now();
+  if (now - _fallbackCache.ts < 5000) return _fallbackCache.model;
+  let model = '';
+  try {
+    const raw = JSON.parse(readFileSync(SUPPORT_MODELS_FILE, 'utf-8'));
+    model = String(raw?.fallback_model?.model || '').trim();
+  } catch { /* absent or unreadable → no backup configured, which is a valid state */ }
+  _fallbackCache = { model, ts: now };
+  return model;
+}
+
+/** Resolve the configured backup to something reachable, or null. Never returns the model that
+ *  was just found unreachable (that would loop), and never guesses at a substitute. */
+function resolveFallbackTarget(cache, requestedModel) {
+  const fb = configuredFallbackModel();
+  if (!fb || fb === requestedModel) return null;
+  const ext = cache?.externalByModel && cache.externalByModel.get(fb);
+  if (ext) return { kind: 'external', model: fb, ext };
+  const svc = cache?.byModel && cache.byModel.get(fb);
+  if (svc) return { kind: 'local', model: fb, svc };
+  console.warn(`[proxy] backup model '${fb}' is itself unreachable — '${requestedModel}' will error`);
+  return null;
+}
+
+function markFallback(res, from, to) {
+  try {
+    res.setHeader('X-AILab-Fallback-From', from);
+    res.setHeader('X-AILab-Fallback-To', to);
+  } catch { /* headers already sent — the log line below is the durable record */ }
+  console.warn(`[proxy] '${from}' unreachable → serving from configured backup '${to}'`);
+}
+
 function findServiceOrExternal(type) {
   const managed = findServicesByType(type);
   if (managed.length) return { svc: managed[0], isExternal: false };
@@ -1370,11 +1417,29 @@ async function handleModelRouting(req, res, path) {
     svc = services[0];
   }
 
+  // A named model is unreachable. Before erroring, use the operator's explicitly configured
+  // backup if there is one — an intentional substitution, not a guess at a replacement.
+  if (!svc && modelId) {
+    const cache = await refreshModelCache();
+    const fb = resolveFallbackTarget(cache, modelId);
+    if (fb) {
+      markFallback(res, modelId, fb.model);
+      let parsed = null;
+      try { parsed = JSON.parse(body.toString()); } catch {}
+      if (parsed) {
+        parsed.model = fb.kind === 'external' ? fb.ext.upstreamModel : fb.model.replace(/@\d+$/, '');
+        if (fb.kind === 'external') return forwardToExternalSource(res, fb.ext.source, fb.ext.upstreamModel, parsed);
+        const fbPort = await getForwardPort(fb.svc);
+        return proxyBuffered(req, res, fb.svc.containerIp, fbPort, path, Buffer.from(JSON.stringify(parsed)));
+      }
+    }
+  }
+
   if (!svc) {
     if (modelId) {
       return res.status(503).json({
         error: `Assigned model '${modelId}' is not reachable — it is offline or not loaded, and no reachable fallback is available.`,
-        hint: 'Launch the assigned model, or assign an online fallback model. The agent was NOT silently rerouted to another model.',
+        hint: 'Launch the assigned model, or set a Backup Model in Settings \u2192 Support Models. The agent was NOT silently rerouted to another model.',
         requestedModel: modelId,
       });
     }
@@ -1434,11 +1499,25 @@ async function handleChatWithTools(req, res) {
     const services = findServicesByType("llm");
     svc = services[0];
   }
+  if (!svc && parsed.model) {
+    const cache2 = await refreshModelCache();
+    const fb = resolveFallbackTarget(cache2, parsed.model);
+    if (fb) {
+      markFallback(res, parsed.model, fb.model);
+      if (fb.kind === 'external') {
+        parsed.model = fb.ext.upstreamModel;
+        return forwardToExternalSource(res, fb.ext.source, fb.ext.upstreamModel, parsed);
+      }
+      parsed.model = fb.model.replace(/@\d+$/, '');
+      svc = fb.svc;
+    }
+  }
+
   if (!svc) {
     if (parsed.model) {
       return res.status(503).json({
         error: `Assigned model '${parsed.model}' is not reachable — it is offline or not loaded, and no reachable fallback is available.`,
-        hint: "Launch the assigned model, or assign an online fallback model. The agent was NOT silently rerouted to another model.",
+        hint: "Launch the assigned model, or set a Backup Model in Settings \u2192 Support Models. The agent was NOT silently rerouted to another model.",
         requestedModel: parsed.model,
       });
     }
