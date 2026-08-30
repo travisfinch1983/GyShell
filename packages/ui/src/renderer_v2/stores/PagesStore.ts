@@ -221,3 +221,54 @@ class PagesStore {
 }
 
 export const pagesStore = new PagesStore()
+
+
+/** One week of journal entries — the sidebar's unit for the Journal view. */
+export interface JournalWeek {
+  key: string
+  label: string
+  entries: JournalEntry[]
+}
+
+/**
+ * Group journal entries into Monday-start weeks, newest first.
+ *
+ * The journal is read as a continuous log rather than as documents, so the
+ * sidebar indexes TIME rather than listing entries: a truncated preview per
+ * entry is a worse version of the body, while a date bracket is a place to jump
+ * to (Travis, 2026-08-30). Entries stay in one scrollable body so reading
+ * across a period never costs a click per entry.
+ */
+export function bucketJournalByWeek(entries: JournalEntry[]): JournalWeek[] {
+  const weekStart = (iso: string): Date => {
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return new Date(0)
+    const mondayOffset = (d.getDay() + 6) % 7   // Sun=0 → 6, so weeks start Monday
+    const s = new Date(d)
+    s.setDate(d.getDate() - mondayOffset)
+    s.setHours(0, 0, 0, 0)
+    return s
+  }
+  const md = (d: Date): string => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+
+  const byKey = new Map<string, JournalWeek>()
+  for (const e of [...entries].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))) {
+    const start = weekStart(e.updatedAt ?? e.createdAt)
+    const key = start.toISOString().slice(0, 10)
+    let bucket = byKey.get(key)
+    if (!bucket) {
+      const end = new Date(start)
+      end.setDate(start.getDate() + 6)
+      const thisWeek = key === (() => {
+        const n = new Date()
+        n.setDate(n.getDate() - ((n.getDay() + 6) % 7))
+        n.setHours(0, 0, 0, 0)
+        return n.toISOString().slice(0, 10)
+      })()
+      bucket = { key, label: `${md(start)} – ${md(end)}${thisWeek ? ' · this week' : ''}`, entries: [] }
+      byKey.set(key, bucket)
+    }
+    bucket.entries.push(e)
+  }
+  return [...byKey.values()].sort((a, b) => b.key.localeCompare(a.key))
+}

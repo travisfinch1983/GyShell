@@ -58,7 +58,8 @@ const TABS: TabDef[] = [
   { id: 'model-downloads', label: 'Model Downloads', Icon: Download },
   { id: 'flowchart', label: 'Flowchart', Icon: Workflow },
   { id: 'svg',       label: 'SVG',       Icon: Shapes },
-  { id: 'pages',     label: 'Pages',     Icon: BookOpen },
+  // Label only — the id stays 'pages' because it is persisted in saved layouts.
+  { id: 'pages',     label: 'Reporting', Icon: BookOpen },
   { id: 'files',     label: 'Files',     Icon: FolderOpen },
   { id: 'logs',      label: 'Logs',      Icon: ScrollText },
   { id: 'roadmap',   label: 'Roadmap',   Icon: MapIcon },

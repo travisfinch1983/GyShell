@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import {
   BookOpen,
@@ -17,6 +17,7 @@ import {
 import type { PageContentType } from '@gyshell/shared'
 import { pagesStore as store } from '../../stores/PagesStore'
 import { buildPageSrcdoc, needsMermaid, PAGE_SANDBOX, SANDBOX_PROBE_HTML } from '../../lib/pageSandbox'
+import { bucketJournalByWeek } from '../../stores/PagesStore'
 import styles from './Pages.module.scss'
 
 function fmtTime(iso: string): string {
@@ -158,6 +159,9 @@ export const PagesPanel: React.FC = observer(() => {
 
   const cur = store.current
   const rep = store.currentReport
+  const journalWeeks = useMemo(() => bucketJournalByWeek(store.journal), [store.journal])
+  const weekRefs = useRef<Record<string, HTMLElement | null>>({})
+  const [activeWeek, setActiveWeek] = useState<string | null>(null)
   const copySource = async () => {
     const src = cur ?? rep
     if (!src) return
@@ -175,7 +179,7 @@ export const PagesPanel: React.FC = observer(() => {
       <div className={styles.list}>
         <div className={styles.listHead}>
           <span className={styles.title}>
-            <BookOpen size={15} /> Pages
+            <BookOpen size={15} /> Reporting
           </span>
           <button type="button" className={styles.iconBtn} title="Refresh" onClick={() => { void store.refresh(); if (store.view === 'journal') void store.loadJournal() }}>
             <RefreshCw size={13} />
@@ -241,36 +245,31 @@ export const PagesPanel: React.FC = observer(() => {
         {store.error && <div className={styles.errorNote}>{store.error}</div>}
         <div className={styles.rows}>
           {store.view === 'journal' ? (
-            store.journal.length === 0 ? (
+            journalWeeks.length === 0 ? (
               <div className={styles.empty}>
                 The journal is empty. Entries are started when work begins and grow as it
                 proceeds — including the "looked at it, nothing to repair" ones, which are
                 exactly the entries nobody remembers otherwise.
               </div>
             ) : (
-              store.journal.map((j) => (
+              /* Date brackets, not entries: the body already holds every entry in
+                 full, so the sidebar's job is jumping to a period rather than
+                 previewing text you can simply scroll to. */
+              journalWeeks.map((w) => (
                 <button
-                  key={j.id}
+                  key={w.key}
                   type="button"
-                  className={styles.row}
-                  onClick={() => { if (j.reportIds?.[0]) void store.openReport(j.reportIds[0]) }}
+                  className={`${styles.row} ${activeWeek === w.key ? styles.active : ''}`}
+                  onClick={() => {
+                    setActiveWeek(w.key)
+                    weekRefs.current[w.key]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                  }}
                 >
-                  <div className={styles.rowTitle}>
-                    <span className={`${styles.statusBadge} ${styles[`st_${j.status}`] ?? ''}`}>{j.status}</span>
-                    {j.issue}
-                  </div>
+                  <div className={styles.rowTitle}>{w.label}</div>
                   <div className={styles.rowMeta}>
-                    {fmtTime(j.updatedAt)}{j.author ? ` · ${j.author}` : ''}
-                    {j.revisions?.length ? ` · ${j.revisions.length} revision(s)` : ''}
-                    {j.keys?.length ? ` · ${j.keys.join(' ')}` : ''}
-                    {/* An entry that cannot serve as a prior occurrence says so
-                        here too, so the list never implies a coverage it lacks. */}
-                    {j.excludedFromCounts ? ' · record only, not counted' : ''}
+                    {w.entries.length} entr{w.entries.length === 1 ? 'y' : 'ies'}
+                    {w.entries.some((e) => e.status === 'open') ? ' · open work' : ''}
                   </div>
-                  {j.notes && <div className={styles.journalLine}>{j.notes.replace(/\n+/g, ' ').slice(0, 160)}</div>}
-                  {j.reportIds?.length > 0 && (
-                    <div className={styles.journalLink}>reports: {j.reportIds.join(', ')}</div>
-                  )}
                 </button>
               ))
             )
@@ -453,7 +452,58 @@ export const PagesPanel: React.FC = observer(() => {
             )}
           </div>
         )}
-        {store.loading ? (
+        {store.view === 'journal' && probe !== 'running' ? (
+          /* ONE continuously scrollable body holding the whole journal. Clicking a
+             week in the sidebar scrolls here rather than swapping the content —
+             a working log is read across time, so paging it entry-by-entry would
+             hide the thing it exists to show. */
+          journalWeeks.length === 0 ? (
+            <div className={styles.empty}>Nothing logged yet.</div>
+          ) : (
+            <div className={styles.journalScroll}>
+              {journalWeeks.map((w) => (
+                <section
+                  key={w.key}
+                  ref={(el) => { weekRefs.current[w.key] = el }}
+                  className={styles.journalWeek}
+                >
+                  <h3 className={styles.weekHead}>{w.label}</h3>
+                  {w.entries.map((j) => (
+                    <article key={j.id} className={styles.journalEntry}>
+                      <div className={styles.entryHead}>
+                        <span className={`${styles.statusBadge} ${styles[`st_${j.status}`] ?? ''}`}>{j.status}</span>
+                        <span className={styles.entryIssue}>{j.issue}</span>
+                      </div>
+                      <div className={styles.rowMeta}>
+                        {fmtTime(j.updatedAt)}{j.author ? ` · ${j.author}` : ''}
+                        {j.revisions?.length ? ` · ${j.revisions.length} revision(s)` : ''}
+                        {j.keys?.length ? ` · ${j.keys.join(' ')}` : ''}
+                        {j.excludedFromCounts ? ' · record only, not counted' : ''}
+                      </div>
+                      {/* Full text, wrapped — the body is where the entry is actually
+                          read, so nothing here is truncated. */}
+                      {j.notes && <div className={styles.entryNotes}>{j.notes}</div>}
+                      {j.reportIds?.length > 0 && (
+                        <div className={styles.journalLink}>
+                          {j.reportIds.map((rid) => (
+                            <button
+                              key={rid}
+                              type="button"
+                              className={styles.journalNoteLink}
+                              onClick={() => { store.setView('reports'); void store.openReport(rid) }}
+                            >
+                              report: {rid}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </article>
+                  ))}
+                </section>
+              ))}
+            </div>
+          )
+        ) : store.loading ? (
           <div className={styles.empty}>Loading…</div>
         ) : doc && !showSource ? (
           // The security boundary: allow-scripts only. NEVER add allow-same-origin.
