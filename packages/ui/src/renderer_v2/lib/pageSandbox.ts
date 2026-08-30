@@ -45,13 +45,59 @@ const BASE_CSS = `
   table { border-collapse: collapse; }
   th, td { border: 1px solid rgba(128,128,128,0.35); padding: 4px 10px; }
   blockquote { border-left: 3px solid rgba(128,128,128,0.4); margin-left: 0; padding-left: 14px; }
+  .page-embed { margin: 1em 0; }
+  .page-embed-svg svg { max-width: 100%; height: auto; }
+  figure.page-embed-flowchart { margin: 1em 0; }
+  figure.page-embed-flowchart figcaption { font-size: 0.85em; opacity: 0.7; text-align: center; margin-top: 4px; }
+  pre.mermaid { background: transparent; text-align: center; }
 `
 
-export function buildPageSrcdoc(html: string, theme: 'light' | 'dark'): string {
+/** True when a page contains mermaid content worth paying the library for. */
+export function needsMermaid(html: string): boolean {
+  return html.includes('class="mermaid"') || html.includes('language-mermaid')
+}
+
+/**
+ * In-frame mermaid bootstrap: normalises marked's fenced-block output
+ * (<pre><code class="language-mermaid">) into <pre class="mermaid">, then
+ * renders. Runs INSIDE the sandbox with an inlined library — the CSP forbids
+ * external scripts by design, so mermaid rides along as source text.
+ */
+const MERMAID_BOOT = (theme: 'light' | 'dark'): string => `
+<script>
+(() => {
+  for (const code of document.querySelectorAll('pre > code.language-mermaid')) {
+    const pre = code.parentElement;
+    const holder = document.createElement('pre');
+    holder.className = 'mermaid';
+    holder.textContent = code.textContent;
+    pre.replaceWith(holder);
+  }
+  if (!document.querySelector('.mermaid')) return;
+  if (typeof mermaid === 'undefined') {
+    for (const el of document.querySelectorAll('.mermaid')) {
+      el.textContent = '[diagram: mermaid library failed to load]';
+    }
+    return;
+  }
+  mermaid.initialize({ startOnLoad: false, theme: '${theme === 'dark' ? 'dark' : 'neutral'}', securityLevel: 'strict' });
+  mermaid.run({ querySelector: '.mermaid' }).catch((e) => {
+    const first = document.querySelector('.mermaid');
+    if (first) first.insertAdjacentHTML('afterend', '<p style="color:#c66">[diagram render error: ' + String(e).slice(0, 200) + ']</p>');
+  });
+})();
+</script>`
+
+export function buildPageSrcdoc(html: string, theme: 'light' | 'dark', mermaidLib?: string): string {
   const vars =
     theme === 'dark'
       ? '--page-bg: #16181d; --page-fg: #e6e6e2;'
       : '--page-bg: #ffffff; --page-fg: #1c1c1a;'
+  // The library is injected as an inline script (CSP allows 'unsafe-inline'
+  // only — the sandbox, not script policing, is the boundary). "<\/script"
+  // inside the lib source would terminate our tag early; guard the sequence.
+  const lib = mermaidLib ? `<script>${mermaidLib.replace(/<\/script/gi, '<\\/script')}</script>` : ''
+  const boot = mermaidLib ? MERMAID_BOOT(theme) : ''
   return (
     '<!doctype html><html><head>' +
     `<meta http-equiv="Content-Security-Policy" content="${CSP}">` +
@@ -59,6 +105,8 @@ export function buildPageSrcdoc(html: string, theme: 'light' | 'dark'): string {
     `<style>:root{${vars}}${BASE_CSS}</style>` +
     '</head><body>' +
     html +
+    lib +
+    boot +
     '</body></html>'
   )
 }

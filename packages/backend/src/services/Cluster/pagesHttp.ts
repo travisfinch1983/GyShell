@@ -51,6 +51,84 @@ export function createPagesRouter(dataDir: string): express.Router {
   const renderHtml = (contentType: string, body: string): string =>
     contentType === 'markdown' ? (marked.parse(body, { async: false }) as string) : body
 
+  const escapeHtml = (s: string): string =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+  /**
+   * Stored flowchart → mermaid source. Agent-authored charts carry a clean
+   * `graph` ({nodes:[{id,label,group?}], edges:[{from,to,label?}], direction});
+   * hand-drawn drawio charts only have mxGraph XML, from which we extract
+   * vertex/edge cells best-effort (layout and styling are deliberately not
+   * reproduced — the embed is the STRUCTURE, the Flowchart tab is the picture).
+   */
+  const flowchartToMermaid = (chart: any): string | null => {
+    let nodes: Array<{ id: string; label?: string }> = []
+    let edges: Array<{ from: string; to: string; label?: string }> = []
+    let direction = 'TD'
+    if (chart?.graph?.nodes?.length) {
+      nodes = chart.graph.nodes
+      edges = chart.graph.edges ?? []
+      direction = chart.graph.direction || 'TD'
+    } else if (typeof chart?.xml === 'string') {
+      const cellRe = /<mxCell\b([^>]*)\/?>(?:[\s\S]*?<\/mxCell>)?/g
+      const attr = (s: string, name: string) => new RegExp(`${name}="([^"]*)"`).exec(s)?.[1]
+      for (const m of chart.xml.matchAll(cellRe)) {
+        const a = m[1]
+        const id = attr(a, 'id')
+        if (!id) continue
+        if (/vertex="1"/.test(a)) {
+          const label = (attr(a, 'value') ?? '').replace(/&lt;[^&]*&gt;|<[^>]*>/g, ' ').trim()
+          if (label) nodes.push({ id, label })
+        } else if (/edge="1"/.test(a)) {
+          const from = attr(a, 'source')
+          const to = attr(a, 'target')
+          if (from && to) edges.push({ from, to, label: attr(a, 'value') ?? undefined })
+        }
+      }
+    }
+    if (nodes.length === 0) return null
+    // Mermaid-safe ids; labels quoted with inner quotes stripped.
+    const idMap = new Map<string, string>()
+    nodes.forEach((n, i) => idMap.set(n.id, `n${i}`))
+    const q = (s: string) => `"${s.replace(/"/g, "'")}"`
+    const lines = [`flowchart ${/^(TD|TB|LR|RL|BT)$/.test(direction) ? direction : 'TD'}`]
+    for (const n of nodes) lines.push(`  ${idMap.get(n.id)}[${q(n.label || n.id)}]`)
+    for (const e of edges) {
+      const f = idMap.get(e.from)
+      const t = idMap.get(e.to)
+      if (!f || !t) continue // edge to a label-less/unknown cell — drop, don't invent
+      lines.push(e.label ? `  ${f} -->|${q(e.label)}| ${t}` : `  ${f} --> ${t}`)
+    }
+    return lines.join('\n')
+  }
+
+  /**
+   * Embed resolution — {{flowchart:ID}} / {{svg:ID}} — happens at READ time,
+   * never at write: the stored page keeps the reference, so editing a diagram
+   * once updates every page that embeds it. Unknown ids resolve to a visible
+   * placeholder rather than silently vanishing.
+   */
+  const EMBED_RE = /\{\{(flowchart|svg):([A-Za-z0-9_-]{1,80})\}\}/g
+  const resolveEmbeds = (html: string): string =>
+    html.replace(EMBED_RE, (_m, kind: string, id: string) => {
+      try {
+        if (kind === 'svg') {
+          const f = path.join(dataDir, 'svgs', `${id}.svg`)
+          if (!existsSync(f)) return `<p><em>[missing svg: ${escapeHtml(id)}]</em></p>`
+          return `<div class="page-embed page-embed-svg">${readFileSync(f, 'utf8')}</div>`
+        }
+        const f = path.join(dataDir, 'flowcharts', `${id}.json`)
+        if (!existsSync(f)) return `<p><em>[missing flowchart: ${escapeHtml(id)}]</em></p>`
+        const chart = JSON.parse(readFileSync(f, 'utf8'))
+        const mermaid = flowchartToMermaid(chart)
+        if (!mermaid) return `<p><em>[flowchart ${escapeHtml(id)} has no renderable graph structure]</em></p>`
+        const caption = chart.name ? `<figcaption>${escapeHtml(String(chart.name))}</figcaption>` : ''
+        return `<figure class="page-embed page-embed-flowchart"><pre class="mermaid">${escapeHtml(mermaid)}</pre>${caption}</figure>`
+      } catch (e) {
+        return `<p><em>[embed ${escapeHtml(kind)}:${escapeHtml(id)} failed: ${escapeHtml(String((e as Error).message))}]</em></p>`
+      }
+    })
+
   // List: newest first, without the per-page version arrays.
   router.get('/api/pages', (_req: Req, res: Res) => {
     try {
@@ -75,11 +153,11 @@ export function createPagesRouter(dataDir: string): express.Router {
     const info = meta.versions.find((v) => v.version === version)
     if (!info) return fail(res, 404, `page ${id} has no version ${version}`)
     try {
-      const html = readFileSync(htmlFile(id, version), 'utf8')
+      const stored = readFileSync(htmlFile(id, version), 'utf8')
       const source = info.contentType === 'markdown' && existsSync(srcFile(id, version))
         ? readFileSync(srcFile(id, version), 'utf8')
-        : html
-      res.json({ meta, version, html, source })
+        : stored
+      res.json({ meta, version, html: resolveEmbeds(stored), source })
     } catch (e) { fail(res, 500, String((e as Error).message)) }
   })
 
