@@ -385,3 +385,24 @@
   font-family: var(--font-mono);
   color: var(--accent);
 }
+
+.noteBadge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 5px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  border-radius: 4px;
+  border: 1px solid var(--fg-faint);
+  color: var(--fg-muted);
+  vertical-align: middle;
+}
+
+.journalNoteLink {
+  margin-top: 3px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--fg-faint);
+}

@@ -288,25 +288,37 @@ export const PagesPanel: React.FC = observer(() => {
           {store.view === 'journal' ? (
             store.journal.length === 0 ? (
               <div className={styles.empty}>
-                The journal is empty. It fills itself: every filed report contributes one line, so
-                there is nothing separate to maintain.
+                The journal is empty. It fills itself: every filed report contributes a line, and
+                so does every "looked at it, nothing to repair" note — the entries nobody
+                remembers otherwise.
               </div>
             ) : (
               store.journal.map((j) => (
                 <button
-                  key={`${j.pageId}-${j.version}`}
+                  key={j.kind === 'note' ? j.noteId : `${j.pageId}-${j.version}`}
                   type="button"
-                  className={`${styles.row} ${j.pageId === store.selectedId ? styles.active : ''}`}
-                  onClick={() => { setProbe(null); setShowSource(false); void store.open(j.pageId) }}
+                  className={`${styles.row} ${j.pageId && j.pageId === store.selectedId ? styles.active : ''}`}
+                  onClick={() => {
+                    if (!j.pageId) return   // a note has no report to open — it IS the record
+                    setProbe(null); setShowSource(false); void store.open(j.pageId)
+                  }}
                 >
-                  <div className={styles.rowTitle}>{j.issue}</div>
+                  <div className={styles.rowTitle}>
+                    {j.kind === 'note' && <span className={styles.noteBadge}>no repair</span>}
+                    {j.issue}
+                  </div>
                   <div className={styles.rowMeta}>
                     {fmtTime(j.receivedAt)} · {store.categoryLabel(j.category)}
                     {j.author ? ` · ${j.author}` : ''}
                   </div>
                   {j.cause && <div className={styles.journalLine}>cause: {j.cause}</div>}
                   {j.fix && <div className={styles.journalLine}>fix: {j.fix}</div>}
-                  <div className={styles.journalLink}>report: {j.pageId} (v{j.version})</div>
+                  {j.whyNoAction && <div className={styles.journalLine}>why no action: {j.whyNoAction}</div>}
+                  {j.pageId ? (
+                    <div className={styles.journalLink}>report: {j.pageId} (v{j.version})</div>
+                  ) : (
+                    <div className={styles.journalNoteLink}>noted only — nothing was repaired</div>
+                  )}
                 </button>
               ))
             )

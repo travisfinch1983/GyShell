@@ -7,13 +7,15 @@ import {
   pageIdSchema,
   pageRestoreRequestSchema,
   pageWriteRequestSchema,
+  journalNoteRequestSchema,
   reportCategorySchema,
   type JournalEntry,
+  type JournalNote,
   type PageMeta,
   type PageVersionInfo,
   type ReportCategory,
 } from '@gyshell/shared'
-import { indexReport, searchReports } from './reportsRag'
+import { indexNote, indexReport, searchReports } from './reportsRag'
 
 type Req = express.Request
 type Res = express.Response
@@ -218,12 +220,30 @@ export function createPagesRouter(dataDir: string): express.Router {
    * never desync from reality and can never be forgotten. Every entry therefore
    * carries a report link by construction.
    */
+  // Journal NOTES — the third triage outcome, "noted, nothing repaired".
+  // Append-only file: a dismissal is a fact about the past, so it is never edited.
+  const notesFile = path.join(dataDir, 'journal-notes.json')
+  const loadNotes = (): JournalNote[] => {
+    try {
+      if (!existsSync(notesFile)) return []
+      const raw = JSON.parse(readFileSync(notesFile, 'utf8'))
+      return Array.isArray(raw?.notes) ? raw.notes : []
+    } catch (e) {
+      console.warn('[pages] journal notes unreadable:', (e as Error).message)
+      return []
+    }
+  }
+
   router.get('/api/pages/journal', (req: Req, res: Res) => {
     const category = req.query.category ? String(req.query.category) : null
-    const entries: JournalEntry[] = allMetas()
+    // Reports contribute derived entries; notes contribute first-class ones. The
+    // journal is therefore complete BY CONSTRUCTION rather than complete-for-repairs:
+    // the entries nobody remembers (recurring benign events) are exactly the notes.
+    const fromReports: JournalEntry[] = allMetas()
       .filter((m) => m.kind === 'report' && m.report?.issue)
       .filter((m) => !category || m.category === category)
       .map((m) => ({
+        kind: 'report' as const,
         pageId: m.id,
         category: m.category ?? '(uncategorised)',
         receivedAt: m.updatedAt,
@@ -233,8 +253,63 @@ export function createPagesRouter(dataDir: string): express.Router {
         author: m.authors[m.authors.length - 1],
         version: m.currentVersion,
       }))
-      .sort((a, b) => b.receivedAt.localeCompare(a.receivedAt))
+    const fromNotes: JournalEntry[] = loadNotes()
+      .filter((n) => !category || n.category === category)
+      .map((n) => ({
+        kind: 'note' as const,
+        noteId: n.id,
+        category: n.category,
+        receivedAt: n.createdAt,
+        issue: n.issue,
+        cause: n.cause,
+        whyNoAction: n.whyNoAction,
+        author: n.author,
+      }))
+    const entries = [...fromReports, ...fromNotes].sort((a, b) => b.receivedAt.localeCompare(a.receivedAt))
     res.json({ entries })
+  })
+
+  /**
+   * File a journal note. Returns `priorSimilar` — how many times something like
+   * this has already been noted — because spotting the REPEAT is the whole
+   * reason the journal exists; making the agent search separately to learn it
+   * would mean it usually doesn't.
+   */
+  router.post('/api/pages/journal/note', json, async (req: Req, res: Res) => {
+    const parsed = journalNoteRequestSchema.safeParse(req.body)
+    if (!parsed.success) return fail(res, 400, `bad note: ${parsed.error.issues[0]?.message}`)
+    const cats = loadCategories()
+    const cat = cats.find((c) => c.id === parsed.data.category)
+    if (!cat) return fail(res, 400, `note requires a known category (have: ${cats.map((c) => c.id).join(', ')})`)
+    try {
+      const notes = loadNotes()
+      const note: JournalNote = {
+        ...parsed.data,
+        id: `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        createdAt: new Date().toISOString(),
+      }
+      notes.push(note)
+      writeFileSync(notesFile, JSON.stringify({ notes }, null, 2))
+
+      // How often has this been dismissed before? Text match on the issue is
+      // deliberate: cheap, exact enough for "have I seen this", and it works
+      // even when the vector store is unavailable.
+      const priorSimilar = notes.filter(
+        (n) => n.id !== note.id && n.issue.trim().toLowerCase() === note.issue.trim().toLowerCase(),
+      ).length
+
+      let indexed: boolean | undefined
+      let indexError: string | undefined
+      try {
+        await indexNote({ collection: cat.collection, note })
+        indexed = true
+      } catch (e) {
+        indexed = false
+        indexError = (e as Error).message
+        console.warn(`[pages] journal note ${note.id} saved but NOT indexed:`, indexError)
+      }
+      res.json({ ok: true, id: note.id, priorSimilar, indexed, indexError })
+    } catch (e) { fail(res, 500, String((e as Error).message)) }
   })
 
   /** Semantic search across one category's collection (or all of them). */

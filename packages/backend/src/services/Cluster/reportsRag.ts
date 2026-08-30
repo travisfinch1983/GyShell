@@ -89,6 +89,28 @@ export async function indexReport(input: ReportVectorInput): Promise<void> {
   })
 }
 
+/**
+ * Index a journal note into the same collection as its category's reports, so
+ * one search answers both "was this ever repaired?" and "did I already decide
+ * this needs no repair?". Prefixed NOTE so a hit is self-describing.
+ */
+export async function indexNote(input: { collection: string; note: { id: string; category: string; issue: string; cause?: string; whyNoAction: string; author?: string; createdAt: string } }): Promise<void> {
+  const n = input.note
+  const text = [
+    `NOTE (no repair made): ${n.issue}`,
+    `category: ${n.category}`,
+    n.cause ? `cause: ${n.cause}` : '',
+    `why no action: ${n.whyNoAction}`,
+    `noted at: ${n.createdAt}`,
+  ].filter(Boolean).join('\n')
+  await callTool('collection_store', {
+    collection: input.collection,
+    text,
+    doc_id: n.id,
+    metadata: JSON.stringify({ kind: 'journal-note', note_id: n.id, category: n.category, issue: n.issue, author: n.author ?? '' }),
+  })
+}
+
 export async function searchReports(collection: string, query: string, limit = 10): Promise<unknown> {
   return callTool('collection_search', { collection, query, limit })
 }

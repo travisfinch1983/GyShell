@@ -184,6 +184,28 @@ function buildServer(author) {
   )
 
   mcp.tool(
+    'journal_note',
+    'Record a triage outcome that needed NO repair — a benign or upstream cause you looked at and dismissed. Use this whenever you ack something without filing a report: it is the only way the dismissal survives your context window, and the reply tells you how many times you have dismissed this same thing before.',
+    {
+      category: z.string().describe('one of report_categories'),
+      issue: z.string().min(1).max(200).describe('short name of what was reported'),
+      cause: z.string().max(500).optional().describe('one line: what it turned out to be'),
+      why_no_action: z.string().min(1).max(500).describe('why nothing was repaired — the field that makes the dismissal reviewable later'),
+      links: z.array(z.string()).optional().describe('notification ids, service names'),
+    },
+    async ({ category, issue, cause, why_no_action, links }) => {
+      const r = await api('POST', '/api/pages/journal/note', {
+        category, issue, cause, whyNoAction: why_no_action, links: links ?? [], author,
+      })
+      const repeat = r.priorSimilar > 0
+        ? `\n⚠ You have noted this same issue ${r.priorSimilar} time(s) before. A recurring "no action needed" is itself a finding — consider whether the alert threshold is wrong, or file a report.`
+        : ''
+      const idx = r.indexed === false ? `\n⚠ saved but NOT vectorised (${r.indexError}) — search will miss it.` : ''
+      return text(`journal note ${r.id} recorded in ${category} (author: ${author}). No report filed.${repeat}${idx}`)
+    },
+  )
+
+  mcp.tool(
     'journal_read',
     'The maintenance journal: every report as one skimmable line (when, issue, cause, fix, report id). Purpose is memory ACROSS context windows — read it to spot a repeat problem you have no memory of fixing.',
     { category: z.string().optional(), limit: z.number().int().positive().max(200).optional() },
@@ -193,8 +215,10 @@ function buildServer(author) {
       if (!entries.length) return text('(journal is empty — no reports filed yet)')
       return text(entries.map((e) =>
         `${e.receivedAt} · [${e.category}] ${e.issue}` +
-        `${e.cause ? ` · cause: ${e.cause}` : ''}${e.fix ? ` · fix: ${e.fix}` : ''}` +
-        ` · report: ${e.pageId} (v${e.version}${e.author ? `, ${e.author}` : ''})`,
+        `${e.cause ? ` · cause: ${e.cause}` : ''}` +
+        (e.kind === 'note'
+          ? ` · NO REPAIR: ${e.whyNoAction}${e.author ? ` (${e.author})` : ''}`
+          : `${e.fix ? ` · fix: ${e.fix}` : ''} · report: ${e.pageId} (v${e.version}${e.author ? `, ${e.author}` : ''})`),
       ).join('\n'))
     },
   )
