@@ -218,8 +218,29 @@ export const DEFAULT_BACKEND_SETTINGS: BackendSettings = {
   },
 };
 
+/**
+ * 🛑 This allowlist SILENTLY DELETES any top-level key it does not name, on
+ * every read — normalizeCurrent() writes the picked object back. Omitting a key
+ * here is not "unsupported", it is "the user's setting reverts itself with no
+ * error": the `chat` key was missing, so the auto-compaction toggle reported
+ * success and undid itself on the next getSettings() (Observability Sweep,
+ * 2026-08-30). pickBackendSnapshot now reports what it drops, so the next
+ * omitted key announces itself instead of eating a setting quietly.
+ */
+const SNAPSHOT_KEYS = [
+  'schemaVersion', 'commandPolicyMode', 'model', 'baseUrl', 'apiKey', 'models',
+  'connections', 'tools', 'agents', 'agentsSeeded', 'gateway', 'layout',
+  'recursionLimit', 'memory', 'chat', 'debugMode', 'experimental',
+] as const;
+
+/** Keys dropped by the last pick — read by the service layer to warn/emit once. */
+export const droppedSnapshotKeys = new Set<string>();
+
 function pickBackendSnapshot(raw: unknown): Partial<BackendSettings> {
   if (!isObject(raw)) return {};
+  for (const k of Object.keys(raw)) {
+    if (!(SNAPSHOT_KEYS as readonly string[]).includes(k)) droppedSnapshotKeys.add(k);
+  }
   return {
     schemaVersion: raw.schemaVersion,
     commandPolicyMode: raw.commandPolicyMode,
@@ -235,6 +256,7 @@ function pickBackendSnapshot(raw: unknown): Partial<BackendSettings> {
     layout: raw.layout,
     recursionLimit: raw.recursionLimit,
     memory: raw.memory,
+    chat: raw.chat,
     debugMode: raw.debugMode,
     experimental: raw.experimental,
   } as Partial<BackendSettings>;

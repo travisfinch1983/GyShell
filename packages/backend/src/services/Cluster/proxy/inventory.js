@@ -17,6 +17,9 @@
  */
 
 import { Router } from 'express';
+import * as fsForState from 'fs';
+import { loadJsonState } from './lib/notify.js';
+import { emitOnce } from './lib/notify.js';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -30,6 +33,19 @@ const vectorStore = {
   upsert: () => {}, delete: () => {}, updateData: () => {}, vectorize: async () => {},
   getTextHash: () => null, clearTextHash: () => {},
 };
+
+// Announce the stub ONCE at startup. cluster_search sits on this object, so
+// agents get a confident empty answer indistinguishable from an empty inventory
+// — a capability that looks present but is not must say so at startup, not wait
+// to be discovered query by query. Deferred 20s: this runs at module load, and
+// the /emit route it posts to is mounted later on this same listener — an
+// immediate post would race the mount and the warning itself would be lost.
+setTimeout(() => emitOnce('inventory-search-stub', 'warning', 'cluster-inventory',
+  'Inventory semantic search is a stub — every query returns zero results',
+  'vectorStore in proxy/inventory.js was never migrated: /api/ai/inventory/search always '
+  + 'answers 200 with [], and /revectorize does nothing. The cluster_search MCP tool sits '
+  + 'on top of this, so agents receive confident empty answers.'), 20000);
+
 const inventoryFile = join(dataDir, 'inventory.json');
 const hostsFile = join(dataDir, 'hosts.json');
 const credentialsFile = join(dataDir, 'credentials.json');
@@ -63,10 +79,8 @@ function saveHosts(data) {
 }
 
 function loadCredentials() {
-  try {
-    if (existsSync(credentialsFile)) return JSON.parse(readFileSync(credentialsFile, 'utf-8'));
-  } catch {}
-  return { entries: [], version: 1 };
+  return loadJsonState(fsForState, credentialsFile, { entries: [], version: 1 },
+    { source: 'cluster-inventory', what: 'Credentials vault' });
 }
 
 function saveCredentials(data) {

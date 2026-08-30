@@ -22,10 +22,8 @@ import { createHash } from 'crypto';
 const CONFIG_FILE = join(process.env.AILAB_PROXY_DATA_DIR || join(process.cwd(), 'data'), 'vector-db-config.json');
 
 function loadConfig() {
-  try {
-    if (existsSync(CONFIG_FILE)) return JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'));
-  } catch {}
-  return [];
+  return loadJsonState(fsForState, CONFIG_FILE, [],
+    { source: 'vector-proxy', what: 'Vector-DB configuration' });
 }
 
 function saveConfig(dbs) {

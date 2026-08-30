@@ -20,10 +20,8 @@ const activeServicesFile = join(dataDir, 'active-services.json');
 const serviceHistoryFile = join(dataDir, 'service-history.json');
 
 function loadActiveServices() {
-  try {
-    if (existsSync(activeServicesFile)) return JSON.parse(readFileSync(activeServicesFile, 'utf-8'));
-  } catch {}
-  return { services: {} };
+  return loadJsonState(fsForState, activeServicesFile, { services: {} },
+    { source: 'service-logs', what: 'Active services map' });
 }
 
 function loadServiceHistory() {

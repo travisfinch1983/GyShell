@@ -161,7 +161,41 @@ export const PagesPanel: React.FC = observer(() => {
   const rep = store.currentReport
   const journalWeeks = useMemo(() => bucketJournalByWeek(store.journal), [store.journal])
   const weekRefs = useRef<Record<string, HTMLElement | null>>({})
+  const entryRefs = useRef<Record<string, HTMLElement | null>>({})
   const [activeWeek, setActiveWeek] = useState<string | null>(null)
+  const [flashId, setFlashId] = useState<string | null>(null)
+  const [jumpDraft, setJumpDraft] = useState('')
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  // The anchor consumer: when the store names an entry, scroll the continuous
+  // body to it and flash it. One frame's delay so the effect runs after the
+  // journal render that the anchor's loadJournal() triggered — scrolling to a
+  // ref that hasn't mounted yet would silently no-op, and a jump that lands
+  // nowhere reads as "it worked" (the exact failure shape the anchor exists
+  // to avoid).
+  const anchorId = store.anchorEntryId
+  useEffect(() => {
+    if (!anchorId || store.view !== 'journal') return
+    const week = journalWeeks.find((w) => w.entries.some((e) => e.id === anchorId))
+    if (week) setActiveWeek(week.key)
+    const t = window.setTimeout(() => {
+      entryRefs.current[anchorId]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      setFlashId(anchorId)
+      store.clearJournalAnchor()
+      // Long enough to be found after the smooth scroll settles, short enough
+      // not to read as a permanent selection — this is a landing light, not state.
+      window.setTimeout(() => setFlashId((f) => (f === anchorId ? null : f)), 2600)
+    }, 60)
+    return () => window.clearTimeout(t)
+  }, [anchorId, store.view, journalWeeks, store])
+
+  const copyEntryId = async (id: string) => {
+    try {
+      await navigator.clipboard.writeText(id)
+      setCopiedId(id)
+      setTimeout(() => setCopiedId((c) => (c === id ? null : c)), 1500)
+    } catch { /* clipboard denied — the id is visible in the chip for manual copy */ }
+  }
   const copySource = async () => {
     const src = cur ?? rep
     if (!src) return
@@ -200,6 +234,27 @@ export const PagesPanel: React.FC = observer(() => {
             </button>
           ))}
         </div>
+        {store.view === 'journal' && (
+          <div className={styles.searchRow}>
+            <Search size={12} />
+            <input
+              className={styles.searchInput}
+              placeholder="Jump to entry id (j-… or note-…)"
+              value={jumpDraft}
+              onChange={(e) => setJumpDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && jumpDraft.trim()) { void store.openJournalEntry(jumpDraft); setJumpDraft('') }
+                if (e.key === 'Escape') { setJumpDraft(''); store.dismissAnchorMiss() }
+              }}
+            />
+          </div>
+        )}
+        {store.anchorMissing && (
+          <div className={styles.errorNote}>
+            No journal entry '{store.anchorMissing}' — it may have been filed under a different id, or not migrated.
+            <button type="button" className={styles.iconBtn} onClick={() => store.dismissAnchorMiss()}><X size={11} /></button>
+          </div>
+        )}
         {store.view !== 'documents' && store.reportTypes.length > 0 && (
           <div className={styles.catRow}>
             <button
@@ -382,6 +437,26 @@ export const PagesPanel: React.FC = observer(() => {
             </button>
           </div>
         )}
+        {rep && probe !== 'running' && store.entriesCiting(rep.meta.id).length > 0 && (
+          /* The report→journal backlink — the other half of the entry's
+             "report: <id>" chips. A report that superseded or resulted from a
+             logged decision should carry you to that entry, not make you
+             search for it. */
+          <div className={styles.citedRow}>
+            cited in journal:
+            {store.entriesCiting(rep.meta.id).map((j) => (
+              <button
+                key={j.id}
+                type="button"
+                className={styles.journalNoteLink}
+                title={j.issue}
+                onClick={() => void store.openJournalEntry(j.id)}
+              >
+                {j.id} — {j.issue.slice(0, 60)}
+              </button>
+            ))}
+          </div>
+        )}
         {cur && probe !== 'running' && (
           <div className={styles.viewHead}>
             <span className={styles.viewTitle}>{cur.meta.title}</span>
@@ -469,10 +544,22 @@ export const PagesPanel: React.FC = observer(() => {
                 >
                   <h3 className={styles.weekHead}>{w.label}</h3>
                   {w.entries.map((j) => (
-                    <article key={j.id} className={styles.journalEntry}>
+                    <article
+                      key={j.id}
+                      ref={(el) => { entryRefs.current[j.id] = el }}
+                      className={`${styles.journalEntry} ${flashId === j.id ? styles.entryFlash : ''}`}
+                    >
                       <div className={styles.entryHead}>
                         <span className={`${styles.statusBadge} ${styles[`st_${j.status}`] ?? ''}`}>{j.status}</span>
                         <span className={styles.entryIssue}>{j.issue}</span>
+                        <button
+                          type="button"
+                          className={styles.idChip}
+                          title="Copy this entry's id — citable from reports, work orders and notifications"
+                          onClick={() => void copyEntryId(j.id)}
+                        >
+                          {copiedId === j.id ? 'copied' : j.id}
+                        </button>
                       </div>
                       <div className={styles.rowMeta}>
                         {fmtTime(j.updatedAt)}{j.author ? ` · ${j.author}` : ''}
