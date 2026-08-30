@@ -133,6 +133,7 @@ export class UniversalProxyService {
     // @ts-expect-error — native CivitAI downloader (runs curl inside CT 152, writes to local /ai-assets)
     const { createCivitaiRouter } = await import('./proxy/civitai.js')
     const { createFlowchartsRouter } = await import('./flowchartsHttp')
+    const { createPagesRouter } = await import('./pagesHttp')
     const { createSvgsRouter } = await import('./svgsHttp')
     const { createNotesRouter } = await import('./notesHttp')
     // @ts-expect-error — native service-log viewer (tails logs over AI-Lab's own SSH, reads local data)
@@ -312,6 +313,8 @@ export class UniversalProxyService {
     }
     // Flowchart diagram store: /api/flowcharts/* — before the broad /api cluster router.
     app.use(createFlowchartsRouter(this.dataDir))
+    // Pages store (Pages tab): /api/pages/* — versioned documents, same dataDir pattern.
+    app.use(createPagesRouter(this.dataDir))
     // SVG store + rasteriser, feeding both the SVG tab and the svg_* MCP tools.
     app.use(createSvgsRouter(this.dataDir))
     app.use(createNotesRouter(this.dataDir))
