@@ -103,3 +103,25 @@
   line-height: 16px;
   text-align: center;
 }
+
+/* Notifications badge — colour IS the severity (yellow warn / orange error / red critical) */
+.topbar-notif-badge {
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+  color: #1a1a1a;
+}
+.topbar-notif-warning { background: #e5a50a; }
+.topbar-notif-error { background: #e07b39; }
+.topbar-notif-critical { background: var(--danger); color: #fff; animation: notif-badge-pulse 1.2s ease-in-out infinite; }
+.topbar-notif-unknown { background: var(--fg-faint); color: var(--app-bg); }
+
+@keyframes notif-badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}

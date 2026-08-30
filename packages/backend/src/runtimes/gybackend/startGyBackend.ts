@@ -37,6 +37,7 @@ import {
 import { ImageAttachmentService } from '../../services/ImageAttachmentService'
 import { TerminalStateStore } from '../../services/terminal/TerminalStateStore'
 import { AgentRegistry, ContextPackStore } from '../../services/ConversationBus'
+import { NotificationsService } from '../../services/Notifications/NotificationsService'
 import { HermesService } from '../../services/Hermes/HermesService'
 import { createHermesRouter } from '../../services/Hermes/hermesHttp'
 import { createAgentToolsRouter } from '../../services/Agent/agentToolsHttp'
@@ -149,6 +150,13 @@ export async function startGyBackend(): Promise<void> {
     const entry = agentRegistry.getBySessionId(sessionId)
     return entry ? contextPackStore.assemble(entry) : undefined
   })
+  // Notifications: events + health board + debug console. Live updates ride the
+  // existing gateway raw broadcast — no second transport (notify:* channels).
+  const notificationsService = new NotificationsService(dataDir, (channel, data) =>
+    gatewayService.broadcastRaw(channel, data),
+  )
+  notificationsService.start()
+
   const catalogInstallService = new CatalogInstallService({
     publish: (channel, data) => gatewayService.broadcastRaw(channel, data),
     keyPath: process.env.AILAB_SSH_KEY || path.join(dataDir, 'ssh', 'id_ed25519')
@@ -172,6 +180,7 @@ export async function startGyBackend(): Promise<void> {
       dataDir,
       hermesRouter: createHermesRouter(hermesService, path.join(dataDir, 'roadmap.md')),
       agentToolsRouter: createAgentToolsRouter({ settingsService, agentService }),
+      notifications: notificationsService,
     })
     .catch((e) => console.warn('[gybackend] universal proxy failed to start:', e))
 

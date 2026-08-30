@@ -1,8 +1,10 @@
 import React from 'react'
 import { observer } from 'mobx-react-lite'
-import { Server, Settings, Square } from 'lucide-react'
+import { Bell, Server, Settings, Square } from 'lucide-react'
 import type { AppStore } from '../../stores/AppStore'
 import { aiServicesStore } from '../../stores/AiServicesStore'
+import { notificationsStore } from '../../stores/NotificationsStore'
+import { NotificationsPanel } from '../Notifications/NotificationsPanel'
 import { isLinux } from '../../platform/platform'
 import './topbar.scss'
 
@@ -22,6 +24,14 @@ export const TopBar: React.FC<{
   const serviceCount = aiServicesStore.services.length
   const handleMaximize = () => gyshell()?.windowControls?.maximize?.()
 
+  const [notifOpen, setNotifOpen] = React.useState(false)
+  React.useEffect(() => {
+    // Badge must be live without opening the panel — that's its whole job.
+    void notificationsStore.ensureLoaded()
+  }, [])
+  const worst = notificationsStore.worstSeverity
+  const badgeCount = notificationsStore.badgeCount
+
   return (
     <div className="topbar">
       <div className="topbar-left">
@@ -32,6 +42,22 @@ export const TopBar: React.FC<{
           (it used to live in the collapsed model sidebar, too small + easy to
           mis-click into the chat overlay). */}
       <div className="topbar-center">
+      {/* Notifications — immediately LEFT of Services (Travis's spec). Badge colour
+          IS the severity scale: yellow=warning, orange=error, red=critical. */}
+      <button
+        className={`topbar-services-btn${notifOpen ? ' active' : ''}`}
+        onClick={() => setNotifOpen((o) => !o)}
+        title="Notifications: health, warnings & errors, debug console"
+      >
+        <Bell size={14} strokeWidth={2} />
+        <span>Notifications</span>
+        {badgeCount > 0 && worst && (
+          <span className={`topbar-notif-badge topbar-notif-${worst}`}>{badgeCount}</span>
+        )}
+        {badgeCount === 0 && notificationsStore.hasUnknown && (
+          <span className="topbar-notif-badge topbar-notif-unknown" title="Some health checks cannot run">?</span>
+        )}
+      </button>
       <button
         className={`topbar-services-btn${servicesOpen ? ' active' : ''}`}
         onClick={onServicesToggle}
@@ -54,6 +80,8 @@ export const TopBar: React.FC<{
         <span>Settings</span>
       </button>
       </div>
+
+      {notifOpen && <NotificationsPanel onClose={() => setNotifOpen(false)} />}
 
       {linux ? (
         <div className="linux-wc">
