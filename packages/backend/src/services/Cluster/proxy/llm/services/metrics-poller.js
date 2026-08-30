@@ -28,6 +28,28 @@ function promSum(text, name) {
   return sum
 }
 
+/**
+ * Sum the samples of a Prometheus metric that carry a specific label value.
+ * Needed because vLLM reports KV offload volume as ONE metric split by transfer_type
+ * (GPU_to_CPU = stored, CPU_to_GPU = restored); promSum would add the two together and
+ * report a number that means nothing.
+ */
+function promSumLabeled(text, name, label, value) {
+  if (!text) return null
+  let sum = null
+  const want = `${label}="${value}"`
+  for (const line of text.split('\n')) {
+    if (!line || line[0] === '#') continue
+    if (!line.startsWith(name)) continue
+    const rest = line.slice(name.length)
+    if (rest && rest[0] !== ' ' && rest[0] !== '{') continue // avoid prefix collisions
+    if (!line.includes(want)) continue
+    const m = line.match(/\s([0-9eE+.\-]+)\s*$/)
+    if (m) { const v = parseFloat(m[1]); if (!Number.isNaN(v)) sum = (sum ?? 0) + v }
+  }
+  return sum
+}
+
 export class LlmMetricsPoller {
   constructor({ dataDir, gpuMonitor, getActiveServices, getServiceHistory, interval = 20000 }) {
     this.file = join(dataDir, 'llm-metrics.json')
@@ -171,8 +193,20 @@ export class LlmMetricsPoller {
         prefillTps: promSum(text, 'vllm:avg_prompt_throughput_toks_per_s'),
         cacheHits: promSum(text, 'vllm:prefix_cache_hits_total'),
         cacheQueries: promSum(text, 'vllm:prefix_cache_queries_total'),
+        // NOTE: external_prefix_cache_* counts hits served by the offload CONNECTOR, which is
+        // the RAM tier and the Optane tier together — it is not Optane-specific. Kept under the
+        // existing field name so stored history stays comparable; the UI labels it accordingly.
         optaneHits: promSum(text, 'vllm:external_prefix_cache_hits_total'),
         optaneQueries: promSum(text, 'vllm:external_prefix_cache_queries_total'),
+        // Volume and latency of the offload path, split by direction. These are what actually
+        // show the cache doing work: stored bytes climb whenever the connector is wired up at
+        // all, restored bytes climb only when a lookup HITS. Restored staying at 0 while stored
+        // grows is the exact signature of the cache being broken, which is the failure Travis
+        // could not see before.
+        kvOffloadStoredBytes: promSumLabeled(text, 'vllm:kv_offload_total_bytes_total', 'transfer_type', 'GPU_to_CPU'),
+        kvOffloadRestoredBytes: promSumLabeled(text, 'vllm:kv_offload_total_bytes_total', 'transfer_type', 'CPU_to_GPU'),
+        kvOffloadStoredSec: promSumLabeled(text, 'vllm:kv_offload_total_time_total', 'transfer_type', 'GPU_to_CPU'),
+        kvOffloadRestoredSec: promSumLabeled(text, 'vllm:kv_offload_total_time_total', 'transfer_type', 'CPU_to_GPU'),
       }
     }
     if (text.includes('aphrodite:')) {
@@ -184,6 +218,8 @@ export class LlmMetricsPoller {
         cacheHits: promSum(text, 'aphrodite:prefix_cache_hits_total'),
         cacheQueries: promSum(text, 'aphrodite:prefix_cache_queries_total'),
         optaneHits: null, optaneQueries: null,
+        kvOffloadStoredBytes: null, kvOffloadRestoredBytes: null,
+        kvOffloadStoredSec: null, kvOffloadRestoredSec: null,
       }
     }
     if (text.includes('llamacpp:')) {
@@ -195,6 +231,8 @@ export class LlmMetricsPoller {
         decodeTps: promSum(text, 'llamacpp:predicted_tokens_seconds'),
         prefillTps: promSum(text, 'llamacpp:prompt_tokens_seconds'),
         cacheHits: null, cacheQueries: null, optaneHits: null, optaneQueries: null,
+        kvOffloadStoredBytes: null, kvOffloadRestoredBytes: null,
+        kvOffloadStoredSec: null, kvOffloadRestoredSec: null,
       }
       // "Regular" KV / prompt-cache hit rate is sampled from /slots by the fast _sampleSlots loop every
       // ~2s (llama.cpp has no cumulative cache counter in /metrics, and a 20s poll would miss most
@@ -299,7 +337,8 @@ export class LlmMetricsPoller {
           // Just reset: baseline the counters at their CURRENT server values so cum_* starts from 0
           // (the /metrics counters are the server's monotonic lifetime totals; a plain accum after a
           // reset would re-add the whole lifetime). Skip accumulation for this one cycle.
-          row._last = { promptTokens: m.promptTokens, genTokens: m.genTokens, genSec: m.genSec, promptSec: m.promptSec, cacheHits: m.cacheHits, cacheQueries: m.cacheQueries, optaneHits: m.optaneHits, optaneQueries: m.optaneQueries }
+          row._last = { promptTokens: m.promptTokens, genTokens: m.genTokens, genSec: m.genSec, promptSec: m.promptSec, cacheHits: m.cacheHits, cacheQueries: m.cacheQueries, optaneHits: m.optaneHits, optaneQueries: m.optaneQueries,
+            kvOffloadStoredBytes: m.kvOffloadStoredBytes, kvOffloadRestoredBytes: m.kvOffloadRestoredBytes, kvOffloadStoredSec: m.kvOffloadStoredSec, kvOffloadRestoredSec: m.kvOffloadRestoredSec }
           delete row._rebaseline
         } else {
           this._accum(row, 'promptTokens', m.promptTokens, runId)
@@ -310,6 +349,13 @@ export class LlmMetricsPoller {
           this._accum(row, 'cacheQueries', m.cacheQueries, runId)
           this._accum(row, 'optaneHits', m.optaneHits, runId)
           this._accum(row, 'optaneQueries', m.optaneQueries, runId)
+          // KV offload volume/latency, split by direction. cum_kvOffloadRestoredBytes is the one
+          // that proves the cache is EARNING its keep: stored bytes climb as soon as the connector
+          // is wired at all, restored bytes climb only on an actual hit.
+          this._accum(row, 'kvOffloadStoredBytes', m.kvOffloadStoredBytes, runId)
+          this._accum(row, 'kvOffloadRestoredBytes', m.kvOffloadRestoredBytes, runId)
+          this._accum(row, 'kvOffloadStoredSec', m.kvOffloadStoredSec, runId)
+          this._accum(row, 'kvOffloadRestoredSec', m.kvOffloadRestoredSec, runId)
         }
         row._lastRun = runId
         // Long-term rate = accumulated tokens / accumulated PHASE time (reset-able, excludes idle) —
