@@ -2289,6 +2289,7 @@ if out: print(json.dumps(out))
     const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 96);
     let kvShim = null;  // llama.cpp launches: descriptor to auto-provision the Optane kvcache shim (fingerprint-keyed)
     let kvPreamble = '';  // 1cat-vllm launches: shell preamble that decides the Optane KV config at START time
+    let vllmEnvPreamble = '';  // 1cat-vllm launches: runtime env the 1.3.0 fork needs
     if (/^llama-server/.test(providerId)) {
       // Extract the real model file name for the content fingerprint. Unwrap the model-cache helper
       // (--model $(mc '/models/.../file.gguf')) so different models don't collide on the literal "$(mc" token.
@@ -2309,6 +2310,30 @@ if out: print(json.dumps(out))
       // kvShim stays null → the provisioning block below is inert. Teardown cleanup still removes any
       // pre-existing kvcache-proxy@ units.
     } else if (/^1cat-vllm/.test(providerId)) {
+      // ── SM70 / 1.3.0 runtime env ────────────────────────────────────────────────────────────
+      // These lived only as HAND EDITS in one generated launcher, which meant any relaunch from
+      // the UI silently dropped them — and this file regenerates that launcher every time.
+      //
+      // VLLM_DISABLED_KERNELS is not a tuning preference: 1.3.0 picks Marlin where 1.0.0 chose
+      // Exllama, and unpinned it measured 46 -> 21 tok/s decode at 32K on the V100 rig. Losing it
+      // is the difference between this engine being a clear win and a severe regression, and it
+      // fails silently — the server starts fine and is simply half as fast.
+      //
+      // Each is set only if not already present, so a launch template or operator can still
+      // override any of them without editing this file.
+      vllmEnvPreamble = `# ── 1Cat-vLLM SM70 runtime env (auto-emitted; override by exporting these first) ──
+: "\${VLLM_DISABLED_KERNELS:=MarlinLinearKernel}"; export VLLM_DISABLED_KERNELS
+: "\${VLLM_SM70_QUANT_BACKEND:=turbomind}"; export VLLM_SM70_QUANT_BACKEND
+: "\${VLLM_SM70_QWEN_GDN_FULL_FORWARD:=1}"; export VLLM_SM70_QWEN_GDN_FULL_FORWARD
+: "\${VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS:=1800}"; export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+`;
+      // --swap-space was removed in 1.3.0; if a saved template still carries it the server exits
+      // immediately with "unrecognized arguments". Strip it rather than letting the launch die.
+      if (/--swap-space[ =]/.test(finalCommand)) {
+        finalCommand = finalCommand.replace(/\s*--swap-space[ =]+\S+/g, '');
+        console.log('[svc-launch] 1cat-vllm: stripped --swap-space (removed in 1.3.0)');
+      }
+
       // ── vLLM Optane KV offload — automatic, like the llama.cpp path above ──────────────────
       // Every 1cat-vllm launch gets the connector with no toggle to remember. Restricted to the
       // 1cat-vllm fork because the patch set lives in that fork's env; the plain `vllm` provider
@@ -2455,7 +2480,7 @@ fi
     const scriptContent = `#!/bin/bash
 # ProxLab managed service — ${providerId} on port ${port || 'auto'}
 # Generated: ${new Date().toISOString()}
-${mcHelper}${tmpdirLine}${mkdirBlock}${kvPreamble}${finalCommand}
+${mcHelper}${tmpdirLine}${mkdirBlock}${vllmEnvPreamble}${kvPreamble}${finalCommand}
 `;
     const b64Script = Buffer.from(scriptContent).toString('base64');
 

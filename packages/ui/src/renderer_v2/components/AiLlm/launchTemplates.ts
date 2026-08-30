@@ -684,7 +684,11 @@ export const LAUNCH_TEMPLATES = {
   // smaller max-num-seqs).
   LAUNCH_TEMPLATES['1cat-vllm'] = {
     ...LAUNCH_TEMPLATES['vllm'],
-    command: '/opt/conda/envs/1cat-vllm-sm70/bin/vllm serve',
+    // 1.3.0 env. The 1.0.0 env (1cat-vllm-sm70) is still installed and is the one-line
+    // rollback, but it must not be the default: it cannot load the 27B MTP checkpoint at
+    // all, and it disables the hybrid KV manager whenever a transfer config is present,
+    // which hard-fails every GDN model AND makes the Optane connector unreachable.
+    command: '/opt/conda/envs/1cat-vllm-sm70-130/bin/vllm serve',
     args: {
       ...LAUNCH_TEMPLATES['vllm'].args,
       dtype:        { ...LAUNCH_TEMPLATES['vllm'].args.dtype, default: 'half' },
@@ -713,7 +717,7 @@ export const LAUNCH_TEMPLATES = {
       // /opt/conda/envs/1cat-vllm-sm70 — do not "tidy" them back into the shared spec.
       swapSpace: { flag: '--swap-space', type: 'number', default: 0, skipIfZero: true,
                         label: 'CPU Swap Space (GiB)',
-                        tooltip: '1Cat-vLLM only. CPU RAM per GPU for KV-cache swap on eviction. 0 = omit the flag.' },
+                        tooltip: 'REMOVED in 1Cat-vLLM 1.3.0 — passing it makes the server exit immediately with "unrecognized arguments". Leave at 0. Only usable if you roll a service back to the 1.0.0 env.' },
       disableLogRequests: { flag: '--disable-log-requests', type: 'flag', default: false,
                         label: 'Disable Request Log',
                         tooltip: '1Cat-vLLM only. Suppress per-request log lines.' },
