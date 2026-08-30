@@ -5,10 +5,6 @@ on the running system, not assumed. Sources: claude1's build/verification runs (
 → 30), the upstream research record (Fleet Feed thread `thr-940e2f6209c0`), and the
 `llm_inference_knowledge` docs it cites.*
 
-> **DRAFT NOTE (remove before publishing):** the FULLPREFIX patch section reflects the
-> state claude1 described on 2026-08-30 and is marked where his in-flight change may have
-> altered it. Confirm the final state with him before treating §3.3 as current.
-
 ---
 
 ## 1. What this is
@@ -25,7 +21,7 @@ Two sentences of honesty up front:
   (40s → 27s). Its value is that five 34.5k-token conversations came back **byte-identical**
   after an engine restart (PID changed, `serve-full local=0 hit=33600`) — not that it is fast.
 
-**Where it lives:** inside vLLM itself — four patches in the site-packages of
+**Where it lives:** inside vLLM itself — a small patch set (five patches, §3) in the site-packages of
 `/opt/conda/envs/1cat-vllm-sm70-130` plus connector configuration in
 `/opt/proxlab/services/1cat-vllm-5003.sh`. There is **no proxy or shim in the path**.
 
@@ -45,8 +41,10 @@ The order is enforced by `TieringOffloadingManager.lookup()`:
 RAM tier size: **256 GB = 4,934 blocks ≈ 3.95M tokens**, deliberately ~3.5× the
 1,125,767-token GPU cache, so the working set of every active conversation fits above disk.
 
-## 3. The four patches (`/opt/1cat-vllm/patches/optane-gdn-fix/`, with README)
+## 3. The patches (`/opt/1cat-vllm/patches/optane-gdn-fix/`, with README)
 
+Four named fixes below; the full patch set is versioned in gitea
+**`claude/optane-kv-cache`** (private) — `patch_mambafix2.py` is the load-bearing one.
 Each exists because something measurable was wrong. They are inert without
 `--kv-transfer-config` (see §8, Rollback).
 
@@ -65,14 +63,20 @@ so nothing is stored before its state exists.
 The store path had a barrier against compute; the load path had none, so compute could
 read blocks **mid-copy**. One-line stream-ordering fix.
 
-### 3.3 FULLPREFIX — the upstream gate, ported ⚠️ *state in flux*
+### 3.3 FULLPREFIX — the upstream gate, ported; partial hits now served
 
 Ports upstream PR **#42554**'s gate (`_mamba_block_aligned_split` must not run for
 async-load requests — without it, an external-hit request is silently dropped from
-scheduling every step and parks forever). Originally this patch **also refused partial
-hits** (no-splice policy: a snapshot is consumed whole or not at all).
-**⚠️ As of 2026-08-30 claude1 was relaxing the partial-hit half — confirm the final
-policy before relying on this paragraph.**
+scheduling every step and parks forever; follow-up **#44599**, tracking issue **#41515**).
+
+The partial-hit policy is **serve-partial** (final, 2026-08-30): a partial prefix hit is
+served as-is. The earlier **refuse-partial** policy — zero the hit and recompute whenever
+coverage wasn't total — was a *workaround* for the store-before-write corruption, not a
+design choice; once MAMBAFIX fixed the actual cause (§3.1), the restriction protected
+against nothing. Measured consequence: the relaxation is **inert in practice** —
+serve-partial events = 0 in the verification reruns, because MAMBAFIX removed the
+tail-block partial case that used to produce them. It removes a restriction we no longer
+need rather than unlocking new hits.
 
 ### 3.4 HOTNESS — eviction that knows what's warm
 
@@ -88,6 +92,22 @@ the **shared prefix first**, the worst possible choice (see §6).
 | `--mamba-cache-mode all` | `align` keeps only 2 rolling state pages — there is no per-block checkpoint to store. `all` materialises the checkpoints the connector needs. |
 | `--no-disable-hybrid-kv-cache-manager` | vLLM auto-disables HMA whenever any `kv_transfer_config` is set unless the user states a preference; without HMA the hybrid specs can't unify and the engine won't start. |
 | RAM tier 256 GB | 4,934 blocks ≈ 3.95M tokens ≈ 3.5× the GPU cache (§2). |
+
+## 4b. Auto-wiring — how a launch gets the connector (2026-08-30, AI-Lab `1d3c56c`)
+
+Every 1cat-vllm launch now receives the connector **automatically** — there is no toggle.
+(Previously this sat behind `AILAB_VLLM_KV_OFFLOAD=1` and emitted the RAM-only
+`CPUOffloadingSpec` path; llama.cpp was already automatic via `--slot-save-path`.)
+
+Mechanics worth knowing before you debug a "connector missing" surprise:
+
+- The connector config is emitted as a **shell preamble decided at START time**, gated on
+  a **readiness marker inside site-packages** that `install-marker.sh` writes only after
+  **all five patches verify**.
+- Consequence, deliberate: a vLLM **reinstall silently reverts to no-connector** instead
+  of asserting at init. The engine stays up; the tier stack is simply absent. After any
+  env rebuild, check the launch log for `Created secondary tier #0 (fs)` (§8.3) and
+  re-run the patch install if it's gone.
 
 ## 5. Performance — keep the two numbers apart
 
