@@ -356,6 +356,36 @@ export class HermesManagementService {
   private failoverTimer: ReturnType<typeof setInterval> | null = null
 
   /** Models the proxy is actually serving right now — the same authority the binding audit uses. */
+  /**
+   * Served-model names belonging to services AI-Lab records as SUSPENDED.
+   *
+   * A suspended model is absent from /v1/models exactly like a crashed one, so the
+   * served list alone cannot tell a deliberate act from a fault -- and alarming on a
+   * routine suspend is how an alert channel teaches its reader to ignore it. Travis
+   * suspends services constantly while testing.
+   *
+   * Returns an EMPTY set on failure rather than throwing: not being able to check which
+   * services are suspended is not evidence that none are, but it must not take the
+   * binding audit down with it.
+   */
+  private async suspendedServedModels(): Promise<Set<string>> {
+    try {
+      const url = `${process.env.AILAB_PROXY_URL || 'http://127.0.0.1:17890'}/api/ai/active-services`
+      const r = await fetch(url, { signal: AbortSignal.timeout(15000) })
+      if (!r.ok) return new Set()
+      const body = (await r.json()) as { services?: Record<string, Record<string, unknown>> }
+      const out = new Set<string>()
+      for (const svc of Object.values(body.services || {})) {
+        if (!svc || typeof svc !== 'object' || !svc.suspended) continue
+        const n = String(svc.servedModelName || '').trim()
+        if (n) out.add(n)
+      }
+      return out
+    } catch {
+      return new Set()
+    }
+  }
+
   private async servedModels(): Promise<Set<string>> {
     const url = `${process.env.AILAB_PROXY_URL || 'http://127.0.0.1:17890'}/api/proxy/llm/v1/models`
     const r = await fetch(url, { signal: AbortSignal.timeout(15000) })
@@ -461,6 +491,8 @@ export class HermesManagementService {
    * the others, and a role that stays broken goes quiet the moment a second one breaks.
    */
   private unservedAlarmed = new Set<string>()
+  /** Suspend suppressions already logged, so an unchanged suspend is stated once, not per pass. */
+  private suspendedLogged = new Set<string>()
   async checkModelBindings(): Promise<void> {
     let served: Set<string>
     try {
@@ -470,12 +502,27 @@ export class HermesManagementService {
     }
     if (served.size === 0) return
 
+    const suspended = await this.suspendedServedModels()
     const unserved: Array<{ key: string; model: string }> = []
     for (const [key, role] of Object.entries(this.loadSupportModels())) {
       if ((role?.provider || '') !== 'ailab') continue   // judged against the wrong catalogue otherwise
       const model = role?.model || ''
       if (!model || model === 'auto') continue
-      if (!served.has(model)) unserved.push({ key, model })
+      if (served.has(model)) continue
+      // Deliberately suspended is not broken. Debug-logged rather than silent, so a
+      // suppression is still traceable to a reason.
+      if (suspended.has(model)) {
+        // Log the DECISION, not every pass. The audit runs every 30s, so an unchanged
+        // suspend would otherwise write ~120 identical lines an hour into the journal —
+        // the same noise argument as latching an alert, one layer down.
+        const sig = `${key}::${model}`
+        if (!this.suspendedLogged.has(sig)) {
+          this.suspendedLogged.add(sig)
+          console.log(`[model-bindings] role '${key}' names '${model}', whose service is SUSPENDED — expected, not raising`)
+        }
+        continue
+      }
+      unserved.push({ key, model })
     }
     // ONE EVENT PER ROLE, never an aggregate. An aggregate message has to interpolate a
     // count or a joined list, and both change as roles are fixed — so a role that is STILL
@@ -496,6 +543,11 @@ export class HermesManagementService {
     // Forget roles that are no longer broken, so a genuine RECURRENCE alarms again rather
     // than being suppressed forever by the first occurrence.
     for (const key of [...this.unservedAlarmed]) if (!nowUnserved.has(key)) this.unservedAlarmed.delete(key)
+    // Drop log markers for roles no longer suspended, so a FUTURE suspend is announced again
+    // rather than silently inheriting the first one's "already logged".
+    for (const sig of [...this.suspendedLogged]) {
+      if (!suspended.has(sig.split('::')[1] || '')) this.suspendedLogged.delete(sig)
+    }
   }
 
   /** Start the failover watcher. Idempotent. */

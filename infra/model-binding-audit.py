@@ -21,6 +21,31 @@ SUPPORT_JSON = os.environ.get("AILAB_SUPPORT_MODELS",
                               "/opt/ai-lab/.gybackend-data/hermes-support-models.json")
 MODEL_KEYS = ("model", "default_model", "vlm_model")
 
+def suspended_served() -> set:
+    """Served-model names whose AI-Lab service is SUSPENDED.
+
+    A suspended model is missing from /v1/models exactly like a crashed one, so the served
+    list alone cannot tell a deliberate act from a fault. Travis suspends services routinely
+    while testing, and 21 bindings name the main model, so without this one suspend produces
+    a standing false alarm.
+
+    Empty set on any failure: not being able to check is not evidence that nothing is
+    suspended, but it must not take the audit down.
+    """
+    try:
+        with urllib.request.urlopen(PROXY + "/api/ai/active-services", timeout=15) as r:
+            svcs = (json.loads(r.read().decode()) or {}).get("services") or {}
+        out = set()
+        for s in svcs.values():
+            if isinstance(s, dict) and s.get("suspended"):
+                n = str(s.get("servedModelName") or "").strip()
+                if n:
+                    out.add(n)
+        return out
+    except Exception:
+        return set()
+
+
 def served():
     """The authority: what the proxy will actually answer for right now."""
     with urllib.request.urlopen(PROXY + "/api/proxy/llm/v1/models", timeout=20) as r:
@@ -209,8 +234,13 @@ def main():
             print(f"  {v}  [{', '.join(sorted(keys))}]")
         print()
     if dead:
-        print(f"{dead} binding(s) name a model the proxy is NOT serving — those features are")
-        print("failing silently right now. Fix the binding or start the model.")
+        paused_now = suspended_served()
+        paused_n = len([r for r in rows if r["status"] == "DEAD" and r["value"] in paused_now])
+        print(f"{dead} binding(s) name a model the proxy is NOT serving.")
+        if paused_n:
+            print(f"  {paused_n} of them name a SUSPENDED service — expected, not a fault.")
+        if dead - paused_n:
+            print(f"  {dead - paused_n} are failing silently. Fix the binding or start the model.")
     else:
         print("All bindings resolve to a served model.")
 
@@ -218,7 +248,13 @@ def main():
     # sweep is the normal state and an event for it would be noise, which is how a panel earns
     # being ignored. Reporting never affects the exit code or the audit itself.
     if "--emit" in sys.argv and dead:
-        worst = [r for r in rows if r["status"] == "DEAD"]
+        paused = suspended_served()
+        # A binding naming a deliberately suspended model is expected, not a silent no-op.
+        worst = [r for r in rows if r["status"] == "DEAD" and r["value"] not in paused]
+        for m in sorted({r["value"] for r in rows if r["status"] == "DEAD"} & paused):
+            print(f"suspended, not reported: {m}")
+        if not worst:
+            return 1 if dead else 0
         by_model: dict = {}
         for r in worst:
             by_model.setdefault(r["value"], []).append(f"{r['source']} {r['path']}")

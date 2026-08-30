@@ -15,6 +15,20 @@ import { spawn, execSync } from 'child_process';
 import { randomUUID, createHash } from 'crypto';
 import { computeKvFingerprint, computeVllmKvFingerprint } from '../../kvcache/fingerprint.js';
 import multer from 'multer';
+
+/**
+ * Pull `--served-model-name X` out of a launch command.
+ *
+ * Unfolds line continuations FIRST. Generated launchers put every flag on its own line
+ * ending in a backslash, and a backslash is not \s -- the same trap that silently made
+ * every vLLM service share one KV pool until 436a853.
+ */
+function extractServedModelName(cmd) {
+  const flat = String(cmd || '').replace(/\\\r?\n\s*/g, ' ');
+  const m = flat.match(/--served-model-name[ =]+("([^"]+)"|'([^']+)'|([^\s\\]+))/);
+  return m ? (m[2] || m[3] || m[4] || '').trim() : '';
+}
+
 import { fileURLToPath } from 'url';
 import { getClusterGpus, getGpuVramUsage, getAllGpuSpecs } from '../services/gpu-specs.js';
 import { estimateVram, getModelPresets, getQuantFormats } from '../services/vram-calc.js';
@@ -2678,6 +2692,12 @@ WantedBy=multi-user.target
       isTts: isTts || false,
       ...(isTools ? { isTools: true } : {}),
       model: model || null,
+      // The name the PROXY routes by, which is what every model BINDING names --
+      // distinct from `model` above, which is the weights path shown in the UI.
+      // Captured here because it is only knowable from the launch command: once a
+      // service is suspended it vanishes from /v1/models and from the catalogue, so
+      // nothing downstream can tell "deliberately suspended" from "gone" without it.
+      servedModelName: extractServedModelName(finalCommand) || null,
       modelFamily: modelFamily || null,
       modelVariant: modelVariant || null,
       quantFormat: quantFormat || null,
