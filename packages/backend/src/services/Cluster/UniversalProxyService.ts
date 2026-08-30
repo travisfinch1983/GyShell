@@ -36,6 +36,8 @@ export class UniversalProxyService {
   private vectorList: unknown = null
   /** AI-Lab x Hermes control-plane HTTP surface (createHermesRouter) — set via start opts. */
   private hermesRouter: unknown = null
+  /** NotificationsService — set via start opts; receives ai.js broadcast() events + mounts /api/notifications. */
+  private notifications: { ingestAiEvent: (msg: any) => void } | null = null
   private agentToolsRouter: unknown = null
 
   private detectLanIp(): string {
@@ -99,7 +101,8 @@ export class UniversalProxyService {
       conn.connect({ host, port: 22, username: 'root', privateKey: key, readyTimeout: opts.timeout || 12000, hostVerifier: () => true })
     })
 
-  async start(opts: { dataDir?: string; host?: string; port?: number; hermesRouter?: unknown; agentToolsRouter?: unknown } = {}): Promise<void> {
+  async start(opts: { dataDir?: string; host?: string; port?: number; hermesRouter?: unknown; agentToolsRouter?: unknown; notifications?: unknown } = {}): Promise<void> {
+    this.notifications = (opts.notifications as typeof this.notifications) ?? this.notifications
     this.hermesRouter = opts.hermesRouter ?? this.hermesRouter
     this.agentToolsRouter = opts.agentToolsRouter ?? this.agentToolsRouter
     this.dataDir = opts.dataDir || this.dataDir
@@ -177,6 +180,14 @@ export class UniversalProxyService {
     // watchdogs). The watchdog honors the persisted enable flag and always skips suspended
     // services, and re-checks suspend/disable intent immediately before any restart — so a
     // suspended service is never auto-resurrected.
+    // The watchdog's broadcast() events (watchdog-restart / watchdog-never-healthy)
+    // finally get their consumer: the Notifications panel.
+    if (this.notifications) {
+      const sink = this.notifications
+      aiModule.setBroadcast?.((msg: unknown) => {
+        try { sink.ingestAiEvent(msg as { type?: string }) } catch { /* a bad event must not kill the proxy */ }
+      })
+    }
     aiModule.startWatchdog?.()
 
     // #266 auto model-cacher: on boot, reconcile the tmpfs cache against the model-cache.json
@@ -315,6 +326,11 @@ export class UniversalProxyService {
     app.use(createFlowchartsRouter(this.dataDir))
     // Pages store (Pages tab): /api/pages/* — versioned documents, same dataDir pattern.
     app.use(createPagesRouter(this.dataDir))
+    // Notifications: /api/notifications/* — state, emit (the estate-wide cheap path), ack, debug.
+    if (this.notifications) {
+      const { createNotificationsRouter } = await import('../Notifications/notificationsHttp')
+      app.use(createNotificationsRouter(this.notifications as never))
+    }
     // SVG store + rasteriser, feeding both the SVG tab and the svg_* MCP tools.
     app.use(createSvgsRouter(this.dataDir))
     app.use(createNotesRouter(this.dataDir))

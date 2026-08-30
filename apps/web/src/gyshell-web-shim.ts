@@ -276,6 +276,12 @@ const gyshellApi = {
     testPve: () => rpc('clusterSettings:testPve'),
   },
 
+  notifications: {
+    onEvent: (cb: (evt: any) => void): CleanupFn => onRaw('notify:event', cb),
+    onDebug: (cb: (entry: any) => void): CleanupFn => onRaw('notify:debug', cb),
+    onHealth: (cb: (health: any[]) => void): CleanupFn => onRaw('notify:health', cb),
+    onAcked: (cb: (data: any) => void): CleanupFn => onRaw('notify:acked', cb),
+  },
   fleet: {
     // ConversationBus (fleet vertical): feed replay/live-tail, sends, guard config.
     send: (request: any) => rpc('fleet:send', request),
