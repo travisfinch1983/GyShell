@@ -49,6 +49,13 @@ export interface HealthCheckConfig {
   /** http only: acceptable statuses. 'any-response' = any HTTP response proves liveness. */
   expect?: number[] | '2xx3xx' | 'any-response'
   timeoutMs?: number
+  /**
+   * Consecutive failed probes required before this dependency is declared DOWN.
+   * A single missed probe is a blip, not an outage: the alarm wakes a maintainer,
+   * so it must cost more than one slow response to raise. The status board still
+   * shows the live result immediately -- only the EVENT waits for confirmation.
+   */
+  confirmations?: number
   /** Severity of the event raised when this dependency goes down. */
   downSeverity: 'warning' | 'error' | 'critical'
 }
@@ -61,6 +68,13 @@ export interface HealthState {
   checkedAt: string
   downSeverity: HealthCheckConfig['downSeverity']
 }
+
+/**
+ * A dependency must fail this many probes in a row before it is called DOWN.
+ * At the default 30s interval that is a minute of real failure, which a genuine
+ * outage survives easily and a slow response does not.
+ */
+const DEFAULT_CONFIRMATIONS = Number(process.env.AILAB_HEALTH_CONFIRMATIONS ?? 2)
 
 const EVENT_CAP = 1000
 const DEBUG_CAP = 500
@@ -79,7 +93,10 @@ const DEFAULT_CHECKS: HealthCheckConfig[] = [
   { id: 'chroma', label: 'ChromaDB', kind: 'http', target: 'http://127.0.0.1:8000/api/v2/heartbeat', expect: '2xx3xx', downSeverity: 'error' },
   { id: 'hippocampai', label: 'HippocampAI memory', kind: 'http', target: 'http://127.0.0.1:8010/healthz', expect: '2xx3xx', downSeverity: 'error' },
   { id: 'openviking', label: 'OpenViking memory', kind: 'http', target: 'http://127.0.0.1:1933/health', expect: '2xx3xx', downSeverity: 'error' },
-  { id: 'unified-memory', label: 'Unified memory MCP', kind: 'http', target: 'http://127.0.0.1:9847/u/healthprobe/mcp', expect: 'any-response', downSeverity: 'error' },
+  // Fans out to five vector DBs behind MCPJungle, so a busy moment can outlast the
+  // default deadline without anything being wrong. Longer timeout AND an extra
+  // confirmation: this one is the most likely to be slow rather than dead.
+  { id: 'unified-memory', label: 'Unified memory MCP', kind: 'http', target: 'http://127.0.0.1:9847/u/healthprobe/mcp', expect: 'any-response', timeoutMs: 15_000, confirmations: 3, downSeverity: 'error' },
   { id: 'pages-mcp', label: 'Pages MCP', kind: 'http', target: 'http://127.0.0.1:9848/health', expect: '2xx3xx', downSeverity: 'warning' },
   { id: 'internet', label: 'Internet reachability', kind: 'http', target: 'https://1.1.1.1', expect: 'any-response', downSeverity: 'warning' },
   { id: 'dns', label: 'DNS resolution', kind: 'dns', target: 'github.com', downSeverity: 'warning' },
@@ -89,6 +106,10 @@ export class NotificationsService {
   private events: NotifyEvent[] = []
   private debugRing: Array<{ ts: string; source: string; message: string }> = []
   private health = new Map<string, HealthState>()
+  /** Consecutive down-probes per check id. Reset by any ok, untouched by unknown. */
+  private downStreak = new Map<string, number>()
+  /** Check ids we have actually raised a DOWN event for, so recovery pairs with it. */
+  private alarmed = new Set<string>()
   private checks: HealthCheckConfig[] = []
   private timer: ReturnType<typeof setInterval> | null = null
   private persistTimer: ReturnType<typeof setTimeout> | null = null
@@ -347,22 +368,45 @@ export class NotificationsService {
 
   private async probeAll(): Promise<void> {
     const results = await Promise.all(this.checks.map((c) => this.probeOne(c)))
+    const byId = new Map(this.checks.map((c) => [c.id, c]))
     for (const r of results) {
-      const prev = this.health.get(r.id)
+      // The board always shows the live result. Only the EVENT is debounced --
+      // hiding a red dot would be dishonest, but waking a maintainer for one slow
+      // response is how a notification channel earns the right to be ignored.
       this.health.set(r.id, r)
-      // Transitions become events; steady state stays quiet (an always-on alarm
-      // is ignored by week two).
-      if (prev && prev.status !== r.status) {
-        if (r.status === 'down') {
-          this.notify({
-            severity: r.downSeverity, source: 'health',
-            message: `${r.label} is DOWN`, detail: r.reason,
-          })
-        } else if (r.status === 'ok' && prev.status === 'down') {
-          this.notify({ severity: 'info', source: 'health', message: `${r.label} recovered` })
-        } else if (r.status === 'unknown') {
-          this.debug('health', `${r.label}: check could not run (${r.reason})`)
+
+      if (r.status === 'unknown') {
+        // The CHECK could not run. That says nothing about the dependency, so it
+        // must neither advance nor clear the streak.
+        this.debug('health', `${r.label}: check could not run (${r.reason})`)
+        continue
+      }
+
+      if (r.status === 'down') {
+        const streak = (this.downStreak.get(r.id) ?? 0) + 1
+        this.downStreak.set(r.id, streak)
+        const needed = byId.get(r.id)?.confirmations ?? DEFAULT_CONFIRMATIONS
+        if (streak >= needed) {
+          // Latched: re-raising every 30s for one ongoing outage is a pager loop.
+          if (!this.alarmed.has(r.id)) {
+            this.alarmed.add(r.id)
+            this.notify({
+              severity: r.downSeverity, source: 'health',
+              message: `${r.label} is DOWN`,
+              detail: `${r.reason} (failed ${streak} consecutive checks)`,
+            })
+          }
+        } else {
+          this.debug('health', `${r.label}: probe failed (${streak}/${needed}) - ${r.reason}`)
         }
+        continue
+      }
+
+      this.downStreak.set(r.id, 0)
+      // Only announce recovery from an outage we actually announced, or the panel
+      // fills with "recovered" lines for failures nobody was ever told about.
+      if (this.alarmed.delete(r.id)) {
+        this.notify({ severity: 'info', source: 'health', message: `${r.label} recovered` })
       }
     }
     this.broadcast('notify:health', [...this.health.values()])
