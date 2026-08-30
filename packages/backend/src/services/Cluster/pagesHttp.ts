@@ -36,7 +36,10 @@ type Res = express.Response
  * routes deliberately do no HTML sanitisation, matching the scoping doc
  * ("the mitigation is an origin boundary, not sanitisation").
  */
-export function createPagesRouter(dataDir: string): express.Router {
+/** Raised when a report or note saved but did not reach its RAG collection. */
+type NotifyFn = (e: { severity: 'warning' | 'error' | 'critical'; source: string; message: string; detail?: string }) => void
+
+export function createPagesRouter(dataDir: string, notify?: NotifyFn): express.Router {
   const router = express.Router()
   const json = express.json({ limit: '8mb' })
   const root = path.join(dataDir, 'pages')
@@ -307,6 +310,15 @@ export function createPagesRouter(dataDir: string): express.Router {
         indexed = false
         indexError = (e as Error).message
         console.warn(`[pages] journal note ${note.id} saved but NOT indexed:`, indexError)
+        // Never blocks the write: a note that saved unindexed is a working note with
+        // degraded search, and refusing it would lose the operator's work. But an
+        // unsearchable note defeats the journal's whole purpose -- spotting the repeat --
+        // and it fails invisibly, so it has to surface somewhere.
+        notify?.({
+          severity: 'warning', source: 'reports-rag',
+          message: `Journal note saved but not indexed - it will not appear in search`,
+          detail: `note ${note.id} in ${cat.collection}: ${indexError}`,
+        })
       }
       res.json({ ok: true, id: note.id, priorSimilar, indexed, indexError })
     } catch (e) { fail(res, 500, String((e as Error).message)) }
@@ -440,6 +452,11 @@ export function createPagesRouter(dataDir: string): express.Router {
             indexed = false
             indexError = (e as Error).message
             console.warn(`[pages] report ${id} saved but NOT indexed:`, indexError)
+            notify?.({
+              severity: 'warning', source: 'reports-rag',
+              message: `Report saved but not indexed - it will not appear in search`,
+              detail: `report ${id}: ${indexError}`,
+            })
           }
         }
       }

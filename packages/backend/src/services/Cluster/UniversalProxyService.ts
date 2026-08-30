@@ -37,7 +37,7 @@ export class UniversalProxyService {
   /** AI-Lab x Hermes control-plane HTTP surface (createHermesRouter) — set via start opts. */
   private hermesRouter: unknown = null
   /** NotificationsService — set via start opts; receives ai.js broadcast() events + mounts /api/notifications. */
-  private notifications: { ingestAiEvent: (msg: any) => void } | null = null
+  private notifications: { ingestAiEvent: (msg: any) => void; notify?: (e: any) => void } | null = null
   private agentToolsRouter: unknown = null
 
   private detectLanIp(): string {
@@ -325,7 +325,7 @@ export class UniversalProxyService {
     // Flowchart diagram store: /api/flowcharts/* — before the broad /api cluster router.
     app.use(createFlowchartsRouter(this.dataDir))
     // Pages store (Pages tab): /api/pages/* — versioned documents, same dataDir pattern.
-    app.use(createPagesRouter(this.dataDir))
+    app.use(createPagesRouter(this.dataDir, (e) => this.notifications?.notify?.(e)))
     // Notifications: /api/notifications/* — state, emit (the estate-wide cheap path), ack, debug.
     if (this.notifications) {
       const { createNotificationsRouter } = await import('../Notifications/notificationsHttp')
