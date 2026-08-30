@@ -110,17 +110,28 @@ def main():
         print(f"FATAL: cannot list agents ({s})")
         sys.exit(1)
     agents = d.get("agents", [])
-    print(f"{len(agents)} agents; journal → {', '.join(JOURNAL_AGENTS)}\n")
+    # The Hermes roster is not the whole fleet. A Claude Code instance -- maintenance-claude
+    # is the case that matters -- is not a Hermes agent, so it never appeared here, and the
+    # journal toolset exists FOR it. Union the journal agents in or the one toolset with a
+    # named owner is the one that never gets provisioned.
+    missing = [a for a in JOURNAL_AGENTS if a not in agents]
+    agents = list(agents) + missing
+    print(f"{len(agents)} agents ({len(missing)} from JOURNAL_AGENTS, not Hermes); "
+          f"journal → {', '.join(JOURNAL_AGENTS)}\n")
 
     existing = servers()
     ok = failed = 0
     for agent in agents:
         group_name = f"agent-{agent}"
         s, group = call("GET", f"{GW}/api/v0/tool-groups/{group_name}")
-        if s != 200:
-            print(f"  - {agent}: no tool group, skipping (not a gateway agent)")
-            continue
-        current = group.get("included_tools") or []
+        # No tool group is not the same as nothing to do. Hermes agents are scoped by a
+        # group; a Claude Code instance reaches the gateway unscoped and sees every tool,
+        # so it needs the SERVERS registered and has no group to update. Skipping it left
+        # maintenance-claude without the toolset built for it.
+        grouped = s == 200
+        if not grouped:
+            print(f"  · {agent}: no tool group (unscoped gateway client) — registering servers only")
+        current = (group.get("included_tools") or []) if grouped else []
         want_names = []
 
         for toolset, what in TOOLSETS:
@@ -142,6 +153,17 @@ def main():
                 continue
             want_names.extend(tools)
 
+        if not grouped:
+            # Verify the same way, through the gateway, just without a group to read back.
+            have = {ts for ts, _ in TOOLSETS if gateway_tools(f"{ts}-{agent}")}
+            expected = {ts for ts, _ in TOOLSETS if ts != "journal" or agent in JOURNAL_AGENTS}
+            if have == expected:
+                print(f"  + {agent}: {', '.join(sorted(have))} (servers registered, no group)")
+                ok += 1
+            else:
+                print(f"  ! {agent}: VERIFY FAILED — expected {sorted(expected)}, gateway shows {sorted(have)}")
+                failed += 1
+            continue
         if not want_names:
             continue
         # Drop this agent's stale authoring tools, keep everything else untouched,
