@@ -2565,19 +2565,33 @@ export class HermesManagementService {
  * Same shape as the skills bug where Hermes auto-assigned all 778 bundled skills
  * at profile creation.
  */
-private static readonly FORBIDDEN_DOC_TOKENS: Array<[string, RegExp]> = [
-  ['TOOLS.md (consolidated into AGENTS.md)', /\bTOOLS\.md\b/],
-  ['IDENTITY.md (consolidated into SOUL.md)', /\bIDENTITY\.md\b/],
-  ['EXECUTION.md (consolidated into AGENTS.md)', /\bEXECUTION\.md\b/],
+/**
+ * Two CLASSES of token, distinguished by where a hit means anything — a
+ * distinction invisible while the scan walked six known docs, and decisive
+ * once it walked ~7,700 files of mostly third-party skills (claude1,
+ * 2026-08-30):
+ *
+ * - 'anywhere': endpoints, hosts, service names. Unambiguous in ANY file,
+ *   whoever wrote it — a vendored skill mentioning our dead relay is exactly
+ *   as broken as ours doing it.
+ * - 'owned': OUR retired document names. Generic filenames (IDENTITY.md…)
+ *   appear innocently in third-party content — an imported example skill
+ *   linking its OWN ./identity/IDENTITY.md is not a finding, and dozens of
+ *   such hits would get the whole lint ignored inside a week.
+ */
+private static readonly FORBIDDEN_DOC_TOKENS: Array<[string, RegExp, 'anywhere' | 'owned']> = [
+  ['TOOLS.md (consolidated into AGENTS.md)', /\bTOOLS\.md\b/, 'owned'],
+  ['IDENTITY.md (consolidated into SOUL.md)', /\bIDENTITY\.md\b/, 'owned'],
+  ['EXECUTION.md (consolidated into AGENTS.md)', /\bEXECUTION\.md\b/, 'owned'],
   // Flagged by Fable's audit; verified 2026-07-28 to have ZERO references anywhere
   // (no profile, no hermes_cli/agent source, no live doc), so this is pure
   // insurance against it being reintroduced by a future doc merge.
-  ['BOOTSTRAP.md (does not exist)', /\bBOOTSTRAP\.md\b/],
-  ['OpenClaw (decommissioned 2026-07)', /openclaw/i],
-  ['ask-claude (skill deleted; use fleet_send)', /\bask[-_]claude\b/i],
-  ['CT 196 (OpenClaw container, gone)', /\bCT[ -]?196\b/i],
-  ['claude-relay (service decommissioned)', /\bclaude-relay\b/i],
-  ['10.0.0.161:6277 (dead relay endpoint)', /10\.0\.0\.161:6277/],
+  ['BOOTSTRAP.md (does not exist)', /\bBOOTSTRAP\.md\b/, 'owned'],
+  ['OpenClaw (decommissioned 2026-07)', /openclaw/i, 'anywhere'],
+  ['ask-claude (skill deleted; use fleet_send)', /\bask[-_]claude\b/i, 'anywhere'],
+  ['CT 196 (OpenClaw container, gone)', /\bCT[ -]?196\b/i, 'anywhere'],
+  ['claude-relay (service decommissioned)', /\bclaude-relay\b/i, 'anywhere'],
+  ['10.0.0.161:6277 (dead relay endpoint)', /10\.0\.0\.161:6277/, 'anywhere'],
 ]
 
 /**
@@ -2627,18 +2641,26 @@ private static readonly SKILL_FILE_GLOBS =
  * level up from the one it hid.
  */
 async lintProfileDocs(agentId: string): Promise<{
-  findings: Array<{ file: string; line: number; token: string; text: string }>
+  findings: Array<{ file: string; line: number; token: string; text: string; owned: boolean }>
   scannedRoots: string[]
 }> {
-  const findings: Array<{ file: string; line: number; token: string; text: string }> = []
+  const findings: Array<{ file: string; line: number; token: string; text: string; owned: boolean }> = []
   const scannedRoots: string[] = []
   const home = this.profileHome(agentId)
 
-  const scanBody = (fileLabel: string, body: string): void => {
+  /**
+   * `owned` = a surface WE author: core docs and custom/ skills. The vendored
+   * library (imported third-party skills) is scanned with the 'anywhere' class
+   * only — doc-name tokens are generic filenames there, and letting them fire
+   * would bury the handful of fixable findings under noise until the lint is
+   * ignored, which is worse than no lint.
+   */
+  const scanBody = (fileLabel: string, body: string, owned: boolean): void => {
     body.split('\n').forEach((text, i) => {
       if (HermesManagementService.DOC_NEGATION_CONTEXT.test(text)) return
-      for (const [token, re] of HermesManagementService.FORBIDDEN_DOC_TOKENS) {
-        if (re.test(text)) findings.push({ file: fileLabel, line: i + 1, token, text: text.trim().slice(0, 180) })
+      for (const [token, re, tokenClass] of HermesManagementService.FORBIDDEN_DOC_TOKENS) {
+        if (tokenClass === 'owned' && !owned) continue
+        if (re.test(text)) findings.push({ file: fileLabel, line: i + 1, token, text: text.trim().slice(0, 180), owned })
       }
     })
   }
@@ -2651,7 +2673,7 @@ async lintProfileDocs(agentId: string): Promise<{
       continue
     }
     if (!body.trim()) continue
-    scanBody(rel, body)
+    scanBody(rel, body, true)
   }
   scannedRoots.push(`core docs (${HermesManagementService.LINTED_DOCS.length} files under ${home})`)
 
@@ -2681,7 +2703,10 @@ async lintProfileDocs(agentId: string): Promise<{
         fileCount++
         const abs = chunk.slice(0, nl).trim()
         const label = abs.startsWith(root.path) ? abs.slice(root.path.length + 1) : abs
-        scanBody(`${root.path === globalSkills ? 'GLOBAL:' : 'skills/'}${label}`, chunk.slice(nl + 1))
+        // custom/ marks OUR authorship in either tree; everything else in the
+        // global root is the imported library.
+        const owned = root.path !== globalSkills || /(^|\/)custom\//.test(label)
+        scanBody(`${root.path === globalSkills ? 'GLOBAL:' : 'skills/'}${label}`, chunk.slice(nl + 1), owned)
       }
       scannedRoots.push(`${root.label} — ${fileCount} file(s) scanned`)
     } catch (e) {
@@ -2690,6 +2715,9 @@ async lintProfileDocs(agentId: string): Promise<{
       scannedRoots.push(`${root.label} — SCAN FAILED (${String((e as Error)?.message ?? e).slice(0, 120)})`)
     }
   }
+  // Owned findings first: the files we can actually fix must not scroll away
+  // under vendored-library hits.
+  findings.sort((a, b) => Number(b.owned) - Number(a.owned))
   return { findings, scannedRoots }
 }
 
@@ -2846,8 +2874,10 @@ async lintProfileDocs(agentId: string): Promise<{
       // WHAT was looked at (a root that is absent or unreadable says so here).
       console.log(`[hermes] doc-lint surface for ${id}: ${lint.scannedRoots.join(' · ')}`)
       if (docIssues.length) {
+        const ownedCount = lint.findings.filter((f) => f.owned).length
         console.warn(
-          `[hermes] DOC-LINT: ${docIssues.length} dead reference(s) in ${id}'s core docs — ` +
+          `[hermes] DOC-LINT: ${docIssues.length} dead reference(s) for ${id} ` +
+            `(${ownedCount} in files WE own, ${docIssues.length - ownedCount} in the vendored library) — ` +
             `this agent will be told to use things that do not exist:`,
         )
         for (const f of docIssues) console.warn(`  ${id}/${f.file}:${f.line}  [${f.token}]  ${f.text}`)

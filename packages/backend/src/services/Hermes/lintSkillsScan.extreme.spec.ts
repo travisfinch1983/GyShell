@@ -37,9 +37,20 @@ async function main(): Promise<void> {
     'RELAY_URL = "http://10.0.0.161:6277"\nDEFAULT_TO = "openclaw-claude"\n')
   writeFileSync(join(home, 'skills', 'custom', 'escalate', 'SKILL.md'), 'Report blockers upstream.\n')
 
-  // Global skills root with its own offender.
+  // Global skills root: one real offender (endpoint class) and one third-party
+  // example that must NOT fire — an imported skill linking its OWN IDENTITY.md
+  // is the noise class that would get the lint ignored inside a week.
   mkdirSync(join(root, 'skills', 'legacy'), { recursive: true })
   writeFileSync(join(root, 'skills', 'legacy', 'notes.md'), 'See the OpenClaw docs for details.\n')
+  mkdirSync(join(root, 'skills', 'context-engineering', 'examples'), { recursive: true })
+  writeFileSync(join(root, 'skills', 'context-engineering', 'examples', 'SKILL.md'),
+    '- [Identity Module](./identity/IDENTITY.md) - Voice and brand details\n')
+  writeFileSync(join(root, 'skills', 'context-engineering', 'examples', 'deploy.md'),
+    'Runs on CT 196 next to the trainer.\n')
+  // And an OWNED custom skill in the GLOBAL tree citing a retired doc name —
+  // custom/ marks our authorship wherever it lives, so this one MUST fire.
+  mkdirSync(join(root, 'skills', 'custom', 'ours'), { recursive: true })
+  writeFileSync(join(root, 'skills', 'custom', 'ours', 'SKILL.md'), 'Read IDENTITY.md first.\n')
 
   const svc: any = new HermesManagementService({ user: 'spec', profileHomeBase: profiles } as any)
   svc.ssh = async (cmd: string) => (await run('bash', ['-c', cmd])).stdout   // REAL pipeline, local dirs
@@ -58,11 +69,23 @@ async function main(): Promise<void> {
   ok(lint.findings.some((f: any) => f.file.startsWith('GLOBAL:') && f.file.includes('legacy/notes.md')),
     'the GLOBAL skills root is walked and labeled as such')
 
+  // ── token classes: 'owned' tokens must not fire on the vendored library ──
+  ok(!lint.findings.some((f: any) => f.file.includes('context-engineering') && f.token.includes('IDENTITY.md')),
+    "a third-party skill linking its OWN IDENTITY.md does NOT fire — doc-name tokens are owned-only")
+  ok(lint.findings.some((f: any) => f.file.includes('context-engineering/examples/deploy.md') && f.token.includes('CT 196')),
+    'but the SAME vendored tree firing an ENDPOINT token (CT 196) is a finding — a hit is a hit whoever wrote it')
+  ok(lint.findings.some((f: any) => f.file.includes('custom/ours') && f.token.includes('IDENTITY.md')),
+    'custom/ in the global tree is OURS: a doc-name token there fires')
+  const firstVendored = lint.findings.findIndex((f: any) => !f.owned)
+  const lastOwned = lint.findings.map((f: any) => f.owned).lastIndexOf(true)
+  ok(firstVendored === -1 || lastOwned < firstVendored,
+    'owned findings sort FIRST — the fixable files cannot scroll away under library noise')
+
   // scan surface
   ok(lint.scannedRoots.length === 3, 'three roots reported: core docs, profile skills, global skills')
   ok(lint.scannedRoots.some((r: string) => r.includes('skills') && r.includes('2 file(s)')),
     'the profile skills root states HOW MANY files it scanned')
-  ok(lint.scannedRoots.some((r: string) => r.includes('GLOBAL') && r.includes('1 file(s)')),
+  ok(lint.scannedRoots.some((r: string) => r.includes('GLOBAL') && r.includes('4 file(s)')),
     'so does the global root — "no findings" is now distinguishable from "did not look"')
 
   // absent root says so
