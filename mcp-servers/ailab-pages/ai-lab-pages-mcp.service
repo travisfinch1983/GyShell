@@ -1,0 +1,15 @@
+[Unit]
+Description=AI-Lab Pages MCP server (streamable HTTP, per-caller /u/<name>/mcp identity routing)
+After=network.target ai-lab.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/mcp-ailab-pages
+ExecStart=/usr/bin/node /opt/mcp-ailab-pages/server.mjs
+Environment=AILAB_API_URL=http://127.0.0.1:17890
+Environment=AILAB_PAGES_MCP_PORT=9848
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

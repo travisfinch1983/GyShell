@@ -214,6 +214,7 @@ export const PagesPanel: React.FC = observer(() => {
                   {p.currentVersion}
                   {p.versionCount > 1 ? ` (${p.versionCount} versions)` : ''} · {fmtTime(p.updatedAt)}
                 </div>
+                {p.authors.length > 0 && <div className={styles.rowMeta}>by {p.authors.join(' + ')}</div>}
               </button>
             ))
           )}
@@ -242,6 +243,11 @@ export const PagesPanel: React.FC = observer(() => {
         {cur && probe !== 'running' && (
           <div className={styles.viewHead}>
             <span className={styles.viewTitle}>{cur.meta.title}</span>
+            {cur.meta.authors.length > 0 && (
+              <span className={styles.authors} title="Every version records its author — the version picker is the per-edit audit trail.">
+                by {cur.meta.authors.join(' + ')}
+              </span>
+            )}
             <span className={styles.versionWrap} title="Version history — pick one to view; Restore copies it forward as a new version.">
               <History size={12} />
               <select
