@@ -442,6 +442,73 @@ const EditableLine: React.FC<{
   )
 }
 
+/**
+ * Who is actually using this role.
+ *
+ * The card could only ever show one value, so a role where 9 agents carry an override and 11 sit
+ * on Auto rendered as a bare "Auto" — a statement that was true of nobody. This makes the split
+ * visible without making it alarming: for a capability-managed role (vision) the difference is
+ * CORRECT, because Auto there means the agent's own model can already see images.
+ */
+const AgentBreakdown: React.FC<{ task: AuxTask }> = ({ task }) => {
+  const [open, setOpen] = useState(false)
+  const b = task.breakdown
+  if (!b || (!b.overrides.length && !b.autos.length && !b.templates.length)) return null
+
+  const managed = !!task.capabilityManaged
+  const autoMeans = managed
+    ? 'uses its own model (already vision-capable)'
+    : "uses this card's selection"
+  const n = b.overrides.length
+  const summary = n === 0
+    ? `all ${b.autos.length} agents follow this card`
+    : `${n} agent${n === 1 ? '' : 's'} ${managed ? 'need a describer' : 'have their own override'}, ${b.autos.length} follow this card`
+
+  const row: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', gap: 10, padding: '2px 0' }
+  return (
+    <div style={{ marginBottom: 7 }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        style={{ display: 'flex', alignItems: 'center', gap: 5, width: '100%', textAlign: 'left', fontSize: 11,
+                 padding: '4px 7px', borderRadius: 6, cursor: 'pointer', color: 'var(--fg-muted)',
+                 border: '1px solid var(--border)', background: 'var(--control-bg)' }}
+        title="Show exactly which agents follow this card and which carry their own value"
+      >
+        <span style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .12s' }}>›</span>
+        <span>{summary}</span>
+      </button>
+      {open && (
+        <div style={{ fontSize: 11, lineHeight: 1.5, padding: '6px 9px', marginTop: 4, borderRadius: 6,
+                      border: '1px solid var(--border)', background: 'var(--bg-elev, rgba(128,128,128,.06))' }}>
+          {b.overrides.length > 0 && (
+            <>
+              <div style={{ fontWeight: 600, marginBottom: 2 }}>
+                {managed ? 'Assigned a describer (main model cannot see images)' : 'Own override'}
+              </div>
+              {b.overrides.map(({ agent, model }) => (
+                <div key={agent} style={row}><span>{agent}</span><span style={{ opacity: .75 }}>{model}</span></div>
+              ))}
+            </>
+          )}
+          {b.autos.length > 0 && (
+            <>
+              <div style={{ fontWeight: 600, margin: '6px 0 2px' }}>Auto — {autoMeans}</div>
+              <div style={{ opacity: .75 }}>{b.autos.join(', ')}</div>
+            </>
+          )}
+          {b.templates.length > 0 && (
+            <>
+              <div style={{ fontWeight: 600, margin: '6px 0 2px' }}>Templates (not real agents, never applied to)</div>
+              <div style={{ opacity: .6 }}>{b.templates.map((t) => t.agent).join(', ')}</div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 const SupportModelSection: React.FC<{
   task: AuxTask
   role?: SupportModelRole
@@ -489,11 +556,15 @@ const SupportModelSection: React.FC<{
         {!task.shared && !task.external && (
           <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: 'rgba(120,130,255,.18)', color: '#9aa6ff', letterSpacing: '.04em' }}>HERMES</span>
         )}
+        {task.providerDefault && (
+          <span title="Sets providers.ailab.default_model — the model used when a call selects the AI-Lab provider without naming one. An agent with its own model is unaffected." style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: 'rgba(90,200,160,.18)', color: '#5ac8a0', letterSpacing: '.04em' }}>FALLBACK</span>
+        )}
         {task.external && (
           <span title="Consumed by an external service (HippocampAI / OpenViking), not by a Hermes agent. Auto is not valid here — pick a concrete model." style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: 'rgba(255,170,60,.18)', color: '#ffb347', letterSpacing: '.04em' }}>EXTERNAL</span>
         )}
       </div>
       <div className="tts-section-body">
+        <AgentBreakdown task={task} />
         {task.drift && (
           <div style={{ fontSize: 11, lineHeight: 1.45, padding: '6px 8px', marginBottom: 7, borderRadius: 6, border: '1px solid rgba(255,170,60,.35)', background: 'rgba(255,170,60,.10)', color: '#ffb347' }}>
             <strong>Agents disagree on this role.</strong> Saving a value below applies it to every agent.
@@ -507,7 +578,9 @@ const SupportModelSection: React.FC<{
         <div className="tts-field">
           <label>Model{saving === 'model' ? ' (saving…)' : ''}</label>
           <select value={model} onChange={(e) => saveModel(e.target.value)} className="tts-select" disabled={saving === 'model'}>
-            <option value="">{task.external ? 'Auto — NOT SUPPORTED by this consumer' : 'Auto — agent’s own main model'}</option>
+            <option value="">{task.external ? 'Auto — NOT SUPPORTED by this consumer'
+              : task.providerDefault ? 'None — leave the provider without a default'
+              : 'Auto — agent’s own main model'}</option>
             {options.map((id) => <option key={id} value={id}>{id}</option>)}
           </select>
           {status && <span className="tts-hint">{status}</span>}

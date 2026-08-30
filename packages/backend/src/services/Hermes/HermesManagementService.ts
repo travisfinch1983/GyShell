@@ -65,6 +65,23 @@ export const EXTERNAL_SUPPORT_ROLES = new Set<string>(['memory_extraction', 'mem
  *  as drift: it cannot be reconciled and the warning would be permanent. */
 export const CAPABILITY_MANAGED_ROLES = new Set<string>(['vision'])
 
+/** Roles that are NOT `auxiliary.<key>` at all: they set the AI-Lab provider's own
+ *  `providers.ailab.default_model` — the model used when something selects the provider without
+ *  naming a model. It was previously editable only by hand in config.yaml on the host, across the
+ *  global file and every profile, which meant it silently kept naming a retired model. */
+export const PROVIDER_DEFAULT_ROLES = new Set<string>(['default_model'])
+/** The config path a provider-default role writes. */
+const PROVIDER_DEFAULT_PATH = 'providers.ailab.default_model'
+
+/** External role -> the compose service that consumes it. Changing one of these models is not
+ *  live until the container is recreated: HippocampAI reads it as LLM_MODEL and OpenViking
+ *  substitutes it into vlm.model, both at START. Without this the UI reports success while the
+ *  service keeps calling the OLD model — and when that model is gone the feature fails silently. */
+export const EXTERNAL_ROLE_SERVICES: Record<string, string> = {
+  memory_extraction: 'hippocampai',
+  memory_vlm: 'openviking',
+}
+
 /** Profile dirs that are TEMPLATES, not addressable agents. `hermes -p default` means "no
  *  profile" and writes the GLOBAL config, so a template's own config.yaml never receives an
  *  apply — it would sit at Auto forever and manufacture permanent, unfixable "drift". */
@@ -76,11 +93,13 @@ const AUX_TASK_SUPPLEMENT: Array<{ key: string; label: string; description: stri
   { key: 'goal_judge', label: 'Goal Judge', description: 'Judges progress in the /goal tracking loop.' },
   { key: 'session_search', label: 'Session Search', description: 'Searches and ranks your past sessions.' },
   { key: 'monitor', label: 'Monitor', description: 'Classifies items for cron monitors and alerts.' },
+  { key: 'default_model', label: 'Default Model (AI-Lab provider)', description: 'Fallback model for the AI-Lab provider — used when a call selects the provider without naming a model. Written to providers.ailab.default_model in the global config and every agent profile. Not a Hermes aux task; an agent with its own model is unaffected.' },
   { key: 'memory_extraction', label: 'Memory Extraction (HippocampAI)', description: 'EXTERNAL consumer: HippocampAI distills durable memories and runs conflict checks; reads this as LLM_MODEL. Not a Hermes aux role — needs a concrete model, never Auto.' },
   { key: 'memory_vlm', label: 'Memory VLM (OpenViking)', description: 'EXTERNAL consumer: OpenViking vision-language model (vlm.model). Not a Hermes aux role — needs a concrete model, never Auto.' },
 ]
 /** AI-Lab-authored per-role defaults. Precedence: user override (stored) > this default > Hermes short desc. */
 const AUX_ROLE_DEFAULTS: Record<string, { description?: string; recommendation?: string }> = {
+  default_model: { recommendation: 'A general-purpose model you are happy to have answer anything that does not name a model explicitly. This is a FALLBACK, not the agents\u2019 model \u2014 each agent\u2019s own selection still wins.' },
   vision: { recommendation: 'Vision-capable model (or a strong describer). Context \u2265 32k. Only used by text-only agents that need images described.' },
   compression: { recommendation: 'Strong summarizer; long context ideal (\u2265 128k) since it reads large transcripts. A fast, always-warm local model works well.' },
   web_extract: { recommendation: 'Small\u2013mid, fast. Longer context helps for large pages (\u2265 32k).' },
@@ -225,7 +244,23 @@ export class HermesManagementService {
       const distinct = new Set(agentIds.filter((a) => !TEMPLATE_PROFILES.has(a)).map((a) => perAgent[a]))
       return { current: distinct.size === 1 ? [...distinct][0] : '', drift: distinct.size > 1, perAgent }
     }
-    const rows: Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean; external: boolean; capabilityManaged: boolean; current: string; drift: boolean; perAgent: Record<string, string> }> = []
+    // The UI could see `current` but not WHO disagrees, so a role with 9 agents overridden and 11
+    // on Auto rendered as a bare "Auto" — true of nobody in particular. Split it here rather than
+    // in the UI so template profiles (never applied to, permanently "different") are labelled as
+    // such instead of looking like drift.
+    type Breakdown = { overrides: Array<{ agent: string; model: string }>; autos: string[]; templates: Array<{ agent: string; model: string }> }
+    const breakdownOf = (perAgent: Record<string, string>): Breakdown => {
+      const b: Breakdown = { overrides: [], autos: [], templates: [] }
+      for (const [agent, model] of Object.entries(perAgent)) {
+        if (TEMPLATE_PROFILES.has(agent)) b.templates.push({ agent, model })
+        else if (model) b.overrides.push({ agent, model })
+        else b.autos.push(agent)
+      }
+      b.overrides.sort((x, y) => x.agent.localeCompare(y.agent))
+      b.autos.sort()
+      return b
+    }
+    const rows: Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean; external: boolean; capabilityManaged: boolean; providerDefault: boolean; current: string; drift: boolean; perAgent: Record<string, string>; breakdown: Breakdown }> = []
     const add = (key: string, label: string, hermesDesc: string) => {
       if (seen.has(key)) return
       seen.add(key)
@@ -244,10 +279,12 @@ export class HermesManagementService {
         shared: SHARED_SUPPORT_ROLES.has(key),
         external,
         capabilityManaged,
+        providerDefault: PROVIDER_DEFAULT_ROLES.has(key),
         current: live.current,
         // Capability-managed roles are SUPPOSED to differ per agent — not drift.
         drift: capabilityManaged ? false : live.drift,
         perAgent: live.perAgent,
+        breakdown: breakdownOf(live.perAgent),
       })
     }
     for (const [key, label, desc] of live) add(key, label, desc)
@@ -257,7 +294,7 @@ export class HermesManagementService {
 
   /** Persist the full role map; apply the MODEL routing for `applyKeys` (changed model-bearing
    *  roles) to every agent. description/recommendation are UI-only (never pushed to Hermes). */
-  async setSupportModels(roles: SupportModelRoles, applyKeys?: string[]): Promise<{ agentsUpdated: number }> {
+  async setSupportModels(roles: SupportModelRoles, applyKeys?: string[]): Promise<{ agentsUpdated: number; restarted?: Array<{ service: string; role: string; ok: boolean; error?: string }> }> {
     const clean: SupportModelRoles = {}
     for (const [key, r] of Object.entries(roles)) {
       if (!r) continue
@@ -269,9 +306,29 @@ export class HermesManagementService {
       if (r.noThink !== undefined) entry.noThink = !!r.noThink
       if (Object.keys(entry).length) clean[key] = entry
     }
+    // Capture the PREVIOUS models before overwriting, so a container is recreated only when the
+    // model actually changed. Every field edit (description, recommendation) goes through this
+    // same path; restarting two containers because someone fixed a typo would be indefensible.
+    const before: Record<string, string> = {}
+    try {
+      for (const [k, r] of Object.entries(this.loadSupportModels())) before[k] = (r as SupportModelRole)?.model || ''
+    } catch { /* first write, or unreadable — treat every key as changed */ }
+
     if (this.cfg.supportModelsFile) atomicWriteJson(this.cfg.supportModelsFile, clean)
     const keys = (applyKeys && applyKeys.length ? applyKeys : Object.keys(clean))
     if (!keys.length) return { agentsUpdated: 0 }
+
+    // The provider default also lives in the GLOBAL config, which no per-agent apply reaches.
+    // `hermes -p default` addresses the global file (see TEMPLATE_PROFILES).
+    if (keys.includes('default_model')) {
+      const m = clean['default_model']?.model || ''
+      try {
+        if (m) await this.hermes(['-p', 'default', 'config', 'set', PROVIDER_DEFAULT_PATH, m])
+        else await this.hermes(['-p', 'default', 'config', 'unset', PROVIDER_DEFAULT_PATH])
+      } catch (e) {
+        console.warn('[support-models] global provider default write failed:', (e as Error)?.message || e)
+      }
+    }
     const agents = await this.listAgents()
     // Reconcile agents CONCURRENTLY — this used to be serial (8 agents x up to 3 `hermes
     // config set` calls each = ~24 sequential round-trips) and felt broken in the UI.
@@ -286,7 +343,48 @@ export class HermesManagementService {
       }
     }))
     const n = results.filter(Boolean).length
-    return { agentsUpdated: n }
+    const restarted = await this.recreateExternalConsumers(keys, before, clean)
+    return { agentsUpdated: n, ...(restarted.length ? { restarted } : {}) }
+  }
+
+  /**
+   * Recreate the containers that consume an external role, when that role's MODEL changed.
+   *
+   * HippocampAI reads the model as LLM_MODEL and OpenViking substitutes it into vlm.model, both
+   * at container start. Saving a new model without recreating leaves the UI reporting success
+   * while the service keeps calling the old one — and once that model is no longer served the
+   * feature fails silently, which is precisely how extraction sat dead against a retired 9B.
+   */
+  private async recreateExternalConsumers(
+    keys: string[],
+    before: Record<string, string>,
+    after: SupportModelRoles,
+  ): Promise<Array<{ service: string; role: string; ok: boolean; error?: string }>> {
+    const compose = process.env.AILAB_COMPOSE_FILE || '/opt/ai-lab/infra/docker/compose.yml'
+    const services = new Map<string, string>()   // service -> the role that triggered it
+    for (const key of keys) {
+      const svc = EXTERNAL_ROLE_SERVICES[key]
+      if (!svc) continue
+      const now = after[key]?.model || ''
+      if (now === (before[key] || '')) continue  // unchanged — nothing to restart for
+      if (!services.has(svc)) services.set(svc, key)
+    }
+    if (!services.size) return []
+    const out: Array<{ service: string; role: string; ok: boolean; error?: string }> = []
+    for (const [svc, role] of services) {
+      try {
+        await this.ssh(`docker compose -f ${shq(compose)} up -d --force-recreate ${shq(svc)} 2>&1`)
+        console.log(`[support-models] recreated ${svc} to pick up ${role}=${after[role]?.model || '(cleared)'}`)
+        out.push({ service: svc, role, ok: true })
+      } catch (e) {
+        const error = (e as Error)?.message || String(e)
+        // Report rather than throw: the model assignment IS saved, and a failed restart must be
+        // visible instead of turning a successful save into an error the operator can't interpret.
+        console.warn(`[support-models] recreate of ${svc} failed:`, error)
+        out.push({ service: svc, role, ok: false, error })
+      }
+    }
+    return out
   }
 
   /** Apply one support-model role to one agent. `vision` keeps its capability-aware special apply;
@@ -297,6 +395,14 @@ export class HermesManagementService {
     // them into auxiliary.<key> would invent a phantom role on every agent. The stored
     // support-models file is their only channel.
     if (EXTERNAL_SUPPORT_ROLES.has(key)) return
+    // Provider-default roles write the PROVIDER's fallback, not an aux task. Clearing it is a
+    // real choice (fall back to whatever Hermes' own default is), so an empty value unsets.
+    if (PROVIDER_DEFAULT_ROLES.has(key)) {
+      const m = role?.model || ''
+      if (m) await this.hermes(['-p', agentId, 'config', 'set', PROVIDER_DEFAULT_PATH, m])
+      else await this.hermes(['-p', agentId, 'config', 'unset', PROVIDER_DEFAULT_PATH]).catch(() => {})
+      return
+    }
     // Aux timeout (scalar -> config set) + no-think (dict extra_body -> yaml write). Orthogonal to routing.
     if (role && typeof role.timeout === 'number' && role.timeout > 0) {
       await this.hermes(['-p', agentId, 'config', 'set', `auxiliary.${key}.timeout`, String(role.timeout)])
@@ -840,6 +946,9 @@ export class HermesManagementService {
       '    for k, v in aux.items():',
       '        if isinstance(v, dict):',
       '            roles[k] = {"provider": v.get("provider") or "", "model": v.get("model") or ""}',
+      '    prov = (cfg.get("providers") or {}).get("ailab") or {}',
+      '    if isinstance(prov, dict):',
+      '        roles["default_model"] = {"provider": "ailab", "model": prov.get("default_model") or ""}',
       '    out[agent] = roles',
       'print(json.dumps(out))',
     ].join('\n')

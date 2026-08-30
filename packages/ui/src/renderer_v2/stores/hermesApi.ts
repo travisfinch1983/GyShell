@@ -44,6 +44,15 @@ export interface AuxTask {
   /** Agents disagree; `current` is '' and perAgent holds the split. */
   drift?: boolean
   perAgent?: Record<string, string>
+  /** Sets `providers.ailab.default_model` rather than an `auxiliary.<key>` role. */
+  providerDefault?: boolean
+  /** perAgent split into what it MEANS, computed backend-side so template profiles (which are
+   *  never applied to) are labelled rather than looking like drift. */
+  breakdown?: {
+    overrides: Array<{ agent: string; model: string }>
+    autos: string[]
+    templates: Array<{ agent: string; model: string }>
+  }
 }
 
 export interface HermesPromptResult {

@@ -75,22 +75,43 @@ def collect():
                 b.append({"source": src, "path": "<unparseable>", "value": f"ERROR {e}"})
     except ImportError:
         b.append({"source": "hermes", "path": "<skipped>", "value": "ERROR pyyaml missing"})
-    # 3. Container ENV — invisible to any file grep; this is the one that bit us before
+    # 3. Container ENV — invisible to any file grep; this is the one that bit us before.
+    #
+    # Read PID 1's environ, not Config.Env. Config.Env is what the env_file supplied at create
+    # time; hippocampai's entrypoint deliberately OVERRIDES it from the mounted support-models
+    # file ("file wins, env is the fallback"), so Config.Env stays at whatever .env said forever.
+    # Auditing it would report a permanent false failure for a container that is in fact using
+    # the right model -- the precise kind of noise that makes an audit worth ignoring.
     for c in [x for x in sh("docker ps --format '{{.Names}}'").split() if x]:
-        for line in sh(f"docker inspect {c} --format '{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}'").splitlines():
+        # The redirect must run INSIDE the container: `docker exec c tr ... < /proc/1/environ`
+        # feeds the HOST's pid-1 environ to the container's tr.
+        live = sh(f"""docker exec {c} sh -c 'tr "\\0" "\\n" < /proc/1/environ' 2>/dev/null""")
+        src = f"docker env: {c}" if live.strip() else f"docker env: {c} (create-time)"
+        for line in (live if live.strip() else
+                     sh(f"docker inspect {c} --format '{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}'")).splitlines():
             if "=" not in line:
                 continue
             k, v = line.split("=", 1)
             if k.upper().endswith("_MODEL") and v.strip():
-                b.append({"source": f"docker env: {c}", "path": k, "value": v.strip()})
-    # 4. Configs INSIDE containers
-    ov = sh("docker exec ailab-openviking cat /root/.openviking/ov.conf 2>/dev/null")
+                b.append({"source": src, "path": k, "value": v.strip()})
+    # 4. Configs INSIDE containers.
+    #
+    # Read the config the process was ACTUALLY given, not the one on disk at the mount path.
+    # openviking mounts ov.conf READ-ONLY as a source and its entrypoint emits a substituted
+    # runtime copy (vlm.model comes from the support-models file), then runs with --config on
+    # that copy. Auditing the source reports the pre-substitution value forever -- it read as a
+    # stale pointer immediately after a recreate that had in fact applied the new model.
+    cmdline = sh("""docker exec ailab-openviking sh -c 'tr "\\0" " " < /proc/1/cmdline' 2>/dev/null""")
+    m = re.search(r"--config\s+(\S+)", cmdline)
+    conf_path = m.group(1) if m else "/root/.openviking/ov.conf"
+    ov = sh(f"docker exec ailab-openviking cat {conf_path} 2>/dev/null")
     if ov.strip():
+        label = f"in-container: openviking {os.path.basename(conf_path)}"
         try:
-            walk_yaml(json.loads(ov), "", b, "in-container: openviking ov.conf")
+            walk_yaml(json.loads(ov), "", b, label)
         except Exception:
-            for m in re.finditer(r'"model"\s*:\s*"([^"]+)"', ov):
-                b.append({"source": "in-container: openviking ov.conf", "path": "model", "value": m.group(1)})
+            for mm in re.finditer(r'"model"\s*:\s*"([^"]+)"', ov):
+                b.append({"source": label, "path": "model", "value": mm.group(1)})
     return b
 
 # Not every model key routes through the LLM proxy. TTS/STT/embedding/rerank bindings name models
