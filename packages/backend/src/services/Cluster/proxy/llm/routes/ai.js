@@ -7450,6 +7450,9 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
   // If a service fails consecutive checks beyond its threshold, auto-restarts via systemd.
   // Services get a startup grace period where health checks are skipped.
   const watchdogFailCounts = {};  // { serviceId: consecutiveFailures }
+  // { serviceId: the startedAt of the run that answered } — keyed on startedAt so a restart
+  // or resume (both of which rewrite startedAt) invalidates it automatically.
+  const watchdogEverHealthy = {};
   const WATCHDOG_INTERVAL = 30000;
   const WATCHDOG_MAX_FAILS_DEFAULT = 5;  // ~2.5 min default (5 x 30s)
   // watchdogEnabled persists across backend restarts so an operator's "off" intent sticks
@@ -7475,7 +7478,13 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
     comfyui:   180,  // 3 min — custom node loading
     fooocus:   180,
     invokeai:  180,
-    vllm:      120,  // 2 min — model loading
+    vllm:      300,  // 5 min — model loading; a large TP model exceeds 2 min on its own
+    // The V100 fork loads far more slowly than plain vLLM: TP4 weight load, then the KV-offload
+    // connector maps a ~226GiB /dev/shm region and allocates per-rank CPU tensors, then CUDA
+    // graph capture. Measured cold start on the 27B: ~380s. With no entry here it inherited the
+    // 60s default, so the watchdog began counting failures three minutes before the engine could
+    // possibly answer, and restarted it mid-load every time.
+    '1cat-vllm': 600,  // 10 min
     koboldcpp: 90,
     'llama-server': 90,
     default:   60,   // 1 min for everything else
@@ -7486,8 +7495,18 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
     sdnext:    10,   // 5 min (10 x 30s) — very slow startup
     comfyui:   8,
     vllm:      6,
+    '1cat-vllm': 10,  // 5 min past the grace period
     default:   WATCHDOG_MAX_FAILS_DEFAULT,
   };
+
+  // A service that has NEVER answered since its current start is in a different situation from
+  // one that was serving and stopped. Restarting the second can genuinely recover it; restarting
+  // the first just throws away however much load progress it had made and starts the same slow
+  // startup again -- which is how a slow model turns into a restart loop rather than a running
+  // service. Tolerate far longer before acting on a service that has not come up yet, and say so
+  // in the log, because the honest diagnosis there is "still starting or misconfigured", and a
+  // restart addresses neither.
+  const NEVER_HEALTHY_MAX_FAILS = 40;  // 20 min past the grace period
 
   /** Health check paths by provider */
   const HEALTH_PATHS = {
@@ -7717,6 +7736,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
         clearTimeout(timer);
 
         if (resp.ok) {
+          watchdogEverHealthy[id] = svc.startedAt;
           if (watchdogFailCounts[id]) {
             console.log(`[watchdog] ${svc.providerId}:${svc.port} recovered`);
             delete watchdogFailCounts[id];
@@ -7728,9 +7748,11 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
       } catch (e) {
         watchdogFailCounts[id] = (watchdogFailCounts[id] || 0) + 1;
         const fails = watchdogFailCounts[id];
-        console.warn(`[watchdog] ${svc.providerId}:${svc.port} failed (${fails}/${maxFails}): ${e.message}`);
+        const everHealthy = watchdogEverHealthy[id] === svc.startedAt;
+        const effMaxFails = everHealthy ? maxFails : NEVER_HEALTHY_MAX_FAILS;
+        console.warn(`[watchdog] ${svc.providerId}:${svc.port} ${everHealthy ? 'failed' : 'not up yet'} (${fails}/${effMaxFails}): ${e.message}`);
 
-        if (fails >= maxFails) {
+        if (fails >= effMaxFails) {
           // Re-check intent right before acting: the fetch loop is async, so a suspend (or a
           // global watchdog-disable) could have landed while this service's checks were in flight.
           // Reloading state prevents the watchdog from resurrecting a just-suspended service —
@@ -7738,6 +7760,14 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
           const fresh = loadActiveServices().services?.[id];
           if (!watchdogEnabled || !fresh || fresh.suspended) {
             console.log(`[watchdog] Skipping restart of ${svc.providerId}:${svc.port} (suspended/disabled/removed mid-cycle)`);
+            delete watchdogFailCounts[id];
+            continue;
+          }
+          if (!everHealthy) {
+            // Never answered since this start. Restarting cannot fix a still-loading or
+            // misconfigured service, and would hide the real problem behind a loop.
+            console.error(`[watchdog] ${svc.providerId}:${svc.port} has NOT become healthy since it started (${fails} checks). NOT restarting — a restart cannot fix a service that never came up. Check the service log.`);
+            broadcast({ type: 'watchdog-never-healthy', serviceId: id, name: svc.providerId });
             delete watchdogFailCounts[id];
             continue;
           }
