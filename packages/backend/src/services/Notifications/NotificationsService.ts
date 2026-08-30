@@ -131,6 +131,7 @@ export class NotificationsService {
     mkdirSync(this.dir(), { recursive: true })
     this.loadEvents()
     this.loadChecks()
+    this.loadRouting()
   }
 
   private dir(): string {
@@ -139,6 +140,79 @@ export class NotificationsService {
 
   private eventsFile(): string {
     return path.join(this.dir(), 'events.json')
+  }
+
+  private routingFile(): string {
+    return path.join(this.dir(), 'routing.json')
+  }
+
+  private loadRouting(): void {
+    try {
+      if (!existsSync(this.routingFile())) return
+      const raw = JSON.parse(readFileSync(this.routingFile(), 'utf8'))
+      // Suspension must survive a restart. A toggle that quietly re-arms on the next deploy
+      // would wake the agent mid-build, which is the thing being switched off.
+      this.routing = { ...this.routing, ...raw, suppressedEvents: raw.suppressedEvents ?? [] }
+    } catch (e) {
+      console.warn('[notify] could not read routing state, defaulting to ACTIVE:', (e as Error)?.message)
+    }
+  }
+
+  private saveRouting(): void {
+    try {
+      mkdirSync(this.dir(), { recursive: true })
+      writeFileSync(this.routingFile(), JSON.stringify(this.routing, null, 2))
+    } catch (e) {
+      console.warn('[notify] could not persist routing state:', (e as Error)?.message)
+    }
+  }
+
+  /** Whether the env var hard-disables routing regardless of the runtime toggle. */
+  private envDisabled(): boolean {
+    const to = process.env.AILAB_MAINTAINER_AGENT
+    return to === 'off' || to === ''
+  }
+
+  routingState(): {
+    suspended: boolean; reason: string; since: string; suppressed: number
+    envDisabled: boolean; recipient: string
+    suppressedEvents: Array<{ id: string; severity: NotifySeverity; source: string; message: string; ts: string }>
+  } {
+    return {
+      ...this.routing,
+      envDisabled: this.envDisabled(),
+      recipient: process.env.AILAB_MAINTAINER_AGENT || 'maintenance-claude',
+    }
+  }
+
+  /**
+   * Suspend or resume forwarding. On RESUME, the agent is told what it missed in one
+   * message rather than replaying the backlog — the point of the pause was not to wake it,
+   * and replaying would defeat that at the exact moment it comes back.
+   */
+  setRouting(suspended: boolean, reason = ''): ReturnType<NotificationsService['routingState']> {
+    const was = this.routing.suspended
+    if (suspended) {
+      if (!was) this.routing = { ...this.routing, suspended: true, reason, since: new Date().toISOString(), suppressed: 0, suppressedEvents: [] }
+      else this.routing.reason = reason || this.routing.reason
+    } else if (was) {
+      const missed = this.routing.suppressed
+      const worst = this.routing.suppressedEvents.reduce<NotifySeverity | null>(
+        (acc, e) => (acc === 'critical' || e.severity === 'critical' ? 'critical'
+          : acc === 'error' || e.severity === 'error' ? 'error' : acc ?? e.severity), null)
+      const since = this.routing.since
+      this.routing = { suspended: false, reason: '', since: '', suppressed: 0, suppressedEvents: [] }
+      this.notify({
+        severity: 'info', source: 'notify-routing',
+        message: `Forwarding to the maintenance agent RESUMED`,
+        detail: missed
+          ? `${missed} event(s) were raised while suspended since ${since} and were NOT forwarded (worst: ${worst}). They are in the panel; the agent was not woken for them.`
+          : `Nothing was suppressed while suspended since ${since}.`,
+      })
+    }
+    this.saveRouting()
+    this.broadcast('notify:routing', this.routingState())
+    return this.routingState()
   }
 
   private checksFile(): string {
@@ -226,10 +300,40 @@ export class NotificationsService {
    *    break the thing that raised the notification.
    */
   private recentRoutes = new Map<string, number>()
+  /**
+   * Forwarding to the maintenance agent, suspendable at RUNTIME.
+   *
+   * Needed because building out emitters raises a lot of premature and wrong alerts, and
+   * every one of them would wake a live agent to investigate nothing. The env var was the
+   * only existing off switch: it needs a restart, and — worse — it suppresses SILENTLY,
+   * which makes "no alerts" and "alerts are switched off" look identical. That is the
+   * failure this whole subsystem exists to prevent, so suspension is counted and surfaced.
+   *
+   * Events are still raised, recorded and badged while suspended. Only the wake-up stops.
+   */
+  private routing: {
+    suspended: boolean
+    reason: string
+    since: string
+    suppressed: number
+    suppressedEvents: Array<{ id: string; severity: NotifySeverity; source: string; message: string; ts: string }>
+  } = { suspended: false, reason: '', since: '', suppressed: 0, suppressedEvents: [] }
   private routeToMaintainer(evt: NotifyEvent): void {
     if (evt.severity === 'info') return
     const to = process.env.AILAB_MAINTAINER_AGENT || 'maintenance-claude'
     if (!to || to === 'off') return
+
+    // Suspended: count and record rather than dropping. A suppressed alert that leaves no
+    // trace is indistinguishable from one that never happened, and the resume message is
+    // only honest if it can say what was missed.
+    if (this.routing.suspended) {
+      this.routing.suppressed += 1
+      this.routing.suppressedEvents.push({ id: evt.id, severity: evt.severity, source: evt.source, message: evt.message, ts: evt.ts })
+      if (this.routing.suppressedEvents.length > 200) this.routing.suppressedEvents.shift()
+      this.debug('notify-routing', `suspended — not forwarding [${evt.severity}] ${evt.source}: ${evt.message}`)
+      this.saveRouting()
+      return
+    }
 
     const key = `${evt.source}::${evt.message}`
     const now = Date.now()
@@ -326,12 +430,15 @@ export class NotificationsService {
     return n
   }
 
-  state(): { health: HealthState[]; events: NotifyEvent[]; debug: Array<{ ts: string; source: string; message: string }>; intervalMs: number } {
+  state(): { health: HealthState[]; events: NotifyEvent[]; debug: Array<{ ts: string; source: string; message: string }>; intervalMs: number; routing: ReturnType<NotificationsService['routingState']> } {
     return {
       health: [...this.health.values()],
       events: this.events.slice(-200),
       debug: [...this.debugRing],
       intervalMs: this.intervalMs,
+      // Carried in the main state payload so the panel can SAY it is suspended. A silent
+      // off switch turns a quiet panel into a false all-clear.
+      routing: this.routingState(),
     }
   }
 

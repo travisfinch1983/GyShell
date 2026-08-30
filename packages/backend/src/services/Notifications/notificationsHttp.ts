@@ -23,6 +23,26 @@ export function createNotificationsRouter(svc: NotificationsService): express.Ro
     res.json(svc.state())
   })
 
+  router.get('/api/notifications/routing', (_req: Req, res: Res) => {
+    res.json(svc.routingState())
+  })
+
+  /**
+   * Suspend or resume forwarding to the maintenance agent. Exposed as an API (and a UI
+   * control) rather than an env var because it is toggled during normal work — building
+   * emitters raises premature alerts — and an env var means a restart and no visibility.
+   */
+  router.post('/api/notifications/routing', json, (req: Req, res: Res) => {
+    const b = (req.body ?? {}) as Record<string, unknown>
+    if (typeof b.suspended !== 'boolean') {
+      return res.status(400).json({ ok: false, error: 'suspended must be a boolean' })
+    }
+    const reason = String(b.reason ?? '').slice(0, 300)
+    const state = svc.setRouting(b.suspended, reason)
+    console.log(`[notify-routing] forwarding ${state.suspended ? 'SUSPENDED' : 'RESUMED'}${reason ? ` — ${reason}` : ''}`)
+    return res.json({ ok: true, ...state })
+  })
+
   router.post('/api/notifications/emit', json, (req: Req, res: Res) => {
     const b = (req.body ?? {}) as Record<string, unknown>
     const severity = String(b.severity ?? '') as NotifySeverity

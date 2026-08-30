@@ -86,6 +86,44 @@ export const NotificationsPanel: React.FC<{ onClose: () => void }> = observer(({
     <>
       <div className={styles.backdrop} onClick={onClose} />
       <div className={styles.panel}>
+        {/*
+          Forwarding state, first thing in the panel and deliberately loud when off.
+          While emitters are being built they raise premature and wrong alerts, so
+          forwarding gets suspended — but an off switch nobody can see turns a quiet panel
+          into a false all-clear, so the panel states it and counts what was withheld.
+        */}
+        {store.routing && (store.routing.suspended || store.routing.envDisabled) && (
+          <div className={styles.routingBanner}>
+            <div>
+              <strong>Forwarding to {store.routing.recipient} is SUSPENDED.</strong>{' '}
+              Events are still recorded and badged here — nobody is being woken for them.
+              {store.routing.suppressed > 0 && ` ${store.routing.suppressed} withheld so far.`}
+              {store.routing.reason && <div className={styles.routingReason}>{store.routing.reason}</div>}
+              {store.routing.envDisabled && (
+                <div className={styles.routingReason}>
+                  Disabled by AILAB_MAINTAINER_AGENT — the button cannot re-enable it.
+                </div>
+              )}
+            </div>
+            {!store.routing.envDisabled && (
+              <button className={styles.routingBtn} onClick={() => void store.setRouting(false)}>
+                Resume forwarding
+              </button>
+            )}
+          </div>
+        )}
+        {store.routing && !store.routing.suspended && !store.routing.envDisabled && (
+          <div className={styles.routingQuiet}>
+            <span>Forwarding to {store.routing.recipient} is active.</span>
+            <button
+              className={styles.routingBtnQuiet}
+              onClick={() => void store.setRouting(true, 'Suspended from the notifications panel')}
+            >
+              Suspend
+            </button>
+          </div>
+        )}
+
         <div className={styles.section}>
           <div className={styles.sectionHead}>Health</div>
           {store.error && <div className={styles.storeError}>notifications: {store.error}</div>}

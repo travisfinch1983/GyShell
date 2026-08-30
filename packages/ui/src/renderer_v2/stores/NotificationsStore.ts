@@ -52,6 +52,15 @@ class NotificationsStore {
   loaded = false
   available = true
   error: string | null = null
+  /**
+   * Whether warnings/errors are being forwarded to the maintenance agent. Held in the store
+   * so the panel can SAY when forwarding is off — a quiet panel and a switched-off panel
+   * look identical otherwise, and that is the false all-clear this system exists to avoid.
+   */
+  routing: {
+    suspended: boolean; reason: string; since: string; suppressed: number
+    envDisabled: boolean; recipient: string
+  } | null = null
 
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private cleanups: Array<() => void> = []
@@ -145,8 +154,27 @@ class NotificationsStore {
         this.events = s.events ?? []
         this.health = s.health ?? []
         this.debug = s.debug ?? []
+        this.routing = s.routing ?? null
         this.error = null
       })
+    } catch (e) {
+      runInAction(() => {
+        this.error = e instanceof Error ? e.message : String(e)
+      })
+    }
+  }
+
+  /** Suspend or resume forwarding to the maintenance agent. */
+  async setRouting(suspended: boolean, reason = ''): Promise<void> {
+    try {
+      const r = await cluster()!.request('POST', '/api/notifications/routing', { suspended, reason })
+      runInAction(() => {
+        this.routing = r
+        this.error = null
+      })
+      // Resuming raises an info event summarising what was missed; pull it in immediately
+      // rather than waiting for the next poll.
+      await this.refresh()
     } catch (e) {
       runInAction(() => {
         this.error = e instanceof Error ? e.message : String(e)
