@@ -75,10 +75,65 @@ class PagesStore {
     return this.reportList.filter((r) => !this.typeFilter || r.type === this.typeFilter)
   }
 
+  /**
+   * Entry the journal body should scroll to and highlight — the per-entry
+   * anchor. Set via openJournalEntry(), cleared by the panel once the flash
+   * has played. Deliberately NOT a per-entry page: the continuous body is the
+   * thing that made the journal readable, so an anchor brings you TO an entry
+   * within it rather than isolating the entry from its neighbours.
+   */
+  anchorEntryId: string | null = null
+  /** An id that was asked for but is not in the journal — surfaced, not swallowed. */
+  anchorMissing: string | null = null
+
   setView(view: 'documents' | 'reports' | 'journal'): void {
     this.view = view
     if (view === 'journal') void this.loadJournal()
-    if (view === 'reports') void this.loadReports()
+    // Reports also load the journal: the open-report view shows which journal
+    // entries cite it, and those backlinks need the entries to exist locally.
+    if (view === 'reports') { void this.loadReports(); void this.loadJournal() }
+  }
+
+  /**
+   * Jump to one journal entry: switch to the Journal view, make sure the log
+   * is loaded, then hand the id to the panel to scroll-and-highlight.
+   *
+   * This is THE consumer entry point for anything holding a citable id — a
+   * report's "cited in journal" chip, a pasted id from a work order, a future
+   * notification naming the entry it came from. The first real citation
+   * (a work order referencing j-mtg5p44o-ti2s) arrived the same day the
+   * continuous body shipped, which is why this exists.
+   */
+  async openJournalEntry(id: string): Promise<void> {
+    const target = id.trim()
+    if (!target) return
+    this.view = 'journal'
+    this.anchorMissing = null
+    this.anchorEntryId = null
+    await this.loadJournal()
+    runInAction(() => {
+      if (this.journal.some((e) => e.id === target)) {
+        this.anchorEntryId = target
+      } else {
+        // An id that resolves to nothing must say so — a jump that silently
+        // lands at the top of the log reads as "it scrolled somewhere",
+        // which is worse than an honest miss.
+        this.anchorMissing = target
+      }
+    })
+  }
+
+  clearJournalAnchor(): void {
+    this.anchorEntryId = null
+  }
+
+  dismissAnchorMiss(): void {
+    this.anchorMissing = null
+  }
+
+  /** Journal entries citing a report — the report→dismissal backlink. */
+  entriesCiting(reportId: string): JournalEntry[] {
+    return this.journal.filter((e) => e.reportIds?.includes(reportId))
   }
 
   setTypeFilter(id: string | null): void {

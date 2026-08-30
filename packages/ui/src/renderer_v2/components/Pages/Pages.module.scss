@@ -500,3 +500,43 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* ── Per-entry anchor ────────────────────────────────────────────────────────
+   A landing light, not a selection: the flash shows WHERE the jump landed and
+   then gets out of the way, so the continuous body stays the primary surface. */
+.entryFlash {
+  animation: entryFlash 2.6s ease-out;
+  border-radius: 6px;
+}
+
+@keyframes entryFlash {
+  0%   { background: color-mix(in srgb, var(--accent, #4a9eff) 26%, transparent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #4a9eff) 55%, transparent); }
+  60%  { background: color-mix(in srgb, var(--accent, #4a9eff) 12%, transparent); box-shadow: 0 0 0 2px transparent; }
+  100% { background: transparent; box-shadow: none; }
+}
+
+.idChip {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+
+  &:hover { color: var(--fg); border-color: var(--fg-faint, var(--border)); }
+}
+
+.citedRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 5px 14px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  border-bottom: 1px solid var(--border);
+}
