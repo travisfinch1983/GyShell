@@ -210,10 +210,15 @@ export class NotificationsService {
     try {
       const r = await fetch(`${fleetd}/directory`, { signal: AbortSignal.timeout(8000) })
       if (!r.ok) return
-      const dir = await r.json() as { agents?: Array<{ id?: string; name?: string }> } | Array<{ id?: string; name?: string }>
+      // fleetd returns agent_id / display_name. The previous annotation declared id / name,
+        // so TypeScript validated field names that were ASSUMED rather than observed — every row
+        // compared undefined and the check could never succeed on a non-empty directory.
+        // id/name kept as fallbacks in case the payload shape ever changes.
+        type DirRow = { agent_id?: string; display_name?: string; id?: string; name?: string }
+        const dir = await r.json() as { agents?: DirRow[] } | DirRow[]
       const rows = Array.isArray(dir) ? dir : (dir.agents ?? [])
       if (!rows.length) return   // an empty listing is not proof of absence
-      const known = rows.some((a) => a.id === to || a.name === to)
+      const known = rows.some((a) => a.agent_id === to || a.display_name === to || a.id === to || a.name === to)
       if (!known) {
         this.notify({
           severity: 'warning', source: 'health-board',
