@@ -197,7 +197,12 @@ class HermesChatStore {
       let raw: any
       try {
         raw = JSON.parse(ev.data)
-      } catch {
+      } catch (e) {
+        // The file's own standing rule: a silently-dropped input is itself a
+        // bug. The schema-mismatch path two lines down reports; a frame that
+        // cannot even PARSE (truncation, a mid-write disconnect) was dropped
+        // with no trace — the harder failure got the softer handling.
+        reportDroppedEvent('live-sse-unparseable', { t: '<unparseable>' }, e)
         return
       }
       const r = hermesStreamEventSchema.safeParse(raw)

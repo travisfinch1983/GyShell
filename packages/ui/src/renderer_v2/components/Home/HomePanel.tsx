@@ -22,7 +22,12 @@ export const HomePanel: React.FC = () => {
   const open = async () => {
     setEditing(true); setStatus('Loading…')
     try {
-      const r = await fetch('/api/dynacat/config').then((x) => x.json())
+      const r = await fetch('/api/dynacat/config').then((x) => {
+        // status first: a proxy HTML error page must report AS the status,
+        // not as a JSON SyntaxError about an unexpected '<'.
+        if (!x.ok) throw new Error(`${x.status} ${x.statusText}`)
+        return x.json()
+      })
       setYaml(r.yaml || ''); setOrig(r.yaml || ''); setManual(!!r.manualOverride); setStatus('')
     } catch (e: any) { setStatus('Load failed: ' + (e?.message || e)) }
   }

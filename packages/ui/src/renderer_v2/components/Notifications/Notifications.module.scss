@@ -256,3 +256,14 @@ $sev-error: #e07b39;
   background: transparent; color: inherit;
   border: 1px solid var(--border-subtle, rgba(255,255,255,0.2)); font-size: 11px;
 }
+
+.occurBadge {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  background: color-mix(in srgb, var(--fg-muted) 10%, transparent);
+}

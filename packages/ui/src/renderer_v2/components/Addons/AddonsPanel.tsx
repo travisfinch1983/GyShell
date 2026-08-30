@@ -133,6 +133,7 @@ const RuntimeAddonView: React.FC<{ addon: RuntimeAddon; visible: boolean; theme:
 export const AddonsPanel: React.FC = () => {
   const theme = useThemeMode()
   const [runtime, setRuntime] = useState<RuntimeAddon[]>([])
+  const [runtimeError, setRuntimeError] = useState<string | null>(null)
   const [health, setHealth] = useState<Record<string, boolean>>({})
   const [active, setActive] = useState<string>(ADDONS[0]?.id ?? '')
   const [visited, setVisited] = useState<Set<string>>(new Set(active ? [active] : []))
@@ -142,7 +143,10 @@ export const AddonsPanel: React.FC = () => {
       // NOTE: plain same-origin fetch — the gyshell cluster proxy allowlists
       // paths and rejects /api/addons ('path not allowed'). fetch works + is
       // consistent with the health-dot fetch below. (claude2 fix, flagged to claude1)
-      const r = await fetch('/api/addons', { headers: { accept: 'application/json' } }).then((res) => res.json())
+      const r = await fetch('/api/addons', { headers: { accept: 'application/json' } }).then((res) => {
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+        return res.json()
+      })
       const addons = (Array.isArray(r?.addons) ? r.addons : []) as RuntimeAddon[]
       const list = addons.filter((a) => a.enabled !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
       setRuntime(list)
@@ -153,7 +157,11 @@ export const AddonsPanel: React.FC = () => {
           .then((res) => setHealth((h) => ({ ...h, [a.id]: res.ok })))
           .catch(() => setHealth((h) => ({ ...h, [a.id]: false })))
       }
-    } catch { /* endpoint unreachable — compiled addons still render */ }
+    } catch (e) {
+      // Compiled addons still render, but "runtime addons silently missing"
+      // and "none installed" must not look identical.
+      setRuntimeError(String((e as Error)?.message ?? e))
+    }
   }
   useEffect(() => { void loadRuntime() }, [])
 
@@ -175,6 +183,11 @@ export const AddonsPanel: React.FC = () => {
             </button>
           )
         })}
+        {runtimeError && (
+          <div style={{ color: 'var(--danger, #e05555)', fontSize: 12, margin: '6px 0' }}>
+            ⚠ runtime addons unavailable ({runtimeError}) — showing compiled addons only; this does NOT mean none are installed
+          </div>
+        )}
         {runtime.map((a) => {
           const Icon = ADDON_ICONS[a.icon ?? 'default'] ?? ADDON_ICONS.default
           const h = health[a.id]

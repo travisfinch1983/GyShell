@@ -142,6 +142,26 @@ async function main(): Promise<void> {
   ok(svc4.state().events.filter((e) => e.source === 'health-board').length === 0,
     'a healthy first boot raises NOTHING — no event on normal state')
 
+  // ── identical-unacked dedup: a standing condition is one counted row ──────
+  // Travis's report made it concrete: every deploy restarted the backend, each
+  // restart re-raised the inventory-stub startup warning, ten rows for one
+  // fact. emitOnce latches per process; the panel must dedupe across them.
+  const svc5 = new NotificationsService(mkdtempSync(join(tmpdir(), 'notif5-')), () => {})
+  const first = svc5.notify({ severity: 'warning', source: 'cluster-inventory', message: 'stub warning', detail: 'boot 1' })
+  const second = svc5.notify({ severity: 'warning', source: 'cluster-inventory', message: 'stub warning', detail: 'boot 2' })
+  ok(second.id === first.id && (second.occurrences ?? 0) === 2,
+    'an identical unacked event BUMPS the existing row instead of stacking a new one')
+  ok(svc5.state().events.filter((e) => e.message === 'stub warning').length === 1,
+    'the panel holds ONE row for the standing condition')
+  ok(second.detail === 'boot 2' && second.ts === first.ts && !!second.lastTs,
+    'latest detail wins, first ts kept, lastTs records the recurrence')
+  svc5.ack([first.id])
+  const third = svc5.notify({ severity: 'warning', source: 'cluster-inventory', message: 'stub warning' })
+  ok(third.id !== first.id,
+    'after an ACK the next occurrence is a FRESH event — silence after acking means stopped, never hidden')
+  ok(svc5.notify({ severity: 'warning', source: 'cluster-inventory', message: 'a different fact' }).id !== third.id,
+    'a different message is never merged — dedup is identity, not proximity')
+
   console.log(`\n${n} assertions passed; outbound calls attempted: ${outbound.length} (all blocked)`)
   process.exit(0)
 }

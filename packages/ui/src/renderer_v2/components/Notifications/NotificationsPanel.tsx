@@ -46,10 +46,15 @@ const EventRow: React.FC<{ e: NotifyEvent }> = observer(({ e }) => {
           onClick={() => e.detail && setOpen((o) => !o)}
         >
           <span className={styles.eventSource}>{e.source}</span> {e.message}
+          {/* A standing condition is one row that counts, not a stack of rows —
+              ten copies of one fact bury everything else in the panel. */}
+          {(e.occurrences ?? 1) > 1 && <span className={styles.occurBadge}>×{e.occurrences}</span>}
         </button>
         {open && e.detail && <pre className={styles.eventDetail}>{e.detail}</pre>}
       </div>
-      <span className={styles.eventTime}>{fmtTime(e.ts)}</span>
+      <span className={styles.eventTime} title={e.lastTs ? `first ${fmtTime(e.ts)} · latest ${fmtTime(e.lastTs)}` : undefined}>
+        {fmtTime(e.lastTs ?? e.ts)}
+      </span>
       {!e.acked && e.severity !== 'info' && (
         <button type="button" className={styles.ackBtn} title="Acknowledge" onClick={() => void store.ack([e.id])}>
           <Check size={12} />

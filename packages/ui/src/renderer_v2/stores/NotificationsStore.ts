@@ -10,6 +10,10 @@ export interface NotifyEvent {
   message: string
   detail?: string
   acked?: boolean
+  /** ≥2 = this exact event repeated while unacked (one counted row, not a stack). */
+  occurrences?: number
+  /** Most recent occurrence; ts stays the first. */
+  lastTs?: string
 }
 
 export interface HealthState {

@@ -45,7 +45,10 @@ export const DynacatBuilder: React.FC<{ onClose: () => void; onSaved: () => void
   const load = async () => {
     setStatus('Loading…')
     try {
-      const r = await fetch('/api/dynacat/config-parsed').then((x) => x.json())
+      const r = await fetch('/api/dynacat/config-parsed').then((x) => {
+        if (!x.ok) throw new Error(`${x.status} ${x.statusText}`)
+        return x.json()
+      })
       const cfg: Config = r.config && typeof r.config === 'object' ? r.config : { pages: [] }
       if (!Array.isArray(cfg.pages)) cfg.pages = []
       setConfig(cfg); setManual(!!r.manualOverride); setPageIdx(0); setStatus('')

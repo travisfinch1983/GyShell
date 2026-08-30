@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react'
 
+let warnedBadFrame = false
+
 // Self-hosted draw.io is served (static) by the AI-Lab web app at /drawio — SAME ORIGIN, no
 // external calls, no container. This component is a thin bridge over draw.io's official embed
 // postMessage protocol (proto=json): we don't modify draw.io's source at all.
@@ -39,7 +41,13 @@ export function DrawioEmbed({ xml, reloadKey, onSave, onAutoSave, onExport, onRe
     const onMsg = (e: MessageEvent) => {
       if (e.source !== iframe.contentWindow || typeof e.data !== 'string') return
       let msg: any
-      try { msg = JSON.parse(e.data) } catch { return }
+      // An unparseable frame from the embed is how a draw.io version bump
+      // changing the postMessage envelope would break saving — with no signal.
+      // One warn per session is enough to name the culprit.
+      try { msg = JSON.parse(e.data) } catch {
+        if (!warnedBadFrame) { warnedBadFrame = true; console.warn('[drawio] unparseable postMessage frame from the editor iframe — protocol drift? First 120 chars:', String(e.data).slice(0, 120)) }
+        return
+      }
       if (!msg || !msg.event) return
       switch (msg.event) {
         case 'configure':

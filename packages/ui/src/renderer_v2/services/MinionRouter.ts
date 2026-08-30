@@ -15,6 +15,8 @@ import { parseMinionResponse } from './minionMessageParser'
 import { getDiscoveredModel, getSlotEndpoint } from './ProxlabDiscovery'
 import { isTtsEnabled, speakText } from './TtsPlayback'
 
+let warnedPersistFailure = false
+
 const MINION_CHAT_STORAGE_KEY = 'gyshell-minion-chat-messages'
 const MAX_STORED_MESSAGES = 200
 
@@ -79,7 +81,15 @@ function persistMinionMessage(msg: StoredChatMessage) {
     stored.push(msg)
     if (stored.length > MAX_STORED_MESSAGES) stored.splice(0, stored.length - MAX_STORED_MESSAGES)
     localStorage.setItem(MINION_CHAT_STORAGE_KEY, JSON.stringify(stored))
-  } catch {}
+  } catch (e) {
+    // Unlike the preference-fallback catches this one LOSES DATA: once quota
+    // is hit, chat history silently stops persisting forever. Warn once so
+    // the permanent condition has at least one witness.
+    if (!warnedPersistFailure) {
+      warnedPersistFailure = true
+      console.warn('[minions] chat persistence failed (quota?) — history will not survive reload:', (e as Error)?.message)
+    }
+  }
 }
 
 export function rehydrateMinionMessages() {

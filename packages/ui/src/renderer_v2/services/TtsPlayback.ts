@@ -381,7 +381,12 @@ async function speakViaStream(
           audioQueue.push(data.audio)
           playNext()
         }
-      } catch {}
+      } catch (e) {
+        // A dropped chunk is a GAP IN AUDIBLE SPEECH with no trace anywhere —
+        // the user hears a stutter and nothing explains it. One line per
+        // occurrence is cheap; the stream keeps going.
+        console.warn('[tts] dropped unparseable stream chunk:', (e as Error)?.message)
+      }
     }
   }
 

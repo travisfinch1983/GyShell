@@ -13,8 +13,12 @@ async function ig(path: string, opts?: { method?: string; body?: any }): Promise
     body: opts?.body ? JSON.stringify(opts.body) : undefined,
   })
   const text = await r.text()
-  const data = text ? JSON.parse(text) : {}
-  if (!r.ok) throw new Error(data?.error || `${r.status} ${r.statusText}`)
+  // Parse AFTER checking ok, tolerantly: a proxy's HTML error page used to
+  // surface as "Unexpected token '<'" — a JSON parser complaining about the
+  // shape of a failure instead of the failure. The HTTP status is the fact.
+  let data: any = {}
+  try { data = text ? JSON.parse(text) : {} } catch { data = {} }
+  if (!r.ok) throw new Error(data?.error || `${r.status} ${r.statusText} — ${path}`)
   return data
 }
 

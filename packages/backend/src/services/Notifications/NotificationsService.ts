@@ -38,6 +38,10 @@ export interface NotifyEvent {
   message: string
   detail?: string
   acked?: boolean
+  /** How many times this exact event has been raised while unacked (≥2 = a repeat). */
+  occurrences?: number
+  /** When the most recent occurrence arrived (ts stays the FIRST). */
+  lastTs?: string
 }
 
 export interface HealthCheckConfig {
@@ -387,6 +391,27 @@ export class NotificationsService {
    * instantiation.
    */
   notify(input: { severity: NotifySeverity; source: string; message: string; detail?: string }): NotifyEvent {
+    // Identical-while-unacked DEDUP. A per-process latch (emitOnce) cannot see
+    // across restarts, and tonight's deploy cadence proved it: every backend
+    // restart re-raised the inventory-stub startup warning until the panel held
+    // ten copies of one fact (Travis, 2026-08-30). A standing condition gets ONE
+    // row that counts its recurrences; acking it re-arms the row, so the next
+    // occurrence after an ack is a fresh event — silence after acking still
+    // means "stopped", never "hidden".
+    const dup = this.events.find(
+      (e) => !e.acked && e.source === input.source && e.message === input.message && e.severity === input.severity,
+    )
+    if (dup) {
+      dup.occurrences = (dup.occurrences ?? 1) + 1
+      dup.lastTs = new Date().toISOString()
+      if (input.detail) dup.detail = input.detail   // latest detail wins; it carries the varying facts
+      this.schedulePersist()
+      this.broadcast('notify:event', dup)
+      // Still offered to routing: its own coalesce window decides, and while
+      // suspended the suppressed counter keeps counting honestly.
+      this.routeToMaintainer(dup)
+      return dup
+    }
     const evt: NotifyEvent = {
       id: `${Date.now().toString(36)}-${(this.seq++).toString(36)}`,
       ts: new Date().toISOString(),
