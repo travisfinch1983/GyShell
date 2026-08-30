@@ -283,6 +283,10 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
     }>(null);
     const [memoryDraft, setMemoryDraft] = useState("");
     const [memoryBusy, setMemoryBusy] = useState(false);
+    // null = fine, string = the save/load failure the user must SEE. Console
+    // output in a packaged renderer is invisible, and a Save button that
+    // swallows its failure is a data-loss path with no witness.
+    const [memoryError, setMemoryError] = useState<string | null>(null);
 
     React.useEffect(() => {
       if (store.settingsSection !== "memory") return;
@@ -341,10 +345,16 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
 
   const saveMemory = async () => {
       setMemoryBusy(true);
+      setMemoryError(null);
     try {
         const snapshot = await store.saveMemoryContent(memoryDraft);
       if (snapshot) {
           setMemoryDraft(snapshot.content);
+      } else {
+          // null = the store caught a failure. The draft is still in the
+          // textarea — nothing is lost YET — but the file was not written,
+          // and silence here is how an edit evaporates on the next reload.
+          setMemoryError("Save FAILED — memory.md was not written. Your edit is still in the box; copy it out before reloading.");
       }
     } finally {
         setMemoryBusy(false);
@@ -353,10 +363,13 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
 
   const reloadMemory = async () => {
       setMemoryBusy(true);
+      setMemoryError(null);
     try {
         const snapshot = await store.loadMemory();
       if (snapshot) {
           setMemoryDraft(snapshot.content);
+      } else {
+          setMemoryError("Reload failed — showing the previous contents, which may be stale.");
       }
     } finally {
         setMemoryBusy(false);
@@ -1731,6 +1744,9 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
                   </button>
                 </div>
               </div>
+              {memoryError && (
+                <div className="settings-error-banner">⚠ {memoryError}</div>
+              )}
 
               <div className="settings-rows">
                 <div className="settings-row">

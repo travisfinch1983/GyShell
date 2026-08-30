@@ -1679,3 +1679,16 @@
   min-width: 45px;
   text-align: right;
 }
+
+/* Failure banner for the memory.md editor — a failed save must outshout a
+   quiet console line, because the draft in the box is the only surviving copy. */
+.settings-error-banner {
+  margin: 8px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--danger, #e05555);
+  border-radius: 6px;
+  color: var(--danger, #e05555);
+  font-size: 12px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--danger, #e05555) 8%, transparent);
+}

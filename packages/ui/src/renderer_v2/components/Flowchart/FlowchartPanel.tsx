@@ -11,18 +11,30 @@ const bridge = (): { request: (m: string, p: string, b?: unknown) => Promise<any
 
 interface Chart { id: string; name: string; xml: string; updatedAt?: string }
 
+/**
+ * 🛑 These used to swallow every failure: list → [] rendered "No saved diagrams
+ * yet." on a dead backend (the empty-pages-tab incident shape — the user is
+ * told there is nothing to open), save → the panel flashed "Saved"
+ * unconditionally on a lost write, and load → a click that silently did
+ * nothing. Failures now PROPAGATE and every caller distinguishes "failed"
+ * from "empty" — a diagram store that cannot be reached must never present
+ * itself as one holding no diagrams.
+ */
 const api = {
   async list(): Promise<Array<{ id: string; name: string; updatedAt?: string }>> {
-    try { const r = await bridge()?.request('GET', '/api/flowcharts'); return Array.isArray(r?.charts) ? r.charts : [] } catch { return [] }
+    const r = await bridge()?.request('GET', '/api/flowcharts')
+    return Array.isArray(r?.charts) ? r.charts : []
   },
-  async load(id: string): Promise<Chart | null> {
-    try { const r = await bridge()?.request('GET', `/api/flowcharts/${encodeURIComponent(id)}`); return r?.chart ?? null } catch { return null }
+  async load(id: string): Promise<Chart> {
+    const r = await bridge()?.request('GET', `/api/flowcharts/${encodeURIComponent(id)}`)
+    if (!r?.chart) throw new Error(`no chart '${id}' in the response`)
+    return r.chart
   },
   async save(c: Chart): Promise<void> {
-    try { await bridge()?.request('PUT', `/api/flowcharts/${encodeURIComponent(c.id)}`, c) } catch { /* ignore */ }
+    await bridge()?.request('PUT', `/api/flowcharts/${encodeURIComponent(c.id)}`, c)
   },
   async remove(id: string): Promise<void> {
-    try { await bridge()?.request('DELETE', `/api/flowcharts/${encodeURIComponent(id)}`) } catch { /* ignore */ }
+    await bridge()?.request('DELETE', `/api/flowcharts/${encodeURIComponent(id)}`)
   },
 }
 
@@ -39,6 +51,10 @@ export function FlowchartPanel() {
   const [saved, setSaved] = useState<Array<{ id: string; name: string; updatedAt?: string }>>([])
   const [showLoad, setShowLoad] = useState(false)
   const [status, setStatus] = useState('')
+  const [listError, setListError] = useState<string | null>(null)
+  /** Set when a background autosave fails — sticky until a save succeeds,
+   *  because a 1.5s flash is not enough warning that your work is not landing. */
+  const [saveError, setSaveError] = useState<string | null>(null)
   const handleRef = useRef<DrawioHandle | null>(null)
   const curXml = useRef(xml); curXml.current = xml
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -52,25 +68,54 @@ export function FlowchartPanel() {
   const flash = (m: string) => { setStatus(m); setTimeout(() => setStatus(''), 1600) }
 
   const storeSave = useCallback(async (x: string) => {
-    await api.save({ id: chartId, name: name.trim() || 'Untitled', xml: x, updatedAt: new Date().toISOString() })
+    try {
+      await api.save({ id: chartId, name: name.trim() || 'Untitled', xml: x, updatedAt: new Date().toISOString() })
+      setSaveError(null)
+    } catch (e) {
+      // The local draft still has the work (localStorage autosave above), so
+      // nothing is lost yet — but the SERVER copy is stale and staying quiet
+      // about that is how a session of edits evaporates on the next reload
+      // elsewhere. Sticky until a save lands.
+      setSaveError(`not saving to server — ${String((e as Error)?.message ?? e)}`)
+      throw e
+    }
   }, [chartId, name])
 
   // draw.io autosave stream: keep the working xml + debounce-persist to the shared store.
   const onAutoSave = useCallback((x: string) => {
     setXml(x)
     if (saveTimer.current) clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => { storeSave(x) }, 1500)
+    saveTimer.current = setTimeout(() => { storeSave(x).catch(() => { /* surfaced via saveError */ }) }, 1500)
   }, [storeSave])
 
   // Explicit Save (draw.io toolbar Save button, or our Save button) persists immediately.
-  const onSave = useCallback(async (x: string) => { setXml(x); await storeSave(x); setSaved(await api.list()); flash('Saved') }, [storeSave])
+  const onSave = useCallback(async (x: string) => {
+    setXml(x)
+    try {
+      await storeSave(x)
+      flash('Saved')   // only after the write actually landed
+      try { setSaved(await api.list()) } catch { /* list refresh is cosmetic here */ }
+    } catch { flash('SAVE FAILED') }
+  }, [storeSave])
   const doSave = useCallback(async () => { await onSave(curXml.current) }, [onSave])
 
   const doNew = useCallback(() => { setChartId(nid()); setName('Untitled'); setXml(''); setReloadKey((k) => k + 1) }, [])
-  const openLoad = useCallback(async () => { setSaved(await api.list()); setShowLoad(true) }, [])
+  const openLoad = useCallback(async () => {
+    setListError(null)
+    try { setSaved(await api.list()) } catch (e) {
+      setSaved([])
+      setListError(String((e as Error)?.message ?? e))
+    }
+    setShowLoad(true)
+  }, [])
   const doLoad = useCallback(async (id: string) => {
-    const c = await api.load(id); if (!c) return
-    setChartId(c.id); setName(c.name || 'Untitled'); setXml(c.xml || ''); setReloadKey((k) => k + 1); setShowLoad(false)
+    try {
+      const c = await api.load(id)
+      setChartId(c.id); setName(c.name || 'Untitled'); setXml(c.xml || ''); setReloadKey((k) => k + 1); setShowLoad(false)
+    } catch (e) {
+      // A click that does nothing is indistinguishable from a broken button.
+      setListError(`could not open '${id}' — ${String((e as Error)?.message ?? e)}`)
+    }
   }, [])
 
   const exportAs = useCallback((format: 'xmlpng' | 'xmlsvg') => handleRef.current?.export(format), [])
@@ -92,6 +137,7 @@ export function FlowchartPanel() {
         <button className={styles.btn} onClick={() => exportAs('xmlpng')} title="Export PNG"><ImageIcon size={13} /> PNG</button>
         <button className={styles.btn} onClick={() => exportAs('xmlsvg')} title="Export SVG"><Download size={13} /> SVG</button>
         <span className={styles.spacer} />
+        {saveError && <span className={styles.saveError} title={saveError}>⚠ {saveError}</span>}
         {status && <span className={styles.dim}>{status}</span>}
       </div>
 
@@ -110,12 +156,17 @@ export function FlowchartPanel() {
         <div className={styles.modalBg} onClick={() => setShowLoad(false)}>
           <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHead}>Saved diagrams</div>
-            {saved.length === 0 && <div className={styles.dim}>No saved diagrams yet.</div>}
+            {/* "failed" and "empty" are different facts and get different lines. */}
+            {listError && <div className={styles.saveError}>couldn't load the list — {listError}</div>}
+            {!listError && saved.length === 0 && <div className={styles.dim}>No saved diagrams yet.</div>}
             {saved.map((c) => (
               <div key={c.id} className={styles.savedRow}>
                 <button className={styles.savedName} onClick={() => doLoad(c.id)}>{c.name}</button>
                 <span className={styles.dim}>{c.updatedAt ? new Date(c.updatedAt).toLocaleString() : ''}</span>
-                <button className={styles.savedDel} title="Delete" onClick={async () => { await api.remove(c.id); setSaved(await api.list()) }}><Trash2 size={12} /></button>
+                <button className={styles.savedDel} title="Delete" onClick={async () => {
+                  try { await api.remove(c.id); setSaved(await api.list()) }
+                  catch (e) { setListError(`delete failed — ${String((e as Error)?.message ?? e)}`) }
+                }}><Trash2 size={12} /></button>
               </div>
             ))}
           </div>

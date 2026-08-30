@@ -18,25 +18,34 @@ export class McpServersStore {
 
   async load(): Promise<void> {
     this.loading = true; this.err = ''
-    try {
-      const [h, s, t, cfg] = await Promise.all([
-        bridge().request('GET', '/api/mcp/health').catch(() => ({ status: 'unreachable' })),
-        bridge().request('GET', '/api/mcp/servers').catch(() => []),
-        bridge().request('GET', '/api/mcp/tools').catch(() => []),
-        bridge().request('GET', '/api/mcp/settings').catch(() => ({ maxToolRounds: 20, toolInjection: true })),
-      ])
-      runInAction(() => {
-        this.health = h
-        this.servers = Array.isArray(s) ? s : []
-        this.tools = Array.isArray(t) ? t : []
-        this.settings = cfg || this.settings
-        this.loaded = true
-      })
-    } catch (e: any) {
-      runInAction(() => { this.err = e?.message || 'Failed to load MCP data' })
-    } finally {
-      runInAction(() => { this.loading = false })
+    // 🛑 The per-call .catch(()=>[]) idiom made every failure invisible: a dead
+    // /servers route rendered "No MCP servers registered" while the health
+    // badge said Connected, and the outer catch (and this.err) were
+    // unreachable because everything was absorbed inside. Now each fetch
+    // keeps its OWN failure, the lists only overwrite on success (a stale
+    // list beats a wrong "empty"), and err aggregates what actually failed.
+    const failures: string[] = []
+    const grab = async <T>(path: string, label: string): Promise<T | undefined> => {
+      try { return await bridge().request('GET', path) } catch (e: any) {
+        failures.push(`${label}: ${e?.message || 'failed'}`)
+        return undefined
+      }
     }
+    const [h, s, t, cfg] = await Promise.all([
+      grab<any>('/api/mcp/health', 'health'),
+      grab<any>('/api/mcp/servers', 'servers'),
+      grab<any>('/api/mcp/tools', 'tools'),
+      grab<any>('/api/mcp/settings', 'settings'),
+    ])
+    runInAction(() => {
+      this.health = h ?? { status: 'unreachable' }
+      if (s !== undefined) this.servers = Array.isArray(s) ? s : []
+      if (t !== undefined) this.tools = Array.isArray(t) ? t : []
+      if (cfg !== undefined) this.settings = cfg || this.settings
+      this.err = failures.join(' · ')
+      this.loaded = true
+      this.loading = false
+    })
   }
 
   get connected(): boolean { return this.health?.status === 'ok' }
@@ -51,7 +60,13 @@ export class McpServersStore {
   }
 
   async deleteServer(name: string): Promise<void> {
-    await bridge().request('DELETE', `/api/mcp/servers/${encodeURIComponent(name)}`).catch(() => undefined)
+    try {
+      await bridge().request('DELETE', `/api/mcp/servers/${encodeURIComponent(name)}`)
+    } catch (e: any) {
+      // A failed delete used to be indistinguishable from success except the
+      // row reappearing — say why instead.
+      runInAction(() => { this.err = `delete '${name}' failed: ${e?.message || e}` })
+    }
     await this.load()
   }
   async toggleTool(fullName: string, enabled: boolean): Promise<void> {
@@ -61,11 +76,18 @@ export class McpServersStore {
     } catch { await this.load() }
   }
   setSetting(k: string, v: any): void { this.settings = { ...this.settings, [k]: v } }
+  /** Throws on failure — the caller owns showing saved-vs-failed. */
   async saveSettings(): Promise<void> {
-    await bridge().request('PUT', '/api/mcp/settings', {
-      toolInjection: this.settings.toolInjection !== false,
-      maxToolRounds: Number(this.settings.maxToolRounds) || 20,
-    })
+    try {
+      await bridge().request('PUT', '/api/mcp/settings', {
+        toolInjection: this.settings.toolInjection !== false,
+        maxToolRounds: Number(this.settings.maxToolRounds) || 20,
+      })
+      runInAction(() => { if (this.err.startsWith('save settings')) this.err = '' })
+    } catch (e: any) {
+      runInAction(() => { this.err = `save settings failed: ${e?.message || e}` })
+      throw e
+    }
   }
 }
 

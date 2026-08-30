@@ -62,6 +62,19 @@ export const reportMetaSchema = z.object({
 })
 export type ReportMeta = z.infer<typeof reportMetaSchema>
 
+/**
+ * The LIST endpoint's row shape: meta with `versions` stripped (the list must
+ * not ship every version's history) and `versionCount` added. Its own schema
+ * because parsing list rows against reportMetaSchema would REFUSE them —
+ * `versions` is required there and absent here. (Nearly shipped that way:
+ * the parse would have errored the whole Reports list into the error banner,
+ * a louder failure than the silent one being fixed, but still a failure.)
+ */
+export const reportListEntrySchema = reportMetaSchema.omit({ versions: true }).extend({
+  versionCount: z.number().int().nonnegative(),
+})
+export type ReportListEntry = z.infer<typeof reportListEntrySchema>
+
 export const reportWriteRequestSchema = z.object({
   type: reportTypeIdSchema,
   title: z.string().min(1).max(200),

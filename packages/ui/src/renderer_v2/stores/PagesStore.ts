@@ -1,7 +1,9 @@
 import { makeAutoObservable, runInAction } from 'mobx'
 import {
+  journalEntrySchema,
   pageListResponseSchema,
   pageReadResponseSchema,
+  reportListEntrySchema,
   type JournalEntry,
   type PageContentType,
   type PageListEntry,
@@ -40,7 +42,7 @@ class PagesStore {
   view: 'documents' | 'reports' | 'journal' = 'documents'
   /** Reports are their OWN surface (/api/reports), not pages with a flag. */
   reportTypes: ReportType[] = []
-  reportList: Array<ReportMeta & { versionCount: number }> = []
+  reportList: Array<import('@gyshell/shared').ReportListEntry> = []
   typeFilter: string | null = null
   currentReport: { meta: ReportMeta; version: number; html: string; source: string } | null = null
   journal: JournalEntry[] = []
@@ -71,7 +73,7 @@ class PagesStore {
     return this.pages
   }
 
-  get reports(): Array<ReportMeta & { versionCount: number }> {
+  get reports(): Array<import('@gyshell/shared').ReportListEntry> {
     return this.reportList.filter((r) => !this.typeFilter || r.type === this.typeFilter)
   }
 
@@ -156,7 +158,13 @@ class PagesStore {
   async loadReports(): Promise<void> {
     try {
       const r = await req('GET', `/api/reports${this.typeFilter ? `?type=${encodeURIComponent(this.typeFilter)}` : ''}`)
-      runInAction(() => { this.reportList = r?.reports ?? [] })
+      // Zod-parsed like every other list here — these two (reports, journal)
+      // were the ONLY surfaces skipping the pattern the file header mandates,
+      // and they are the newest, on the tab that had the original
+      // shape-drift incident. `?? []` on a drifted response is exactly the
+      // quiet-wrong rendering the header warns about.
+      const parsed = reportListEntrySchema.array().parse(r?.reports ?? [])
+      runInAction(() => { this.reportList = parsed })
     } catch (e) {
       runInAction(() => { this.error = e instanceof Error ? e.message : String(e) })
     }
@@ -177,7 +185,8 @@ class PagesStore {
   async loadJournal(): Promise<void> {
     try {
       const r = await req('GET', '/api/journal')
-      runInAction(() => { this.journal = r?.entries ?? [] })
+      const parsed = journalEntrySchema.array().parse(r?.entries ?? [])
+      runInAction(() => { this.journal = parsed })
     } catch (e) {
       runInAction(() => { this.error = e instanceof Error ? e.message : String(e) })
     }

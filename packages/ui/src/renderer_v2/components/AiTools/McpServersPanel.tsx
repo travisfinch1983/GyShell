@@ -8,7 +8,10 @@ import styles from './AiTools.module.scss'
 export const McpServersPanel: React.FC = observer(() => {
   useEffect(() => { if (!store.loaded) void store.load() }, [])
   const [saved, setSaved] = React.useState(false)
-  const save = async () => { await store.saveSettings(); setSaved(true); setTimeout(() => setSaved(false), 2000) }
+  const save = async () => {
+    try { await store.saveSettings(); setSaved(true); setTimeout(() => setSaved(false), 2000) }
+    catch { /* store.err carries the reason; the banner below renders it */ }
+  }
 
   return (
     <div className={styles.panel}>
@@ -23,9 +26,18 @@ export const McpServersPanel: React.FC = observer(() => {
         </button>
       </div>
 
+      {/* err was declared in the store and rendered nowhere — the one signal
+          that could distinguish "no servers" from "the load failed" was
+          invisible. It renders first, above everything it explains. */}
+      {store.err && <div className={styles.errBanner}>⚠ {store.err}</div>}
+
       {/* Servers */}
       <div className={styles.serverList}>
-        {store.servers.length === 0 && <div className={styles.muted}>{store.loaded ? 'No MCP servers registered' : 'Loading…'}</div>}
+        {store.servers.length === 0 && (
+          <div className={styles.muted}>
+            {!store.loaded ? 'Loading…' : store.err ? 'Server list unavailable (see error above) — this does NOT mean none are registered.' : 'No MCP servers registered'}
+          </div>
+        )}
         {store.servers.map((s) => {
           const tc = store.toolCount(s.name)
           return (
