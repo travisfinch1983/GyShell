@@ -6,8 +6,8 @@ import {
   type PageContentType,
   type PageListEntry,
   type PageReadResponse,
-  type ReportCategory,
-  type ReportSummary,
+  type ReportMeta,
+  type ReportType,
 } from '@gyshell/shared'
 
 function bridge(): { request: (method: string, path: string, body?: unknown) => Promise<any> } | undefined {
@@ -38,8 +38,11 @@ class PagesStore {
 
   /** Documents | Reports — the tab's two sub-surfaces. */
   view: 'documents' | 'reports' | 'journal' = 'documents'
-  categories: ReportCategory[] = []
-  categoryFilter: string | null = null
+  /** Reports are their OWN surface (/api/reports), not pages with a flag. */
+  reportTypes: ReportType[] = []
+  reportList: Array<ReportMeta & { versionCount: number }> = []
+  typeFilter: string | null = null
+  currentReport: { meta: ReportMeta; version: number; html: string; source: string } | null = null
   journal: JournalEntry[] = []
   searchQuery = ''
   searchResults: Array<{ category: string; pageId?: string; score?: number; text?: string; error?: string }> | null = null
@@ -57,47 +60,68 @@ class PagesStore {
       return
     }
     await this.refresh()
-    await this.loadCategories()
+    await this.loadReportTypes()
     runInAction(() => {
       this.loaded = true
     })
   }
 
+  /** Pages are scoping documents only now — reports moved to their own store. */
   get documents(): PageListEntry[] {
-    return this.pages.filter((p) => (p.kind ?? 'document') !== 'report')
+    return this.pages
   }
 
-  get reports(): PageListEntry[] {
-    return this.pages
-      .filter((p) => p.kind === 'report')
-      .filter((p) => !this.categoryFilter || p.category === this.categoryFilter)
+  get reports(): Array<ReportMeta & { versionCount: number }> {
+    return this.reportList.filter((r) => !this.typeFilter || r.type === this.typeFilter)
   }
 
   setView(view: 'documents' | 'reports' | 'journal'): void {
     this.view = view
     if (view === 'journal') void this.loadJournal()
+    if (view === 'reports') void this.loadReports()
   }
 
-  setCategoryFilter(id: string | null): void {
-    this.categoryFilter = id
-    if (this.view === 'journal') void this.loadJournal()
+  setTypeFilter(id: string | null): void {
+    this.typeFilter = id
+    void this.loadReports()
   }
 
-  categoryLabel(id?: string): string {
+  typeLabel(id?: string): string {
     if (!id) return ''
-    return this.categories.find((c) => c.id === id)?.label ?? id
+    return this.reportTypes.find((t) => t.id === id)?.label ?? id
   }
 
-  async loadCategories(): Promise<void> {
+  async loadReportTypes(): Promise<void> {
     try {
-      const r = await req('GET', '/api/pages/report-categories')
-      runInAction(() => { this.categories = r?.categories ?? [] })
-    } catch { /* categories are decorative until the next load */ }
+      const r = await req('GET', '/api/reports/types')
+      runInAction(() => { this.reportTypes = r?.types ?? [] })
+    } catch { /* decorative until the next load */ }
+  }
+
+  async loadReports(): Promise<void> {
+    try {
+      const r = await req('GET', `/api/reports${this.typeFilter ? `?type=${encodeURIComponent(this.typeFilter)}` : ''}`)
+      runInAction(() => { this.reportList = r?.reports ?? [] })
+    } catch (e) {
+      runInAction(() => { this.error = e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  async openReport(id: string, version?: number): Promise<void> {
+    this.loading = true
+    try {
+      const r = await req('GET', `/api/reports/${encodeURIComponent(id)}${version ? `?version=${version}` : ''}`)
+      runInAction(() => { this.currentReport = r; this.current = null; this.selectedId = id })
+    } catch (e) {
+      runInAction(() => { this.error = e instanceof Error ? e.message : String(e) })
+    } finally {
+      runInAction(() => { this.loading = false })
+    }
   }
 
   async loadJournal(): Promise<void> {
     try {
-      const r = await req('GET', `/api/pages/journal${this.categoryFilter ? `?category=${encodeURIComponent(this.categoryFilter)}` : ''}`)
+      const r = await req('GET', '/api/journal')
       runInAction(() => { this.journal = r?.entries ?? [] })
     } catch (e) {
       runInAction(() => { this.error = e instanceof Error ? e.message : String(e) })
@@ -109,12 +133,12 @@ class PagesStore {
     if (!query.trim()) { this.searchResults = null; return }
     this.searching = true
     try {
-      const r = await req('GET', `/api/pages/report-search?q=${encodeURIComponent(query)}${this.categoryFilter ? `&category=${encodeURIComponent(this.categoryFilter)}` : ''}`)
+      const r = await req('GET', `/api/reports-search?q=${encodeURIComponent(query)}${this.typeFilter ? `&type=${encodeURIComponent(this.typeFilter)}` : ''}`)
       const flat: Array<{ category: string; pageId?: string; score?: number; text?: string; error?: string }> = []
       for (const c of r?.collections ?? []) {
-        if (c.error) { flat.push({ category: c.category, error: c.error }); continue }
+        if (c.error) { flat.push({ category: c.type, error: c.error }); continue }
         for (const hit of c.results ?? []) {
-          flat.push({ category: c.category, pageId: hit.doc_id, score: hit.score, text: hit.text })
+          flat.push({ category: c.type, pageId: hit.doc_id, score: hit.score, text: hit.text })
         }
       }
       runInAction(() => { if (this.searchQuery === query) this.searchResults = flat })
@@ -175,13 +199,9 @@ class PagesStore {
     this.viewVersion = null
   }
 
-  async write(
-    id: string,
-    input: { title: string; contentType: PageContentType; body: string; kind?: 'document' | 'report'; category?: string; report?: ReportSummary },
-  ): Promise<void> {
+  async write(id: string, input: { title: string; contentType: PageContentType; body: string }): Promise<void> {
     await req('PUT', `/api/pages/${encodeURIComponent(id)}`, { ...input, author: 'user' })
     await this.refresh()
-    if (this.view === 'journal') void this.loadJournal()
     await this.open(id)
   }
 

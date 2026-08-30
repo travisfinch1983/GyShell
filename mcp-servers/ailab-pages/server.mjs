@@ -1,22 +1,30 @@
 #!/usr/bin/env node
 /**
- * ailab-pages MCP — agent authoring tools for the AI-Lab Pages tab.
+ * ailab-authoring MCP — THREE SEPARATE TOOLSETS served from one process.
  *
- * IDENTITY IS PROGRAMMATIC, never a tool argument (Travis, 2026-08-30): this is a
- * streamable-HTTP server with per-caller path routing, the same pattern as the unified
- * memory service. Each agent is registered on MCPJungle as `pages-<agent>` pinned to
- * /u/agent:<agent>/mcp, and the author recorded on every write is derived from THAT
- * path — an agent cannot forget it, mistype it, or spoof someone else's.
+ * 🛑 Separate by design (Travis, 2026-08-30): "a toolset for Scoping Pages, a
+ * toolset for Reports, and a toolset for maintenance claude to make his journal
+ * entries… this way they don't accidentally get all mixed in together." An
+ * agent holding only Reports cannot file into Pages by accident, and a
+ * camera-monitoring agent never sees journal tools at all.
  *
- * Tools: page_write / page_get / page_list, mirroring the flowchart_* family. Pages are
- * versioned append-only on the backend, so overwrites can never destroy earlier work —
- * which is why any agent may write to any page. There is deliberately NO page_delete:
- * deletion stays a human act in the UI.
+ * Each toolset is its own URL prefix and therefore its own MCPJungle server,
+ * assignable per agent independently:
+ *   /pages/u/<caller>/mcp    → pages-<agent>    scoping documents
+ *   /reports/u/<caller>/mcp  → reports-<agent>  typed reports (maintenance,
+ *                              security, vulnerability, incident, research…)
+ *   /journal/u/<caller>/mcp  → journal-<agent>  the working log
  *
- * Env: AILAB_API_URL (default http://127.0.0.1:17890), AILAB_PAGES_MCP_PORT (default 9848),
- *      AILAB_API_TIMEOUT_MS (default 15000).
- * Deploy: /opt/mcp-ailab-pages/ with its own node_modules (same as mcp-ailab-flowchart);
- *         systemd unit ai-lab-pages-mcp.service alongside.
+ * IDENTITY IS PROGRAMMATIC: the author recorded on every write comes from the
+ * caller path, never a tool argument — an agent cannot forget it, mistype it,
+ * or spoof another's.
+ *
+ * ⚠ MCPJungle caches tool schemas AT REGISTRATION. Changing a toolset needs
+ * `mcpjungle register --force` per server; restarting this process is not
+ * enough and new tools stay invisible to every agent (claude1, 2026-08-30).
+ *
+ * Env: AILAB_API_URL (default http://127.0.0.1:17890), AILAB_PAGES_MCP_PORT
+ *      (default 9848), AILAB_API_TIMEOUT_MS (default 15000).
  */
 import http from 'node:http'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -40,224 +48,280 @@ async function api(method, path, body) {
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(TIMEOUT),
   })
-  const text = await res.text()
+  const raw = await res.text()
   let data
-  try { data = JSON.parse(text) } catch { data = { raw: text } }
+  try { data = JSON.parse(raw) } catch { data = { raw } }
   if (!res.ok) throw new Error(data?.error ?? `${res.status} ${res.statusText}`)
   return data
 }
 
 const text = (s) => ({ content: [{ type: 'text', text: s }] })
+const slug = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/)
 
-/** One McpServer per request, closed over the caller identity from the URL path. */
-function buildServer(author) {
-  const mcp = new McpServer(
-    { name: 'ailab-pages', version: '1.0.0' },
-    {
-      instructions:
-        'Author and read AI-Lab Pages — rendered documents in the Pages tab. Writes are ' +
-        'versioned append-only (your write adds a version; nothing is destroyed) and your ' +
-        `authorship (${author}) is recorded automatically. Markdown is preferred; fenced ` +
-        '```mermaid blocks render as diagrams, and {{flowchart:ID}} / {{svg:ID}} embed stored ' +
-        'diagrams live (they update when the diagram is edited). No delete — that is human-only.',
-    },
-  )
-
+// ── Toolset: SCOPING PAGES ───────────────────────────────────────────────────
+function addPageTools(mcp, author) {
   mcp.tool(
     'page_write',
-    'Create a page or add a new version to an existing one. Append-only: earlier versions stay ' +
-      'restorable, so writing to a page someone else authored is safe and records you as co-author.',
+    'Create or revise a SCOPING PAGE — a design doc, plan, rundown or reference. NOT for reports or journal entries: those have their own toolsets. Append-only, so revising someone else\'s page is safe and records you as co-author.',
     {
-      id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/).describe('page slug, e.g. optane-kv-cache'),
+      id: slug.describe('page slug, e.g. optane-kv-cache'),
       title: z.string().min(1).max(200),
       body: z.string().max(4 * 1024 * 1024).describe('markdown (preferred) or raw HTML per content_type'),
       content_type: z.enum(['markdown', 'html']).default('markdown'),
     },
     async ({ id, title, body, content_type }) => {
-      const r = await api('PUT', `/api/pages/${enc(id)}`, {
-        title, body, contentType: content_type, author,
-      })
-      return text(`wrote page ${id} version ${r.version} (author: ${author}). View it in the Pages tab.`)
+      const r = await api('PUT', `/api/pages/${enc(id)}`, { title, body, contentType: content_type, author })
+      return text(`wrote page ${id} v${r.version} (author: ${author}). Pages tab → Documents.`)
     },
   )
 
-  mcp.tool(
-    'page_get',
-    'Read a page: returns the authored SOURCE (what page_write accepts back), plus title, ' +
-      'version and author info. Pass version to read history.',
-    {
-      id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/),
-      version: z.number().int().positive().optional(),
-    },
+  mcp.tool('page_get', 'Read a scoping page: authored source plus version and author history.',
+    { id: slug, version: z.number().int().positive().optional() },
     async ({ id, version }) => {
       const r = await api('GET', `/api/pages/${enc(id)}${version ? `?version=${version}` : ''}`)
       const m = r.meta
-      const head =
-        `page ${m.id} — "${m.title}" v${r.version}/${m.currentVersion}` +
-        ` · ${m.contentType} · authors: ${(m.authors ?? []).join(', ') || 'unknown'}\n` +
-        m.versions.map((v) => `  v${v.version} ${v.createdAt} by ${v.author ?? '?'}${v.restoredFrom ? ` (restored from v${v.restoredFrom})` : ''}`).join('\n')
-      return text(`${head}\n--- source ---\n${r.source}`)
-    },
-  )
+      return text(
+        `page ${m.id} — "${m.title}" v${r.version}/${m.currentVersion} · authors: ${(m.authors ?? []).join(', ') || 'unknown'}\n` +
+        m.versions.map((v) => `  v${v.version} ${v.createdAt} by ${v.author ?? '?'}`).join('\n') +
+        `\n--- source ---\n${r.source}`)
+    })
 
-  mcp.tool('page_list', 'List all pages with title, latest version, and authors.', {}, async () => {
+  mcp.tool('page_list', 'List scoping pages.', {}, async () => {
     const r = await api('GET', '/api/pages')
     if (!r.pages?.length) return text('(no pages)')
-    return text(
-      r.pages
-        .map((p) => `${p.id} — "${p.title}" v${p.currentVersion} (${p.versionCount} versions) · ${p.kind ?? 'document'}${p.category ? `/${p.category}` : ''} · authors: ${(p.authors ?? []).join(', ') || 'unknown'} · updated ${p.updatedAt}`)
-        .join('\n'),
-    )
+    return text(r.pages.map((p) => `${p.id} — "${p.title}" v${p.currentVersion} · authors: ${(p.authors ?? []).join(', ') || 'unknown'} · ${p.updatedAt}`).join('\n'))
   })
+}
 
-  // ── Reports ────────────────────────────────────────────────────────────────
-  // A report is a page with a CATEGORY (its own RAG collection) and the summary
-  // fields the journal is derived from. Category is validated against the live
-  // list server-side, so "which category" cannot be silently wrong — the same
-  // principle that makes authorship unspoofable.
-
+// ── Toolset: REPORTS ─────────────────────────────────────────────────────────
+function addReportTools(mcp, author) {
   mcp.tool(
-    'report_categories',
-    'List report categories and their STARTING templates. Call this before report_write: the template is a beginning to adapt, never a schema you must match.',
+    'report_types',
+    'List the report TYPES you may file under, with what each is for. Call this first — the type decides which collection the report is searchable in and who reads it.',
     {},
     async () => {
-      const r = await api('GET', '/api/pages/report-categories')
-      const rows = (r.categories ?? []).map(
-        (c) => `${c.id} — ${c.label}${c.description ? `: ${c.description}` : ''}`,
-      )
-      return text(`report categories:\n${rows.join('\n')}\n\n(call report_template for a category's starting template)`)
+      const r = await api('GET', '/api/reports/types')
+      return text(`report types:\n${(r.types ?? []).map((t) => `  ${t.id} — ${t.label}${t.description ? `: ${t.description}` : ''}`).join('\n')}\n\n(report_template <type> for its starting template)`)
     },
   )
 
   mcp.tool(
     'report_template',
-    "Get one category's starting template — copy it, then change whatever the report needs. Sections that do not apply should be removed rather than left empty.",
-    { category: z.string() },
-    async ({ category }) => {
-      const r = await api('GET', '/api/pages/report-categories')
-      const cat = (r.categories ?? []).find((c) => c.id === category)
-      if (!cat) return text(`no such category '${category}'. Available: ${(r.categories ?? []).map((c) => c.id).join(', ')}`)
-      return text(`template for ${cat.id} (${cat.label}) — a STARTING point, modify freely:\n\n${cat.template}`)
+    'Get a type\'s STARTING template — copy it and change whatever the report needs. Sections that do not apply should be deleted, not left empty. It is a beginning, never a schema you must match.',
+    { type: z.string() },
+    async ({ type }) => {
+      const r = await api('GET', '/api/reports/types')
+      const t = (r.types ?? []).find((x) => x.id === type)
+      if (!t) return text(`no such report type '${type}'. Available: ${(r.types ?? []).map((x) => x.id).join(', ')}`)
+      return text(`template for ${t.id} (${t.label}) — a STARTING point, modify freely:\n\n${t.template}`)
     },
   )
 
   mcp.tool(
     'report_write',
-    'File a report (or add a version to an existing one). Reports are versioned append-only and vectorised into their category\'s searchable collection. issue/cause/fix become the journal line — keep them to one line each; the detail belongs in the body.',
+    'File a report of a chosen TYPE (or add a version to an existing one). Reports are append-only and vectorised into their type\'s collection. The type cannot be changed later — it decides where the report is searchable.',
     {
-      id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/).describe('report slug, e.g. maintenance-optane-pruner-20260830'),
+      id: slug.describe('report slug, e.g. maintenance-optane-pruner-20260830'),
+      type: z.string().describe('one of report_types'),
       title: z.string().min(1).max(200),
-      category: z.string().describe('must be one of report_categories'),
-      issue: z.string().min(1).max(200).describe('short problem name — the journal\'s primary column'),
-      cause: z.string().max(500).optional().describe('one line: what was actually wrong'),
-      fix: z.string().max(500).optional().describe('one line: what you did about it'),
-      links: z.array(z.string()).optional().describe('notification ids, service names, URLs, related page ids'),
+      summary: z.string().max(300).optional().describe('one line: what this is about — the list column'),
       body: z.string().max(4 * 1024 * 1024).describe('the full report, markdown'),
+      links: z.array(z.string()).optional().describe('notification ids, hosts, services, other report ids'),
     },
-    async ({ id, title, category, issue, cause, fix, links, body }) => {
-      const r = await api('PUT', `/api/pages/${enc(id)}`, {
-        title, body, contentType: 'markdown', author, kind: 'report', category,
-        report: { issue, cause, fix, links: links ?? [] },
-      })
+    async ({ id, type, title, summary, body, links }) => {
+      const r = await api('PUT', `/api/reports/${enc(id)}`, { type, title, summary, body, links, author })
       const idx = r.indexed === false
-        ? `\n⚠ saved but NOT vectorised (${r.indexError}) — the report is fine, semantic search will miss it until re-filed.`
+        ? `\n⚠ saved but NOT vectorised (${r.indexError}) — the report is safe; semantic search will miss it until re-filed.`
         : ''
-      return text(`filed report ${id} v${r.version} in ${category} (author: ${author}). Journal entry created automatically.${idx}`)
+      return text(`filed ${type} report ${id} v${r.version} (author: ${author}).${idx}\nIf you keep a journal, link this id there so the next lookup finds it.`)
     },
   )
 
+  mcp.tool('report_get', 'Read a filed report.', { id: slug, version: z.number().int().positive().optional() },
+    async ({ id, version }) => {
+      const r = await api('GET', `/api/reports/${enc(id)}${version ? `?version=${version}` : ''}`)
+      const m = r.meta
+      return text(`report ${m.id} [${m.type}] — "${m.title}" v${r.version}/${m.currentVersion}` +
+        `${m.summary ? `\nsummary: ${m.summary}` : ''}\nauthors: ${(m.authors ?? []).join(', ') || 'unknown'}\n--- source ---\n${r.source}`)
+    })
+
   mcp.tool(
     'report_search',
-    'Semantic search across report collections. Use this BEFORE investigating a problem — a prior repair of the same issue is the fastest fix available.',
-    { query: z.string().min(1), category: z.string().optional().describe('omit to search every category') },
-    async ({ query, category }) => {
-      const r = await api('GET', `/api/pages/report-search${q({ q: query, category })}`)
+    'Semantic search across report collections. Use this BEFORE investigating anything — a prior report on the same problem is the fastest fix available.',
+    { query: z.string().min(1), type: z.string().optional().describe('omit to search every type') },
+    async ({ query, type }) => {
+      const r = await api('GET', `/api/reports-search${q({ q: query, type })}`)
       const out = []
       for (const c of r.collections ?? []) {
-        if (c.error) { out.push(`${c.category}: (search unavailable: ${c.error})`); continue }
+        if (c.error) { out.push(`${c.type}: (search unavailable: ${c.error})`); continue }
         for (const hit of c.results ?? []) {
-          out.push(`[${c.category}] ${hit.doc_id ?? '?'} (score ${hit.score ?? '?'}): ${String(hit.text ?? '').slice(0, 240).replace(/\n/g, ' ')}`)
+          out.push(`[${c.type}] ${hit.doc_id ?? '?'} (score ${hit.score ?? '?'}): ${String(hit.text ?? '').slice(0, 240).replace(/\n/g, ' ')}`)
         }
       }
       return text(out.length ? out.join('\n') : `no report matches for '${query}'`)
     },
   )
 
+  mcp.tool('report_list', 'List filed reports, newest first.', { type: z.string().optional() },
+    async ({ type }) => {
+      const r = await api('GET', `/api/reports${q({ type })}`)
+      if (!r.reports?.length) return text('(no reports)')
+      return text(r.reports.map((x) => `${x.id} [${x.type}] "${x.title}" v${x.currentVersion} · ${x.summary ?? ''} · ${x.updatedAt}`).join('\n'))
+    })
+}
+
+// ── Toolset: JOURNAL ─────────────────────────────────────────────────────────
+function addJournalTools(mcp, author) {
   mcp.tool(
-    'journal_note',
-    'Record a triage outcome that needed NO repair — a benign or upstream cause you looked at and dismissed. Use this whenever you ack something without filing a report: it is the only way the dismissal survives your context window, and the reply tells you how many times you have dismissed this same thing before.',
+    'journal_new',
+    'Start a journal entry when you START work — not after. The journal is your memory across context windows: an entry you meant to write later is one you will not remember to write. The reply tells you how many times you have logged this same issue before.',
     {
-      category: z.string().describe('one of report_categories'),
-      issue: z.string().min(1).max(200).describe('short name of what was reported'),
-      cause: z.string().max(500).optional().describe('one line: what it turned out to be'),
-      why_no_action: z.string().min(1).max(500).describe('why nothing was repaired — the field that makes the dismissal reviewable later'),
-      links: z.array(z.string()).optional().describe('notification ids, service names'),
+      issue: z.string().min(1).max(200).describe('short name of what you are looking at'),
+      notes: z.string().max(20000).optional().describe('what you know so far'),
+      status: z.enum(['open', 'resolved', 'no-action']).optional().describe("default open; 'no-action' = looked at it, nothing to repair"),
+      report_ids: z.array(z.string()).optional(),
+      links: z.array(z.string()).optional().describe('notification ids, services, hosts'),
     },
-    async ({ category, issue, cause, why_no_action, links }) => {
-      const r = await api('POST', '/api/pages/journal/note', {
-        category, issue, cause, whyNoAction: why_no_action, links: links ?? [], author,
-      })
+    async ({ issue, notes, status, report_ids, links }) => {
+      const r = await api('POST', '/api/journal', { issue, notes, status, reportIds: report_ids, links, author })
       const repeat = r.priorSimilar > 0
-        ? `\n⚠ You have noted this same issue ${r.priorSimilar} time(s) before. A recurring "no action needed" is itself a finding — consider whether the alert threshold is wrong, or file a report.`
+        ? `\n⚠ You have logged this same issue ${r.priorSimilar} time(s) before. A recurring problem is itself a finding — check what you did last time before repeating it.`
         : ''
-      const idx = r.indexed === false ? `\n⚠ saved but NOT vectorised (${r.indexError}) — search will miss it.` : ''
-      return text(`journal note ${r.id} recorded in ${category} (author: ${author}). No report filed.${repeat}${idx}`)
+      return text(`journal entry ${r.id} started (${status ?? 'open'}).${repeat}\nAdd to it with journal_append as you work.`)
+    },
+  )
+
+  mcp.tool(
+    'journal_append',
+    'Add a line to an entry as you work — findings, attempts, results. Appends are additive and timestamped; nothing is replaced. Use this rather than rewriting the entry.',
+    {
+      id: z.string(),
+      text: z.string().min(1).max(20000),
+      status: z.enum(['open', 'resolved', 'no-action']).optional().describe('set when the outcome becomes clear'),
+      report_ids: z.array(z.string()).optional().describe('link the report when you file one'),
+      links: z.array(z.string()).optional(),
+    },
+    async ({ id, text: line, status, report_ids, links }) => {
+      const r = await api('POST', `/api/journal/${enc(id)}/append`, { text: line, status, reportIds: report_ids, links, author })
+      return text(`appended to ${id} (status: ${r.status}).`)
+    },
+  )
+
+  mcp.tool(
+    'journal_update',
+    'Correct an entry: replaces fields outright. The previous text is KEPT as a revision, so a correction never erases what the log used to say. Prefer journal_append for adding as you go.',
+    {
+      id: z.string(),
+      issue: z.string().max(200).optional(),
+      notes: z.string().max(20000).optional(),
+      status: z.enum(['open', 'resolved', 'no-action']).optional(),
+      report_ids: z.array(z.string()).optional(),
+      links: z.array(z.string()).optional(),
+    },
+    async ({ id, issue, notes, status, report_ids, links }) => {
+      const r = await api('PATCH', `/api/journal/${enc(id)}`, { issue, notes, status, reportIds: report_ids, links, author })
+      return text(`updated ${id} (${r.revisions} revision(s) kept).`)
     },
   )
 
   mcp.tool(
     'journal_read',
-    'The maintenance journal: every report as one skimmable line (when, issue, cause, fix, report id). Purpose is memory ACROSS context windows — read it to spot a repeat problem you have no memory of fixing.',
-    { category: z.string().optional(), limit: z.number().int().positive().max(200).optional() },
-    async ({ category, limit }) => {
-      const r = await api('GET', `/api/pages/journal${q({ category })}`)
-      const entries = (r.entries ?? []).slice(0, limit ?? 50)
-      if (!entries.length) return text('(journal is empty — no reports filed yet)')
+    'Look up past work — this is what the journal is FOR. Read it before investigating anything that feels familiar: you may have already solved it in a context window you no longer have.',
+    {
+      q: z.string().optional().describe('text filter over issue and notes'),
+      status: z.enum(['open', 'resolved', 'no-action']).optional(),
+      limit: z.number().int().positive().max(200).optional(),
+    },
+    async ({ q: query, status, limit }) => {
+      const r = await api('GET', `/api/journal${q({ q: query, status })}`)
+      const entries = (r.entries ?? []).slice(0, limit ?? 40)
+      if (!entries.length) return text('(no matching journal entries)')
       return text(entries.map((e) =>
-        `${e.receivedAt} · [${e.category}] ${e.issue}` +
-        `${e.cause ? ` · cause: ${e.cause}` : ''}` +
-        (e.kind === 'note'
-          ? ` · NO REPAIR: ${e.whyNoAction}${e.author ? ` (${e.author})` : ''}`
-          : `${e.fix ? ` · fix: ${e.fix}` : ''} · report: ${e.pageId} (v${e.version}${e.author ? `, ${e.author}` : ''})`),
+        `${e.updatedAt} · [${e.status}] ${e.issue} (${e.id})` +
+        `${e.reportIds?.length ? ` · reports: ${e.reportIds.join(', ')}` : ''}` +
+        `${e.notes ? `\n    ${String(e.notes).replace(/\n+/g, ' ').slice(0, 200)}` : ''}`,
       ).join('\n'))
     },
   )
 
+  mcp.tool('journal_get', 'Read one journal entry in full, including its revision history.',
+    { id: z.string() },
+    async ({ id }) => {
+      const r = await api('GET', `/api/journal/${enc(id)}`)
+      const e = r.entry
+      return text(`${e.id} · [${e.status}] ${e.issue}\nauthor: ${e.author ?? '?'} · created ${e.createdAt} · updated ${e.updatedAt}` +
+        `${e.reportIds?.length ? `\nreports: ${e.reportIds.join(', ')}` : ''}` +
+        `${e.links?.length ? `\nlinks: ${e.links.join(', ')}` : ''}` +
+        `\n\n${e.notes || '(no notes yet)'}` +
+        `${e.revisions?.length ? `\n\n--- ${e.revisions.length} earlier revision(s) kept ---\n` + e.revisions.map((v) => `[${v.at}] ${String(v.previous).slice(0, 300)}`).join('\n') : ''}`)
+    })
+}
+
+const TOOLSETS = {
+  pages: {
+    add: addPageTools,
+    instructions: (a) =>
+      `Scoping pages for AI-Lab — design docs, plans, rundowns, references. Writes are versioned ` +
+      `append-only and your authorship (${a}) is recorded automatically. Markdown preferred; fenced ` +
+      '```mermaid blocks render as diagrams and {{flowchart:ID}} / {{svg:ID}} embed stored diagrams ' +
+      'live. This toolset is NOT for reports or journal entries — those have their own tools.',
+  },
+  reports: {
+    add: addReportTools,
+    instructions: (a) =>
+      `File and search REPORTS as ${a}. Every report has a TYPE (maintenance, security, ` +
+      `vulnerability, incident, research…) which decides its searchable collection — call ` +
+      `report_types first. Reports are append-only: a report records what was true when it was ` +
+      `written and is never silently rewritten. Search before investigating; a prior report is ` +
+      `the fastest fix available.`,
+  },
+  journal: {
+    add: addJournalTools,
+    instructions: (a) =>
+      `Your working log, ${a}. Start an entry when work STARTS, append as you go, and set its ` +
+      `status when the outcome is clear — including 'no-action' for things you looked at and ` +
+      `decided needed no repair, which are exactly the ones you will not otherwise remember. ` +
+      `Read it before investigating anything familiar: its purpose is memory across context windows.`,
+  },
+}
+
+function buildServer(author, toolset) {
+  const spec = TOOLSETS[toolset]
+  const mcp = new McpServer(
+    { name: `ailab-${toolset}`, version: '2.0.0' },
+    { capabilities: { tools: {} }, instructions: spec.instructions(author) },
+  )
+  spec.add(mcp, author)
   return mcp
 }
 
 /**
- * Caller identity from the path: /u/<caller>/mcp. The registered form is
- * agent:<profile>; the recorded author drops the prefix. Anything outside the
- * slug alphabet is refused — the memory service's lesson is that answering
- * every path yields silently-wrong namespaces, so unknown shapes 404 loudly.
+ * Route: /<toolset>/u/<caller>/mcp. Caller identity comes from the path, and an
+ * unknown shape 404s LOUDLY rather than defaulting — the memory service's
+ * lesson was that answering every path yields silently-wrong identities.
  */
-function callerFrom(url) {
-  const m = /^\/u\/([A-Za-z0-9:_-]{1,80})\/mcp\/?$/.exec(url.split('?')[0])
+function parse(url) {
+  const m = /^\/(pages|reports|journal)\/u\/([A-Za-z0-9:_-]{1,80})\/mcp\/?$/.exec(url.split('?')[0])
   if (!m) return null
-  return m[1].replace(/^agent:/, '')
+  return { toolset: m[1], caller: m[2].replace(/^agent:/, '') }
 }
 
 const server = http.createServer(async (req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, service: 'ailab-pages-mcp' }))
+    res.end(JSON.stringify({ ok: true, service: 'ailab-authoring-mcp', toolsets: Object.keys(TOOLSETS) }))
     return
   }
-  const caller = callerFrom(req.url ?? '')
-  if (!caller) {
+  const route = parse(req.url ?? '')
+  if (!route) {
     res.writeHead(404, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ error: 'expected /u/<caller>/mcp' }))
+    res.end(JSON.stringify({ error: 'expected /<pages|reports|journal>/u/<caller>/mcp' }))
     return
   }
   try {
-    // Stateless streamable HTTP: fresh server+transport per request, identity baked in.
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
-    const mcp = buildServer(caller)
-    res.on('close', () => {
-      void transport.close()
-      void mcp.close()
-    })
+    const mcp = buildServer(route.caller, route.toolset)
+    res.on('close', () => { void transport.close(); void mcp.close() })
     await mcp.connect(transport)
     await transport.handleRequest(req, res)
   } catch (e) {
@@ -269,5 +333,5 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.listen(PORT, '0.0.0.0', () => {
-  process.stderr.write(`ailab-pages MCP listening on :${PORT} (backend ${BASE})\n`)
+  process.stderr.write(`ailab-authoring MCP on :${PORT} — toolsets ${Object.keys(TOOLSETS).join(', ')} (backend ${BASE})\n`)
 })
