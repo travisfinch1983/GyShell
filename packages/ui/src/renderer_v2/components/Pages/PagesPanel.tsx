@@ -32,40 +32,23 @@ function currentTheme(): 'light' | 'dark' {
 
 /** In-page editor overlay (standard #2 — no native dialogs). Plain source, deliberately not a WYSIWYG. */
 const EditOverlay: React.FC<{
-  initial?: { id: string; title: string; contentType: PageContentType; body: string; kind?: string; category?: string; issue?: string; cause?: string; fix?: string }
-  asReport?: boolean
+  initial?: { id: string; title: string; contentType: PageContentType; body: string }
   onClose: () => void
-}> = observer(({ initial, asReport, onClose }) => {
+}> = observer(({ initial, onClose }) => {
   const [id, setId] = useState(initial?.id ?? '')
   const [title, setTitle] = useState(initial?.title ?? '')
   const [contentType, setContentType] = useState<PageContentType>(initial?.contentType ?? 'markdown')
   const [body, setBody] = useState(initial?.body ?? '')
-  const isReport = asReport || initial?.kind === 'report'
-  const [category, setCategory] = useState(initial?.category ?? store.categoryFilter ?? store.categories[0]?.id ?? '')
-  const [issue, setIssue] = useState(initial?.issue ?? '')
-  const [cause, setCause] = useState(initial?.cause ?? '')
-  const [fix, setFix] = useState(initial?.fix ?? '')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  // Starting template, not a schema: loaded once when the body is still empty so
-  // it can be edited or deleted wholesale.
-  useEffect(() => {
-    if (!isReport || initial || body.trim()) return
-    const tpl = store.categories.find((c) => c.id === category)?.template
-    if (tpl) setBody(tpl)
-  }, [isReport, category])
-
   const canSave = /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(id) && title.trim() && body.trim() && !busy
-    && (!isReport || (!!category && !!issue.trim()))
   const save = async () => {
     if (!canSave) return
     setBusy(true)
     setErr(null)
     try {
-      await store.write(id, isReport
-        ? { title: title.trim(), contentType, body, kind: 'report', category, report: { issue: issue.trim(), cause: cause.trim() || undefined, fix: fix.trim() || undefined, links: [] } }
-        : { title: title.trim(), contentType, body })
+      await store.write(id, { title: title.trim(), contentType, body })
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -78,57 +61,24 @@ const EditOverlay: React.FC<{
     <div className={styles.overlay}>
       <div className={styles.overlayCard}>
         <div className={styles.overlayHead}>
-          <span>{initial ? `Edit ${initial.id} (writes a new version)` : isReport ? 'New report' : 'New page'}</span>
+          <span>{initial ? `Edit ${initial.id} (writes a new version)` : 'New scoping page'}</span>
           <button type="button" className={styles.iconBtn} onClick={onClose}>
             <X size={14} />
           </button>
         </div>
         <div className={styles.formRow}>
-          <input
-            className={styles.field}
-            placeholder="page-id (slug)"
-            value={id}
-            disabled={!!initial}
-            onChange={(e) => setId(e.target.value)}
-          />
-          <select
-            className={styles.field}
-            value={contentType}
-            onChange={(e) => setContentType(e.target.value as PageContentType)}
-          >
+          <input className={styles.field} placeholder="page-id (slug)" value={id} disabled={!!initial}
+            onChange={(e) => setId(e.target.value)} />
+          <select className={styles.field} value={contentType}
+            onChange={(e) => setContentType(e.target.value as PageContentType)}>
             <option value="markdown">markdown</option>
             <option value="html">html</option>
           </select>
         </div>
         <input className={styles.field} placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} />
-        {isReport && (
-          <>
-            <div className={styles.formRow}>
-              <select className={styles.field} value={category} onChange={(e) => setCategory(e.target.value)}>
-                {store.categories.map((c) => (
-                  <option key={c.id} value={c.id}>{c.label}</option>
-                ))}
-              </select>
-              <input
-                className={styles.field}
-                placeholder="Issue (the journal line) *"
-                value={issue}
-                onChange={(e) => setIssue(e.target.value)}
-              />
-            </div>
-            <div className={styles.formRow}>
-              <input className={styles.field} placeholder="Cause (one line)" value={cause} onChange={(e) => setCause(e.target.value)} />
-              <input className={styles.field} placeholder="Fix (one line)" value={fix} onChange={(e) => setFix(e.target.value)} />
-            </div>
-          </>
-        )}
-        <textarea
-          className={styles.editor}
+        <textarea className={styles.editor} value={body} spellCheck={false}
           placeholder={contentType === 'markdown' ? '# Markdown source…' : '<!-- HTML source… -->'}
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          spellCheck={false}
-        />
+          onChange={(e) => setBody(e.target.value)} />
         {err && <div className={styles.errorNote}>{err}</div>}
         <button type="button" className={styles.primaryBtn} disabled={!canSave} onClick={() => void save()}>
           Save version
@@ -190,6 +140,9 @@ export const PagesPanel: React.FC = observer(() => {
 
   const doc = useMemo(() => {
     if (probe === 'running') return buildPageSrcdoc(SANDBOX_PROBE_HTML, currentTheme())
+    // Reports render through the SAME sandbox as pages — agent-authored HTML is
+    // agent-authored HTML whichever surface it came from.
+    if (store.currentReport) return buildPageSrcdoc(store.currentReport.html, currentTheme())
     if (!store.current) return null
     if (wantMermaid && !mermaidLib) return buildPageSrcdoc('<p>Loading diagram renderer…</p>', currentTheme())
     return buildPageSrcdoc(store.current.html, currentTheme(), wantMermaid ? mermaidLib ?? undefined : undefined)
@@ -204,10 +157,12 @@ export const PagesPanel: React.FC = observer(() => {
   }
 
   const cur = store.current
+  const rep = store.currentReport
   const copySource = async () => {
-    if (!cur) return
+    const src = cur ?? rep
+    if (!src) return
     try {
-      await navigator.clipboard.writeText(showSource ? cur.source : cur.html)
+      await navigator.clipboard.writeText(showSource ? src.source : src.html)
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     } catch {
@@ -226,7 +181,7 @@ export const PagesPanel: React.FC = observer(() => {
             <RefreshCw size={13} />
           </button>
           <button type="button" className={styles.newBtn} onClick={() => setEditing('new')}>
-            <Plus size={12} /> {store.view === 'documents' ? 'New' : 'New report'}
+            <Plus size={12} /> New page
           </button>
         </div>
         <div className={styles.subTabs}>
@@ -241,22 +196,22 @@ export const PagesPanel: React.FC = observer(() => {
             </button>
           ))}
         </div>
-        {store.view !== 'documents' && store.categories.length > 0 && (
+        {store.view !== 'documents' && store.reportTypes.length > 0 && (
           <div className={styles.catRow}>
             <button
               type="button"
-              className={`${styles.catChip} ${store.categoryFilter === null ? styles.catActive : ''}`}
-              onClick={() => store.setCategoryFilter(null)}
+              className={`${styles.catChip} ${store.typeFilter === null ? styles.catActive : ''}`}
+              onClick={() => store.setTypeFilter(null)}
             >
               all
             </button>
-            {store.categories.map((c) => (
+            {store.reportTypes.map((c: { id: string; label: string; description?: string }) => (
               <button
                 key={c.id}
                 type="button"
                 title={c.description}
-                className={`${styles.catChip} ${store.categoryFilter === c.id ? styles.catActive : ''}`}
-                onClick={() => store.setCategoryFilter(store.categoryFilter === c.id ? null : c.id)}
+                className={`${styles.catChip} ${store.typeFilter === c.id ? styles.catActive : ''}`}
+                onClick={() => store.setTypeFilter(store.typeFilter === c.id ? null : c.id)}
               >
                 {c.label}
               </button>
@@ -288,36 +243,33 @@ export const PagesPanel: React.FC = observer(() => {
           {store.view === 'journal' ? (
             store.journal.length === 0 ? (
               <div className={styles.empty}>
-                The journal is empty. It fills itself: every filed report contributes a line, and
-                so does every "looked at it, nothing to repair" note — the entries nobody
-                remembers otherwise.
+                The journal is empty. Entries are started when work begins and grow as it
+                proceeds — including the "looked at it, nothing to repair" ones, which are
+                exactly the entries nobody remembers otherwise.
               </div>
             ) : (
               store.journal.map((j) => (
                 <button
-                  key={j.kind === 'note' ? j.noteId : `${j.pageId}-${j.version}`}
+                  key={j.id}
                   type="button"
-                  className={`${styles.row} ${j.pageId && j.pageId === store.selectedId ? styles.active : ''}`}
-                  onClick={() => {
-                    if (!j.pageId) return   // a note has no report to open — it IS the record
-                    setProbe(null); setShowSource(false); void store.open(j.pageId)
-                  }}
+                  className={styles.row}
+                  onClick={() => { if (j.reportIds?.[0]) void store.openReport(j.reportIds[0]) }}
                 >
                   <div className={styles.rowTitle}>
-                    {j.kind === 'note' && <span className={styles.noteBadge}>no repair</span>}
+                    <span className={`${styles.statusBadge} ${styles[`st_${j.status}`] ?? ''}`}>{j.status}</span>
                     {j.issue}
                   </div>
                   <div className={styles.rowMeta}>
-                    {fmtTime(j.receivedAt)} · {store.categoryLabel(j.category)}
-                    {j.author ? ` · ${j.author}` : ''}
+                    {fmtTime(j.updatedAt)}{j.author ? ` · ${j.author}` : ''}
+                    {j.revisions?.length ? ` · ${j.revisions.length} revision(s)` : ''}
+                    {j.keys?.length ? ` · ${j.keys.join(' ')}` : ''}
+                    {/* An entry that cannot serve as a prior occurrence says so
+                        here too, so the list never implies a coverage it lacks. */}
+                    {j.excludedFromCounts ? ' · record only, not counted' : ''}
                   </div>
-                  {j.cause && <div className={styles.journalLine}>cause: {j.cause}</div>}
-                  {j.fix && <div className={styles.journalLine}>fix: {j.fix}</div>}
-                  {j.whyNoAction && <div className={styles.journalLine}>why no action: {j.whyNoAction}</div>}
-                  {j.pageId ? (
-                    <div className={styles.journalLink}>report: {j.pageId} (v{j.version})</div>
-                  ) : (
-                    <div className={styles.journalNoteLink}>noted only — nothing was repaired</div>
+                  {j.notes && <div className={styles.journalLine}>{j.notes.replace(/\n+/g, ' ').slice(0, 160)}</div>}
+                  {j.reportIds?.length > 0 && (
+                    <div className={styles.journalLink}>reports: {j.reportIds.join(', ')}</div>
                   )}
                 </button>
               ))
@@ -338,30 +290,48 @@ export const PagesPanel: React.FC = observer(() => {
                     onClick={() => r.pageId && void store.open(r.pageId)}
                   >
                     <div className={styles.rowTitle}>{r.pageId}</div>
-                    <div className={styles.rowMeta}>{store.categoryLabel(r.category)}{r.score !== undefined ? ` · score ${r.score}` : ''}</div>
+                    <div className={styles.rowMeta}>{store.typeLabel(r.category)}{r.score !== undefined ? ` · score ${r.score}` : ''}</div>
                     <div className={styles.journalLine}>{String(r.text ?? '').slice(0, 160)}</div>
                   </button>
                 )
               ))}
             </>
-          ) : (store.view === 'reports' ? store.reports : store.documents).length === 0 ? (
+          ) : store.view === 'reports' ? (
+            store.reports.length === 0 ? (
+              <div className={styles.empty}>
+                No reports yet. Agents file them with their Reports toolset — each report has a
+                type (maintenance, security, vulnerability…) and is searchable within it.
+              </div>
+            ) : (
+              store.reports.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  className={`${styles.row} ${r.id === store.selectedId ? styles.active : ''}`}
+                  onClick={() => { setProbe(null); setShowSource(false); void store.openReport(r.id) }}
+                >
+                  <div className={styles.rowTitle}>{r.title}</div>
+                  <div className={styles.rowMeta}>
+                    <span className={styles.typeBadge}>{store.typeLabel(r.type)}</span>
+                    {r.id} · v{r.currentVersion} · {fmtTime(r.updatedAt)}
+                  </div>
+                  {r.summary && <div className={styles.journalLine}>{r.summary}</div>}
+                  {r.authors?.length > 0 && <div className={styles.rowMeta}>by {r.authors.join(' + ')}</div>}
+                </button>
+              ))
+            )
+          ) : store.documents.length === 0 ? (
             <div className={styles.empty}>
-              {store.view === 'reports'
-                ? 'No reports yet. Agents file them with report_write; each one is vectorised into its category for semantic search.'
-                : 'No documents yet. Agents write them via the pages API; you can also create one here.'}
+              No scoping pages yet. Agents write them with their Pages toolset; you can also
+              create one here.
             </div>
           ) : (
-            (store.view === 'reports' ? store.reports : store.documents).map((p) => (
+            store.documents.map((p) => (
               <button
                 key={p.id}
                 type="button"
                 className={`${styles.row} ${p.id === store.selectedId ? styles.active : ''}`}
-                onClick={() => {
-                  setProbe(null)
-                  setShowSource(false)
-                  setConfirmDelete(false)
-                  void store.open(p.id)
-                }}
+                onClick={() => { setProbe(null); setShowSource(false); setConfirmDelete(false); void store.open(p.id) }}
               >
                 <div className={styles.rowTitle}>{p.title}</div>
                 <div className={styles.rowMeta}>
@@ -369,9 +339,6 @@ export const PagesPanel: React.FC = observer(() => {
                   {p.currentVersion}
                   {p.versionCount > 1 ? ` (${p.versionCount} versions)` : ''} · {fmtTime(p.updatedAt)}
                 </div>
-                {p.kind === 'report' && p.category && (
-                  <div className={styles.rowMeta}>{store.categoryLabel(p.category)}{p.report?.issue ? ` · ${p.report.issue}` : ''}</div>
-                )}
                 {p.authors.length > 0 && <div className={styles.rowMeta}>by {p.authors.join(' + ')}</div>}
               </button>
             ))
@@ -398,6 +365,24 @@ export const PagesPanel: React.FC = observer(() => {
       </div>
 
       <div className={styles.view}>
+        {rep && probe !== 'running' && (
+          <div className={styles.viewHead}>
+            <span className={styles.viewTitle}>{rep.meta.title}</span>
+            <span className={styles.typeBadge}>{store.typeLabel(rep.meta.type)}</span>
+            <span className={styles.authors}>
+              v{rep.version}/{rep.meta.currentVersion}
+              {rep.meta.authors.length ? ` · by ${rep.meta.authors.join(' + ')}` : ''}
+            </span>
+            <span className={styles.spacer} />
+            <button type="button" className={`${styles.toolBtn} ${showSource ? styles.activeTool : ''}`}
+              onClick={() => setShowSource((v) => !v)}>
+              <FileCode size={13} /> source
+            </button>
+            <button type="button" className={styles.toolBtn} onClick={() => void copySource()}>
+              {copied ? <Check size={13} /> : <Copy size={13} />} copy
+            </button>
+          </div>
+        )}
         {cur && probe !== 'running' && (
           <div className={styles.viewHead}>
             <span className={styles.viewTitle}>{cur.meta.title}</span>
@@ -473,8 +458,8 @@ export const PagesPanel: React.FC = observer(() => {
         ) : doc && !showSource ? (
           // The security boundary: allow-scripts only. NEVER add allow-same-origin.
           <iframe className={styles.frame} sandbox={PAGE_SANDBOX} srcDoc={doc} title={cur?.meta.title ?? 'page'} />
-        ) : doc && showSource && cur ? (
-          <pre className={styles.sourceView}>{cur.source}</pre>
+        ) : doc && showSource && (cur ?? rep) ? (
+          <pre className={styles.sourceView}>{(cur ?? rep)!.source}</pre>
         ) : (
           <div className={styles.empty}>Select a page, create one, or run the sandbox self-test.</div>
         )}
@@ -482,14 +467,9 @@ export const PagesPanel: React.FC = observer(() => {
 
       {editing && (
         <EditOverlay
-          asReport={editing === 'new' && store.view !== 'documents'}
           initial={
             editing === 'edit' && cur
-              ? {
-                  id: cur.meta.id, title: cur.meta.title, contentType: cur.meta.contentType, body: cur.source,
-                  kind: cur.meta.kind, category: cur.meta.category,
-                  issue: cur.meta.report?.issue, cause: cur.meta.report?.cause, fix: cur.meta.report?.fix,
-                }
+              ? { id: cur.meta.id, title: cur.meta.title, contentType: cur.meta.contentType, body: cur.source }
               : undefined
           }
           onClose={() => setEditing(null)}

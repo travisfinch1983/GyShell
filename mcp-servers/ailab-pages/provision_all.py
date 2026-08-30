@@ -1,24 +1,43 @@
 #!/usr/bin/env python3
-"""Give EVERY existing Hermes agent the pages-<agent> toolset. Idempotent, one-shot.
+"""Provision the THREE authoring toolsets across the fleet. Idempotent.
 
-New/edited agents get this automatically via ensureMemoryNamespaceAndFleet in
-HermesManagementService; this script converges the agents that already exist.
+  pages-<agent>    → /pages/u/agent:<agent>/mcp      scoping documents   → ALL agents
+  reports-<agent>  → /reports/u/agent:<agent>/mcp    typed reports       → ALL agents
+  journal-<agent>  → /journal/u/agent:<agent>/mcp    the working log     → JOURNAL_AGENTS
 
-Guards inherited from adapters/provision_agent.py (the memory provisioning script):
- - agent list comes from the REAL profile API, never typed by hand (the pages service
-   answers ANY /u/<ns>/mcp path, so a typo mints a working-but-wrong author identity);
- - BOTH halves or neither: register the server AND extend the tool group;
- - tool groups are read, EXTENDED and written back — never replaced, never shrunk;
- - verify after: the group must actually contain pages-<agent>__ tools when done.
+Separate servers, not one mixed toolset: an agent that files security-camera
+reports must not see journal tools, and nothing should land in the wrong section
+by accident (Travis, 2026-08-30). Journal recipients are a list because the
+journal is a working log belonging to specific agents, not a fleet-wide surface.
+
+🛑 MCPJUNGLE CACHES TOOL SCHEMAS AT REGISTRATION and does not re-enumerate when
+the upstream server restarts (claude1, 2026-08-30 — his correct deploy sat
+behind a stale cache). So:
+  - an EXISTING server whose toolset changed must be re-registered with --force;
+  - restarting the MCP process alone changes nothing a caller can see;
+  - and verification must go THROUGH THE GATEWAY, never against the server.
+This script does all three: force-refreshes, then counts tools via the gateway.
+
+Guards carried from the memory provisioner: the agent list comes from the real
+profile API (a typo mints a working-but-wrong identity), tool groups are read /
+EXTENDED / written back — never replaced — and every agent is verified after.
 """
 import json
+import os
+import subprocess
 import sys
 import urllib.error
 import urllib.request
 
-GW = "http://127.0.0.1:8080"
-API = "http://127.0.0.1:17890"
-PAGES = "http://127.0.0.1:9848"
+GW = os.environ.get("MCPJUNGLE_URL", "http://127.0.0.1:8080")
+API = os.environ.get("AILAB_API_URL", "http://127.0.0.1:17890")
+MCP = os.environ.get("AILAB_AUTHORING_MCP_URL", "http://127.0.0.1:9848")
+MCPJUNGLE_BIN = os.environ.get("MCPJUNGLE_BIN", "mcpjungle")
+# Journal is a working log, so it belongs to the agents that keep one.
+JOURNAL_AGENTS = [a.strip() for a in os.environ.get(
+    "AILAB_JOURNAL_AGENTS", "maintenance-claude").split(",") if a.strip()]
+
+TOOLSETS = [("pages", "scoping documents"), ("reports", "typed reports"), ("journal", "working log")]
 
 
 def call(method, url, payload=None, timeout=45):
@@ -35,127 +54,125 @@ def call(method, url, payload=None, timeout=45):
             return e.code, json.loads(b)
         except Exception:
             return e.code, {"raw": b.decode(errors="replace")[:300]}
+    except Exception as e:
+        return 0, {"raw": str(e)}
 
 
-def tools_for_server(srv):
-    """Fully-qualified tool names MCPJungle knows for a server, e.g. pages-wren__page_write.
-
-    A tool group stores TOOL names, not server names: the live groups hold
-    memory-<agent>__collection_list and friends. Writing the bare server name is rejected with
-    "tool pages-<agent> does not exist or is disabled". The backend hook gets away with pushing a
-    bare name because it expands through loadToolRegistry afterwards; this script has to expand
-    for itself.
-    """
-    s, d = call("GET", f"{GW}/api/v0/tools")
-    if s != 200:
-        return []
-    tools = d if isinstance(d, list) else d.get("tools", [])
-    names = [(t.get("name") if isinstance(t, dict) else str(t)) for t in tools]
-    return sorted(n for n in names if str(n).startswith(f"{srv}__"))
+def servers():
+    _, d = call("GET", f"{GW}/api/v0/servers")
+    rows = d if isinstance(d, list) else d.get("servers", [])
+    return {r.get("name"): r for r in rows if isinstance(r, dict)}
 
 
-def server_exists(name):
-    """True when MCPJungle already has this server.
+def gateway_tools(server_name):
+    """Tools the GATEWAY will actually serve — the only view any agent sees."""
+    _, d = call("GET", f"{GW}/api/v0/tools?server={server_name}")
+    rows = d if isinstance(d, list) else d.get("tools", [])
+    return [t.get("name") for t in rows if isinstance(t, dict)]
 
-    Registration is NOT idempotent by status code: a duplicate returns 500 with
-    "UNIQUE constraint failed: mcp_servers.name", not 409. Treating 500 as a failure made the
-    whole script non-rerunnable -- the first pass registered all 20 servers but lost the group
-    update to a discovery race, and every later pass then bailed at registration before it could
-    finish the job. Ask what exists instead of inferring it from an error code.
-    """
-    s, d = call("GET", f"{GW}/api/v0/servers")
-    if s != 200:
+
+def register(name, url, description, force):
+    """No in-place refresh exists in MCPJungle; --force deregisters + re-registers."""
+    cfg = {"name": name, "transport": "streamable_http", "url": url,
+           "description": description, "session_mode": "stateless"}
+    if not force:
+        s, _ = call("POST", f"{GW}/api/v0/servers", cfg)
+        # A duplicate returns 500 UNIQUE-constraint, not 409 — never infer from the code.
+        return s in (200, 201)
+    path = f"/tmp/.reg-{name}.json"
+    with open(path, "w") as f:
+        json.dump(cfg, f)
+    try:
+        p = subprocess.run([MCPJUNGLE_BIN, "register", "--force", "-c", path],
+                           capture_output=True, text=True, timeout=60)
+        if p.returncode != 0:
+            print(f"    register --force failed: {(p.stderr or p.stdout).strip()[:200]}")
+        return p.returncode == 0
+    except FileNotFoundError:
+        print(f"    {MCPJUNGLE_BIN} not on PATH — cannot force-refresh {name}")
         return False
-    servers = d if isinstance(d, list) else d.get("servers", [])
-    return any(str(x.get("name") or "") == name for x in servers)
-
-
-def get_group(name):
-    """Matches backend toolGroups.ts: GET returns {included_tools:[...]} or 404."""
-    s, d = call("GET", f"{GW}/api/v0/tool-groups/{name}")
-    if s != 200:
-        return None
-    return d
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def main():
-    s, d = call("GET", f"{PAGES}/health", timeout=5)
+    s, health = call("GET", f"{MCP}/health", timeout=5)
     if s != 200:
-        print(f"FATAL: pages MCP not healthy on {PAGES} ({s}) — start ai-lab-pages-mcp first")
+        print(f"FATAL: authoring MCP not healthy at {MCP} ({s}) — start it first")
         sys.exit(1)
+    print(f"authoring MCP toolsets: {', '.join(health.get('toolsets', []))}")
 
     s, d = call("GET", f"{API}/api/hermes/agents")
     if s != 200:
         print(f"FATAL: cannot list agents ({s})")
         sys.exit(1)
     agents = d.get("agents", [])
-    print(f"{len(agents)} agents")
+    print(f"{len(agents)} agents; journal → {', '.join(JOURNAL_AGENTS)}\n")
 
-    ok = skipped = failed = 0
+    existing = servers()
+    ok = failed = 0
     for agent in agents:
-        srv = f"pages-{agent}"
         group_name = f"agent-{agent}"
-        group = get_group(group_name)
-        if group is None:
-            print(f"  - {agent}: no tool group {group_name}, skipping (not a gateway agent)")
-            skipped += 1
+        s, group = call("GET", f"{GW}/api/v0/tool-groups/{group_name}")
+        if s != 200:
+            print(f"  - {agent}: no tool group, skipping (not a gateway agent)")
             continue
-        tools = group.get("included_tools") or []
-        if any(str(t).startswith("pages-") for t in tools):
-            print(f"  = {agent}: already has pages tools")
-            skipped += 1
-            continue
+        current = group.get("included_tools") or []
+        want_names = []
 
-        # Ask what exists rather than inferring it from an error code: a duplicate register
-        # returns 500 ("UNIQUE constraint failed"), not 409, so a status-only check makes the
-        # script non-rerunnable — which matters because the FIRST pass can register every server
-        # and still lose the group update to MCPJungle's tool-discovery lag.
-        if server_exists(srv):
-            reg_status, reg_body = 200, {}
-        else:
-            reg_status, reg_body = call("POST", f"{GW}/api/v0/servers", {
-                "name": srv, "transport": "streamable_http",
-                "url": f"{PAGES}/u/agent:{agent}/mcp", "session_mode": "stateless",
-                "description": f"{agent}-scoped Pages authoring — authorship from this path, not a tool argument.",
-            })
-        already = reg_status == 500 and "UNIQUE constraint" in json.dumps(reg_body)
-        if reg_status not in (200, 201, 400, 409) and not already:
-            print(f"  ! {agent}: server registration failed ({reg_status}) {json.dumps(reg_body)[:120]}")
-            failed += 1
-            continue
+        for toolset, what in TOOLSETS:
+            if toolset == "journal" and agent not in JOURNAL_AGENTS:
+                continue
+            name = f"{toolset}-{agent}"
+            url = f"{MCP}/{toolset}/u/agent:{agent}/mcp"
+            prior = existing.get(name)
+            # Force-refresh when the server exists (its toolset may have changed);
+            # plain register when new. Either way we VERIFY through the gateway below.
+            if not register(name, url, f"{agent}-scoped {what} — authorship from the caller path, not a tool argument.", force=bool(prior)):
+                print(f"  ! {agent}: could not register {name}")
+                failed += 1
+                continue
+            tools = gateway_tools(name)
+            if not tools:
+                print(f"  ! {agent}: {name} registered but the GATEWAY reports 0 tools — not adding to the group")
+                failed += 1
+                continue
+            want_names.extend(tools)
 
-        # MCPJungle discovers a newly registered server's tools asynchronously, so the very
-        # first pass can register everything and still find nothing to add. Skip rather than
-        # write a group that would be rejected — re-running then completes the job.
-        srv_tools = tools_for_server(srv)
-        if not srv_tools:
-            print(f"  - {agent}: {srv} registered but its tools are not discovered yet — re-run shortly")
-            skipped += 1
+        if not want_names:
             continue
-
-        # Write shape matches backend writeToolGroup: PUT, POST fallback on 404.
-        new_tools = list(tools) + srv_tools
-        body = {"name": group_name,
-                "description": group.get("description") or f"AI-Lab tool set for {agent}",
-                "included_servers": [], "included_tools": new_tools, "excluded_tools": []}
+        # Drop this agent's stale authoring tools, keep everything else untouched,
+        # then add what the gateway actually serves now.
+        keep = [t for t in current if not any(t.startswith(f"{ts}-{agent}__") for ts, _ in TOOLSETS)]
+        merged = sorted(set(keep) | set(want_names))
+        if merged == sorted(set(current)):
+            print(f"  = {agent}: already current ({len(merged)} tools)")
+            ok += 1
+            continue
+        body = {"name": group_name, "description": group.get("description") or f"AI-Lab tool set for {agent}",
+                "included_servers": [], "included_tools": merged, "excluded_tools": []}
         s, d = call("PUT", f"{GW}/api/v0/tool-groups/{group_name}", body)
         if s == 404:
             s, d = call("POST", f"{GW}/api/v0/tool-groups", body)
         if s not in (200, 201):
-            print(f"  ! {agent}: group update failed ({s}) {str(d)[:120]}")
+            print(f"  ! {agent}: group update failed ({s}) {str(d)[:140]}")
             failed += 1
             continue
-
-        after = get_group(group_name) or {}
-        got = after.get("included_tools") or []
-        if any(str(t).startswith(f"pages-{agent}") for t in got) or srv in got:
-            print(f"  + {agent}: pages tools added ({len(tools)} -> {len(got)})")
+        s, after = call("GET", f"{GW}/api/v0/tool-groups/{group_name}")
+        got = (after or {}).get("included_tools") or []
+        have = {ts for ts, _ in TOOLSETS if any(t.startswith(f"{ts}-{agent}__") for t in got)}
+        expected = {ts for ts, _ in TOOLSETS if ts != "journal" or agent in JOURNAL_AGENTS}
+        if have == expected:
+            print(f"  + {agent}: {', '.join(sorted(have))} ({len(current)} → {len(got)} tools)")
             ok += 1
         else:
-            print(f"  ! {agent}: VERIFY FAILED — group written but pages tools not present")
+            print(f"  ! {agent}: VERIFY FAILED — expected {sorted(expected)}, gateway shows {sorted(have)}")
             failed += 1
 
-    print(f"\ndone: {ok} provisioned, {skipped} skipped, {failed} failed")
+    print(f"\ndone: {ok} ok, {failed} failed")
     sys.exit(1 if failed else 0)
 
 

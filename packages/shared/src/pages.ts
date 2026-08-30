@@ -32,108 +32,10 @@ export const pageVersionInfoSchema = z.object({
 })
 export type PageVersionInfo = z.infer<typeof pageVersionInfoSchema>
 
-/**
- * Documents vs reports. A report is a page with a CATEGORY (→ its own RAG
- * collection) and the summary fields the journal is built from. Categories are
- * first-class and extensible — config, never a hardcoded enum.
- */
-export const PAGE_KINDS = ['document', 'report'] as const
-export const pageKindSchema = z.enum(PAGE_KINDS)
-export type PageKind = z.infer<typeof pageKindSchema>
-
-/**
- * The journal line, carried ON the report. Deriving the journal from these
- * instead of maintaining a second document means it can never desync from the
- * reports and can never be forgotten — filing the report IS filing the entry.
- */
-export const reportSummarySchema = z.object({
-  /** Short name of the problem — the journal's primary column. */
-  issue: z.string().min(1).max(200),
-  /** One line: what was actually wrong. */
-  cause: z.string().max(500).optional(),
-  /** One line: what was done about it. */
-  fix: z.string().max(500).optional(),
-  /** Free-form references: notification ids, service names, URLs, other page ids. */
-  links: z.array(z.string().max(300)).max(20).default([]),
-})
-export type ReportSummary = z.infer<typeof reportSummarySchema>
-
-export const reportCategorySchema = z.object({
-  id: z.string().min(1).max(48).regex(/^[a-z0-9][a-z0-9_-]*$/),
-  label: z.string().min(1).max(64),
-  /** RAG collection this category's reports are vectorised into. */
-  collection: z.string().min(1).max(64),
-  /** STARTING template — a beginning to modify, never a schema that rejects. */
-  template: z.string().default(''),
-  description: z.string().max(300).optional(),
-})
-export type ReportCategory = z.infer<typeof reportCategorySchema>
-
-/**
- * A journal NOTE: the third triage outcome — "noted, nothing repaired".
- *
- * 🛑 Why this is first-class rather than derived. A repair is memorable and
- * leaves a report you can search; a benign recurring failure (an upstream API
- * that was briefly overloaded, a probe that blipped once) leaves nothing, and is
- * PRECISELY the thing nobody remembers across context windows. Deriving the
- * journal only from reports would make the most-forgettable outcome invisible,
- * so the agent would rediscover the same benign event every few days. Notes are
- * vectorised alongside reports so a search for the symptom surfaces "you already
- * dismissed this, three times".
- */
-export const journalNoteSchema = z.object({
-  id: z.string().min(1).max(80),
-  category: z.string(),
-  createdAt: z.string(),
-  issue: z.string().min(1).max(200),
-  cause: z.string().max(500).optional(),
-  /** Why no repair was made — the field that makes a dismissal reviewable. */
-  whyNoAction: z.string().min(1).max(500),
-  author: z.string().max(64).optional(),
-  links: z.array(z.string().max(300)).max(20).default([]),
-})
-export type JournalNote = z.infer<typeof journalNoteSchema>
-
-export const journalNoteRequestSchema = journalNoteSchema.omit({ id: true, createdAt: true }).extend({
-  category: z.string().max(48),
-})
-export type JournalNoteRequest = z.infer<typeof journalNoteRequestSchema>
-
-/** One journal line: a filed repair (report) or a recorded dismissal (note). */
-export const journalEntrySchema = z.object({
-  kind: z.enum(['report', 'note']).default('report'),
-  /** reports only — the page the entry was derived from. */
-  pageId: pageIdSchema.optional(),
-  /** notes only. */
-  noteId: z.string().optional(),
-  category: z.string(),
-  receivedAt: z.string(),
-  issue: z.string(),
-  cause: z.string().optional(),
-  /** reports only. */
-  fix: z.string().optional(),
-  /** notes only — why nothing was repaired. */
-  whyNoAction: z.string().optional(),
-  author: z.string().optional(),
-  version: z.number().int().positive().optional(),
-  /**
-   * The trail back to the source: event ids, service names, commits, related pages.
-   * Stored on both reports and notes, so dropping it here made it unreachable --
-   * a link recorded and never shown is indistinguishable from one never recorded.
-   */
-  links: z.array(z.string()).default([]),
-})
-export type JournalEntry = z.infer<typeof journalEntrySchema>
-
 export const pageMetaSchema = z.object({
   id: pageIdSchema,
   title: z.string(),
   contentType: pageContentTypeSchema,
-  kind: pageKindSchema.default('document'),
-  /** reports only — the category id, which selects the RAG collection. */
-  category: z.string().optional(),
-  /** reports only — journal fields. */
-  report: reportSummarySchema.optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
   currentVersion: z.number().int().positive(),
@@ -172,10 +74,6 @@ export const pageWriteRequestSchema = z.object({
   contentType: pageContentTypeSchema,
   body: z.string().max(4 * 1024 * 1024),
   author: z.string().max(64).optional(),
-  /** 'report' requires category + report.issue; 'document' (default) ignores both. */
-  kind: pageKindSchema.optional(),
-  category: z.string().max(48).optional(),
-  report: reportSummarySchema.optional(),
 })
 export type PageWriteRequest = z.infer<typeof pageWriteRequestSchema>
 

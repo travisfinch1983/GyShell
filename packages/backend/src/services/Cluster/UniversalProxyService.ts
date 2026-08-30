@@ -137,6 +137,8 @@ export class UniversalProxyService {
     const { createCivitaiRouter } = await import('./proxy/civitai.js')
     const { createFlowchartsRouter } = await import('./flowchartsHttp')
     const { createPagesRouter } = await import('./pagesHttp')
+    const { createReportsRouter } = await import('./reportsHttp')
+    const { createJournalRouter } = await import('./journalHttp')
     const { createSvgsRouter } = await import('./svgsHttp')
     const { createNotesRouter } = await import('./notesHttp')
     // @ts-expect-error — native service-log viewer (tails logs over AI-Lab's own SSH, reads local data)
@@ -325,7 +327,15 @@ export class UniversalProxyService {
     // Flowchart diagram store: /api/flowcharts/* — before the broad /api cluster router.
     app.use(createFlowchartsRouter(this.dataDir))
     // Pages store (Pages tab): /api/pages/* — versioned documents, same dataDir pattern.
-    app.use(createPagesRouter(this.dataDir, (e) => this.notifications?.notify?.(e)))
+    app.use(createPagesRouter(this.dataDir))
+    // Reports and the Journal are their OWN surfaces, not sub-paths of pages:
+    // three separate things, three separate toolsets (Travis 2026-08-30).
+    app.use(createReportsRouter(this.dataDir, (e) => this.notifications?.notify?.(e)))
+    // Pass notify so a degraded journal index leaves the process instead of
+    // living only in the response of whichever agent happened to make the call.
+    app.use(createJournalRouter(this.dataDir, this.notifications
+      ? (i) => (this.notifications as never as { notify: (x: unknown) => unknown }).notify(i)
+      : undefined))
     // Notifications: /api/notifications/* — state, emit (the estate-wide cheap path), ack, debug.
     if (this.notifications) {
       const { createNotificationsRouter } = await import('../Notifications/notificationsHttp')

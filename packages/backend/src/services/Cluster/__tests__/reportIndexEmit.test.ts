@@ -1,55 +1,50 @@
-// Proves the indexed:false emitter fires. Mounted in isolation with a scratch dataDir so no
-// note reaches the real journal -- notes are append-only, so a test entry would be permanent.
-// Storage isolation is not network isolation, so the RAG URL is pointed at a dead port and the
-// maintainer route is disarmed: see feedback on the harness that woke maintenance-claude.
+// Proves the indexed:false emitter survived the toolset split. It was wired into pagesHttp
+// (e0839e6); the split moved reports to their own router, which did not carry it forward --
+// a functional revert that git could not flag because the code moved rather than changed.
+//
+// Isolated: scratch dataDir, RAG pointed at a dead port, maintainer route disarmed. A scratch
+// dataDir isolates storage, not the network, and the default RAG target is a live service.
 process.env.AILAB_MAINTAINER_AGENT = 'off'
-process.env.UNIFIED_MEMORY_URL = 'http://127.0.0.1:9'   // dead: forces the index to fail
+process.env.UNIFIED_MEMORY_URL = 'http://127.0.0.1:9'
 // @ts-ignore -- express has no types installed repo-wide (same as notesHttp/svgsHttp).
-// @ts-ignore is deliberate over @ts-expect-error: if types are ever added, an expect-error
-// would itself become an unused-directive error and break the baseline it protects.
 import express from 'express'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { createPagesRouter } from '../pagesHttp.js'
+import { createReportsRouter } from '../reportsHttp.js'
 
 async function main() {
-  const dataDir = mkdtempSync(path.join(tmpdir(), 'pages-emit-'))
-  mkdirSync(path.join(dataDir, 'pages'), { recursive: true })
-  writeFileSync(path.join(dataDir, 'pages', 'report-categories.json'), JSON.stringify({
-    categories: [{ id: 'maintenance', label: 'Maintenance', description: 'test', collection: 'test_collection' }],
-  }))
-
-  const seen: any[] = []
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'reports-emit-'))
+  const seen: Array<Record<string, unknown>> = []
   const app = express()
-  app.use(createPagesRouter(dataDir, (e) => seen.push(e)))
+  app.use(createReportsRouter(dataDir, (e: Record<string, unknown>) => seen.push(e)))
   const srv = app.listen(0)
-  const port = (srv.address() as any).port
+  const port = (srv.address() as { port: number }).port
 
-  const res = await fetch(`http://127.0.0.1:${port}/api/pages/journal/note`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ category: 'maintenance', issue: 'emitter probe', whyNoAction: 'probe' }),
+  const res = await fetch(`http://127.0.0.1:${port}/api/reports/emit-probe`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: 'Emitter probe', type: 'maintenance',
+      summary: 'probe', body: 'probe body', author: 'claude1',
+    }),
   })
-  const body: any = await res.json()
+  const body = await res.json() as Record<string, any>
   srv.close()
 
   let fail = 0
-  const check = (label: string, ok: boolean, got: unknown) => {
+  const check = (label: string, ok: boolean, got?: unknown) => {
     console.log(`  ${ok ? '✓' : '✗'} ${label}${ok ? '' : ` — got ${JSON.stringify(got)}`}`)
     if (!ok) fail++
   }
-  check('the note still SAVED despite the index failing', body?.ok === true && !!body?.id, body)
+  check('the report still SAVED despite the index failing', body?.ok === true, body)
   check('indexed reported false', body?.indexed === false, body?.indexed)
-  check('indexError surfaced to the caller', typeof body?.indexError === 'string' && body.indexError.length > 0, body?.indexError)
   check('exactly one notification raised', seen.length === 1, seen.length)
-  check('severity is warning (degraded, not broken)', seen[0]?.severity === 'warning', seen[0]?.severity)
+  check('severity warning (search degraded, record safe)', seen[0]?.severity === 'warning', seen[0]?.severity)
   check('source is reports-rag', seen[0]?.source === 'reports-rag', seen[0]?.source)
-  // The detail must let a reader act without opening a log: which note, which
-  // collection it failed to reach, and why.
-  check('detail names the note, its collection and the cause',
-    /note-\S+ in \S+: .+/.test(seen[0]?.detail || ''), seen[0]?.detail)
+  check('detail names report, collection and cause',
+    /emit-probe in \S+: .+/.test(String(seen[0]?.detail ?? '')), seen[0]?.detail)
 
-  console.log(fail === 0 ? '\nALL PASS — a report that cannot be indexed now surfaces instead of degrading search silently.' : `\n${fail} FAILURE(S)`)
+  console.log(fail === 0 ? '\nALL PASS — the emitter survived the split.' : `\n${fail} FAILURE(S)`)
   process.exit(fail === 0 ? 0 : 1)
 }
 main()

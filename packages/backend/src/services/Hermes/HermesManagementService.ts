@@ -1342,7 +1342,6 @@ export class HermesManagementService {
         .map((t) => t.split('__')[0])
         .filter((p) => p.startsWith('memory')))]
       const hasFleet = current.some((t) => t.startsWith('fleet__'))
-      const hasPages = current.some((t) => t.startsWith('pages-'))
 
       // Which servers ALREADY exist — asked, not inferred from status codes: a duplicate
       // registration returns 500 "UNIQUE constraint failed", not 409 (found live by
@@ -1373,30 +1372,40 @@ export class HermesManagementService {
         }
       }
 
-      // Pages authoring (Travis 2026-08-30): identity is PROGRAMMATIC — same per-caller
-      // routing pattern as memory, so the recorded author is derived from the registered
-      // path, never typed by the agent. Same both-halves-or-neither rule as memory.
-      const pagesSrv = `pages-${agentId}`
-      if (!hasPages && !registered.has(pagesSrv)) {
-        const pagesUrl = `${process.env.AILAB_PAGES_MCP_URL || 'http://127.0.0.1:9848'}/u/${ns}/mcp`
+      // Authoring toolsets (Travis 2026-08-30): pages / reports / journal are
+      // SEPARATE servers so an agent cannot file into the wrong section, and so
+      // a future camera or security agent gets reports without journal tools.
+      // Journal is a working log — only the agents that keep one receive it.
+      const journalAgents = (process.env.AILAB_JOURNAL_AGENTS || 'maintenance-claude')
+        .split(',').map((a) => a.trim()).filter(Boolean)
+      const authoringBase = process.env.AILAB_AUTHORING_MCP_URL || process.env.AILAB_PAGES_MCP_URL || 'http://127.0.0.1:9848'
+      const toolsets = ['pages', 'reports', ...(journalAgents.includes(agentId) ? ['journal'] : [])]
+      const authoringServers: string[] = []
+      for (const ts of toolsets) {
+        const srv = `${ts}-${agentId}`
+        authoringServers.push(srv)
+        if (current.some((t) => t.startsWith(`${srv}__`)) || registered.has(srv)) continue
         const res = await fetch(`${gw}/api/v0/servers`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            name: pagesSrv, transport: 'streamable_http', url: pagesUrl, session_mode: 'stateless',
-            description: `${agentId}-scoped Pages authoring (page_write/get/list) — authorship recorded from this path, not a tool argument.`,
+            name: srv, transport: 'streamable_http',
+            url: `${authoringBase}/${ts}/u/${ns}/mcp`, session_mode: 'stateless',
+            description: `${agentId}-scoped ${ts} — authorship recorded from this path, not a tool argument.`,
           }),
           signal: AbortSignal.timeout(15000),
         })
         if (!res.ok && res.status !== 409 && res.status !== 400) {
-          console.warn(`[agent-provision] ${agentId}: could not register ${pagesSrv} (HTTP ${res.status}) — pages tools will retry on next create/edit`)
+          console.warn(`[agent-provision] ${agentId}: could not register ${srv} (HTTP ${res.status}) — will retry on next create/edit`)
         }
       }
 
       const want = [...current]
       if (existingMem.length === 0) want.push(memSrv)   // bare server name expands to all its tools
       if (!hasFleet) want.push('fleet')
-      if (!hasPages) want.push(pagesSrv)
+      for (const srv of authoringServers) {
+        if (!current.some((t) => t.startsWith(`${srv}__`))) want.push(srv)
+      }
       if (want.length === current.length) return        // already complete
 
       const reg = await loadToolRegistry(gw)
