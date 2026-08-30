@@ -16,6 +16,7 @@ import { PrimarySidebar, type PrimaryTab } from './components/PrimarySidebar/Pri
 import { GlobalChat } from './components/Chat/GlobalChat'
 import { AgentChatPanel } from './components/AgentChat/AgentChatPanel'
 import { FlowchartPanel } from './components/Flowchart/FlowchartPanel'
+import { PagesPanel } from './components/Pages/PagesPanel'
 import { SvgPanel } from './components/Svg/SvgPanel'
 import { FleetPanel } from './components/Fleet/FleetPanel'
 import { AddonsPanel } from './components/Addons/AddonsPanel'
@@ -267,6 +268,7 @@ export const App: React.FC = observer(() => {
           {primaryTab === 'addons' && <AddonsPanel />}
 
           {primaryTab === 'flowchart' && <FlowchartPanel />}
+          {primaryTab === 'pages' && <PagesPanel />}
           {primaryTab === 'svg' && <SvgPanel />}
           {primaryTab === 'files' && <FilesPanel />}
           {primaryTab === 'roadmap' && <RoadmapPanel />}
