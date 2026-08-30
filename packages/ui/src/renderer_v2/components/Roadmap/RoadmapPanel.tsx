@@ -79,7 +79,13 @@ export const RoadmapPanel: React.FC = () => {
     if (!activePid) return
     setTree(t => t ? { ...t, nodes: mapTree(t.nodes, n => n.id === nid ? { ...n, done } : n) } : t)
     try { await bridge().request('PATCH', `/api/roadmap/projects/${encodeURIComponent(activePid)}/nodes/${encodeURIComponent(nid)}`, { done }) }
-    catch { void loadTree(activePid) }
+    catch (e) {
+      // Say WHY the checkbox reverted. This catch used to be silent, which hid a
+      // transport bug (PATCH rejected at the bridge) for weeks — the box just
+      // snapped back and the failure looked like a mis-click.
+      setStatus(`save failed — ${String((e as Error)?.message ?? e)}`)
+      void loadTree(activePid)
+    }
   }
   const editTitle = async (nid: string, title: string) => {
     if (!activePid || !title.trim()) return

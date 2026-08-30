@@ -933,7 +933,13 @@ export class HermesManagementService {
    *  model via `auxiliary.compression`. Unset → `auto` (falls back to the agent's own main model,
    *  see auxiliary_client main-agent fallback). Model-agnostic — applied to every agent. */
   private async applyCompactionConfig(agentId: string): Promise<void> {
-    const c = this.loadSupportModels().compaction
+    // `compression`, NOT `compaction`: loadSupportModels migrates the legacy key
+    // away and DELETES it, so reading the old name here was always undefined —
+    // which made the else-branch unconditional, and every applySpec silently
+    // reset the agent's compression to auto/'' , wiping the operator's global
+    // Compaction assignment (Observability Sweep T1, 2026-08-30). The exact
+    // stale-config family this file documents at the vision role.
+    const c = this.loadSupportModels().compression
     if (c?.model) {
       await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.compression.provider', c.provider || 'ailab'])
       await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.compression.model', c.model])

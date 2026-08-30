@@ -21,7 +21,7 @@ export interface ClusterServiceOptions {
   timeoutMs?: number
 }
 
-export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE'
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
 export class ClusterService {
   private readonly base: string
@@ -87,7 +87,11 @@ export class ClusterService {
    */
   async request(method: string, path: string, body?: unknown): Promise<unknown> {
     const m = (method || 'GET').toUpperCase() as HttpMethod
-    if (!['GET', 'POST', 'PUT', 'DELETE'].includes(m)) {
+    // PATCH included: journal edits (PATCH /api/journal/:id) and roadmap node
+    // updates both send it. Its absence here was invisible by construction —
+    // RoadmapPanel caught the rejection into a silent reload, so the checkbox
+    // just reverted with no message (Observability Sweep, 2026-08-30).
+    if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(m)) {
       throw new Error(`cluster proxy: method not allowed: ${m}`)
     }
     if (typeof path !== 'string' || !path.startsWith('/api/') || path.includes('..')) {
