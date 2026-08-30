@@ -48,9 +48,15 @@ export interface AuxTask {
   providerDefault?: boolean
   /** Consumed by the AI-Lab proxy itself; never written to an agent. */
   proxyLevel?: boolean
+  /** What THIS CARD is set to — the setting itself, independent of what agents currently
+   *  carry. For a capability-managed role the agents are supposed to differ, so a consensus
+   *  reading is meaningless and this is the only honest value to display. */
+  cardModel?: string
   /** perAgent split into what it MEANS, computed backend-side so template profiles (which are
    *  never applied to) are labelled rather than looking like drift. */
   breakdown?: {
+    /** Agents carrying exactly the card's model. */
+    follows: string[]
     overrides: Array<{ agent: string; model: string }>
     autos: string[]
     templates: Array<{ agent: string; model: string }>

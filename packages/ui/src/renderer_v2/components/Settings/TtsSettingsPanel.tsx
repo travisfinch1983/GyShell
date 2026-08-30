@@ -453,16 +453,17 @@ const EditableLine: React.FC<{
 const AgentBreakdown: React.FC<{ task: AuxTask }> = ({ task }) => {
   const [open, setOpen] = useState(false)
   const b = task.breakdown
-  if (!b || (!b.overrides.length && !b.autos.length && !b.templates.length)) return null
+  if (!b || (!b.follows.length && !b.overrides.length && !b.autos.length && !b.templates.length)) return null
 
   const managed = !!task.capabilityManaged
   const autoMeans = managed
-    ? 'uses its own model (already vision-capable)'
-    : "uses this card's selection"
-  const n = b.overrides.length
-  const summary = n === 0
-    ? `all ${b.autos.length} agents follow this card`
-    : `${n} agent${n === 1 ? '' : 's'} ${managed ? 'need a describer' : 'have their own override'}, ${b.autos.length} follow this card`
+    ? 'uses its own model (already vision-capable, so no describer is needed)'
+    : "no model set — falls back to the agent's own model"
+  const parts: string[] = []
+  if (b.follows.length) parts.push(`${b.follows.length} using this card's model`)
+  if (b.autos.length) parts.push(`${b.autos.length} on Auto`)
+  if (b.overrides.length) parts.push(`${b.overrides.length} with a different model`)
+  const summary = parts.length ? parts.join(' · ') : 'no agents'
 
   const row: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', gap: 10, padding: '2px 0' }
   return (
@@ -481,11 +482,17 @@ const AgentBreakdown: React.FC<{ task: AuxTask }> = ({ task }) => {
       {open && (
         <div style={{ fontSize: 11, lineHeight: 1.5, padding: '6px 9px', marginTop: 4, borderRadius: 6,
                       border: '1px solid var(--border)', background: 'var(--bg-elev, rgba(128,128,128,.06))' }}>
-          {b.overrides.length > 0 && (
+          {b.follows.length > 0 && (
             <>
               <div style={{ fontWeight: 600, marginBottom: 2 }}>
-                {managed ? 'Assigned a describer (main model cannot see images)' : 'Own override'}
+                {managed ? 'Using this card’s model (their own model cannot see images)' : 'Using this card’s model'}
               </div>
+              <div style={{ opacity: .75 }}>{b.follows.join(', ')}</div>
+            </>
+          )}
+          {b.overrides.length > 0 && (
+            <>
+              <div style={{ fontWeight: 600, margin: '6px 0 2px' }}>Set to something else (a real override)</div>
               {b.overrides.map(({ agent, model }) => (
                 <div key={agent} style={row}><span>{agent}</span><span style={{ opacity: .75 }}>{model}</span></div>
               ))}
@@ -517,7 +524,8 @@ const SupportModelSection: React.FC<{
 }> = ({ task, role, catalog, onSave }) => {
   // Seed from the LIVE per-agent value. Seeding from the stored overlay (role?.model) is
   // what made roles with a stale config render as "Auto" — the drift was unshowable.
-  const [model, setModel] = useState(task.current ?? role?.model ?? '')
+  // The SETTING, not a reading of agent state — the breakdown panel below reports reality.
+  const [model, setModel] = useState(task.cardModel ?? role?.model ?? '')
   const [desc, setDesc] = useState(task.description)
   const [rec, setRec] = useState(task.recommendation)
   const [noThink, setNoThink] = useState(!!role?.noThink)

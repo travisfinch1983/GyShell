@@ -255,19 +255,25 @@ export class HermesManagementService {
     // on Auto rendered as a bare "Auto" — true of nobody in particular. Split it here rather than
     // in the UI so template profiles (never applied to, permanently "different") are labelled as
     // such instead of looking like drift.
-    type Breakdown = { overrides: Array<{ agent: string; model: string }>; autos: string[]; templates: Array<{ agent: string; model: string }> }
-    const breakdownOf = (perAgent: Record<string, string>): Breakdown => {
-      const b: Breakdown = { overrides: [], autos: [], templates: [] }
+    type Breakdown = { follows: string[]; overrides: Array<{ agent: string; model: string }>; autos: string[]; templates: Array<{ agent: string; model: string }> }
+    // Classify each agent against the CARD's OWN value, not against "is this field non-empty".
+    // Applying a role WRITES the card's model to every agent, so treating any non-empty value as
+    // an override reported "19 agents have their own overrides, 0 follow this card" about 19
+    // agents that were all faithfully carrying the card's model. An override is a value that
+    // DISAGREES with the card; matching it is the opposite of an override.
+    const breakdownOf = (perAgent: Record<string, string>, cardModel: string): Breakdown => {
+      const b: Breakdown = { follows: [], overrides: [], autos: [], templates: [] }
       for (const [agent, model] of Object.entries(perAgent)) {
         if (TEMPLATE_PROFILES.has(agent)) b.templates.push({ agent, model })
-        else if (model) b.overrides.push({ agent, model })
-        else b.autos.push(agent)
+        else if (!model) b.autos.push(agent)
+        else if (cardModel && model === cardModel) b.follows.push(agent)
+        else b.overrides.push({ agent, model })
       }
       b.overrides.sort((x, y) => x.agent.localeCompare(y.agent))
-      b.autos.sort()
+      b.autos.sort(); b.follows.sort()
       return b
     }
-    const rows: Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean; external: boolean; capabilityManaged: boolean; providerDefault: boolean; proxyLevel: boolean; current: string; drift: boolean; perAgent: Record<string, string>; breakdown: Breakdown }> = []
+    const rows: Array<{ key: string; label: string; description: string; recommendation: string; shared: boolean; external: boolean; capabilityManaged: boolean; providerDefault: boolean; proxyLevel: boolean; cardModel: string; current: string; drift: boolean; perAgent: Record<string, string>; breakdown: Breakdown }> = []
     const add = (key: string, label: string, hermesDesc: string) => {
       if (seen.has(key)) return
       seen.add(key)
@@ -279,6 +285,15 @@ export class HermesManagementService {
       const live = (external || PROXY_LEVEL_ROLES.has(key))
         ? { current: s.model || '', drift: false, perAgent: {} as Record<string, string> }
         : liveFor(key)
+      // What the CARD is set to — the SETTING, never a reading of what agents currently carry.
+      // Deriving it from live agent state made the control lie in both directions: the vision
+      // card flipped to Auto whenever most agents happened to have vision-capable models (a
+      // consensus reading is meaningless for a role where agents are SUPPOSED to differ), and a
+      // role could look "set" purely because agents still carried a previously applied value.
+      // The original reason for reading live state — that a config set outside this UI was
+      // otherwise invisible — is now served by the per-agent breakdown, which reports reality
+      // without the control having to impersonate it. A setting is a setting.
+      const cardModel = s.model || ''
       rows.push({
         key, label,
         description: (s.description || def.description || hermesDesc || '').trim(),
@@ -288,11 +303,12 @@ export class HermesManagementService {
         capabilityManaged,
         providerDefault: PROVIDER_DEFAULT_ROLES.has(key),
         proxyLevel: PROXY_LEVEL_ROLES.has(key),
-        current: live.current,
+        current: live.current,   // still the LIVE consensus — drift detection depends on it
+        cardModel,
         // Capability-managed roles are SUPPOSED to differ per agent — not drift.
         drift: capabilityManaged ? false : live.drift,
         perAgent: live.perAgent,
-        breakdown: breakdownOf(live.perAgent),
+        breakdown: breakdownOf(live.perAgent, cardModel),
       })
     }
     for (const [key, label, desc] of live) add(key, label, desc)
