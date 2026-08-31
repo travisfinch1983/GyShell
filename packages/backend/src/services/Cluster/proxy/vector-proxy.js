@@ -20,8 +20,6 @@ import { join } from 'path';
 import * as fsForState from 'fs';
 import { loadJsonState } from './lib/notify.js';
 import { createHash } from 'crypto';
-import * as fsForState from 'fs';
-import { loadJsonState } from './lib/notify.js';
 
 const CONFIG_FILE = join(process.env.AILAB_PROXY_DATA_DIR || join(process.cwd(), 'data'), 'vector-db-config.json');
 
