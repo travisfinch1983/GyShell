@@ -914,6 +914,24 @@ export function createCivitaiRouter(config, sshService) {
       effectiveOverride = null;
     }
 
+    // The custom filename gets the SAME treatment as the folder. It did not before:
+    // fileNameOverride was read ONLY from the request, never from history — so a model
+    // downloaded earlier under a custom name came back resolved from the bare template,
+    // the Filename box seeded with the template result, and re-downloading produced a
+    // SECOND copy under a different name. (The UI sends `undefined` before seeding, and
+    // JSON.stringify drops undefined keys, so `absent` reaches us as intended.)
+    let effectiveFnOverride;
+    if (Object.prototype.hasOwnProperty.call(req.body, 'fileNameOverride')) {
+      effectiveFnOverride = fileNameOverride || null;
+    } else if (versionId) {
+      const hFn = lookupHistoryOverride(modelId, versionId);
+      effectiveFnOverride = (hFn?.fileNameOverride && String(hFn.versionId) === String(versionId))
+        ? hFn.fileNameOverride
+        : null;
+    } else {
+      effectiveFnOverride = null;
+    }
+
     const resolved = [];
     // Captured from the LAST resolve pass so the client can seed its editable Folder/Filename
     // boxes with the values the template actually produced. Without these the UI can only show
@@ -927,10 +945,10 @@ export function createCivitaiRouter(config, sshService) {
       lastTypeFolder = typeFolder || lastTypeFolder;
       lastFolderPart = folderPart || '';
       // Apply filename override — keep the extension from the resolved name
-      if (fileNameOverride) {
+      if (effectiveFnOverride) {
         const _dot = fileName.lastIndexOf('.');
         const ext = _dot > 0 ? fileName.substring(_dot) : '';
-        fileName = fileNameOverride + ext;
+        fileName = effectiveFnOverride + ext;
       }
       resolved.push({ originalName: file.name, newName: fileName, targetDir });
     }
@@ -946,6 +964,9 @@ export function createCivitaiRouter(config, sshService) {
       basePath,
       typeFolder: lastTypeFolder,
       folderPart: lastFolderPart,
+      // The name actually in force, so the Filename box can be seeded with the custom
+      // name this model was downloaded under rather than the template's guess.
+      fileNameOverride: effectiveFnOverride || '',
     });
   });
 
@@ -1003,6 +1024,13 @@ export function createCivitaiRouter(config, sshService) {
       if (v.files?.length) {
         const model = { id: modelId, type: modelType || 'LORA', name: modelName || '', creator: {} };
         const version = { id: v.id, name: v.name || '', baseModel: v.baseModel || '' };
+        // Must mirror the DOWNLOADER's collision handling exactly. If this computes the
+        // bare name while the downloader writes a disambiguated one, the file is on disk
+        // and this reports it missing — the badge stays dark and the model gets fetched
+        // again. Two functions deriving a path independently WILL drift; they agree here
+        // because they apply the same rule to the same input.
+        const _nameCounts = {};
+        for (const f of v.files) _nameCounts[f.name] = (_nameCounts[f.name] || 0) + 1;
 
         for (const file of v.files) {
           try {
@@ -1012,6 +1040,14 @@ export function createCivitaiRouter(config, sshService) {
               const _dot = fileName.lastIndexOf('.');
         const ext = _dot > 0 ? fileName.substring(_dot) : '';
               fileName = fnOverride + ext;
+            }
+            if (_nameCounts[file.name] > 1) {
+              const _d = fileName.lastIndexOf('.');
+              const _b = _d > 0 ? fileName.substring(0, _d) : fileName;
+              const _e = _d > 0 ? fileName.substring(_d) : '';
+              const _t = [file.metadata?.fp, file.metadata?.size, file.metadata?.format]
+                .filter(Boolean).join('-').replace(/[^A-Za-z0-9._-]/g, '');
+              fileName = `${_b}${_t ? '-' + _t : ''}-${file.id}${_e}`;
             }
             const fullPath = `${targetDir}/${fileName}`;
 
