@@ -610,7 +610,7 @@ const ReviewBrowser: React.FC = observer(() => {
               <div className={styles.fileSection}>
                 <div className={styles.sectionLabel}>Files → resolved name (live)</div>
                 {(v.files || []).map((f: any) => {
-                  const resolved = store.resolvedNameFor(f.name)
+                  const resolved = store.resolvedNameForId(f.id, f.name)
                   // A version often ships several files under ONE name (fp8 / bf16 / GGUF
                   // quants). Key and tick by the CivitAI file id — keying by name gave five
                   // rows the same React key and made every checkbox move together — and show
@@ -624,6 +624,27 @@ const ReviewBrowser: React.FC = observer(() => {
                       {variant && <span className={styles.quantBadge} title="what distinguishes this file from others with the same name">{variant}</span>}
                       {f.type && <span className={styles.quantBadge}>{f.type}</span>}
                       <span className={styles.fileSize}>{kb(f.sizeKB)}</span>
+                      {/* Per-file naming. The template only sees VERSION-level variables, so a
+                          version holding several distinct files (full / r128 / r64) collapses them
+                          onto one name. These two give the row its own say: keep the upstream name,
+                          or add a suffix before the extension. */}
+                      <input
+                        className={styles.fileSuffix}
+                        type="text"
+                        placeholder="suffix"
+                        title="Appended to the generated name, before the extension (e.g. r64)"
+                        value={store.fileOpt(f.id ?? f.name).suffix ?? ''}
+                        disabled={!store.isFileRenamed(f.id ?? f.name)}
+                        onClick={(e) => e.preventDefault()}
+                        onChange={(e) => store.setFileSuffix(f.id ?? f.name, e.target.value)}
+                      />
+                      <span
+                        className={`${styles.renameToggle} ${store.isFileRenamed(f.id ?? f.name) ? '' : styles.renameOff}`}
+                        title={store.isFileRenamed(f.id ?? f.name)
+                          ? 'Renaming ON — the template names this file. Click to keep its original CivitAI name.'
+                          : 'Renaming OFF — keeping the original CivitAI name. Click to apply the template.'}
+                        onClick={(e) => { e.preventDefault(); store.toggleFileRename(f.id ?? f.name) }}
+                      >{store.isFileRenamed(f.id ?? f.name) ? 'Aa' : 'Aa\u0338'}</span>
                     </label>
                   )
                 })}

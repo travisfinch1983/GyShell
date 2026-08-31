@@ -785,7 +785,68 @@ export function createCivitaiRouter(config, sshService) {
   const getCivitaiToken = readCivitaiToken;
 
   // ─── Helper: resolve target path for a model file ──────────────────────
-  function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined, extensionOverride, componentOverride) {
+  /** Final on-disk names for ALL files of one version, computed in ONE place so the live
+ *  preview and the actual download cannot drift apart.
+ *
+ *  Order matters, and it is: EXPLICIT USER INTENT FIRST, automatic guard LAST.
+ *    1. per-file "keep original name" — wins outright, nothing else is applied
+ *    2. otherwise the template result, then the custom filename override
+ *    3. + the per-file suffix, inserted before the extension
+ *    4. + automatic disambiguation, but ONLY for names that STILL collide
+ *
+ *  Step 4 running last is the fix for a real bug: the guard used to run before the
+ *  filename override, so setting a custom name overwrote the disambiguated base and every
+ *  file in the version collapsed onto one path again — exactly the case it existed to
+ *  prevent. It also means a user's own suffixes suppress the ugly `-<fileId>` entirely:
+ *  name them r64/r128 yourself and no machine tag is added.
+ *
+ *  @param baseNameFor  (file) => templated name, supplied by the caller so this stays
+ *                      independent of how the path template is resolved.
+ */
+function resolveVersionFileNames(files, baseNameFor, fnOverride, fileOpts) {
+  const keyOf = (f) => String(f.id != null ? f.id : f.name);
+  const names = new Map();
+
+  for (const f of files || []) {
+    const o = (fileOpts && (fileOpts[keyOf(f)] || fileOpts[String(f.name)])) || {};
+    let name;
+    if (o.noRename) {
+      name = f.name;                                  // upstream name, verbatim
+    } else {
+      name = baseNameFor(f);
+      if (fnOverride) {
+        const d = name.lastIndexOf('.');
+        name = fnOverride + (d > 0 ? name.substring(d) : '');
+      }
+    }
+    if (o.suffix) {
+      const d = name.lastIndexOf('.');
+      const b = d > 0 ? name.substring(0, d) : name;
+      const e = d > 0 ? name.substring(d) : '';
+      const sfx = String(o.suffix).trim().replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[_-]+|[_-]+$/g, '');
+      if (sfx) name = `${b}-${sfx}${e}`;
+    }
+    names.set(keyOf(f), name);
+  }
+
+  const counts = {};
+  for (const n of names.values()) counts[n] = (counts[n] || 0) + 1;
+  for (const f of files || []) {
+    const k = keyOf(f);
+    const n = names.get(k);
+    if (counts[n] > 1) {
+      const d = n.lastIndexOf('.');
+      const b = d > 0 ? n.substring(0, d) : n;
+      const e = d > 0 ? n.substring(d) : '';
+      const tag = [f.metadata?.fp, f.metadata?.size, f.metadata?.format]
+        .filter(Boolean).join('-').replace(/[^A-Za-z0-9._-]/g, '');
+      names.set(k, `${b}${tag ? '-' + tag : ''}-${f.id}${e}`);
+    }
+  }
+  return names;
+}
+
+function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined, extensionOverride, componentOverride) {
     const vars = resolveVars(model, version, file, cfg);
     if (userDefined) vars['$USER_DEFINED'] = userDefined;
     if (extensionOverride) vars['$EXTENSION_OVERRIDE'] = extensionOverride;
@@ -888,7 +949,7 @@ export function createCivitaiRouter(config, sshService) {
   // ─── POST /resolve-paths — Resolve template paths for model files ───────
   // Used by the renamer to compute new paths from templates
   router.post('/resolve-paths', (req, res) => {
-    const { modelId, versionId, modelType, modelName, versionName, baseModel, creatorName, primaryTag, tags, files, pathOverride, userDefined, fileNameOverride } = req.body;
+    const { modelId, versionId, modelType, modelName, versionName, baseModel, creatorName, primaryTag, tags, files, pathOverride, userDefined, fileNameOverride, fileOpts } = req.body;
     if (!files?.length) return res.status(400).json({ error: 'files required' });
 
     const cfg = loadConfig();
@@ -939,18 +1000,25 @@ export function createCivitaiRouter(config, sshService) {
     // part beneath <basePath>/<typeFolder>), so the boxes had to be left blank.
     let lastTypeFolder = '';
     let lastFolderPart = '';
+    // One naming pass for the whole version, shared with the download path.
+    const _dirs = new Map();
+    const _finalNames = resolveVersionFileNames(files, (f) => {
+      const fake = { id: f.id, name: f.name, sizeKB: f.sizeKB || 0, metadata: f.metadata || {}, hashes: {} };
+      const r = resolveTargetPath(model, version, fake, cfg, effectiveOverride, userDefined || '');
+      lastTypeFolder = r.typeFolder || lastTypeFolder;
+      lastFolderPart = r.folderPart || '';
+      _dirs.set(String(f.id != null ? f.id : f.name), r.targetDir);
+      return r.fileName;
+    }, effectiveFnOverride, fileOpts);
+
     for (const file of files) {
-      const fakeFile = { name: file.name, sizeKB: file.sizeKB || 0, metadata: {}, hashes: {} };
-      let { targetDir, fileName, typeFolder, folderPart } = resolveTargetPath(model, version, fakeFile, cfg, effectiveOverride, userDefined || '');
-      lastTypeFolder = typeFolder || lastTypeFolder;
-      lastFolderPart = folderPart || '';
-      // Apply filename override — keep the extension from the resolved name
-      if (effectiveFnOverride) {
-        const _dot = fileName.lastIndexOf('.');
-        const ext = _dot > 0 ? fileName.substring(_dot) : '';
-        fileName = effectiveFnOverride + ext;
-      }
-      resolved.push({ originalName: file.name, newName: fileName, targetDir });
+      const k = String(file.id != null ? file.id : file.name);
+      resolved.push({
+        fileId: file.id != null ? String(file.id) : '',
+        originalName: file.name,
+        newName: _finalNames.get(k),
+        targetDir: _dirs.get(k),
+      });
     }
 
     const targetDir = resolved[0]?.targetDir || `${basePath}/other`;
@@ -1128,7 +1196,7 @@ export function createCivitaiRouter(config, sshService) {
   // Called by the browser extension or the CivitAI tab in ProxLab.
   // conflictMode: 'overwrite' | 'skip' | undefined (default: check and redirect to queue)
   router.post('/download', async (req, res) => {
-    const { modelId, versionId, pageUrl, pathOverride, userDefined, conflictMode, fileNameOverride, extensionOverride, fileIds } = req.body;
+    const { modelId, versionId, pageUrl, pathOverride, userDefined, conflictMode, fileNameOverride, extensionOverride, fileIds, fileOpts } = req.body;
     if (!modelId) return res.status(400).json({ error: 'modelId required' });
 
     const cfg = loadConfig();
@@ -1180,8 +1248,13 @@ export function createCivitaiRouter(config, sshService) {
       // new file deleted the previous one's .part on the way in. Result: a corrupt
       // blob, and progress reading past 100% because it measured one shared .part
       // against a single file's expected size (a 19 GB file reaching 60 GB).
-      const _nameCounts = {};
-      for (const f of version.files) _nameCounts[f.name] = (_nameCounts[f.name] || 0) + 1;
+      // Same helper as the preview, so what the UI showed is what lands on disk.
+      const _dlDirs = new Map();
+      const _dlNames = resolveVersionFileNames(version.files, (f) => {
+        const r = resolveTargetPath(model, version, f, cfg, effectiveOverride, userDefined, extensionOverride, versionComponent);
+        _dlDirs.set(String(f.id != null ? f.id : f.name), r.targetDir);
+        return r.fileName;
+      }, fileNameOverride, fileOpts);
 
       for (const file of version.files) {
           // Honour an explicit file selection. Previously the UI's checkboxes never
@@ -1192,24 +1265,12 @@ export function createCivitaiRouter(config, sshService) {
           if (!file.downloadUrl) continue;
           if (file.type === 'Training Data') continue;
 
-          let { targetDir, fileName } = resolveTargetPath(model, version, file, cfg, effectiveOverride, userDefined, extensionOverride, versionComponent);
-          // Rename ONLY on collision, so single-file versions keep their exact
-          // upstream name. The id is always appended because metadata alone is not
-          // unique either — 4 of Lustify's 5 safetensors are all fp=bf16.
-          if (_nameCounts[file.name] > 1) {
-            const _dot = fileName.lastIndexOf('.');
-            const _base = _dot > 0 ? fileName.substring(0, _dot) : fileName;
-            const _ext = _dot > 0 ? fileName.substring(_dot) : '';
-            const _tag = [file.metadata?.fp, file.metadata?.size, file.metadata?.format]
-              .filter(Boolean).join('-').replace(/[^A-Za-z0-9._-]/g, '');
-            fileName = `${_base}${_tag ? '-' + _tag : ''}-${file.id}${_ext}`;
-          }
-          // Apply filename override — keep the extension
-          if (fileNameOverride) {
-            const _dot = fileName.lastIndexOf('.');
-        const ext = _dot > 0 ? fileName.substring(_dot) : '';
-            fileName = fileNameOverride + ext;
-          }
+          const _k = String(file.id != null ? file.id : file.name);
+          // Name and dir both come from the shared pass. The override and the per-file
+          // options are already folded in, and the collision guard ran AFTER them —
+          // previously the override was applied last and wiped the guard's work.
+          let targetDir = _dlDirs.get(_k);
+          let fileName = _dlNames.get(_k);
           const targetFile = `${targetDir}/${fileName}`;
 
           // Skip existing COMPLETE files unless explicitly overwriting.

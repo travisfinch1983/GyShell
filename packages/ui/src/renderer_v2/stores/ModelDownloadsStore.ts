@@ -95,6 +95,14 @@ export class ModelDownloadsStore {
   // name (fp8 / bf16 / GGUF quants), so the Set collapsed them to one entry: ticking or
   // unticking any of them moved all of them together, and there was no way to choose one.
   civVerFiles = new Map<number, Set<string>>()
+  /** versionId → fileId → per-file naming options.
+   *  A version can hold several genuinely different files that the template cannot tell
+   *  apart, because the template only sees VERSION-level variables: Krea 2 Identity Edit
+   *  v1.2 ships the full LoRA plus r128 and r64 ranks, and all three resolve to one name.
+   *  `noRename` keeps the upstream filename verbatim; `suffix` is appended to the generated
+   *  name before the extension. Naming them yourself also suppresses the automatic
+   *  `-<fileId>` disambiguation, which exists only as a last-resort guard. */
+  civFileOpts = new Map<number, Map<string, { noRename?: boolean; suffix?: string }>>()
   civQueue: any[] = [] // /api/civitai/queue — items sent from the browser extension's "Review" button
   civQueueItemId: string | null = null // the queue item currently loaded into the browser
   civQueueIndex = 0 // position in the review queue (navigated with prev/next arrows)
@@ -761,6 +769,7 @@ export class ModelDownloadsStore {
     this.civVerSeeded.clear()
     this.civVerSelected.clear()
     this.civVerFiles.clear()
+    this.civFileOpts.clear()
   }
 
   /** View a version. Viewing is separate from selecting it for download (ProxLab: badge vs checkbox). */
@@ -875,6 +884,49 @@ export class ModelDownloadsStore {
     if (this.civQueue.length) this.showQueueItem(Math.min(this.civQueueIndex, this.civQueue.length - 1))
     else runInAction(() => { this.civModel = null })
   }
+  private optsFor(vid: number | null): Map<string, { noRename?: boolean; suffix?: string }> {
+    if (vid == null) return new Map()
+    let m = this.civFileOpts.get(vid)
+    if (!m) { m = new Map(); this.civFileOpts.set(vid, m) }
+    return m
+  }
+  fileOpt(fileId: string | number): { noRename?: boolean; suffix?: string } {
+    return this.optsFor(this.civSelVersionId).get(String(fileId)) ?? {}
+  }
+  /** Ticked = the template renames this file (the default). Unticked = keep its own name. */
+  isFileRenamed(fileId: string | number): boolean {
+    return !this.fileOpt(fileId).noRename
+  }
+  toggleFileRename(fileId: string | number): void {
+    const vid = this.civSelVersionId
+    const m = this.optsFor(vid)
+    const k = String(fileId)
+    const cur = m.get(k) ?? {}
+    m.set(k, { ...cur, noRename: !cur.noRename })
+    if (vid != null) this.civFileOpts.set(vid, m)
+    this.resolveReviewPathLive()
+  }
+  setFileSuffix(fileId: string | number, suffix: string): void {
+    const vid = this.civSelVersionId
+    const m = this.optsFor(vid)
+    const k = String(fileId)
+    m.set(k, { ...(m.get(k) ?? {}), suffix })
+    if (vid != null) this.civFileOpts.set(vid, m)
+    this.resolveReviewPathLive()
+  }
+  /** Plain object for the wire; omitted entirely when nothing is customised. */
+  private fileOptsPayload(vid: number | null): Record<string, any> | undefined {
+    const m = vid == null ? null : this.civFileOpts.get(vid)
+    if (!m || !m.size) return undefined
+    const out: Record<string, any> = {}
+    for (const [k, v] of m) {
+      const e: any = {}
+      if (v.noRename) e.noRename = true
+      if (v.suffix) e.suffix = v.suffix
+      if (Object.keys(e).length) out[k] = e
+    }
+    return Object.keys(out).length ? out : undefined
+  }
   toggleReviewFile(fileId: string | number): void {
     const s = this.filesForVersion(this.civSelVersionId)
     const k = String(fileId)
@@ -899,7 +951,8 @@ export class ModelDownloadsStore {
         creatorName: m.creator?.username || '',
         primaryTag: (m.tags || [])[0] || '',
         tags: m.tags || [],
-        files: (v.files || []).map((f: any) => ({ name: f.name })),
+        files: (v.files || []).map((f: any) => ({ id: f.id, name: f.name, sizeKB: f.sizeKB, metadata: f.metadata })),
+        fileOpts: this.fileOptsPayload(vid),
         // Send this version's own overrides. Before seeding, both are absent so the server
         // resolves purely from the template — that result is what we then seed the boxes with.
         pathOverride: seeded ? (this.civVerFolder.get(vid) ?? '') : undefined,
@@ -929,6 +982,16 @@ export class ModelDownloadsStore {
   }
   resolvedNameFor(originalName: string): string {
     return this.civResolvedFiles.find((f) => f.originalName === originalName)?.newName || originalName
+  }
+  /** Preview name for ONE file, matched by id. Matching on originalName is wrong whenever
+   *  a version ships several files under the same upstream name — every row would show
+   *  the first match. Falls back to name matching for older payloads without ids. */
+  resolvedNameForId(fileId: string | number | undefined, originalName: string): string {
+    if (fileId != null) {
+      const hit = this.civResolvedFiles.find((f: any) => String(f.fileId) === String(fileId))
+      if (hit?.newName) return hit.newName
+    }
+    return this.resolvedNameFor(originalName)
   }
   /** Download every ticked version, each with ITS OWN folder/filename overrides. Falls back to the
    *  version being viewed if nothing is ticked, so the button is never a no-op. */
@@ -960,6 +1023,8 @@ export class ModelDownloadsStore {
         const picked = this.civVerFiles.get(vid)
         const total = (this.civVersions.find((x: any) => x.id === vid)?.files ?? []).length
         if (picked && picked.size && picked.size < total) body.fileIds = [...picked]
+        const opts = this.fileOptsPayload(vid)
+        if (opts) body.fileOpts = opts
         try {
           await this.cluster().request('POST', '/api/civitai/download', body)
         } catch (e) {
