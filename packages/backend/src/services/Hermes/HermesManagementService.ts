@@ -624,7 +624,11 @@ export class HermesManagementService {
             : h.parkedServers > 0
               ? `Agent '${id}' has ${h.parkedServers} MCP server(s) parked after failed connections`
               : `Agent '${id}' is serving a stale tool set`,
-          detail: `${h.detail} Reconnect from the agent's Tools panel (or reconnectAgentTools) to restore; the give-up is permanent until then.`,
+          // The parked detail owns its own remedy (incl. the re-park caveat);
+          // appending the generic suffix there re-created the contradiction.
+          detail: h.parkedServers > 0
+            ? h.detail
+            : `${h.detail} Reconnect from the agent's Tools panel (or reconnectAgentTools) to restore; the give-up is permanent until then.`,
         })
       } else if (this.toolHealthAlarmed.delete(id)) {
         this.cfg.notify?.({
@@ -2011,7 +2015,7 @@ export class HermesManagementService {
    *  group against the agent's own last registration and look for a give-up AFTER it. */
   async getToolHealth(agentId: string): Promise<{
     groupTools: number; registeredTools: number | null; gaveUp: boolean
-    parkedServers: number; gatewayActive: boolean; healthy: boolean
+    parkedServers: number; parkedNames: string[]; gatewayActive: boolean; healthy: boolean
     /** stale registration but the gateway restarted AFTER it: the fix is
      *  already applied and loads on the agent's next turn — needs NOTHING.
      *  (m-c nearly re-restarted six live gateways because the alert fired 83
@@ -2033,7 +2037,14 @@ export class HermesManagementService {
     let gaveUp = false
     let parkedServers = 0
     let registeredAt = ''
+    // Park lines precede their registration summary in boot order; names seen
+    // since the previous registration belong to the next one. The NAME is what
+    // lets a reader match against known-dead shims — a count cannot (m-c).
+    let parkedNames: string[] = []
+    let pendingNames: string[] = []
     for (const line of raw.split('\n')) {
+      const park = line.match(/MCP server '([^']+)' failed initial connection.*parking/)
+      if (park) { pendingNames.push(park[1]); continue }
       // "registered N tool(s) from M server(s) (K failed)" — the failed count is
       // the cheap, structured signal that servers PARKED (permanent until a
       // reconnect); matching the parking prose alone missed it for months.
@@ -2041,10 +2052,13 @@ export class HermesManagementService {
       if (m) {
         registeredTools = parseInt(m[1], 10); parkedServers = m[2] ? parseInt(m[2], 10) : 0; gaveUp = false
         registeredAt = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/)?.[1] ?? ''
+        parkedNames = pendingNames; pendingNames = []
         continue
       }
       if (/reconnection attempts, giving up/.test(line)) gaveUp = true
     }
+    // Parks AFTER the last registration (a re-park during this session) count too.
+    if (pendingNames.length) parkedNames = [...new Set([...parkedNames, ...pendingNames])]
 
     const unit = `hermes-gateway-${agentId}`
     // One call for both liveness and the restart time. Same host, same clock,
@@ -2071,8 +2085,13 @@ export class HermesManagementService {
     // the real shortfall was the entire six-tool reports set (the 4 built-ins
     // netted against it). State the estimated real gap.
     const realGap = registeredTools === null ? 0 : Math.max(0, groupTools - Math.max(0, registeredTools - PROTOCOL_EXTRAS))
+    // ONE remedy owner per message (m-c's catch: the pending fragment said
+    // "do NOT reconnect" while the parked note said "reconnect" — a reader
+    // following the message does both). When servers are parked, the parked
+    // half owns the remedy and every other fragment states facts only.
+    const namesStr = parkedNames.length ? ` (${parkedNames.join(', ')})` : ''
     const parkedNote = parkedServers > 0
-      ? ` Additionally ${parkedServers} MCP server(s) FAILED connection and are PARKED — their tools are missing entirely, not stale, and parking is permanent until a reconnect.`
+      ? ` ${parkedServers} MCP server(s)${namesStr} FAILED connection and are PARKED — their tools are missing entirely, not stale, and parking is permanent until a reconnect. A reconnect retries them; if one re-parks immediately, that server itself is broken — check it against known-dead shims before retrying again.`
       : ''
     const detail = gaveUp
       ? 'Hermes stopped retrying its MCP connection and is running with no tools. Reconnect to restore them.'
@@ -2081,9 +2100,9 @@ export class HermesManagementService {
         : matches
           ? `Serving ${registeredTools} tools for a group of ${groupTools}.` + parkedNote
           : pending
-            ? `Registration is ~${realGap} tool(s) short of the group, but the gateway was already reconnected at ${gatewayRestartedAt} (after that registration) — the refreshed set loads on the agent's NEXT TURN. No action needed; do NOT reconnect again.` + parkedNote
-            : `Group has ${groupTools} tools but the agent last registered ${registeredTools} — and that count includes up to ${PROTOCOL_EXTRAS} MCP protocol built-ins, so the real shortfall is ~${realGap} tool(s), not ${Math.max(0, groupTools - registeredTools)}. Reconnect to resync.` + parkedNote
-    return { groupTools, registeredTools, gaveUp, parkedServers, gatewayActive, healthy, pending, gatewayRestartedAt, detail }
+            ? `Registration is ~${realGap} tool(s) short of the group, but the gateway was already reconnected at ${gatewayRestartedAt} (after that registration) — the refreshed set loads on the agent's NEXT TURN.${parkedServers > 0 ? '' : ' No action needed; do NOT reconnect again.'}` + parkedNote
+            : `Group has ${groupTools} tools but the agent last registered ${registeredTools} — and that count includes up to ${PROTOCOL_EXTRAS} MCP protocol built-ins, so the real shortfall is ~${realGap} tool(s), not ${Math.max(0, groupTools - registeredTools)}.${parkedServers > 0 ? '' : ' Reconnect to resync.'}` + parkedNote
+    return { groupTools, registeredTools, gaveUp, parkedServers, parkedNames, gatewayActive, healthy, pending, gatewayRestartedAt, detail }
   }
 
   /** Restart the agent's messaging gateway so it re-reads config and reconnects its MCP link.

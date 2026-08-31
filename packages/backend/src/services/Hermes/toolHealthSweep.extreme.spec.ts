@@ -60,7 +60,7 @@ async function main(): Promise<void> {
   // "stale — reconnect to resync". The (K failed) count on the registration
   // line is the structured signal.
   svc.listAgentsStrict = async () => ['delta']
-  health.delta = { groupTools: 60, registeredTools: 58, gaveUp: false, parkedServers: 1, gatewayActive: true, healthy: false, detail: 'parked' }
+  health.delta = { groupTools: 60, registeredTools: 58, gaveUp: false, parkedServers: 1, parkedNames: ['view-screen'], gatewayActive: true, healthy: false, detail: 'parked' }
   const bp = emitted.length
   await svc.sweepToolHealth()
   ok(emitted.length === bp + 1 && emitted[bp].severity === 'error' && emitted[bp].message.includes('parked after failed connections'),
@@ -105,6 +105,30 @@ async function main(): Promise<void> {
   th = await svc3.getToolHealth('cinder')
   ok(th.pending === false && th.detail.includes('Reconnect to resync'),
     'STRANDED: registration after the last restart keeps the reconnect prescription')
+
+  // ── ONE remedy per composed message (m-c's defect + claude1's invariant) ──
+  // Each half was individually correct; only the COMPOSITION contradicted
+  // itself ("do NOT reconnect" + "Reconnect to restore"). Per-half tests pass
+  // on that bug — the assertion has to look at the whole message.
+  const countRemedies = (d: string) => {
+    const doNot = /do NOT reconnect/i.test(d) ? 1 : 0
+    const doRe = (d.match(/[Rr]econnect (to resync|from the agent|retries)/g) ?? []).length
+    return doNot + (doRe > 0 ? 1 : 0)
+  }
+  showResp = mkShow('2026-08-31 15:24:36')   // pending again…
+  logLines = "2026-08-31 15:20:00,000 INFO tools.mcp_tool: MCP server 'view-screen' failed initial connection after 3 attempts, parking until a reconnect is requested\n"
+    + "2026-08-30 15:15:19,116 INFO tools.mcp_tool: MCP: registered 58 tool(s) from 1 server(s) (1 failed)"
+  th = await svc3.getToolHealth('cinder')
+  ok(countRemedies(th.detail) === 1 && !/do NOT reconnect/.test(th.detail),
+    'pending + parked composes ONE remedy — the parked half owns it, the pending half states facts only')
+  ok(th.parkedNames.includes('view-screen') && th.detail.includes('view-screen'),
+    'the parked server is NAMED — a name matches against known-dead shims, a count cannot')
+  ok(th.detail.includes('re-parks immediately'),
+    'the remedy carries the re-park caveat — a dead shim failing the remedy is distinguishable from doing it wrong')
+  logLines = "2026-08-30 15:15:19,116 INFO tools.mcp_tool: MCP: registered 58 tool(s) from 1 server(s)"
+  th = await svc3.getToolHealth('cinder')
+  ok(countRemedies(th.detail) === 1 && /do NOT reconnect/.test(th.detail),
+    'pending WITHOUT parked keeps its own single remedy: wait, do not reconnect')
 
   // sweep severities: pending → one INFO; >24h-old restart → warning backstop
   svc.listAgentsStrict = async () => ['echo']
