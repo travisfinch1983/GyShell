@@ -148,9 +148,36 @@
 .revVerBtn { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 4px 11px; border-radius: 14px; border: 1px solid var(--border); background: var(--control-bg); color: var(--fg-muted); cursor: pointer; &:hover { color: var(--fg); } }
 .revVerLabel { display: inline-flex; align-items: center; gap: 5px; background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer; }
 .revVerActive { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: var(--accent); color: var(--fg); }
-.revVerOwned { border-color: color-mix(in srgb, var(--success) 60%, transparent); background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); &.revVerActive { background: color-mix(in srgb, var(--success) 30%, transparent); color: var(--fg); box-shadow: inset 0 0 0 1px var(--success); } }
-.revVerPartial { border-color: color-mix(in srgb, #e0a832 60%, transparent); background: color-mix(in srgb, #e0a832 16%, transparent); color: #e0a832; &.revVerActive { background: color-mix(in srgb, #e0a832 30%, transparent); color: var(--fg); box-shadow: inset 0 0 0 1px #e0a832; } }
-.revVerHistory { border-color: color-mix(in srgb, var(--success) 30%, transparent); color: color-mix(in srgb, var(--success) 70%, var(--fg-muted)); &.revVerActive { background: color-mix(in srgb, var(--success) 18%, transparent); color: var(--fg); } }
+/* On-disk state. GOLD = you already have this — it is the signal that stops a re-download,
+   so it is the loudest of the three. The old styling was --success green at 16% alpha over
+   a near-black panel, which on a dark theme was all but invisible: the only badge that read
+   clearly was whichever one happened to be ACTIVE. Alphas raised, border brought to full
+   strength and a ring added so the pill reads at a glance rather than on inspection. */
+$onDisk: #f2c14e;      /* gold — present and complete */
+$partial: #e8843c;     /* orange — present but INCOMPLETE; deliberately not gold, since
+                          "half a checkpoint" must not look like "you have this" */
+
+.revVerOwned {
+  border-color: $onDisk;
+  background: color-mix(in srgb, #{$onDisk} 30%, transparent);
+  color: $onDisk;
+  font-weight: 600;
+  box-shadow: 0 0 0 1px color-mix(in srgb, #{$onDisk} 35%, transparent);
+  &.revVerActive { background: color-mix(in srgb, #{$onDisk} 46%, transparent); color: var(--fg); box-shadow: inset 0 0 0 1px $onDisk, 0 0 0 1px color-mix(in srgb, #{$onDisk} 45%, transparent); }
+}
+.revVerPartial {
+  border: 1px dashed $partial;      /* dashed = unfinished, legible even in monochrome */
+  background: color-mix(in srgb, #{$partial} 26%, transparent);
+  color: $partial;
+  font-weight: 600;
+  &.revVerActive { background: color-mix(in srgb, #{$partial} 42%, transparent); color: var(--fg); box-shadow: inset 0 0 0 1px $partial; }
+}
+.revVerHistory {
+  border-color: color-mix(in srgb, #{$onDisk} 55%, transparent);
+  background: color-mix(in srgb, #{$onDisk} 10%, transparent);
+  color: color-mix(in srgb, #{$onDisk} 78%, var(--fg-muted));
+  &.revVerActive { background: color-mix(in srgb, #{$onDisk} 28%, transparent); color: var(--fg); }
+}
 .revBase { font-size: 9px; padding: 0 5px; border-radius: 6px; background: rgba(0,0,0,0.2); }
 .revImages { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
 .revImg { width: 100%; aspect-ratio: 3/4; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); background: var(--control-bg); }
