@@ -4,7 +4,7 @@
 /* eslint-disable */
 // @ts-nocheck
 import express from 'express'
-import { emitNotification, emitOnce } from './lib/notify.js';
+import { emitNotification } from './lib/notify.js';
 import multer from 'multer'
 import { readFile as readFileAsync, readdir, stat } from 'node:fs/promises'
 import { extname, join, resolve as pathResolve, dirname, basename } from 'node:path'
@@ -21,7 +21,10 @@ try { const _x = await import('xlsx'); XLSX = _x.default || _x } catch { XLSX = 
 const RAG_DATA_DIR = process.env.AILAB_PROXY_DATA_DIR || '/opt/ai-lab/.gybackend-data'
 const RAG_MODELS_FILE = join(RAG_DATA_DIR, 'rag-models.json')
 const ACTIVE_SERVICES_FILE = join(RAG_DATA_DIR, 'active-services.json')
-const RAG_DEFAULT_EMBED_MODEL = 'Qwen3-VL-Embedding-8B'
+// Fallback only when rag-models.json is absent. The old value here was the
+// RETIRED 4-bit served-name, which the proxy now 404s — a dead fallback fails
+// exactly when nobody can see why.
+const RAG_DEFAULT_EMBED_MODEL = 'Qwen3-VL-Embedding-8B-FP8'
 const RAG_DEFAULT_RERANK_MODEL = 'nvidia/llama-nemotron-rerank-vl-1b-v2'
 
 function readRagModels() {
@@ -296,30 +299,75 @@ function ragStatus() {
  *  failure to the item that caused it. The item is already shift()ed off the queue
  *  before dispatch, so a bad item is dropped rather than retried forever.
  */
+/** Re-index an existing collection from its manifest entry — REPLACE semantics.
+ *
+ *  Chunk ids are stable (`col::path::idx`), so upserting over the old points
+ *  would keep chunks of files that were DELETED from the repo forever; the
+ *  honest refresh drops the collection's vectors first and re-indexes from a
+ *  fresh clone. The empty-search window equals one indexing run (same as the
+ *  initial index) — fine for a nightly job. A mid-run failure leaves the
+ *  checkpoint runRagIndexing wrote, so /api/ai/rag/resume can finish it.
+ */
+async function runRagUpdate(collection) {
+  const colName = sanitizeCollectionName(collection);
+  // Manifest lookup — the collection's repo_url/branch live on the MCP server's manifest.
+  let entry = null;
+  try {
+    const manifestResult = await exec(MCPJUNGLE_HOST,
+      'cat /opt/mcp-codebase-rag/data/collections.json 2>/dev/null || echo "[]"',
+      { timeout: 10000 });
+    const manifest = JSON.parse(manifestResult.stdout || '[]');
+    entry = manifest.find(c => c.name === colName) || manifest.find(c => c.name === collection) || null;
+  } catch (e) {
+    console.warn(`[rag-update] '${colName}': manifest unreadable — skipping this refresh (${e.message})`);
+    return;
+  }
+  if (!entry?.repo_url) {
+    // Not an error: collections without a repo_url are indexed-by-hand and
+    // update-all's producer already filters them; reaching here means the
+    // manifest changed between queueing and processing.
+    console.warn(`[rag-update] '${colName}': no manifest entry with a repo_url — skipping`);
+    return;
+  }
+  const branch = entry.branch && entry.branch !== 'default' ? entry.branch : '';
+
+  // Drop the old vectors (all backends). A failed delete aborts the refresh
+  // rather than layering new chunks over stale ones.
+  const delResp = await fetch(`http://127.0.0.1:${selfPort}/api/proxy/vector/all/collections/${colName}`, {
+    method: 'DELETE',
+    signal: AbortSignal.timeout(60000),
+  });
+  await delResp.text().catch(() => {});
+  if (!delResp.ok && delResp.status !== 404) {
+    throw new Error(`vector delete returned ${delResp.status} — refusing to re-index over stale chunks`);
+  }
+
+  console.log(`[rag-update] Refreshing '${colName}' from ${entry.repo_url}${branch ? ` (${branch})` : ''}`);
+  await runRagIndexing(entry.repo_url, colName, entry.description || '', branch);
+  // runRagIndexing reports failure via ragJob.error, not by throwing.
+  if (ragJob.error) {
+    throw new Error(`re-index failed after vector delete: ${ragJob.error}. `
+      + `The collection is EMPTY until this is repaired — resume via /api/ai/rag/resume/${colName}.`);
+  }
+  console.log(`[rag-update] '${colName}' refreshed: ${ragJob.result?.files_indexed ?? '?'} files, ${ragJob.result?.chunks_created ?? '?'} chunks`);
+}
+
 function processRagQueue() {
   if (ragJob.active || ragQueue.length === 0) return;
   const next = ragQueue.shift();
   console.log(`[rag-queue] Processing: ${next.type} ${next.collection} (${ragQueue.length} remaining)`);
   try {
     if (next.type === 'update') {
-      // TODO(runRagUpdate): re-index an existing collection with replace/resume
-      // semantics. NOT a rename — no update variant has ever existed here.
-      if (typeof runRagUpdate !== 'function') {
-        console.error(`[rag-queue] SKIPPED update '${next.collection}': runRagUpdate is not `
-          + `implemented, so this collection is NOT being refreshed. This is why codebase-RAG `
-          + `auto-update does nothing. Skipping instead of crashing the backend.`);
-        // Once per process, not per collection: the guard above stopped the
-        // nightly crash but kept the SILENCE — update-all answers 200 {queued:N}
-        // while all N are guaranteed to land here. Say it where someone looks.
-        emitOnce('rag-update-unimplemented', 'warning', 'codebase-rag',
-          'Codebase-RAG auto-update is queueing work that is silently discarded',
-          `Collection '${next.collection}' (and every other queued update) is dropped because `
-          + `runRagUpdate is not implemented. update-all keeps reporting {queued:N} as success, `
-          + `so stale collections look like a search-quality problem, not a fault. This lane `
-          + `already crashed the backend nightly 2026-08-16→20 without anyone noticing.`);
-        return;
-      }
-      runRagUpdate(next.collection);
+      // Implemented 2026-08-31 (it crashed the backend nightly 2026-08-16→20
+      // while undefined, then was guard-skipped with a warning until now).
+      // Same containment as the indexing branch: an unhandled rejection in a
+      // timer callback is just as fatal as a throw.
+      runRagUpdate(next.collection).catch((err) => {
+        console.error(`[rag-queue] update '${next.collection}' failed:`, err);
+        void emitNotification('warning', 'codebase-rag',
+          'A codebase-RAG collection refresh failed',
+          `Collection '${next.collection}': ${err?.message ?? err}`);
+      });
     } else {
       const p = runRagIndexing(next.url, next.collection, next.description, next.branch);
       // runRagIndexing is async and is deliberately not awaited here; without this
@@ -380,7 +428,12 @@ const RAG_SKIP_NAMES = new Set([
 ]);
 
 function sanitizeCollectionName(name) {
-  return 'codebase_' + name.replace(/[^a-zA-Z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').toLowerCase();
+  // IDEMPOTENT: manifest entries store the already-sanitized name, and
+  // runRagUpdate feeds them back through here — always-prepending turned a
+  // refresh of 'codebase_x' into a new 'codebase_codebase_x' collection while
+  // the real one sat deleted (caught by ragUpdateAndInventorySearch.smoke).
+  const clean = name.replace(/[^a-zA-Z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').toLowerCase();
+  return clean.startsWith('codebase_') ? clean : 'codebase_' + clean;
 }
 
 /** Chunk a file's content into overlapping pieces */

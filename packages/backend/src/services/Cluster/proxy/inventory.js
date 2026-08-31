@@ -19,7 +19,7 @@
 import { Router } from 'express';
 import * as fsForState from 'fs';
 import { loadJsonState } from './lib/notify.js';
-import { emitOnce } from './lib/notify.js';
+import { createLocalVectorStore } from './lib/localVectorStore.js';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -27,24 +27,28 @@ import crypto from 'crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.AILAB_PROXY_DATA_DIR || '/tmp';
-const vectorStore = {
-  search: async () => [], getAll: () => [], getById: () => null,
-  getConfig: () => ({ enabled: false }), getStats: () => ({}), updateConfig: (c) => c,
-  upsert: () => {}, delete: () => {}, updateData: () => {}, vectorize: async () => {},
-  getTextHash: () => null, clearTextHash: () => {},
+// Real store since 2026-08-31 — the stub era ('every query returns zero
+// results', the sweep's cluster-inventory:inventory-search-stub warning) is
+// over. In-process + file-backed on purpose: the call sites below use search()
+// SYNCHRONOUSLY, the corpus is ~200 entries, and the credential vault must not
+// replicate into the shared vector DBs.
+const selfPort = process.env.AILAB_PROXY_PORT || 17890;
+const embedModelName = () => {
+  // Same source of truth as rag.js effEmbedModel(): rag-models.json, chosen in
+  // the Support Models tab. Fallback = the CURRENT FP8 encoder — never a
+  // retired served-name (a dead fallback 404s only when the config file is
+  // missing, which is exactly when someone is least able to debug it).
+  try {
+    const m = JSON.parse(readFileSync(join(dataDir, 'rag-models.json'), 'utf-8')).embedModel;
+    if (m) return m;
+  } catch { /* fall through */ }
+  return 'Qwen3-VL-Embedding-8B-FP8';
 };
-
-// Announce the stub ONCE at startup. cluster_search sits on this object, so
-// agents get a confident empty answer indistinguishable from an empty inventory
-// — a capability that looks present but is not must say so at startup, not wait
-// to be discovered query by query. Deferred 20s: this runs at module load, and
-// the /emit route it posts to is mounted later on this same listener — an
-// immediate post would race the mount and the warning itself would be lost.
-setTimeout(() => emitOnce('inventory-search-stub', 'warning', 'cluster-inventory',
-  'Inventory semantic search is a stub — every query returns zero results',
-  'vectorStore in proxy/inventory.js was never migrated: /api/ai/inventory/search always '
-  + 'answers 200 with [], and /revectorize does nothing. The cluster_search MCP tool sits '
-  + 'on top of this, so agents receive confident empty answers.'), 20000);
+const vectorStore = createLocalVectorStore({
+  file: join(dataDir, 'inventory-vectors.json'),
+  embedUrl: `http://127.0.0.1:${selfPort}/api/proxy/embed/v1/embeddings`,
+  embedModel: embedModelName,
+});
 
 const inventoryFile = join(dataDir, 'inventory.json');
 const hostsFile = join(dataDir, 'hosts.json');
@@ -206,7 +210,11 @@ function credentialToText(entry) {
 async function syncToLocalStore(collection, entries, toTextFn) {
   if (!entries.length) return;
   const { createHash } = await import('node:crypto');
-  const hash = (s) => createHash('sha1').update(s).digest('hex');
+  // The embed MODEL is part of the hash: identical text embedded by a different
+  // encoder is a different vector, and nothing else would ever notice the swap
+  // (the hippocampai FP8 lesson — dim stays 4096, comparisons never raise).
+  const model = embedModelName();
+  const hash = (s) => createHash('sha1').update(`${model}|${s}`).digest('hex');
 
   // Partition: entries whose source text changed (need embedding) vs unchanged
   const needsEmbed = [];
@@ -451,7 +459,25 @@ export function createInventoryRouter(pveApi) {
       allResults.sort((a, b) => b.score - a.score);
       allResults = allResults.slice(0, limit);
 
-      res.json({ query, results: allResults });
+      // Coverage travels IN the result: an un-vectorized collection must not
+      // read as "searched, no matches" (the confident-empty the stub taught).
+      const sourceCounts = {
+        [INVENTORY]: (loadInventory().entries || []).length,
+        [HOSTS]: (loadHosts().entries || []).length,
+        [CREDENTIALS]: (loadCredentials().entries || []).length,
+      };
+      const coverage = {};
+      let gap = false;
+      for (const col of collections) {
+        const vectorized = vectorStore.getAll(col).length;
+        const source = sourceCounts[col] ?? 0;
+        coverage[col] = { vectorized, sourceEntries: source };
+        if (vectorized === 0 && source > 0) gap = true;
+      }
+      res.json({
+        query, results: allResults, coverage,
+        ...(gap ? { note: 'Some collections have entries but no vectors yet — results are incomplete until the next scan sync or POST /revectorize.' } : {}),
+      });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
