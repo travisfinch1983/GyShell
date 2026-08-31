@@ -432,7 +432,12 @@ function sanitizeCollectionName(name) {
   // runRagUpdate feeds them back through here — always-prepending turned a
   // refresh of 'codebase_x' into a new 'codebase_codebase_x' collection while
   // the real one sat deleted (caught by ragUpdateAndInventorySearch.smoke).
-  const clean = name.replace(/[^a-zA-Z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').toLowerCase();
+  const clean = String(name || '').replace(/[^a-zA-Z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').toLowerCase();
+  // A symbol-only name ('!!!', '___') is truthy so it passes the route guards, but
+  // sanitizes to '' -> 'codebase_' -> and on the NEXT pass the trailing-underscore strip
+  // runs before the prefix check, giving 'codebase_codebase'. Same forked-twin data loss,
+  // one edge case further in. Named constant keeps f(f(x)) == f(x).
+  if (!clean) return 'codebase_unnamed';
   return clean.startsWith('codebase_') ? clean : 'codebase_' + clean;
 }
 
