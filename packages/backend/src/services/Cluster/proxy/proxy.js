@@ -128,153 +128,16 @@ const PROXY_DATA_DIR = process.env.AILAB_PROXY_DATA_DIR || join(__dirname, '..',
 const activeServicesFile = join(PROXY_DATA_DIR, 'active-services.json');
 const voicePresetsFile = join(PROXY_DATA_DIR, 'voice-presets.json');
 
-// ─── MCP Tool Integration ──────────────────────────────────────────────────
-const MCPJUNGLE_URL = process.env.MCPJUNGLE_URL || 'http://127.0.0.1:8080';
-const MCP_TOOL_CACHE_TTL = 60_000; // 60 seconds
-const mcpSettingsFile = join(PROXY_DATA_DIR, 'mcp-settings.json');
-
-function loadMcpSettings() {
-  try {
-    if (existsSync(mcpSettingsFile)) return JSON.parse(readFileSync(mcpSettingsFile, 'utf-8'));
-  } catch {}
-  return {};
-}
-
-function saveMcpSettings(settings) {
-  writeFileSync(mcpSettingsFile, JSON.stringify(settings, null, 2));
-}
-
-function getMcpMaxRounds() {
-  return loadMcpSettings().maxToolRounds || 20;
-}
-
-/** Update MCP settings (called from server.js API route) */
-export function updateMcpSettings(updates) {
-  const current = loadMcpSettings();
-  Object.assign(current, updates);
-  saveMcpSettings(current);
-  return current;
-}
-
-/** Get current MCP settings */
-export function getMcpSettings() {
-  const defaults = { maxToolRounds: 20, toolInjection: true };
-  return { ...defaults, ...loadMcpSettings() };
-}
-
-const _mcpState = {
-  sessionId: null,
-  tools: [],        // raw MCP tools
-  openaiTools: [],  // OpenAI function-calling format
-  updated: 0,
-  healthy: true,
-  lastError: null,
-};
-
-/** Send a JSON-RPC request to MCPJungle */
-async function mcpRequest(method, params) {
-  const headers = { 'Content-Type': 'application/json' };
-  if (_mcpState.sessionId) headers['Mcp-Session-Id'] = _mcpState.sessionId;
-
-  const payload = { jsonrpc: '2.0', id: Date.now(), method };
-  if (params) payload.params = params;
-
-  // Initialize session if needed
-  if (!_mcpState.sessionId) {
-    try {
-      const initResp = await fetch(`${MCPJUNGLE_URL}/mcp`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          jsonrpc: '2.0', id: 1, method: 'initialize',
-          params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'proxlab', version: '1.0.0' } },
-        }),
-        signal: AbortSignal.timeout(5000),
-      });
-      if (initResp.ok) {
-        _mcpState.sessionId = initResp.headers.get('Mcp-Session-Id');
-        if (_mcpState.sessionId) headers['Mcp-Session-Id'] = _mcpState.sessionId;
-        // Send initialized notification
-        await fetch(`${MCPJUNGLE_URL}/mcp`, {
-          method: 'POST', headers,
-          body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
-          signal: AbortSignal.timeout(3000),
-        }).catch(() => {});
-      }
-    } catch (e) {
-      _mcpState.healthy = false;
-      _mcpState.lastError = e.message;
-      return null;
-    }
-  }
-
-  try {
-    const resp = await fetch(`${MCPJUNGLE_URL}/mcp`, {
-      method: 'POST', headers,
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(10000),
-    });
-    if (resp.ok) {
-      const data = await resp.json();
-      _mcpState.healthy = true;
-      _mcpState.lastError = null;
-      return data.result || data;
-    }
-  } catch (e) {
-    _mcpState.healthy = false;
-    _mcpState.lastError = e.message;
-  }
-  return null;
-}
-
-/** Fetch and cache MCP tools in OpenAI format. Fails silently. */
-async function getMcpTools() {
-  if (_mcpState.openaiTools.length && (Date.now() - _mcpState.updated) < MCP_TOOL_CACHE_TTL) {
-    return _mcpState.openaiTools;
-  }
-  try {
-    const result = await mcpRequest('tools/list');
-    if (!result || !result.tools) return _mcpState.openaiTools;
-    _mcpState.tools = result.tools;
-    _mcpState.openaiTools = result.tools.map(t => ({
-      type: 'function',
-      function: {
-        name: t.name,
-        description: t.description || '',
-        parameters: t.inputSchema || { type: 'object', properties: {} },
-      },
-    }));
-    _mcpState.updated = Date.now();
-  } catch (e) {
-    console.warn(`[mcp] Failed to refresh tools: ${e.message}`);
-  }
-  return _mcpState.openaiTools;
-}
-
-/** Execute a tool via MCPJungle */
-async function callMcpTool(name, args) {
-  try {
-    const result = await mcpRequest('tools/call', { name, arguments: args });
-    if (result && result.content) {
-      return result.content
-        .map(b => (typeof b === 'string' ? b : b.text || JSON.stringify(b)))
-        .join('\n');
-    }
-    return JSON.stringify(result);
-  } catch (e) {
-    return `Tool call failed: ${e.message}`;
-  }
-}
-
-/** Get MCP health status for the UI */
-export function getMcpHealth() {
-  return {
-    healthy: _mcpState.healthy,
-    tools: _mcpState.openaiTools.length,
-    lastError: _mcpState.lastError,
-    cachedAt: _mcpState.updated ? new Date(_mcpState.updated).toISOString() : null,
-  };
-}
+// ─── MCP Tool Integration: REMOVED (2026-08-31) ───────────────────────────
+// A ~145-line block (mcpRequest/getMcpTools/callMcpTool/getMcpHealth/_mcpState
+// + a settings trio) with ZERO callers anywhere in packages/ — verified by
+// symbol grep before deletion, per claude1's "dead is a claim I'd like
+// tested". Its settings switch (toolInjection) persisted a toggle that
+// controlled nothing: a false instrument Travis would reasonably believe.
+// Removed whole under the retire ruling ("stale stuff breeds confusion").
+// MCP tool exposure is MCPJungle's job via the gateway; nothing here ever
+// served a live request. Stored mcp-settings.json values are left untouched;
+// they are simply no longer read for injection.
 
 /** Known STT provider IDs */
 const STT_PROVIDERS = new Set(['faster-whisper']);

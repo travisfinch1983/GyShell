@@ -64,10 +64,9 @@ export const McpServersPanel: React.FC = observer(() => {
       <div className={styles.settingsBox}>
         <h4 className={styles.h4}>Tool Proxy Settings</h4>
         <div className={styles.settingsRow}>
-          <label className={styles.chk}>
-            <input type="checkbox" checked={store.settings.toolInjection !== false} onChange={(e) => store.setSetting('toolInjection', e.target.checked)} />
-            Inject tools into LLM requests
-          </label>
+          {/* The "Inject tools into LLM requests" toggle is GONE (2026-08-31):
+              the code it switched was deleted as dead, and a control reporting
+              state it does not control is a false instrument. */}
           <label className={styles.numLbl}>
             Max tool rounds
             <input className={styles.num} type="number" min={1} max={50} value={store.settings.maxToolRounds ?? 20} onChange={(e) => store.setSetting('maxToolRounds', parseInt(e.target.value, 10) || 20)} />
