@@ -100,8 +100,14 @@ def _load_config(hermes_home: str = "") -> dict:
         with open(path, "r", encoding="utf-8") as f:
             file_cfg = json.load(f)
         cfg.update({k: v for k, v in file_cfg.items() if v not in (None, "")})
-    except Exception:
-        pass
+    except FileNotFoundError:
+        pass  # no override file — defaults are the configured state
+    except Exception as e:
+        # A CORRUPT file silently falling back is the dangerous one: defaults
+        # include a different user_id, so every write lands in the wrong
+        # memory namespace while everything looks fine.
+        logger.warning("hippocampai: config %s unreadable — DEFAULTS in use "
+                       "(including the default user_id namespace): %s", path, e)
     return cfg
 
 
@@ -119,6 +125,7 @@ class HippocampAIProvider(MemoryProvider):
         self._turn_buffer: List[str] = []
         self._failures = 0
         self._breaker_until = 0.0
+        self._dropped_while_open = 0
 
     # -- identity ------------------------------------------------------------
 
@@ -134,6 +141,7 @@ class HippocampAIProvider(MemoryProvider):
 
     def _post(self, path: str, body: Dict[str, Any], timeout: float = 8.0) -> Optional[Any]:
         if time.time() < self._breaker_until:
+            self._dropped_while_open += 1
             return None
         req = urllib.request.Request(
             self._cfg["url"].rstrip("/") + path,
@@ -144,6 +152,12 @@ class HippocampAIProvider(MemoryProvider):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 self._failures = 0
+                if self._dropped_while_open:
+                    # The breaker window used to swallow calls with no trace —
+                    # recovery is where the bill gets read out.
+                    logger.warning("hippocampai: circuit closed — %s calls were dropped while it was open",
+                                   self._dropped_while_open)
+                    self._dropped_while_open = 0
                 raw = r.read()
                 return json.loads(raw) if raw else None
         except Exception as e:  # noqa: BLE001 — any failure feeds the breaker
@@ -214,10 +228,16 @@ class HippocampAIProvider(MemoryProvider):
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         with self._lock:
-            if self._prefetched and self._prefetch_query:
+            if self._prefetched and self._prefetch_query == query:
                 out = self._prefetched
                 self._prefetched = ""
                 return out
+            if self._prefetched:
+                # Prefetched for a DIFFERENT query — serving it anyway handed
+                # the model memories about the wrong topic, silently. Discard
+                # and do the honest cold recall below.
+                logger.debug("hippocampai: discarding stale prefetch (was for %r)", self._prefetch_query)
+                self._prefetched = ""
         # cold turn: one short synchronous recall so the first turn still sees memory
         return self._format(self._recall(query, self._cfg["recall_k"]))
 
@@ -240,9 +260,13 @@ class HippocampAIProvider(MemoryProvider):
         body = {"conversation": chunk[:24000], "user_id": self._user_id,
                 "session_id": self._session_id}
         if sync:
-            self._post("/v1/memories:extract", body, timeout=180.0)
+            if self._post("/v1/memories:extract", body, timeout=180.0) is None:
+                logger.warning("hippocampai: memory extraction FAILED — this turn's memories were not captured")
         else:
-            self._bg(self._post, "/v1/memories:extract", body, 180.0)
+            def _extract() -> None:
+                if self._post("/v1/memories:extract", body, 180.0) is None:
+                    logger.warning("hippocampai: background memory extraction FAILED — this turn's memories were not captured")
+            self._bg(_extract)
 
     def sync_turn(self, user_content: str, assistant_content: str, *,
                   session_id: str = "", messages: Optional[List[Dict[str, Any]]] = None) -> None:

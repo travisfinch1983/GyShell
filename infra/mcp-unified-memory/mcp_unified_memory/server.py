@@ -145,6 +145,7 @@ SYNC_INTERVAL = int(os.environ.get("SYNC_INTERVAL", "60"))
 # Max WAL entries replayed per backend per sync_pending call — bounds how long a
 # backlog drain can take so it never makes a store slow.
 SYNC_BATCH = int(os.environ.get("SYNC_BATCH", "25"))
+WAL_BACKLOG_THRESHOLD = int(os.environ.get("WAL_BACKLOG_THRESHOLD", "200"))
 
 # Vector DBs to write to (read from ProxLab config, or use defaults)
 VECTOR_DBS = [
@@ -231,8 +232,11 @@ class WriteAheadLog:
         try:
             if self.state_file.exists():
                 return json.loads(self.state_file.read_text())
-        except Exception:
-            pass
+        except Exception as e:
+            # {} is the safe fallback (compact keeps everything, writes are
+            # idempotent upserts so re-applying is harmless) — but it resets
+            # every replay cursor, so say it happened.
+            print(f"[unified-memory] WAL state file unreadable — treating all entries as unapplied: {e}")
         return {}
 
     def mark_applied(self, db_name: str, wal_id: int):
@@ -251,25 +255,62 @@ class WriteAheadLog:
                 return []
             with open(self.wal_file) as f:
                 for line in f:
-                    entry = json.loads(line.strip())
+                    try:
+                        entry = json.loads(line.strip())
+                    except Exception:
+                        # One corrupt LINE used to abort the whole read via the
+                        # outer except — pending silently read as empty and the
+                        # backlog never drained. Skip the line, keep the rest.
+                        print(f"[unified-memory] WAL: skipping unparseable line for {db_name}")
+                        continue
                     if entry.get("_wal_id", 0) > last_applied:
                         pending.append(entry)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[unified-memory] WAL read failed for {db_name} — reporting no pending (backlog may exist): {e}")
         return pending
 
+    def min_applied_wal_id(self) -> int:
+        """The oldest applied position across ALL backends — entries at or
+        below it are safe to drop; anything above is someone's backlog."""
+        state = self.get_db_state()
+        if not state:
+            return 0
+        return min(int(v) for v in state.values())
+
     def compact(self, keep_last_n: int = 1000):
-        """Remove old WAL entries, keeping last N."""
+        """Remove old WAL entries — but NEVER unapplied ones.
+
+        🛑 The old compact kept the last N lines regardless of whether they
+        had been replayed: a backend down for more than ~N writes had its
+        backlog silently truncated — permanent loss, invisible, while
+        memory_health computed the exact number nobody was watching. Now the
+        floor is the slowest backend's applied position: the file may grow
+        while a backend is down (that is the honest cost of not losing its
+        writes), and the backlog emitter below is what keeps that growth
+        from being silent."""
         try:
             if not self.wal_file.exists():
                 return
+            floor = self.min_applied_wal_id()
             with open(self.wal_file) as f:
                 lines = f.readlines()
-            if len(lines) > keep_last_n:
+            if len(lines) <= keep_last_n:
+                return
+            keep = []
+            for i, line in enumerate(lines):
+                if i >= len(lines) - keep_last_n:
+                    keep.append(line)
+                    continue
+                try:
+                    if json.loads(line.strip()).get("_wal_id", 0) > floor:
+                        keep.append(line)   # unapplied somewhere — NOT droppable
+                except Exception:
+                    keep.append(line)       # unparseable — keep; deciding it is junk is not compact's call
+            if len(keep) < len(lines):
                 with open(self.wal_file, "w") as f:
-                    f.writelines(lines[-keep_last_n:])
-        except Exception:
-            pass
+                    f.writelines(keep)
+        except Exception as e:
+            print(f"[unified-memory] WAL compact failed (kept everything): {e}")
 
 
 wal = WriteAheadLog(WAL_DIR)
@@ -422,6 +463,14 @@ def vectorize(texts: list[str]) -> list[list[float]]:
         resp.raise_for_status()
         data = resp.json()
         vecs = [d["embedding"] for d in data.get("data", [])]
+        if len(vecs) == len(texts):
+            _degraded("embed", True)
+        else:
+            # HTTP 200 with the wrong number of vectors is still a failure —
+            # every caller treats a short result as "failed to vectorize".
+            _degraded("embed", False,
+                      "Embeddings are failing — recall degraded to hippo-only, writes not vectorised",
+                      f"embed endpoint returned {len(vecs)} vectors for {len(texts)} inputs (HTTP 200).")
         # A model swap that changes dimensionality invalidates every existing
         # collection; make that loud instead of letting writes fail obscurely.
         if vecs and len(vecs[0]) != EMBED_DIM:
@@ -432,6 +481,10 @@ def vectorize(texts: list[str]) -> list[list[float]]:
         return vecs
     except Exception as e:
         print(f"[unified-memory] Embedding failed: {e}")
+        _degraded("embed", False,
+                  "Embeddings are failing — recall degraded to hippo-only, writes not vectorised",
+                  f"{e}. consensus_recall skips every vector lane without a query vector, so answers "
+                  "arrive looking normal, just thin — the one-lane-dead-another-covers shape.")
         return []
 
 
@@ -448,11 +501,11 @@ def stable_point_id(memory_id: str) -> int:
     return int.from_bytes(hashlib.blake2b(memory_id.encode("utf-8"), digest_size=8).digest(), "big") % (2**63)
 
 
-def write_to_qdrant(client: httpx.Client, db: dict, memory_id: str, vector: list, payload: dict) -> bool:
+def write_to_qdrant(client: httpx.Client, db: dict, memory_id: str, vector: list, payload: dict, collection: str = "") -> bool:
     try:
         int_id = stable_point_id(memory_id)
         resp = client.put(
-            f"http://{db['host']}:{db['port']}/collections/{qdrant_collection(db)}/points",
+            f"http://{db['host']}:{db['port']}/collections/{qdrant_collection(db, collection)}/points",
             json={"points": [{"id": int_id, "vector": vector, "payload": {**payload, "_memory_id": memory_id}}]},
             timeout=10.0,
         )
@@ -462,12 +515,12 @@ def write_to_qdrant(client: httpx.Client, db: dict, memory_id: str, vector: list
         return False
 
 
-def write_to_milvus(client: httpx.Client, db: dict, memory_id: str, vector: list, payload: dict) -> bool:
+def write_to_milvus(client: httpx.Client, db: dict, memory_id: str, vector: list, payload: dict, collection: str = "") -> bool:
     try:
         resp = client.post(
             f"http://{db['host']}:{db['port']}/v2/vectordb/entities/insert",
             json={
-                "collectionName": COLLECTION_NAME,
+                "collectionName": collection or COLLECTION_NAME,
                 "data": [{"vector": vector, "text": payload.get("text", ""), "_memory_id": memory_id}],
             },
             timeout=10.0,
@@ -488,9 +541,10 @@ def _weaviate_object_uuid(weaviate_class: str, memory_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{weaviate_class}:{memory_id}"))
 
 
-def write_to_weaviate(client: httpx.Client, db: dict, memory_id: str, vector: list, payload: dict) -> bool:
+def write_to_weaviate(client: httpx.Client, db: dict, memory_id: str, vector: list, payload: dict, collection: str = "") -> bool:
     try:
-        weaviate_class = COLLECTION_NAME[0].upper() + COLLECTION_NAME[1:]
+        _cname = collection or COLLECTION_NAME
+        weaviate_class = _cname[0].upper() + _cname[1:]
         obj_id = _weaviate_object_uuid(weaviate_class, memory_id)
         body = {
             "class": weaviate_class,
@@ -509,7 +563,7 @@ def write_to_weaviate(client: httpx.Client, db: dict, memory_id: str, vector: li
         return False
 
 
-def write_to_chromadb(client: httpx.Client, db: dict, memory_id: str, vector: list, payload: dict) -> bool:
+def write_to_chromadb(client: httpx.Client, db: dict, memory_id: str, vector: list, payload: dict, collection: str = "") -> bool:
     try:
         # Get collection ID
         cols_resp = client.get(
@@ -517,7 +571,7 @@ def write_to_chromadb(client: httpx.Client, db: dict, memory_id: str, vector: li
             timeout=5.0,
         )
         cols = cols_resp.json()
-        col = next((c for c in cols if c["name"] == COLLECTION_NAME), None)
+        col = next((c for c in cols if c["name"] == (collection or COLLECTION_NAME)), None)
         if not col:
             return False
         resp = client.post(
@@ -771,10 +825,10 @@ def search_openviking(query: str, k: int, user_id: str) -> list:
 
 # ─── Vector DB Search ────────────────────────────────────────────────────────
 
-def search_qdrant(client: httpx.Client, db: dict, query_vector: list, k: int) -> list:
+def search_qdrant(client: httpx.Client, db: dict, query_vector: list, k: int, collection: str = "") -> list:
     try:
         resp = client.post(
-            f"http://{db['host']}:{db['port']}/collections/{qdrant_collection(db)}/points/query",
+            f"http://{db['host']}:{db['port']}/collections/{qdrant_collection(db, collection)}/points/query",
             json={"query": query_vector, "limit": k, "with_payload": True},
             timeout=15.0,
         )
@@ -790,11 +844,11 @@ def search_qdrant(client: httpx.Client, db: dict, query_vector: list, k: int) ->
         return []
 
 
-def search_milvus(client: httpx.Client, db: dict, query_vector: list, k: int) -> list:
+def search_milvus(client: httpx.Client, db: dict, query_vector: list, k: int, collection: str = "") -> list:
     try:
         resp = client.post(
             f"http://{db['host']}:{db['port']}/v2/vectordb/entities/search",
-            json={"collectionName": COLLECTION_NAME, "data": [query_vector], "annsField": "vector",
+            json={"collectionName": collection or COLLECTION_NAME, "data": [query_vector], "annsField": "vector",
                   "limit": k, "outputFields": ["text", "_memory_id", "user_id"]},
             timeout=15.0,
         )
@@ -810,9 +864,10 @@ def search_milvus(client: httpx.Client, db: dict, query_vector: list, k: int) ->
         return []
 
 
-def search_weaviate(client: httpx.Client, db: dict, query_vector: list, k: int) -> list:
+def search_weaviate(client: httpx.Client, db: dict, query_vector: list, k: int, collection: str = "") -> list:
     try:
-        weaviate_class = COLLECTION_NAME[0].upper() + COLLECTION_NAME[1:]
+        _cname = collection or COLLECTION_NAME
+        weaviate_class = _cname[0].upper() + _cname[1:]
         resp = client.post(
             f"http://{db['host']}:{db['port']}/v1/graphql",
             json={"query": f'{{ Get {{ {weaviate_class}(nearVector: {{vector: {json.dumps(query_vector)}}}, limit: {k}) {{ text memory_id metadata _additional {{ id distance }} }} }} }}'},
@@ -838,14 +893,14 @@ def search_weaviate(client: httpx.Client, db: dict, query_vector: list, k: int) 
         return []
 
 
-def search_chromadb(client: httpx.Client, db: dict, query_vector: list, k: int) -> list:
+def search_chromadb(client: httpx.Client, db: dict, query_vector: list, k: int, collection: str = "") -> list:
     try:
         cols_resp = client.get(
             f"http://{db['host']}:{db['port']}/api/v2/tenants/default_tenant/databases/default_database/collections",
             timeout=5.0,
         )
         cols = cols_resp.json()
-        col = next((c for c in cols if c["name"] == COLLECTION_NAME), None)
+        col = next((c for c in cols if c["name"] == (collection or COLLECTION_NAME)), None)
         if not col:
             return []
         resp = client.post(
@@ -1063,6 +1118,16 @@ def _sync_worker() -> None:
         try:
             sync_pending(include_hippo=True)
             wal.compact()
+            # The backlog check memory_health computed for nobody: per backend,
+            # latched via _degraded (3 consecutive over-threshold passes fire
+            # once; a drained backlog re-arms with an info).
+            for _db in VECTOR_DBS:
+                _n = len(wal.get_pending(_db["name"]))
+                _degraded(f"wal-{_db['name']}", _n <= WAL_BACKLOG_THRESHOLD,
+                          f"Memory writes are backing up for {_db['name']}",
+                          f"{_n} unapplied WAL entries (threshold {WAL_BACKLOG_THRESHOLD}). The backend is not absorbing "
+                          "writes; they are safe in the WAL (compact never drops unapplied entries) but recall on this "
+                          "lane is increasingly stale, and the file grows until the backend recovers.")
         except Exception as e:  # noqa: BLE001
             print(f"[unified-memory] sync worker error: {e}")
 
@@ -1309,7 +1374,11 @@ def memory_health() -> str:
 
     # Reranker
     try:
-        resp = client.post(RERANKER_URL, json={"query": "test", "documents": ["test"]}, timeout=5.0)
+        # rag_model_cfg()["rerank_url"] is what rerank() ACTUALLY calls;
+        # probing the env default here let the health check read green against
+        # an endpoint the live path never touches (and vice versa).
+        resp = client.post(rag_model_cfg()["rerank_url"],
+                           json={"query": "test", "documents": ["test"]}, timeout=5.0)
         health["reranker"] = {"healthy": resp.status_code == 200}
     except Exception as e:
         health["reranker"] = {"healthy": False, "error": str(e)}
@@ -1460,11 +1529,11 @@ def collection_store(
     for db in VECTOR_DBS:
         writer = WRITERS.get(db["type"])
         if writer:
-            # Temporarily swap COLLECTION_NAME
-            saved = globals().get("COLLECTION_NAME")
-            globals()["COLLECTION_NAME"] = collection
-            ok = writer(client, db, doc_id, vecs[0], payload)
-            globals()["COLLECTION_NAME"] = saved
+            # collection rides as an ARGUMENT — the old globals() swap raced
+            # concurrent HTTP requests (uvicorn serves in parallel): a main-memory
+            # write landing during the swap window was silently misfiled into the
+            # custom collection.
+            ok = writer(client, db, doc_id, vecs[0], payload, collection=collection)
             results[db["name"]] = ok
 
     successful = sum(1 for v in results.values() if v)
@@ -1503,11 +1572,10 @@ def collection_search(
     for db in VECTOR_DBS:
         searcher = SEARCHERS.get(db["type"])
         if searcher:
-            # Temporarily swap collection name
-            saved = globals().get("COLLECTION_NAME")
-            globals()["COLLECTION_NAME"] = collection
-            db_results = searcher(client, db, query_vector, k)
-            globals()["COLLECTION_NAME"] = saved
+            # collection as an ARGUMENT — same race as the writer-side swap:
+            # a concurrent main-memory search during the swap window silently
+            # searched the wrong collection.
+            db_results = searcher(client, db, query_vector, k, collection=collection)
             if db_results:
                 results_by_source[db["name"]] = db_results
 
