@@ -38,11 +38,37 @@ check(socketForInstance({ id: 'fable-builder', user: 'root' }) === '/tmp/claude-
 check(socketForInstance({ id: 'claude2', user: 'claude2' }) === '/tmp/claude-claude2.sock', 'unit: claude2 socket')
 check(socketForInstance({ id: 'claude-dhb', user: 'claude-dhb' }) === '/tmp/claude-dhb.sock', 'unit: claude-dhb socket')
 check(socketForInstance({ id: 'x', user: 'root', consoleSocket: '/tmp/custom.sock' }) === '/tmp/custom.sock', 'unit: consoleSocket override wins')
-check(attachCommandFor({ id: 'claude1', user: 'root' }) === 'exec dtach -a /tmp/claude.sock', 'unit: root attach is direct')
+// The attach command has gained three things since these two checks were written, and each
+// is load-bearing rather than cosmetic, so assert the PROPERTIES that carry the reason —
+// a frozen string here just rots again on the next legitimate change and reads as a
+// regression in attach semantics when it is only a stale expectation:
+//   1. a reap prefix killing stray `dtach -a` clients (single-attach enforcement; a second
+//      client is the multi-attach /clear vector), guarded on comm=dtach so it can never kill
+//      the ttyd wrapper or the privilege-drop layer
+//   2. `-r winch` AFTER the socket — dtach 0.9 rejects the reverse order once a tty exists
+//   3. `runuser -u <user> --` replacing `su - <user> -c`, whose login shell ran a profile
+//      that corrupted the pty stream for fleet-user instances
+const rootCmd = attachCommandFor({ id: 'claude1', user: 'root' })
 check(
-  attachCommandFor({ id: 'claude2', user: 'claude2' }) === `exec su - claude2 -c 'exec dtach -a /tmp/claude-claude2.sock'`,
-  'unit: user attach drops via su',
+  /(^|;\s*)exec dtach -a \/tmp\/claude\.sock -r winch$/.test(rootCmd),
+  'unit: root attach is direct — dtach exec\'d last, socket before -r',
 )
+check(!/\brunuser\b|\bsu -\s/.test(rootCmd), 'unit: root attach adds no privilege-drop layer')
+check(
+  rootCmd.includes("pgrep -f 'dtach -a /tmp/claude.sock'"),
+  'unit: root attach reaps stray dtach clients before attaching',
+)
+check(
+  rootCmd.includes('comm 2>/dev/null)" = dtach'),
+  'unit: the reap kills ONLY real dtach procs — pgrep -f would otherwise match its own shell',
+)
+
+const userCmd = attachCommandFor({ id: 'claude2', user: 'claude2' })
+check(
+  /(^|;\s*)exec runuser -u claude2 -- dtach -a \/tmp\/claude-claude2\.sock -r winch$/.test(userCmd),
+  'unit: user attach drops via runuser (no login shell), socket before -r',
+)
+check(!/\bsu - claude2\b/.test(userCmd), 'unit: user attach no longer goes through `su -`')
 
 // ── live harness: stub manager + service on a scratch port ────────────────────
 async function main() {
