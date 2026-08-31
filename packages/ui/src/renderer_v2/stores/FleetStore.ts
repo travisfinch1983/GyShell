@@ -13,7 +13,36 @@ import {
   type FeedThread,
   type FeedThreadKind,
   type FeedVisibility,
+  type FleetWakeStats,
 } from './fleetFeedApi'
+
+/** What a directory chip may claim about an agent's wake reliability. */
+export type WakeHealth =
+  | { state: 'latched'; stage: string }
+  | { state: 'flaky'; ok: number; total: number }
+  | { state: 'clean'; ok: number; total: number }
+
+/**
+ * Wake health for one agent, or NULL when nothing may be claimed.
+ *
+ * Null when there are no stats at all AND when the agent is absent from them —
+ * fleetd omits agents with no traffic in the window, and "no evidence" must
+ * render as nothing, never as a passing check (cannot-check ≠ healthy).
+ * `latched` (a live, sustained alarm) takes precedence over counters: it is
+ * the panel STATE; the ratio is context. Ratios, not totals — 11/56 says
+ * something 11 alone does not.
+ */
+export function wakeHealthFor(stats: FleetWakeStats | null, agentId: string): WakeHealth | null {
+  if (!stats) return null
+  const latchedStage = stats.latched?.[agentId]
+  if (latchedStage) return { state: 'latched', stage: latchedStage }
+  const a = stats.agents?.[agentId]
+  if (!a) return null
+  const failed = (a.wake_timeout ?? 0) + (a.wake_stalled ?? 0)
+  const total = (a.woke ?? 0) + failed
+  if (total === 0) return null
+  return failed > 0 ? { state: 'flaky', ok: a.woke, total } : { state: 'clean', ok: a.woke, total }
+}
 
 // claude1's call (contract review item 2): polling stays for now, but cheap —
 // cursor + unread ride the feed request; revisit SSE once the tab's shape settles.
@@ -48,6 +77,7 @@ class FleetStore {
   categories: FeedCategory[] = []
   agents: FeedDirectoryEntry[] = []
   guard: FeedGuard | null = null
+  wakeStats: FleetWakeStats | null = null
 
   scope: FeedScope = 'all'
   kindFilter: 'all' | FeedThreadKind = 'all'
@@ -291,6 +321,22 @@ class FleetStore {
     } catch {
       /* transient */
     }
+    // Separate try: wake stats failing must not take the directory down with it.
+    // A failed fetch KEEPS the previous stats (stale beats a silent all-clear);
+    // the chips make no claim for agents absent from the data either way.
+    try {
+      const ws = await fleetFeedApi.wakeStats()
+      runInAction(() => {
+        if (ws) this.wakeStats = ws
+      })
+    } catch {
+      /* transient — previous stats stand */
+    }
+  }
+
+  /** Wake health for one agent chip — see wakeHealthFor. */
+  wakeHealth(agentId: string): WakeHealth | null {
+    return wakeHealthFor(this.wakeStats, agentId)
   }
 
   async refreshGuard(): Promise<void> {
