@@ -609,17 +609,26 @@ const ReviewBrowser: React.FC = observer(() => {
             <>
               <div className={styles.fileSection}>
                 <div className={styles.sectionLabel}>Files → resolved name (live)</div>
+                {store.collidingFileIds.size > 0 && (
+                  <div className={styles.collisionWarn}>
+                    Two or more selected files resolve to the same filename. They would
+                    overwrite each other, so the download is blocked — give the marked rows
+                    different suffixes, turn renaming off, or untick all but one.
+                  </div>
+                )}
                 {(v.files || []).map((f: any) => {
                   const resolved = store.resolvedNameForId(f.id, f.name)
+                  const clashes = store.collidingFileIds.has(String(f.id ?? f.name))
                   // A version often ships several files under ONE name (fp8 / bf16 / GGUF
                   // quants). Key and tick by the CivitAI file id — keying by name gave five
                   // rows the same React key and made every checkbox move together — and show
                   // the precision/format so identical names are still tellable apart.
                   const variant = [f.metadata?.fp, f.metadata?.size, f.metadata?.format].filter(Boolean).join(' · ')
                   return (
-                    <label key={f.id ?? f.name} className={styles.fileRow}>
+                    <label key={f.id ?? f.name} className={`${styles.fileRow} ${clashes ? styles.fileRowClash : ''}`}>
                       <input type="checkbox" checked={store.isFileSelected(f.id ?? f.name)} onChange={() => store.toggleReviewFile(f.id ?? f.name)} />
                       <span className={styles.fileName} title={f.name}>{resolved}</span>
+                      {clashes && <span className={styles.clashBadge} title="This name is not unique among the selected files">duplicate name</span>}
                       {resolved !== f.name && <span className={styles.fileOrig} title={`original: ${f.name}`}>was {f.name}</span>}
                       {variant && <span className={styles.quantBadge} title="what distinguishes this file from others with the same name">{variant}</span>}
                       {f.type && <span className={styles.quantBadge}>{f.type}</span>}

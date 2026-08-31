@@ -103,6 +103,9 @@ export class ModelDownloadsStore {
    *  name before the extension. Naming them yourself also suppresses the automatic
    *  `-<fileId>` disambiguation, which exists only as a last-resort guard. */
   civFileOpts = new Map<number, Map<string, { noRename?: boolean; suffix?: string }>>()
+  // Groups of file ids that resolve to the SAME name. Non-empty means the user cleared the
+  // discriminators; the preview warns rather than the server silently renaming behind them.
+  civVerCollisions = new Map<number, string[][]>()
   civQueue: any[] = [] // /api/civitai/queue — items sent from the browser extension's "Review" button
   civQueueItemId: string | null = null // the queue item currently loaded into the browser
   civQueueIndex = 0 // position in the review queue (navigated with prev/next arrows)
@@ -770,6 +773,7 @@ export class ModelDownloadsStore {
     this.civVerSelected.clear()
     this.civVerFiles.clear()
     this.civFileOpts.clear()
+    this.civVerCollisions.clear()
   }
 
   /** View a version. Viewing is separate from selecting it for download (ProxLab: badge vs checkbox). */
@@ -890,6 +894,14 @@ export class ModelDownloadsStore {
     if (!m) { m = new Map(); this.civFileOpts.set(vid, m) }
     return m
   }
+  /** File ids that currently share a name with another selected file. */
+  get collidingFileIds(): Set<string> {
+    const out = new Set<string>()
+    const vid = this.civSelVersionId
+    if (vid == null) return out
+    for (const g of this.civVerCollisions.get(vid) ?? []) for (const k of g) out.add(String(k))
+    return out
+  }
   fileOpt(fileId: string | number): { noRename?: boolean; suffix?: string } {
     return this.optsFor(this.civSelVersionId).get(String(fileId)) ?? {}
   }
@@ -957,6 +969,10 @@ export class ModelDownloadsStore {
         // Without this the server counted every file in the version, so ticking one of
         // three same-named files still looked like a collision and appended a file id.
         fileIds: Array.from(this.civVerFiles.get(vid) ?? []),
+        // Only the FIRST resolve lets the server invent discriminators -- we seed the
+        // per-file suffix boxes from them below. After that every component of the name
+        // comes from a field the user can see and edit, so the server must not append.
+        autoDisambiguate: seeded ? false : undefined,
         // Send this version's own overrides. Before seeding, both are absent so the server
         // resolves purely from the template — that result is what we then seed the boxes with.
         pathOverride: seeded ? (this.civVerFolder.get(vid) ?? '') : undefined,
@@ -965,6 +981,7 @@ export class ModelDownloadsStore {
       runInAction(() => {
         this.civResolvedDir = r?.targetDir || ''
         this.civResolvedFiles = Array.isArray(r?.files) ? r.files : []
+        this.civVerCollisions.set(vid, Array.isArray(r?.collisions) ? r.collisions : [])
         if (!seeded) {
           // Pre-fill from what the template produced: folderPart is exactly what pathOverride
           // consumes, and the filename box holds the base name (the backend re-adds the extension).
@@ -975,6 +992,19 @@ export class ModelDownloadsStore {
           const seedName = String(r?.fileNameOverride || '')
             || String((r?.baseFileName ?? '')).replace(/\.[^.]+$/, '')
           this.civVerFilename.set(vid, seedName)
+          // Seed the per-file suffix boxes with the server's discriminators (derived from
+          // what differs in the upstream names -- 'r128', 'r64'), so the number that used to
+          // be appended invisibly is now an ordinary editable value.
+          const auto = (r?.autoSuffixes ?? {}) as Record<string, string>
+          if (Object.keys(auto).length) {
+            const m = this.civFileOpts.get(vid) ?? new Map()
+            for (const [fid, sfx] of Object.entries(auto)) {
+              if (!sfx) continue
+              const cur = m.get(String(fid)) ?? {}
+              if (!cur.suffix) m.set(String(fid), { ...cur, suffix: String(sfx) })
+            }
+            this.civFileOpts.set(vid, m)
+          }
           this.civVerSeeded.add(vid)
         }
       })

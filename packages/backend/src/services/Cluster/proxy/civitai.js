@@ -803,8 +803,61 @@ export function createCivitaiRouter(config, sshService) {
  *  @param baseNameFor  (file) => templated name, supplied by the caller so this stays
  *                      independent of how the path template is resolved.
  */
-function resolveVersionFileNames(files, baseNameFor, fnOverride, fileOpts, selectedKeys) {
+/**
+ * Derive a human-meaningful discriminator for files that would otherwise share a name.
+ * Preference order, best first:
+ *   1. the part of the ORIGINAL upstream filenames that actually differs
+ *      (krea2_identity_edit_v1_2{,_r128,_r64} -> '', 'r128', 'r64')
+ *   2. the metadata fields that differ within the group (fp16 / fp8 / nf4, pruned / full)
+ *   3. the CivitAI file id -- a meaningless number, and the last resort
+ * Returns one string per file, aligned with `group`; '' means "needs nothing".
+ */
+function deriveAutoSuffixes(group) {
+  const clean = (s) => String(s || '')
+    .replace(/^[_\-. ]+/, '')
+    .replace(/[_\-. ]+$/, '')
+    .replace(/[^A-Za-z0-9._-]+/g, '_');
+
+  // 1 ── differing tail of the upstream names
+  const stems = group.map((f) => String(f.name || '').replace(/\.[^.]+$/, ''));
+  let pre = 0;
+  if (stems.length > 1) {
+    const min = Math.min(...stems.map((s) => s.length));
+    while (pre < min && stems.every((s) => s[pre] === stems[0][pre])) pre++;
+  }
+  let out = stems.map((s) => clean(s.substring(pre)));
+  if (new Set(out).size === group.length) return out;
+
+  // 2 ── differing metadata
+  const fields = ['fp', 'size', 'format'].filter((k) => {
+    const vals = new Set(group.map((f) => String(f.metadata?.[k] ?? '')));
+    return vals.size > 1;
+  });
+  if (fields.length) {
+    out = group.map((f) => clean(fields.map((k) => f.metadata?.[k]).filter(Boolean).join('-')));
+    if (new Set(out).size === group.length) return out;
+  }
+
+  // 3 ── file id
+  return group.map((f) => String(f.id));
+}
+
+/**
+ * Resolve the final on-disk name for every file in a version.
+ *
+ * `autoDisambiguate` false means: apply ONLY what the caller asked for and never invent a
+ * suffix. The UI passes false once it has seeded its per-file suffix boxes, so that every
+ * component of the previewed name exists in a field the user can actually edit -- silently
+ * appending a tag the Filename box could not remove is exactly the bug this replaced.
+ * Collisions that remain are reported via `outCollisions` instead of being papered over.
+ */
+function resolveVersionFileNames(files, baseNameFor, fnOverride, fileOpts, selectedKeys, opts) {
+  const { autoDisambiguate = true, outAuto = null, outCollisions = null } = opts || {};
   const keyOf = (f) => String(f.id != null ? f.id : f.name);
+  const splitExt = (n) => {
+    const d = n.lastIndexOf('.');
+    return d > 0 ? [n.substring(0, d), n.substring(d)] : [n, ''];
+  };
   const names = new Map();
 
   for (const f of files || []) {
@@ -815,35 +868,24 @@ function resolveVersionFileNames(files, baseNameFor, fnOverride, fileOpts, selec
     } else {
       name = baseNameFor(f);
       if (fnOverride) {
-        const d = name.lastIndexOf('.');
-        name = fnOverride + (d > 0 ? name.substring(d) : '');
+        const [, e] = splitExt(name);
+        name = fnOverride + e;
       }
     }
     if (o.suffix) {
-      const d = name.lastIndexOf('.');
-      const b = d > 0 ? name.substring(0, d) : name;
-      const e = d > 0 ? name.substring(d) : '';
-      const sfx = String(o.suffix).trim().replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[_-]+|[_-]+$/g, '');
+      const [b, e] = splitExt(name);
+      const sfx = String(o.suffix).trim()
+        .replace(/[^A-Za-z0-9._-]+/g, '_')
+        .replace(/^[_-]+|[_-]+$/g, '');
       if (sfx) name = `${b}-${sfx}${e}`;
     }
     names.set(keyOf(f), name);
   }
 
-  // Auto-disambiguate only what is STILL colliding after the user's own choices, and tag
-  // with the MINIMAL discriminator: the metadata fields that actually differ inside the
-  // colliding group, falling back to the file id only when metadata cannot separate them.
-  // Concatenating fp+size+format+id unconditionally produced names so long the UI truncated
-  // them, and the tail reappeared no matter what the user typed in the Filename box.
-  const splitExt = (n) => {
-    const d = n.lastIndexOf('.');
-    return d > 0 ? [n.substring(0, d), n.substring(d)] : [n, ''];
-  };
-  // A collision only matters between files that are ACTUALLY BEING WRITTEN. Counting
-  // every file in the version meant ticking one of three same-named LoRA files still
-  // looked like a 3-way conflict, so a file id got appended for a conflict that did not
-  // exist — and nothing the user typed could remove it. selectedKeys null = all files.
+  // A collision only matters between files that are ACTUALLY BEING WRITTEN. Counting every
+  // file in the version meant ticking one of three same-named files still looked like a
+  // three-way conflict. selectedKeys null = all files.
   const isSel = (f) => !selectedKeys || selectedKeys.has(keyOf(f));
-
   const counts = {};
   for (const f of files || []) {
     if (!isSel(f)) continue;
@@ -862,37 +904,14 @@ function resolveVersionFileNames(files, baseNameFor, fnOverride, fileOpts, selec
   }
 
   for (const [n, group] of groups) {
+    const suffixes = deriveAutoSuffixes(group);
+    if (outAuto) group.forEach((f, i) => outAuto.set(keyOf(f), suffixes[i]));
+    if (outCollisions) outCollisions.push(group.map(keyOf));
+    if (!autoDisambiguate) continue;                  // report only; never invent
     const [base, ext] = splitExt(n);
-    // Keep only the fields that vary within this group — a field every file shares
-    // carries no information and is pure noise in the filename.
-    const discriminating = ['fp', 'size', 'format'].filter((key) => {
-      const vals = new Set(group.map((f) => String(f.metadata?.[key] ?? '')));
-      return vals.size > 1;
+    group.forEach((f, i) => {
+      names.set(keyOf(f), suffixes[i] ? `${base}-${suffixes[i]}${ext}` : `${base}${ext}`);
     });
-
-    const tagged = new Map();
-    for (const f of group) {
-      const tag = discriminating
-        .map((key) => f.metadata?.[key])
-        .filter(Boolean)
-        .join('-')
-        .replace(/[^A-Za-z0-9._-]/g, '');
-      tagged.set(keyOf(f), tag ? `${base}-${tag}${ext}` : `${base}${ext}`);
-    }
-
-    // Identical metadata (the common LoRA case) leaves them still equal; the file id is
-    // then the only true key, so append it — but only to the files that need it.
-    const tagCounts = {};
-    for (const v of tagged.values()) tagCounts[v] = (tagCounts[v] || 0) + 1;
-    for (const f of group) {
-      const k = keyOf(f);
-      let v = tagged.get(k);
-      if (tagCounts[v] > 1) {
-        const [vb, ve] = splitExt(v);
-        v = `${vb}-${f.id}${ve}`;
-      }
-      names.set(k, v);
-    }
   }
   return names;
 }
@@ -1000,7 +1019,7 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
   // ─── POST /resolve-paths — Resolve template paths for model files ───────
   // Used by the renamer to compute new paths from templates
   router.post('/resolve-paths', (req, res) => {
-    const { modelId, versionId, modelType, modelName, versionName, baseModel, creatorName, primaryTag, tags, files, pathOverride, userDefined, fileNameOverride, fileOpts, fileIds } = req.body;
+    const { modelId, versionId, modelType, modelName, versionName, baseModel, creatorName, primaryTag, tags, files, pathOverride, userDefined, fileNameOverride, fileOpts, fileIds, autoDisambiguate } = req.body;
     if (!files?.length) return res.status(400).json({ error: 'files required' });
 
     const cfg = loadConfig();
@@ -1063,6 +1082,10 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
     const selectedKeys = (Array.isArray(fileIds) && fileIds.length)
       ? new Set(fileIds.map(String))
       : null;
+    // Suffixes the UI seeds its per-file boxes with, and any collision that survives the
+    // user's own choices -- surfaced so the UI can warn instead of silently renaming.
+    const _autoSuffixes = new Map();
+    const _collisions = [];
     const _finalNames = resolveVersionFileNames(files, (f) => {
       const fake = { id: f.id, name: f.name, sizeKB: f.sizeKB || 0, metadata: f.metadata || {}, hashes: {} };
       const r = resolveTargetPath(model, version, fake, cfg, effectiveOverride, userDefined || '');
@@ -1071,7 +1094,11 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       _dirs.set(String(f.id != null ? f.id : f.name), r.targetDir);
       if (!baseFileName) baseFileName = r.fileName;
       return r.fileName;
-    }, effectiveFnOverride, fileOpts, selectedKeys);
+    }, effectiveFnOverride, fileOpts, selectedKeys, {
+      autoDisambiguate: autoDisambiguate !== false,
+      outAuto: _autoSuffixes,
+      outCollisions: _collisions,
+    });
 
     for (const file of files) {
       const k = String(file.id != null ? file.id : file.name);
@@ -1099,6 +1126,13 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       fileNameOverride: effectiveFnOverride || '',
       // Undecorated template name for seeding the Filename box (see baseFileName above).
       baseFileName,
+      // Per-file discriminators for files that would otherwise share a name. The UI seeds
+      // its editable suffix boxes with these so every part of the previewed name lives in
+      // a field the user can change or clear.
+      autoSuffixes: Object.fromEntries(_autoSuffixes),
+      // Groups of file ids that STILL resolve to the same name. Non-empty means the user
+      // cleared the discriminators; warn, do not silently rename.
+      collisions: _collisions,
     });
   });
 
@@ -1315,13 +1349,33 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       // against a single file's expected size (a 19 GB file reaching 60 GB).
       // Same helper as the preview, so what the UI showed is what lands on disk.
       const _dlDirs = new Map();
+      const _dlCollisions = [];
       const _dlNames = resolveVersionFileNames(version.files, (f) => {
         const r = resolveTargetPath(model, version, f, cfg, effectiveOverride, userDefined, extensionOverride, versionComponent);
         _dlDirs.set(String(f.id != null ? f.id : f.name), r.targetDir);
         return r.fileName;
       }, fileNameOverride, fileOpts, (Array.isArray(fileIds) && fileIds.length)
         ? new Set(fileIds.map(String))
-        : null);
+        : null, { autoDisambiguate: req.body.autoDisambiguate !== false, outCollisions: _dlCollisions });
+
+      // With auto-disambiguation off the user owns every part of the name, so two selected
+      // files CAN now resolve to the same path. Writing both is precisely what corrupted
+      // downloads before this guard existed: N files interleaving into ONE .part, each
+      // deleting the previous one's, progress reading past 100%. Refuse loudly instead.
+      if (req.body.autoDisambiguate === false && _dlCollisions.length) {
+        const _sel = (Array.isArray(fileIds) && fileIds.length) ? new Set(fileIds.map(String)) : null;
+        const _clash = _dlCollisions
+          .map((g) => g.filter((k) => !_sel || _sel.has(k)))
+          .filter((g) => g.length > 1);
+        if (_clash.length) {
+          return res.status(409).json({
+            error: 'Files would overwrite each other',
+            detail: 'These selected files resolve to the same filename. Give them different '
+              + 'suffixes, turn renaming off for some, or deselect all but one.',
+            collisions: _clash.map((g) => ({ fileIds: g, name: _dlNames.get(g[0]) })),
+          });
+        }
+      }
 
       for (const file of version.files) {
           // Honour an explicit file selection. Previously the UI's checkboxes never
