@@ -10,6 +10,12 @@ Committed rather than scratch: an uncommitted verification is a claim, not an
 artifact. No live host, no live board — recorder only.
 """
 import http.server, json, os, subprocess, sys, threading, importlib, types
+import os as _os
+# REPO ROOT is derived from THIS FILE's location, not hardcoded. It was
+# _REPO + "/...", which exists only on fable's box: on the deploy
+# line the test died at import, so "18/18 passing" was a claim nobody else could
+# check. A test that only runs in one checkout cannot verify a shared artifact.
+_REPO = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 received = []
 class Rec(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
@@ -28,7 +34,7 @@ def ok(c, m):
     n += 1; print("  ok —", m)
 
 # ── exporter: counter + latch, via the real module with run() driven ──────────
-sys.path.insert(0, "/root/repos/ai-lab-fable/infra/service-gpu-exporter")
+sys.path.insert(0, _REPO + "/infra/service-gpu-exporter")
 import service_gpu_exporter as ex
 ex.AILAB_API = api
 # a non-nvidia command failing must NOT count (the counter is nvidia-scoped)
@@ -56,10 +62,10 @@ ok(len(received) == 2, "a clean pass re-arms — a new outage reports again")
 
 # ── provision_all emit(): host named, lost-report fallback ────────────────────
 received.clear()
-sys.path.insert(0, "/root/repos/ai-lab-fable/mcp-servers/ailab-pages")
+sys.path.insert(0, _REPO + "/mcp-servers/ailab-pages")
 os.environ["AILAB_API_URL"] = api
 import importlib.util
-spec = importlib.util.spec_from_file_location("prov", "/root/repos/ai-lab-fable/mcp-servers/ailab-pages/provision_all.py")
+spec = importlib.util.spec_from_file_location("prov", _REPO + "/mcp-servers/ailab-pages/provision_all.py")
 prov = importlib.util.module_from_spec(spec)
 try:
     spec.loader.exec_module(prov)  # module-level only; main() not called
@@ -91,7 +97,7 @@ env = dict(os.environ, AILAB_API_URL=api, AILAB_PROVIDER_REPO=repo, AILAB_DATA_D
 real_dest = pathlib.Path(dest, "scripts", "providers"); real_dest.mkdir(parents=True)
 for f in ["a.sh", "orphan.sh", "b.sh"]:
     pathlib.Path(dest, f).rename(real_dest / f)
-r = subprocess.run(["bash", "/root/repos/ai-lab-fable/infra/provider-scripts/drift-check/provider-drift-check.sh"],
+r = subprocess.run(["bash", _REPO + "/infra/provider-scripts/drift-check/provider-drift-check.sh"],
                    env=env, capture_output=True, text=True, timeout=30)
 time.sleep(0.3)
 msgs = [e["message"] for e in received]
@@ -103,7 +109,7 @@ count = len(received)
 # clean tree: silent
 pathlib.Path(repo, "a.sh").write_text((real_dest / "a.sh").read_text())
 pathlib.Path(repo, "orphan.sh").write_text((real_dest / "orphan.sh").read_text())
-r2 = subprocess.run(["bash", "/root/repos/ai-lab-fable/infra/provider-scripts/drift-check/provider-drift-check.sh"],
+r2 = subprocess.run(["bash", _REPO + "/infra/provider-scripts/drift-check/provider-drift-check.sh"],
                     env=env, capture_output=True, text=True, timeout=30)
 time.sleep(0.3)
 ok(len(received) == count and "OK" in r2.stdout, "a clean tree emits NOTHING — silence when healthy")
@@ -116,7 +122,7 @@ gate_dest = pathlib.Path(dest2, "scripts", "providers"); gate_dest.mkdir(parents
 for i in range(12):  # 12 repo scripts, deployed tree empty → 12/12 "missing"
     pathlib.Path(repo2, f"s{i}.sh").write_text(f"echo {i}\n")
 env2 = dict(os.environ, AILAB_API_URL=api, AILAB_PROVIDER_REPO=repo2, AILAB_DATA_DIR=dest2)
-r3 = subprocess.run(["bash", "/root/repos/ai-lab-fable/infra/provider-scripts/drift-check/provider-drift-check.sh"],
+r3 = subprocess.run(["bash", _REPO + "/infra/provider-scripts/drift-check/provider-drift-check.sh"],
                     env=env2, capture_output=True, text=True, timeout=30)
 time.sleep(0.3)
 ok(len(received) == 1 and "MISCONFIGURED" in received[0]["message"],
@@ -129,7 +135,7 @@ ok("over the sanity gate" in r3.stdout, "stdout names the gate decision for jour
 received.clear()
 for i in range(4, 12):
     pathlib.Path(repo2, f"s{i}.sh").unlink()   # down to 4 scripts, all missing
-r4 = subprocess.run(["bash", "/root/repos/ai-lab-fable/infra/provider-scripts/drift-check/provider-drift-check.sh"],
+r4 = subprocess.run(["bash", _REPO + "/infra/provider-scripts/drift-check/provider-drift-check.sh"],
                     env=env2, capture_output=True, text=True, timeout=30)
 time.sleep(0.3)
 ok(len(received) == 4 and all("missing from the deployed set" in e["message"] for e in received),
