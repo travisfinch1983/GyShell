@@ -595,6 +595,23 @@ export class HermesManagementService {
         if (this.toolHealthAlarmed.has(id)) continue
         this.toolHealthAlarmed.add(id)
         console.warn(`[hermes-tools] ${id}: ${h.detail}`)
+        // Pending = already remedied, loads on the agent's next turn: one INFO
+        // (self-clearing in the good case), escalating to warning only if the
+        // gateway restart is >24h old — an agent that never speaks stays short
+        // of its tools indefinitely, and at that point pending IS stranded.
+        if (h.pending && h.parkedServers === 0 && !h.gaveUp) {
+          const restartAge = h.gatewayRestartedAt ? Date.now() - new Date(h.gatewayRestartedAt.replace(' ', 'T')).getTime() : 0
+          const longPending = restartAge > 24 * 3600_000
+          this.cfg.notify?.({
+            severity: longPending ? 'warning' : 'info',
+            source: 'hermes-tools',
+            message: longPending
+              ? `Agent '${id}' has not taken a turn in 24h+ since its tool reconnect`
+              : `Agent '${id}' tool refresh is pending its next turn`,
+            detail: h.detail + (longPending ? ' The agent has been idle so long that pending is stranded in effect — check whether it should be running at all.' : ''),
+          })
+          continue
+        }
         this.cfg.notify?.({
           // Parked = a server whose tools are GONE until a reconnect — the
           // same permanence as gave-up, scoped to one server: error, not the
@@ -1994,7 +2011,14 @@ export class HermesManagementService {
    *  group against the agent's own last registration and look for a give-up AFTER it. */
   async getToolHealth(agentId: string): Promise<{
     groupTools: number; registeredTools: number | null; gaveUp: boolean
-    parkedServers: number; gatewayActive: boolean; healthy: boolean; detail: string
+    parkedServers: number; gatewayActive: boolean; healthy: boolean
+    /** stale registration but the gateway restarted AFTER it: the fix is
+     *  already applied and loads on the agent's next turn — needs NOTHING.
+     *  (m-c nearly re-restarted six live gateways because the alert fired 83
+     *  minutes after the remedy and prescribed 'reconnect'.) */
+    pending: boolean
+    gatewayRestartedAt: string
+    detail: string
   }> {
     const group = `agent-${agentId}`
     const tools = (await readToolGroup(this.gatewayBase(), group)) ?? []
@@ -2008,23 +2032,39 @@ export class HermesManagementService {
     let registeredTools: number | null = null
     let gaveUp = false
     let parkedServers = 0
+    let registeredAt = ''
     for (const line of raw.split('\n')) {
       // "registered N tool(s) from M server(s) (K failed)" — the failed count is
       // the cheap, structured signal that servers PARKED (permanent until a
       // reconnect); matching the parking prose alone missed it for months.
       const m = line.match(/registered (\d+) tool\(s\) from \d+ server\(s\)(?: \((\d+) failed\))?/)
-      if (m) { registeredTools = parseInt(m[1], 10); parkedServers = m[2] ? parseInt(m[2], 10) : 0; gaveUp = false; continue }
+      if (m) {
+        registeredTools = parseInt(m[1], 10); parkedServers = m[2] ? parseInt(m[2], 10) : 0; gaveUp = false
+        registeredAt = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/)?.[1] ?? ''
+        continue
+      }
       if (/reconnection attempts, giving up/.test(line)) gaveUp = true
     }
 
     const unit = `hermes-gateway-${agentId}`
-    const gatewayActive = (await this.ssh(`systemctl is-active ${shq(unit)} 2>/dev/null || true`).catch(() => '')).trim() === 'active'
+    // One call for both liveness and the restart time. Same host, same clock,
+    // same YYYY-MM-DD HH:MM:SS shape as the log line — string comparison is
+    // exact, no timezone parsing to get wrong.
+    const unitShow = (await this.ssh(`systemctl show ${shq(unit)} -p ActiveState -p ActiveEnterTimestamp 2>/dev/null || true`).catch(() => ''))
+    const gatewayActive = /ActiveState=active/.test(unitShow)
+    const gatewayRestartedAt = unitShow.match(/ActiveEnterTimestamp=\w* ?(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/)?.[1] ?? ''
 
     // The agent's registration count includes MCP protocol built-ins (list_resources,
     // read_resource, list_prompts, get_prompt) on top of the group's tools, so compare with
     // that allowance rather than demanding equality.
     const PROTOCOL_EXTRAS = 4
     const matches = registeredTools !== null && registeredTools >= groupTools && registeredTools <= groupTools + PROTOCOL_EXTRAS
+    // Stranded vs pending: a stale registration with a LATER gateway restart is
+    // already remedied — Hermes registers lazily, so the refreshed set loads on
+    // the agent's next turn. Prescribing "reconnect" there restarts a live
+    // gateway for nothing (and interrupts a turn if one is in flight).
+    const pending = !gaveUp && registeredTools !== null && !matches
+      && !!gatewayRestartedAt && !!registeredAt && gatewayRestartedAt > registeredAt
     const healthy = !gaveUp && parkedServers === 0 && (registeredTools === null || matches)
     // The allowance belongs in the COMPARISON, never in the numbers a reader
     // sees: printing raw 58-vs-60 sent triage hunting two missing tools when
@@ -2040,8 +2080,10 @@ export class HermesManagementService {
         ? 'No registration seen in the agent log yet.' + parkedNote
         : matches
           ? `Serving ${registeredTools} tools for a group of ${groupTools}.` + parkedNote
-          : `Group has ${groupTools} tools but the agent last registered ${registeredTools} — and that count includes up to ${PROTOCOL_EXTRAS} MCP protocol built-ins, so the real shortfall is ~${realGap} tool(s), not ${Math.max(0, groupTools - registeredTools)}. Reconnect to resync.` + parkedNote
-    return { groupTools, registeredTools, gaveUp, parkedServers, gatewayActive, healthy, detail }
+          : pending
+            ? `Registration is ~${realGap} tool(s) short of the group, but the gateway was already reconnected at ${gatewayRestartedAt} (after that registration) — the refreshed set loads on the agent's NEXT TURN. No action needed; do NOT reconnect again.` + parkedNote
+            : `Group has ${groupTools} tools but the agent last registered ${registeredTools} — and that count includes up to ${PROTOCOL_EXTRAS} MCP protocol built-ins, so the real shortfall is ~${realGap} tool(s), not ${Math.max(0, groupTools - registeredTools)}. Reconnect to resync.` + parkedNote
+    return { groupTools, registeredTools, gaveUp, parkedServers, gatewayActive, healthy, pending, gatewayRestartedAt, detail }
   }
 
   /** Restart the agent's messaging gateway so it re-reads config and reconnects its MCP link.

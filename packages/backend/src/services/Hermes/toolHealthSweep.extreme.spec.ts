@@ -84,6 +84,49 @@ async function main(): Promise<void> {
   th = await svc3.getToolHealth('cinder')
   ok(th.parkedServers === 0 && th.healthy === true && th.detail.startsWith('Serving'),
     'a clean registration (group + extras, no failed count) is healthy with no parked note')
+
+  // ── stranded vs pending: the 83-minute scenario ──────────────────────────
+  // Gateways reconnected 15:24; the sweep alerted 16:47 saying "reconnect to
+  // resync" about agents ALREADY reconnected and merely awaiting their next
+  // turn (Hermes registers lazily). m-c nearly restarted six live gateways on
+  // that prescription. The unit's ActiveEnterTimestamp against the
+  // registration line's timestamp is the discriminator — same host, same
+  // clock, same format, so string comparison is exact.
+  const mkShow = (ts: string) => `ActiveState=active\nActiveEnterTimestamp=Sun ${ts} UTC`
+  let showResp = mkShow('2026-08-31 15:24:36')
+  svc3.ssh = async (cmd: string) => (cmd.includes('systemctl show') ? showResp : logLines)
+  logLines = "2026-08-30 15:15:19,116 INFO tools.mcp_tool: MCP: registered 58 tool(s) from 1 server(s)"
+  th = await svc3.getToolHealth('cinder')
+  ok(th.pending === true && th.healthy === false,
+    'PENDING: stale registration + LATER gateway restart = remedy already applied, still not healthy')
+  ok(th.detail.includes('NEXT TURN') && th.detail.includes('do NOT reconnect again'),
+    'the pending detail prescribes waiting, never a second reconnect')
+  showResp = mkShow('2026-08-30 14:00:00')   // restart BEFORE the registration
+  th = await svc3.getToolHealth('cinder')
+  ok(th.pending === false && th.detail.includes('Reconnect to resync'),
+    'STRANDED: registration after the last restart keeps the reconnect prescription')
+
+  // sweep severities: pending → one INFO; >24h-old restart → warning backstop
+  svc.listAgentsStrict = async () => ['echo']
+  // Local-time strings, matching production where systemctl and the parser run
+  // on the same box (an earlier draft used toISOString — UTC — and the 25h case
+  // silently became 18h on a UTC-7 host).
+  const localTs = (msAgo: number) => {
+    const d = new Date(Date.now() - msAgo)
+    const pad = (x: number) => String(x).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  }
+  const recent = localTs(3600_000)
+  health.echo = { groupTools: 60, registeredTools: 58, gaveUp: false, parkedServers: 0, pending: true, gatewayRestartedAt: recent, gatewayActive: true, healthy: false, detail: 'pending' }
+  const bq = emitted.length
+  await svc.sweepToolHealth()
+  ok(emitted.length === bq + 1 && emitted[bq].severity === 'info' && emitted[bq].message.includes('pending its next turn'),
+    'a pending agent raises INFO, not the stale-set warning — no one is sent to re-run the remedy')
+  svc.toolHealthAlarmed.delete('echo')
+  health.echo.gatewayRestartedAt = localTs(25 * 3600_000)
+  await svc.sweepToolHealth()
+  ok(emitted[emitted.length - 1].severity === 'warning' && emitted[emitted.length - 1].message.includes('24h+'),
+    'pending with a restart >24h old escalates — an agent that never speaks is stranded in effect')
   globalThis.fetch = realFetch
 
   // ── strict enumeration: the failover no-op family ─────────────────────────
