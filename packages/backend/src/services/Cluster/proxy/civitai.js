@@ -829,18 +829,58 @@ function resolveVersionFileNames(files, baseNameFor, fnOverride, fileOpts) {
     names.set(keyOf(f), name);
   }
 
+  // Auto-disambiguate only what is STILL colliding after the user's own choices, and tag
+  // with the MINIMAL discriminator: the metadata fields that actually differ inside the
+  // colliding group, falling back to the file id only when metadata cannot separate them.
+  // Concatenating fp+size+format+id unconditionally produced names so long the UI truncated
+  // them, and the tail reappeared no matter what the user typed in the Filename box.
+  const splitExt = (n) => {
+    const d = n.lastIndexOf('.');
+    return d > 0 ? [n.substring(0, d), n.substring(d)] : [n, ''];
+  };
   const counts = {};
   for (const n of names.values()) counts[n] = (counts[n] || 0) + 1;
+
+  const groups = new Map();
   for (const f of files || []) {
-    const k = keyOf(f);
-    const n = names.get(k);
+    const n = names.get(keyOf(f));
     if (counts[n] > 1) {
-      const d = n.lastIndexOf('.');
-      const b = d > 0 ? n.substring(0, d) : n;
-      const e = d > 0 ? n.substring(d) : '';
-      const tag = [f.metadata?.fp, f.metadata?.size, f.metadata?.format]
-        .filter(Boolean).join('-').replace(/[^A-Za-z0-9._-]/g, '');
-      names.set(k, `${b}${tag ? '-' + tag : ''}-${f.id}${e}`);
+      if (!groups.has(n)) groups.set(n, []);
+      groups.get(n).push(f);
+    }
+  }
+
+  for (const [n, group] of groups) {
+    const [base, ext] = splitExt(n);
+    // Keep only the fields that vary within this group — a field every file shares
+    // carries no information and is pure noise in the filename.
+    const discriminating = ['fp', 'size', 'format'].filter((key) => {
+      const vals = new Set(group.map((f) => String(f.metadata?.[key] ?? '')));
+      return vals.size > 1;
+    });
+
+    const tagged = new Map();
+    for (const f of group) {
+      const tag = discriminating
+        .map((key) => f.metadata?.[key])
+        .filter(Boolean)
+        .join('-')
+        .replace(/[^A-Za-z0-9._-]/g, '');
+      tagged.set(keyOf(f), tag ? `${base}-${tag}${ext}` : `${base}${ext}`);
+    }
+
+    // Identical metadata (the common LoRA case) leaves them still equal; the file id is
+    // then the only true key, so append it — but only to the files that need it.
+    const tagCounts = {};
+    for (const v of tagged.values()) tagCounts[v] = (tagCounts[v] || 0) + 1;
+    for (const f of group) {
+      const k = keyOf(f);
+      let v = tagged.get(k);
+      if (tagCounts[v] > 1) {
+        const [vb, ve] = splitExt(v);
+        v = `${vb}-${f.id}${ve}`;
+      }
+      names.set(k, v);
     }
   }
   return names;
@@ -1002,12 +1042,18 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
     let lastFolderPart = '';
     // One naming pass for the whole version, shared with the download path.
     const _dirs = new Map();
+    // The template's own output for the first file, BEFORE any per-file suffix or
+    // auto-disambiguation tag. This — not the decorated newName — is what the UI's
+    // Filename box must be seeded with, or the tag becomes part of the override the
+    // user sends back and can never be deleted.
+    let baseFileName = '';
     const _finalNames = resolveVersionFileNames(files, (f) => {
       const fake = { id: f.id, name: f.name, sizeKB: f.sizeKB || 0, metadata: f.metadata || {}, hashes: {} };
       const r = resolveTargetPath(model, version, fake, cfg, effectiveOverride, userDefined || '');
       lastTypeFolder = r.typeFolder || lastTypeFolder;
       lastFolderPart = r.folderPart || '';
       _dirs.set(String(f.id != null ? f.id : f.name), r.targetDir);
+      if (!baseFileName) baseFileName = r.fileName;
       return r.fileName;
     }, effectiveFnOverride, fileOpts);
 
@@ -1035,6 +1081,8 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       // The name actually in force, so the Filename box can be seeded with the custom
       // name this model was downloaded under rather than the template's guess.
       fileNameOverride: effectiveFnOverride || '',
+      // Undecorated template name for seeding the Filename box (see baseFileName above).
+      baseFileName,
     });
   });
 

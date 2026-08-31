@@ -965,8 +965,12 @@ export class ModelDownloadsStore {
           // Pre-fill from what the template produced: folderPart is exactly what pathOverride
           // consumes, and the filename box holds the base name (the backend re-adds the extension).
           this.civVerFolder.set(vid, String(r?.folderPart ?? ''))
-          const primary = (r?.files ?? [])[0]?.newName ?? ''
-          this.civVerFilename.set(vid, String(primary).replace(/\.[^.]+$/, ''))
+          // Seed from the template's UNDECORATED name, never from files[0].newName —
+          // that one carries the auto-disambiguation tag, which would then be sent back
+          // as fileNameOverride and could not be removed from the box.
+          const seedName = String(r?.fileNameOverride || '')
+            || String((r?.baseFileName ?? '')).replace(/\.[^.]+$/, '')
+          this.civVerFilename.set(vid, seedName)
           this.civVerSeeded.add(vid)
         }
       })
