@@ -249,9 +249,11 @@ def inject(sock, text):
     try:
         raw = text.encode("utf-8", "replace")
         total = len(raw)
-        # /clear forensics: log the EXACT payload (repr + hex) so any injection can be
-        # correlated byte-for-byte against a spontaneous /clear on the tty tracer.
-        log(f"INJECT-TEXT {sock} bytes={total} repr={text!r} hex={raw.hex()}")
+        # Was: full repr + hex of every payload, for the /clear forensics push. That
+        # investigation is CLOSED, and the line logged whole message bodies twice at
+        # normal level — disk burn plus every DM in plaintext in the journal. Keep the
+        # forensic handle (size + a short prefix), drop the payload.
+        log(f"INJECT-TEXT {sock} bytes={total} prefix={text[:40]!r}")
 
         chunks = _chunk_utf8(text, CHUNK_BYTES)
         if len(chunks) > 1:

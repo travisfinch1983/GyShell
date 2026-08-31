@@ -45,7 +45,23 @@ proxlab_symlink() {
         FILE_COUNT=$(find "$TARGET_PATH" -maxdepth 1 -not -name '.' | wc -l)
         if [ "$FILE_COUNT" -gt 0 ]; then
             echo "  [shared] Moving existing files from $TARGET_PATH to $SHARED_PATH"
-            cp -a "$TARGET_PATH"/. "$SHARED_PATH"/ 2>/dev/null || true
+            # 🛑 The delete below is UNRECOVERABLE, so it must not run on a failed copy.
+            # This was `cp ... 2>/dev/null || true` followed by an unconditional rm -rf:
+            # 2>/dev/null hid WHY it failed, || true hid THAT it failed, and the rm ran
+            # anyway — a full disk or a bad permission silently ate the source directory.
+            if ! cp -a "$TARGET_PATH"/. "$SHARED_PATH"/; then
+                echo "  [shared] ERROR: copy of $TARGET_PATH -> $SHARED_PATH FAILED." >&2
+                echo "  [shared] REFUSING to delete $TARGET_PATH. Nothing was lost; fix and re-run." >&2
+                return 1
+            fi
+            # cp can exit 0 having copied nothing if the source raced away under us.
+            local COPIED
+            COPIED=$(find "$SHARED_PATH" -maxdepth 1 -not -name '.' | wc -l)
+            if [ "$COPIED" -lt "$FILE_COUNT" ]; then
+                echo "  [shared] ERROR: $SHARED_PATH holds $COPIED entries, expected >= $FILE_COUNT." >&2
+                echo "  [shared] REFUSING to delete $TARGET_PATH." >&2
+                return 1
+            fi
         fi
         rm -rf "$TARGET_PATH"
     fi
