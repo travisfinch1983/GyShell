@@ -90,7 +90,11 @@ export class ModelDownloadsStore {
   civVerFilename = new Map<number, string>() // versionId → fileNameOverride (base name, no extension)
   civVerSeeded = new Set<number>() // versions whose boxes have been pre-filled from the resolver
   civVerSelected = new Set<number>() // versions ticked for download
-  civVerFiles = new Map<number, Set<string>>() // versionId → selected file names (scoped per version)
+  // versionId → selected CivitAI FILE IDs (scoped per version).
+  // 🛑 Was a Set of file NAMES. One version routinely ships several files with the same
+  // name (fp8 / bf16 / GGUF quants), so the Set collapsed them to one entry: ticking or
+  // unticking any of them moved all of them together, and there was no way to choose one.
+  civVerFiles = new Map<number, Set<string>>()
   civQueue: any[] = [] // /api/civitai/queue — items sent from the browser extension's "Review" button
   civQueueItemId: string | null = null // the queue item currently loaded into the browser
   civQueueIndex = 0 // position in the review queue (navigated with prev/next arrows)
@@ -738,7 +742,7 @@ export class ModelDownloadsStore {
         this.resetReviewVersionState()
         this.civSelVersionId = v?.id ?? null
         if (v) {
-          this.civVerFiles.set(v.id, new Set((v.files ?? []).map((f: any) => f.name)))
+          this.civVerFiles.set(v.id, new Set((v.files ?? []).map((f: any) => String(f.id))))
           this.civVerSelected.add(v.id) // the version you land on starts ticked
         }
       })
@@ -764,7 +768,7 @@ export class ModelDownloadsStore {
     this.civSelVersionId = vid
     const v = this.civCurrentVersion
     if (v && !this.civVerFiles.has(vid)) {
-      this.civVerFiles.set(vid, new Set((v.files ?? []).map((f: any) => f.name)))
+      this.civVerFiles.set(vid, new Set((v.files ?? []).map((f: any) => String(f.id))))
     }
     void this.resolveReviewPath()
   }
@@ -779,7 +783,7 @@ export class ModelDownloadsStore {
       this.civVerSelected.add(vid)
       const v = this.civVersions.find((x: any) => x.id === vid)
       if (v && !this.civVerFiles.has(vid)) {
-        this.civVerFiles.set(vid, new Set((v.files ?? []).map((f: any) => f.name)))
+        this.civVerFiles.set(vid, new Set((v.files ?? []).map((f: any) => String(f.id))))
       }
     }
   }
@@ -794,8 +798,8 @@ export class ModelDownloadsStore {
     if (!s) { s = new Set(); this.civVerFiles.set(vid, s) }
     return s
   }
-  isFileSelected(name: string): boolean {
-    return this.filesForVersion(this.civSelVersionId).has(name)
+  isFileSelected(fileId: string | number): boolean {
+    return this.filesForVersion(this.civSelVersionId).has(String(fileId))
   }
 
   // ── Per-version Folder / Filename boxes ──
@@ -850,7 +854,7 @@ export class ModelDownloadsStore {
       const v = (item.versionId && versions.find((x: any) => String(x.id) === String(item.versionId))) || versions[0]
       this.civSelVersionId = v?.id ?? null
       if (v) {
-        this.civVerFiles.set(v.id, new Set((v.files ?? []).map((f: any) => f.name)))
+        this.civVerFiles.set(v.id, new Set((v.files ?? []).map((f: any) => String(f.id))))
         this.civVerSelected.add(v.id)
       }
     })
@@ -871,9 +875,10 @@ export class ModelDownloadsStore {
     if (this.civQueue.length) this.showQueueItem(Math.min(this.civQueueIndex, this.civQueue.length - 1))
     else runInAction(() => { this.civModel = null })
   }
-  toggleReviewFile(name: string): void {
+  toggleReviewFile(fileId: string | number): void {
     const s = this.filesForVersion(this.civSelVersionId)
-    s.has(name) ? s.delete(name) : s.add(name)
+    const k = String(fileId)
+    s.has(k) ? s.delete(k) : s.add(k)
     // Map values are observed by reference; re-set so mobx sees the mutation.
     if (this.civSelVersionId != null) this.civVerFiles.set(this.civSelVersionId, s)
   }
@@ -949,6 +954,12 @@ export class ModelDownloadsStore {
         const fname = this.civVerFilename.get(vid)
         if (folder !== undefined) body.pathOverride = folder
         if (fname) body.fileNameOverride = fname
+        // Send the tick state. Until now the body carried only modelId/versionId, so the
+        // checkboxes were decorative and the backend downloaded EVERY file in the version.
+        // Omitted when nothing is explicitly deselected, so "download the lot" still works.
+        const picked = this.civVerFiles.get(vid)
+        const total = (this.civVersions.find((x: any) => x.id === vid)?.files ?? []).length
+        if (picked && picked.size && picked.size < total) body.fileIds = [...picked]
         try {
           await this.cluster().request('POST', '/api/civitai/download', body)
         } catch (e) {

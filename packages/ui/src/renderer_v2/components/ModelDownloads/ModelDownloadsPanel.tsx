@@ -611,11 +611,17 @@ const ReviewBrowser: React.FC = observer(() => {
                 <div className={styles.sectionLabel}>Files → resolved name (live)</div>
                 {(v.files || []).map((f: any) => {
                   const resolved = store.resolvedNameFor(f.name)
+                  // A version often ships several files under ONE name (fp8 / bf16 / GGUF
+                  // quants). Key and tick by the CivitAI file id — keying by name gave five
+                  // rows the same React key and made every checkbox move together — and show
+                  // the precision/format so identical names are still tellable apart.
+                  const variant = [f.metadata?.fp, f.metadata?.size, f.metadata?.format].filter(Boolean).join(' · ')
                   return (
-                    <label key={f.name} className={styles.fileRow}>
-                      <input type="checkbox" checked={store.isFileSelected(f.name)} onChange={() => store.toggleReviewFile(f.name)} />
+                    <label key={f.id ?? f.name} className={styles.fileRow}>
+                      <input type="checkbox" checked={store.isFileSelected(f.id ?? f.name)} onChange={() => store.toggleReviewFile(f.id ?? f.name)} />
                       <span className={styles.fileName} title={f.name}>{resolved}</span>
                       {resolved !== f.name && <span className={styles.fileOrig} title={`original: ${f.name}`}>was {f.name}</span>}
+                      {variant && <span className={styles.quantBadge} title="what distinguishes this file from others with the same name">{variant}</span>}
                       {f.type && <span className={styles.quantBadge}>{f.type}</span>}
                       <span className={styles.fileSize}>{kb(f.sizeKB)}</span>
                     </label>

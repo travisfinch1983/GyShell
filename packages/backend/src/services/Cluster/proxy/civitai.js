@@ -364,9 +364,18 @@ function addToHistory(model, version, source = 'proxlab', extra = {}) {
 
   // Build files array from version data (actual CivitAI metadata — source of truth for repo contents)
   const filesArray = version?.files?.map(f => ({
+    // 🛑 id is the ONLY reliable identity. One version routinely ships several files
+    // with the SAME name (fp8 / bf16 / GGUF quants): Lustify v10-Krea2 has FIVE
+    // lustifyNSFWCheckpoint_v10Krea2.safetensors, two differing by 0.1 MB. Anything
+    // keyed on name collapses them — the picker shows one row, selection toggles all,
+    // and every download resolves to one path.
+    id: f.id != null ? String(f.id) : '',
     name: f.name,
     sizeKB: f.sizeKB || 0,
     type: f.type || 'Model',
+    fp: f.metadata?.fp || '',
+    format: f.metadata?.format || '',
+    downloadUrl: f.downloadUrl || '',
     hashes: f.hashes || {},
   })) || null;
 
@@ -1083,7 +1092,7 @@ export function createCivitaiRouter(config, sshService) {
   // Called by the browser extension or the CivitAI tab in ProxLab.
   // conflictMode: 'overwrite' | 'skip' | undefined (default: check and redirect to queue)
   router.post('/download', async (req, res) => {
-    const { modelId, versionId, pageUrl, pathOverride, userDefined, conflictMode, fileNameOverride, extensionOverride } = req.body;
+    const { modelId, versionId, pageUrl, pathOverride, userDefined, conflictMode, fileNameOverride, extensionOverride, fileIds } = req.body;
     if (!modelId) return res.status(400).json({ error: 'modelId required' });
 
     const cfg = loadConfig();
@@ -1129,11 +1138,36 @@ export function createCivitaiRouter(config, sshService) {
 
       // ── Download model file(s) ──
       if (cfg.downloadModel && version.files?.length) {
-        for (const file of version.files) {
+      // Count names WITHIN this version. Several files sharing a name is normal on
+      // CivitAI and used to be destructive here: all of them resolved to the SAME
+      // targetFile, so N concurrent downloads interleaved into ONE .part — and each
+      // new file deleted the previous one's .part on the way in. Result: a corrupt
+      // blob, and progress reading past 100% because it measured one shared .part
+      // against a single file's expected size (a 19 GB file reaching 60 GB).
+      const _nameCounts = {};
+      for (const f of version.files) _nameCounts[f.name] = (_nameCounts[f.name] || 0) + 1;
+
+      for (const file of version.files) {
+          // Honour an explicit file selection. Previously the UI's checkboxes never
+          // reached here at all — the body carried only modelId/versionId, so EVERY file
+          // in the version downloaded no matter what was ticked. Absent/empty = all files,
+          // which keeps older callers and the browser extension working unchanged.
+          if (Array.isArray(fileIds) && fileIds.length && !fileIds.map(String).includes(String(file.id))) continue;
           if (!file.downloadUrl) continue;
           if (file.type === 'Training Data') continue;
 
           let { targetDir, fileName } = resolveTargetPath(model, version, file, cfg, effectiveOverride, userDefined, extensionOverride, versionComponent);
+          // Rename ONLY on collision, so single-file versions keep their exact
+          // upstream name. The id is always appended because metadata alone is not
+          // unique either — 4 of Lustify's 5 safetensors are all fp=bf16.
+          if (_nameCounts[file.name] > 1) {
+            const _dot = fileName.lastIndexOf('.');
+            const _base = _dot > 0 ? fileName.substring(0, _dot) : fileName;
+            const _ext = _dot > 0 ? fileName.substring(_dot) : '';
+            const _tag = [file.metadata?.fp, file.metadata?.size, file.metadata?.format]
+              .filter(Boolean).join('-').replace(/[^A-Za-z0-9._-]/g, '');
+            fileName = `${_base}${_tag ? '-' + _tag : ''}-${file.id}${_ext}`;
+          }
           // Apply filename override — keep the extension
           if (fileNameOverride) {
             const _dot = fileName.lastIndexOf('.');
