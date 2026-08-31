@@ -18,6 +18,8 @@ import http from 'http';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
+import * as fsForState from 'fs';
+import { loadJsonState } from './lib/notify.js';
 
 const CONFIG_FILE = join(process.env.AILAB_PROXY_DATA_DIR || join(process.cwd(), 'data'), 'vector-db-config.json');
 

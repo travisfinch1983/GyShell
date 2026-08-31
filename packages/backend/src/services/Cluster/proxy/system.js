@@ -14,6 +14,8 @@
 import { Router } from 'express';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import * as fsForState from 'fs';
+import { loadJsonState } from './lib/notify.js';
 
 const dataDir = process.env.AILAB_PROXY_DATA_DIR || (process.cwd() + '/data');
 const activeServicesFile = join(dataDir, 'active-services.json');
