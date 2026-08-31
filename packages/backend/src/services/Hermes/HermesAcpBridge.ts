@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { EventEmitter } from 'events'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname } from 'path'
 
 /**
@@ -95,7 +95,15 @@ export class HermesAcpBridge extends EventEmitter {
         else if (v && typeof v === 'object' && (v as ConversationMeta).sessionId) out[k] = { sessionId: v.sessionId, agentId: v.agentId || '', title: v.title, lastActive: v.lastActive || 0 }
       }
       this.persistedSessions = out
-    } catch { this.persistedSessions = {} }
+    } catch (e) {
+      // A corrupt map silently discarded EVERY conversation's resume id and
+      // title — indistinguishable from a first boot, and the next save would
+      // write the emptiness over the file (the roadmaps.json shape). Keep the
+      // bytes, start empty, and say what happened.
+      try { copyFileSync(this.sessionMapFile(), `${this.sessionMapFile()}.corrupt-${Date.now()}`) } catch { /* the log below still names the file */ }
+      console.warn(`[hermes-acp] session map unreadable (${(e as Error)?.message}) — starting with no resumable conversations; the corrupt file is preserved beside it`)
+      this.persistedSessions = {}
+    }
   }
   private saveSessionMap(): void {
     try { const p = this.sessionMapFile(); mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, JSON.stringify(this.persistedSessions)) } catch { /* best-effort */ }
