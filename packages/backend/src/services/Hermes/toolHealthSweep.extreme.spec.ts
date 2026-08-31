@@ -119,12 +119,39 @@ async function main(): Promise<void> {
   logLines = "2026-08-31 15:20:00,000 INFO tools.mcp_tool: MCP server 'view-screen' failed initial connection after 3 attempts, parking until a reconnect is requested\n"
     + "2026-08-30 15:15:19,116 INFO tools.mcp_tool: MCP: registered 58 tool(s) from 1 server(s) (1 failed)"
   th = await svc3.getToolHealth('cinder')
-  ok(countRemedies(th.detail) === 1 && !/do NOT reconnect/.test(th.detail),
-    'pending + parked composes ONE remedy — the parked half owns it, the pending half states facts only')
+  // STALE parked evidence: both the parking line and the registration predate the
+  // reconnect, so the parked observation may already be fixed. Real case that forced
+  // this — view-screen was removed from config 2026-08-30 19:24 while the alarm kept
+  // asserting it 21h later off a 15:15 registration made BEFORE the removal.
+  ok(th.parkedStale === true,
+    'parked evidence older than the reconnect is marked STALE — the config can have changed since')
+  ok(countRemedies(th.detail) === 1 && /do NOT reconnect/.test(th.detail),
+    'when the parked evidence is stale the PENDING half keeps the single remedy (wait) — a stale observation must not prescribe an action')
+  ok(!/re-parks immediately/.test(th.detail) && /may already be resolved/.test(th.detail),
+    'the stale parked note is PRESCRIPTION-FREE and says so — reported, never suppressed, at its true weight')
   ok(th.parkedNames.includes('view-screen') && th.detail.includes('view-screen'),
-    'the parked server is NAMED — a name matches against known-dead shims, a count cannot')
-  ok(th.detail.includes('re-parks immediately'),
-    'the remedy carries the re-park caveat — a dead shim failing the remedy is distinguishable from doing it wrong')
+    'the parked server is NAMED even when stale — a name matches against known-dead shims, a count cannot')
+
+  // FRESH parked evidence: the registration POST-DATES the reconnect, so the failure is
+  // current and owns the remedy exactly as before.
+  showResp = mkShow('2026-08-31 15:24:36')
+  logLines = "2026-08-31 15:30:00,000 INFO tools.mcp_tool: MCP server 'view-screen' failed initial connection after 3 attempts, parking until a reconnect is requested\n"
+    + "2026-08-31 15:31:10,000 INFO tools.mcp_tool: MCP: registered 58 tool(s) from 1 server(s) (1 failed)"
+  th = await svc3.getToolHealth('cinder')
+  ok(th.parkedStale === false && th.parkedServers === 1,
+    'parked evidence NEWER than the reconnect is NOT stale — a current failure stays current')
+  ok(countRemedies(th.detail) === 1 && /re-parks immediately/.test(th.detail),
+    'fresh parked evidence owns the single remedy, with the re-park caveat intact')
+
+  // THE GENERALISATION, above any one field: an alarm must never assert a LIVE fault
+  // from evidence it has itself declared stale. This covers registration-derived fields
+  // neither of us has added yet.
+  showResp = mkShow('2026-08-31 15:24:36')
+  logLines = "2026-08-31 15:20:00,000 INFO tools.mcp_tool: MCP server 'view-screen' failed initial connection after 3 attempts, parking until a reconnect is requested\n"
+    + "2026-08-30 15:15:19,116 INFO tools.mcp_tool: MCP: registered 58 tool(s) from 1 server(s) (1 failed)"
+  th = await svc3.getToolHealth('cinder')
+  ok(!(th.pending && th.parkedStale && /are PARKED —/.test(th.detail)),
+    'INVARIANT: no live-fault assertion is made from evidence the same message calls stale')
   logLines = "2026-08-30 15:15:19,116 INFO tools.mcp_tool: MCP: registered 58 tool(s) from 1 server(s)"
   th = await svc3.getToolHealth('cinder')
   ok(countRemedies(th.detail) === 1 && /do NOT reconnect/.test(th.detail),
