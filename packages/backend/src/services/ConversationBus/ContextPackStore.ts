@@ -65,7 +65,13 @@ export class ContextPackStore {
     try {
       const body = readFileSync(file, 'utf8')
       return body.trim() ? body : undefined
-    } catch {
+    } catch (e) {
+      // A slot READ error was indistinguishable from "unauthored" — the run
+      // lost its persona with no trace. ENOENT stays silent (unauthored IS
+      // normal); anything else is a real read failure.
+      if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        console.warn(`[context-pack] slot read failed (${file}): ${(e as Error)?.message} — treating as unauthored`)
+      }
       return undefined
     }
   }
@@ -94,7 +100,10 @@ export class ContextPackStore {
     let entries: string[] = []
     try {
       entries = readdirSync(dir)
-    } catch {
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        console.warn(`[context-pack] agent dir unreadable (${dir}): ${(e as Error)?.message} — reporting no pack`)
+      }
       return []
     }
     // Preserve canonical slot order regardless of readdir order.

@@ -1,7 +1,20 @@
 // Parse LIVE backend responses through the zod schemas. If these disagree, the contract is a lie.
 import { z } from "/opt/ai-lab/node_modules/zod/index.js"
 const B = "http://127.0.0.1:17890/api/fleet"
-const get = async (p) => (await fetch(B + p)).json()
+// A dropped route returns Express's 404 HTML, and .json() on that THREW —
+// the one tool whose job is catching contract lies died instead of reporting.
+// Now a non-JSON or non-2xx response FAILS the check it belongs to, loudly.
+const get = async (p) => {
+  const r = await fetch(B + p)
+  const text = await r.text()
+  try {
+    const j = JSON.parse(text)
+    if (!r.ok) return { __httpError: `${r.status} ${JSON.stringify(j).slice(0, 120)}` }
+    return j
+  } catch {
+    return { __httpError: `${r.status} non-JSON (${text.slice(0, 60).replace(/\n/g, ' ')}…) — route missing?` }
+  }
+}
 
 const vis = z.enum(["private","public"])
 const att = z.object({attachment_id:z.string(),filename:z.string().nullable(),media_type:z.string(),
@@ -27,24 +40,26 @@ const guard = z.object({enabled:z.boolean(),reason:z.string().nullable(),
 
 let bad = 0
 const t = (name, schema, data) => {
+  if (data && data.__httpError) { bad++; console.log("  FAIL " + name); console.log("       HTTP: " + data.__httpError); return }
   const r = schema.safeParse(data)
   if (r.success) console.log("  OK   " + name)
   else { bad++; console.log("  FAIL " + name); console.log("       " + JSON.stringify(r.error.issues.slice(0,3))) }
 }
-const feed = await get("/threads?viewer=user&scope=all&limit=5&unread=1")
+// canonical names only — the aliases (/threads,/directory,/delivery-guard) were dropped in 1bcd13e
+const feed = await get("/feed?viewer=user&scope=all&limit=5&unread=1")
 t("feed envelope", z.object({threads:z.array(thr),has_more:z.boolean(),next_cursor:z.string().nullable()}), feed)
 if (feed.threads?.length) {
   const tr = await get("/thread/" + feed.threads[0].thread_id)
   t("thread read", z.object({thread:thr,messages:z.array(msg),has_more:z.boolean(),before_seq:z.number().nullable()}), tr)
 }
-t("directory", z.object({agents:z.array(dir)}), await get("/directory"))
+t("directory", z.object({agents:z.array(dir)}), await get("/agents"))
 t("categories", z.object({categories:z.array(cat)}), await get("/categories"))
 t("search", z.object({results:z.array(z.object({message_id:z.string(),thread_id:z.string(),seq:z.number(),
   subject:z.string().nullable(),category:z.string().nullable(),sender:z.string(),body:z.string(),created_at:z.number()}))}),
   await get("/search?q=optane"))
 t("unread", z.object({unread:z.array(z.object({thread_id:z.string(),subject:z.string().nullable(),unread_count:z.number()}))}),
   await get("/unread?viewer=user"))
-t("delivery-guard", guard, await get("/delivery-guard"))
+t("delivery-guard", guard, await get("/guard"))
 console.log(bad ? `\n  ${bad} SCHEMA MISMATCH(ES)` : "\n  every live response matches its schema")
 process.exit(bad?1:0)
 

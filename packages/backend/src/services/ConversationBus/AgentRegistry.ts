@@ -69,11 +69,6 @@ export class AgentRegistry {
     return [...this.agents.values()]
   }
 
-  /** Enabled non-user agents — the broadcast recipient set (minus the sender). */
-  deliverable(): AgentRegistryEntry[] {
-    return this.list().filter((a) => a.enabled && a.kind !== 'user')
-  }
-
   upsert(entry: unknown): AgentRegistryEntry {
     const parsed = agentRegistryEntrySchema.parse(entry)
     if (parsed.kind === 'user') throw new Error('the user entry is built-in and cannot be declared')
@@ -82,32 +77,11 @@ export class AgentRegistry {
     return parsed
   }
 
-  /** Written back when the bus lazily creates a local agent's stable session. */
-  setSessionId(agentId: string, sessionId: string): void {
-    const entry = this.agents.get(agentId)
-    if (!entry || entry.kind !== 'local') throw new Error(`no local agent ${agentId}`)
-    this.agents.set(agentId, { ...entry, sessionId })
-    this.persist()
-  }
-
-  /**
-   * Auto-register an unknown relay sender (R1.6: inbound bridge should make
-   * claude1/fable/etc. traffic appear without manual config). Slugifies the
-   * relay name into an agentId.
-   */
-  ensureRelayAgent(relayName: string): AgentRegistryEntry {
-    const agentId = relayName.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[-_]+/, '').slice(0, 64)
-    const existing = this.agents.get(agentId)
-    if (existing) return existing
-    const entry = agentRegistryEntrySchema.parse({
-      agentId,
-      displayName: relayName,
-      kind: 'relay',
-      relayRecipient: relayName,
-      enabled: true,
-    })
-    this.agents.set(agentId, entry)
-    this.persist()
-    return entry
-  }
+  // (deliverable(), setSessionId() and ensureRelayAgent() REMOVED, 2026-08-31.
+  // All three were ConversationBus write paths with zero callers after the bus
+  // retirement — and ensureRelayAgent still MUTATED registry.json if anything
+  // ever reached it: a retired path that accepts writes is stale state waiting
+  // to breed confusion, which is the exact wording of Travis's retire ruling.
+  // The registry itself stays: ContextPackStore still resolves personas
+  // through it.)
 }

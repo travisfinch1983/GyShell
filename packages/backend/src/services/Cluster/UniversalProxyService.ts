@@ -36,6 +36,9 @@ export class UniversalProxyService {
   private vectorList: unknown = null
   /** AI-Lab x Hermes control-plane HTTP surface (createHermesRouter) — set via start opts. */
   private hermesRouter: unknown = null
+  /** Console bridge — held so liveSessions() is reachable for status surfaces. */
+  private claudeConsole?: import('../ClaudeConsole/ClaudeConsoleService').ClaudeConsoleService
+
   /** NotificationsService — set via start opts; receives ai.js broadcast() events + mounts /api/notifications. */
   private notifications: { ingestAiEvent: (msg: any) => void; notify?: (e: any) => void } | null = null
   private agentToolsRouter: unknown = null
@@ -381,11 +384,15 @@ export class UniversalProxyService {
     // Native xterm.js console bridge (/api/claude/console/:id) — single-writer dtach attach
     // over SSH; replaces the ttyd terminals once verified (ailab-native-console.md).
     const { ClaudeConsoleService } = await import('../ClaudeConsole/ClaudeConsoleService')
-    new ClaudeConsoleService({
+    // KEEP the reference: constructing this as a throwaway made liveSessions()
+    // — "how many live consoles (for status surfaces)" — unreachable by
+    // construction, an observability accessor that existed only in source.
+    this.claudeConsole = new ClaudeConsoleService({
       managerUrl: (process.env.CLAUDE_INSTANCE_MANAGER_URL || 'http://10.0.0.161:7700').replace(/\/+$/, ''),
       sshKeyPath: this.keyPath,
       sshTarget: process.env.CLAUDE_CONSOLE_SSH_TARGET || 'root@10.0.0.161',
-    }).attachUpgrade(this.server)
+    })
+    this.claudeConsole.attachUpgrade(this.server)
     this.server.on('error', (e) => console.warn('[universal-proxy] server error:', e))
     await new Promise<void>((resolve) => this.server!.listen(this.port, this.host, resolve))
     console.log(`[universal-proxy] listening on http://${this.host}:${this.port}/api/proxy`)

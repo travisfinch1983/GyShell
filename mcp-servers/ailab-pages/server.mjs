@@ -255,7 +255,11 @@ function addJournalTools(mcp, author) {
           gapNote = `\n\n⚠ ${g.unlogged.length} report(s) have no journal entry — the log will not find them next time: ` +
             g.unlogged.slice(0, 8).map((u) => u.id).join(', ')
         }
-      } catch { /* gaps are a nicety; never fail the read for them */ }
+      } catch (e) {
+        // Never fail the read — but a permanently-failing gaps endpoint was
+        // invisible; one debug line names it.
+        console.error(`[authoring-mcp] journal-gaps read failed (nicety, read continues): ${e?.message ?? e}`)
+      }
       if (!entries.length) return text(`(no matching journal entries)${gapNote}`)
       return text(entries.map((e) =>
         `${e.updatedAt} · [${e.status}] ${e.issue} (${e.id})` +
@@ -359,6 +363,10 @@ const server = http.createServer(async (req, res) => {
     await mcp.connect(transport)
     await transport.handleRequest(req, res)
   } catch (e) {
+    // After the startup line this process was silent for LIFE — a 500 went to
+    // the calling agent's transcript and nowhere else. One journald line per
+    // failure names the URL so a broken toolset is findable.
+    console.error(`[authoring-mcp] ${req.method} ${req.url} failed: ${e?.message ?? e}`)
     if (!res.headersSent) {
       res.writeHead(500, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: String(e?.message ?? e) }))

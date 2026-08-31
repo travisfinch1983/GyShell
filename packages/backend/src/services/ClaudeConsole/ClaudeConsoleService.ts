@@ -125,17 +125,34 @@ export class ClaudeConsoleService {
   private async resolveInstance(id: string): Promise<ManagedInstance | null> {
     try {
       const r = await fetch(`${this.cfg.managerUrl}/instances`, { signal: AbortSignal.timeout(8000) })
+      if (!r.ok) {
+        // Without this check a 5xx HTML body became a JSON SyntaxError below,
+        // and the user was told "unknown instance" about a manager that was
+        // ANSWERING — the wrong fact, confidently.
+        console.warn(`[claude-console] instance-manager answered HTTP ${r.status} for '${id}'`)
+        this.lastResolveError = `instance-manager HTTP ${r.status}`
+        return null
+      }
       const body = (await r.json()) as { instances?: ManagedInstance[] }
-      return body.instances?.find((i) => i.id === id) ?? null
-    } catch {
+      const found = body.instances?.find((i) => i.id === id) ?? null
+      this.lastResolveError = found ? null : `id '${id}' not in the manager's ${body.instances?.length ?? 0}-instance list`
+      return found
+    } catch (e) {
+      console.warn(`[claude-console] instance-manager unreachable resolving '${id}': ${(e as Error)?.message}`)
+      this.lastResolveError = `instance-manager unreachable (${(e as Error)?.message})`
       return null
     }
   }
 
+  /** Why the last resolveInstance returned null — 'unreachable' and 'not registered' are different repairs. */
+  private lastResolveError: string | null = null
+
   private async attach(id: string, ws: WebSocket): Promise<void> {
     const inst = await this.resolveInstance(id)
     if (!inst) {
-      this.sendStatus(ws, 'error', `unknown instance "${id}" (instance-manager unreachable or id not registered)`)
+      // Name the ACTUAL cause: "unreachable" and "not registered" are
+      // different repairs, and the old either/or message helped with neither.
+      this.sendStatus(ws, 'error', `cannot attach "${id}": ${this.lastResolveError ?? 'unknown cause'}`)
       ws.close(4404, 'unknown instance')
       return
     }
@@ -143,6 +160,9 @@ export class ClaudeConsoleService {
     // SINGLE-WRITER: displace any existing attach before spawning ours.
     const old = this.sessions.get(id)
     if (old) {
+      // Server-side record: a displaced console was only ever told client-side,
+      // so "my console died" had no backend trace to correlate.
+      console.log(`[claude-console] takeover on '${id}' — displacing the existing attach`)
       this.sendStatus(old.ws, 'takeover', 'another client attached — this console was displaced')
       try { old.pty.kill() } catch { /* already dead */ }
       try { old.ws.close(4001, 'takeover') } catch { /* already closed */ }

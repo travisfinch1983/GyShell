@@ -8,8 +8,11 @@
  *
  * First run migrates the legacy single-doc roadmap.md into an "AI-Lab" project so nothing is lost.
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { TransitionLatch } from '../notifyLocal'
 import { join } from 'path'
+
+const roadmapLatch = new TransitionLatch(1, 'roadmap-store')
 
 export type NodeKind = 'section' | 'phase' | 'group' | 'item'
 export interface RoadmapNode {
@@ -33,20 +36,58 @@ export interface RoadmapData { projects: RoadmapProject[] }
 const FILE = 'roadmaps.json'
 const filePath = (dataDir: string) => join(dataDir, FILE)
 
+/**
+ * 🛑 Corrupt-read-then-overwrite was TOTAL SILENT DATA LOSS here: a parse
+ * failure fell through to {projects:[]}, and the very next roadmap_* mutation
+ * saved that empty object over roadmaps.json — every project gone, reported
+ * to the caller as ok:true. The non-atomic write below could CREATE the
+ * corrupt file (crash mid-write) that triggered it. This store now holds the
+ * Observability Sweep's own tracking, so the stakes are not hypothetical.
+ *
+ * The contract now: a corrupt file is copied aside and POISONS the store —
+ * every save refuses loudly until the file is repaired or removed. Absent
+ * stays a normal first boot. Writes are atomic (tmp+rename), so a crash can
+ * no longer manufacture the corrupt state.
+ */
+const poisoned = new Map<string, string>()   // dataDir → reason
+
 export function loadRoadmaps(dataDir: string): RoadmapData {
+  const p = filePath(dataDir)
+  if (!existsSync(p)) return { projects: [] }
   try {
-    const p = filePath(dataDir)
-    if (existsSync(p)) {
-      const d = JSON.parse(readFileSync(p, 'utf8'))
-      if (d && Array.isArray(d.projects)) return d as RoadmapData
+    const d = JSON.parse(readFileSync(p, 'utf8'))
+    if (d && Array.isArray(d.projects)) {
+      poisoned.delete(dataDir)   // repaired file re-arms saving
+      return d as RoadmapData
     }
-  } catch { /* fall through to empty */ }
-  return { projects: [] }
+    throw new Error('parsed but has no projects array')
+  } catch (e) {
+    let saved = ''
+    try { copyFileSync(p, `${p}.corrupt-${Date.now()}`); saved = 'copied aside' } catch { saved = 'backup ALSO failed' }
+    const reason = `${p} is unreadable (${(e as Error).message}; original ${saved})`
+    poisoned.set(dataDir, reason)
+    console.error(`[roadmap] ${reason} — serving EMPTY and REFUSING saves until repaired`)
+    roadmapLatch.once(`corrupt:${p}`, 'critical',
+      'Roadmap store is corrupt — read-only until repaired',
+      `${reason}. Every project reads as missing and every save is refused: saving now would write the emptiness over the file, which is permanent loss. Repair or remove the file (the .corrupt copy holds the bytes) and reload.`)
+    return { projects: [] }
+  }
 }
 
 export function saveRoadmaps(dataDir: string, data: RoadmapData): void {
+  const reason = poisoned.get(dataDir)
+  if (reason) {
+    // Refusal is the DESIGNED outcome, not an error path: the alternative is
+    // silently replacing every project with the empty set we loaded.
+    throw new Error(`roadmap store is corrupt and saves are refused (${reason}) — repair the file first`)
+  }
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true })
-  writeFileSync(filePath(dataDir), JSON.stringify(data, null, 2), 'utf8')
+  // Atomic: the old non-atomic write could crash mid-file and CREATE the
+  // corrupt state the load path then destroyed.
+  const p = filePath(dataDir)
+  const tmp = `${p}.tmp`
+  writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8')
+  renameSync(tmp, p)
 }
 
 let _c = 0
@@ -194,7 +235,12 @@ export function ensureSeeded(dataDir: string, roadmapMdFile?: string): RoadmapDa
       const md = readFileSync(roadmapMdFile, 'utf8')
       if (md.trim()) data.projects.push(markdownToProject(md, 'AI-Lab'))
     }
-  } catch { /* ignore, start empty */ }
+  } catch (e) {
+    // The legacy roadmap.md was the SOURCE for this migration; discarding it
+    // silently meant the move to structured storage could eat the document it
+    // migrated from.
+    console.warn('[roadmap] legacy roadmap.md migration failed — starting empty; the source doc is untouched on disk:', (e as Error).message)
+  }
   saveRoadmaps(dataDir, data)
   return data
 }

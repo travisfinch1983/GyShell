@@ -220,7 +220,9 @@ export type FeedUnread = z.infer<typeof feedUnreadSchema>
 /**
  * The delivery kill switch — Travis-facing, and the replacement for the one that dies with
  * ConversationBus. Served at /api/fleet/guard since the old router retired
- * (bus-retirement 5/5); /api/fleet/delivery-guard remains a temporary alias.
+ * (bus-retirement 5/5). The /delivery-guard alias was dropped in 1bcd13e —
+ * this comment claimed it remained for a while after, which is the
+ * doc-outlives-artifact shape; /guard is the only path.
  */
 export const feedGuardSchema = z.object({
   enabled: z.boolean(),

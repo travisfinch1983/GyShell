@@ -14,8 +14,10 @@ type Res = {
  * Fleet FEED routes — the AI-Lab surface for the Fleet Feed tab, and since bus-retirement 3/5
  * the SOLE owner of /api/fleet/*. Canonical names are the ones this surface always wanted
  * (/feed, /send, /agents, /guard); the shadow-avoiding names it launched under (/threads,
- * /message, /directory, /delivery-guard) remain as ALIASES so a deployed UI bundle keeps
- * working across the rename — drop them once the web build ships with canonical paths.
+ * /message, /directory, /delivery-guard) were DROPPED in 1bcd13e — this header claimed
+ * they "remain as ALIASES" for a while after, and the contract validator kept calling
+ * them and dying on the 404 HTML. A doc that outlives what it describes is how
+ * ask-claude survived; canonical paths only, stated as such.
  *
  * Everything here is a thin proxy to fleetd. No business logic: visibility, participant checks
  * and public-only search are enforced in the store, so a second implementation here could only

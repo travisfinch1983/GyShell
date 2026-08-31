@@ -1,7 +1,10 @@
 import Store from 'electron-store'
+import { TransitionLatch } from './notifyLocal'
 import { v4 as uuidv4 } from 'uuid'
 import type { AgentEvent, AgentEventType } from '../types'
 import type { ChatMessage, UIChatSession, UIUpdateAction } from '../types/ui-chat'
+
+const historyLatch = new TransitionLatch(1, 'ui-history')
 
 const buildAutoSessionTitle = (content: string): string => {
   const normalized = String(content || '').replace(/\s+/g, ' ').trim()
@@ -174,8 +177,15 @@ export class UIHistoryService {
       this.pendingFlushTimer = null
       try {
         this.flush()
+        historyLatch.rearm('flush-failing')
       } catch (e) {
+        // The conversation lives ONLY in memory while this fails — the user
+        // discovers on refresh. Warn-only made that a surprise; latched emit
+        // makes it a warning while there is still time to copy things out.
         console.warn('[UIHistoryService] debounced flush failed:', e)
+        historyLatch.once('flush-failing', 'warning',
+          'Conversation history is not persisting to disk',
+          `The debounced history flush is failing (${(e as Error)?.message ?? e}). Open conversations survive in memory but will NOT survive a reload or restart while this lasts.`)
       }
     }, UIHistoryService.DEBOUNCED_FLUSH_DELAY_MS)
     // Don't keep the process alive just for this timer.
