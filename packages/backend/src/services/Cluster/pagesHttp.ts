@@ -1,5 +1,6 @@
 // @ts-expect-error — express ships untyped in this repo (same pattern as flowchartsHttp)
 import express from 'express'
+import { TransitionLatch } from '../notifyLocal'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { marked } from 'marked'
@@ -10,6 +11,8 @@ import {
   type PageMeta,
   type PageVersionInfo,
 } from '@gyshell/shared'
+
+const storeLatch = new TransitionLatch(1, 'pages-store')
 
 type Req = express.Request
 type Res = express.Response
@@ -52,7 +55,17 @@ export function createPagesRouter(dataDir: string): express.Router {
     try {
       const meta = JSON.parse(readFileSync(metaFile(id), 'utf8')) as PageMeta
       return { ...meta, authors: meta.authors ?? deriveAuthors(meta.versions) }
-    } catch { return null }
+    } catch (e) {
+      // A corrupt meta.json made the page VANISH from every listing with no
+      // trace — indistinguishable from deleted (notesHttp logs this
+      // deliberately; this store now matches). The versions on disk are intact;
+      // only the meta needs repair.
+      console.warn(`[pages] ${id}/meta.json unreadable — page hidden from listings:`, (e as Error).message)
+      storeLatch.once(`corrupt-meta:${id}`, 'warning',
+        'A page is hidden by a corrupt meta.json',
+        `Page '${id}': meta.json fails to parse (${(e as Error).message}). The page vanishes from listings but its versions are intact on disk — repair the meta to restore it.`)
+      return null
+    }
   }
 
   const renderHtml = (contentType: string, body: string): string =>

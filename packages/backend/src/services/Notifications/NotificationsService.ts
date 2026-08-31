@@ -111,6 +111,17 @@ const DEFAULT_CHECKS: HealthCheckConfig[] = [
   // confirmation: this one is the most likely to be slow rather than dead.
   { id: 'unified-memory', label: 'Unified memory MCP', kind: 'http', target: 'http://127.0.0.1:9847/u/healthprobe/mcp', expect: 'any-response', timeoutMs: 15_000, confirmations: 3, downSeverity: 'error' },
   { id: 'pages-mcp', label: 'Pages MCP', kind: 'http', target: 'http://127.0.0.1:9848/health', expect: '2xx3xx', downSeverity: 'warning' },
+  // ── Sweep additions (claude1's continuous-dependence rule, 2026-08-30): a dot
+  // earns its place when something depends on the service CONTINUOUSLY and its
+  // failure is otherwise SILENT. All three targets verified live before adding.
+  // Rejected under the same rule (recorded on the roadmap, not re-litigated
+  // here): searxng, sftpgo (intermittent — fail loudly at point of use),
+  // Prometheus, ProxLab upstream (not load-bearing for AI-Lab's own function).
+  // /models exercises the POOL behind the proxy route, not just the listener —
+  // the proxy answering while the pool is down was the whole point.
+  { id: 'embeddings', label: 'Embeddings pool', kind: 'http', target: 'http://127.0.0.1:17890/api/proxy/embed/v1/models', expect: '2xx3xx', downSeverity: 'error' },
+  { id: 'reranker', label: 'Recall reranker', kind: 'http', target: 'http://127.0.0.1:17890/api/proxy/rerank/v1/models', expect: '2xx3xx', downSeverity: 'warning' },
+  { id: 'instance-manager', label: 'Claude instance manager', kind: 'http', target: 'http://10.0.0.161:7700/instances', expect: '2xx3xx', downSeverity: 'error' },
   { id: 'internet', label: 'Internet reachability', kind: 'http', target: 'https://1.1.1.1', expect: 'any-response', downSeverity: 'warning' },
   { id: 'dns', label: 'DNS resolution', kind: 'dns', target: 'github.com', downSeverity: 'warning' },
 ]

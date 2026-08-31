@@ -1,5 +1,6 @@
 // @ts-expect-error — express ships untyped in this repo (same pattern as pagesHttp)
 import express from 'express'
+import { TransitionLatch } from '../notifyLocal'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { marked } from 'marked'
@@ -12,6 +13,8 @@ import {
   type ReportVersion,
 } from '@gyshell/shared'
 import { indexReport, searchReports } from './reportsRag'
+
+const storeLatch = new TransitionLatch(1, 'reports-store')
 
 type Req = express.Request
 type Res = express.Response
@@ -115,7 +118,15 @@ export function createReportsRouter(dataDir: string, notify?: NotifyFn): express
 
   const readMeta = (id: string): ReportMeta | null => {
     if (!existsSync(metaFile(id))) return null
-    try { return JSON.parse(readFileSync(metaFile(id), 'utf8')) as ReportMeta } catch { return null }
+    try { return JSON.parse(readFileSync(metaFile(id), 'utf8')) as ReportMeta } catch (e) {
+      // Same shape as pagesHttp: a corrupt meta silently hides the report from
+      // every listing AND from the journal's gap detection.
+      console.warn(`[reports] ${id}/meta.json unreadable — report hidden from listings:`, (e as Error).message)
+      storeLatch.once(`corrupt-meta:${id}`, 'warning',
+        'A report is hidden by a corrupt meta.json',
+        `Report '${id}': meta.json fails to parse (${(e as Error).message}). The report vanishes from listings and gap detection, but its versions are intact on disk.`)
+      return null
+    }
   }
 
   router.get('/api/reports/types', (_req: Req, res: Res) => {

@@ -241,7 +241,9 @@ export const App: React.FC = observer(() => {
               inset: 0,
             }}
           >
-            <TerminalWorkspace store={store} />
+            <ErrorBoundary label="The terminal workspace">
+              <TerminalWorkspace store={store} />
+            </ErrorBoundary>
           </div>
 
           {primaryTab === 'home' && (
@@ -355,27 +357,40 @@ export const App: React.FC = observer(() => {
           )}
 
           {/* Global chat overlay — toggled independently from the model sidebar. */}
-          <GlobalChat store={store} visible={chatOpen} />
+          <ErrorBoundary label="The global chat overlay">
+            <GlobalChat store={store} visible={chatOpen} />
+          </ErrorBoundary>
         </div>
 
         {/* Settings is an overlay so we don't unmount terminals (xterm state stays alive) */}
         <div
           className={`gyshell-overlay settings-overlay${store.view === 'settings' ? ' is-open' : ''}`}
         >
-          <SettingsView store={store} />
+          <ErrorBoundary label="The settings view">
+            <SettingsView store={store} />
+          </ErrorBoundary>
         </div>
 
         <div
           className={`gyshell-overlay connections-overlay${store.view === 'connections' ? ' is-open' : ''}`}
         >
-          <ConnectionsView store={store} />
+          <ErrorBoundary label="The connections view">
+            <ConnectionsView store={store} />
+          </ErrorBoundary>
         </div>
 
         {/* Global running-services drawer — floats on the right over any tab while open. */}
-        <ServicesDrawer visible={servicesDrawerOpen} onClose={() => setServicesDrawerOpen(false)} />
+        <ErrorBoundary label="The services drawer">
+          <ServicesDrawer visible={servicesDrawerOpen} onClose={() => setServicesDrawerOpen(false)} />
+        </ErrorBoundary>
       </div>
-      {/* Global GPU fleet monitor — bottom-docked, collapsible; live metrics from Prometheus. */}
-      <GpuFleetPanel />
+      {/* Global GPU fleet monitor — bottom-docked, collapsible; live metrics from Prometheus.
+          ALWAYS MOUNTED, which is exactly why it is wrapped: one bad field from a
+          Prometheus shape change used to be able to unmount the entire React tree
+          from the bottom dock — the Support-Models incident's shape, app-wide. */}
+      <ErrorBoundary label="The GPU fleet dock">
+        <GpuFleetPanel />
+      </ErrorBoundary>
       <ContextMenuOverlay />
     </div>
   )
