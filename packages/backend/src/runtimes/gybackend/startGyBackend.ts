@@ -184,7 +184,22 @@ export async function startGyBackend(): Promise<void> {
       agentToolsRouter: createAgentToolsRouter({ settingsService, agentService }),
       notifications: notificationsService,
     })
-    .catch((e) => console.warn('[gybackend] universal proxy failed to start:', e))
+    .catch((e) => {
+      // started ≠ started: this swallow let the process announce "Started."
+      // with the entire 17890 listener missing (2026-08-31 20:43 — a parse
+      // error shipped to civitai.js; the only signal was m-c probing from
+      // OUTSIDE). The process stays up — a crash here would systemd-loop on a
+      // syntax error — but the failure is now a first-class critical through
+      // the in-process notify (no HTTP hop: the port this reports dead is the
+      // port an HTTP emit would need). fleetd rides its own listener, so the
+      // alert still routes to the maintainer during exactly this outage.
+      console.error('[gybackend] universal proxy FAILED to start — port 17890 is DEAD while the process runs:', e)
+      notificationsService.notify({
+        severity: 'critical', source: 'backend',
+        message: 'Universal proxy FAILED to start — the backend is up but port 17890 is dead',
+        detail: `${(e as Error)?.message ?? e}. Every /api/proxy consumer (LLM routing, embeddings, reranker, RAG) is down until this is fixed and the backend restarted. Likely a broken deploy — check the last change to the proxy tree.`,
+      })
+    })
 
   const terminalRestoreResult = await terminalService.restorePersistedTerminals()
   if (terminalRestoreResult.restored.length > 0 || terminalRestoreResult.failed.length > 0) {

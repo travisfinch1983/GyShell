@@ -243,6 +243,43 @@ async function main(): Promise<void> {
   ok(!!resumedEvt && (resumedEvt.detail ?? '').includes('1 event(s)'),
     'and the routed notice carries the missed-while-suspended summary')
 
+  // ── dependency ordering + boot context (m-c work order, claude1's inversion)
+  // One dead transport (17890) used to page CRITICAL + ERROR + WARNING for a
+  // single fault. And the drafted boot-grace SUPPRESSION was reverted the same
+  // hour: the motivating episode was a broken deploy whose CRITICAL was the
+  // only correct alert of the day — so the boot window adds CONTEXT, never delay.
+  const svc7: any = new (await import('./NotificationsService')).NotificationsService(
+    mkdtempSync(join(tmpdir(), 'notif7-')), () => {})
+  svc7.checks = [
+    { id: 'ailab-proxy', label: 'AI-Lab proxy', kind: 'http', target: 'http://t/proxy', expect: '2xx3xx', downSeverity: 'critical', confirmations: 1 },
+    { id: 'embeddings', label: 'Embeddings pool', kind: 'http', target: 'http://t/embed', expect: '2xx3xx', downSeverity: 'error', confirmations: 1, dependsOn: 'ailab-proxy' },
+  ]
+  let proxyUp = false
+  let embedUp = false
+  ;(globalThis as any).fetch = async (url: string) => {
+    if (String(url).includes('/send')) return { ok: true, json: async () => ({ recipients: {} }), text: async () => '' }
+    const up = String(url).includes('/proxy') ? proxyUp : embedUp
+    if (!up) throw new Error('ECONNREFUSED')
+    return { ok: true, status: 200, text: async () => '', json: async () => ({}) } as any
+  }
+  const healthEvts = () => svc7.state().events.filter((e: any) => e.source === 'health')
+
+  await svc7.probeAll()
+  ok(healthEvts().length === 1 && healthEvts()[0].message === 'AI-Lab proxy is DOWN',
+    'transport + dependent both dead → ONE event, the root cause — not a severity fan-out')
+  ok(healthEvts()[0].severity === 'critical' && (healthEvts()[0].detail ?? '').includes('never came up with it'),
+    'the down-event fires IMMEDIATELY at confirmation — no quiet period — and carries the boot context')
+  ok(svc7.state().health.find((h: any) => h.id === 'embeddings')?.status === 'down',
+    'the BOARD still shows the dependent red — only the redundant event is withheld')
+
+  proxyUp = true   // transport recovers; dependent still dead
+  await svc7.probeAll()
+  await svc7.probeAll()
+  ok(healthEvts().some((e: any) => e.message === 'Embeddings pool is DOWN'),
+    'a dependent still dead after its transport recovers alarms on its own — suppression is not forgiveness')
+  ok(!healthEvts().some((e: any) => e.message === 'Embeddings pool recovered'),
+    'and no recovery was ever emitted for the suppressed period')
+
   // ── /emit truncation is marked in the response ────────────────────────────
   // @ts-expect-error — express ships untyped in this repo (same pattern as the routers)
   const express = (await import('express')).default

@@ -66,6 +66,14 @@ export interface HealthCheckConfig {
    * shows the live result immediately -- only the EVENT waits for confirmation.
    */
   confirmations?: number
+  /**
+   * Another check this one is reached THROUGH. When the transport is already
+   * confirmed down, this check's own DOWN event is suppressed — one dead
+   * dependency used to page CRITICAL + ERROR + WARNING for a single fault
+   * (proxy + embeddings + reranker, 2026-08-31). The board still shows this
+   * dot red with the dependency named; only the redundant EVENT is withheld.
+   */
+  dependsOn?: string
   /** Severity of the event raised when this dependency goes down. */
   downSeverity: 'warning' | 'error' | 'critical'
 }
@@ -97,6 +105,19 @@ const EVENT_CAP = 1000
 const DEBUG_CAP = 500
 
 /**
+ * Down-events raised soon after the backend's own start carry BOOT CONTEXT —
+ * "the backend started Ns ago and this dependency never came up with it" —
+ * because that is a different fault (a listener that did not bind, likely a
+ * broken deploy) than a service that fell over. DELIBERATELY NO quiet period:
+ * a suppression window was drafted here and reverted the same hour — the one
+ * episode that motivated it (2026-08-31 20:43) turned out to be a parse error
+ * shipped to civitai.js, the CRITICAL was the only correct alert of the day,
+ * and a grace window would have delayed exactly it. The confirmations
+ * debounce (2 probes ≈ 60s) is the whole delay an alert gets.
+ */
+const BOOT_CONTEXT_WINDOW_MS = 5 * 60_000
+
+/**
  * Defaults verified live on CT152 2026-08-30. Weaviate is 8087 (8081 is
  * dynacat); hippocampai health is /healthz not /health; unified-memory has no
  * health route — a 406 to a bare GET is its liveness proof.
@@ -123,8 +144,8 @@ const DEFAULT_CHECKS: HealthCheckConfig[] = [
   // Prometheus, ProxLab upstream (not load-bearing for AI-Lab's own function).
   // /models exercises the POOL behind the proxy route, not just the listener —
   // the proxy answering while the pool is down was the whole point.
-  { id: 'embeddings', label: 'Embeddings pool', kind: 'http', target: 'http://127.0.0.1:17890/api/proxy/embed/v1/models', expect: '2xx3xx', downSeverity: 'error' },
-  { id: 'reranker', label: 'Recall reranker', kind: 'http', target: 'http://127.0.0.1:17890/api/proxy/rerank/v1/models', expect: '2xx3xx', downSeverity: 'warning' },
+  { id: 'embeddings', label: 'Embeddings pool', kind: 'http', target: 'http://127.0.0.1:17890/api/proxy/embed/v1/models', expect: '2xx3xx', downSeverity: 'error', dependsOn: 'ailab-proxy' },
+  { id: 'reranker', label: 'Recall reranker', kind: 'http', target: 'http://127.0.0.1:17890/api/proxy/rerank/v1/models', expect: '2xx3xx', downSeverity: 'warning', dependsOn: 'ailab-proxy' },
   { id: 'instance-manager', label: 'Claude instance manager', kind: 'http', target: 'http://10.0.0.161:7700/instances', expect: '2xx3xx', downSeverity: 'error' },
   { id: 'internet', label: 'Internet reachability', kind: 'http', target: 'https://1.1.1.1', expect: 'any-response', downSeverity: 'warning' },
   { id: 'dns', label: 'DNS resolution', kind: 'dns', target: 'github.com', downSeverity: 'warning' },
@@ -139,6 +160,7 @@ export class NotificationsService {
   /** Check ids we have actually raised a DOWN event for, so recovery pairs with it. */
   private alarmed = new Set<string>()
   private checks: HealthCheckConfig[] = []
+  private readonly bootAt = Date.now()
   private timer: ReturnType<typeof setInterval> | null = null
   private persistTimer: ReturnType<typeof setTimeout> | null = null
   private persistFailedReported = false
@@ -755,13 +777,26 @@ export class NotificationsService {
         this.downStreak.set(r.id, streak)
         const needed = byId.get(r.id)?.confirmations ?? defaultConfirmations()
         if (streak >= needed) {
+          const sinceBoot = Date.now() - this.bootAt
+          // Transport already down: this failure is the SAME fault seen through
+          // a dependent — one accurate root-cause alert beats three severities
+          // for one dead port. Streaks keep advancing so a dependent that stays
+          // down after its transport recovers alarms on the next pass.
+          const dep = byId.get(r.id)?.dependsOn
+          if (dep && this.health.get(dep)?.status === 'down') {
+            this.debug('health', `${r.label}: down, but its transport '${dep}' is already reported down — event suppressed as duplicate of the root cause`)
+            continue
+          }
           // Latched: re-raising every 30s for one ongoing outage is a pager loop.
           if (!this.alarmed.has(r.id)) {
             this.alarmed.add(r.id)
+            const bootNote = sinceBoot < BOOT_CONTEXT_WINDOW_MS
+              ? ` The backend itself started ${Math.round(sinceBoot / 1000)}s ago and this dependency never came up with it — a listener that did not bind (check the last deploy), not a service that fell over.`
+              : ''
             this.notify({
               severity: r.downSeverity, source: 'health',
               message: `${r.label} is DOWN`,
-              detail: `${r.reason} (failed ${streak} consecutive checks)`,
+              detail: `${r.reason} (failed ${streak} consecutive checks)` + bootNote,
             })
           }
         } else {
