@@ -41,11 +41,21 @@ export function markFailure(svc) {
   if (!svc) return
   const k = keyOf(svc)
   const cur = failures.get(k) || { count: 0, at: 0 }
-  failures.set(k, { count: cur.count + 1, at: Date.now() })
+  const next = { count: cur.count + 1, at: Date.now() }
+  failures.set(k, next)
+  if (next.count === FAIL_THRESHOLD) {
+    // A pool quietly shrinking from 3 to 1 was invisible — "why is throughput
+    // a third of normal" had no findable answer. One line at the bench moment.
+    console.warn(`[service-pools] BENCHED ${k} after ${FAIL_THRESHOLD} consecutive failures — out of rotation for ${FAIL_COOLDOWN_MS / 1000}s`)
+  }
 }
 
 export function markSuccess(svc) {
-  if (svc) failures.delete(keyOf(svc))
+  if (!svc) return
+  const k = keyOf(svc)
+  const f = failures.get(k)
+  if (f && f.count >= FAIL_THRESHOLD) console.log(`[service-pools] ${k} recovered — back in rotation`)
+  failures.delete(k)
 }
 
 /** Is this instance currently benched for repeated failures? */
@@ -88,7 +98,11 @@ export async function refreshPool(type, findServicesByType) {
         const id = (svc.aliasOverride && typeof svc.aliasOverride === 'string') ? svc.aliasOverride : m.id
         raw.push({ m: { ...m, id }, svc, slot })
       }
-    } catch { /* an unreachable backend simply contributes nothing this cycle */ }
+    } catch (e) {
+      // Contributing nothing is correct; doing it with no trace meant a pool
+      // could be half its size for hours with nothing to grep. Debug-weight.
+      console.log(`[service-pools] probe failed for ${svc.containerIp}:${svc.port} — contributing nothing this cycle (${e?.message})`)
+    }
   }))
 
   raw.sort((a, b) => a.slot - b.slot)

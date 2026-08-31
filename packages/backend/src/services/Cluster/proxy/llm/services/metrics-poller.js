@@ -10,6 +10,17 @@ import { join } from 'node:path'
 import crypto from 'node:crypto'
 import { toolCallSnapshot } from '../../tool-call-metrics.js'
 
+// Poll failures were setInterval(() => poll().catch(() => {})) — every failure
+// discarded, so a flat/stale metrics chart had no explanation anywhere. One
+// line per poller per minute: enough to grep, impossible to flood.
+const _pollWarnAt = new Map()
+function warnPollFailure(which, e) {
+  const now = Date.now()
+  if (now - (_pollWarnAt.get(which) ?? 0) < 60_000) return
+  _pollWarnAt.set(which, now)
+  console.warn(`[metrics-poller] ${which} failing: ${e?.message ?? e}`)
+}
+
 const STORE_VERSION = 1
 
 /** Sum all numeric samples of a Prometheus metric by name (ignores labels, comments). */
@@ -118,17 +129,17 @@ export class LlmMetricsPoller {
       try { writeFileSync(this.file, JSON.stringify(this.store, null, 2)) } catch (e) { console.warn('[llm-metrics] save failed:', e?.message) }
     }, 1500)
   }
-  _flush() { try { writeFileSync(this.file, JSON.stringify(this.store, null, 2)) } catch {} }
+  _flush() { try { writeFileSync(this.file, JSON.stringify(this.store, null, 2)) } catch (e) { warnPollFailure('flush', e) } }
 
   start() {
-    this.poll().catch(() => {})
-    this._timer = setInterval(() => this.poll().catch(() => {}), this.interval)
+    this.poll().catch((e) => warnPollFailure('poll', e))
+    this._timer = setInterval(() => this.poll().catch((e) => warnPollFailure('poll', e)), this.interval)
     if (this._timer.unref) this._timer.unref()
     // Fast, lightweight /slots sampler (cache hit/miss) — independent of the heavy metrics poll.
-    this._slotTimer = setInterval(() => this._sampleSlots().catch(() => {}), this._slotInterval)
+    this._slotTimer = setInterval(() => this._sampleSlots().catch((e) => warnPollFailure('slots', e)), this._slotInterval)
     if (this._slotTimer.unref) this._slotTimer.unref()
     // Fast token-counter sampler feeding the live rolling-window rate.
-    this._tokenTimer = setInterval(() => this._sampleTokens().catch(() => {}), this._tokenInterval)
+    this._tokenTimer = setInterval(() => this._sampleTokens().catch((e) => warnPollFailure('tokens', e)), this._tokenInterval)
     if (this._tokenTimer.unref) this._tokenTimer.unref()
   }
   stop() { if (this._timer) clearInterval(this._timer); if (this._slotTimer) clearInterval(this._slotTimer); if (this._tokenTimer) clearInterval(this._tokenTimer) }

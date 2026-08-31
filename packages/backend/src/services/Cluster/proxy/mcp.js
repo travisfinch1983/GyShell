@@ -92,7 +92,12 @@ export function createMcpRouter({ exec }) {
       const out = []
       for (const s of servers) {
         let tools = []
-        try { tools = await gwGet(`/api/v0/tools?server=${encodeURIComponent(s.name)}`) } catch { tools = [] }
+        try { tools = await gwGet(`/api/v0/tools?server=${encodeURIComponent(s.name)}`) } catch (e) {
+        // toolCount:0 from a FAILED enumeration was indistinguishable from a
+        // server exposing no tools — name which server would not enumerate.
+        console.warn(`[mcp] tool enumeration failed for '${s.name}' — rendering 0 tools (${e?.message})`)
+        tools = []
+      }
         const mapped = tools.map((t) => ({
           name: t.name,
           shortName: shortName(t.name),
@@ -146,7 +151,7 @@ export function createMcpRouter({ exec }) {
       const servers = await gwGet('/api/v0/servers')
       const all = []
       for (const s of servers) {
-        try { all.push(...(await gwGet(`/api/v0/tools?server=${encodeURIComponent(s.name)}`))) } catch { /* skip */ }
+        try { all.push(...(await gwGet(`/api/v0/tools?server=${encodeURIComponent(s.name)}`))) } catch (e) { console.warn(`[mcp] tool enumeration failed for '${s.name}' — its tools are absent from this listing (${e?.message})`) }
       }
       res.json(all)
     } catch (e) { res.status(502).json({ error: e.message }) }

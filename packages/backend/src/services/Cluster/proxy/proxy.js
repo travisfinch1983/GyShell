@@ -1156,7 +1156,12 @@ async function refreshModelCache() {
         externalByModel.set(taggedId, { source, upstreamModel });
       }
     }
-  } catch { /* external sources are best-effort; never break the local catalog */ }
+  } catch (e) {
+    // best-effort, never breaking the local catalog — but Claude/DeepSeek/
+    // OpenRouter vanishing from /v1/models with no line naming WHICH source or
+    // WHY made the drop-out look like a config change. One line, per refresh.
+    console.warn(`[model-catalog] external source enumeration failed (${e?.message}) — external models are absent from /v1/models this cycle`);
+  }
 
   modelCache = { models: allModels, byModel, externalByModel, updatedAt: Date.now() };
   return modelCache;
@@ -1348,7 +1353,16 @@ function configuredFallbackModel() {
   try {
     const raw = JSON.parse(readFileSync(SUPPORT_MODELS_FILE, 'utf-8'));
     model = String(raw?.fallback_model?.model || '').trim();
-  } catch { /* absent or unreadable → no backup configured, which is a valid state */ }
+  } catch (e) {
+    // ABSENT is a valid state (no backup configured). PRESENT-but-unparseable
+    // is not: a corrupt support-models file silently stopped a CONFIGURED
+    // fallback from applying, so requests 503'd where they should have failed
+    // over — and the two states were one comment. 5s cache = worst-case one
+    // line per 5s while corrupt.
+    if (e?.code !== 'ENOENT') {
+      console.warn(`[fallback-model] ${SUPPORT_MODELS_FILE} unreadable (${e?.message}) — a CONFIGURED backup, if any, is NOT applying`);
+    }
+  }
   _fallbackCache = { model, ts: now };
   return model;
 }
@@ -3698,6 +3712,12 @@ export function createProxyRouter(sshService) {
     const matchedName = (requestedName && presets[requestedName]) ? requestedName : null;
     const preset = matchedName ? presets[matchedName] : presets['Shadowheart'];
     const resolvedName = matchedName || 'Shadowheart';
+    if (!matchedName && requestedName) {
+      // The X-Voice-Preset header was the ONLY record of this substitution and
+      // nothing persists headers — "every selection producing Shadowheart while
+      // the UI claimed otherwise" is this file's own documented incident.
+      console.warn(`[preset-tts] unknown voice '${requestedName}' — substituting Shadowheart (presets: ${Object.keys(presets).slice(0, 12).join(', ')})`);
+    }
     if (!preset) return res.status(503).json({ error: `No voice preset matched "${requestedName}" and Shadowheart fallback missing` });
 
     // Build payload from preset, only take input text from the request.
