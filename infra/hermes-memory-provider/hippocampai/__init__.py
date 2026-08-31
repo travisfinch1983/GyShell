@@ -2,7 +2,8 @@
 
 Bridges Hermes' native MemoryProvider hooks (agent/memory_provider.py) to the
 lab's HippocampAI service ("Advanced Intelligence APIs", default
-http://10.0.0.26:8000) — the same backend the unified-memory MCP fronts, so
+http://10.0.0.219:8010 — the docker instance) — the same backend the
+unified-memory MCP fronts, so
 explicit MCP remember/recall and this seamless tier share one store.
 
 Seamless behavior (no agent ceremony):
@@ -52,7 +53,10 @@ _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECS = 120
 
 _DEFAULTS = {
-    "url": os.environ.get("HIPPOCAMPAI_URL", "http://10.0.0.26:8000"),
+    # Default = the docker instance on the ai-lab CT (host port 8010). The old
+    # default, 10.0.0.26:8000, was the CT26 venv install — DECOMMISSIONED
+    # 2026-08-31 (corpus migrated; CT stopped): that address answers nothing.
+    "url": os.environ.get("HIPPOCAMPAI_URL", "http://10.0.0.219:8010"),
     "user_id": os.environ.get("HIPPOCAMPAI_USER_ID", ""),
     "recall_k": int(os.environ.get("HIPPOCAMPAI_RECALL_K", "5") or 5),
     "extract_every": int(os.environ.get("HIPPOCAMPAI_EXTRACT_EVERY", "5") or 5),
