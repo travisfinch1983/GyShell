@@ -60,7 +60,12 @@ export function createDiscoveryRouter({ dataDir }) {
 
   const runProbe = () =>
     new Promise((resolve) => {
-      execFile('python3', [PROBE], { timeout: 180000 }, () => resolve());
+      execFile('python3', [PROBE], { timeout: 180000 }, (err, _stdout, stderr) => {
+        // Discarding err meant a missing/crashing probe returned HTTP 200 with
+        // the PREVIOUS snapshot — the Services tab showed aged data as fresh.
+        if (err) console.warn(`[discovery] probe failed — serving the previous snapshot: ${err.message}${stderr ? ` — ${String(stderr).slice(0, 300)}` : ''}`);
+        resolve();
+      });
     });
 
   // GET /api/discovery — current snapshot (≤10 min fresh from the timer).

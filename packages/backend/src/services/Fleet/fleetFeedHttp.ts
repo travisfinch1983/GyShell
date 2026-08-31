@@ -39,6 +39,9 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
   // not a 500 — collapsing everything to 500 sends the UI into retry/alert instead of
   // showing the user why it was refused.
   const fail = (res: Res, e: unknown) => {
+    // The error went to the CLIENT only — a 503 transport failure to fleetd
+    // left no backend trace to correlate with fleetd's own logs.
+    console.warn(`[fleet-feed] request failed: ${e instanceof Error ? e.message : String(e)}`)
     if (e instanceof FleetFeedError) {
       return res.status(e.status >= 400 && e.status < 600 ? e.status : 500)
                 .json({ ok: false, error: e.message, stage: e.stage })

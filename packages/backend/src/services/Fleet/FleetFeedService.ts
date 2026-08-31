@@ -69,7 +69,12 @@ export class FleetFeedService {
   }
 
   async health(): Promise<boolean> {
-    try { await this.call('GET', '/health'); return true } catch { return false }
+    try { await this.call('GET', '/health'); return true } catch (e) {
+      // catch{return false} destroyed the one string saying WHY fleetd is
+      // unreachable (refused vs timeout vs DNS) — keep it findable.
+      console.warn(`[fleet-feed] fleetd health check failed: ${e instanceof Error ? e.message : String(e)}`)
+      return false
+    }
   }
 
   // ── feed / threads ────────────────────────────────────────────────────────

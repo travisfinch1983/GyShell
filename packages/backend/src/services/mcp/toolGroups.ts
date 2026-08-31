@@ -47,7 +47,11 @@ export async function loadToolRegistry(gatewayBase: string, timeoutMs = 8000): P
       const live = tools.filter((t) => t.enabled !== false).map((t) => t.name)
       serverTools.set(s.name, live)
       for (const n of live) valid.add(n)
-    } catch { /* a server that won't enumerate contributes nothing */ }
+    } catch (e) {
+      // Which server failed was never recorded — a registry built while one
+      // server was down validated selections against a silently smaller world.
+      console.warn(`[tool-groups] tool enumeration failed for '${s.name}' — its tools are absent from the registry this pass (${(e as Error)?.message})`)
+    }
   }
   return { valid, serverTools }
 }

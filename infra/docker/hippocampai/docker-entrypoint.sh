@@ -60,7 +60,29 @@ fi
 #
 # PRECEDENCE (same as above): file wins, env is the fallback. A missing/unreadable file must
 # NOT wipe a working config -- keep whatever .env supplied and say so loudly.
-RM=/ai-lab-data/rag-models.json
+# Override is for the committed harness (infra/emitter-tests/) — unset in prod.
+RM="${RAG_MODELS_FILE:-/ai-lab-data/rag-models.json}"
+
+# Config-layer events (source memory-models, subject hippocampai). A container
+# boot's echo lines land in journald nobody reads; the two states that matter —
+# derivation impossible (env fallback = the retired-model drift shape) and a
+# derived model that DIVERGES from .env (re-embed consequence) — go to the
+# notifications panel. Agreement stays silent. Never fails the boot.
+emit_notify() {
+  _sev="$1"; _msg="$2"; _detail="$3"
+  _host="$(hostname 2>/dev/null || echo unknown)"
+  python3 - "$_sev" "$_msg" "$_detail [host $_host]" <<'PY' || true
+import json, sys, urllib.request, os
+body = json.dumps({"severity": sys.argv[1], "source": "memory-models",
+                   "message": sys.argv[2], "detail": sys.argv[3]}).encode()
+url = (os.environ.get("AILAB_API_URL") or "http://10.0.0.234:17890").rstrip("/") + "/api/notifications/emit"
+try:
+    urllib.request.urlopen(urllib.request.Request(url, data=body,
+        headers={"Content-Type": "application/json"}), timeout=5)
+except Exception as e:
+    print(f"hippocampai: NOTIFY LOST ({e}): {sys.argv[2]}", file=sys.stderr)
+PY
+}
 
 if [ -f "$RM" ]; then
   RM_EMBED="$(python3 - "$RM" embedModel <<'PY'
@@ -85,6 +107,7 @@ PY
   if [ -n "$RM_EMBED" ]; then
     if [ "$RM_EMBED" != "${EMBED_API_MODEL:-}" ]; then
       echo "hippocampai: EMBED_API_MODEL <- rag-models.embedModel = '$RM_EMBED' (was '${EMBED_API_MODEL:-unset}') -- RE-EMBED REQUIRED if the corpus was built with the old model"
+      emit_notify warning "hippocampai embed model derived from rag-models diverges from .env" "rag-models.embedModel='$RM_EMBED', .env EMBED_API_MODEL='${EMBED_API_MODEL:-unset}'. The derived value wins (correct), but if the stored corpus was embedded with the old model, queries and corpus are no longer comparable and NOTHING will raise — re-embed, then update .env so this stops firing each boot."
     else
       echo "hippocampai: EMBED_API_MODEL = '$RM_EMBED' (rag-models and env agree)"
     fi
@@ -93,6 +116,7 @@ PY
     export EMBED_API_MODEL EMBED_MODEL
   else
     echo "hippocampai: rag-models.json has no embedModel; keeping env EMBED_API_MODEL='${EMBED_API_MODEL:-unset}'" >&2
+    emit_notify warning "hippocampai cannot derive its embed model — rag-models.json mounted but yielded none" "The file exists but is unreadable or has no embedModel; .env fallback EMBED_API_MODEL='${EMBED_API_MODEL:-unset}' is in use. Same drift risk as an unmounted file: a stale .env can pin a retired embedder that never errors."
   fi
 
   if [ -n "$RM_RERANK" ]; then
@@ -108,6 +132,7 @@ PY
   fi
 else
   echo "hippocampai: $RM not mounted; keeping env EMBED_API_MODEL='${EMBED_API_MODEL:-unset}' RERANK_API_MODEL='${RERANK_API_MODEL:-unset}'" >&2
+  emit_notify warning "hippocampai cannot derive embed/rerank models — rag-models.json not mounted" "Falling back to .env: EMBED_API_MODEL='${EMBED_API_MODEL:-unset}', RERANK_API_MODEL='${RERANK_API_MODEL:-unset}'. This is exactly the drift shape that pinned the retired V100 model for weeks (both models advertise dim 4096, so a wrong embedder can never raise)."
 fi
 
 exec "$@"

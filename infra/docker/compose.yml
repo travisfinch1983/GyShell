@@ -72,7 +72,12 @@ services:
     container_name: ailab-chroma
     restart: unless-stopped
     ports:
-      - "8010:8000"   # 8000 on the host is chroma
+      # 8000:8000 matches the LIVE stack (health dot probes :8000/api/v2/heartbeat,
+      # unified-memory CHROMA_PORT defaults 8000). This line previously claimed
+      # 8010 — colliding with hippocampai below, so a fresh `compose up` would
+      # fail to bind whichever started second. Vendored-file drift, found in the
+      # sweep audit; the live stack was never wrong.
+      - "8000:8000"
     volumes:
       - /zpoolgamma/docker-volume/ai-lab/chroma:/data
     environment:
