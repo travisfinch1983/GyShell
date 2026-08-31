@@ -222,6 +222,27 @@ async function main(): Promise<void> {
   ok((merged.routeCoalesced ?? 0) >= 1,
     'a window-suppressed wake-up is RECORDED on the event — suppressed and routed no longer look identical')
 
+  // ── info routing: plain info stays local, the RESUMED notice travels ──────
+  // maintenance-claude only discovered forwarding was back on when unrelated
+  // alerts arrived (2026-08-31): the one info about its OWN alert path was
+  // sitting on a panel it doesn't watch. routeInfo is the narrow exception.
+  sendResponse = { recipients: { 'maintenance-claude': { state: 'delivered' } } }
+  const infoCalls0 = sendCalls
+  svc6.notify({ severity: 'info', source: 'spec-src', message: 'plain info case' })
+  await settle()
+  ok(sendCalls === infoCalls0, 'a plain INFO event never routes — recoveries do not wake the agent')
+  svc6.setRouting(true, 'spec pause')
+  svc6.notify({ severity: 'warning', source: 'spec-src', message: 'missed during pause' })
+  await settle()
+  const resumeCalls0 = sendCalls
+  svc6.setRouting(false)
+  await settle()
+  ok(sendCalls === resumeCalls0 + 1,
+    'the RESUMED notice ROUTES despite being info — the agent hears its alert path reopened ON that path')
+  const resumedEvt = svc6.state().events.find((e) => e.message.includes('RESUMED'))
+  ok(!!resumedEvt && (resumedEvt.detail ?? '').includes('1 event(s)'),
+    'and the routed notice carries the missed-while-suspended summary')
+
   // ── /emit truncation is marked in the response ────────────────────────────
   // @ts-expect-error — express ships untyped in this repo (same pattern as the routers)
   const express = (await import('express')).default

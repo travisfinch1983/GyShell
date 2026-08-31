@@ -42,6 +42,10 @@ export interface NotifyEvent {
   occurrences?: number
   /** Occurrences whose wake-up was suppressed by the coalesce window (recorded, not silent). */
   routeCoalesced?: number
+  /** Route to the maintainer even at info severity. Reserved for events about
+   *  the maintainer's OWN alert path (the RESUMED notice) — the one info the
+   *  recipient must not have to discover by watching a panel it doesn't watch. */
+  routeInfo?: boolean
   /** When the most recent occurrence arrived (ts stays the FIRST). */
   lastTs?: string
 }
@@ -283,6 +287,11 @@ export class NotificationsService {
       this.routing = { suspended: false, reason: '', since: '', suppressed: 0, suppressedEvents: [] }
       this.notify({
         severity: 'info', source: 'notify-routing',
+        // routeInfo: the agent whose alert path just reopened must hear it ON
+        // that path — maintenance-claude only learned resumption had happened
+        // when unrelated alerts started arriving (2026-08-31), and the missed-
+        // while-suspended summary below is exactly what it needs on wake.
+        routeInfo: true,
         message: `Forwarding to the maintenance agent RESUMED`,
         detail: missed
           ? `${missed} event(s) were raised while suspended since ${since} and were NOT forwarded (worst: ${worst}). They are in the panel; the agent was not woken for them.`
@@ -474,7 +483,7 @@ export class NotificationsService {
     suppressedEvents: Array<{ id: string; severity: NotifySeverity; source: string; message: string; ts: string }>
   } = { suspended: false, reason: '', since: '', suppressed: 0, suppressedEvents: [] }
   private routeToMaintainer(evt: NotifyEvent): void {
-    if (evt.severity === 'info') return
+    if (evt.severity === 'info' && !evt.routeInfo) return
     const to = process.env.AILAB_MAINTAINER_AGENT || 'maintenance-claude'
     if (!to || to === 'off') return
 
