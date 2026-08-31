@@ -413,10 +413,19 @@ export class HermesManagementService {
     if (!role) return
     const previous = role.model || ''
     if (previous === model) return
+    // Enumerate FIRST: if the fleet cannot be listed, the failover must not
+    // proceed to write the file and fire a success notify about an action
+    // applied to nobody. Abort loudly; the next watch tick retries.
+    let agents: string[]
+    try {
+      agents = await this.listAgentsStrict()
+    } catch (e) {
+      console.warn(`[failover] ${key}: agent enumeration failed — failover to '${model}' NOT applied this tick (${(e as Error)?.message})`)
+      return
+    }
     roles[key] = { ...role, model }                    // primaryModel deliberately untouched
     if (this.cfg.supportModelsFile) atomicWriteJson(this.cfg.supportModelsFile, roles)
 
-    const agents = await this.listAgents()
     await Promise.all(agents.map(async (id) => {
       try { await this.applyRoleConfig(id, key, roles[key]) }
       catch (e) { console.warn(`[failover] ${key}: agent ${id} not updated:`, (e as Error)?.message || e) }
@@ -563,6 +572,47 @@ export class HermesManagementService {
   }
 
   /** Start the failover watcher. Idempotent. */
+  private toolHealthTick = 0
+  /** Agents whose gave-up/unhealthy state has already been notified (re-armed on recovery). */
+  private readonly toolHealthAlarmed = new Set<string>()
+
+  /**
+   * The tool-health SWEEP — getToolHealth existed, detected "Hermes stopped
+   * retrying its MCP connection and is running with no tools", and NOTHING
+   * polled it: the condition was permanent until a human happened to open the
+   * right UI panel. Runs every 20th failover tick (10 min at the default 30s
+   * — the check costs 2 ssh calls per agent, so it must not ride the 30s
+   * cadence). Latched per agent; recovery re-arms and says so.
+   */
+  private async sweepToolHealth(): Promise<void> {
+    let agents: string[]
+    try { agents = await this.listAgentsStrict() } catch { return }   // cannot-check ≠ failed
+    for (const id of agents) {
+      let h: Awaited<ReturnType<HermesManagementService['getToolHealth']>>
+      try { h = await this.getToolHealth(id) } catch { continue }
+      if (!h.gatewayActive) continue   // no gateway unit = not a gateway agent; nothing to watch
+      if (h.gaveUp || !h.healthy) {
+        if (this.toolHealthAlarmed.has(id)) continue
+        this.toolHealthAlarmed.add(id)
+        console.warn(`[hermes-tools] ${id}: ${h.detail}`)
+        this.cfg.notify?.({
+          severity: h.gaveUp ? 'error' : 'warning',
+          source: 'hermes-tools',
+          message: h.gaveUp
+            ? `Agent '${id}' is running with NO tools — Hermes gave up its MCP connection`
+            : `Agent '${id}' is serving a stale tool set`,
+          detail: `${h.detail} Reconnect from the agent's Tools panel (or reconnectAgentTools) to restore; the give-up is permanent until then.`,
+        })
+      } else if (this.toolHealthAlarmed.delete(id)) {
+        this.cfg.notify?.({
+          severity: 'info', source: 'hermes-tools',
+          message: `Agent '${id}' tools recovered`,
+          detail: h.detail,
+        })
+      }
+    }
+  }
+
   startFailoverWatch(intervalMs = 30000): void {
     if (this.failoverTimer) return
     this.failoverTimer = setInterval(() => {
@@ -572,8 +622,12 @@ export class HermesManagementService {
       // the silent-no-op twin of a failover and belongs on the same watch.
       void this.checkModelBindings().catch((e) =>
         console.warn('[model-bindings] pass failed:', (e as Error)?.message || e))
+      if (++this.toolHealthTick % 20 === 0) {
+        void this.sweepToolHealth().catch((e) =>
+          console.warn('[hermes-tools] sweep failed:', (e as Error)?.message || e))
+      }
     }, intervalMs)
-    console.log(`[failover] support-model failover watch started (every ${Math.round(intervalMs / 1000)}s, 3 confirmations to switch)`)
+    console.log(`[failover] support-model failover watch started (every ${Math.round(intervalMs / 1000)}s, 3 confirmations to switch; tool-health sweep every 20th tick)`)
   }
 
   /** Persist the full role map; apply the MODEL routing for `applyKeys` (changed model-bearing
@@ -660,7 +714,10 @@ export class HermesManagementService {
         console.warn('[support-models] global provider default write failed:', (e as Error)?.message || e)
       }
     }
-    const agents = await this.listAgents()
+    // Strict: a transient enumeration failure used to become agentsUpdated:0
+    // ok:true — a silent fleet-wide no-op reporting success. Throwing lets the
+    // route answer 500 with the actual reason.
+    const agents = await this.listAgentsStrict()
     // Reconcile agents CONCURRENTLY — this used to be serial (8 agents x up to 3 `hermes
     // config set` calls each = ~24 sequential round-trips) and felt broken in the UI.
     // Per-agent writes stay ordered; different agents touch different profile files.
@@ -1020,11 +1077,29 @@ export class HermesManagementService {
     const scriptB64 = Buffer.from(script, 'utf8').toString('base64')
     await this.ssh(`printf %s ${shq(scriptB64)} | base64 -d | python3 - ${shq(`${home}/config.yaml`)} ${shq(patchB64)}`)
     let gatewayRestarted = false
+    const unit = `hermes-gateway-${agentId}.service`
+    let active = false
     try {
-      const unit = `hermes-gateway-${agentId}.service`
-      const active = (await this.ssh(`systemctl is-active ${shq(unit)} || true`)).trim() === 'active'
-      if (active) { await this.ssh(`systemctl restart ${shq(unit)}`); gatewayRestarted = true }
+      active = (await this.ssh(`systemctl is-active ${shq(unit)} || true`)).trim() === 'active'
     } catch { /* no unit for this profile — config applies on next gateway start */ }
+    if (active) {
+      try {
+        await this.ssh(`systemctl restart ${shq(unit)}`)
+        gatewayRestarted = true
+      } catch (e) {
+        // One catch used to cover both probes, so a GENUINE restart failure
+        // was indistinguishable from "no unit" — both returned
+        // gatewayRestarted:false ok:true, and Telegram kept the old voice
+        // with nothing saying why. The unit was ACTIVE; failing to restart it
+        // is a real fault, not a valid state.
+        console.warn(`[hermes-tts] ${agentId}: gateway RESTART FAILED on an active unit — the old voice keeps serving (${(e as Error)?.message})`)
+        this.cfg.notify?.({
+          severity: 'warning', source: 'hermes-tts',
+          message: `Voice config saved but the gateway restart failed for '${agentId}'`,
+          detail: `systemctl restart ${unit} failed (${(e as Error)?.message}). The new config is on disk; the OLD voice keeps serving until the gateway restarts.`,
+        })
+      }
+    }
     console.log(`[hermes-tts] ${agentId}: saved ${JSON.stringify(patch)} gatewayRestarted=${gatewayRestarted}`)
     return { ok: true, gatewayRestarted }
   }
@@ -1049,6 +1124,14 @@ export class HermesManagementService {
       if (d?.model) {
         await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.vision.provider', d.provider || 'ailab'])
         await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.vision.model', d.model])
+      } else {
+        // CLEARING the global describer must clear the agents too: this was
+        // the one branch that didn't, so each text-only agent kept POINTING AT
+        // THE PREVIOUS describer — the exact stale-config family this file's
+        // own header warns about, reintroduced by omission.
+        await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.vision.provider', 'auto'])
+        await this.hermes(['-p', agentId, 'config', 'set', 'auxiliary.vision.model', ''])
+        console.log(`[support-roles] ${agentId}: vision describer CLEARED (global assignment removed)`)
       }
     }
   }
@@ -1410,12 +1493,19 @@ export class HermesManagementService {
   }
 
   /** Apply the same disabled-tool set to EVERY agent (global default). */
-  async setGlobalNativeTools(disabled: string[]): Promise<{ agents: number }> {
-    const agents = await this.listAgents()
+  async setGlobalNativeTools(disabled: string[]): Promise<{ agents: number; failed: number }> {
+    // Strict: a failed enumeration must surface as an error, not as {agents:0} ok.
+    const agents = await this.listAgentsStrict()
+    let okCount = 0
+    const failures: string[] = []
     for (const id of agents) {
-      try { await this.setAgentNativeTools(id, disabled) } catch { /* skip agents missing the plugin */ }
+      try { await this.setAgentNativeTools(id, disabled); okCount++ }
+      catch (e) { failures.push(id); console.warn(`[native-tools] ${id}: not applied (${(e as Error)?.message}) — usually the plugin is missing`) }
     }
-    return { agents: agents.length }
+    if (failures.length) console.warn(`[native-tools] global apply: ${okCount} ok, ${failures.length} skipped (${failures.join(', ')})`)
+    // The count is SUCCESSES — returning the total let ok:true, agents:20
+    // stand while all 20 had failed.
+    return { agents: okCount, failed: failures.length }
   }
 
   private async nativePluginInstalled(agentId: string): Promise<boolean> {
@@ -2283,7 +2373,15 @@ export class HermesManagementService {
   private async assignedSkillRefs(agentId: string): Promise<Set<string>> {
     const skillsRoot = `${this.profileHome(agentId)}/skills`
     let out = ''
-    try { out = await this.ssh(`cd ${shq(skillsRoot)} 2>/dev/null && find . -name SKILL.md -printf '%h\\n' 2>/dev/null | sed 's|^\\./||'`) } catch { return new Set() }
+    try {
+      out = await this.ssh(`cd ${shq(skillsRoot)} 2>/dev/null && find . -name SKILL.md -printf '%h\\n' 2>/dev/null | sed 's|^\\./||'`)
+    } catch (e) {
+      // catch→empty-Set FABRICATED state: the Skills tab reported every skill
+      // unassigned for the agent, and a save from that view would then act on
+      // the fabrication. A read failure must throw so the caller shows an
+      // error instead of a confident wrong list.
+      throw new Error(`cannot read ${agentId}'s skills (${(e as Error)?.message}) — refusing to report "none assigned" for a failed read`)
+    }
     return new Set(out.split('\n').map((x) => x.trim()).filter(Boolean))
   }
 
@@ -2535,11 +2633,23 @@ export class HermesManagementService {
   /** List existing agent profiles (directory names under the profile home base). */
   async listAgents(): Promise<string[]> {
     try {
-      const out = await this.ssh(`ls -1 ${shq(this.profileHomeBase)} 2>/dev/null || true`)
-      return out.split('\n').map((s) => s.trim()).filter(Boolean)
-    } catch {
+      return await this.listAgentsStrict()
+    } catch (e) {
+      console.warn('[hermes-mgmt] agent enumeration failed — treating as empty for a read-only surface:', (e as Error)?.message)
       return []
     }
+  }
+
+  /**
+   * Enumeration that THROWS on failure. Mutating fan-outs must use this:
+   * catch→[] turned a transient ssh failure into a successful fleet-wide
+   * no-op — setSupportModels reported agentsUpdated:0 ok:true, and worst,
+   * applyEffectiveModel fired its "failed over to X" notify after applying
+   * the failover to NOBODY: an alarm asserting an action that did not happen.
+   */
+  async listAgentsStrict(): Promise<string[]> {
+    const out = await this.ssh(`ls -1 ${shq(this.profileHomeBase)} 2>/dev/null || true`)
+    return out.split('\n').map((s) => s.trim()).filter(Boolean)
   }
 
   async agentExists(agentId: string): Promise<boolean> {
