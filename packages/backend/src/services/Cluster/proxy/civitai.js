@@ -9,7 +9,7 @@
  */
 
 import { Router } from 'express';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync, renameSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync, renameSync, unlinkSync } from 'fs';
 import { join, basename } from 'path';
 import { spawn } from 'child_process';
 import { execSync } from 'child_process';
@@ -71,6 +71,37 @@ function readJsonSafe(path, fallback, label) {
 // ─── Download tracking (active downloads + temp session history) ──────────
 function loadDownloads() {
   return readJsonSafe(DOWNLOADS_PATH, { downloads: [] }, 'downloads manifest');
+}
+
+/**
+ * Kill a download for real: the transient scope is the whole cgroup, so stopping it takes
+ * the wrapper AND curl together. Signalling the tracked pid alone only kills the wrapper and
+ * leaves curl orphaned, still writing, and no longer reapable.
+ *
+ * `systemctl stop foo` resolves to foo.service -- the .scope suffix is mandatory, and its
+ * absence is why an earlier version of this failed silently into an empty catch.
+ *
+ * Returns true if anything is still alive afterwards.
+ */
+function killDownloadProcs(dl) {
+  if (!dl) return false;
+  if (dl.scope) {
+    const unit = String(dl.scope).endsWith('.scope') ? String(dl.scope) : `${dl.scope}.scope`;
+    try { execSync(`systemctl stop ${unit}`, { timeout: 15000, stdio: 'ignore' }); } catch {}
+  }
+  if (!dl.pid) return false;
+  // Negative pid = the process group, which catches the child curl for entries recorded
+  // before scopes were stored.
+  try { process.kill(-dl.pid, 'SIGTERM'); } catch {}
+  try { process.kill(dl.pid, 'SIGTERM'); } catch {}
+  let alive = false;
+  try { process.kill(dl.pid, 0); alive = true; } catch { alive = false; }
+  if (alive) {
+    try { process.kill(-dl.pid, 'SIGKILL'); } catch {}
+    try { process.kill(dl.pid, 'SIGKILL'); } catch {}
+    try { process.kill(dl.pid, 0); alive = true; } catch { alive = false; }
+  }
+  return alive;
 }
 
 function saveDownloads(data) {
@@ -381,7 +412,20 @@ function addToHistory(model, version, source = 'proxlab', extra = {}) {
 
   // Build locatedFiles — what's ACTUALLY on disk (may differ from files if renamed)
   let locatedFiles = null;
-  if (extra.targetDir && filesArray) {
+  if (Array.isArray(extra.downloadedFiles) && extra.downloadedFiles.length) {
+    // The names the downloader ACTUALLY wrote. Re-deriving them below was a third
+    // independent derivation of the same path, and it drifted the moment the downloader
+    // started disambiguating same-named files: every file in the version got recorded
+    // under one bare name that existed nowhere on disk, so check-existing reported the
+    // model missing, the badge stayed dark, and the history looked like the files had
+    // overwritten each other. Never re-derive a path that has already been decided.
+    const basePath = getBasePath();
+    locatedFiles = extra.downloadedFiles.map((d) => ({
+      name: d.name,
+      currentPath: d.path,
+      indexPath: String(d.path).replace(basePath, ''),
+    }));
+  } else if (extra.targetDir && filesArray) {
     const basePath = getBasePath();
     const override = extra.fileNameOverride;
     locatedFiles = filesArray.map(f => {
@@ -640,7 +684,9 @@ function spawnCurl(url, targetPath, token) {
   const realPid = child.pid;
 
   console.log(`[civitai-dl] SPAWN: PID ${realPid} (scope ${scopeName}) → ${targetPath.split('/').pop()} (log: ${logPath})`);
-  return realPid;
+  // The scope name matters as much as the pid: realPid is the outer bash, and curl is its
+  // child inside this transient cgroup. Signalling the pid alone leaves curl running.
+  return { pid: realPid, scope: scopeName };
 }
 
 function countActiveDownloads() {
@@ -675,9 +721,10 @@ function processPendingDownloads() {
       console.log(`[civitai] Skip (already complete, ${dl.size}B): ${dl.targetFile}`);
       continue;
     }
-    const pid = spawnCurl(dl.dlUrl, dl.targetFile, null);
-    if (pid) {
-      dl.pid = pid;
+    const sp = spawnCurl(dl.dlUrl, dl.targetFile, null);
+    if (sp) {
+      dl.pid = sp.pid;
+      dl.scope = sp.scope;
       dl.status = 'downloading';
       dl.startedAt = new Date().toISOString();
       slots--;
@@ -1421,7 +1468,8 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
             dlUrl += (dlUrl.includes('?') ? '&' : '?') + `token=${civitaiToken}`;
           }
 
-          const pid = downloadFile(dlUrl, targetFile, null, cfg);
+          const _sp = downloadFile(dlUrl, targetFile, null, cfg);
+          const pid = _sp?.pid || null;
 
           // Fix permissions for this file's directory
           fixPermissions(targetDir, sshService);
@@ -1440,6 +1488,7 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
             size: (file.sizeKB || 0) * 1024,
             progress: 0,
             pid: pid || null,
+            scope: _sp?.scope || null,
             status: pid ? 'downloading' : 'pending',
             startedAt: pid ? new Date().toISOString() : null,
             completedAt: null,
@@ -1482,6 +1531,11 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
         pathOverride: effectiveOverride,
         targetDir: metaDir,
         fileNameOverride: fileNameOverride || extensionOverride || null,
+        // Only the files this download actually wrote, under the names it used. Previously
+        // every file in the version was recorded, all under one re-derived name.
+        downloadedFiles: queued
+          .filter((q) => q.type === 'model' && q.fileName && q.targetDir)
+          .map((q) => ({ name: q.fileName, path: `${q.targetDir}/${q.fileName}` })),
       });
 
       // Respond immediately — metadata and images download in background
@@ -1895,6 +1949,13 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
             dl.error = `Failed after ${dl._retries} retries — download keeps dying immediately`;
             console.log(`[civitai-dl] GIVE UP: ${dl.fileName} — ${dl._retries} retries exhausted`);
           } else {
+            // "PID dead" is judged from the WRAPPER pid, and curl is its child: the wrapper can
+            // exit while curl keeps downloading. Requeueing then spawns a SECOND curl onto the
+            // same .part -- two writers, one file. Seen in the wild as REQUEUE lines whose
+            // reported progress kept climbing (12.6 GB -> 24.5 GB) between "dead" verdicts.
+            // Tear the whole scope down first so the requeue has exactly one writer.
+            killDownloadProcs(dl);
+            dl.scope = null;
             dl.status = 'pending';
             dl.pid = null;
             dl.progress = currentSize;
@@ -1968,12 +2029,28 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
     if (idx === -1) return res.status(404).json({ error: 'Not found' });
 
     const dl = manifest.downloads[idx];
-    // Kill process if still running
-    if (dl.status === 'downloading' && dl.pid) {
-      try { process.kill(dl.pid, 'SIGTERM'); } catch {}
+    // Stopping must actually stop it. This used to SIGTERM dl.pid -- the OUTER BASH WRAPPER --
+    // which leaves curl (its child, in the same transient scope) orphaned and still writing,
+    // and then spliced the record out regardless. The reconciler could no longer see the
+    // orphan, nothing could stop it again, and on completion its `&& mv` would rename the
+    // file into place as a finished download the user had cancelled. Observed: a cancelled
+    // 26 GB checkpoint still growing, untracked, requeued curls sharing one .part.
+    const stillAlive = killDownloadProcs(dl);
+    if (stillAlive) {
+      // Keep the record. Something we cannot kill must stay visible and reapable rather than
+      // becoming an invisible orphan -- that is the whole bug this replaced.
+      dl.error = `Stop requested but PID ${dl.pid} survived SIGKILL`;
+      saveDownloads(manifest);
+      return res.status(500).json({ error: dl.error, id: dl.id });
+    }
+    // A cancelled download should not leave its partial behind: it holds the space the user
+    // was reclaiming, and a stale .part is what a later attempt would resume onto.
+    if (dl.targetFile) {
+      try { unlinkSync(`${dl.targetFile}.part`); } catch {}
     }
     manifest.downloads.splice(idx, 1);
     saveDownloads(manifest);
+    console.log(`[civitai-dl] STOPPED: ${dl.fileName || dl.id} (scope ${dl.scope || 'n/a'}, pid ${dl.pid || 'n/a'})`);
     res.json({ ok: true });
   });
 
@@ -1985,20 +2062,32 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
     res.json({ ok: true });
   });
 
-  /** POST /downloads/:id/stop — Stop a download but keep it in queue as pending */
+  /** POST /downloads/:id/stop — Stop a download and leave it stopped until forced. */
   router.post('/downloads/:id/stop', (req, res) => {
     const manifest = loadDownloads();
     const dl = manifest.downloads.find(d => d.id === req.params.id);
     if (!dl) return res.status(404).json({ error: 'Not found' });
-    if (dl.status === 'downloading' && dl.pid) {
-      try { process.kill(dl.pid, 'SIGTERM'); } catch {}
-      console.log(`[civitai-dl] STOP: ${dl.fileName} PID ${dl.pid}`);
+    // This used to SIGTERM the wrapper pid and set status back to 'pending' -- and 'pending'
+    // is exactly what processPendingDownloads() picks up, so the reconciler respawned the
+    // download within 5 seconds. Pressing Stop killed the wrapper, orphaned curl, and started
+    // a SECOND curl onto the same .part. Observed: a cancelled 26 GB checkpoint still growing.
+    // 'stopped' is the status the UI already renders (with a Force-start button); the pump
+    // ignores it, so stopped now means stopped.
+    const stillAlive = killDownloadProcs(dl);
+    console.log(`[civitai-dl] STOP: ${dl.fileName} pid ${dl.pid || 'n/a'} scope ${dl.scope || 'n/a'}`
+      + (stillAlive ? ' — PROCESS SURVIVED' : ''));
+    if (stillAlive) {
+      dl.error = `Stop requested but PID ${dl.pid} survived SIGKILL`;
+      saveDownloads(manifest);
+      return res.status(500).json({ error: dl.error, id: dl.id });
     }
-    dl.status = 'pending';
+    dl.status = 'stopped';
     dl.pid = null;
+    dl.scope = null;
+    dl.error = null;
     dl._deadChecks = 0;
     saveDownloads(manifest);
-    res.json({ ok: true });
+    res.json({ ok: true, status: 'stopped' });
   });
 
   /** POST /downloads/:id/force — Force-start a download ignoring concurrency/scheduler */
@@ -2010,9 +2099,10 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
     if (dl.status === 'downloading' && dl.pid) {
       return res.json({ ok: true, message: 'Already downloading' });
     }
-    const pid = spawnCurl(dl.dlUrl, dl.targetFile, null);
-    if (pid) {
-      dl.pid = pid;
+    const sp = spawnCurl(dl.dlUrl, dl.targetFile, null);
+    if (sp) {
+      dl.pid = sp.pid;
+      dl.scope = sp.scope;
       dl.status = 'downloading';
       dl.startedAt = new Date().toISOString();
       dl._deadChecks = 0;
