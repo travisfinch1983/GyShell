@@ -953,6 +953,10 @@ export class ModelDownloadsStore {
         tags: m.tags || [],
         files: (v.files || []).map((f: any) => ({ id: f.id, name: f.name, sizeKB: f.sizeKB, metadata: f.metadata })),
         fileOpts: this.fileOptsPayload(vid),
+        // The preview must disambiguate over exactly the files that will be written.
+        // Without this the server counted every file in the version, so ticking one of
+        // three same-named files still looked like a collision and appended a file id.
+        fileIds: Array.from(this.civVerFiles.get(vid) ?? []),
         // Send this version's own overrides. Before seeding, both are absent so the server
         // resolves purely from the template — that result is what we then seed the boxes with.
         pathOverride: seeded ? (this.civVerFolder.get(vid) ?? '') : undefined,

@@ -803,7 +803,7 @@ export function createCivitaiRouter(config, sshService) {
  *  @param baseNameFor  (file) => templated name, supplied by the caller so this stays
  *                      independent of how the path template is resolved.
  */
-function resolveVersionFileNames(files, baseNameFor, fnOverride, fileOpts) {
+function resolveVersionFileNames(files, baseNameFor, fnOverride, fileOpts, selectedKeys) {
   const keyOf = (f) => String(f.id != null ? f.id : f.name);
   const names = new Map();
 
@@ -838,11 +838,22 @@ function resolveVersionFileNames(files, baseNameFor, fnOverride, fileOpts) {
     const d = n.lastIndexOf('.');
     return d > 0 ? [n.substring(0, d), n.substring(d)] : [n, ''];
   };
+  // A collision only matters between files that are ACTUALLY BEING WRITTEN. Counting
+  // every file in the version meant ticking one of three same-named LoRA files still
+  // looked like a 3-way conflict, so a file id got appended for a conflict that did not
+  // exist — and nothing the user typed could remove it. selectedKeys null = all files.
+  const isSel = (f) => !selectedKeys || selectedKeys.has(keyOf(f));
+
   const counts = {};
-  for (const n of names.values()) counts[n] = (counts[n] || 0) + 1;
+  for (const f of files || []) {
+    if (!isSel(f)) continue;
+    const n = names.get(keyOf(f));
+    counts[n] = (counts[n] || 0) + 1;
+  }
 
   const groups = new Map();
   for (const f of files || []) {
+    if (!isSel(f)) continue;
     const n = names.get(keyOf(f));
     if (counts[n] > 1) {
       if (!groups.has(n)) groups.set(n, []);
@@ -989,7 +1000,7 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
   // ─── POST /resolve-paths — Resolve template paths for model files ───────
   // Used by the renamer to compute new paths from templates
   router.post('/resolve-paths', (req, res) => {
-    const { modelId, versionId, modelType, modelName, versionName, baseModel, creatorName, primaryTag, tags, files, pathOverride, userDefined, fileNameOverride, fileOpts } = req.body;
+    const { modelId, versionId, modelType, modelName, versionName, baseModel, creatorName, primaryTag, tags, files, pathOverride, userDefined, fileNameOverride, fileOpts, fileIds } = req.body;
     if (!files?.length) return res.status(400).json({ error: 'files required' });
 
     const cfg = loadConfig();
@@ -1047,6 +1058,11 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
     // Filename box must be seeded with, or the tag becomes part of the override the
     // user sends back and can never be deleted.
     let baseFileName = '';
+    // The preview must disambiguate over exactly what the download will write, or the
+    // name shown is not the name that lands on disk.
+    const selectedKeys = (Array.isArray(fileIds) && fileIds.length)
+      ? new Set(fileIds.map(String))
+      : null;
     const _finalNames = resolveVersionFileNames(files, (f) => {
       const fake = { id: f.id, name: f.name, sizeKB: f.sizeKB || 0, metadata: f.metadata || {}, hashes: {} };
       const r = resolveTargetPath(model, version, fake, cfg, effectiveOverride, userDefined || '');
@@ -1055,7 +1071,7 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       _dirs.set(String(f.id != null ? f.id : f.name), r.targetDir);
       if (!baseFileName) baseFileName = r.fileName;
       return r.fileName;
-    }, effectiveFnOverride, fileOpts);
+    }, effectiveFnOverride, fileOpts, selectedKeys);
 
     for (const file of files) {
       const k = String(file.id != null ? file.id : file.name);
@@ -1145,70 +1161,71 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
         // and this reports it missing — the badge stays dark and the model gets fetched
         // again. Two functions deriving a path independently WILL drift; they agree here
         // because they apply the same rule to the same input.
-        const _nameCounts = {};
-        for (const f of v.files) _nameCounts[f.name] = (_nameCounts[f.name] || 0) + 1;
+        // ONE naming pass, shared with the downloader via resolveVersionFileNames, so the
+        // two cannot drift. This endpoint used to keep its OWN copy of the collision rule
+        // and they did drift the moment the rule changed. We cannot know which files were
+        // selected at download time, so accept EITHER name: the undecorated one (file
+        // fetched on its own, no collision) or the disambiguated one (whole version).
+        const _keyOf = (f) => String(f.id != null ? f.id : f.name);
+        const _dirs = new Map();
+        const _mk = (f) => {
+          const r = resolveTargetPath(model, version, f, cfg, effectiveOverride, '', null);
+          _dirs.set(_keyOf(f), r.targetDir);
+          return r.fileName;
+        };
+        const _namesAll = resolveVersionFileNames(v.files, _mk, fnOverride, null, null);
+        const _namesBare = resolveVersionFileNames(v.files, _mk, fnOverride, null, new Set());
 
         for (const file of v.files) {
           try {
-            let { targetDir, fileName } = resolveTargetPath(model, version, file, cfg, effectiveOverride, '', null);
-            // Apply filename override if saved in history
-            if (fnOverride) {
-              const _dot = fileName.lastIndexOf('.');
-        const ext = _dot > 0 ? fileName.substring(_dot) : '';
-              fileName = fnOverride + ext;
-            }
-            if (_nameCounts[file.name] > 1) {
-              const _d = fileName.lastIndexOf('.');
-              const _b = _d > 0 ? fileName.substring(0, _d) : fileName;
-              const _e = _d > 0 ? fileName.substring(_d) : '';
-              const _t = [file.metadata?.fp, file.metadata?.size, file.metadata?.format]
-                .filter(Boolean).join('-').replace(/[^A-Za-z0-9._-]/g, '');
-              fileName = `${_b}${_t ? '-' + _t : ''}-${file.id}${_e}`;
-            }
+            const _k = _keyOf(file);
+            const targetDir = _dirs.get(_k);
+            const fileName = _namesBare.get(_k) || file.name;
             const fullPath = `${targetDir}/${fileName}`;
 
-            if (existsSync(fullPath)) {
-              const st = statSync(fullPath);
-              existingFiles.push({ name: fileName, path: fullPath, size: st.size });
+            const _cands = [];
+            for (const n of [_namesBare.get(_k), _namesAll.get(_k), file.name]) {
+              if (n && !_cands.includes(n)) _cands.push(n);
+            }
+            const _hit = _cands
+              .map((n) => ({ n, p: `${targetDir}/${n}` }))
+              .find((c) => existsSync(c.p));
+
+            if (_hit) {
+              const st = statSync(_hit.p);
+              existingFiles.push({ name: _hit.n, path: _hit.p, size: st.size });
             } else {
-              // Also check if the original CivitAI filename exists in the same dir
-              const origPath = `${targetDir}/${file.name}`;
-              if (existsSync(origPath)) {
-                const st = statSync(origPath);
-                existingFiles.push({ name: file.name, path: origPath, size: st.size });
-              } else {
-                // Check history entries matching this exact version ID
-                let foundViaHistory = false;
-                const vHistEntry = historyEntries.find(e => String(e.versionId) === vid);
-                if (vHistEntry?.locatedFiles?.length) {
-                  for (const lf of vHistEntry.locatedFiles) {
-                    if (existsSync(lf.currentPath)) {
-                      const st = statSync(lf.currentPath);
-                      existingFiles.push({ name: lf.name, path: lf.currentPath, size: st.size });
-                      foundViaHistory = true;
-                      break;
-                    }
+              // Check history entries matching this exact version ID
+              let foundViaHistory = false;
+              const vHistEntry = historyEntries.find(e => String(e.versionId) === vid);
+              if (vHistEntry?.locatedFiles?.length) {
+                for (const lf of vHistEntry.locatedFiles) {
+                  if (existsSync(lf.currentPath)) {
+                    const st = statSync(lf.currentPath);
+                    existingFiles.push({ name: lf.name, path: lf.currentPath, size: st.size });
+                    foundViaHistory = true;
+                    break;
                   }
                 }
-                // Also check downloadedVersions arrays
-                if (!foundViaHistory) {
-                  for (const he of historyEntries) {
-                    if (he.downloadedVersions?.includes(vid) && he.locatedFiles?.length) {
-                      for (const lf of he.locatedFiles) {
-                        if (existsSync(lf.currentPath)) {
-                          const st = statSync(lf.currentPath);
-                          existingFiles.push({ name: lf.name, path: lf.currentPath, size: st.size });
-                          foundViaHistory = true;
-                          break;
-                        }
+              }
+              // Also check downloadedVersions arrays
+              if (!foundViaHistory) {
+                for (const he of historyEntries) {
+                  if (he.downloadedVersions?.includes(vid) && he.locatedFiles?.length) {
+                    for (const lf of he.locatedFiles) {
+                      if (existsSync(lf.currentPath)) {
+                        const st = statSync(lf.currentPath);
+                        existingFiles.push({ name: lf.name, path: lf.currentPath, size: st.size });
+                        foundViaHistory = true;
+                        break;
                       }
                     }
-                    if (foundViaHistory) break;
                   }
+                  if (foundViaHistory) break;
                 }
-                if (!foundViaHistory) {
-                  missingFiles.push({ name: fileName, path: fullPath });
-                }
+              }
+              if (!foundViaHistory) {
+                missingFiles.push({ name: fileName, path: fullPath });
               }
             }
           } catch {}
@@ -1302,7 +1319,9 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
         const r = resolveTargetPath(model, version, f, cfg, effectiveOverride, userDefined, extensionOverride, versionComponent);
         _dlDirs.set(String(f.id != null ? f.id : f.name), r.targetDir);
         return r.fileName;
-      }, fileNameOverride, fileOpts);
+      }, fileNameOverride, fileOpts, (Array.isArray(fileIds) && fileIds.length)
+        ? new Set(fileIds.map(String))
+        : null);
 
       for (const file of version.files) {
           // Honour an explicit file selection. Previously the UI's checkboxes never
