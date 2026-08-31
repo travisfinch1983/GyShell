@@ -4,7 +4,7 @@
 // broke when 0.4.5 changed the `list` output format). `exec` is retained only for the
 // rare deregister-server call.
 import express from 'express'
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { readFileSync } from 'fs'
 import { join } from 'path'
 
 const MCPJUNGLE_URL = (process.env.MCPJUNGLE_URL || 'http://127.0.0.1:8080').replace(/\/+$/, '')
@@ -66,19 +66,18 @@ export function createMcpRouter({ exec }) {
   }
   const getSettings = () => {
     try {
-      const raw = JSON.parse(readFileSync(settingsPath, 'utf8'))
-      // toolInjection REMOVED from the surface (2026-08-31): the block it
-      // switched was deleted as dead, and a toggle reporting state it does not
-      // control is a false instrument. The stored key, if present, is left in
-      // the file untouched — just never read or served again.
-      delete raw.toolInjection
-      return raw
-    } catch { return { maxToolRounds: 20 } }
-  }
-  const saveSettings = (s) => {
-    try { mkdirSync(dataDir, { recursive: true }) } catch { /* ignore */ }
-    writeFileSync(settingsPath, JSON.stringify(s, null, 2))
-    return s
+      // AI-Lab's llm-proxy currently exposes NO tool-proxy settings. Both
+      // former knobs were false instruments wired to deleted dead code:
+      // toolInjection (a switch reporting state it did not control) and
+      // maxToolRounds (its only reader was the dead block's own helper — and a
+      // bounded number input reads as a tuning parameter someone might spend
+      // real time tuning, which is worse). The route stays and serves {}
+      // rather than 404ing: a 404 where the UI expects an object manufactures
+      // the "load failed reads as empty" family. Any stored values are left in
+      // the file untouched; they are simply never read or served.
+      JSON.parse(readFileSync(settingsPath, 'utf8'))   // still validates the file if present
+      return {}
+    } catch { return {} }
   }
 
   router.get('/health', async (_req, res) => {
@@ -200,14 +199,11 @@ export function createMcpRouter({ exec }) {
   })
 
   router.get('/settings', (_req, res) => res.json(getSettings()))
-  router.put('/settings', express.json(), (req, res) => {
-    try {
-      // Incoming toolInjection is ignored (the switch is gone); merging over
-      // the RAW file preserves any stored value without ever writing it anew.
-      const body = { ...(req.body || {}) }
-      delete body.toolInjection
-      res.json(saveSettings({ ...getSettings(), ...body }))
-    } catch (e) { res.status(500).json({ error: e.message }) }
+  router.put('/settings', express.json(), (_req, res) => {
+    // No settings exist to write (see getSettings). Accept-and-ignore keeps a
+    // deployed UI bundle from surfacing a save error mid-transition; nothing
+    // is persisted.
+    res.json({})
   })
   router.delete('/servers/:name', async (req, res) => {
     try { await mcpjungleCli(`deregister ${req.params.name}`); res.json({ ok: true }) } catch (e) { res.status(502).json({ error: e.message }) }

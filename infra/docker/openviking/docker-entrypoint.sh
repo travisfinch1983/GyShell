@@ -29,30 +29,87 @@ model = dense.get("model") or ""
 try:
     data = json.load(urllib.request.urlopen(base + "/models", timeout=10)).get("data") or []
     entry = next((m for m in data if m.get("id") == model), None)
+    substituted = 0
     if entry is None and len(data) == 1:
-        # ov.conf pinned a name AI-Lab no longer serves. The proxy serves exactly ONE embed
-        # model, so that IS the Support Models selection -- use it rather than refusing to
-        # boot. A stale pin here crash-looped this container 4149 times.
+        # ov.conf pinned a name AI-Lab no longer serves; the proxy serves exactly
+        # ONE embed model. Whether adopting it is safe depends on whether ITS
+        # workspace already exists -- that decision lives in shell below, which
+        # is why the substitution FLAG travels with the fingerprint. (Silently
+        # adopting it used to mkdir a fresh EMPTY workspace: boots healthy,
+        # zero memories -- it traded the 4149-restart crash-loop for silent
+        # total memory loss.)
         entry = data[0]
+        substituted = 1
         print(f"openviking: ov.conf names {model!r} which is not served; "
-              f"using the proxy's only model {entry.get('id')!r}", file=sys.stderr)
-    print(hashlib.sha1(f"{entry['id']}|{entry.get('root','')}".encode()).hexdigest()[:12] if entry else "")
+              f"proxy's only model is {entry.get('id')!r}", file=sys.stderr)
+    fp = hashlib.sha1(f"{entry['id']}|{entry.get('root','')}".encode()).hexdigest()[:12] if entry else ""
+    print(f"{fp} {substituted}")
 except Exception as e:
-    print("", file=sys.stderr); print(f"fingerprint probe failed: {e}", file=sys.stderr)
-    print("")
+    print(f"fingerprint probe failed: {e}", file=sys.stderr)
+    print(" 0")
 PY
 )"
+SUBSTITUTED="${FP#* }"
+FP="${FP%% *}"
+
+# Best-effort notification -- a crash-looping or degraded container's stderr is
+# journald-only, which is where the 12-day outage lived. Never fatal.
+emit_notify() { # severity message detail
+  python3 - "$1" "$2" "$3" <<'PY' || echo "NOTIFY LOST" >&2
+import json, sys, urllib.request, os
+body = json.dumps({"severity": sys.argv[1], "source": "memory-workspace",
+                   "message": sys.argv[2],
+                   "detail": f"[host {os.uname().nodename}] {sys.argv[3]}"}).encode()
+req = urllib.request.Request((os.environ.get("AILAB_API_URL", "http://10.0.0.219:17890"))
+                             + "/api/notifications/emit", body,
+                             {"Content-Type": "application/json"}, method="POST")
+urllib.request.urlopen(req, timeout=5).read()
+PY
+}
 
 if [ -z "$FP" ]; then
   # Refuse to guess: an unknown encoder writing into another encoder's workspace
   # is exactly the corruption this exists to prevent.
   echo "FATAL: could not fingerprint the embedding model (endpoint unreachable?)." >&2
   echo "       Refusing to start rather than risk writing into the wrong workspace." >&2
+  emit_notify critical "OpenViking refused to start - embedding model unfingerprintable" \
+    "The embed endpoint was unreachable or served no model, so the workspace identity cannot be resolved. Refusing beats guessing; memory capture is DOWN until the embed pool answers. The container will crash-loop until then - the designed loud failure, not a fault to silence."
   exit 1
 fi
 
-WS="$ROOT/$FP"
-mkdir -p "$WS"
+# REFUSE-LOUDLY CONTRACT (claude1's ruling, 2026-08-31; same shape as the
+# roadmap store): a substitution may CONTINUE an existing workspace, but must
+# never CREATE one. Two things answering to one identity is the ambiguity that
+# burned real hours; a fresh empty workspace born from a model rename is silent
+# total memory loss wearing a green health dot.
+if [ "$SUBSTITUTED" = "1" ] && [ ! -d "$ROOT/$FP" ]; then
+  QUARANTINE="$ROOT/UNRESOLVED-DO-NOT-USE-$FP"
+  mkdir -p "$QUARANTINE"
+  {
+    echo "This is NOT a real OpenViking workspace."
+    echo "ov.conf names an embed model the proxy no longer serves, and no workspace"
+    echo "exists for the substitute's fingerprint ($FP). Creating one would be"
+    echo "silent memory loss. Fix Support Models (or ov.conf) so the configured"
+    echo "model matches an existing workspace, then restart this container."
+  } > "$QUARANTINE/README-UNRESOLVED.txt" 2>/dev/null || true
+  chmod 555 "$QUARANTINE" || true
+  existing="$(ls "$ROOT" 2>/dev/null | tr '\n' ' ')"
+  echo "openviking: REFUSING the substituted workspace - booting DEGRADED against read-only $QUARANTINE" >&2
+  emit_notify critical "OpenViking is running WITHOUT its memory workspace" \
+    "ov.conf's embed model is not served and the substitute's fingerprint ($FP) has no existing workspace - creating one would be silent memory loss, so the service is up DEGRADED against a read-only quarantine dir: every capture write fails visibly. Existing workspaces: ${existing:-none}. Repair: point Support Models (or ov.conf) at the model matching the workspace you want, then restart."
+  WS="$QUARANTINE"
+elif [ "$SUBSTITUTED" = "1" ]; then
+  # The substitute's workspace ALREADY EXISTS: using it continues an
+  # established identity rather than manufacturing one. Safe, but said.
+  echo "openviking: substituted model's workspace exists - CONTINUING $ROOT/$FP" >&2
+  emit_notify warning "OpenViking substituted its embed model (existing workspace continued)" \
+    "ov.conf's model is not served; the proxy's only embed model maps to fingerprint $FP whose workspace already exists - continuing it. Update ov.conf/Support Models so the names agree and this warning stops."
+  WS="$ROOT/$FP"
+  mkdir -p "$WS"
+else
+  WS="$ROOT/$FP"
+  mkdir -p "$WS"
+fi
 # Also take vlm.model from AI-Lab's Support Models file (role `memory_vlm`) so the model
 # is controlled in the UI rather than pinned in ov.conf. File wins; ov.conf is the fallback
 # — a missing/unreadable file must never blank a working config.
