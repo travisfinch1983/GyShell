@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react'
+import { DataAge } from '../Common/DataAge'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Trash2, Database } from 'lucide-react'
 import { kvCacheStore as store, type KvEligibleSvc } from '../../stores/KvCacheStore'
@@ -111,7 +112,7 @@ export const KvCacheDashboard: React.FC = observer(() => {
           {store.eligible.filter((s) => store.isEnabled(s.id)).length} enabled
         </span>
         <div className={styles.spacer} />
-        <button className={styles.refreshBtn} title="Refresh" onClick={() => void store.load()}><RefreshCw size={13} /></button>
+        <DataAge ts={store.lastGoodAt} /> <button className={styles.refreshBtn} title="Refresh" onClick={() => void store.load()}><RefreshCw size={13} /></button>
       </div>
 
       {store.error && <div className={styles.errorBar}>{store.error}</div>}

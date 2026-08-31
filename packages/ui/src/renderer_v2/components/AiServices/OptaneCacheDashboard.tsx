@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react'
+import { DataAge } from '../Common/DataAge'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, HardDrive } from 'lucide-react'
 import { optaneCacheStore as store, type OptanePool } from '../../stores/OptaneCacheStore'
@@ -70,7 +71,7 @@ export const OptaneCacheDashboard: React.FC = observer(() => {
         <span className={styles.metricsSub}>{h.detail}</span>
         <div className={styles.spacer} />
         {store.generatedAt > 0 && <span className={styles.metricsSub}>{ago(store.generatedAt, 'ms')}</span>}
-        <button className={styles.refreshBtn} title="Refresh" onClick={() => void store.load()}>
+        <DataAge ts={store.lastGoodAt} /> <button className={styles.refreshBtn} title="Refresh" onClick={() => void store.load()}>
           <RefreshCw size={13} className={store.loading ? styles.spin : ''} />
         </button>
       </div>

@@ -24,8 +24,18 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; onDone: () => voi
     setRunning(true); setStatus('Starting…')
     try {
       const { jobId } = await store.autoCaption(body)
+      let statusFailures = 0
       poll.current = setInterval(async () => {
-        let s: any; try { s = await store.autoCaptionStatus(jobId) } catch { return }
+        let s: any
+        try { s = await store.autoCaptionStatus(jobId); statusFailures = 0 } catch {
+          // Same cap as CropEditor: a dead status endpoint must not leave
+          // "Captioning…" on screen forever with running never released.
+          if (++statusFailures >= 15) {
+            clearInterval(poll.current); poll.current = null; setRunning(false)
+            setStatus('Lost contact with the captioning job (status endpoint unreachable) — it may still finish server-side; refresh to see results.')
+          }
+          return
+        }
         if (s.state === 'running') { setStatus(`Captioning ${s.done}/${s.total || '…'}${s.provider ? ' (' + s.provider + ')' : ''}…`); return }
         clearInterval(poll.current); poll.current = null; setRunning(false)
         if (s.state === 'done') { setStatus(`Done — wrote ${s.wrote}, skipped ${s.skipped}, errors ${s.errors}.${s.lastError ? ' Last: ' + s.lastError : ''}`); onDone() }

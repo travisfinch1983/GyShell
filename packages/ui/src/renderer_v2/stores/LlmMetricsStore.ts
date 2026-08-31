@@ -40,6 +40,8 @@ export interface LlmMetricRow {
 }
 
 export class LlmMetricsStore {
+  /** Time of the last SUCCESSFUL refresh — the age a frozen panel is missing. */
+  lastGoodAt: number | null = null
   rows: LlmMetricRow[] = []
   loaded = false
   error = ''
@@ -55,6 +57,7 @@ export class LlmMetricsStore {
         this.rows = (r as any)?.rows ?? []
         this.loaded = true
         this.error = ''
+        this.lastGoodAt = Date.now()
         const lw = this.rows.find((x) => x.liveWindowSec != null)?.liveWindowSec
         if (lw != null) this.liveWindowSec = lw
       })

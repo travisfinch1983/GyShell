@@ -50,6 +50,12 @@ function liveChannels(): any {
  * poll keeps the panel honest rather than frozen.
  */
 class NotificationsStore {
+  /** True when the live channels have gone silent past the health-broadcast
+   *  heartbeat window — the badge may LAG; the panel says so instead of
+   *  looking current. */
+  streamStale = false
+  private lastStreamAt = 0
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null
   events: NotifyEvent[] = []
   health: HealthState[] = []
   debug: DebugEntry[] = []
@@ -119,11 +125,29 @@ class NotificationsStore {
       this.cleanups.push(
         live.onEvent((evt: NotifyEvent) => this.ingestEvent(evt)),
         live.onDebug((entry: DebugEntry) => this.ingestDebug(entry)),
-        live.onHealth((health: HealthState[]) => runInAction(() => { this.health = health })),
+        live.onHealth((health: HealthState[]) => runInAction(() => {
+          this.health = health
+          // The health broadcast fires every probe cycle, which makes it a
+          // HEARTBEAT: its absence separates "stream detached" from "quiet
+          // night" — the two states this sink previously could not tell apart.
+          this.lastStreamAt = Date.now()
+          this.streamStale = false
+        })),
         live.onAcked(() => void this.refresh()),
       )
       // Belt over braces: a very slow poll heals any missed broadcast.
       this.pollTimer = setInterval(() => void this.refresh(), 5 * 60_000)
+      // Stream watchdog (the HermesChatStore heartbeat pattern): this store is
+      // the sink every emitter in the estate writes to, and a silently-dead
+      // channel froze the badge and board for up to 5 minutes looking normal.
+      this.lastStreamAt = Date.now()
+      this.watchdogTimer = setInterval(() => {
+        if (Date.now() - this.lastStreamAt > 100_000 && !this.streamStale) {
+          runInAction(() => { this.streamStale = true })
+          console.warn('[notifications] live stream silent past the heartbeat window — flagging stale and refreshing')
+          void this.refresh()
+        }
+      }, 30_000)
     } else {
       this.pollTimer = setInterval(() => void this.refresh(), FALLBACK_POLL_MS)
     }
@@ -134,6 +158,8 @@ class NotificationsStore {
     this.cleanups = []
     if (this.pollTimer) clearInterval(this.pollTimer)
     this.pollTimer = null
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer)
+    this.watchdogTimer = null
   }
 
   private ingestEvent(evt: NotifyEvent): void {

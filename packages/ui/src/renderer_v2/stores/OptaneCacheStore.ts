@@ -76,6 +76,8 @@ export interface OptaneSnapshot {
 }
 
 export class OptaneCacheStore {
+  /** Time of the last SUCCESSFUL refresh — the age a frozen panel is missing. */
+  lastGoodAt: number | null = null
   nodes: OptaneNode[] = []
   snapshots: OptaneSnapshot[] = []
   vllmOptaneBase = ''
@@ -97,6 +99,7 @@ export class OptaneCacheStore {
         this.vllmOptaneBase = (r as any)?.vllmOptaneBase ?? ''
         this.generatedAt = (r as any)?.generatedAt ?? 0
         this.error = (r as any)?.error ?? ''
+        if (!this.error) this.lastGoodAt = Date.now()
         this.loaded = true
         this.loading = false
       })

@@ -106,8 +106,20 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
     setBusy(true); setMsg('Upscaling… (GPU, ~30–60s)')
     try {
       const { jobId } = await store.upscale(rel)
+      let statusFailures = 0
       pollRef.current = setInterval(async () => {
-        let s: any; try { s = await store.upscaleStatus(jobId) } catch { return }
+        let s: any
+        try { s = await store.upscaleStatus(jobId); statusFailures = 0 } catch {
+          // catch{return} spun this interval FOREVER on a dead endpoint — the
+          // UI stuck on "Upscaling…" with busy never released. The job may
+          // well still be running server-side; after ~30s of unreachable
+          // status, say so and stop pretending to watch it.
+          if (++statusFailures >= 12) {
+            clearInterval(pollRef.current); pollRef.current = null; setBusy(false)
+            setMsg('Lost contact with the upscale job (status endpoint unreachable) — the job may still finish server-side; reload the image in a minute.')
+          }
+          return
+        }
         if (s.state === 'running') return
         clearInterval(pollRef.current); pollRef.current = null; setBusy(false)
         if (s.state === 'done') { setMsg(`Upscaled to ${s.w}×${s.h}${s.gpu ? ' on ' + s.gpu : ''}.`); loadImg(); onChanged() } else setMsg(`Upscale failed: ${s.error || 'unknown'}`)

@@ -91,6 +91,8 @@ function classifyServiceType(s: AiService): string {
 }
 
 export class AiServicesStore {
+  /** Time of the last SUCCESSFUL refresh — the age a frozen panel is missing. */
+  lastGoodAt: number | null = null
   services: AiService[] = []
   config: AiConfig = { pools: {}, agents: {} }
   providers: Provider[] = []
@@ -181,7 +183,7 @@ export class AiServicesStore {
           this.utilHistory[pci] = (this.utilHistory[pci] ?? []).concat(g.util).slice(-24)
           this.vramHistory[pci] = (this.vramHistory[pci] ?? []).concat(g.memUsed).slice(-24)
         }
-        this.error = null
+        this.error = null; this.lastGoodAt = Date.now()
         this.loaded = true
       })
       // proxy routing state (best-effort)

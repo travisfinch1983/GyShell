@@ -93,6 +93,8 @@ function loadNodeOrder(): string[] {
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 export class ClusterStore {
+  /** Failures from the last modal-data load — empty dropdowns must say WHY. */
+  modalDataError: string | null = null
   status: ClusterStatus | null = null
   loading = false
   error: string | null = null
@@ -334,12 +336,19 @@ export class ClusterStore {
 
   /** Load GPU inventory/assignments + storages for the migrate / GPU modals. */
   async loadModalData(): Promise<void> {
+    // These modals gate a DESTRUCTIVE operation (migration): "no migration
+    // targets" and "the fetch failed" must never look identical, because the
+    // second invites concluding the first. Failures are collected and named.
+    const failures: string[] = []
+    const grab = (path: string, label: string) =>
+      this.req('GET', path).catch((e: unknown) => { failures.push(`${label}: ${(e as Error)?.message ?? 'failed'}`); return null })
     const [inv, asn, st] = await Promise.all([
-      this.req('GET', '/api/gpu/inventory').catch(() => null),
-      this.req('GET', '/api/gpu/assignments').catch(() => null),
-      this.req('GET', '/api/storages').catch(() => null),
+      grab('/api/gpu/inventory', 'GPU inventory'),
+      grab('/api/gpu/assignments', 'GPU assignments'),
+      grab('/api/storages', 'storages'),
     ])
     runInAction(() => {
+      this.modalDataError = failures.length ? failures.join(' · ') : null
       this.gpuInventory = inv
       this.gpuAssignments = asn
       this.storages = Array.isArray(st) ? st : (st as any)?.storages ?? null

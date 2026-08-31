@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react'
+import { DataAge } from '../Common/DataAge'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Trash2, Sparkles } from 'lucide-react'
 import { claudeMaxMetricsStore as store, type ClaudeMaxRow } from '../../stores/ClaudeMaxMetricsStore'
@@ -30,7 +31,7 @@ export const ClaudeMaxMetricsDashboard: React.FC = observer(() => {
           {n(t.requests)} reqs · {n(t.input)} in / {n(t.output)} out · cache hit {pctV(totalCacheHitPct)}
         </span>
         <div className={styles.spacer} />
-        <button className={styles.refreshBtn} title="Refresh" onClick={() => void store.load()}><RefreshCw size={13} /></button>
+        <DataAge ts={store.lastGoodAt} /> <button className={styles.refreshBtn} title="Refresh" onClick={() => void store.load()}><RefreshCw size={13} /></button>
       </div>
       {store.error && <div className={styles.errorBar}>{store.error}</div>}
       {store.loaded && store.rows.length === 0 && <div className={styles.loading}>No Claude Max traffic recorded yet — make a request through /api/proxy/claude-max and it'll appear here.</div>}
