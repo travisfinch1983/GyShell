@@ -31,6 +31,7 @@ import urllib.error
 import urllib.request
 
 GW = os.environ.get("MCPJUNGLE_URL", "http://127.0.0.1:8080")
+HOSTNAME = os.uname().nodename
 API = os.environ.get("AILAB_API_URL", "http://127.0.0.1:17890")
 MCP = os.environ.get("AILAB_AUTHORING_MCP_URL", "http://127.0.0.1:9848")
 
@@ -56,6 +57,23 @@ JOURNAL_AGENTS = [a.strip() for a in os.environ.get(
     "AILAB_JOURNAL_AGENTS", "maintenance-claude").split(",") if a.strip()]
 
 TOOLSETS = [("pages", "scoping documents"), ("reports", "typed reports"), ("journal", "working log")]
+
+
+def emit(severity, message, detail=""):
+    """Failures printed to whoever ran it reach nobody when a hook or timer ran
+    it — the "20 ok, 0 failed" incident's quieter sibling. Best-effort, never
+    fatal: a lost report still leaves one line on stderr. The HOST is named in
+    every event (an emitter aimed at a host that does not exist burned us once
+    tonight already)."""
+    try:
+        body = json.dumps({"severity": severity, "source": "mcp-provision",
+                           "message": message,
+                           "detail": f"[host {HOSTNAME}] {detail}"}).encode()
+        req = urllib.request.Request(f"{API}/api/notifications/emit", body,
+                                     {"Content-Type": "application/json"}, method="POST")
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception as e:
+        print(f"NOTIFY LOST ({e}): {severity}: {message}", file=sys.stderr)
 
 
 def call(method, url, payload=None, timeout=45):
@@ -126,6 +144,9 @@ def main():
               "/opt/ai-lab-mcp/mcpjungle, /usr/local/bin/mcpjungle, PATH).\n"
               "         EXISTING servers cannot be force-refreshed and will keep "
               "serving their cached tool schemas.\n")
+        emit("warning", "provision_all ran without the mcpjungle binary",
+             "Existing MCP servers could not be force-refreshed and keep serving cached "
+             "tool schemas — a correct deploy sat invisible behind exactly this once.")
 
     s, health = call("GET", f"{MCP}/health", timeout=5)
     if s != 200:
@@ -231,10 +252,15 @@ def main():
     if unserved:
         print(f"\n! JOURNAL OWNERS WITHOUT JOURNAL TOOLS: {', '.join(unserved)}")
         print("  (named in AILAB_JOURNAL_AGENTS but the gateway serves them no journal-* tools)")
+        emit("error", "Provisioning left a journal owner without journal tools",
+             f"Gateway serves no journal-* tools to: {', '.join(unserved)}. Per-item success is not coverage; this run cannot be called good.")
         failed += len(unserved)
     else:
         print(f"\njournal owners verified through the gateway: {', '.join(JOURNAL_AGENTS)}")
 
+    if failed:
+        emit("error", "MCP provisioning run had failures",
+             f"{failed} failure(s), {ok} ok. The full breakdown is in this run's stdout — but stdout reaches nobody when a hook ran this, which is why this event exists.")
     print(f"done: {ok} ok, {failed} failed")
     sys.exit(1 if failed else 0)
 

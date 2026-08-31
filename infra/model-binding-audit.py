@@ -182,7 +182,7 @@ def main():
         print(f"FATAL: could not read the served-model list from {PROXY}: {e}", file=sys.stderr)
         return 2
 
-    rows, other, dead = [], [], 0
+    rows, other, dead, errors = [], [], 0, 0
     for x in collect():
         v = x["value"]
         if not routes_via_proxy(x):
@@ -190,6 +190,7 @@ def main():
             continue
         if v.startswith("ERROR"):
             status = "ERROR"
+            errors += 1
         elif not v or v in ("auto", "''"):
             status = "AUTO"
         elif v in exact or v in bare:
@@ -201,8 +202,8 @@ def main():
 
     if "--json" in sys.argv:
         print(json.dumps({"served": sorted(exact), "bindings": rows,
-                          "notChecked": other, "dead": dead}, indent=2))
-        return 1 if dead else 0
+                          "notChecked": other, "dead": dead, "errors": errors}, indent=2))
+        return 1 if (dead or errors) else 0
 
     print(f"Serving {len(exact)} models via {PROXY}\n")
     bad = [r for r in rows if r["status"] in ("DEAD", "ERROR")]
@@ -241,12 +242,23 @@ def main():
             print(f"  {paused_n} of them name a SUSPENDED service — expected, not a fault.")
         if dead - paused_n:
             print(f"  {dead - paused_n} are failing silently. Fix the binding or start the model.")
+    elif errors:
+        # 🛑 CANNOT-CHECK ≠ ALL-CLEAR. ERROR rows (unreadable support-models
+        # file, unparseable YAML, missing pyyaml — which skips the ENTIRE
+        # Hermes section) used to leave dead==0 and this script declared "All
+        # bindings resolve." over bindings it never examined — the audit's own
+        # "20 ok, 0 failed".
+        print(f"{errors} binding(s) could NOT be checked — this run proves nothing about them.")
     else:
         print("All bindings resolve to a served model.")
 
     # --emit raises the result into the notifications panel. Only a FAILURE is reported: a clean
     # sweep is the normal state and an event for it would be noise, which is how a panel earns
     # being ignored. Reporting never affects the exit code or the audit itself.
+    if "--emit" in sys.argv and errors and not dead:
+        emit("warning", "model-bindings",
+             "Model-binding audit could not check some bindings",
+             f"[host {os.uname().nodename}] {errors} binding(s) unreadable (config parse failure or missing pyyaml — the latter skips the whole Hermes section). The audit proves nothing about them; a clean report over unchecked bindings is the failure this audit exists to catch.")
     if "--emit" in sys.argv and dead:
         paused = suspended_served()
         # A binding naming a deliberately suspended model is expected, not a silent no-op.
@@ -268,7 +280,9 @@ def main():
                  f"Model binding names a model that is not being served: {model}",
                  f"{len(bindings)} binding{'' if len(bindings) == 1 else 's'} name it and are "
                  f"failing silently: {'; '.join(sorted(bindings))}"[:600])
-    return 1 if dead else 0
+    # Errors fail the run: exit 0 with unchecked bindings would let a cron
+    # wrapper (or a human reading $?) take "clean" from a run that proved nothing.
+    return 1 if (dead or errors) else 0
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -1,0 +1,15 @@
+# Provider-script drift check — the scheduled half of deploy.sh --check.
+# PLACEMENT: claude1 installs this on the host holding the deployed provider
+# scripts (ai-gpu). Copy both unit files to /etc/systemd/system/, adjust
+# AILAB_PROVIDER_REPO to that host's repo checkout, then:
+#   systemctl daemon-reload && systemctl enable --now provider-drift-check.timer
+[Unit]
+Description=Provider-script drift check (emits per drifted script, host-named)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=AILAB_API_URL=http://10.0.0.219:17890
+Environment=AILAB_PROVIDER_REPO=/root/repos/ai-lab/infra/provider-scripts
+ExecStart=/opt/ai-lab-ops/provider-drift-check.sh

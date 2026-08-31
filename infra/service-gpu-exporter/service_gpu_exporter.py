@@ -35,7 +35,11 @@ which fixes the old bug where idle/co-located services read the whole-GPU total.
 Zero dependencies (stdlib http.server); scrape does one nvidia-smi query pass +
 one pmon one-shot + cheap /proc reads (~100-200ms).
 """
+import json
+import os
 import subprocess
+import sys
+import urllib.request
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -55,12 +59,61 @@ ANCESTOR_HOPS = 4
 NVSMI_WRAPPER = "/usr/local/bin/nvidia-smi-cached"
 
 
+# Failure counters for the EXISTING nvidia-smi calls. 🛑 Standing rule: never
+# add an nvidia-smi call site or raise the call rate — polling deadlocked
+# px-gpu on 2026-08-17. These counters observe calls that already happen;
+# they add zero.
+NVSMI_ERRORS = 0
+NVSMI_LAST_ERROR = ""
+HOSTNAME = os.uname().nodename
+AILAB_API = os.environ.get("AILAB_API_URL", "http://10.0.0.219:17890")
+_emit_streak = 0
+_emit_fired = False
+
+
+def _emit_degraded(detail: str) -> None:
+    """Latched: 3 consecutive scrape passes with nvidia-smi failures fire ONE
+    warning; a clean pass re-arms. Host named in every event — an emitter that
+    does not say where it ran is aimed at nowhere."""
+    global _emit_streak, _emit_fired
+    _emit_streak += 1
+    if _emit_streak < 3 or _emit_fired:
+        return
+    _emit_fired = True
+    try:
+        body = json.dumps({"severity": "warning", "source": "gpu-exporter",
+                           "message": "GPU exporter cannot read nvidia-smi — serving empty series that read as idle",
+                           "detail": f"[host {HOSTNAME}] {detail} Empty series are byte-identical to an idle service at the consumer; "
+                                     "the errors counter (service_gpu_exporter_nvsmi_errors_total) is the honest signal."}).encode()
+        req = urllib.request.Request(f"{AILAB_API}/api/notifications/emit", body,
+                                     {"Content-Type": "application/json"}, method="POST")
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception as e:
+        print(f"NOTIFY LOST ({e}): gpu-exporter degraded on {HOSTNAME}", file=sys.stderr)
+
+
+def _emit_rearm() -> None:
+    global _emit_streak, _emit_fired
+    _emit_streak = 0
+    _emit_fired = False
+
+
 def run(cmd: list[str], timeout: float = 10.0) -> str:
+    global NVSMI_ERRORS, NVSMI_LAST_ERROR
     if cmd and cmd[0] == "nvidia-smi" and Path(NVSMI_WRAPPER).exists():
         cmd = [NVSMI_WRAPPER] + list(cmd[1:])
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
-    except Exception:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if r.returncode != 0 and cmd and "nvidia-smi" in cmd[0]:
+            # A refusal (circuit breaker) or NVML error with empty stdout used
+            # to be indistinguishable from "nothing running". Count it.
+            NVSMI_ERRORS += 1
+            NVSMI_LAST_ERROR = (r.stderr or f"exit {r.returncode}").strip()[:200]
+        return r.stdout
+    except Exception as e:
+        if cmd and "nvidia-smi" in cmd[0]:
+            NVSMI_ERRORS += 1
+            NVSMI_LAST_ERROR = str(e)[:200]
         return ""
 
 
@@ -149,6 +202,7 @@ def esc(v: str) -> str:
 
 
 def collect() -> str:
+    errors_at_start = NVSMI_ERRORS
     t0 = time.monotonic()
     lines: list[str] = [
         "# HELP service_gpu_vram_bytes Per-service GPU VRAM (per-process, summed per port+gpu). Joined to services by live listening port.",
@@ -218,6 +272,17 @@ def collect() -> str:
     lines.append(f"service_gpu_exporter_scrape_duration_seconds {time.monotonic() - t0:.3f}")
     lines.append("# TYPE service_gpu_exporter_up gauge")
     lines.append(f"service_gpu_exporter_up {ok}")
+    # The honest failure signal: `up` only drops when BOTH queries return empty,
+    # and no-series is exactly how an idle service reads — failure and idle were
+    # indistinguishable at the consumer. The counter moves when nvidia-smi
+    # actually failed, whatever `up` says.
+    lines.append("# HELP service_gpu_exporter_nvsmi_errors_total nvidia-smi call failures since exporter start (counts EXISTING calls only; adds none).")
+    lines.append("# TYPE service_gpu_exporter_nvsmi_errors_total counter")
+    lines.append(f"service_gpu_exporter_nvsmi_errors_total {NVSMI_ERRORS}")
+    if NVSMI_ERRORS > errors_at_start:
+        _emit_degraded(f"latest: {NVSMI_LAST_ERROR}.")
+    else:
+        _emit_rearm()
     return "\n".join(lines) + "\n"
 
 
@@ -230,6 +295,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = collect().encode()
         except Exception as e:  # never take the scrape target down
+            # Serving 200-with-up-0 is right; doing it with NO log was not —
+            # log_message is a no-op, so a broken collect() had zero witnesses.
+            print(f"[gpu-exporter] collect() failed on {HOSTNAME}: {e}", file=sys.stderr)
             body = f"service_gpu_exporter_up 0\n# error: {e}\n".encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; version=0.0.4")

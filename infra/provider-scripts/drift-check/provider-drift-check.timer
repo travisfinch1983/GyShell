@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily provider-script drift check
+
+[Timer]
+# Daily, offset from midnight so it never races logrotate or the RAG autosync.
+OnCalendar=*-*-* 04:20:00
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target
