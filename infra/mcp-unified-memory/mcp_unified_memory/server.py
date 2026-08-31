@@ -1485,8 +1485,10 @@ def _create_collection_if_needed(collection: str):
             elif db["type"] == "chromadb":
                 client.post(f"{url}/api/v2/tenants/default_tenant/databases/default_database/collections",
                             json={"name": collection, "metadata": {"dimension": EMBED_DIM}}, timeout=10.0)
-        except Exception:
-            pass
+        except Exception as e:
+            # The write that follows will fail on this backend and say so in
+            # its per-DB result; this line names the CAUSE (create vs write).
+            print(f"[unified-memory] collection create failed on {db['name']} for '{collection}': {e}")
 
 
 @mcp.tool()
@@ -1537,13 +1539,18 @@ def collection_store(
             results[db["name"]] = ok
 
     successful = sum(1 for v in results.values() if v)
-    return json.dumps({
+    out = {
         "collection": collection,
         "doc_id": doc_id,
         "text": text[:100],
         "replicated_to": f"{successful}/{len(results)}",
         "backends": results,
-    }, indent=2)
+    }
+    if successful == 0:
+        # 'replicated_to: 0/3' inside a success-shaped body reads as stored.
+        # Nothing was — say so at the top where a caller actually looks.
+        out["error"] = "NOT stored — every backend write failed (see backends)"
+    return json.dumps(out, indent=2)
 
 
 @mcp.tool()
