@@ -351,7 +351,12 @@ export function createClusterRouter({ pveApi, gpuMonitor, hookscriptDeploy, sshE
           for (const mp of removedMounts) {
             try {
               await sshExec(hostIp, `pct set ${vmid} --${mp.key} ${mp.value}`, { timeout: 10000 });
-            } catch {}
+            } catch (e) {
+              // A container left permanently missing a mount, with only the
+              // earlier "Migration failed" line, was undiagnosable — name the
+              // exact mount and the manual repair.
+              console.error(`[migrate] FAILED to restore bind mount --${mp.key} on CT ${vmid} after aborted migration (${e?.message}). Restore manually: pct set ${vmid} --${mp.key} ${mp.value}`);
+            }
           }
         }
         return res.status(500).json({ error: result.stderr || result.stdout || 'Migration failed', code: result.code });

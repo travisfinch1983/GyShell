@@ -95,7 +95,11 @@ async function classifyRagServices() {
   const results = await Promise.all(items.map(async (s) => {
     const endpoint = `http://${s.containerIp}:${s.port}/v1`
     let type = 'llm'
-    try { type = await probeServiceType(endpoint) } catch {}
+    try { type = await probeServiceType(endpoint) } catch (e) {
+        // A service failing classification silently filed as 'llm' and vanished
+        // from the embed/rerank pickers with no record of which endpoint or why.
+        console.warn(`[rag] service-type probe failed for ${endpoint} — defaulting to 'llm' (${e?.message})`)
+      }
     return { model: s.model || s.name, url: endpoint, containerIp: s.containerIp, port: s.port, type }
   }))
   return { embed: results.filter((r) => r.type === 'embed'), rerank: results.filter((r) => r.type === 'rerank') }

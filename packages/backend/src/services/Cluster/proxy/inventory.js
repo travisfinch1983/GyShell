@@ -520,7 +520,7 @@ export function createInventoryRouter(pveApi) {
     };
     inv.entries.push(entry);
     saveInventory(inv);
-    syncToLocalStore(INVENTORY, [entry], inventoryToText).catch(() => {});
+    syncToLocalStore(INVENTORY, [entry], inventoryToText).catch((e) => console.warn(`[inventory] local-store sync failed (write succeeded; index side-effect lost): ${e?.message}`));
     res.json(entry);
   });
 
@@ -547,7 +547,7 @@ export function createInventoryRouter(pveApi) {
     entry.updatedAt = new Date().toISOString();
     inv.entries[idx] = entry;
     saveInventory(inv);
-    syncToLocalStore(INVENTORY, [entry], inventoryToText).catch(() => {});
+    syncToLocalStore(INVENTORY, [entry], inventoryToText).catch((e) => console.warn(`[inventory] local-store sync failed (write succeeded; index side-effect lost): ${e?.message}`));
     res.json(entry);
   });
 
@@ -650,7 +650,7 @@ export function createInventoryRouter(pveApi) {
     };
     hosts.entries.push(entry);
     saveHosts(hosts);
-    syncToLocalStore(HOSTS, [entry], hostToText).catch(() => {});
+    syncToLocalStore(HOSTS, [entry], hostToText).catch((e) => console.warn(`[inventory] local-store sync failed (write succeeded; index side-effect lost): ${e?.message}`));
     res.json(entry);
   });
 
@@ -669,7 +669,7 @@ export function createInventoryRouter(pveApi) {
     entry.updatedAt = new Date().toISOString();
     hosts.entries[idx] = entry;
     saveHosts(hosts);
-    syncToLocalStore(HOSTS, [entry], hostToText).catch(() => {});
+    syncToLocalStore(HOSTS, [entry], hostToText).catch((e) => console.warn(`[inventory] local-store sync failed (write succeeded; index side-effect lost): ${e?.message}`));
     res.json(entry);
   });
 
@@ -752,7 +752,7 @@ export function createInventoryRouter(pveApi) {
     };
     creds.entries.push(entry);
     saveCredentials(creds);
-    syncToLocalStore(CREDENTIALS, [entry], credentialToText).catch(() => {});
+    syncToLocalStore(CREDENTIALS, [entry], credentialToText).catch((e) => console.warn(`[inventory] local-store sync failed (write succeeded; index side-effect lost): ${e?.message}`));
     res.json({ ...entry, password: entry.password ? '••••••••' : '', tokenSecret: entry.tokenSecret ? '••••••••' : '', bearerToken: entry.bearerToken ? '••••••••' : '', sshPrivateKey: entry.sshPrivateKey ? '••••••••' : '', sshPublicKey: entry.sshPublicKey ? '••••••••' : '' });
   });
 
@@ -769,7 +769,7 @@ export function createInventoryRouter(pveApi) {
     entry.updatedAt = new Date().toISOString();
     creds.entries[idx] = entry;
     saveCredentials(creds);
-    syncToLocalStore(CREDENTIALS, [entry], credentialToText).catch(() => {});
+    syncToLocalStore(CREDENTIALS, [entry], credentialToText).catch((e) => console.warn(`[inventory] local-store sync failed (write succeeded; index side-effect lost): ${e?.message}`));
     res.json({ ...entry, password: entry.password ? '••••••••' : '', tokenSecret: entry.tokenSecret ? '••••••••' : '', bearerToken: entry.bearerToken ? '••••••••' : '', sshPrivateKey: entry.sshPrivateKey ? '••••••••' : '', sshPublicKey: entry.sshPublicKey ? '••••••••' : '' });
   });
 

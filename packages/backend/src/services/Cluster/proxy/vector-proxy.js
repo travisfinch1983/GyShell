@@ -17,6 +17,8 @@ import { Router, json as jsonParser } from 'express';
 import http from 'http';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import * as fsForState from 'fs';
+import { loadJsonState } from './lib/notify.js';
 import { createHash } from 'crypto';
 
 const CONFIG_FILE = join(process.env.AILAB_PROXY_DATA_DIR || join(process.cwd(), 'data'), 'vector-db-config.json');
