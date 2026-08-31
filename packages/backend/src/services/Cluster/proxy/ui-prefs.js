@@ -11,7 +11,14 @@ export function createUiPrefsRouter() {
   const load = () => {
     try { return existsSync(file) ? JSON.parse(readFileSync(file, 'utf-8')) : {} } catch { return {} }
   }
-  const save = (d) => { try { writeFileSync(file, JSON.stringify(d, null, 2)) } catch { /* ignore */ } }
+  const save = (d) => {
+    try { writeFileSync(file, JSON.stringify(d, null, 2)); return true } catch (e) {
+      // The PUT used to answer with the merged object as if stored — the
+      // preference then vanished on reload with no trace anywhere.
+      console.warn(`[ui-prefs] save failed — preferences will NOT survive a reload: ${e?.message}`)
+      return false
+    }
+  }
 
   router.get('/', (_req, res) => res.json(load()))
   router.put('/', express.json({ limit: '256kb' }), (req, res) => {
