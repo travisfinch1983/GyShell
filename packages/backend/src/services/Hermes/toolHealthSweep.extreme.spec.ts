@@ -54,6 +54,38 @@ async function main(): Promise<void> {
   await svc.sweepToolHealth()
   ok(emitted.length === before, 'an unlistable fleet skips the pass — no alarm manufactured from a blind check')
 
+  // ── parked servers: permanence must not read as mere staleness ───────────
+  // m-c's catch: "parking until a reconnect is requested" never matched the
+  // give-up regex, so an agent with a permanently parked server alarmed as
+  // "stale — reconnect to resync". The (K failed) count on the registration
+  // line is the structured signal.
+  svc.listAgentsStrict = async () => ['delta']
+  health.delta = { groupTools: 60, registeredTools: 58, gaveUp: false, parkedServers: 1, gatewayActive: true, healthy: false, detail: 'parked' }
+  const bp = emitted.length
+  await svc.sweepToolHealth()
+  ok(emitted.length === bp + 1 && emitted[bp].severity === 'error' && emitted[bp].message.includes('parked after failed connections'),
+    'a parked server alarms at ERROR with its own message — permanence, not staleness')
+
+  // ── getToolHealth parser + honest arithmetic (real method, stubbed I/O) ───
+  const svc3: any = new HermesManagementService({ user: 'spec' } as any)
+  const groupToolNames = Array.from({ length: 60 }, (_, i) => `srv__t${i}`)
+  const realFetch = globalThis.fetch
+  globalThis.fetch = (async () => ({ ok: true, status: 200, json: async () => ({ included_tools: groupToolNames }) })) as any
+  let logLines = "2026-08-31 INFO tools.mcp_tool: MCP: registered 58 tool(s) from 1 server(s) (1 failed)"
+  svc3.ssh = async (cmd: string) => (cmd.includes('is-active') ? 'active' : logLines)
+  let th = await svc3.getToolHealth('cinder')
+  ok(th.parkedServers === 1 && th.healthy === false,
+    'the (1 failed) registration count surfaces as parkedServers and fails health')
+  ok(th.detail.includes('PARKED') && th.detail.includes('permanent'),
+    'the detail says the parked tools are GONE until reconnect, not stale')
+  ok(th.detail.includes('real shortfall is ~6') && !/not 2\b.*not 2\b/.test(th.detail),
+    'HONEST ARITHMETIC: 60-vs-58 is reported as a ~6-tool shortfall — the 4 protocol built-ins net in the comparison, never in the numbers shown')
+  logLines = "2026-08-31 INFO tools.mcp_tool: MCP: registered 64 tool(s) from 1 server(s)"
+  th = await svc3.getToolHealth('cinder')
+  ok(th.parkedServers === 0 && th.healthy === true && th.detail.startsWith('Serving'),
+    'a clean registration (group + extras, no failed count) is healthy with no parked note')
+  globalThis.fetch = realFetch
+
   // ── strict enumeration: the failover no-op family ─────────────────────────
   const svc2: any = new HermesManagementService({ user: 'spec', notify: (e: any) => emitted.push(e), supportModelsFile: undefined } as any)
   svc2.loadSupportModels = () => ({ tts: { model: 'primary-x', primaryModel: 'primary-x' } })

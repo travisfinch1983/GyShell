@@ -596,11 +596,17 @@ export class HermesManagementService {
         this.toolHealthAlarmed.add(id)
         console.warn(`[hermes-tools] ${id}: ${h.detail}`)
         this.cfg.notify?.({
-          severity: h.gaveUp ? 'error' : 'warning',
+          // Parked = a server whose tools are GONE until a reconnect — the
+          // same permanence as gave-up, scoped to one server: error, not the
+          // stale-set warning (m-c's catch: parking prose never matched the
+          // give-up regex, so a permanently degraded agent read as merely stale).
+          severity: h.gaveUp || h.parkedServers > 0 ? 'error' : 'warning',
           source: 'hermes-tools',
           message: h.gaveUp
             ? `Agent '${id}' is running with NO tools — Hermes gave up its MCP connection`
-            : `Agent '${id}' is serving a stale tool set`,
+            : h.parkedServers > 0
+              ? `Agent '${id}' has ${h.parkedServers} MCP server(s) parked after failed connections`
+              : `Agent '${id}' is serving a stale tool set`,
           detail: `${h.detail} Reconnect from the agent's Tools panel (or reconnectAgentTools) to restore; the give-up is permanent until then.`,
         })
       } else if (this.toolHealthAlarmed.delete(id)) {
@@ -1988,7 +1994,7 @@ export class HermesManagementService {
    *  group against the agent's own last registration and look for a give-up AFTER it. */
   async getToolHealth(agentId: string): Promise<{
     groupTools: number; registeredTools: number | null; gaveUp: boolean
-    gatewayActive: boolean; healthy: boolean; detail: string
+    parkedServers: number; gatewayActive: boolean; healthy: boolean; detail: string
   }> {
     const group = `agent-${agentId}`
     const tools = (await readToolGroup(this.gatewayBase(), group)) ?? []
@@ -1997,13 +2003,17 @@ export class HermesManagementService {
     const log = `${this.profileHome(agentId)}/logs/agent.log`
     // Last registration line, and anything after it, in one hop.
     const raw = await this.ssh(
-      `tail -n 4000 ${shq(log)} 2>/dev/null | grep -aE 'registered [0-9]+ tool\\(s\\) from|reconnection attempts, giving up' | tail -n 20 || true`,
+      `tail -n 4000 ${shq(log)} 2>/dev/null | grep -aE 'registered [0-9]+ tool\\(s\\) from|reconnection attempts, giving up|parking until a reconnect' | tail -n 20 || true`,
     ).catch(() => '')
     let registeredTools: number | null = null
     let gaveUp = false
+    let parkedServers = 0
     for (const line of raw.split('\n')) {
-      const m = line.match(/registered (\d+) tool\(s\) from/)
-      if (m) { registeredTools = parseInt(m[1], 10); gaveUp = false; continue }
+      // "registered N tool(s) from M server(s) (K failed)" — the failed count is
+      // the cheap, structured signal that servers PARKED (permanent until a
+      // reconnect); matching the parking prose alone missed it for months.
+      const m = line.match(/registered (\d+) tool\(s\) from \d+ server\(s\)(?: \((\d+) failed\))?/)
+      if (m) { registeredTools = parseInt(m[1], 10); parkedServers = m[2] ? parseInt(m[2], 10) : 0; gaveUp = false; continue }
       if (/reconnection attempts, giving up/.test(line)) gaveUp = true
     }
 
@@ -2015,15 +2025,23 @@ export class HermesManagementService {
     // that allowance rather than demanding equality.
     const PROTOCOL_EXTRAS = 4
     const matches = registeredTools !== null && registeredTools >= groupTools && registeredTools <= groupTools + PROTOCOL_EXTRAS
-    const healthy = !gaveUp && (registeredTools === null || matches)
+    const healthy = !gaveUp && parkedServers === 0 && (registeredTools === null || matches)
+    // The allowance belongs in the COMPARISON, never in the numbers a reader
+    // sees: printing raw 58-vs-60 sent triage hunting two missing tools when
+    // the real shortfall was the entire six-tool reports set (the 4 built-ins
+    // netted against it). State the estimated real gap.
+    const realGap = registeredTools === null ? 0 : Math.max(0, groupTools - Math.max(0, registeredTools - PROTOCOL_EXTRAS))
+    const parkedNote = parkedServers > 0
+      ? ` Additionally ${parkedServers} MCP server(s) FAILED connection and are PARKED — their tools are missing entirely, not stale, and parking is permanent until a reconnect.`
+      : ''
     const detail = gaveUp
       ? 'Hermes stopped retrying its MCP connection and is running with no tools. Reconnect to restore them.'
       : registeredTools === null
-        ? 'No registration seen in the agent log yet.'
+        ? 'No registration seen in the agent log yet.' + parkedNote
         : matches
-          ? `Serving ${registeredTools} tools for a group of ${groupTools}.`
-          : `Group has ${groupTools} tools but the agent last registered ${registeredTools} — it is out of date. Reconnect to resync.`
-    return { groupTools, registeredTools, gaveUp, gatewayActive, healthy, detail }
+          ? `Serving ${registeredTools} tools for a group of ${groupTools}.` + parkedNote
+          : `Group has ${groupTools} tools but the agent last registered ${registeredTools} — and that count includes up to ${PROTOCOL_EXTRAS} MCP protocol built-ins, so the real shortfall is ~${realGap} tool(s), not ${Math.max(0, groupTools - registeredTools)}. Reconnect to resync.` + parkedNote
+    return { groupTools, registeredTools, gaveUp, parkedServers, gatewayActive, healthy, detail }
   }
 
   /** Restart the agent's messaging gateway so it re-reads config and reconnects its MCP link.
