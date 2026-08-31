@@ -228,6 +228,8 @@ export async function runMemoryRecall(
   }
 
   const allHits: Array<{ collection: string; text: string; score: number; metadata: any }> = []
+  const searchedTargets: string[] = []
+  const failedTargets: string[] = []
   for (const tgt of targets) {
     try {
       const resp = await fetchWithTimeout(
@@ -239,8 +241,9 @@ export async function runMemoryRecall(
         },
         signal,
       )
-      if (!resp.ok) continue
+      if (!resp.ok) { failedTargets.push(`${tgt} (HTTP ${resp.status})`); continue }
       const data = (await resp.json()) as any
+      searchedTargets.push(tgt)
       const fused: any[] = data.fused || data.results || []
       for (const r of fused) {
         allHits.push({
@@ -250,11 +253,28 @@ export async function runMemoryRecall(
           metadata: r.metadata || {},
         })
       }
-    } catch { /* skip and continue with other targets */ }
+    } catch (e) {
+      // skip and continue with other targets — but REMEMBER the skip: when
+      // every lane fails, "no memories matched" is a confident lie.
+      failedTargets.push(`${tgt} (${(e as Error)?.message ?? 'failed'})`)
+    }
   }
 
   if (allHits.length === 0) {
-    return { kind: 'text', message: `No memories matched "${query}" in ${targets.join(', ')}.` }
+    if (searchedTargets.length === 0) {
+      // Nothing was actually searched. The old message here was a confident
+      // negative indistinguishable from a genuinely empty store — the
+      // "one lane dead, another silently covers" family, at the tool surface.
+      return {
+        kind: 'text',
+        message: `⚠ Memory search FAILED — no collection could be queried (${failedTargets.join('; ')}). ` +
+          `This is NOT "no memories": nothing was searched. Do not conclude the information is absent.`,
+      }
+    }
+    const failNote = failedTargets.length
+      ? ` ⚠ ${failedTargets.length} collection(s) could not be searched: ${failedTargets.join('; ')} — absence is only proven for the searched ones.`
+      : ''
+    return { kind: 'text', message: `No memories matched "${query}" in ${searchedTargets.join(', ')}.${failNote}` }
   }
   allHits.sort((a, b) => b.score - a.score)
   const top = allHits.slice(0, topK)

@@ -315,6 +315,9 @@ ${recentOutput}
       try {
         const kind = detectFileKind(imageHint, new Uint8Array(bytes));
         if (kind !== 'image') {
+          // The user SEES an attachment; the model never gets it; nothing said
+          // so anywhere — a dropped input with no witness. One line per drop.
+          console.warn(`[InputParseHelper] attachment '${imageHint}' dropped — sniffed as '${kind}', not an image; the model will not see it`);
           continue;
         }
 
@@ -330,6 +333,10 @@ ${recentOutput}
         inputImages.push(normalized);
 
         if (!options.modelSupportsImage) {
+          // The transcript shows the attachment as ready while the model never
+          // received it — say which model and why, so "it ignored my image"
+          // has a findable cause.
+          console.warn(`[InputParseHelper] image '${imageHint}' not sent to the model — the active model has no image input; it still renders in the transcript`);
           continue;
         }
         if (sizeBytes > this.MAX_MODEL_IMAGE_BYTES) {

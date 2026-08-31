@@ -105,6 +105,7 @@ export function createAgentToolsRouter(deps: { settingsService: any; agentServic
       let disabledSelectedCount = 0
       let unsupportedCount = 0
       let functionalCount = 0
+      let countsFailed: string | null = null
       try {
         const enabled = await fetchEnabledMap()
         for (const tn of treeNames) {
@@ -115,9 +116,21 @@ export function createAgentToolsRouter(deps: { settingsService: any; agentServic
           if (runnableInProc) { if (globallyOn) functionalCount++ }
           else unsupportedCount++ // MCP or session-bound native: external-only until the exec fast-follow
         }
-      } catch { /* counts are advisory */ }
+      } catch (e) {
+        // Counts are advisory, but zeros-from-failure read as "you selected
+        // nothing runnable" — a different claim entirely. Mark them unknown.
+        countsFailed = String((e as Error)?.message || e)
+        console.warn(`[agent-tools] status counts unavailable for ${agentId}: ${countsFailed}`)
+      }
 
-      res.json({ ok: true, agentId, count: canonical.length, endpoint, groupError, functionalCount, disabledSelectedCount, unsupportedCount })
+      res.json({
+        ok: true, agentId, count: canonical.length, endpoint, groupError,
+        // null = could not be computed (countsError says why) — NOT zero.
+        functionalCount: countsFailed ? null : functionalCount,
+        disabledSelectedCount: countsFailed ? null : disabledSelectedCount,
+        unsupportedCount: countsFailed ? null : unsupportedCount,
+        ...(countsFailed ? { countsError: countsFailed } : {}),
+      })
     } catch (e) {
       res.status(500).json({ error: String((e as Error)?.message || e) })
     }

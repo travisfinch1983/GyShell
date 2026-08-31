@@ -230,13 +230,16 @@ export async function runWebSearch(args: unknown, signal?: AbortSignal): Promise
     if (results.length === 0) {
       return {
         kind: 'text',
-        message: `No results parsed for "${query}". Backend may have returned a captcha or rate-limited the request.`,
+        message: `⚠ DEGRADED SEARCH (SearXNG down, legacy DDG scraper): no results parsed for "${query}" — the scraper is rate-limit and captcha prone, so this is NOT an authoritative "no results". Retry later or use a different engine.`,
       }
     }
     const formatted = results
       .map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`)
       .join('\n\n')
-    return { kind: 'text', message: `Search: ${query}\n\n${formatted}` }
+    // The route travels IN the result: the model treats tool output as
+    // authoritative, and a degraded scraper's thin results read as "that's all
+    // there is" unless the output says which path produced them.
+    return { kind: 'text', message: `Search (DEGRADED — SearXNG down, legacy scraper): ${query}\n\n${formatted}\n\n⚠ Results came from the rate-limited fallback scraper and may be incomplete.` }
   } catch (err) {
     if ((err as any)?.name === 'AbortError') throw err
     return {

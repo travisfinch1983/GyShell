@@ -1,4 +1,5 @@
 import { ChatOpenAI } from '@langchain/openai'
+import { TransitionLatch } from './notifyLocal'
 import { HumanMessage, AIMessage, ToolMessage, type BaseMessage } from '@langchain/core/messages'
 import { mapChatMessagesToStoredMessages, mapStoredMessagesToChatMessages } from '@langchain/core/messages'
 import { convertToOpenAITool } from '@langchain/core/utils/function_calling'
@@ -30,7 +31,6 @@ import {
   waitSchema,
   waitTerminalIdleSchema,
   waitCommandEndSchema,
-
   toolImplementations,
   buildSkillToolDescription,
   buildDelegateAgentDescription
@@ -82,6 +82,10 @@ import { TokenManager } from './AgentHelper/TokenManager'
 import { InputParseHelper } from './AgentHelper/InputParseHelper'
 import { ImageAttachmentService } from './ImageAttachmentService'
 import { RunMarkerService, type RunMarker } from './RunMarkerService'
+
+/** Agent-runtime emitters — latched, one per subject. */
+const bindingLatch = new TransitionLatch(3, 'agent-runtime')
+let gatingFetchFailures = 0
 
 const Ann: any = Annotation
 type StartupInputState = StartTaskInput | undefined
@@ -253,7 +257,26 @@ export class AgentService_v2 {
   /** Repoint builtInToolEnabled at the gateway ailab-native enable state (config federation).
    *  All-enabled fallback lives in getGatewayNativeToolEnabledMap. */
   private async startBuiltInToolGatingRefresh(): Promise<void> {
-    const refresh = async () => { try { this.builtInToolEnabled = await getGatewayNativeToolEnabledMap() } catch { /* keep last-known */ } }
+    const refresh = async () => {
+      try {
+        this.builtInToolEnabled = await getGatewayNativeToolEnabledMap()
+        gatingFetchFailures = 0
+      } catch (e) {
+        // keep last-known — but SAY what is in force. With the gateway down at
+        // boot the map is {} = ALL tools enabled, meaning operator-DISABLED
+        // built-ins are silently live; mid-run it means the map is stale.
+        gatingFetchFailures += 1
+        const mapState = Object.keys(this.builtInToolEnabled ?? {}).length === 0
+          ? 'EMPTY map in force — every built-in tool is enabled, including any the operator disabled'
+          : 'stale map in force (last successful fetch still applies)'
+        console.warn(`[AgentService_v2] native-tool gating refresh failed (${(e as Error)?.message}); ${mapState}`)
+        if (gatingFetchFailures === 3 && Object.keys(this.builtInToolEnabled ?? {}).length === 0) {
+          bindingLatch.once('gating-all-enabled', 'warning',
+            'Native-tool gating is running WIDE OPEN',
+            'The gateway gating map has never loaded this process (3 consecutive failures) and the empty-map fallback enables EVERY built-in tool — including any the operator disabled. Restores itself when the gateway answers; re-check disabled tools after.')
+        }
+      }
+    }
     await refresh()
     if (!this.builtInGatingTimer) {
       this.builtInGatingTimer = setInterval(() => void refresh(), 30_000)
@@ -366,9 +389,11 @@ export class AgentService_v2 {
       findItemWithKey(profile.globalModelId) ||
       findItemWithKey((profile as any).chatModelId) ||
       findItemWithKey((profile as any).coderModelId)
+    let lastDitch = false
     if (!globalItem) {
       // Last-ditch fallback: any item with a usable apiKey.
       globalItem = settings.models.items.find((m) => !!m.apiKey)
+      lastDitch = true
     }
     if (!globalItem) {
       console.warn('[AgentService_v2] No usable model could be resolved for session binding:', {
@@ -384,6 +409,15 @@ export class AgentService_v2 {
         `[AgentService_v2] Profile "${profileId}" globalModelId "${profile.globalModelId}" is stale; ` +
         `falling back to "${globalItem.id}". Re-pick the Default Model in Settings to silence this warning.`
       )
+      if (lastDitch) {
+        // The named fallbacks (chat/coder) are still the operator's own picks;
+        // "whatever model happens to have an apiKey" is not a choice anyone
+        // made, and a session silently running on an arbitrary model is the
+        // stale-binding failure the audit named. Once per profile per process.
+        bindingLatch.once(`last-ditch:${profileId}`, 'warning',
+          'A chat profile is running on an ARBITRARY model',
+          `Profile '${profileId}': every configured model id (global/chat/coder) is stale, so the session bound to '${globalItem.id}' — the first item holding an apiKey, not a choice anyone made. Re-pick the Default Model in Settings. The usual cause is an auto-discovered service renamed at relaunch.`)
+      }
     }
 
     // The retired action/thinking/compaction role fields no longer exist on
@@ -1418,7 +1452,15 @@ export class AgentService_v2 {
       if (typeof args === 'string') {
         try {
           args = this.helpers.parseStrictJsonObject(args)
-        } catch {}
+        } catch (e) {
+          // The empty catch here passed the RAW STRING on to invokeTool as if
+          // it were the argument object — the tool ran with garbage arguments
+          // and the resulting error fed back to the model as tool OUTPUT,
+          // with nothing anywhere saying the blob never parsed. Still passing
+          // it through (the tool's own validation gives the model a usable
+          // error to self-correct from), but no longer silently.
+          console.warn(`[AgentService_v2] tool '${toolCall.name}': model produced unparseable JSON args (${(e as Error)?.message}) — passing raw; first 120 chars: ${String(toolCall.args).slice(0, 120)}`)
+        }
       }
 
       const signal = config?.signal
@@ -1660,7 +1702,11 @@ export class AgentService_v2 {
         const reported = match?._proxlab_slots
         if (typeof reported === 'number' && reported > 0) slots = Math.floor(reported)
       }
-    } catch { /* fall through to slots=1 */ }
+    } catch (e) {
+      // A proxy blip here silently collapsed delegation concurrency from N to
+      // 1 for the cache TTL — "why is the fan-out serial" had no findable cause.
+      console.warn(`[AgentService_v2] slot discovery failed for ${modelName} (${(e as Error)?.message}) — using slots=1 until the next refresh`)
+    }
     this.slotCache.set(key, { slots, expiresAt: Date.now() + this.SLOT_CACHE_TTL_MS })
     return slots
   }
@@ -1723,6 +1769,13 @@ export class AgentService_v2 {
         for (const id of ids) push(id, resolveModelById(id))
       }
       if (out.length === 0) {
+        // Nothing records which model a delegated agent actually ran on, and
+        // this branch silently substitutes the CALLER's model when the agent's
+        // configured profiles all name deleted models. Log the decision —
+        // "why did the researcher answer like the coder" starts here.
+        if (ids.length > 0) {
+          console.warn(`[AgentService_v2] delegate agent '${agent?.name ?? agent?.id ?? '?'}': all ${ids.length} configured model profile(s) are stale (${ids.join(', ')}) — falling back to the CALLER's active model`)
+        }
         push('__active__', resolveActiveProfileModel())
       }
       return out
@@ -1807,7 +1860,13 @@ export class AgentService_v2 {
         })
         throw error
       }
-      console.log('[AgentService_v2][history_compaction_guard] Summary generation unavailable. skip compaction.')
+      // The caught error used to be DISCARDED here while the UI still received
+      // sub_tool_finished — compaction looked like it succeeded, and history
+      // grew until the model's hard limit with nothing saying why.
+      console.warn(`[AgentService_v2][history_compaction_guard] compaction SKIPPED — summary generation failed: ${(error as Error)?.message ?? error}. History keeps growing until the context limit.`)
+      bindingLatch.once('compaction-skipping', 'warning',
+        'History compaction is failing — sessions will grow to the context limit',
+        `Summary generation is unavailable (latest: ${String((error as Error)?.message ?? error).slice(0, 200)}). Compaction reports finished to the UI but changes nothing; long sessions will hit the hard limit. Check the Compaction support-model assignment.`)
       this.helpers.sendEvent(sessionId, {
         messageId: compactionMessageId,
         type: 'sub_tool_finished'
