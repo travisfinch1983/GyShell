@@ -1,7 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { observer } from 'mobx-react-lite'
-import { RefreshCw, Play, Download, Loader2, Save } from 'lucide-react'
-import { mcpServersStore } from '../../stores/McpServersStore'
+import { RefreshCw, Play, Download, Loader2 } from 'lucide-react'
 
 function bridge(): any { return (window as any).gyshell?.cluster }
 const BASE = '/api/proxy/claude-max'
@@ -26,54 +24,14 @@ function downloadFile(name: string, data: unknown) {
   URL.revokeObjectURL(url)
 }
 
-/** MCP tool-injection settings for the llm proxy (PUT /api/mcp/settings) —
- *  AI-Lab's own proxy config, relocated here from the AI-Tools MCP panel when
- *  that panel became the MCPJungle dashboard embed (which has no surface for it). */
-const McpToolProxySection: React.FC = observer(() => {
-  const store = mcpServersStore
-  useEffect(() => { if (!store.loaded) void store.load() }, [])
-  const [saved, setSaved] = useState(false)
-  const save = async () => { await store.saveSettings(); setSaved(true); setTimeout(() => setSaved(false), 2000) }
-
-  return (
-    <>
-      <div className="settings-section-header">
-        <div className="settings-section-title">MCP Tool Proxy</div>
-      </div>
-      <div className="settings-rows">
-        <p style={{ fontSize: 12.5, color: 'var(--fg-muted)', margin: '0 0 8px', lineHeight: 1.5 }}>
-          How the LLM proxy uses the MCP gateway's tools. Server registration and per-tool
-          enable/disable live in the MCP dashboard (AI · Tools → MCP Servers).
-        </p>
-        {/* toolInjection switch removed 2026-08-31 — it controlled deleted dead
-            code; a switch reporting state it does not control is a false
-            instrument. maxToolRounds below is FLAGGED for the same review
-            (no live consumer found) but awaits claude1's ruling. */}
-        <div className="settings-row">
-          <div className="settings-row-label-with-info">
-            <label>Max tool rounds</label>
-          </div>
-          <input
-            type="number"
-            min={1}
-            max={50}
-            value={store.settings.maxToolRounds ?? 20}
-            onChange={(e) => store.setSetting('maxToolRounds', parseInt(e.target.value, 10) || 20)}
-            style={{ width: 70, height: 28, padding: '0 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--control-bg)', color: 'var(--fg)', fontSize: 13 }}
-          />
-        </div>
-        <div className="settings-row">
-          <div className="settings-row-label-with-info">
-            <label>Apply</label>
-          </div>
-          <button className="btn-secondary" onClick={() => void save()}>
-            <Save size={14} /> {saved ? 'Saved!' : 'Save'}
-          </button>
-        </div>
-      </div>
-    </>
-  )
-})
+/** McpToolProxySection REMOVED (2026-08-31). Its two knobs — the
+ *  toolInjection switch and the maxToolRounds number input — were false
+ *  instruments wired to deleted dead code: nothing ever read either value
+ *  (the setting's only reader was the deleted block's own helper). A bounded
+ *  number input is the worse of the two: it reads as a tuning parameter
+ *  someone might spend real time tuning. AI-Lab's llm-proxy currently
+ *  exposes no tool-proxy settings; /api/mcp/settings serves {} so stale UI
+ *  bundles degrade gracefully. */
 
 /** Settings → Proxy: MCP tool-proxy config + Claude Max prompt-capture toggle + cache-miss diff viewer. */
 export const ProxySettingsPanel: React.FC = () => {
@@ -137,7 +95,6 @@ export const ProxySettingsPanel: React.FC = () => {
 
   return (
     <>
-      <McpToolProxySection />
 
       <div className="settings-section-header" style={{ marginTop: 20 }}>
         <div className="settings-section-title">Claude Max — Prompt Capture</div>

@@ -9,7 +9,7 @@ export class McpServersStore {
   health: any = null
   servers: any[] = []
   tools: any[] = []
-  settings: any = { maxToolRounds: 20 }
+  settings: any = {}
   loading = false
   loaded = false
   err = ''
@@ -75,19 +75,8 @@ export class McpServersStore {
       runInAction(() => { this.tools = this.tools.map((t) => (t.fullName === fullName ? { ...t, enabled } : t)) })
     } catch { await this.load() }
   }
-  setSetting(k: string, v: any): void { this.settings = { ...this.settings, [k]: v } }
-  /** Throws on failure — the caller owns showing saved-vs-failed. */
-  async saveSettings(): Promise<void> {
-    try {
-      await bridge().request('PUT', '/api/mcp/settings', {
-        maxToolRounds: Number(this.settings.maxToolRounds) || 20,
-      })
-      runInAction(() => { if (this.err.startsWith('save settings')) this.err = '' })
-    } catch (e: any) {
-      runInAction(() => { this.err = `save settings failed: ${e?.message || e}` })
-      throw e
-    }
-  }
+  // saveSettings/setSetting removed 2026-08-31 — no tool-proxy settings exist
+  // any more (both former knobs were false instruments wired to deleted code).
 }
 
 export const mcpServersStore = new McpServersStore()

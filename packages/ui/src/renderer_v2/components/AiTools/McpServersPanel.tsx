@@ -1,17 +1,12 @@
 import React, { useEffect } from 'react'
 import { observer } from 'mobx-react-lite'
-import { RefreshCw, Trash2, Save } from 'lucide-react'
+import { RefreshCw, Trash2 } from 'lucide-react'
 import { mcpServersStore as store } from '../../stores/McpServersStore'
 import { confirmStore } from '../../stores/confirmStore'
 import styles from './AiTools.module.scss'
 
 export const McpServersPanel: React.FC = observer(() => {
   useEffect(() => { if (!store.loaded) void store.load() }, [])
-  const [saved, setSaved] = React.useState(false)
-  const save = async () => {
-    try { await store.saveSettings(); setSaved(true); setTimeout(() => setSaved(false), 2000) }
-    catch { /* store.err carries the reason; the banner below renders it */ }
-  }
 
   return (
     <div className={styles.panel}>
@@ -61,20 +56,12 @@ export const McpServersPanel: React.FC = observer(() => {
       </div>
 
       {/* Tool proxy settings */}
-      <div className={styles.settingsBox}>
-        <h4 className={styles.h4}>Tool Proxy Settings</h4>
-        <div className={styles.settingsRow}>
-          {/* The "Inject tools into LLM requests" toggle is GONE (2026-08-31):
-              the code it switched was deleted as dead, and a control reporting
-              state it does not control is a false instrument. */}
-          <label className={styles.numLbl}>
-            Max tool rounds
-            <input className={styles.num} type="number" min={1} max={50} value={store.settings.maxToolRounds ?? 20} onChange={(e) => store.setSetting('maxToolRounds', parseInt(e.target.value, 10) || 20)} />
-          </label>
-          <span className={styles.spacer} />
-          <button className={styles.btnPrimary} onClick={() => void save()}><Save size={13} /> {saved ? 'Saved!' : 'Save'}</button>
-        </div>
-      </div>
+      {/* "Tool Proxy Settings" box REMOVED entirely (2026-08-31). Both knobs
+          (toolInjection toggle, maxToolRounds number input) were false
+          instruments wired to deleted dead code — and an empty settings box
+          invites the next person to fill it. Server registration and per-tool
+          enable/disable above are the live controls; /api/mcp/settings serves
+          {} so a stale UI bundle degrades gracefully. */}
 
       {/* Tools grouped by server */}
       <div className={styles.toolsSection}>
