@@ -9,7 +9,7 @@ export class McpServersStore {
   health: any = null
   servers: any[] = []
   tools: any[] = []
-  settings: any = { maxToolRounds: 20, toolInjection: true }
+  settings: any = { maxToolRounds: 20 }
   loading = false
   loaded = false
   err = ''
@@ -80,7 +80,6 @@ export class McpServersStore {
   async saveSettings(): Promise<void> {
     try {
       await bridge().request('PUT', '/api/mcp/settings', {
-        toolInjection: this.settings.toolInjection !== false,
         maxToolRounds: Number(this.settings.maxToolRounds) || 20,
       })
       runInAction(() => { if (this.err.startsWith('save settings')) this.err = '' })

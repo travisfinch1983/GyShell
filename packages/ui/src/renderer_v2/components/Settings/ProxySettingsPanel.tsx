@@ -45,15 +45,10 @@ const McpToolProxySection: React.FC = observer(() => {
           How the LLM proxy uses the MCP gateway's tools. Server registration and per-tool
           enable/disable live in the MCP dashboard (AI · Tools → MCP Servers).
         </p>
-        <div className="settings-row">
-          <div className="settings-row-label-with-info">
-            <label>Inject tools into LLM requests</label>
-          </div>
-          <label className="switch">
-            <input type="checkbox" checked={store.settings.toolInjection !== false} onChange={(e) => store.setSetting('toolInjection', e.target.checked)} />
-            <span className="switch-slider" />
-          </label>
-        </div>
+        {/* toolInjection switch removed 2026-08-31 — it controlled deleted dead
+            code; a switch reporting state it does not control is a false
+            instrument. maxToolRounds below is FLAGGED for the same review
+            (no live consumer found) but awaits claude1's ruling. */}
         <div className="settings-row">
           <div className="settings-row-label-with-info">
             <label>Max tool rounds</label>

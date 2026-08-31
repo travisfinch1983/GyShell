@@ -77,8 +77,19 @@ const { readFileSync } = await import('node:fs')
 for (const mod of ['inventory.js', 'proxy.js', 'vector-proxy.js', 'system.js']) {
   const src = readFileSync(new URL(`./${mod}`, import.meta.url), 'utf8')
   const uses = src.includes('loadJsonState(')
-  const imports = src.includes("import { loadJsonState }")
-  ok(!uses || imports, `${mod}: every loadJsonState CALL has its IMPORT — the exact defect that hid for 13 batches`)
+  // EXACTLY one, not at-least one: presence-checking let both failure
+  // directions through — the MISSING import hid for 13 batches (import
+  // success is silent), and then two sides of a merge each added the
+  // identical import at different anchors, git merged CLEANLY, and the file
+  // would not parse (claude1's catch: a clean merge is not a correct merge).
+  const importCount = (src.match(/^import \{ loadJsonState \}/gm) ?? []).length
+  const fsAliasCount = (src.match(/^import \* as fsForState from/gm) ?? []).length
+  if (uses) {
+    ok(importCount === 1, `${mod}: EXACTLY one loadJsonState import (found ${importCount}) — 0 hid for 13 batches, 2 broke a clean merge`)
+    ok(fsAliasCount === 1, `${mod}: EXACTLY one fsForState import (found ${fsAliasCount})`)
+  } else {
+    ok(importCount === 0 && fsAliasCount === 0, `${mod}: no stray loader imports without call sites`)
+  }
 }
 
 srv.close()

@@ -13,8 +13,9 @@ import styles from './AiTools.module.scss'
  * DNS) — same-scheme as the AI-Lab origin, so no mixed content; the browser
  * still never talks to a 10.0.0.x address directly.
  *
- * The Tool Proxy Settings (toolInjection/maxToolRounds — AI-Lab's OWN
- * llm-proxy config the dashboard can't manage) live in Settings › Proxy.
+ * The Tool Proxy Settings (maxToolRounds — AI-Lab's OWN llm-proxy config the
+ * dashboard can't manage) live in Settings › Proxy. (toolInjection was removed
+ * 2026-08-31 with the dead code it switched.)
  */
 const DASHBOARD_URL = 'https://mcp.deeveeyant.com'
 

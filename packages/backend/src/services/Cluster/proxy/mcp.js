@@ -65,7 +65,15 @@ export function createMcpRouter({ exec }) {
     return (result.stdout || '') + (result.stderr || '')
   }
   const getSettings = () => {
-    try { return JSON.parse(readFileSync(settingsPath, 'utf8')) } catch { return { maxToolRounds: 20, toolInjection: true } }
+    try {
+      const raw = JSON.parse(readFileSync(settingsPath, 'utf8'))
+      // toolInjection REMOVED from the surface (2026-08-31): the block it
+      // switched was deleted as dead, and a toggle reporting state it does not
+      // control is a false instrument. The stored key, if present, is left in
+      // the file untouched — just never read or served again.
+      delete raw.toolInjection
+      return raw
+    } catch { return { maxToolRounds: 20 } }
   }
   const saveSettings = (s) => {
     try { mkdirSync(dataDir, { recursive: true }) } catch { /* ignore */ }
@@ -193,7 +201,13 @@ export function createMcpRouter({ exec }) {
 
   router.get('/settings', (_req, res) => res.json(getSettings()))
   router.put('/settings', express.json(), (req, res) => {
-    try { res.json(saveSettings({ ...getSettings(), ...(req.body || {}) })) } catch (e) { res.status(500).json({ error: e.message }) }
+    try {
+      // Incoming toolInjection is ignored (the switch is gone); merging over
+      // the RAW file preserves any stored value without ever writing it anew.
+      const body = { ...(req.body || {}) }
+      delete body.toolInjection
+      res.json(saveSettings({ ...getSettings(), ...body }))
+    } catch (e) { res.status(500).json({ error: e.message }) }
   })
   router.delete('/servers/:name', async (req, res) => {
     try { await mcpjungleCli(`deregister ${req.params.name}`); res.json({ ok: true }) } catch (e) { res.status(502).json({ error: e.message }) }
