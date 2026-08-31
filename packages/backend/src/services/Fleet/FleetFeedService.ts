@@ -188,6 +188,14 @@ export class FleetFeedService {
   /** Live presence — standard #5: computed by fleetd at read time, never a cached boolean. */
   directory() { return this.call<{ agents: unknown[] }>('GET', '/directory') }
 
+  /** Wake-failure aggregation (fleet-channel 9831a94) — fleetd's receipts, aggregated
+   *  server-side. An agent with no traffic in the window is ABSENT from the result,
+   *  never zeroed: silence is not evidence of health, and consumers must not render it
+   *  as a passing check. */
+  wakeStats(windowS?: number) {
+    return this.call<unknown>('GET', `/wake-stats${windowS ? `?window_s=${windowS}` : ''}`)
+  }
+
   // ── attachments ───────────────────────────────────────────────────────────
   addAttachment(a: { message_id: string; filename: string; media_type: string;
                      content_b64: string; kind?: string; structured?: unknown }) {

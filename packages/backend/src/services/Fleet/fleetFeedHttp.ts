@@ -142,6 +142,9 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
   router.get('/api/fleet/agents', (_req: Req, res: Res) =>
     ok(res, () => svc.directory()))
 
+  router.get('/api/fleet/wake-stats', (req: Req, res: Res) =>
+    ok(res, () => svc.wakeStats(req.query?.window_s ? Number(req.query.window_s) : undefined)))
+
   router.post('/api/fleet/attachment', jsonBody, (req: Req, res: Res) =>
     ok(res, () => svc.addAttachment(req.body)))
 

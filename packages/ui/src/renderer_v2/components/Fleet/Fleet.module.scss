@@ -53,6 +53,16 @@
   &.thinking { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
   &.queued { background: #e5a50a; }
   &.offline { background: var(--fg-faint); }
+  // sustained wake failures latched by fleetd: delivered but not waking
+  &.wakeAlarm { background: #e5a50a; animation: pulse 1.2s ease-in-out infinite; }
+}
+
+// intermittent missed wakes this window — a quiet hint, the title carries the detail
+.wakeFlaky {
+  color: #e5a50a;
+  font-size: 10px;
+  line-height: 1;
+  margin-left: 1px;
 }
 
 @keyframes pulse {

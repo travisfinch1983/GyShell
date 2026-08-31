@@ -71,6 +71,24 @@ export function unwrapList<T>(r: unknown, what: string, ...keys: string[]): T[] 
 
 export { feedSecondsToDate } from '@gyshell/shared'
 
+/** Per-agent wake counters over the stats window (fleetd receipts, aggregated server-side). */
+export interface FleetWakeAgentStats {
+  woke: number
+  wake_timeout: number
+  wake_stalled: number
+  last_woke_at: number | null
+  last_failed_at: number | null
+}
+
+export interface FleetWakeStats {
+  window_s: number
+  alert_min: number
+  /** Agents with a LIVE latched wake alarm (sustained failures) — the panel state. */
+  latched: Record<string, string>
+  agents: Record<string, FleetWakeAgentStats>
+  totals?: Record<string, number>
+}
+
 /** Feed list scope — a query concept of the /feed route, not a stored shape. */
 export type FeedScope = 'public' | 'mine' | 'all'
 
@@ -199,6 +217,13 @@ export const fleetFeedApi = {
   async directory(): Promise<FeedDirectoryEntry[]> {
     const r = await get('/api/fleet/agents')
     return unwrapList<FeedDirectoryEntry>(r, 'directory', 'agents', 'directory')
+  },
+
+  /** Wake-failure stats (fleetd 9831a94). An agent absent from `agents` had no
+   *  traffic in the window — that is NO CLAIM about its wake health, never "0 failures". */
+  async wakeStats(windowS?: number): Promise<FleetWakeStats | null> {
+    const r = await get(`/api/fleet/wake-stats${q({ window_s: windowS })}`)
+    return r && typeof r === 'object' && r.agents ? (r as FleetWakeStats) : null
   },
 
   async guard(): Promise<FeedGuard> {

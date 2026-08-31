@@ -581,16 +581,29 @@ export const FleetPanel: React.FC = observer(() => {
         <span className={styles.agents}>
           {store.agents
             .filter((a) => a.agent_id !== FLEET_VIEWER)
-            .map((a) => (
-              <span
-                key={a.agent_id}
-                className={styles.agentChip}
-                title={`${a.kind} · ${a.status ?? (store.isOnline(a) ? 'online' : 'offline')}${a.turn_count !== null ? ` · ${a.turn_count} turns` : ''}`}
-              >
-                <span className={`${styles.dot} ${store.isOnline(a) ? styles.idle : styles.offline}`} />
-                {a.display_name || a.agent_id}
-              </span>
-            ))}
+            .map((a) => {
+              // Wake reliability (fleetd receipts): latched = live sustained alarm;
+              // flaky = some wakes missed this window (messages DELIVERED, the agent
+              // just wasn't woken — an unread reply looks identical to being ignored).
+              // null = no traffic in the window: render NOTHING, silence is not health.
+              const wake = store.wakeHealth(a.agent_id)
+              const wakeNote = wake?.state === 'latched'
+                ? ` · ⚠ WAKE ALARM (${wake.stage}) — messages are delivered but not waking it; check the thread for unread replies`
+                : wake
+                  ? ` · wakes ${wake.ok}/${wake.total} ok${wake.state === 'flaky' ? ' — some notifications missed; replies may sit unread' : ''}`
+                  : ''
+              return (
+                <span
+                  key={a.agent_id}
+                  className={styles.agentChip}
+                  title={`${a.kind} · ${a.status ?? (store.isOnline(a) ? 'online' : 'offline')}${a.turn_count !== null ? ` · ${a.turn_count} turns` : ''}${wakeNote}`}
+                >
+                  <span className={`${styles.dot} ${wake?.state === 'latched' ? styles.wakeAlarm : store.isOnline(a) ? styles.idle : styles.offline}`} />
+                  {a.display_name || a.agent_id}
+                  {wake?.state === 'flaky' && <span className={styles.wakeFlaky} aria-label="some wakes missed">◦</span>}
+                </span>
+              )
+            })}
         </span>
         <span className={styles.spacer} />
         <span className={styles.searchBox} title="Searches PUBLIC content only — private threads are never indexed">
