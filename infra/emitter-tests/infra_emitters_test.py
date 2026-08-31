@@ -108,4 +108,31 @@ r2 = subprocess.run(["bash", "/root/repos/ai-lab-fable/infra/provider-scripts/dr
 time.sleep(0.3)
 ok(len(received) == count and "OK" in r2.stdout, "a clean tree emits NOTHING — silence when healthy")
 
+# ── sanity gate: mass drift reads as a misconfigured CHECK, not 66 warnings ───
+# (2026-08-31: a wrong AILAB_PROVIDER_REPO emitted 66 live warnings in one run.)
+received.clear()
+repo2 = tempfile.mkdtemp(); dest2 = tempfile.mkdtemp()
+gate_dest = pathlib.Path(dest2, "scripts", "providers"); gate_dest.mkdir(parents=True)
+for i in range(12):  # 12 repo scripts, deployed tree empty → 12/12 "missing"
+    pathlib.Path(repo2, f"s{i}.sh").write_text(f"echo {i}\n")
+env2 = dict(os.environ, AILAB_API_URL=api, AILAB_PROVIDER_REPO=repo2, AILAB_DATA_DIR=dest2)
+r3 = subprocess.run(["bash", "/root/repos/ai-lab-fable/infra/provider-scripts/drift-check/provider-drift-check.sh"],
+                    env=env2, capture_output=True, text=True, timeout=30)
+time.sleep(0.3)
+ok(len(received) == 1 and "MISCONFIGURED" in received[0]["message"],
+   "12/12 drifted → exactly ONE warning saying the CHECK looks misconfigured, not twelve")
+ok("12 of 12" in received[0]["detail"] and "[host " in received[0]["detail"],
+   "the gate event carries the ratio and the host")
+ok("over the sanity gate" in r3.stdout, "stdout names the gate decision for journalctl readers")
+
+# floor: a small honest install (below GATE_MIN_TOTAL) keeps per-script events
+received.clear()
+for i in range(4, 12):
+    pathlib.Path(repo2, f"s{i}.sh").unlink()   # down to 4 scripts, all missing
+r4 = subprocess.run(["bash", "/root/repos/ai-lab-fable/infra/provider-scripts/drift-check/provider-drift-check.sh"],
+                    env=env2, capture_output=True, text=True, timeout=30)
+time.sleep(0.3)
+ok(len(received) == 4 and all("missing from the deployed set" in e["message"] for e in received),
+   "below the size floor, per-script events still flow — the gate never hides a small real incident")
+
 print(f"\n{n} assertions passed")
