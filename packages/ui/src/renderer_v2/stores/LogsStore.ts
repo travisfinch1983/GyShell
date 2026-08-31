@@ -22,6 +22,8 @@ export interface LogService {
 }
 
 export class LogsStore {
+  /** Service-LIST failures — separate from the per-log `error` so one poll cannot mask the other. */
+  listError: string | null = null
   services: LogService[] = []
   selectedId: string | null = null
   logText = ''
@@ -62,9 +64,13 @@ export class LogsStore {
         this.services = Array.isArray(list) ? list : []
         // keep selection if still present
         if (this.selectedId && !this.services.some((s) => s.id === this.selectedId)) this.selectedId = null
+        this.listError = null
       })
     } catch (e) {
-      runInAction(() => { this.error = e instanceof Error ? e.message : String(e) })
+      // Its OWN field: this used to share `error` with fetchLog, whose 3s poll
+      // succeeding cleared it — a persistently failing sidebar looked healthy
+      // as long as one log kept streaming.
+      runInAction(() => { this.listError = e instanceof Error ? e.message : String(e) })
     } finally {
       runInAction(() => { this.loadingList = false })
     }

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { DataAge } from '../Common/DataAge'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, RotateCcw, Settings2, Trash2, X } from 'lucide-react'
 import { llmMetricsStore as store, type LlmMetricRow } from '../../stores/LlmMetricsStore'
@@ -88,7 +89,7 @@ export const LlmMetricsDashboard: React.FC = observer(() => {
             onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
           />
         </label>
-        <button className={styles.refreshBtn} title="Refresh" onClick={() => void store.load()}><RefreshCw size={13} /></button>
+        <DataAge ts={store.lastGoodAt} /> <button className={styles.refreshBtn} title="Refresh" onClick={() => void store.load()}><RefreshCw size={13} /></button>
       </div>
       {store.error && <div className={styles.errorBar}>{store.error}</div>}
       {store.loaded && store.rows.length === 0 && <div className={styles.loading}>No LLM metrics yet — launch a model and they'll appear here.</div>}

@@ -41,6 +41,11 @@ export const MigrateModal: React.FC<{ guest: ClusterGuest; onClose: () => void }
               ))}
             </select>
           </div>
+          {clusterStore.modalDataError && (
+            <div className={styles.modalRow} style={{ color: 'var(--danger, #e05555)', fontSize: 11.5, fontWeight: 600 }}>
+              ⚠ modal data failed to load ({clusterStore.modalDataError}) — empty pickers here mean UNKNOWN, not "no targets"; this gates a migration, so reload before proceeding
+            </div>
+          )}
           <div className={styles.modalRow}>
             <label>Target storage</label>
             <select value={storage} onChange={(e) => setStorage(e.target.value)}>

@@ -120,7 +120,8 @@ export const LogsPanel: React.FC = observer(() => {
             {store.running.map((s) => <ServiceRow key={s.id} svc={s} />)}
             {store.stopped.length > 0 && <div className={styles.groupLabel}>Stopped / Failed ({store.stopped.length})</div>}
             {store.stopped.map((s) => <ServiceRow key={s.id} svc={s} />)}
-            {store.services.length === 0 && <div className={styles.empty}>{store.loadingList ? 'Loading…' : 'No services.'}</div>}
+            {store.listError && <div className={styles.errorBar}>service list unavailable — {store.listError}</div>}
+            {store.services.length === 0 && !store.listError && <div className={styles.empty}>{store.loadingList ? 'Loading…' : 'No services.'}</div>}
           </div>
         </div>
 

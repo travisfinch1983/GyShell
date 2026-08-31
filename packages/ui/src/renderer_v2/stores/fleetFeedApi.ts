@@ -3,10 +3,11 @@
  * fleet-channel docs/FEED_CONTRACT.md + shared/fleet/feed-contracts.ts).
  * Same pattern as hermesApi.ts: ALL endpoint knowledge lives here.
  *
- * Canonical route names (/feed, /send, /agents, /guard) — the ConversationBus
- * router whose claims forced the launch-era names (threads/message/directory/
- * delivery-guard) retired in bus-retirement 3/5; the backend keeps those as
- * temporary aliases for bundles built before this rename.
+ * Canonical route names ONLY (/feed, /send, /agents, /guard). The launch-era
+ * aliases (threads/message/directory/delivery-guard) were DROPPED in 1bcd13e —
+ * this header claimed they remained for a while after, which is the
+ * doc-outlives-artifact shape that kept the contract validator calling dead
+ * routes.
  *
  * JSON rides the cluster bridge (standard #1 — the browser never talks to
  * fleetd or any 10.0.0.x address). Attachment BYTES are the one
@@ -19,6 +20,7 @@
  */
 import { FEED_VIEWER_ID, type FeedAttachmentKind, type FeedVisibility } from '@gyshell/shared'
 import type {
+
   FeedAttachmentRef,
   FeedCategory,
   FeedDirectoryEntry,
@@ -44,6 +46,29 @@ export type {
   FeedThreadRead,
   FeedVisibility,
 } from '@gyshell/shared'
+
+/**
+ * Unwrap a list envelope, LOUDLY. The old `r?.key ?? r ?? []` triple-fallback
+ * turned a backend key rename into a silent [] (or worse, returned the raw
+ * envelope object as the "array") — the writer-wrote-a-different-shape-than-
+ * the-reader-read class from the Pages incident. A drifted shape now returns
+ * [] but names itself once per key in the console, so drift is findable.
+ */
+const warnedShapes = new Set<string>()
+export function unwrapList<T>(r: unknown, what: string, ...keys: string[]): T[] {
+  const obj = r as Record<string, unknown> | null
+  for (const k of keys) {
+    const v = obj?.[k]
+    if (Array.isArray(v)) return v as T[]
+  }
+  if (Array.isArray(r)) return r as T[]
+  if (r != null && !warnedShapes.has(what)) {
+    warnedShapes.add(what)
+    console.warn(`[fleet-feed] ${what}: response matched none of [${keys.join(', ')}] and is not an array — backend shape drift? keys seen: ${obj ? Object.keys(obj).join(',') : typeof r}`)
+  }
+  return []
+}
+
 export { feedSecondsToDate } from '@gyshell/shared'
 
 /** Feed list scope — a query concept of the /feed route, not a stored shape. */
@@ -162,18 +187,18 @@ export const fleetFeedApi = {
 
   async categories(): Promise<FeedCategory[]> {
     const r = await get('/api/fleet/categories')
-    return (r?.categories ?? r ?? []) as FeedCategory[]
+    return unwrapList<FeedCategory>(r, 'categories', 'categories')
   },
 
   /** PUBLIC content only — enforced in fleetd's query, not by a caller flag. */
   async search(query: string): Promise<FeedSearchHit[]> {
     const r = await get(`/api/fleet/search${q({ q: query })}`)
-    return (r?.hits ?? r?.results ?? r ?? []) as FeedSearchHit[]
+    return unwrapList<FeedSearchHit>(r, 'search', 'hits', 'results')
   },
 
   async directory(): Promise<FeedDirectoryEntry[]> {
     const r = await get('/api/fleet/agents')
-    return (r?.agents ?? r?.directory ?? r ?? []) as FeedDirectoryEntry[]
+    return unwrapList<FeedDirectoryEntry>(r, 'directory', 'agents', 'directory')
   },
 
   async guard(): Promise<FeedGuard> {

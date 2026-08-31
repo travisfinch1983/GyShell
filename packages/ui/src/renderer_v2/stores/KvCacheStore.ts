@@ -54,6 +54,8 @@ export interface KvPoolStats {
 }
 
 export class KvCacheStore {
+  /** Time of the last SUCCESSFUL refresh — the age a frozen panel is missing. */
+  lastGoodAt: number | null = null
   eligible: KvEligibleSvc[] = []
   services: Record<string, KvOrchStats> = {}
   pools: Record<string, KvPoolStats> = {}
@@ -74,6 +76,7 @@ export class KvCacheStore {
         this.settings = (r as any)?.settings ?? { defaultEnabled: false, perService: {} }
         this.loaded = true
         this.error = ''
+        this.lastGoodAt = Date.now()
       })
     } catch (e: any) {
       runInAction(() => { this.error = e?.message || 'load failed'; this.loaded = true })

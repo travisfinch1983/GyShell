@@ -91,6 +91,13 @@ export const NotificationsPanel: React.FC<{ onClose: () => void }> = observer(({
     <>
       <div className={styles.backdrop} onClick={onClose} />
       <div className={styles.panel}>
+        {/* The stream heartbeat: without this a dead live channel froze the
+            badge and board for up to 5 minutes while looking current. */}
+        {store.streamStale && (
+          <div className={styles.errBanner ?? ''} style={{ padding: '5px 10px', fontSize: 11.5, color: 'var(--danger, #e05555)', borderBottom: '1px solid var(--border)' }}>
+            ⚠ live stream detached — this view may LAG; refreshing on a slow poll until it returns
+          </div>
+        )}
         {/*
           Forwarding state, first thing in the panel and deliberately loud when off.
           While emitters are being built they raise premature and wrong alerts, so

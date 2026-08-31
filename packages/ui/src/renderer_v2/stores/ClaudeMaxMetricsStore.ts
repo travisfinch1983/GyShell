@@ -41,6 +41,8 @@ export interface ClaudeMaxRecent {
 }
 
 export class ClaudeMaxMetricsStore {
+  /** Time of the last SUCCESSFUL refresh — the age a frozen panel is missing. */
+  lastGoodAt: number | null = null
   rows: ClaudeMaxRow[] = []
   recent: ClaudeMaxRecent[] = []
   loaded = false
@@ -57,6 +59,7 @@ export class ClaudeMaxMetricsStore {
         this.recent = (r as any)?.recent ?? []
         this.loaded = true
         this.error = ''
+        this.lastGoodAt = Date.now()
       })
     } catch (e: any) {
       runInAction(() => { this.error = e?.message || 'load failed'; this.loaded = true })

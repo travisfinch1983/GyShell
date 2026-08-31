@@ -60,7 +60,12 @@ export const GpuModal: React.FC<{ guest: ClusterGuest; onClose: () => void }> = 
             </select>
           </div>
           <div className={styles.gpuList}>
-            {!clusterStore.gpuInventory && <div className={styles.dim}>Loading GPUs…</div>}
+            {clusterStore.modalDataError && (
+              <div className={styles.dim} style={{ color: 'var(--danger, #e05555)', fontWeight: 600 }}>
+                ⚠ load failed ({clusterStore.modalDataError}) — empty lists below mean UNKNOWN, not "none available"
+              </div>
+            )}
+            {!clusterStore.gpuInventory && !clusterStore.modalDataError && <div className={styles.dim}>Loading GPUs…</div>}
             {clusterStore.gpuInventory && gpus.length === 0 && staleAssigned.length === 0 && (
               <div className={styles.dim}>No GPUs detected on {guest.node}.</div>
             )}
