@@ -90,3 +90,36 @@
 .acl { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fg-muted); justify-content: space-between; }
 .acl select, .acl input { flex: 0 0 auto; }
 .aclChk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-muted); }
+
+/* ── Auto-caption modal: output-type picker + inline guidance ──────────────────
+   The model list used to be bare ids with nothing saying what they produced. These carry
+   the explanation next to the control it explains, rather than in a tooltip nobody opens. */
+.acSection {
+  margin: 12px 0 4px; font-size: 10px; font-weight: 600; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--fg-faint);
+}
+.acHint {
+  font-size: 11px; line-height: 1.45; color: var(--fg-faint); margin: 3px 0 2px;
+  code { font-size: 10.5px; padding: 0 3px; border-radius: 3px; background: var(--bg-inset, rgba(127,127,127,.16)); }
+}
+.acWarn {
+  margin: 6px 0 2px; padding: 7px 9px; font-size: 11px; line-height: 1.45;
+  border-radius: 4px; border-left: 3px solid var(--warn, #e8a33c);
+  background: color-mix(in srgb, var(--warn, #e8a33c) 12%, transparent);
+  color: color-mix(in srgb, var(--warn, #e8a33c) 72%, #fff);
+}
+.acSeg { display: flex; gap: 6px; }
+.acSegBtn {
+  flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  padding: 7px 10px; cursor: pointer; font-size: 12px; text-align: left;
+  border-radius: 5px; border: 1px solid var(--border, rgba(127,127,127,.3));
+  background: transparent; color: var(--fg-muted);
+  &:disabled { opacity: .45; cursor: not-allowed; }
+  &:not(:disabled):hover { border-color: var(--accent, #6ea8fe); }
+}
+.acSegOn {
+  border-color: var(--accent, #6ea8fe);
+  background: color-mix(in srgb, var(--accent, #6ea8fe) 14%, transparent);
+  color: var(--fg, inherit);
+}
+.acSegExt { font-size: 10px; opacity: .7; font-family: ui-monospace, monospace; }

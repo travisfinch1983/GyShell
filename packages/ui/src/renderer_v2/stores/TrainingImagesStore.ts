@@ -150,6 +150,12 @@ export class TrainingImagesStore {
   async upscale(rel: string): Promise<any> { return ig('/upscale', { method: 'POST', body: { path: rel } }) }
   async upscaleStatus(jobId: string): Promise<any> { return ig(`/upscale-status?jobId=${jobId}`) }
   async swapUpscale(rel: string): Promise<any> { return ig('/swap-upscale', { method: 'POST', body: { path: rel } }) }
+  /** Blanket add/remove the same tags across a whole folder (or a selection) in ONE call.
+   *  `position` defaults to 'start' because kohya reads the leading token as the trigger word,
+   *  so a blanket trigger has to prepend. Per-image POST /tags would be 650+ round-trips. */
+  async tagsBatch(body: { add?: string[]; remove?: string[]; files?: string[]; position?: 'start' | 'end' }): Promise<any> {
+    return ig('/tags-batch', { method: 'POST', body: { path: this.cwd, ...body } })
+  }
   async taggers(): Promise<any> { return ig('/taggers') }
   async autoCaption(body: any): Promise<any> { return ig('/auto-caption', { method: 'POST', body }) }
   async autoCaptionStatus(jobId: string): Promise<any> { return ig(`/auto-caption-status?jobId=${jobId}`) }

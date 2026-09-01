@@ -1004,6 +1004,56 @@ export function createImagegenRouter(config) {
     } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
   });
 
+  // ---- tags-batch: add/remove the SAME tags across many images in one call ----
+  // POST { path:<folder rel>, files?:[names], add?:[], remove?:[], position?:'start'|'end' }
+  // `files` omitted = every image in the folder. Per-image round-trips (POST /tags) were the
+  // only way to do this, which is 650+ requests on a real set and no way to put a trigger word
+  // FIRST -- and position matters: kohya reads the leading token as the trigger, so a blanket
+  // trigger must prepend, not append.
+  router.post('/tags-batch', express.json(), (req, res) => {
+    const b = req.body || {};
+    let dir;
+    try { dir = safeResolve(b.path); } catch { return res.status(400).json({ error: 'bad path' }); }
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'not a directory' });
+
+    const norm = (t) => String(t).trim();
+    const add = (Array.isArray(b.add) ? b.add : []).map(norm).filter(Boolean);
+    const remove = new Set((Array.isArray(b.remove) ? b.remove : []).map(norm).filter(Boolean));
+    if (!add.length && !remove.size) return res.status(400).json({ error: 'nothing to add or remove' });
+    const atStart = b.position !== 'end';   // default: prepend (trigger-word case)
+
+    let names;
+    if (Array.isArray(b.files) && b.files.length) {
+      names = b.files.map((n) => resolveImageName(dir, String(n || ''))).filter(Boolean);
+    } else {
+      try { names = readdirSync(dir).filter((f) => isImage(f) && !isCollageFile(f)); }
+      catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    }
+
+    let changed = 0, unchanged = 0, cleared = 0; const errors = [];
+    for (const nm of names) {
+      const txt = path.join(dir, nm).replace(/\.[^/.]+$/, '') + '.txt';
+      let tags = [];
+      try { if (existsSync(txt)) tags = readFileSync(txt, 'utf8').split(',').map(norm).filter(Boolean); }
+      catch { errors.push(nm); continue; }
+      const before = tags.join(', ');
+      tags = tags.filter((t) => !remove.has(t));
+      // Re-seat rather than skip: a tag already present but in the wrong place still needs to
+      // move when the caller asked for it at the start.
+      const addSet = new Set(add);
+      tags = tags.filter((t) => !addSet.has(t));
+      tags = atStart ? [...add, ...tags] : [...tags, ...add];
+      const after = tags.join(', ');
+      if (after === before) { unchanged++; continue; }
+      try {
+        if (!tags.length) { if (existsSync(txt)) { unlinkSync(txt); cleared++; } }
+        else { writeFileSync(txt, after, 'utf8'); try { chmodSync(txt, 0o664); } catch { /* not owner */ } }
+        changed++;
+      } catch { errors.push(nm); }
+    }
+    res.json({ ok: true, total: names.length, changed, unchanged, cleared, errors });
+  });
+
   // ---- Strip booru-tag (.txt) sidecars. POST { path:<folder rel>, files?:[names] }.
   // Removes ONLY .txt tag files — never images, never .caption (natural-language).
   // Folder-wide when `files` omitted; otherwise just the named images' .txt.

@@ -6,6 +6,7 @@ import { confirmStore } from '../../stores/confirmStore'
 import { promptStore } from '../../stores/promptStore'
 import { CropEditor } from './CropEditor'
 import { AutoCaptionModal } from './AutoCaptionModal'
+import { BlanketTagModal } from './BlanketTagModal'
 import styles from './TrainingImages.module.scss'
 
 const SORT_KEYS: { v: any; label: string }[] = [
@@ -154,9 +155,14 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   const [merge, setMerge] = useState(false)
   const [crop, setCrop] = useState<{ rel: string; name: string } | null>(null)
   const [autoCap, setAutoCap] = useState(false)
+  const [blanket, setBlanket] = useState(false)
   useEffect(() => { void store.browse('') }, [])
   // In a training_set, click = crop/resize editor; elsewhere, click = zoom preview.
-  const openImage = (im: IgImage) => store.inTrainingSet ? setCrop({ rel: im.rel, name: im.name }) : setLb({ rel: im.rel, name: im.name })
+  // The crop editor is really the image DETAIL view — it carries the crop box, the .txt tag
+  // box, the .caption box and the rating together. It used to open only inside a training_set,
+  // which meant tags could not be read or edited anywhere else, even though the tagger writes
+  // sidecars into any folder. Collages still open in the lightbox.
+  const openImage = (im: IgImage) => setCrop({ rel: im.rel, name: im.name })
 
   const doSend = async () => {
     const suffix = await promptStore.prompt({ title: 'Send to training set', placeholder: 'optional suffix, e.g. yellow_glossy (blank = training_set)', confirmText: 'Send' })
@@ -218,9 +224,10 @@ export const TrainingImagesPanel: React.FC = observer(() => {
         {store.crumbs.map((c) => <span key={c.path}> / <a onClick={() => void store.browse(c.path)}>{c.name}</a></span>)}
       </div>
 
-      {store.inTrainingSet && (
+      {store.images.length > 0 && (
         <div className={styles.setbar}>
           <button className={styles.btn} onClick={() => setAutoCap(true)}>🏷 Auto-caption…</button>
+          <button className={styles.btn} title="Add or remove the same booru tags across this folder" onClick={() => setBlanket(true)}>🏷 Blanket tags…</button>
           <button className={styles.btn} onClick={() => void doCollage()}>🖼 Generate collage</button>
           {store.hasCollage && <button className={styles.btn} onClick={() => setLb({ rel: `${store.cwd}/${store.collageFirst}`, name: 'collage', bust: Date.now() })}>View collage</button>}
           <button className={styles.btn} onClick={() => void doStrip()}>🧹 Strip tags</button>
@@ -238,6 +245,8 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           <button className={styles.btn} onClick={() => setPicker('move')}>Move…</button>
           <button className={styles.btn} onClick={() => setPicker('copy')}>Copy…</button>
           {store.inTrainingSet && <button className={styles.btnDanger} onClick={() => void doDelete()}>Delete</button>}
+          <button className={styles.btn} title="Add or remove the same booru tags across the selected images" onClick={() => setBlanket(true)}>Blanket tags…</button>
+          <button className={styles.btn} title="Strip .txt tag sidecars for the selected images" onClick={() => void doStrip([...store.selected])}>Strip tags</button>
           <button className={styles.btn} title="Clear ratings + comments for the selected images" onClick={() => void doWipe([...store.selected])}>Wipe ratings</button>
           <span className={styles.msg}>{store.msg}</span>
         </div>
@@ -270,6 +279,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
       {lb && <Lightbox rel={lb.rel} name={lb.name} bust={lb.bust} onClose={() => setLb(null)} />}
       {crop && <CropEditor rel={crop.rel} name={crop.name} onClose={() => setCrop(null)} onChanged={() => void store.browse(store.cwd)} />}
       {autoCap && <AutoCaptionModal onClose={() => setAutoCap(false)} onDone={() => void store.browse(store.cwd)} />}
+      {blanket && <BlanketTagModal files={[...store.selected]} onClose={() => setBlanket(false)} onDone={() => void store.browse(store.cwd)} />}
       {picker && <Picker op={picker} files={[...store.selected]} onClose={() => setPicker(null)} onDone={() => void store.browse(store.cwd)} />}
       {merge && <MergeModal onClose={() => setMerge(false)} />}
     </div>
