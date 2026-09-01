@@ -22,6 +22,53 @@ class ClaudeInstancesStore {
   private api: InstanceManagerApi | null = null
   private loading: Promise<void> | null = null
 
+  // ── live refresh ──────────────────────────────────────────────────────────
+  // reload() only rescheduled itself while stuck on the MOCK, so once the real backend was
+  // reached the list froze until a manual page refresh. Re-logging in an instance changed its
+  // status and login badge on the server and the header kept showing the old colour — the panel
+  // was a snapshot pretending to be a live view.
+  private pollTimer: ReturnType<typeof setInterval> | null = null
+  private watchers = 0
+  private refreshing = false
+
+  /** Reload without stacking: on a slow backend a 20s poll would otherwise queue requests
+   *  faster than they complete, and two in-flight lists can resolve out of order and show
+   *  older data than what is already on screen. */
+  private async refreshOnce(): Promise<void> {
+    if (this.refreshing) return
+    this.refreshing = true
+    try { await this.reload() } finally { this.refreshing = false }
+  }
+
+  private readonly onVisibility = (): void => {
+    // Coming back to the tab is the moment the user most expects current data — it is exactly
+    // when they have just re-logged in an instance in a terminal and switched back to look.
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') void this.refreshOnce()
+  }
+
+  /**
+   * Keep the list live while a view is mounted. Returns an unsubscribe function, so the caller
+   * can hand it straight to a React effect. Refcounted: several mounted views share ONE timer.
+   * Hidden tabs skip the poll — a background tab that keeps polling costs a request every 20s
+   * for a view nobody is looking at, and the visibility handler refreshes it on return anyway.
+   */
+  startAutoRefresh(intervalMs = 20000): () => void {
+    this.watchers += 1
+    if (this.watchers === 1) {
+      this.pollTimer = setInterval(() => {
+        if (typeof document === 'undefined' || document.visibilityState === 'visible') void this.refreshOnce()
+      }, intervalMs)
+      if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.onVisibility)
+    }
+    return () => {
+      this.watchers = Math.max(0, this.watchers - 1)
+      if (this.watchers === 0) {
+        if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null }
+        if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.onVisibility)
+      }
+    }
+  }
+
   constructor() {
     makeAutoObservable(this)
   }

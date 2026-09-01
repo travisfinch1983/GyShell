@@ -1005,7 +1005,17 @@ async function refreshModelCache() {
     );
     for (const { source, ids } of perSource) {
       for (const upstreamModel of ids) {
-        const taggedId = `[${source.tag}] ${upstreamModel}`;
+        // Tag format is PARENTHESES, not brackets. `[` opens a YAML list, and these ids are
+        // written into Hermes profile YAML as model.default — `hermes config set` warns
+        // "looks like a list/mapping ... storing as string" on exactly this value. On
+        // 2026-08-31 every agent profile lost its model binding, and while the trigger was
+        // never pinned down, a value that is one careless writer away from being parsed as a
+        // list has no business being an identifier. Parens are not YAML indicator characters.
+        const taggedId = `(${source.tag}) ${upstreamModel}`;
+        // Legacy bracket id, kept as a resolvable ALIAS so anything that stored the old
+        // form — saved sessions, agent configs, other apps pointed at this proxy — keeps
+        // working instead of failing with "model not found".
+        const legacyId = `[${source.tag}] ${upstreamModel}`;
         allModels.push({
           id: taggedId,
           object: 'model',
@@ -1017,6 +1027,7 @@ async function refreshModelCache() {
           capabilities: resolveModelCapabilities(upstreamModel),
         });
         externalByModel.set(taggedId, { source, upstreamModel });
+        externalByModel.set(legacyId, { source, upstreamModel });   // alias only; not listed in the catalog
       }
     }
   } catch (e) {

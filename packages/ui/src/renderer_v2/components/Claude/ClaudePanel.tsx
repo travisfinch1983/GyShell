@@ -221,7 +221,14 @@ export const ClaudePanel: React.FC = observer(() => {
   useEffect(() => {
     if (!store.loaded) void store.load()
     void instancesStore.ensureLoaded()
+    // Keep status dots and login badges live. Without this the panel was a one-shot snapshot:
+    // re-logging in an instance updated the server and the badge stayed its old colour until a
+    // manual page refresh.
+    const stopAutoRefresh = instancesStore.startAutoRefresh()
     void uiPrefsStore.ensureLoaded()
+    // Returning the unsubscribe is what makes the refcount correct: without it the interval
+    // outlives the panel and `watchers` never returns to 0, so remounting would stack timers.
+    return stopAutoRefresh
   }, [])
   const [active, setActiveState] = useState<string>(DIRECTIVES)
   const restored = useRef(false)

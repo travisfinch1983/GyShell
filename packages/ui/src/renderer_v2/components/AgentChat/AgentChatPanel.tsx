@@ -277,6 +277,31 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
   const logRef = useRef<HTMLDivElement | null>(null)
   // Per-conversation model swap (backend 2ce0aa1): raw catalog ids verbatim.
   const [modelIds, setModelIds] = useState<string[]>([])
+
+  /**
+   * Hermes reports `current_model` in ITS OWN namespace, `<provider>:<model_id>` — e.g.
+   * `openrouter:Qwen3.8-27B-INT8-MM-Think_Preserve-256k`. That prefix is Hermes-internal and
+   * frequently does not name the provider actually serving the request: the example above is an
+   * AI-Lab proxy model, served by the proxy, labelled openrouter. Showing it raw made the header
+   * claim the chat was on a model/provider it was not, which is worse than showing nothing —
+   * Travis read it as evidence that a removed fallback was still being used.
+   *
+   * So: if the bare id (after the first colon) is a real catalog entry, use THAT. It selects the
+   * genuine option instead of synthesising an off-catalog one, and swapModel then sends an id the
+   * proxy actually knows. Only when nothing matches do we fall back to the raw string, which at
+   * that point is the honest answer — an id we cannot place.
+   */
+  const displayModelId = (raw: string | null): string => {
+    if (!raw) return ''
+    if (modelIds.includes(raw)) return raw
+    const i = raw.indexOf(':')
+    if (i > 0) {
+      const bare = raw.slice(i + 1)
+      if (modelIds.includes(bare)) return bare
+    }
+    return raw
+  }
+  const currentModelId = displayModelId(s.currentModel)
   const [swapping, setSwapping] = useState(false)
   const [swapMsg, setSwapMsg] = useState('')
   useEffect(() => { void hermesApi.listRawModelIds().then(setModelIds) }, [])
@@ -381,14 +406,16 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
         <strong>{spec?.displayName ?? agentId}</strong>
         <select
           className={styles.modelSwap}
-          value={s.currentModel ?? ''}
+          value={currentModelId}
           disabled={swapping || modelIds.length === 0}
           title="Swap this conversation's model (live session only — takes effect next turn)"
           onChange={(e) => void swapModel(e.target.value)}
         >
           {!s.currentModel && <option value="">{modelIds.length ? 'model…' : 'loading models…'}</option>}
           {/* keep an off-catalog current model selectable rather than snapping elsewhere */}
-          {s.currentModel && !modelIds.includes(s.currentModel) && <option value={s.currentModel}>{s.currentModel}</option>}
+          {currentModelId && !modelIds.includes(currentModelId) && (
+            <option value={currentModelId}>{currentModelId} (not in catalog)</option>
+          )}
           {modelIds.map((id) => <option key={id} value={id}>{id}</option>)}
         </select>
         {swapMsg && <span className={styles.dim} style={{ fontSize: 10 }}>{swapMsg}</span>}
