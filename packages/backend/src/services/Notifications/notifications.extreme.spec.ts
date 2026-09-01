@@ -108,9 +108,37 @@ async function main(): Promise<void> {
   r = await call('POST', '/api/notifications/ack', { ids: 'all' })
   assert(r.status === 200, 'ack route accepts')
 
-  // event cap
-  for (let i = 0; i < 1100; i++) svc.notify({ severity: 'info', source: 'cap', message: `m${i}` })
-  assert(svc.state().events.length <= 200, 'state returns capped slice')
+  // ── event cap + read window ────────────────────────────────────────────────
+  // 🛑 The assertion here USED to be `state().events.length <= 200`, which encoded the defect:
+  // unacked events were windowed out of the reader's view, and maintenance-claude triages from
+  // exactly this surface. An unacked warning older than the window was invisible-but-open.
+
+  // (a) ACKED events ARE still windowed — somebody has already seen them.
+  for (let i = 0; i < 400; i++) svc.notify({ severity: 'info', source: 'cap-acked', message: `a${i}` })
+  await call('POST', '/api/notifications/ack', { ids: 'all' })
+  const ackedView = svc.state().events
+  assert(ackedView.every((e) => e.acked), 'everything is acked at this point')
+  assert(ackedView.length <= 200, `acked events stay windowed (got ${ackedView.length})`)
+
+  // (b) UNACKED events are NEVER windowed out, however many arrive.
+  for (let i = 0; i < 500; i++) svc.notify({ severity: 'warning', source: 'cap-unacked', message: `u${i}` })
+  const served = svc.state().events.filter((e) => e.source === 'cap-unacked')
+  assert(served.length === 500, `every unacked event is served (got ${served.length})`)
+
+  // (c) THE REAL SCENARIO: an unacked CRITICAL must survive a flood of routine info that both
+  // exceeds the read window AND overflows the store cap.
+  svc.notify({ severity: 'critical', source: 'cap-critical', message: 'must survive the flood' })
+  for (let i = 0; i < 1500; i++) svc.notify({ severity: 'info', source: 'flood', message: `f${i}` })
+  const crit = svc.state().events.find((e) => e.source === 'cap-critical')
+  assert(!!crit, 'an unacked CRITICAL survives a 1500-event info flood')
+
+  // (d) That flood DID force unacked events out, and that loss is announced, never silent.
+  const loss = svc.state().events.find((e) => e.source === 'notify-store')
+  assert(!!loss, 'dropping unacked events emits a notify-store event')
+  assert(
+    (loss?.detail ?? '').includes('least-severe-first'),
+    'the loss event states the policy it applied',
+  )
 
   server.close()
   target.close()

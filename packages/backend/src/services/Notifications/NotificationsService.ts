@@ -103,6 +103,10 @@ function defaultConfirmations(): number {
 }
 
 const EVENT_CAP = 1000
+// How many ACKED events the panel carries alongside EVERY unacked one. Unacked events are never
+// windowed out: an acked event is one somebody has already seen, an unacked one is outstanding
+// work, and only the first is safe to hide.
+const ACKED_VIEW = 200
 const DEBUG_CAP = 500
 
 /**
@@ -341,7 +345,12 @@ export class NotificationsService {
     try {
       if (existsSync(this.eventsFile())) {
         const raw = JSON.parse(readFileSync(this.eventsFile(), 'utf8'))
-        if (Array.isArray(raw)) this.events = raw.slice(-EVENT_CAP)
+        // Load everything, then trim under the acked-first policy. A recency slice here
+        // would drop unacked events across a restart -- the exact window this fixes.
+        if (Array.isArray(raw)) {
+          this.events = raw
+          this.trimEvents()
+        }
       }
     } catch (e) {
       // Starting empty LOSES unacked events — including criticals nobody has
@@ -418,12 +427,85 @@ export class NotificationsService {
     }
   }
 
+  /**
+   * Trim to EVENT_CAP by dropping the OLDEST ACKED events first.
+   *
+   * 🛑 The previous form was `splice(0, length - EVENT_CAP)` -- acked-blind, oldest-first. A
+   * sustained flood of routine info could therefore evict an unacked CRITICAL that nobody had
+   * seen, and nothing said so. Acked means somebody looked at it; that is the only thing safe
+   * to discard under pressure.
+   *
+   * If the overflow is entirely unacked we still have to drop something, and that IS data loss
+   * -- so it is announced, never silent. An eviction nobody is told about turns a full store
+   * into a false all-clear.
+   */
+  private trimEvents(): void {
+    if (this.events.length <= EVENT_CAP) return
+
+    const overflow = this.events.length - EVENT_CAP
+    let dropped = 0
+    const kept: NotifyEvent[] = []
+    for (const e of this.events) {
+      if (dropped < overflow && e.acked) {
+        dropped++
+        continue
+      }
+      kept.push(e)
+    }
+    this.events = kept
+    if (this.events.length <= EVENT_CAP) return
+
+    // Still over cap: everything left is UNACKED, so something outstanding has to go.
+    // 🛑 Drop the LEAST SEVERE first, oldest within a severity. Purely oldest-first (my first
+    // version) let a flood of routine `info` evict an older unacked CRITICAL — the same failure
+    // one step along. Age is the right tiebreak within a severity, never across them.
+    const still = this.events.length - EVENT_CAP
+    let need = still
+    const doomed = new Set<string>()
+    for (const sev of ['info', 'warning', 'error', 'critical'] as NotifySeverity[]) {
+      if (need <= 0) break
+      for (const e of this.events) {
+        if (need <= 0) break
+        if (!e.acked && e.severity === sev && !doomed.has(e.id)) {
+          doomed.add(e.id)
+          need--
+        }
+      }
+    }
+    const lost = this.events.filter((e) => doomed.has(e.id))
+    this.events = this.events.filter((e) => !doomed.has(e.id))
+
+    const worstLost: NotifySeverity =
+      lost.some((e) => e.severity === 'critical') ? 'critical'
+        : lost.some((e) => e.severity === 'error') ? 'error'
+          : 'warning'
+    const sources = [...new Set(lost.map((e) => e.source))].slice(0, 6).join(', ')
+    // Pushed directly rather than through emit(): emit() calls trimEvents(), which would recurse.
+    // Going one over the cap here is harmless -- the next trim reclaims it from an acked event.
+    const evt: NotifyEvent = {
+      id: `${Date.now().toString(36)}-${(this.seq++).toString(36)}`,
+      ts: new Date().toISOString(),
+      acked: false,
+      severity: worstLost,
+      source: 'notify-store',
+      message: `Dropped ${still} UNACKED event(s) at the store cap`,
+      detail: `The store holds ${EVENT_CAP} events and the overflow was entirely unacked, so `
+        + `${still} outstanding event(s) were discarded least-severe-first. Worst severity lost: `
+        + `${worstLost}. Sources: ${sources || 'unknown'}. This is real loss, not housekeeping — `
+        + `something is producing events faster than they are being acked.`,
+    }
+    this.events.push(evt)
+    this.broadcast('notify:event', evt)
+  }
+
   private schedulePersist(): void {
     if (this.persistTimer) return
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null
       try {
-        writeFileSync(this.eventsFile(), JSON.stringify(this.events.slice(-EVENT_CAP), null, 2))
+        // trimEvents() already holds the cap, and it keeps unacked events preferentially --
+          // re-slicing here by recency would silently undo that on the way to disk.
+          writeFileSync(this.eventsFile(), JSON.stringify(this.events, null, 2))
         this.persistFailedReported = false
       } catch (e) {
         console.warn('[notifications] persist failed:', (e as Error).message)
@@ -483,7 +565,7 @@ export class NotificationsService {
       ...input,
     }
     this.events.push(evt)
-    if (this.events.length > EVENT_CAP) this.events.splice(0, this.events.length - EVENT_CAP)
+    this.trimEvents()
     this.schedulePersist()
     this.broadcast('notify:event', evt)
     this.routeToMaintainer(evt)
@@ -648,7 +730,7 @@ export class NotificationsService {
       detail: `${detail}. Events keep recording and badging here; only the wake-up is affected. This event is deliberately local-only.`,
     }
     this.events.push(evt)
-    if (this.events.length > EVENT_CAP) this.events.splice(0, this.events.length - EVENT_CAP)
+    this.trimEvents()
     this.schedulePersist()
     this.broadcast('notify:event', evt)
     // Deliberately NO routeToMaintainer call.
@@ -712,7 +794,15 @@ export class NotificationsService {
   state(): { health: HealthState[]; events: NotifyEvent[]; debug: Array<{ ts: string; source: string; message: string }>; intervalMs: number; routing: ReturnType<NotificationsService['routingState']> } {
     return {
       health: [...this.health.values()],
-      events: this.events.slice(-200),
+      // EVERY unacked event, plus the newest ACKED_VIEW acked ones, in original order.
+      // slice(-200) hid outstanding events behind a burst of routine ones, and this is
+      // the surface maintenance-claude triages from.
+      events: (() => {
+        const keepAcked = new Set(
+          this.events.filter((e) => e.acked).slice(-ACKED_VIEW).map((e) => e.id),
+        )
+        return this.events.filter((e) => !e.acked || keepAcked.has(e.id))
+      })(),
       debug: [...this.debugRing],
       intervalMs: this.intervalMs,
       // Carried in the main state payload so the panel can SAY it is suspended. A silent
