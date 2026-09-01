@@ -15,11 +15,22 @@
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
+import { existsSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { WebSocket } from 'ws'
 import { ClaudeConsoleService, attachCommandFor, socketForInstance } from './ClaudeConsoleService'
 
 const TARGET = process.env.CONSOLE_SPEC_TARGET || 'root@10.0.0.161'
-const KEY = process.env.CONSOLE_SPEC_KEY || path.join(os.homedir(), '.ssh', 'id_ed25519')
+// 🛑 Default to the key the SERVICE actually uses. This previously defaulted to
+// ~/.ssh/id_ed25519 — a different file that is not authorized on CT181 — so every live case
+// failed with "Permission denied (publickey,password)" and the suite reported 7 failures that
+// were entirely about the fixture. It failed identically whether the console worked or not,
+// which makes it worse than no test: it trains you to ignore a red console suite.
+const KEY = process.env.CONSOLE_SPEC_KEY
+  || process.env.AILAB_SSH_KEY
+  || (existsSync('/opt/ai-lab/.gybackend-data/ssh/id_ed25519')
+    ? '/opt/ai-lab/.gybackend-data/ssh/id_ed25519'
+    : path.join(os.homedir(), '.ssh', 'id_ed25519'))
 const TEST_SOCKET = '/tmp/console-test.sock'
 
 let failures = 0
@@ -70,8 +81,39 @@ check(
 )
 check(!/\bsu - claude2\b/.test(userCmd), 'unit: user attach no longer goes through `su -`')
 
+// ── fixture: the throwaway dtach session the live cases attach to ─────────────
+// 🛑 This used to be a MANUAL precondition stated only in the header comment, so the live cases
+// failed with "No such file or directory" for anyone who had not run it by hand. The spec now
+// owns its fixture: a red run then means the console is broken, which is the only thing a test
+// is for.
+function ssh(cmd: string): { ok: boolean; out: string } {
+  const r = spawnSync('ssh', [
+    '-i', KEY, '-o', 'StrictHostKeyChecking=no', '-o', 'BatchMode=yes',
+    '-o', 'ConnectTimeout=10', TARGET, cmd,
+  ], { encoding: 'utf8', timeout: 30000 })
+  return { ok: r.status === 0, out: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim() }
+}
+
+function setUpFixture(): void {
+  // -n: detached, no client. Idempotent: clear any leftover from an aborted run first.
+  ssh(`rm -f ${TEST_SOCKET}`)
+  const r = ssh(`dtach -n ${TEST_SOCKET} bash -i && sleep 0.3 && test -S ${TEST_SOCKET}`)
+  if (!r.ok) {
+    console.error(`  cannot create the test dtach socket on ${TARGET}: ${r.out}`)
+    console.error('  (this is a HARNESS failure, not a console failure — do not read it as one)')
+    process.exit(2)
+  }
+}
+
+function tearDownFixture(): void {
+  // Kill the holder, then the socket. Matched on the exact socket path so it cannot touch a
+  // real instance's dtach — every fleet socket is /tmp/claude*.sock, never console-test.
+  ssh(`pkill -f 'dtach -n ${TEST_SOCKET}' ; rm -f ${TEST_SOCKET}`)
+}
+
 // ── live harness: stub manager + service on a scratch port ────────────────────
 async function main() {
+  setUpFixture()
   const manager = http.createServer((_req, res) => {
     res.setHeader('content-type', 'application/json')
     res.end(JSON.stringify({ instances: [{ id: 'console-test', user: 'root', consoleSocket: TEST_SOCKET }] }))
@@ -145,6 +187,7 @@ async function main() {
 
   await new Promise<void>((r) => server.close(() => r()))
   await new Promise<void>((r) => manager.close(() => r()))
+  tearDownFixture()
 
   if (failures) {
     console.error(`\n${failures} FAILURES`)
