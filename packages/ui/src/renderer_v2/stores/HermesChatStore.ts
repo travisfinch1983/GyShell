@@ -19,6 +19,22 @@ import { isTtsEnabled, speakText, speakTextNow, type TtsOverride } from '../serv
 import { makeAutoObservable, runInAction } from 'mobx'
 import { hermesStreamEventSchema, type HermesSlashCommand, type HermesStreamEvent } from '@gyshell/shared'
 import { hermesApi } from './hermesApi'
+
+/**
+ * Conversation-load debug feed → the Bell panel's debug console (Travis's ask:
+ * a conversation that never loads was SILENT — no way to see whether the load
+ * was requested, fired, answered, or skipped). Every entry point and every
+ * early-return in the load path reports here with its reason. Fire-and-forget,
+ * never throws, never awaited; also mirrors to the browser console.
+ */
+function chatDebug(message: string): void {
+  try {
+    console.debug(`[chat-load] ${message}`)
+    const bridge = (window as any).gyshell?.cluster
+    if (bridge) void bridge.request('POST', '/api/notifications/debug', { source: 'chat-load', message }).catch(() => {})
+  } catch { /* instrumentation must never break the thing it watches */ }
+}
+const cshort = (id: string): string => id.slice(0, 8)
 import { buildViewSnapshot } from '../lib/viewContext'
 import { captureUI, hasLiveShare, acquireScreenShare } from '../services/ScreenshotService'
 
@@ -138,8 +154,16 @@ class HermesChatStore {
    * agentId routes the HTTP call.
    */
   attach(agentId: string, conversationId: string): void {
-    if (this.sources.has(conversationId)) return
+    const existing = this.sources.get(conversationId)
+    if (existing) {
+      // readyState is the tell: 0/1 = a live stream (skip is correct);
+      // 2 = a CLOSED zombie still in the map — attach would silently do
+      // nothing forever, which is exactly the invisible-failure shape.
+      chatDebug(`[${cshort(conversationId)}] attach skipped — stream already in map (readyState=${existing.readyState}${existing.readyState === 2 ? ' ⚠ CLOSED zombie' : ''}) agent=${agentId}`)
+      return
+    }
     const s = this.state(conversationId)
+    chatDebug(`[${cshort(conversationId)}] attach requested agent=${agentId} (items=${s.items.length}, restoredOnce=${this.restored.has(conversationId)}, lastSeq=${s.lastSeq})`)
     // SERVER-TRUTH RESTORE (once per conversation per page load): replay the
     // stored transcript through reduce(), then attach the live stream from the
     // last replayed seq — no duplicates, no gap.
@@ -148,6 +172,7 @@ class HermesChatStore {
       void this.restoreThenStream(agentId, conversationId)
       return
     }
+    chatDebug(`[${cshort(conversationId)}] skipping history restore (${this.restored.has(conversationId) ? 'already attempted this page load' : `items already present: ${s.items.length}`}) — opening live stream`)
     this.openStream(agentId, conversationId, s.lastSeq || undefined)
   }
 
@@ -157,28 +182,58 @@ class HermesChatStore {
     // buffer cannot speak. Cleared in finally: leaking this flag would silently disable
     // TTS for the conversation for the rest of the page's life.
     this.replaying.add(conversationId)
+    chatDebug(`[${cshort(conversationId)}] history request FIRING → GET /agents/${agentId}/history`)
+    const t0 = Date.now()
     try {
       const h = await hermesApi.history(agentId, conversationId)
       const events: Array<Record<string, unknown>> = h?.events ?? []
       let replayed = 0
+      let transcript = 0
+      let sawResumedReady = false
       for (const raw of events) {
+        // Raw-level: the schema strips unknown keys, and `resumed` is the one
+        // that distinguishes "new conversation" from "backend claims it
+        // resumed a prior session".
+        if (raw.t === 'ready' && (raw as { resumed?: unknown }).resumed === true) sawResumedReady = true
         const r = hermesStreamEventSchema.safeParse(raw)
         if (!r.success) { reportDroppedEvent('history-replay', raw, r.error); continue }
         runInAction(() => this.reduce(conversationId, r.data))
         replayed++
+        if (typeof raw.t === 'string' && /^(history|history_thought|history_tool|user|message)$/.test(raw.t)) transcript++
         if (typeof raw.seq === 'number') since = raw.seq
+      }
+      chatDebug(`[${cshort(conversationId)}] history answered in ${Date.now() - t0}ms: ${events.length} event(s), ${replayed} replayed, ${transcript} transcript turn(s)${sawResumedReady ? ', resumed=true' : ''}${since != null ? `, lastSeq=${since}` : ''}`)
+      // A resumed session with ZERO transcript is the started≠started of chat:
+      // the backend says "resumed" but returned no prior turns — typically the
+      // agent session failed to REBUILD server-side (e.g. no LLM provider
+      // configured for the profile). Without this, that failure renders
+      // identically to a genuinely empty conversation. (claude1's finding,
+      // 2026-08-31: only a bare ready event came back for loom/cinder/wren.)
+      if (sawResumedReady && transcript === 0) {
+        chatDebug(`[${cshort(conversationId)}] ⚠ RESUMED-BUT-EMPTY: backend resumed the session but returned no prior turns — the agent session likely failed to rebuild server-side`)
+        runInAction(() => this.state(conversationId).items.push({
+          id: this.nextId++, ts: Date.now(), kind: 'system',
+          text: '⚠ This conversation\'s history could not be restored: the backend resumed the session but returned no prior turns. The agent session may have failed to rebuild (check the backend log for acp-bridge errors, e.g. a missing LLM provider). Your messages still send; earlier turns are not shown.',
+        }))
       }
       // no "transcript restored" chat item — the restored transcript IS the
       // indicator, and the row re-stacked on re-attach (Travis had ~5).
-      void replayed
-    } catch { /* no history yet / route hiccup — stream from live */ }
+    } catch (e) {
+      // This catch was SILENT — a failed/never-answered history request was
+      // indistinguishable from an empty conversation. Say what happened.
+      chatDebug(`[${cshort(conversationId)}] ⚠ history request FAILED after ${Date.now() - t0}ms: ${(e as Error)?.message ?? e} — streaming live-only, no transcript restored`)
+    }
     finally { this.replaying.delete(conversationId) }
     if (since != null) this.state(conversationId).lastSeq = since
     this.openStream(agentId, conversationId, since)
   }
 
   private openStream(agentId: string, conversationId: string, since?: number): void {
-    if (this.sources.has(conversationId)) return
+    if (this.sources.has(conversationId)) {
+      chatDebug(`[${cshort(conversationId)}] openStream skipped — a stream is already in the map`)
+      return
+    }
+    chatDebug(`[${cshort(conversationId)}] opening SSE stream${since != null ? ` since=${since}` : ' (from start)'}`)
     this.agents.set(conversationId, agentId)
     const s = this.state(conversationId)
     const base = hermesApi.streamPath(agentId, conversationId)
@@ -191,7 +246,10 @@ class HermesChatStore {
       const w = this.watchdogs.get(conversationId)
       if (w) { clearInterval(w); this.watchdogs.delete(conversationId) }
     }
-    es.onopen = () => runInAction(() => { s.connected = true; s.error = null })
+    es.onopen = () => {
+      chatDebug(`[${cshort(conversationId)}] stream CONNECTED`)
+      runInAction(() => { s.connected = true; s.error = null })
+    }
     es.onmessage = (ev) => {
       lastRecv = Date.now() // ANY byte (incl. the t:ping heartbeat) proves the socket is live
       let raw: any
@@ -215,6 +273,7 @@ class HermesChatStore {
       })
     }
     es.onerror = () => {
+      chatDebug(`[${cshort(conversationId)}] stream ERROR (readyState=${es.readyState}) — tearing down, reopen scheduled`)
       runInAction(() => { s.connected = false })
       // Take control of reconnection: native EventSource retries the ORIGINAL url (stale
       // open-time cursor). Tear down and reopen from the latest folded seq instead.
@@ -227,6 +286,7 @@ class HermesChatStore {
     // the chat catches up on its own, no manual reload.
     const watchdog = setInterval(() => {
       if (Date.now() - lastRecv > 35000) {
+        chatDebug(`[${cshort(conversationId)}] ⚠ stream SILENT ${Math.round((Date.now() - lastRecv) / 1000)}s (half-open socket) — forcing reconnect`)
         runInAction(() => { s.connected = false })
         teardown()
         this.scheduleReopen(conversationId)
@@ -242,8 +302,12 @@ class HermesChatStore {
     const timer = setTimeout(() => {
       this.reconnectTimers.delete(conversationId)
       const agentId = this.agents.get(conversationId)
-      if (!agentId || !this.chats.has(conversationId)) return // ended/never-attached — don't resurrect
+      if (!agentId || !this.chats.has(conversationId)) {
+        chatDebug(`[${cshort(conversationId)}] reopen ABORTED — ${!agentId ? 'no agent mapping' : 'conversation ended'} (won't resurrect)`)
+        return // ended/never-attached — don't resurrect
+      }
       if (this.sources.has(conversationId)) return
+      chatDebug(`[${cshort(conversationId)}] reopening stream after drop`)
       this.openStream(agentId, conversationId, this.state(conversationId).lastSeq || undefined)
     }, 1200)
     this.reconnectTimers.set(conversationId, timer)
@@ -251,6 +315,7 @@ class HermesChatStore {
 
   /** Close the observer stream. The backend session keeps running (headless invariant). */
   detach(conversationId: string): void {
+    if (this.sources.has(conversationId)) chatDebug(`[${cshort(conversationId)}] detach — closing stream (agent session keeps running)`)
     this.sources.get(conversationId)?.close()
     this.sources.delete(conversationId)
     const w = this.watchdogs.get(conversationId)
