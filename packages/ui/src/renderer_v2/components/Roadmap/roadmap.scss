@@ -317,3 +317,23 @@
 }
 .rm-crumb-sep { color: var(--fg-faint); font-size: 12px; }
 .rmo-newrow { display: flex; padding: 4px 2px 2px; }
+
+
+/* Owner + cross-instance attribution.
+   Ownership is bookkeeping, not permission — any instance may edit any roadmap, and these
+   marks exist so the owner can see what happened without diffing. Only NON-owner activity is
+   badged; badging the owner's own work would make the mark meaningless. */
+.rmo-owner {
+  flex: none; width: 92px; font-size: 10px; padding: 2px 5px; border-radius: 3px;
+  border: 1px solid var(--border, rgba(127,127,127,.3));
+  background: var(--bg-inset, rgba(0,0,0,.15)); color: var(--fg-muted);
+  &::placeholder { font-style: italic; opacity: .55; }
+  &:focus { border-color: var(--accent, #6ea8fe); color: var(--fg, inherit); }
+}
+.rmb-attrib { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
+.rmb-by {
+  font-size: 9px; padding: 1px 5px; border-radius: 7px; white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--accent, #6ea8fe) 45%, transparent);
+  background: color-mix(in srgb, var(--accent, #6ea8fe) 12%, transparent);
+  color: color-mix(in srgb, var(--accent, #6ea8fe) 78%, #fff);
+}

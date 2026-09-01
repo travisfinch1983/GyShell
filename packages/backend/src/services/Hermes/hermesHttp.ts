@@ -674,6 +674,18 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
 
   // ---- Multi-project structured roadmaps (project sub-tabs + roadmap_* MCP tools) ----
   const rmDir = (): string => (roadmapFile ? dirname(roadmapFile) : '')
+  /** Who is making this change. SELF-REPORTED: attribution is BOOKKEEPING so an owner can see
+   *  what another instance did to their roadmap — it is NOT an access check, and every caller
+   *  may edit every roadmap. Body wins over header so an MCP tool can pass it explicitly. An
+   *  absent actor produces NO stamp rather than a guessed one. */
+  const actorOf = (req: Req): string | undefined => {
+    const b = (req.body || {}) as Record<string, unknown>
+    const fromBody = typeof b.actor === 'string' ? b.actor.trim() : ''
+    const h = (req.headers || {})['x-ailab-actor']
+    const fromHeader = typeof h === 'string' ? h.trim() : ''
+    return (fromBody || fromHeader) || undefined
+  }
+
   const rmLoad = (): rmStore.RoadmapData => rmStore.ensureSeeded(rmDir(), roadmapFile)
   const rmSave = (d: rmStore.RoadmapData): void => rmStore.saveRoadmaps(rmDir(), d)
   const rmCount = (nodes: rmStore.RoadmapNode[]): number => nodes.reduce((s, n) => s + 1 + rmCount(n.children || []), 0)
@@ -693,6 +705,7 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
             description: p.description ?? '',
             status: p.status ?? null,
             reportId: p.reportId ?? null,
+            owner: p.owner ?? null,
             itemsDone: prog.done, itemsOpen: prog.open,
             itemsUntracked: prog.untracked, itemsTotal: prog.total,
           }
@@ -718,6 +731,7 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
       if ('description' in b) patch.description = b.description === null ? null : String(b.description ?? '')
       if ('status' in b) patch.status = (b.status === null || b.status === '') ? null : (b.status as rmStore.ProjectStatus)
       if ('reportId' in b) patch.reportId = b.reportId === null ? null : String(b.reportId ?? '')
+      if ('owner' in b) patch.owner = b.owner === null ? null : String(b.owner ?? '')
       const d = rmLoad()
       const proj = rmStore.updateProject(d, req.params.pid, patch)
       if (!proj) return res.status(404).json({ error: 'project not found' })
@@ -731,11 +745,11 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
   router.post('/api/roadmap/projects/:pid/nodes', json, (req: Req, res: Res) => {
-    try { const d = rmLoad(); const n = rmStore.addNode(d, req.params.pid, (req.body as Record<string, unknown>) || {} as any); if (!n) return res.status(404).json({ error: 'project or parent not found' }); rmSave(d); res.json({ node: n }) }
+    try { const d = rmLoad(); const n = rmStore.addNode(d, req.params.pid, { ...((req.body as Record<string, unknown>) || {}), actor: actorOf(req) } as any); if (!n) return res.status(404).json({ error: 'project or parent not found' }); rmSave(d); res.json({ node: n }) }
     catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
   router.patch('/api/roadmap/projects/:pid/nodes/:nid', json, (req: Req, res: Res) => {
-    try { const d = rmLoad(); const n = rmStore.editNode(d, req.params.pid, req.params.nid, (req.body as any) || {}); if (!n) return res.status(404).json({ error: 'node not found' }); rmSave(d); res.json({ node: n }) }
+    try { const d = rmLoad(); const n = rmStore.editNode(d, req.params.pid, req.params.nid, { ...((req.body as any) || {}), actor: actorOf(req) }); if (!n) return res.status(404).json({ error: 'node not found' }); rmSave(d); res.json({ node: n }) }
     catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
   // Move a card between board columns. ONE call that sets done AND status together, because
@@ -749,7 +763,7 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
         return res.status(400).json({ error: `column must be one of ${rmStore.BOARD_COLUMNS.join(', ')}` })
       }
       const d = rmLoad()
-      const n = rmStore.editNode(d, req.params.pid, req.params.nid, rmStore.patchForColumn(col))
+      const n = rmStore.editNode(d, req.params.pid, req.params.nid, { ...rmStore.patchForColumn(col), actor: actorOf(req) })
       if (!n) return res.status(404).json({ error: 'node not found' })
       rmSave(d)
       res.json({ node: n, column: rmStore.boardColumn(n) })

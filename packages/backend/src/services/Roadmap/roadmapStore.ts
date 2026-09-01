@@ -54,6 +54,13 @@ export interface RoadmapNode {
   title: string
   kind: NodeKind
   done?: boolean
+  /** Set ONLY when a non-owner created this node. The owner's own additions stay unmarked —
+   *  badging everything would make the signal worthless. */
+  addedBy?: string
+  /** Set ONLY when a non-owner last changed this node (status, title, note, done). */
+  updatedBy?: string
+  /** When updatedBy last touched it — an attribution with no date ages into a mystery. */
+  updatedByAt?: string
   /** Board lane while NOT done. Meaningless when done === true; cleared on completion. */
   status?: NodeStatus
   note?: string
@@ -78,6 +85,16 @@ export interface RoadmapProject {
   status?: ProjectStatus
   /** Id of the scoping document in Reporting, if one has been written. */
   reportId?: string
+  /**
+   * Which Claude instance or agent owns this roadmap (e.g. 'claude1', 'claude2', 'claude-dhb').
+   *
+   * Ownership is BOOKKEEPING, not permission: anyone may edit any roadmap. What ownership
+   * buys is attribution — a change made by someone other than the owner is stamped with who
+   * made it, so the owner can see what happened to their project without having to diff it.
+   * Deliberately not an access check; a lock would just get worked around and would stop the
+   * cross-project help that actually happens.
+   */
+  owner?: string
 }
 
 /**
@@ -211,6 +228,7 @@ export interface ProjectPatch {
   description?: string | null
   status?: ProjectStatus | null
   reportId?: string | null
+  owner?: string | null
 }
 export function updateProject(data: RoadmapData, id: string, patch: ProjectPatch): RoadmapProject | null {
   const p = getProject(data, id); if (!p) return null
@@ -231,6 +249,11 @@ export function updateProject(data: RoadmapData, id: string, patch: ProjectPatch
     if (v) p.reportId = v; else delete p.reportId
     touched = true
   }
+  if (patch.owner !== undefined) {
+    const v = patch.owner === null ? '' : String(patch.owner).trim()
+    if (v) p.owner = v; else delete p.owner
+    touched = true
+  }
   if (touched) p.updatedAt = nowIso()
   return p
 }
@@ -240,12 +263,22 @@ export function deleteProject(data: RoadmapData, id: string): boolean {
 }
 
 // ---- node ops ----
-interface AddArgs { parentId?: string | null; title: string; kind?: NodeKind; done?: boolean; note?: string; position?: number }
+interface AddArgs { parentId?: string | null; title: string; kind?: NodeKind; done?: boolean; note?: string; position?: number; actor?: string }
+
+/** True when `actor` is someone other than the project's owner. Unknown actor or unowned
+ *  project => no stamp: inventing an attribution is worse than having none, and stamping
+ *  every edit on an unowned roadmap would be pure noise. */
+function isForeign(proj: RoadmapProject, actor?: string): boolean {
+  const a = (actor || '').trim()
+  if (!a || !proj.owner) return false
+  return a.toLowerCase() !== proj.owner.trim().toLowerCase()
+}
 export function addNode(data: RoadmapData, pid: string, a: AddArgs): RoadmapNode | null {
   const proj = getProject(data, pid); if (!proj) return null
   let arr = proj.nodes
   if (a.parentId) { const ctx = findCtx(proj, a.parentId); if (!ctx) return null; ctx.node.children = ctx.node.children || []; arr = ctx.node.children }
   const node: RoadmapNode = { id: genId('node'), title: String(a.title || ''), kind: (a.kind || 'item'), order: 0, children: [] }
+  if (isForeign(proj, a.actor)) node.addedBy = String(a.actor).trim()
   if (a.done !== undefined) node.done = !!a.done
   if (a.note !== undefined && a.note !== null) node.note = String(a.note)
   if (typeof a.position === 'number' && a.position >= 0 && a.position <= arr.length) arr.splice(a.position, 0, node)
@@ -254,7 +287,7 @@ export function addNode(data: RoadmapData, pid: string, a: AddArgs): RoadmapNode
   proj.updatedAt = nowIso()
   return node
 }
-interface EditArgs { title?: string; kind?: NodeKind; done?: boolean | null; note?: string | null; status?: NodeStatus | null }
+interface EditArgs { title?: string; kind?: NodeKind; done?: boolean | null; note?: string | null; status?: NodeStatus | null; actor?: string }
 export function editNode(data: RoadmapData, pid: string, nid: string, patch: EditArgs): RoadmapNode | null {
   const proj = getProject(data, pid); if (!proj) return null
   const ctx = findCtx(proj, nid); if (!ctx) return null
@@ -270,10 +303,14 @@ export function editNode(data: RoadmapData, pid: string, nid: string, patch: Edi
   // A finished item has no lane. Leaving a stale 'doing' on a ticked box is precisely the
   // disagreement the single-source-of-truth rule above exists to prevent.
   if (n.done === true) delete n.status
+  if (isForeign(proj, patch.actor)) {
+    n.updatedBy = String(patch.actor).trim()
+    n.updatedByAt = nowIso()
+  }
   proj.updatedAt = nowIso()
   return n
 }
-export const setDone = (data: RoadmapData, pid: string, nid: string, done: boolean) => editNode(data, pid, nid, { done })
+export const setDone = (data: RoadmapData, pid: string, nid: string, done: boolean, actor?: string) => editNode(data, pid, nid, { done, actor })
 export function removeNode(data: RoadmapData, pid: string, nid: string): boolean {
   const proj = getProject(data, pid); if (!proj) return false
   const ctx = findCtx(proj, nid); if (!ctx) return false

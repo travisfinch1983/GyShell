@@ -16,6 +16,11 @@ import './roadmap.scss'
 
 function bridge(): any { return (window as any).gyshell?.cluster }
 
+/** Edits made in this UI are Travis's, not an agent's. Sent on every write so an item he
+ *  changes on someone else's roadmap is attributed to him rather than appearing to be the
+ *  owner's own work. */
+const UI_ACTOR = 'travis'
+
 type NodeKind = 'section' | 'phase' | 'group' | 'item'
 interface RNode { id: string; title: string; kind: NodeKind; done?: boolean; note?: string; order: number; children: RNode[] }
 interface RProject { id: string; name: string; order: number; updatedAt: string; nodes: RNode[] }
@@ -60,7 +65,7 @@ export const RoadmapPanel: React.FC = () => {
 
   const patchProject = useCallback(async (pid: string, patch: Record<string, unknown>) => {
     try {
-      await bridge().request('PATCH', `/api/roadmap/projects/${encodeURIComponent(pid)}`, patch)
+      await bridge().request('PATCH', `/api/roadmap/projects/${encodeURIComponent(pid)}`, { ...patch, actor: UI_ACTOR })
       const data = await bridge().request('GET', '/api/roadmap/projects')
       setProjects(Array.isArray(data?.projects) ? data.projects : [])
     } catch (e) { setStatus('Save failed: ' + ((e as Error)?.message || e)) }
@@ -71,7 +76,7 @@ export const RoadmapPanel: React.FC = () => {
   const moveCard = useCallback(async (nodeId: string, column: BoardColumn) => {
     if (!activePid) return
     try {
-      await bridge().request('POST', `/api/roadmap/projects/${encodeURIComponent(activePid)}/nodes/${encodeURIComponent(nodeId)}/column`, { column })
+      await bridge().request('POST', `/api/roadmap/projects/${encodeURIComponent(activePid)}/nodes/${encodeURIComponent(nodeId)}/column`, { column, actor: UI_ACTOR })
       const data = await bridge().request('GET', `/api/roadmap/projects/${encodeURIComponent(activePid)}`)
       setTree(data?.project ?? null)
       const list = await bridge().request('GET', '/api/roadmap/projects')
@@ -109,13 +114,13 @@ export const RoadmapPanel: React.FC = () => {
 
   const addNode = async (parentId: string | null, title: string, kind: NodeKind) => {
     if (!activePid || !title.trim()) return
-    try { await bridge().request('POST', `/api/roadmap/projects/${encodeURIComponent(activePid)}/nodes`, { parentId, title: title.trim(), kind }); await loadTree(activePid); await loadProjects(activePid) }
+    try { await bridge().request('POST', `/api/roadmap/projects/${encodeURIComponent(activePid)}/nodes`, { parentId, title: title.trim(), kind, actor: UI_ACTOR }); await loadTree(activePid); await loadProjects(activePid) }
     catch (e) { setStatus(`add failed — ${String((e as Error)?.message ?? e)}`) }
   }
   const toggleDone = async (nid: string, done: boolean) => {
     if (!activePid) return
     setTree(t => t ? { ...t, nodes: mapTree(t.nodes, n => n.id === nid ? { ...n, done } : n) } : t)
-    try { await bridge().request('PATCH', `/api/roadmap/projects/${encodeURIComponent(activePid)}/nodes/${encodeURIComponent(nid)}`, { done }) }
+    try { await bridge().request('PATCH', `/api/roadmap/projects/${encodeURIComponent(activePid)}/nodes/${encodeURIComponent(nid)}`, { done, actor: UI_ACTOR }) }
     catch (e) {
       // Say WHY the checkbox reverted. This catch used to be silent, which hid a
       // transport bug (PATCH rejected at the bridge) for weeks — the box just
@@ -126,7 +131,7 @@ export const RoadmapPanel: React.FC = () => {
   }
   const editTitle = async (nid: string, title: string) => {
     if (!activePid || !title.trim()) return
-    try { await bridge().request('PATCH', `/api/roadmap/projects/${encodeURIComponent(activePid)}/nodes/${encodeURIComponent(nid)}`, { title: title.trim() }); await loadTree(activePid) }
+    try { await bridge().request('PATCH', `/api/roadmap/projects/${encodeURIComponent(activePid)}/nodes/${encodeURIComponent(nid)}`, { title: title.trim(), actor: UI_ACTOR }); await loadTree(activePid) }
     catch (e) { setStatus(`edit failed — ${String((e as Error)?.message ?? e)}`) }
   }
   const removeNode = async (nid: string) => {

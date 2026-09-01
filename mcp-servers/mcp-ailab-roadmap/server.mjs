@@ -92,6 +92,7 @@ tool('roadmap_add_node',
   'done. Omit parent_id for a top-level node, or pass a parent node id to nest under it (build sections -> ' +
   'phases -> items this way). Returns the new node id.',
   {
+    actor: z.string().optional().describe('YOUR instance/agent name (e.g. claude1, claude2, claude-dhb, wren). Anyone may edit ANY roadmap — this is not a permission check. If you edit a roadmap you do NOT own, your name is stamped on what you added or changed so the owner can see it. Omit it and the change lands unattributed, which is worse for them than a name. Pass it on every write.'),
     project_id: z.string().min(1),
     title: z.string().min(1).describe('The node text/title'),
     parent_id: z.string().optional().describe('Parent node id to nest under; omit for top level'),
@@ -101,24 +102,26 @@ tool('roadmap_add_node',
     position: z.number().int().optional().describe('Insert index among siblings; omit to append'),
   },
   (a) => api('POST', `/api/roadmap/projects/${enc(a.project_id)}/nodes`,
-    clean({ parentId: a.parent_id, title: a.title, kind: a.kind, done: a.done, note: a.note, position: a.position })))
+    clean({ parentId: a.parent_id, title: a.title, kind: a.kind, done: a.done, note: a.note, position: a.position, actor: a.actor })))
 
 tool('roadmap_edit_node',
   'STATE-CHANGING: Edit a node. Only the fields you pass change. done=true/false checks/unchecks; ' +
   'note="" clears the note; kind changes the node type.',
   {
+    actor: z.string().optional().describe('YOUR instance/agent name (e.g. claude1, claude2, claude-dhb, wren). Anyone may edit ANY roadmap — this is not a permission check. If you edit a roadmap you do NOT own, your name is stamped on what you added or changed so the owner can see it. Omit it and the change lands unattributed, which is worse for them than a name. Pass it on every write.'),
     project_id: z.string().min(1), node_id: z.string().min(1),
     title: z.string().optional(), kind: KIND.optional(),
     done: z.boolean().optional(), note: z.string().optional(),
   },
   (a) => api('PATCH', `/api/roadmap/projects/${enc(a.project_id)}/nodes/${enc(a.node_id)}`,
-    clean({ title: a.title, kind: a.kind, done: a.done, note: a.note })))
+    clean({ title: a.title, kind: a.kind, done: a.done, note: a.note, actor: a.actor })))
 
 tool('roadmap_set_done',
   'STATE-CHANGING: Check or uncheck a node — mark it complete/incomplete (or revisited). ' +
   'Convenience wrapper for toggling progress.',
-  { project_id: z.string().min(1), node_id: z.string().min(1), done: z.boolean().describe('true = complete, false = incomplete') },
-  (a) => api('PATCH', `/api/roadmap/projects/${enc(a.project_id)}/nodes/${enc(a.node_id)}`, { done: a.done }))
+  {
+    actor: z.string().optional().describe('YOUR instance/agent name (e.g. claude1, claude2, claude-dhb, wren). Anyone may edit ANY roadmap — this is not a permission check. If you edit a roadmap you do NOT own, your name is stamped on what you added or changed so the owner can see it. Omit it and the change lands unattributed, which is worse for them than a name. Pass it on every write.'), project_id: z.string().min(1), node_id: z.string().min(1), done: z.boolean().describe('true = complete, false = incomplete') },
+  (a) => api('PATCH', `/api/roadmap/projects/${enc(a.project_id)}/nodes/${enc(a.node_id)}`, clean({ done: a.done, actor: a.actor })))
 
 tool('roadmap_remove_node',
   'STATE-CHANGING: Remove a node and all of its children from a project.',
@@ -129,12 +132,13 @@ tool('roadmap_move_node',
   'STATE-CHANGING: Re-parent a node (or move it to the top level by omitting parent_id) and optionally set its ' +
   'position among siblings. Cannot move a node into its own subtree.',
   {
+    actor: z.string().optional().describe('YOUR instance/agent name (e.g. claude1, claude2, claude-dhb, wren). Anyone may edit ANY roadmap — this is not a permission check. If you edit a roadmap you do NOT own, your name is stamped on what you added or changed so the owner can see it. Omit it and the change lands unattributed, which is worse for them than a name. Pass it on every write.'),
     project_id: z.string().min(1), node_id: z.string().min(1),
     parent_id: z.string().optional().describe('New parent node id; omit for top level'),
     position: z.number().int().optional().describe('Index among the new siblings; omit to append'),
   },
   (a) => api('POST', `/api/roadmap/projects/${enc(a.project_id)}/nodes/${enc(a.node_id)}/move`,
-    clean({ parentId: a.parent_id ?? null, position: a.position })))
+    clean({ parentId: a.parent_id ?? null, position: a.position, actor: a.actor })))
 
 const transport = new StdioServerTransport()
 await server.connect(transport)

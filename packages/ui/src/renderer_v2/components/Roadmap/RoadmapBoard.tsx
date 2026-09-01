@@ -9,6 +9,9 @@ interface RNode {
   kind: 'section' | 'phase' | 'group' | 'item'
   done?: boolean
   status?: 'todo' | 'doing' | 'blocked'
+  addedBy?: string
+  updatedBy?: string
+  updatedByAt?: string
   note?: string
   order: number
   children: RNode[]
@@ -98,6 +101,18 @@ export const RoadmapBoard: React.FC<{
               >
                 {path && <div className="rmb-path">{path}</div>}
                 <div className="rmb-cardtitle">{node.title}</div>
+                {/* Only present when someone OTHER than the owner touched it — the owner's own
+                    work is unmarked, or the badge would be on everything and mean nothing. */}
+                {(node.addedBy || node.updatedBy) && (
+                  <div className="rmb-attrib">
+                    {node.addedBy && <span className="rmb-by" title={`Added by ${node.addedBy}`}>+{node.addedBy}</span>}
+                    {node.updatedBy && (
+                      <span className="rmb-by" title={`Last changed by ${node.updatedBy}${node.updatedByAt ? ' on ' + node.updatedByAt.slice(0, 10) : ''}`}>
+                        ✎{node.updatedBy}
+                      </span>
+                    )}
+                  </div>
+                )}
                 {/* Dragging is the primary gesture, but a select is the accessible one and the
                     only one that works on touch — a board you can only operate with a mouse
                     excludes the tablet this gets read on. */}

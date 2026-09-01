@@ -14,6 +14,7 @@ export interface ProjMeta {
   description?: string
   status?: ProjectStatus | null
   reportId?: string | null
+  owner?: string | null
   itemsDone?: number
   itemsOpen?: number
   itemsUntracked?: number
@@ -88,6 +89,15 @@ const Row: React.FC<{
             {p.name}
           </button>
 
+          {/* Who owns this roadmap. Editable inline — ownership moves between instances and a
+              field that is awkward to change goes stale, which defeats the point of showing it. */}
+          <input
+            className="rmo-owner"
+            value={p.owner ?? ''}
+            placeholder="owner"
+            title="Which Claude instance or agent owns this roadmap. Anyone may edit any roadmap; edits by others are attributed on the item."
+            onChange={(e) => void onPatch(p.id, { owner: e.target.value })}
+          />
           <span className={`rmo-age${stale ? ' rmo-age-stale' : ''}`} title={p.updatedAt}>
             {age.label}{stale ? ' · untouched' : ''}
           </span>
