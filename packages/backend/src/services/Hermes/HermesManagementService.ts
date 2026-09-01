@@ -1709,6 +1709,69 @@ export class HermesManagementService {
     }
   }
 
+  /** Every agent profile MUST define a provider named `custom`. Restored ACP sessions persist
+   *  their provider TYPE -- "custom", pointing at the AI-Lab proxy -- and Hermes rebuilds the
+   *  agent from that NAME on session/load. A profile without it throws "No LLM provider
+   *  configured", the load silently no-ops, and the chat panel renders an empty conversation with
+   *  every prior turn unreachable. `hermes profile create --clone` leaves providers empty, so a
+   *  brand-new agent carries the defect from birth.
+   *
+   *  It went unnoticed for a long time because agents whose session was still LIVE in memory never
+   *  needed a rebuild, so some conversations opened fine and others did not -- which reads as a
+   *  flaky UI rather than a config gap. (2026-08-31: every conversation in the panel was affected;
+   *  wren looked healthy while returning nothing but its ready banner.)
+   *
+   *  A profile's `providers:` block REPLACES the global one rather than merging, so defining
+   *  `custom` in the global config.yaml does NOT reach the profiles. It has to be written here. */
+  private async ensureCustomProvider(agentId: string): Promise<void> {
+    const globalCfg = `${dirname(this.profileHomeBase)}/config.yaml`
+    const script = [
+      'import sys, yaml',
+      'prof, glb = sys.argv[1], sys.argv[2]',
+      'cfg = yaml.safe_load(open(prof)) or {}',
+      'pr = cfg.get("providers")',
+      'if not isinstance(pr, dict): pr = cfg["providers"] = {}',
+      'if "custom" in pr:',
+      '    print("present"); raise SystemExit',
+      'g = (yaml.safe_load(open(glb)) or {}).get("providers") or {}',
+      'src = g.get("custom") or g.get("ailab") or {}',
+      'pr["custom"] = {',
+      '    "name": src.get("name") or "AI-Lab Universal Proxy (custom)",',
+      '    "api": src.get("api"),',
+      '    "transport": src.get("transport") or "openai_chat",',
+      '    "default_model": src.get("default_model"),',
+      '}',
+      'yaml.safe_dump(cfg, open(prof, "w"), sort_keys=False, default_flow_style=False, allow_unicode=True)',
+      'print("added")',
+    ].join('\n')
+    const b64 = Buffer.from(script, 'utf8').toString('base64')
+    try {
+      const out = (await this.ssh(
+        `printf %s ${shq(b64)} | base64 -d | python3 - ` +
+          `${shq(`${this.profileHomeBase}/${agentId}/config.yaml`)} ${shq(globalCfg)}`,
+      )).trim().split('\n').pop()
+      if (out !== 'added') return
+      console.warn(`[agent-provision] ${agentId}: profile had no \`custom\` provider — added`)
+      // A repair that fixes itself quietly is indistinguishable from never having been broken,
+      // and this one silently costs the user every past conversation until it is applied.
+      this.cfg.notify?.({
+        severity: 'warning',
+        source: 'hermes',
+        message: `Repaired ${agentId}: profile was missing its \`custom\` provider`,
+        detail:
+          'Restored chat sessions persist provider "custom". A profile without that named entry '
+          + 'cannot rebuild the agent on session/load, so every past conversation for this agent '
+          + 'opens EMPTY. Added automatically. Note a profile\'s providers block replaces the '
+          + 'global one rather than merging, so the global config cannot supply this.',
+      })
+    } catch (e) {
+      console.warn(
+        `[agent-provision] ${agentId}: could NOT ensure the \`custom\` provider `
+          + `(${(e as Error).message}) — past conversations for this agent may open empty`,
+      )
+    }
+  }
+
   private async ensureCompositeMemory(agentId: string): Promise<void> {
     if (agentId === HermesManagementService.MEMORY_TEMPLATE_PROFILE) return
     const home = this.profileHome(agentId)
@@ -3045,6 +3108,9 @@ async lintProfileDocs(agentId: string): Promise<{
     // reconciled, so every agent (freshly created or edited) converges on the standard memory
     // provider. `hermes profile create --clone` doesn't carry plugins and leaves provider empty,
     // so this is what actually makes composite the default. Shared OpenViking key is global .env.
+    // Provider named `custom` — what a restored session rebuilds from. Reconciled on every
+    // create AND edit, so a new agent can never be born unable to reopen its own history.
+    await this.ensureCustomProvider(id)
     await this.ensureCompositeMemory(id)
     // Per-agent OpenViking memory key (isolation): provision/rotate the agent's key, wire it into
     // the profile .env (capture) and the recall key-map (recall). No-op if OV admin creds unset.
