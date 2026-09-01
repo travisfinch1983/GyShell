@@ -296,7 +296,7 @@ export class UniversalProxyService {
     })
     const { createUiPrefsRouter } = await import('./proxy/ui-prefs.js')
     app.use('/api/ui-prefs', createUiPrefsRouter())
-    const { createClaudeRouter, attachClaudeTermUpgrade } = await import('./proxy/claude.js')
+    const { createClaudeRouter } = await import('./proxy/claude.js')
     app.use('/api/claude', createClaudeRouter({ exec: this.sshExec }))
     // @ts-expect-error — JS router: LoRA training-image browser/organizer (local-fs + sharp on /ai-assets/imagegen)
     const { createImagegenRouter } = await import('./proxy/llm/routes/imagegen.js')
@@ -379,7 +379,6 @@ export class UniversalProxyService {
     }))
 
     this.server = http.createServer(app)
-    attachClaudeTermUpgrade(this.server) // ttyd WebSocket reverse-proxy for the Claude tab terminals (kept during the native-console transition)
     attachAddonsUpgrade(this.server) // addon WebSocket reverse-proxy (/addons/<id>/*)
     // Native xterm.js console bridge (/api/claude/console/:id) — single-writer dtach attach
     // over SSH; replaces the ttyd terminals once verified (ailab-native-console.md).

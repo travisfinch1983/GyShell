@@ -90,9 +90,11 @@ const ConnectionView: React.FC<{ conn: any }> = observer(({ conn }) => {
       {restartMsg && <div className={styles.dim}>{restartMsg}</div>}
       {setupLog && <pre className={styles.setupLog}>{setupLog}</pre>}
 
-      {conn.provisioned
-        ? <div ref={termRef as any} className={styles.termWrap} style={{ height: termHeight }}><iframe key={reloadKey} className={styles.term} src={`${store.termUrl(conn.id)}?cb=${reloadKey}`} title={`${conn.name} terminal`} sandbox="allow-scripts allow-same-origin allow-forms" /></div>
-        : <div className={styles.termPlaceholder}><TermIcon size={16} /> No live terminal yet — click “Set up terminal” to install ttyd + the auto-starting Claude session on this container.</div>}
+      {/* The managed-ttyd terminal was removed 2026-09-01 — the native xterm.js console
+          (NativeConsole, used by InstanceView) replaces it for fleet instances. This legacy
+          CONNECTIONS view never gained one; reach a container over ssh instead.
+          Archive: /claude/archive/ttyd-decommission-20260901/ */}
+      <div className={styles.termPlaceholder}><TermIcon size={16} /> No embedded terminal for connections — use the instance tabs (native console) or ssh.</div>
 
       <FileEditor connId={conn.id} />
     </div>

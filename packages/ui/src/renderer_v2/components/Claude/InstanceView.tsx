@@ -41,7 +41,6 @@ export const InstanceView: React.FC<{ instance: ClaudeInstance }> = observer(({ 
   const { ref: termRef, height: termHeight } = usePersistedHeight(`claudeInstTerm:${instance.id}`, 960)
   const [msg, setMsg] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
-  const [useLegacyTtyd, setUseLegacyTtyd] = useState(false)
   const busy = store.busyIds.has(instance.id)
 
   const run = async (action: ControlAction, label: string, confirm?: { title: string; message: string }) => {
@@ -119,16 +118,6 @@ export const InstanceView: React.FC<{ instance: ClaudeInstance }> = observer(({ 
         <div className={styles.termPlaceholder}>
           <TermIcon size={16} /> Mock mode — no live terminal until the instance-manager (Phase 1) is deployed.
         </div>
-      ) : useLegacyTtyd ? (
-        <div ref={termRef as any} className={styles.termWrap} style={{ height: termHeight }}>
-          <iframe
-            key={reloadKey}
-            className={styles.term}
-            src={`${instance.termPath}?cb=${reloadKey}`}
-            title={`${instance.name} terminal`}
-            sandbox="allow-scripts allow-same-origin allow-forms"
-          />
-        </div>
       ) : (
         <div ref={termRef as any}>
           {/* key on reloadKey: control actions (exit/resume) swap the session under
@@ -136,13 +125,6 @@ export const InstanceView: React.FC<{ instance: ClaudeInstance }> = observer(({ 
           <NativeConsole key={reloadKey} instanceId={instance.id} height={termHeight} />
         </div>
       )}
-      <button
-        className={styles.ttydToggle}
-        title="Transition escape hatch — the ttyd path stays alive until the native console is verified"
-        onClick={() => setUseLegacyTtyd((v) => !v)}
-      >
-        {useLegacyTtyd ? 'use native console' : 'use legacy ttyd'}
-      </button>
 
       <PermissionsPicker instance={instance} />
     </div>

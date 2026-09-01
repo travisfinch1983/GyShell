@@ -44,7 +44,6 @@ export class ClaudeStore {
   async setup(id: string): Promise<any> {
     return bridge().request('POST', `/api/claude/connections/${encodeURIComponent(id)}/setup`).catch((e: any) => ({ error: e?.message || String(e) }))
   }
-  termUrl(id: string): string { return `/api/claude/term/${encodeURIComponent(id)}/` }
   async restart(id: string): Promise<any> {
     return bridge().request('POST', `/api/claude/connections/${encodeURIComponent(id)}/restart`).catch((e: any) => ({ error: e?.message || String(e) }))
   }

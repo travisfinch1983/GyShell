@@ -124,7 +124,8 @@ export function createAddonsProxyRouter() {
 }
 
 /** Attach the addon WebSocket reverse-proxy to the universal-proxy HTTP server (raw TCP pipe).
- * Coexists with attachClaudeTermUpgrade — each handler ignores URLs that aren't its prefix. */
+ * Coexists with the other upgrade handlers (the native Claude console) — each ignores URLs
+ * that are not its prefix. attachClaudeTermUpgrade was removed with ttyd on 2026-09-01. */
 export function attachAddonsUpgrade(server) {
   server.on('upgrade', (req, socket, head) => {
     const mm = /^\/addons\/([a-z0-9][a-z0-9_-]{0,63})(\/[^?]*)?/.exec(req.url || '');
