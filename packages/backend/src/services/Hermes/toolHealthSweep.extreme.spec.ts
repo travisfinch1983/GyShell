@@ -10,7 +10,16 @@
  * fleet-wide no-op — worst as applyEffectiveModel's "failed over to X" notify
  * about an action applied to NOBODY. All stubs; no ssh, no live fleet.
  */
+import { existsSync, rmSync } from 'fs'
+import { AlarmLatch } from '../AlarmLatch'
 import { HermesManagementService } from './HermesManagementService'
+
+// The latch is now PERSISTED, so the spec must own its file or it would read real fleet state
+// and leave its own behind. Set before any service is constructed.
+const LATCH = `/tmp/hermes-tool-alarms.spec.${process.pid}.json`
+process.env.HERMES_TOOL_ALARMS_FILE = LATCH
+const resetLatch = (): void => { if (existsSync(LATCH)) rmSync(LATCH) }
+resetLatch()
 
 let n = 0
 const ok = (c: boolean, m: string): void => {
@@ -93,7 +102,7 @@ async function main(): Promise<void> {
     'when the log then becomes unreadable, the sweep says UNKNOWN — it does NOT emit "recovered"')
   ok(!emitted.slice(bs).some((e) => e.message.includes('recovered')),
     'no false recovery: an alarm is retracted only by positive evidence of health')
-  ok(svc.toolHealthAlarmed.has('eta'), 'and the original alarm stays latched/open underneath')
+  ok(svc.toolAlarms().has('eta', 'gaveup'), 'and the original alarm stays latched/open underneath')
   ok((last as any).detail.includes('REMAINS OPEN'),
     'the unknown warning tells the reader the earlier alarm is still open')
 
@@ -103,6 +112,47 @@ async function main(): Promise<void> {
   await svc.sweepToolHealth()
   ok(emitted.length === br + 1 && emitted[br].severity === 'info' && emitted[br].message.includes('recovered'),
     'a readable, healthy registration DOES clear the alarm')
+
+  // ── the latch is PERSISTED: a restart must not re-announce what has not changed ──
+  // 28 ai-lab.service restarts in one dev day each re-announced every still-true condition.
+  // Nothing new had happened; the observer had forgotten. A notification must describe a change
+  // in the WORLD, not a change in the watcher.
+  svc.listAgentsStrict = async () => ['theta']
+  health.theta = { groupTools: 5, registeredTools: null, gaveUp: true, parkedServers: 0, gatewayActive: true, known: true, healthy: false, detail: 'gave up' }
+  const bth = emitted.length
+  await svc.sweepToolHealth()
+  ok(emitted.length === bth + 1, 'theta alarms once')
+
+  // A brand-new service instance = a process restart, reading the same on-disk latch.
+  const svcRestart: any = new HermesManagementService({ user: 'spec', notify: (e: any) => emitted.push(e) } as any)
+  svcRestart.listAgentsStrict = svc.listAgentsStrict
+  svcRestart.getToolHealth = svc.getToolHealth
+  await svcRestart.sweepToolHealth()
+  ok(emitted.length === bth + 1, 'ACROSS A RESTART the same still-true condition is NOT re-announced')
+
+  // Condition classes latch independently — a parked latch must not swallow a later give-up.
+  const latch = new AlarmLatch(LATCH)
+  ok(latch.has('theta', 'gaveup') && !latch.has('theta', 'parked'),
+    'the latch is keyed on (subject, condition-class), not subject alone')
+
+  // Expiry: a long-standing condition re-announces occasionally rather than going silent forever,
+  // and SAYS it is a restatement — repetition presented as news is its own kind of lie.
+  let fakeNow = Date.now()
+  const expiring = new AlarmLatch(`${LATCH}.exp`, 1000, () => fakeNow)
+  ok(expiring.claim('x', 'gaveup') === '', 'first claim announces, with no restatement note')
+  ok(expiring.claim('x', 'gaveup') === null, 'second claim inside the window is suppressed')
+  fakeNow += 2000
+  const again = expiring.claim('x', 'gaveup')
+  ok(typeof again === 'string' && again.includes('re-stated because it is still true'),
+    'after the window it re-announces AND labels itself a restatement, not news')
+
+  // Positive evidence still clears — persistence must not reopen the false-recovery door.
+  health.theta = { ...health.theta, gaveUp: false, healthy: true, registeredTools: 5, detail: 'ok' }
+  const bcl = emitted.length
+  await svc.sweepToolHealth()
+  ok(emitted.length === bcl + 1 && emitted[bcl].message.includes('recovered'),
+    'positive evidence clears the persisted latch and reports recovery once')
+  ok(!new AlarmLatch(LATCH).has('theta', 'gaveup'), 'and the cleared state is persisted, not just in memory')
 
   // ── getToolHealth parser + honest arithmetic (real method, stubbed I/O) ───
   const svc3: any = new HermesManagementService({ user: 'spec' } as any)
@@ -207,15 +257,23 @@ async function main(): Promise<void> {
   }
   const recent = localTs(3600_000)
   health.echo = { groupTools: 60, registeredTools: 58, gaveUp: false, parkedServers: 0, pending: true, gatewayRestartedAt: recent, gatewayActive: true, known: true, healthy: false, detail: 'pending' }
-  const bq = emitted.length
+  const bpend = emitted.length
   await svc.sweepToolHealth()
-  ok(emitted.length === bq + 1 && emitted[bq].severity === 'info' && emitted[bq].message.includes('pending its next turn'),
-    'a pending agent raises INFO, not the stale-set warning — no one is sent to re-run the remedy')
-  svc.toolHealthAlarmed.delete('echo')
-  health.echo.gatewayRestartedAt = localTs(25 * 3600_000)
+  ok(emitted.length === bpend, 'PENDING EMITS NOTHING — a stale registration after a reconnect is the normal RESTING state of an agent nobody has messaged, not a fault')
+
+  // The escalation that used to live here fired on five agents for a system working exactly as
+  // designed. A Hermes agent is always online; its ACP session simply is not connected until
+  // something messages it, and the refresh loads on first contact. There is no idle duration
+  // that separates "dormant by design" from "stranded", because stranded-after-reconnect does
+  // not exist — so a longer threshold would be the same bug firing less often.
+  health.echo = { ...health.echo, gatewayRestartedAt: '2026-08-20 10:00:00' }
   await svc.sweepToolHealth()
-  ok(emitted[emitted.length - 1].severity === 'warning' && emitted[emitted.length - 1].message.includes('24h+'),
-    'pending with a restart >24h old escalates — an agent that never speaks is stranded in effect')
+  ok(emitted.length === bpend, 'and it still emits nothing after DAYS of idling — no threshold resurrects a signal with no referent')
+
+  // Restore the real fetch — the block above stubs it, and leaving the stub installed would
+  // silently poison every later test in this process. I deleted this line while rewriting the
+  // pending assertions, and tsc surfaced it only as "realFetch is unused" — a dangling
+  // teardown reads as a trivial lint warning right up until it isn't.
   globalThis.fetch = realFetch
 
   // ── strict enumeration: the failover no-op family ─────────────────────────
@@ -233,6 +291,8 @@ async function main(): Promise<void> {
   try { await svc2.setGlobalNativeTools([]) } catch { threw = true }
   ok(threw, 'setGlobalNativeTools with a dead enumeration THROWS instead of returning agents:0 ok')
 
+  resetLatch()
+  if (existsSync(`${LATCH}.exp`)) rmSync(`${LATCH}.exp`)
   console.log(`\n${n} assertions passed`)
   process.exit(0)
 }

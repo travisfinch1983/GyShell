@@ -7,6 +7,7 @@ import { PROVIDER_SERVICE_CAPS } from '@gyshell/shared'
 // @ts-expect-error — proxy capability resolver ships as untyped JS (same pattern as the other proxy/*.js imports)
 import { resolveModelCapabilities } from '../Cluster/proxy/model-capabilities.js'
 import { clusterSettingsService } from '../Cluster/ClusterSettingsService'
+import { AlarmLatch } from '../AlarmLatch'
 import { loadToolRegistry, resolveSelection, unknownToolsError, readToolGroup, readToolGroupStatus, writeToolGroup } from '../mcp/toolGroups.js'
 import { nonGatewayExecutableNativeTools } from '../Agent/nativeToolsHttp.js'
 
@@ -573,89 +574,97 @@ export class HermesManagementService {
 
   /** Start the failover watcher. Idempotent. */
   private toolHealthTick = 0
-  /** Agents whose gave-up/unhealthy state has already been notified (re-armed on recovery). */
-  private readonly toolHealthAlarmed = new Set<string>()
-  /** Agents whose health could not be READ. Latched separately from a real fault so an
-   *  unreadable log neither spams every sweep nor masquerades as either verdict. */
-  private readonly toolHealthUnknown = new Set<string>()
+  /** Alarm bookkeeping for the tool-health sweep. Shared implementation (see AlarmLatch) so
+   *  every alarmed-set in the codebase means the same thing by "already announced" — the
+   *  health-dot latch in NotificationsService uses this same class. */
+  private toolAlarmsLatch: AlarmLatch | null = null
+  private toolAlarms(): AlarmLatch {
+    if (!this.toolAlarmsLatch) {
+      this.toolAlarmsLatch = new AlarmLatch(
+        process.env.HERMES_TOOL_ALARMS_FILE || '/opt/ai-lab/.gybackend-data/hermes-tool-alarms.json',
+      )
+    }
+    return this.toolAlarmsLatch
+  }
 
-  /**
-   * The tool-health SWEEP — getToolHealth existed, detected "Hermes stopped
-   * retrying its MCP connection and is running with no tools", and NOTHING
-   * polled it: the condition was permanent until a human happened to open the
-   * right UI panel. Runs every 20th failover tick (10 min at the default 30s
-   * — the check costs 2 ssh calls per agent, so it must not ride the 30s
-   * cadence). Latched per agent; recovery re-arms and says so.
-   */
+  /** The condition being alarmed about. Distinct classes latch independently, so a still-parked
+   *  server can never swallow a later, genuinely different fault on the same agent. */
+  private static readonly TOOL_FAULT_CLASSES = ['gaveup', 'parked', 'stale']
+  private static toolConditionClass(h: { gaveUp: boolean; parkedServers: number; known: boolean }): string {
+    if (!h.known) return 'unknown'
+    if (h.gaveUp) return 'gaveup'
+    if (h.parkedServers > 0) return 'parked'
+    return 'stale'
+  }
+
   private async sweepToolHealth(): Promise<void> {
     let agents: string[]
     try { agents = await this.listAgentsStrict() } catch { return }   // cannot-check ≠ failed
+    const latch = this.toolAlarms()
+    const FAULTS = HermesManagementService.TOOL_FAULT_CLASSES
+
+    /** Announce unless this exact condition is already announced and not yet due a restatement. */
+    const announce = (id: string, cls: string, ev: { severity: 'info' | 'warning' | 'error'; message: string; detail: string }): void => {
+      const suffix = latch.claim(id, cls)
+      if (suffix === null) return
+      console.warn(`[hermes-tools] ${id}: ${ev.message}`)
+      this.cfg.notify?.({ ...ev, source: 'hermes-tools', detail: ev.detail + suffix })
+    }
+
     for (const id of agents) {
       let h: Awaited<ReturnType<HermesManagementService['getToolHealth']>>
       try { h = await this.getToolHealth(id) } catch { continue }
       if (!h.gatewayActive) continue   // no gateway unit = not a gateway agent; nothing to watch
-      // UNKNOWN is handled first and on its own latch, because the two things it must
-      // never do are both below: it must not raise a fault it did not observe, and it
-      // must NOT reach the recovery branch — a log we cannot read is not evidence that
-      // a previously-alarmed agent got better. Silently clearing a real alarm is the
-      // worse of the two failures, since it also un-warns the reader.
+
+      // UNKNOWN first: it must not raise a fault it did not observe, and must NOT reach the
+      // recovery branch — an unreadable log is not evidence that an alarmed agent got better.
       if (!h.known) {
-        if (this.toolHealthUnknown.has(id)) continue
-        this.toolHealthUnknown.add(id)
-        console.warn(`[hermes-tools] ${id}: tool health unknown — ${h.detail}`)
-        this.cfg.notify?.({
-          severity: 'warning', source: 'hermes-tools',
+        const openReal = latch.anyOpen(id, FAULTS)
+        announce(id, 'unknown', {
+          severity: 'warning',
           message: `Agent '${id}' tool health cannot be determined`,
-          detail: h.detail + (this.toolHealthAlarmed.has(id)
-            ? ' An earlier alarm for this agent REMAINS OPEN and has not been cleared — this check cannot confirm a recovery.'
-            : ''),
+          detail: h.detail + (openReal ? ' An earlier alarm for this agent REMAINS OPEN and has not been cleared — this check cannot confirm a recovery.' : ''),
         })
         continue
       }
-      this.toolHealthUnknown.delete(id)
+      latch.clear(id, ['unknown'])
+
+      // PENDING IS NOT A FAULT AND NEVER WAS.
+      // A Hermes agent's ACP session is not connected until something messages it; a stale
+      // registration after a gateway restart is the normal RESTING state of an agent nobody has
+      // spoken to yet, and it self-heals on first contact. There is no idle duration that
+      // separates "dormant by design" from "stranded", because the stranded case does not exist.
+      // An earlier version escalated this at 24h and produced five warnings about a system
+      // working exactly as designed. Removed rather than re-tuned: a threshold on a signal with
+      // no referent is still noise, just less often. (Travis, via maintenance-claude, 2026-09-01.)
+      if (h.pending && !h.gaveUp && h.parkedServers === 0) {
+        latch.clear(id, FAULTS)
+        continue
+      }
+
       if (h.gaveUp || !h.healthy) {
-        if (this.toolHealthAlarmed.has(id)) continue
-        this.toolHealthAlarmed.add(id)
-        console.warn(`[hermes-tools] ${id}: ${h.detail}`)
-        // Pending = already remedied, loads on the agent's next turn: one INFO
-        // (self-clearing in the good case), escalating to warning only if the
-        // gateway restart is >24h old — an agent that never speaks stays short
-        // of its tools indefinitely, and at that point pending IS stranded.
-        if (h.pending && !h.gaveUp && (h.parkedServers === 0 || h.parkedStale)) {
-          const restartAge = h.gatewayRestartedAt ? Date.now() - new Date(h.gatewayRestartedAt.replace(' ', 'T')).getTime() : 0
-          const longPending = restartAge > 24 * 3600_000
-          this.cfg.notify?.({
-            severity: longPending ? 'warning' : 'info',
-            source: 'hermes-tools',
-            message: longPending
-              ? `Agent '${id}' has not taken a turn in 24h+ since its tool reconnect`
-              : `Agent '${id}' tool refresh is pending its next turn`,
-            detail: h.detail + (longPending ? ' The agent has been idle so long that pending is stranded in effect — check whether it should be running at all.' : ''),
-          })
-          continue
-        }
-        this.cfg.notify?.({
-          // Parked = a server whose tools are GONE until a reconnect — the
-          // same permanence as gave-up, scoped to one server: error, not the
-          // stale-set warning (m-c's catch: parking prose never matched the
-          // give-up regex, so a permanently degraded agent read as merely stale).
-          // An alarm must never assert a LIVE fault from evidence it has itself
-          // declared stale. Parked escalates to error only when the observation
-            // post-dates the reconnect.
+        const cls = HermesManagementService.toolConditionClass(h)
+        // Stale classes for THIS agent that no longer apply are cleared, so a fixed parked
+        // server does not keep a latch that would suppress a later, different alarm.
+        latch.clear(id, FAULTS.filter((c) => c !== cls))
+        announce(id, cls, {
+          // Parked = a server whose tools are GONE until a reconnect — the same permanence as
+          // gave-up, scoped to one server. An alarm must never assert a LIVE fault from evidence
+          // it has itself declared stale, so parked escalates to error only when the observation
+          // post-dates the reconnect.
           severity: h.gaveUp || (h.parkedServers > 0 && !h.parkedStale) ? 'error' : 'warning',
-          source: 'hermes-tools',
           message: h.gaveUp
             ? `Agent '${id}' is running with NO tools — Hermes gave up its MCP connection`
             : h.parkedServers > 0
               ? `Agent '${id}' has ${h.parkedServers} MCP server(s) parked after failed connections`
               : `Agent '${id}' is serving a stale tool set`,
-          // The parked detail owns its own remedy (incl. the re-park caveat);
-          // appending the generic suffix there re-created the contradiction.
+          // The parked detail owns its own remedy (incl. the re-park caveat); appending the
+          // generic suffix there re-created the contradiction.
           detail: h.parkedServers > 0
             ? h.detail
             : `${h.detail} Reconnect from the agent's Tools panel (or reconnectAgentTools) to restore; the give-up is permanent until then.`,
         })
-      } else if (this.toolHealthAlarmed.delete(id)) {
+      } else if (latch.clear(id, FAULTS).length) {
         this.cfg.notify?.({
           severity: 'info', source: 'hermes-tools',
           message: `Agent '${id}' tools recovered`,
@@ -663,6 +672,7 @@ export class HermesManagementService {
         })
       }
     }
+    latch.save()
   }
 
   startFailoverWatch(intervalMs = 30000): void {
