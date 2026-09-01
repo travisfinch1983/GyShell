@@ -681,8 +681,22 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
   router.get('/api/roadmap/projects', (_req: Req, res: Res) => {
     try {
       const d = rmLoad()
+      // The Overview table of contents renders from THIS list alone — it is not a second store
+      // to keep in sync. description/status/reportId live on the project, and progress is
+      // COMPUTED here rather than cached, so a checked box can never disagree with the summary.
       const projects = d.projects.slice().sort((a, b) => (a.order || 0) - (b.order || 0))
-        .map(p => ({ id: p.id, name: p.name, order: p.order, updatedAt: p.updatedAt, nodeCount: rmCount(p.nodes) }))
+        .map(p => {
+          const prog = rmStore.progressOf(p.nodes)
+          return {
+            id: p.id, name: p.name, order: p.order, updatedAt: p.updatedAt,
+            nodeCount: rmCount(p.nodes),
+            description: p.description ?? '',
+            status: p.status ?? null,
+            reportId: p.reportId ?? null,
+            itemsDone: prog.done, itemsOpen: prog.open,
+            itemsUntracked: prog.untracked, itemsTotal: prog.total,
+          }
+        })
       res.json({ projects })
     } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
@@ -695,7 +709,21 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
   router.patch('/api/roadmap/projects/:pid', json, (req: Req, res: Res) => {
-    try { const d = rmLoad(); if (!rmStore.renameProject(d, req.params.pid, String((req.body as { name?: unknown })?.name ?? ''))) return res.status(404).json({ error: 'project not found' }); rmSave(d); res.json({ ok: true }) }
+    try {
+      const b = (req.body || {}) as Record<string, unknown>
+      // Forward ONLY keys the caller actually sent. Defaulting name to '' meant any patch
+      // silently renamed the project to empty — a partial write clobbering by omission.
+      const patch: rmStore.ProjectPatch = {}
+      if ('name' in b) patch.name = String(b.name ?? '')
+      if ('description' in b) patch.description = b.description === null ? null : String(b.description ?? '')
+      if ('status' in b) patch.status = (b.status === null || b.status === '') ? null : (b.status as rmStore.ProjectStatus)
+      if ('reportId' in b) patch.reportId = b.reportId === null ? null : String(b.reportId ?? '')
+      const d = rmLoad()
+      const proj = rmStore.updateProject(d, req.params.pid, patch)
+      if (!proj) return res.status(404).json({ error: 'project not found' })
+      rmSave(d)
+      res.json({ ok: true, project: proj })
+    }
     catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
   router.delete('/api/roadmap/projects/:pid', (req: Req, res: Res) => {

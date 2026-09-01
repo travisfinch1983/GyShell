@@ -36,6 +36,8 @@ import { LogsPanel } from './components/Logs/LogsPanel'
 import { AiLlmPanel, AiImagePanel, AiTtsSttPanel, AiToolsPanel } from './components/AiModality/AiModalityPanels'
 import { ClaudePanel } from './components/Claude/ClaudePanel'
 import { liveConsoleStore } from './stores/LiveConsoleStore'
+import { roadmapNavStore } from './stores/RoadmapNavStore'
+import { pagesStore } from './stores/PagesStore'
 import './styles/app.scss'
 
 const store = new AppStore()
@@ -106,6 +108,17 @@ export const App: React.FC = observer(() => {
   // Terminal tab, whose right pane is the Live Console.
   React.useEffect(() => {
     return reaction(() => liveConsoleStore.focusSeq, () => handlePrimaryTabChange('terminal'))
+  }, [handlePrimaryTabChange])
+
+  // The Roadmap Overview's "Scoping doc" button surfaces the Reporting tab and opens the linked
+  // report. Same seq-bump shape as the Live Console above, for the same reason: a counter
+  // re-fires when the destination is unchanged, where a boolean would go quiet on the 2nd click.
+  React.useEffect(() => {
+    return reaction(() => roadmapNavStore.reportSeq, () => {
+      const id = roadmapNavStore.reportId
+      handlePrimaryTabChange('pages')
+      if (id) void pagesStore.openReport(id)
+    })
   }, [handlePrimaryTabChange])
 
   React.useEffect(() => {

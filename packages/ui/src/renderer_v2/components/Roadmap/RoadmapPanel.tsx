@@ -10,6 +10,7 @@
  */
 import React, { useCallback, useEffect, useState } from 'react'
 import { Map as MapIcon, Plus, RefreshCw, Trash2, ChevronRight, ChevronDown, Check } from 'lucide-react'
+import { RoadmapOverview, type ProjMeta as OverviewMeta } from './RoadmapOverview'
 import './roadmap.scss'
 
 function bridge(): any { return (window as any).gyshell?.cluster }
@@ -17,7 +18,12 @@ function bridge(): any { return (window as any).gyshell?.cluster }
 type NodeKind = 'section' | 'phase' | 'group' | 'item'
 interface RNode { id: string; title: string; kind: NodeKind; done?: boolean; note?: string; order: number; children: RNode[] }
 interface RProject { id: string; name: string; order: number; updatedAt: string; nodes: RNode[] }
-interface ProjMeta { id: string; name: string; order: number; updatedAt: string; nodeCount: number }
+type ProjMeta = OverviewMeta
+
+/** The Overview is a pseudo-project id rather than a real stored project: the table of contents
+ *  IS the project list, so making it a real project would duplicate every name and description
+ *  and immediately drift from the thing it describes. */
+const OVERVIEW = '__overview__'
 
 const KINDS: NodeKind[] = ['section', 'phase', 'group', 'item']
 
@@ -36,15 +42,25 @@ export const RoadmapPanel: React.FC = () => {
       const data = await bridge().request('GET', '/api/roadmap/projects')
       const list: ProjMeta[] = Array.isArray(data?.projects) ? data.projects : []
       setProjects(list)
-      const pick = selectId && list.some(p => p.id === selectId) ? selectId
-        : (list.some(p => p.id === activePid) ? activePid : (list[0]?.id ?? ''))
+      // Default to the Overview. Landing on whichever project happens to sort first is how a
+      // project nobody opens stays invisible — the table of contents exists to prevent that.
+      const pick = selectId && (selectId === OVERVIEW || list.some(p => p.id === selectId)) ? selectId
+        : (activePid && (activePid === OVERVIEW || list.some(p => p.id === activePid)) ? activePid : OVERVIEW)
       setActivePid(pick)
       return pick
     } catch { setState('error'); return '' }
   }, [activePid])
 
+  const patchProject = useCallback(async (pid: string, patch: Record<string, unknown>) => {
+    try {
+      await bridge().request('PATCH', `/api/roadmap/projects/${encodeURIComponent(pid)}`, patch)
+      const data = await bridge().request('GET', '/api/roadmap/projects')
+      setProjects(Array.isArray(data?.projects) ? data.projects : [])
+    } catch (e) { setStatus('Save failed: ' + ((e as Error)?.message || e)) }
+  }, [])
+
   const loadTree = useCallback(async (pid: string) => {
-    if (!pid) { setTree(null); setState('ready'); return }
+    if (!pid || pid === OVERVIEW) { setTree(null); setState('ready'); return }
     try {
       const data = await bridge().request('GET', `/api/roadmap/projects/${encodeURIComponent(pid)}`)
       setTree(data?.project ?? null); setState('ready')
@@ -108,6 +124,13 @@ export const RoadmapPanel: React.FC = () => {
       </div>
 
       <div className="rm-subtabs">
+        <button
+          className={`rm-tab rm-tab-overview${activePid === OVERVIEW ? ' active' : ''}`}
+          onClick={() => setActivePid(OVERVIEW)}
+          title="Table of contents — every project, its progress and how long since anyone touched it"
+        >
+          Overview
+        </button>
         {projects.map(p => (
           <button key={p.id} className={`rm-tab${p.id === activePid ? ' active' : ''}`} onClick={() => setActivePid(p.id)} title={`${p.nodeCount} items`}>
             {p.name}
@@ -128,8 +151,11 @@ export const RoadmapPanel: React.FC = () => {
       <div className="rm-body">
         {state === 'loading' && <div className="rm-empty">Loading…</div>}
         {state === 'error' && <div className="rm-empty rm-err">Failed to load roadmap.</div>}
-        {state === 'ready' && !tree && <div className="rm-empty">No projects yet — create one above.</div>}
-        {state === 'ready' && tree && (
+        {state === 'ready' && activePid === OVERVIEW && (
+          <RoadmapOverview projects={projects} onOpen={setActivePid} onPatch={patchProject} />
+        )}
+        {state === 'ready' && activePid !== OVERVIEW && !tree && <div className="rm-empty">No projects yet — create one above.</div>}
+        {state === 'ready' && activePid !== OVERVIEW && tree && (
           <div className="rm-tree">
             {tree.nodes.length === 0 && <div className="rm-empty">Empty — add a section or item below.</div>}
             {tree.nodes.slice().sort((a, b) => a.order - b.order).map(n => (
@@ -139,7 +165,7 @@ export const RoadmapPanel: React.FC = () => {
             <AddRow depth={0} defaultKind="section" onAdd={(title, kind) => void addNode(null, title, kind)} />
           </div>
         )}
-        {state === 'ready' && tree && projects.length > 0 && (
+        {state === 'ready' && activePid !== OVERVIEW && tree && projects.length > 0 && (
           <div className="rm-projfoot">
             <DeleteConfirm label={`Delete project "${tree.name}"`} onConfirm={() => void deleteProject(tree.id)} />
           </div>

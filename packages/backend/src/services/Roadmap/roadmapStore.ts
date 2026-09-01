@@ -24,12 +24,50 @@ export interface RoadmapNode {
   order: number
   children: RoadmapNode[]
 }
+/** A project's lifecycle state. Drives the Overview table of contents and is the seed the
+ *  Kanban view will group by — which is why it lives on the PROJECT rather than being derived
+ *  from checkbox counts: "every item done" and "we decided to stop" are different facts, and a
+ *  project nobody has started looks identical to a finished one if you only count checkboxes. */
+export type ProjectStatus = 'idea' | 'active' | 'paused' | 'blocked' | 'done'
+export const PROJECT_STATUSES: ProjectStatus[] = ['idea', 'active', 'paused', 'blocked', 'done']
+
 export interface RoadmapProject {
   id: string
   name: string
   order: number
   updatedAt: string
   nodes: RoadmapNode[]
+  /** One line for the table of contents. Optional — older projects predate it. */
+  description?: string
+  status?: ProjectStatus
+  /** Id of the scoping document in Reporting, if one has been written. */
+  reportId?: string
+}
+
+/**
+ * Leaf progress for the table of contents. Reports THREE numbers, because two of them lie.
+ *
+ * An `item` with no `done` flag is a real task that was written down and never given a
+ * checkbox. Counting only checkboxes made every project read as finished while carrying that
+ * work invisibly: measured 2026-09-01, SiteMap showed 49/49 with 25 such items, Marinara 30/30
+ * with 41, Network Overhaul 9/9 with 19 — 96 tasks across the board, including things like
+ * "Call the ISP: can you get a /29 static block". A progress bar that reaches 100% while work
+ * remains is the failure this whole Overview exists to end, so `untracked` is a first-class
+ * number rather than being folded into either side.
+ *
+ * `group`/`section`/`phase` are containers and are never counted — they would inflate both.
+ */
+export function progressOf(nodes: RoadmapNode[]): { done: number; open: number; untracked: number; total: number } {
+  let done = 0, open = 0, untracked = 0
+  const walk = (arr: RoadmapNode[]): void => {
+    for (const n of arr) {
+      if (typeof n.done === 'boolean') { if (n.done) done++; else open++ }
+      else if (n.kind === 'item') untracked++
+      if (n.children?.length) walk(n.children)
+    }
+  }
+  walk(nodes)
+  return { done, open, untracked, total: done + open + untracked }
 }
 export interface RoadmapData { projects: RoadmapProject[] }
 
@@ -126,6 +164,39 @@ export function createProject(data: RoadmapData, name: string): RoadmapProject {
 export function renameProject(data: RoadmapData, id: string, name: string): boolean {
   const p = getProject(data, id); if (!p) return false
   p.name = String(name); p.updatedAt = nowIso(); return true
+}
+
+/** Patch a project's metadata. Every field is optional and only touched when PRESENT, so a
+ *  caller editing the description cannot blank the status by omission — the same
+ *  replace-not-merge trap that made Hermes profiles lose their provider. Passing null for
+ *  description/reportId clears that one field explicitly. */
+export interface ProjectPatch {
+  name?: string
+  description?: string | null
+  status?: ProjectStatus | null
+  reportId?: string | null
+}
+export function updateProject(data: RoadmapData, id: string, patch: ProjectPatch): RoadmapProject | null {
+  const p = getProject(data, id); if (!p) return null
+  let touched = false
+  if (patch.name !== undefined) { p.name = String(patch.name); touched = true }
+  if (patch.description !== undefined) {
+    const v = patch.description === null ? '' : String(patch.description).trim()
+    if (v) p.description = v; else delete p.description
+    touched = true
+  }
+  if (patch.status !== undefined) {
+    if (patch.status && PROJECT_STATUSES.includes(patch.status)) p.status = patch.status
+    else delete p.status
+    touched = true
+  }
+  if (patch.reportId !== undefined) {
+    const v = patch.reportId === null ? '' : String(patch.reportId).trim()
+    if (v) p.reportId = v; else delete p.reportId
+    touched = true
+  }
+  if (touched) p.updatedAt = nowIso()
+  return p
 }
 export function deleteProject(data: RoadmapData, id: string): boolean {
   const i = data.projects.findIndex(p => p.id === id); if (i < 0) return false
