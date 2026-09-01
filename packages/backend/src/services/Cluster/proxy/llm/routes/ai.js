@@ -7612,6 +7612,19 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
     sdnext: '/sdapi/v1/start',
     fooocus: '/',
     invokeai: '/api/v1/app/version',
+  // Gradio serves its app at `/` and has no /health — probing the default 404s forever, so the
+  // service never flips to everHealthy and emits "never became healthy" ~20 min after a launch
+  // that in fact succeeded. Verified 2026-08-31 on a live instance: /health 404, / 200, /config 200.
+  // The watchdog behaved correctly throughout (it refused to restart something that never came
+  // up); the probe was the wrong one.
+  'kohya-ss': '/',
+  // NOT-YET-VERIFIED SIBLINGS — these also listen on a port with no entry here, so they fall back
+  // to /health and will produce the same false alarm the first time each is launched:
+  //   ollama (11434), 1cat-vllm (8000), f5tts (7860), dramabox (8885), tts-webui (7770),
+  //   fluxgym (7860), audio-tools (8890)
+  // Deliberately NOT filled in by guesswork: a wrong health path is indistinguishable from a
+  // dead service, which is the bug this comment exists because of. Add each one after probing
+  // that provider while it is actually running.
   };
 
   // ─── Training Config Management ────────────────────────────────────────
