@@ -154,6 +154,33 @@ async function main(): Promise<void> {
     'positive evidence clears the persisted latch and reports recovery once')
   ok(!new AlarmLatch(LATCH).has('theta', 'gaveup'), 'and the cleared state is persisted, not just in memory')
 
+  // ── a departed subject keeps no latch ─────────────────────────────────────
+  // m-c traced the clear-path and found the one real hole: an agent deleted and RECREATED with
+  // the same id inside the re-announce window inherits the old latch, so a genuine first fault
+  // on the new agent is silent. Leaving the roster is a THIRD kind of evidence — not "healthy"
+  // and not "unknown", but "this subject no longer exists".
+  const pl = new AlarmLatch(`${LATCH}.prune`)
+  pl.claim('gone-agent', 'gaveup')
+  pl.claim('kept-agent', 'parked')
+  pl.claim('weird:id:with:colons', 'stale')
+  const removed = pl.pruneSubjects(['kept-agent', 'weird:id:with:colons'])
+  ok(removed.length === 1 && removed[0] === 'gone-agent:gaveup',
+    'pruning drops ONLY the departed subject')
+  ok(pl.has('kept-agent', 'parked'), 'a subject still on the roster keeps its latch')
+  ok(pl.has('weird:id:with:colons', 'stale'),
+    'subject ids containing colons survive — the key splits on the LAST colon, not the first')
+  // A recreated id now starts clean, which is the whole point.
+  ok(pl.claim('gone-agent', 'gaveup') === '',
+    'a recreated id announces its first fault as NEW, not as a suppressed restatement')
+
+  // The dangerous misuse the contract warns about, asserted so the guarantee is checked and not
+  // merely documented: an EMPTY roster wipes everything. This is why the caller must pass a
+  // roster whose enumeration threw on failure — a catch-to-[] would silently disarm every alarm.
+  const pl2 = new AlarmLatch(`${LATCH}.prune2`)
+  pl2.claim('a', 'gaveup'); pl2.claim('b', 'parked')
+  ok(pl2.pruneSubjects([]).length === 2,
+    'an EMPTY roster removes every entry — proving why only a TRUSTED (throwing) enumeration may be passed')
+
   // ── getToolHealth parser + honest arithmetic (real method, stubbed I/O) ───
   const svc3: any = new HermesManagementService({ user: 'spec' } as any)
   const groupToolNames = Array.from({ length: 60 }, (_, i) => `srv__t${i}`)
@@ -293,6 +320,7 @@ async function main(): Promise<void> {
 
   resetLatch()
   if (existsSync(`${LATCH}.exp`)) rmSync(`${LATCH}.exp`)
+  for (const x of ['.prune', '.prune2']) if (existsSync(`${LATCH}${x}`)) rmSync(`${LATCH}${x}`)
   console.log(`\n${n} assertions passed`)
   process.exit(0)
 }

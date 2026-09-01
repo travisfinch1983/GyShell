@@ -672,6 +672,10 @@ export class HermesManagementService {
         })
       }
     }
+    // Agents that have LEFT the roster keep no latch: an id recreated later must start clean.
+    // Safe only because listAgentsStrict THREW on failure and the sweep returned above — so
+    // `agents` is a trusted roster here, never a best-effort or empty one.
+    latch.pruneSubjects(agents)
     latch.save()
   }
 

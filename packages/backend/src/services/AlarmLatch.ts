@@ -83,6 +83,33 @@ export class AlarmLatch {
     return gone
   }
 
+  /**
+   * Drop every entry whose subject is not in `keep`.
+   *
+   * This is NOT evidence of health. It is evidence that the SUBJECT NO LONGER EXISTS, which is a
+   * third kind of fact and the reason a recreated subject must start clean: without it, an agent
+   * deleted and recreated under the same id inherits the old one's latch, and a genuine FIRST
+   * fault on the new agent is suppressed until the re-announce window expires.
+   *
+   * ⚠ CALLER CONTRACT: pass a roster you TRUST — one whose enumeration THREW on failure rather
+   * than returning an empty list. Handed a best-effort roster, this would read a failed
+   * enumeration as "every subject is gone" and silently wipe every open alarm, which is the
+   * catch-to-empty-list family that strict enumeration exists to prevent.
+   *
+   * @returns the keys removed.
+   */
+  pruneSubjects(keep: string[]): string[] {
+    const alive = new Set(keep)
+    const removed: string[] = []
+    for (const k of Object.keys(this.map)) {
+      // Split on the LAST colon: subjects may legitimately contain one.
+      const i = k.lastIndexOf(':')
+      const subject = i < 0 ? k : k.slice(0, i)
+      if (!alive.has(subject)) { delete this.map[k]; removed.push(k); this.dirty = true }
+    }
+    return removed
+  }
+
   /** Persist if anything changed. Cheap no-op otherwise. */
   save(): void {
     if (!this.dirty) return
