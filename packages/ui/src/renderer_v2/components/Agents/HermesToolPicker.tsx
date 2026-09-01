@@ -221,15 +221,30 @@ export const HermesToolPicker: React.FC<{ agentId: string }> = ({ agentId }) => 
         </div>
       )}
 
+      {/* The warning row shows only when something is wrong, but Reconnect is offered
+          ALWAYS. Gating the control on !healthy produced two bad outcomes: a healthy-looking
+          agent whose LIVE CHAT SESSION still held an old toolset could not be reconnected at
+          all (an ACP session captures its tools when created, so a config change made outside
+          the tool editor never reaches it), and in the `pending` state the detail text read
+          "do NOT reconnect again" while sitting directly beside a Reconnect button. The advice
+          and the control now agree. */}
       {health && !health.healthy && (
         <div className={styles.formMsg} style={{ color: 'var(--warning, #fbbf24)', display: 'flex', alignItems: 'center', gap: 8 }}>
           <AlertTriangle size={14} />
           <span style={{ flex: 1 }}>{health.detail}</span>
-          <button className={styles.btn} disabled={busy} onClick={() => void reconnect()}>
-            <Plug size={13} /> Reconnect
-          </button>
         </div>
       )}
+
+      <div className={styles.formMsg} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span className={styles.dim} style={{ flex: 1, fontSize: 11 }}>
+          Reconnect restarts this agent's gateway and reloads its live chat sessions with
+          <code> --resume</code>, so conversation history is kept. Use it when the agent cannot see
+          tools you have assigned — a chat opened before a tool change keeps the older set.
+        </span>
+        <button className={styles.btn} disabled={busy} onClick={() => void reconnect()}>
+          <Plug size={13} /> Reconnect
+        </button>
+      </div>
 
       {backups.length > 0 && (
         <div style={{ margin: '6px 0' }}>
