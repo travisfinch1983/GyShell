@@ -31,6 +31,13 @@ const TAGGER_REMOTE_MODELS = '/imagegen/taggers';        // ONNX tagger model di
 const TAGGER_LOCAL_MODELS = '/ai-assets/imagegen/taggers'; // same dir, proxlab-local (for listing)
 const ONNX_PY = '/opt/imagegen-tagger/.venv/bin/python';
 const ONNX_SCRIPT = '/opt/imagegen-tagger/tagger.py';
+// onnxruntime-gpu dlopens libcudnn.so / libcublas.so by BARE name, but the pip nvidia wheels
+// drop them under site-packages/nvidia/*/lib -- not on the loader path, and shipped only with
+// versioned sonames. Without this the CUDA provider loads and REPORTS ITSELF ACTIVE, then fails
+// every image at the first Conv node ("cuDNN is unavailable"). A provider that is available but
+// cannot execute is worse than one that is absent, because the status line looks right.
+// The glob keeps this correct across python-version bumps in that venv.
+const ONNX_LD = `LD_LIBRARY_PATH="$(echo /opt/imagegen-tagger/.venv/lib/python*/site-packages/nvidia/*/lib | tr ' ' ':')"`;
 const BLIP_PY = '/opt/photo-upscale/.venv/bin/python';   // has torch cu128 + transformers
 const BLIP_SCRIPT = '/opt/imagegen-tagger/blip_caption.py';
 const BLIP_MODEL_DIR = '/imagegen/blip/hf-large';
@@ -639,7 +646,7 @@ export function createImagegenRouter(config) {
           + (b.trigger ? ` --trigger ${q(b.trigger)}` : '')
           + (b.overwrite ? ' --overwrite' : '') + ' --json';
     } else {
-      cmd = `${ONNX_PY} ${ONNX_SCRIPT} --folder ${q(remoteFolder)} --model-dir ${q(`${TAGGER_REMOTE_MODELS}/${model}`)} `
+      cmd = `${ONNX_LD} ${ONNX_PY} ${ONNX_SCRIPT} --folder ${q(remoteFolder)} --model-dir ${q(`${TAGGER_REMOTE_MODELS}/${model}`)} `
           + `--device ${device} --gpu-index ${TAGGER_GPU_INDEX} --caption-ext ${ext} `
           + `--threshold ${Number(b.threshold) || 0.35} --char-threshold ${Number(b.char_threshold) || 0.85}`
           + (b.trigger ? ` --trigger ${q(b.trigger)}` : '')

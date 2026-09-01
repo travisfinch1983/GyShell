@@ -38,7 +38,7 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; onDone: () => voi
   const [taggers, setTaggers] = useState<any[]>([])
   const [outKind, setOutKind] = useState<OutKind>('tags')
   const [model, setModel] = useState('')
-  const [device, setDevice] = useState('cpu')
+  const [device, setDevice] = useState('cuda')
   const [thr, setThr] = useState('0.35'); const [cthr, setCthr] = useState('0.85')
   const [spaces, setSpaces] = useState(false); const [trigger, setTrigger] = useState(''); const [overwrite, setOverwrite] = useState(false)
   const [status, setStatus] = useState(''); const [running, setRunning] = useState(false)
@@ -164,15 +164,10 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; onDone: () => voi
                 <option value="cpu">CPU</option><option value="cuda">GPU (4090)</option>
               </select>
             </label>
-            {/* The installed onnxruntime on the tagger host is the CPU-only build: asking for CUDA
-                falls back to CPU rather than failing, so say so instead of letting the dropdown
-                imply something the runtime will not do. The finished job reports what really ran. */}
-            {device === 'cuda' && (
-              <div className={styles.acWarn}>
-                The tagger host currently runs a CPU-only onnxruntime, so this will fall back to CPU.
-                The result line reports the provider that actually ran. (BLIP does use the 4090.)
-              </div>
-            )}
+            <div className={styles.acHint}>
+              The 4090 is shared with ComfyUI — pick CPU if you would rather not contend for it.
+              Either way the result line names the provider that actually ran.
+            </div>
           </>
         )}
 
