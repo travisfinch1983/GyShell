@@ -486,10 +486,38 @@ export class HermesManagementService {
         await this.applyEffectiveModel(key, primary, 'primary is reachable again')
       } else if (want === 'down' && active !== backup) {
         if (!served.has(backup)) {
+          // A DOUBLE failure was silent: primary down AND backup unserved
+          // logged to journald and woke nobody — the "work stops and no
+          // surface says so" family, at exactly the moment the fallback tier
+          // matters. The bug fixed here is the SILENCE, not an outage (the
+          // tier was healthy when this shipped; m-c's OR-credit signal was a
+          // deliberate credential strip reading as a payment error). Latched
+          // per role via the shared AlarmLatch; the served-list read
+          // succeeding is what makes both the claim and the clear positive
+          // evidence rather than inference.
+          const suffix = this.toolAlarms().claim(`role:${key}`, 'failover-dead')
+          if (suffix !== null) {
+            this.cfg.notify?.({
+              severity: 'warning', source: 'hermes-failover',
+              message: `Support role '${key}' has NO working tier — primary down, backup not served`,
+              detail: `Primary '${primary}' is unreachable and backup '${backup}' is not in the served-model list, so no failover is possible: the role's function (${key}) is doing nothing until one tier returns. Both names were checked against the live served list this pass.` + suffix,
+            })
+            this.toolAlarms().save()
+          }
           console.warn(`[failover] ${key}: primary '${primary}' is down and backup '${backup}' is not served either — leaving as-is`)
           continue
         }
         await this.applyEffectiveModel(key, backup, `primary '${primary}' unreachable`)
+      }
+      // Positive-evidence clear: this pass READ the served list and the double
+      // failure is not present for this role (primary up, or backup served).
+      if (this.toolAlarms().clear(`role:${key}`, ['failover-dead']).length > 0) {
+        this.toolAlarms().save()
+        this.cfg.notify?.({
+          severity: 'info', source: 'hermes-failover',
+          message: `Support role '${key}' has a working tier again`,
+          detail: `Primary '${primary}' or backup '${backup}' is back in the served-model list — failover is possible again.`,
+        })
       }
     }
   }

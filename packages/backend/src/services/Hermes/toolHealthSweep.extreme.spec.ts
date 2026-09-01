@@ -11,6 +11,8 @@
  * about an action applied to NOBODY. All stubs; no ssh, no live fleet.
  */
 import { existsSync, mkdirSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import { AlarmLatch } from '../AlarmLatch'
 import { HermesManagementService } from './HermesManagementService'
 
@@ -394,6 +396,30 @@ async function main(): Promise<void> {
   resetLatch()
   if (existsSync(`${LATCH}.exp`)) rmSync(`${LATCH}.exp`)
   for (const x of ['.prune', '.prune2', '.survive']) if (existsSync(`${LATCH}${x}`)) rmSync(`${LATCH}${x}`)
+  // ── the double failure is no longer silent ────────────────────────────────
+  // Primary down AND backup unserved logged to journald and woke nobody — at
+  // exactly the moment the fallback tier matters. Latched via the shared
+  // AlarmLatch; the served-list read is the positive evidence both ways.
+  const emitted3: Array<{ severity: string; source: string; message: string }> = []
+  const svcF: any = new HermesManagementService({ user: 'spec', notify: (e: any) => emitted3.push(e) } as any)
+  process.env.HERMES_TOOL_ALARMS_FILE = join(tmpdir(), `failover-latch-${Date.now()}.json`)
+  svcF.toolAlarmsLatch = null   // force re-read of the env path
+  svcF.loadSupportModels = () => ({ tts: { model: 'p1', primaryModel: 'p1', fallbackModel: 'b1' } })
+  svcF.applyEffectiveModel = async () => { throw new Error('spec: must not fail over with backup unserved') }
+  svcF.servedModels = async () => new Set(['something-else'])   // neither p1 nor b1 served
+  for (let i = 0; i < 3; i++) await svcF.checkSupportModelFailover()   // 3 confirmations
+  const dead = emitted3.filter((e) => e.source === 'hermes-failover' && e.message.includes('NO working tier'))
+  ok(dead.length === 1 && dead[0].severity === 'warning',
+    'primary-down + backup-unserved raises ONE latched warning — the double failure is no longer journald-only')
+  for (let i = 0; i < 2; i++) await svcF.checkSupportModelFailover()
+  ok(emitted3.filter((e) => e.message.includes('NO working tier')).length === 1,
+    'and it stays latched across passes — one wake per condition')
+  svcF.servedModels = async () => new Set(['b1'])   // backup returns to the served list
+  for (let i = 0; i < 3; i++) { svcF.applyEffectiveModel = async () => {}; await svcF.checkSupportModelFailover() }
+  ok(emitted3.some((e) => e.message.includes('working tier again')),
+    'a tier returning to the served list clears on POSITIVE evidence and says so')
+  delete process.env.HERMES_TOOL_ALARMS_FILE
+
   console.log(`\n${n} assertions passed`)
   process.exit(0)
 }
