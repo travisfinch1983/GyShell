@@ -129,12 +129,6 @@
 }
 
 // ---- multi-project roadmap (sub-tabs + tree) ----
-.rm-subtabs { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-.rm-tab { font-size: 12px; padding: 4px 12px; border: 1px solid var(--border); border-radius: 5px; background: var(--control-bg, rgba(255,255,255,0.04)); color: var(--fg); cursor: pointer; white-space: nowrap;
-  &:hover { background: var(--bg-hover, rgba(255,255,255,0.08)); }
-  &.active { background: var(--accent); border-color: var(--accent); color: var(--accent-fg, #fff); font-weight: 600; }
-  &.rm-add { padding: 4px 8px; } }
-.rm-newproj { display: inline-flex; align-items: center; gap: 4px; }
 .rm-input { font-size: 12px; padding: 3px 8px; background: var(--control-bg, rgba(0,0,0,0.2)); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; min-width: 150px; &:focus { outline: none; border-color: var(--accent); } }
 .rm-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 .rm-empty { padding: 20px 24px; font-size: 12px; color: var(--fg-faint); font-style: italic; &.rm-err { color: var(--danger, #e66); } }
@@ -165,7 +159,6 @@
 /* ── Overview: the table of contents ──────────────────────────────────────────
    Three progress colours, not two. `untracked` is its own segment because folding
    it into either side is what let projects show a full bar with work remaining. */
-.rm-tab-overview { font-weight: 600; }
 
 .rmo { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 16px; }
 
@@ -312,3 +305,15 @@
   border: 1px solid var(--border, rgba(127,127,127,.3));
   background: var(--bg-inset, rgba(0,0,0,.18)); color: var(--fg-muted);
 }
+
+
+/* Breadcrumb header — replaced the per-project tab strip, which did not survive the project
+   count growing. This is the only way back to the table of contents, so it stays visible. */
+.rm-crumb {
+  display: inline-flex; align-items: center; gap: 3px; cursor: pointer;
+  padding: 2px 6px; border-radius: 4px; font-size: 12px;
+  border: 1px solid transparent; background: transparent; color: var(--fg-muted);
+  &:hover { border-color: var(--border, rgba(127,127,127,.35)); color: var(--fg, inherit); }
+}
+.rm-crumb-sep { color: var(--fg-faint); font-size: 12px; }
+.rmo-newrow { display: flex; padding: 4px 2px 2px; }

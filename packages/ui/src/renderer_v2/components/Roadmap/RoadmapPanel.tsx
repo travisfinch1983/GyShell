@@ -9,7 +9,7 @@
  * House rules honored: no window.confirm/alert/prompt — inline inputs and a two-step delete confirm.
  */
 import React, { useCallback, useEffect, useState } from 'react'
-import { Map as MapIcon, Plus, RefreshCw, Trash2, ChevronRight, ChevronDown, Check } from 'lucide-react'
+import { Map as MapIcon, Plus, RefreshCw, Trash2, ChevronRight, ChevronDown, ChevronLeft } from 'lucide-react'
 import { RoadmapOverview, type ProjMeta as OverviewMeta } from './RoadmapOverview'
 import { RoadmapBoard, type BoardColumn } from './RoadmapBoard'
 import './roadmap.scss'
@@ -34,14 +34,15 @@ export const RoadmapPanel: React.FC = () => {
   const [tree, setTree] = useState<RProject | null>(null)
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [status, setStatus] = useState('')
-  const [newProjName, setNewProjName] = useState('')
-  const [addingProj, setAddingProj] = useState(false)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   // Tree vs Board are two lenses on the SAME nodes — not two datasets. Persisted so the choice
   // survives a reload, per project-agnostic preference.
   const [view, setView] = useState<'tree' | 'board'>(
     () => (localStorage.getItem('rm-view') === 'board' ? 'board' : 'tree'))
   const setViewPersist = (v: 'tree' | 'board') => { setView(v); localStorage.setItem('rm-view', v) }
+  // Falls back to the list entry so the breadcrumb has a name during the tree fetch rather
+  // than flashing empty.
+  const activeName = projects.find(p => p.id === activePid)?.name ?? ''
 
   const loadProjects = useCallback(async (selectId?: string) => {
     try {
@@ -91,13 +92,14 @@ export const RoadmapPanel: React.FC = () => {
 
   const refresh = async () => { setState('loading'); const pid = await loadProjects(activePid); await loadTree(pid || activePid) }
 
-  const createProject = async () => {
-    const name = newProjName.trim(); if (!name) return
+  /** The Overview owns the input now, so the name arrives as an argument. Stays on the
+   *  Overview afterwards rather than jumping into the empty new project — you almost always
+   *  want to add a description next, and that is here. */
+  const createProject = async (name: string) => {
+    const n = name.trim(); if (!n) return
     try {
-      const data = await bridge().request('POST', '/api/roadmap/projects', { name })
-      setNewProjName(''); setAddingProj(false)
-      const pid = data?.project?.id
-      await loadProjects(pid); if (pid) await loadTree(pid)
+      await bridge().request('POST', '/api/roadmap/projects', { name: n })
+      await loadProjects(OVERVIEW)
     } catch (e) { setStatus(`create failed — ${String((e as Error)?.message ?? e)}`) }
   }
   const deleteProject = async (pid: string) => {
@@ -135,9 +137,24 @@ export const RoadmapPanel: React.FC = () => {
 
   return (
     <div className="roadmap-panel">
+      {/* One way in, one way out. The per-project tab strip was removed once the Overview
+          became the table of contents: a tab per project does not survive the project count
+          growing, and two navigation paths to the same place is the clutter that hides the
+          list you actually read. Inside a project the header becomes a breadcrumb, so there
+          is always a visible way back — a strip removal without one strands you. */}
       <div className="roadmap-header">
         <MapIcon size={16} />
-        <span className="roadmap-title">Roadmap</span>
+        {activePid === OVERVIEW ? (
+          <span className="roadmap-title">Roadmap</span>
+        ) : (
+          <>
+            <button className="rm-crumb" onClick={() => setActivePid(OVERVIEW)} title="Back to the table of contents">
+              <ChevronLeft size={13} /> All projects
+            </button>
+            <span className="rm-crumb-sep">/</span>
+            <span className="roadmap-title">{tree?.name ?? activeName}</span>
+          </>
+        )}
         <span className="roadmap-status">{status}</span>
         {activePid !== OVERVIEW && (
           <span className="rm-viewtoggle">
@@ -148,36 +165,11 @@ export const RoadmapPanel: React.FC = () => {
         <button className="roadmap-btn" onClick={() => void refresh()} title="Reload"><RefreshCw size={12} /> Reload</button>
       </div>
 
-      <div className="rm-subtabs">
-        <button
-          className={`rm-tab rm-tab-overview${activePid === OVERVIEW ? ' active' : ''}`}
-          onClick={() => setActivePid(OVERVIEW)}
-          title="Table of contents — every project, its progress and how long since anyone touched it"
-        >
-          Overview
-        </button>
-        {projects.map(p => (
-          <button key={p.id} className={`rm-tab${p.id === activePid ? ' active' : ''}`} onClick={() => setActivePid(p.id)} title={`${p.nodeCount} items`}>
-            {p.name}
-          </button>
-        ))}
-        {addingProj ? (
-          <span className="rm-newproj">
-            <input autoFocus className="rm-input" placeholder="Project name…" value={newProjName}
-              onChange={e => setNewProjName(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') void createProject(); if (e.key === 'Escape') { setAddingProj(false); setNewProjName('') } }} />
-            <button className="rm-mini" onClick={() => void createProject()}><Check size={12} /></button>
-          </span>
-        ) : (
-          <button className="rm-tab rm-add" onClick={() => setAddingProj(true)} title="New project"><Plus size={12} /></button>
-        )}
-      </div>
-
       <div className="rm-body">
         {state === 'loading' && <div className="rm-empty">Loading…</div>}
         {state === 'error' && <div className="rm-empty rm-err">Failed to load roadmap.</div>}
         {state === 'ready' && activePid === OVERVIEW && (
-          <RoadmapOverview projects={projects} onOpen={setActivePid} onPatch={patchProject} />
+          <RoadmapOverview projects={projects} onOpen={setActivePid} onPatch={patchProject} onCreate={createProject} />
         )}
         {state === 'ready' && activePid !== OVERVIEW && !tree && <div className="rm-empty">No projects yet — create one above.</div>}
         {state === 'ready' && activePid !== OVERVIEW && tree && view === 'board' && (

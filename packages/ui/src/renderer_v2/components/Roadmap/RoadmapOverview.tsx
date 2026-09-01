@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { ArrowRight, FileText, Check, X } from 'lucide-react'
+import { ArrowRight, FileText, Check, X, Plus } from 'lucide-react'
 import { roadmapNavStore } from '../../stores/RoadmapNavStore'
 
 export type ProjectStatus = 'idea' | 'active' | 'paused' | 'blocked' | 'done'
@@ -190,7 +190,18 @@ export const RoadmapOverview: React.FC<{
   projects: ProjMeta[]
   onOpen: (pid: string) => void
   onPatch: (pid: string, patch: Record<string, unknown>) => Promise<void>
-}> = ({ projects, onOpen, onPatch }) => {
+  onCreate: (name: string) => Promise<void>
+}> = ({ projects, onOpen, onPatch, onCreate }) => {
+  // "New project" lives here now rather than in the old tab strip — this list IS the set of
+  // projects, so adding one belongs next to it.
+  const [adding, setAdding] = useState(false)
+  const [newName, setNewName] = useState('')
+  const create = async () => {
+    const n = newName.trim()
+    if (!n) { setAdding(false); return }
+    setNewName(''); setAdding(false)
+    await onCreate(n)
+  }
   const totals = projects.reduce(
     (a, p) => ({
       done: a.done + (p.itemsDone ?? 0),
@@ -223,6 +234,27 @@ export const RoadmapOverview: React.FC<{
       )}
       {projects.length === 0 && <div className="rm-empty">No projects yet.</div>}
       {projects.map((p) => <Row key={p.id} p={p} onOpen={onOpen} onPatch={onPatch} />)}
+
+      <div className="rmo-newrow">
+        {adding ? (
+          <span className="rmo-descedit">
+            <input
+              autoFocus className="rmo-input" placeholder="Project name…"
+              value={newName} onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void create()
+                if (e.key === 'Escape') { setAdding(false); setNewName('') }
+              }}
+            />
+            <button className="rmo-mini" onClick={() => void create()} title="Create"><Check size={11} /></button>
+            <button className="rmo-mini" onClick={() => { setAdding(false); setNewName('') }} title="Cancel"><X size={11} /></button>
+          </span>
+        ) : (
+          <button className="rmo-btn rmo-btn-ghost" onClick={() => setAdding(true)}>
+            <Plus size={12} /> New project
+          </button>
+        )}
+      </div>
     </div>
   )
 }
