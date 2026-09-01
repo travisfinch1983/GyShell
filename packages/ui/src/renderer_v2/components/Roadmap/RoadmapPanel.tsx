@@ -11,6 +11,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { Map as MapIcon, Plus, RefreshCw, Trash2, ChevronRight, ChevronDown, Check } from 'lucide-react'
 import { RoadmapOverview, type ProjMeta as OverviewMeta } from './RoadmapOverview'
+import { RoadmapBoard, type BoardColumn } from './RoadmapBoard'
 import './roadmap.scss'
 
 function bridge(): any { return (window as any).gyshell?.cluster }
@@ -36,6 +37,11 @@ export const RoadmapPanel: React.FC = () => {
   const [newProjName, setNewProjName] = useState('')
   const [addingProj, setAddingProj] = useState(false)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  // Tree vs Board are two lenses on the SAME nodes — not two datasets. Persisted so the choice
+  // survives a reload, per project-agnostic preference.
+  const [view, setView] = useState<'tree' | 'board'>(
+    () => (localStorage.getItem('rm-view') === 'board' ? 'board' : 'tree'))
+  const setViewPersist = (v: 'tree' | 'board') => { setView(v); localStorage.setItem('rm-view', v) }
 
   const loadProjects = useCallback(async (selectId?: string) => {
     try {
@@ -58,6 +64,19 @@ export const RoadmapPanel: React.FC = () => {
       setProjects(Array.isArray(data?.projects) ? data.projects : [])
     } catch (e) { setStatus('Save failed: ' + ((e as Error)?.message || e)) }
   }, [])
+
+  /** Move a card between board columns. The SERVER decides which fields a column implies
+   *  (POST …/column) — sending done+status from here would put that invariant in two places. */
+  const moveCard = useCallback(async (nodeId: string, column: BoardColumn) => {
+    if (!activePid) return
+    try {
+      await bridge().request('POST', `/api/roadmap/projects/${encodeURIComponent(activePid)}/nodes/${encodeURIComponent(nodeId)}/column`, { column })
+      const data = await bridge().request('GET', `/api/roadmap/projects/${encodeURIComponent(activePid)}`)
+      setTree(data?.project ?? null)
+      const list = await bridge().request('GET', '/api/roadmap/projects')
+      setProjects(Array.isArray(list?.projects) ? list.projects : [])
+    } catch (e) { setStatus('Move failed: ' + ((e as Error)?.message || e)) }
+  }, [activePid])
 
   const loadTree = useCallback(async (pid: string) => {
     if (!pid || pid === OVERVIEW) { setTree(null); setState('ready'); return }
@@ -120,6 +139,12 @@ export const RoadmapPanel: React.FC = () => {
         <MapIcon size={16} />
         <span className="roadmap-title">Roadmap</span>
         <span className="roadmap-status">{status}</span>
+        {activePid !== OVERVIEW && (
+          <span className="rm-viewtoggle">
+            <button className={`rm-vbtn${view === 'tree' ? ' active' : ''}`} onClick={() => setViewPersist('tree')}>Tree</button>
+            <button className={`rm-vbtn${view === 'board' ? ' active' : ''}`} onClick={() => setViewPersist('board')} title="Kanban board of this project's items">Board</button>
+          </span>
+        )}
         <button className="roadmap-btn" onClick={() => void refresh()} title="Reload"><RefreshCw size={12} /> Reload</button>
       </div>
 
@@ -155,7 +180,10 @@ export const RoadmapPanel: React.FC = () => {
           <RoadmapOverview projects={projects} onOpen={setActivePid} onPatch={patchProject} />
         )}
         {state === 'ready' && activePid !== OVERVIEW && !tree && <div className="rm-empty">No projects yet — create one above.</div>}
-        {state === 'ready' && activePid !== OVERVIEW && tree && (
+        {state === 'ready' && activePid !== OVERVIEW && tree && view === 'board' && (
+          <RoadmapBoard nodes={tree.nodes} onMove={moveCard} />
+        )}
+        {state === 'ready' && activePid !== OVERVIEW && tree && view === 'tree' && (
           <div className="rm-tree">
             {tree.nodes.length === 0 && <div className="rm-empty">Empty — add a section or item below.</div>}
             {tree.nodes.slice().sort((a, b) => a.order - b.order).map(n => (

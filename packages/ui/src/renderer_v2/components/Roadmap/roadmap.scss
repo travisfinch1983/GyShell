@@ -259,3 +259,56 @@
 }
 .rmo-btn-go { border-color: color-mix(in srgb, var(--accent, #6ea8fe) 55%, transparent); }
 .rmo-btn-ghost { opacity: .6; }
+
+
+/* ── Kanban board (item level, within a project) ─────────────────────────────── */
+.rm-viewtoggle { display: inline-flex; margin-left: auto; margin-right: 6px; border-radius: 4px; overflow: hidden;
+  border: 1px solid var(--border, rgba(127,127,127,.3)); }
+.rm-vbtn {
+  padding: 3px 10px; font-size: 11px; cursor: pointer; border: none; background: transparent;
+  color: var(--fg-muted);
+  &.active { background: color-mix(in srgb, var(--accent, #6ea8fe) 22%, transparent); color: var(--fg, inherit); }
+  &:hover:not(.active) { background: color-mix(in srgb, var(--fg, #888) 10%, transparent); }
+}
+
+.rmb { display: flex; gap: 10px; padding: 10px; align-items: flex-start; overflow-x: auto; height: 100%; }
+.rmb-col {
+  flex: 1 1 0; min-width: 190px; display: flex; flex-direction: column; gap: 6px;
+  padding: 8px; border-radius: 6px; max-height: 100%;
+  border: 1px solid var(--border, rgba(127,127,127,.22));
+  background: color-mix(in srgb, var(--fg, #888) 3%, transparent);
+}
+.rmb-over { border-color: var(--accent, #6ea8fe); background: color-mix(in srgb, var(--accent, #6ea8fe) 10%, transparent); }
+/* Untracked is amber on purpose: it is a queue to empty, not a resting place. */
+.rmb-col-untracked { border-left: 3px solid var(--warn, #e8a33c); }
+.rmb-col-done      { border-left: 3px solid #4ea36a; }
+.rmb-col-blocked   { border-left: 3px solid #e05252; }
+
+.rmb-head { display: flex; align-items: center; gap: 6px; }
+.rmb-title { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--fg-muted); }
+.rmb-count {
+  margin-left: auto; font-size: 10px; padding: 1px 6px; border-radius: 8px;
+  background: var(--bg-inset, rgba(127,127,127,.2)); color: var(--fg-muted);
+}
+.rmb-blurb { font-size: 10px; color: var(--fg-faint); font-style: italic; margin-top: -2px; }
+
+.rmb-cards { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 40px; }
+.rmb-empty { font-size: 11px; color: var(--fg-faint); text-align: center; padding: 8px 0; }
+
+.rmb-card {
+  display: flex; flex-direction: column; gap: 4px; cursor: grab;
+  padding: 7px 8px; border-radius: 5px;
+  border: 1px solid var(--border, rgba(127,127,127,.28));
+  background: var(--bg-panel, rgba(0,0,0,.22));
+  &:hover { border-color: color-mix(in srgb, var(--accent, #6ea8fe) 50%, transparent); }
+  &:active { cursor: grabbing; }
+}
+.rmb-dragging { opacity: .45; }
+.rmb-busy { opacity: .6; pointer-events: none; }
+.rmb-path { font-size: 9.5px; color: var(--fg-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rmb-cardtitle { font-size: 11.5px; line-height: 1.35; color: var(--fg, inherit); }
+.rmb-move {
+  margin-top: 2px; font-size: 10px; padding: 2px 4px; border-radius: 3px; cursor: pointer;
+  border: 1px solid var(--border, rgba(127,127,127,.3));
+  background: var(--bg-inset, rgba(0,0,0,.18)); color: var(--fg-muted);
+}

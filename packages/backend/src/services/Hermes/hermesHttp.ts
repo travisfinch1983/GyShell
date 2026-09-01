@@ -738,6 +738,23 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     try { const d = rmLoad(); const n = rmStore.editNode(d, req.params.pid, req.params.nid, (req.body as any) || {}); if (!n) return res.status(404).json({ error: 'node not found' }); rmSave(d); res.json({ node: n }) }
     catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
   })
+  // Move a card between board columns. ONE call that sets done AND status together, because
+  // the column->fields mapping is an invariant, not a client concern: a UI that sent them
+  // separately could leave a ticked box carrying a stale 'doing' lane, and the tree and the
+  // board would then disagree about the same node.
+  router.post('/api/roadmap/projects/:pid/nodes/:nid/column', json, (req: Req, res: Res) => {
+    try {
+      const col = String((req.body as { column?: unknown })?.column ?? '') as rmStore.BoardColumn
+      if (!rmStore.BOARD_COLUMNS.includes(col)) {
+        return res.status(400).json({ error: `column must be one of ${rmStore.BOARD_COLUMNS.join(', ')}` })
+      }
+      const d = rmLoad()
+      const n = rmStore.editNode(d, req.params.pid, req.params.nid, rmStore.patchForColumn(col))
+      if (!n) return res.status(404).json({ error: 'node not found' })
+      rmSave(d)
+      res.json({ node: n, column: rmStore.boardColumn(n) })
+    } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }
+  })
   router.delete('/api/roadmap/projects/:pid/nodes/:nid', (req: Req, res: Res) => {
     try { const d = rmLoad(); if (!rmStore.removeNode(d, req.params.pid, req.params.nid)) return res.status(404).json({ error: 'node not found' }); rmSave(d); res.json({ ok: true }) }
     catch (e) { res.status(500).json({ error: String((e as Error).message) }) }

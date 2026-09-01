@@ -15,11 +15,47 @@ import { join } from 'path'
 const roadmapLatch = new TransitionLatch(1, 'roadmap-store')
 
 export type NodeKind = 'section' | 'phase' | 'group' | 'item'
+/**
+ * Where an unfinished item sits on the board. DELIBERATELY does not include a 'done' value:
+ * `done` is the single source of truth for finished-ness, and this only describes the
+ * NOT-done space. Two independent fields both claiming to say whether something is finished
+ * is how a card reads "Done" while its checkbox is unticked — the same disagreeing-surfaces
+ * problem this codebase has been paying for elsewhere.
+ *
+ * Column derivation, in one place (boardColumn below):
+ *   done === true          -> Done      (whatever status says)
+ *   done === false/absent  -> status, defaulting to 'todo'
+ *   done absent entirely   -> Untracked (never triaged — the 96 items the Overview found)
+ */
+export type NodeStatus = 'todo' | 'doing' | 'blocked'
+export const NODE_STATUSES: NodeStatus[] = ['todo', 'doing', 'blocked']
+
+export type BoardColumn = 'untracked' | 'todo' | 'doing' | 'blocked' | 'done'
+export const BOARD_COLUMNS: BoardColumn[] = ['untracked', 'todo', 'doing', 'blocked', 'done']
+
+/** The ONLY place a column is decided, so the board and the tree can never disagree. */
+export function boardColumn(n: RoadmapNode): BoardColumn {
+  if (n.done === true) return 'done'
+  if (typeof n.done !== 'boolean') return 'untracked'
+  return n.status && NODE_STATUSES.includes(n.status) ? n.status : 'todo'
+}
+
+/** Inverse of boardColumn: the field changes a drop into `col` must make. Returning BOTH
+ *  fields every time is what keeps them consistent — a move that set only one would leave the
+ *  other stale, which is exactly how the two would drift apart. */
+export function patchForColumn(col: BoardColumn): { done: boolean | null; status: NodeStatus | null } {
+  if (col === 'done') return { done: true, status: null }
+  if (col === 'untracked') return { done: null, status: null }
+  return { done: false, status: col }
+}
+
 export interface RoadmapNode {
   id: string
   title: string
   kind: NodeKind
   done?: boolean
+  /** Board lane while NOT done. Meaningless when done === true; cleared on completion. */
+  status?: NodeStatus
   note?: string
   order: number
   children: RoadmapNode[]
@@ -218,7 +254,7 @@ export function addNode(data: RoadmapData, pid: string, a: AddArgs): RoadmapNode
   proj.updatedAt = nowIso()
   return node
 }
-interface EditArgs { title?: string; kind?: NodeKind; done?: boolean | null; note?: string | null }
+interface EditArgs { title?: string; kind?: NodeKind; done?: boolean | null; note?: string | null; status?: NodeStatus | null }
 export function editNode(data: RoadmapData, pid: string, nid: string, patch: EditArgs): RoadmapNode | null {
   const proj = getProject(data, pid); if (!proj) return null
   const ctx = findCtx(proj, nid); if (!ctx) return null
@@ -227,6 +263,13 @@ export function editNode(data: RoadmapData, pid: string, nid: string, patch: Edi
   if (patch.kind !== undefined) n.kind = patch.kind
   if (patch.done !== undefined) { if (patch.done === null) delete n.done; else n.done = !!patch.done }
   if (patch.note !== undefined) { if (patch.note === null || patch.note === '') delete n.note; else n.note = String(patch.note) }
+  if (patch.status !== undefined) {
+    if (patch.status && NODE_STATUSES.includes(patch.status)) n.status = patch.status
+    else delete n.status
+  }
+  // A finished item has no lane. Leaving a stale 'doing' on a ticked box is precisely the
+  // disagreement the single-source-of-truth rule above exists to prevent.
+  if (n.done === true) delete n.status
   proj.updatedAt = nowIso()
   return n
 }
