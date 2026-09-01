@@ -1,6 +1,6 @@
 # @gyshell/mcp-fleet — AI-Lab fleet MCP gateway
 
-An MCP server (stdio) exposing the AI-Lab **ConversationBus** to external agents —
+An MCP server (stdio) exposing AI-Lab **fleet messaging** to external agents —
 claude instances, OpenClaw, anything that speaks MCP — so inter-agent messaging goes
 through the lab's single comms backbone instead of app-specific integrations.
 
@@ -56,7 +56,7 @@ printf '%s\n%s\n%s\n' \
 ```
 
 Full-loop test (MCP stdio → HTTP → real bus) lives at
-`packages/backend/src/services/ConversationBus/fleetMcp.extreme.spec.ts` (build this
+`packages/backend/src/services/Fleet/fleetMcp.extreme.spec.ts` (build this
 package first, then run with tsx).
 
 ## mcpjungle registration (coordinator-owned — do not run from a build branch)
@@ -70,7 +70,7 @@ mcpjungle register -c ailab-fleet.json
 ```json
 {
   "name": "ailab-fleet",
-  "description": "AI-Lab inter-agent messaging over the ConversationBus (claude-relay replacement)",
+  "description": "AI-Lab inter-agent messaging over fleetd (claude-relay replacement)",
   "transport": "stdio",
   "command": "node /opt/ailab-fleet-mcp/dist/index.js",
   "env": { "AILAB_API_URL": "http://10.0.0.219:17890" }

@@ -1,3 +1,10 @@
+> **STATUS: COMPLETE (2026-09-01).** The migration this document planned is finished.
+> ConversationBus was retired on 2026-08-27 and its last code — the router's surviving
+> AgentRegistry/ContextPackStore seam and the `fleet/contracts.ts` schemas — was removed on
+> 2026-09-01. `/api/fleet/*` is owned solely by the Fleet Feed router (fleetFeedHttp.ts),
+> proxied to fleetd. References to ConversationBus below are HISTORICAL; nothing named here
+> still exists in the codebase.
+
 # Fleet Feed — backend contract (messaging v2)
 
 Everything below is LIVE on the AI-Lab backend and covered by tests (101 in `core/`, plus

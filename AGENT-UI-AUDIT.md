@@ -3,7 +3,7 @@
 **Date:** 2026-07-03 · **Author:** fable · **Branch:** `fable/chat-rework` (post-merge of `claude1/chat-rework` @ d50686c)
 **Method:** traced every agent/model/chat surface from component → store → bridge/RPC/HTTP → backend service; live-probed endpoints where wiring was ambiguous.
 
-**NEW backend** = `/api/hermes/*` (control plane + SSE), `/api/fleet/*` (ConversationBus), `/api/proxy/llm/catalog` (tagged `CatalogModel[]`), `/api/proxy/external-sources` (model-endpoints registry). **OLD** = `gyshell.agent.*`/`gyshell.agents.*` gateway RPCs (AgentService_v2), local `settings.models`, ProxLab discovery, minion/relay code.
+**NEW backend** = `/api/hermes/*` (control plane + SSE), `/api/fleet/*` (Fleet Feed, proxied to fleetd), `/api/proxy/llm/catalog` (tagged `CatalogModel[]`), `/api/proxy/external-sources` (model-endpoints registry). **OLD** = `gyshell.agent.*`/`gyshell.agents.*` gateway RPCs (AgentService_v2), local `settings.models`, ProxLab discovery, minion/relay code.
 
 **Reminder on intent (from the Hermes plan):** `AgentService_v2` deliberately REMAINS the engine for Travis's primary chat tab; Hermes powers *fleet* agents. "Still on `gyshell.agent.*`" is therefore not automatically wrong — verdicts below account for that.
 

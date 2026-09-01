@@ -23,7 +23,7 @@ type Res = {
  * and public-only search are enforced in the store, so a second implementation here could only
  * ever drift from it.
  *
- * (Historical: a claim() mount-time collision guard lived here while ConversationBus's router
+ * (Historical: a claim() mount-time collision guard lived here while the retired bus's router
  * was mounted first and Express silently shadowed duplicates — /api/fleet/guard collided and
  * the kill switch lied. The old router is gone; the guard went with it.)
  */
@@ -98,7 +98,7 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
 
   // Travis-facing kill switch. Read and write, because a control you cannot observe is not a
   // control — the UI has to be able to show that traffic is currently stopped, and why.
-  // ONE switch, ONE path. It spanned two legs while ConversationBus ran a separate
+  // ONE switch, ONE path. It spanned two legs while a second autonomous route ran
   // autonomous route; that capability was dropped on 2026-08-27, so the switch is honest
   // as a single leg rather than reporting a second one that no longer exists.
   router.get('/api/fleet/guard', (_req: Req, res: Res) => ok(res, () => svc.getGuard()))
@@ -135,7 +135,7 @@ export function createFleetFeedRouter(svc: FleetFeedService = new FleetFeedServi
   })
 
   // Semantic index build. No claim() wrapper — the guard retired with the router that
-  // made it necessary, now that ConversationBus no longer holds these paths.
+  // made it necessary; nothing else holds these paths now.
   router.post('/api/fleet/reindex', jsonBody, (req: Req, res: Res) =>
     ok(res, () => svc.reindex(req.body?.limit ? Number(req.body.limit) : undefined)))
 

@@ -2,9 +2,9 @@
  * Fleet FEED contracts (messaging v2).
  *
  * These describe the /api/fleet/feed|thread|post|search|... surface, which proxies fleetd
- * (the canonical SQLite store on claude1:17900). They are DELIBERATELY separate from
- * ./contracts, which describes the older ConversationBus vertical (busEnvelope, agentActivity,
- * afterSeq replay). The two coexist until the reworked Fleet Feed tab replaces the old one.
+ * (the canonical SQLite store on claude1:17900). This is the ONLY fleet contract module —
+ * the older bus vertical it once sat alongside (busEnvelope, agentActivity, afterSeq replay)
+ * was retired with its schemas on 2026-09-01.
  *
  * 🛑 Field names mirror fleetd's JSON exactly (snake_case). Do not "tidy" them to camelCase
  * here — the backend is a pure proxy, and renaming in one layer only is how a contract and its
@@ -218,9 +218,8 @@ export const feedUnreadSchema = z.object({
 export type FeedUnread = z.infer<typeof feedUnreadSchema>
 
 /**
- * The delivery kill switch — Travis-facing, and the replacement for the one that dies with
- * ConversationBus. Served at /api/fleet/guard since the old router retired
- * (bus-retirement 5/5). The /delivery-guard alias was dropped in 1bcd13e —
+ * The delivery kill switch — Travis-facing. Served at /api/fleet/guard; it replaced the
+ * one that died with the retired message bus. The /delivery-guard alias was dropped in 1bcd13e —
  * this comment claimed it remained for a while after, which is the
  * doc-outlives-artifact shape; /guard is the only path.
  */

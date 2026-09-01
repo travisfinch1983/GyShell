@@ -4,7 +4,7 @@ Fleet Forwarder — one process that delivers AI-Lab fleet-bus messages to
 every local Claude Code instance's dtach session on this container.
 
 Replaces the per-instance relay-injectors + the standalone claude-relay server:
-it polls AI-Lab's ConversationBus feed (the single source of truth) and injects
+it polls AI-Lab's fleet feed (the single source of truth) and injects
 each envelope addressed to a local instance straight into that instance's dtach
 pty — the "relay_outbound_unwired" delivery path the bus is missing.
 

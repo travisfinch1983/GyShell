@@ -12,7 +12,7 @@ import { dirname } from 'path'
  *       ssh <CT158> <pyvenv> /opt/acp-bridge/acp-bridge.py --profile <agentId>
  *     which drives `hermes -p <agentId> acp` and streams NORMALIZED ndjson events.
  *   - Sessions live in THIS service's Map — their lifecycle is owned by the backend,
- *     NEVER by a UI socket. UIs, the ConversationBus, and UIHistory are all mere
+ *     NEVER by a UI socket. UIs and UIHistory are all mere
  *     OBSERVERS that subscribe via `onEvent`/the emitter and may come and go freely.
  *     Closing a browser cannot stop or pause an agent.
  *   - Prompts arrive from anywhere (UI or bus-inbound) via `prompt()`.

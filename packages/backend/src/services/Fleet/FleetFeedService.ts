@@ -93,7 +93,7 @@ export class FleetFeedService {
 
   /** Paging here is a TAIL window: omit `limit` for the whole thread, or pass limit and walk
    *  `before_seq` backwards. Receipts ride along by default — losing them would be a silent
-   *  downgrade from the delivery observability the old ConversationBus tab had. */
+   *  downgrade from the delivery observability the retired bus tab had. */
   readThread(threadId: string, opts: { limit?: number; before_seq?: number; receipts?: boolean;
                                        viewer?: string } = {}) {
     const p = new URLSearchParams()
@@ -125,12 +125,13 @@ export class FleetFeedService {
    * Kill switch for FLEETD DELIVERY. DB-backed in fleetd, so a restart cannot silently un-flip
    * it and leave you believing traffic was stopped.
    *
-   * 🛑 SCOPE: this does NOT stop everything. ConversationBus runs a SEPARATE autonomous path
-   * (HermesBusSubscriber: Hermes agents auto-replying to each other) which never touches fleetd
-   * and is governed by its own `autonomousRoutingEnabled` flag at /api/fleet/status + /guard.
-   * Two switches, two paths. Flipping this one off while believing it stopped all agent traffic
-   * is precisely the "a control that lies" failure this guard exists to prevent, so the limit is
-   * documented here rather than discovered later.
+   * SCOPE: ONE switch, ONE path. This used to be half a control — a second autonomous route
+   * (Hermes agents auto-replying to each other) ran outside fleetd behind its own flag, so
+   * flipping this off stopped less than it appeared to. That route was dropped on 2026-08-27
+   * and its plumbing removed on 2026-09-01; fleetd is now the only path agent traffic takes,
+   * so this switch means what it says. If a second delivery route is ever added, it must be
+   * folded into THIS switch rather than given its own — a control that stops only some of the
+   * traffic is the "control that lies" failure this guard exists to prevent.
    */
   getGuard() {
     return this.call<{ enabled: boolean; reason: string | null; updated_by: string | null;

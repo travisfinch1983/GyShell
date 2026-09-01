@@ -184,7 +184,7 @@ export class GatewayService extends EventEmitter implements IGatewayRuntime {
   }
 
   /**
-   * ConversationBus seam (fleet vertical): run an agent's turn from delivered
+   * Inter-agent seam (fleet vertical): run an agent's turn from delivered
    * inter-agent messages, reusing the full normal-dispatch lifecycle (profile
    * lock, abort wiring, DONE/SESSION_READY, transcript persistence). Resolves
    * when the turn completes so the bus can mark deliveries done in order.

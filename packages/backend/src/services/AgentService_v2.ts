@@ -218,10 +218,6 @@ export class AgentService_v2 {
   private lastInjectedViewHash: Map<string, string> = new Map()
   private waitForFeedback: ((messageId: string, timeoutMs?: number) => Promise<any | null>) | null = null
   private imageAttachmentService: ImageAttachmentService | null = null
-  // reqs 9-11: resolves a session's assembled agent context-pack for system-prompt
-  // injection. Late-bound by startup wiring once the registry + ContextPackStore
-  // exist (AgentService_v2 is constructed before the ConversationBus). Null =>
-  // plain behaviour (no per-agent pack), so the human chat surface is unchanged.
   private contextPackProvider: ((sessionId: string) => string | undefined) | null = null
 
   constructor(
@@ -660,15 +656,7 @@ export class AgentService_v2 {
           console.warn('[AgentService_v2] Failed to load memory.md for system prompt injection:', error)
         }
       }
-      // reqs 9-11: if this session belongs to a registered fleet agent, assemble
-      // its context pack into the system prompt. Undefined for UI scratch sessions.
-      let agentContextPack: string | undefined
-      try {
-        agentContextPack = this.contextPackProvider?.(sessionId) ?? undefined
-      } catch (error) {
-        console.warn('[AgentService_v2] context-pack resolution failed:', error)
-      }
-      const baseSystemText = createBaseSystemPromptText(memoryPrompt, agentContextPack)
+      const baseSystemText = createBaseSystemPromptText(memoryPrompt)
       const newMessages = upsertSingleSystemMessageByText([...messages, humanMessage], baseSystemText)
 
       const maxTokens = this.getEffectiveMaxTokensFromBinding(sessionBinding)

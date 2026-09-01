@@ -10,7 +10,7 @@ import Store from 'electron-store'
  * let boot-time recovery notice an interrupted turn and surface it to the user
  * ("your last turn was cut off — re-send to continue") instead of leaving a
  * confusing gap. Keyed by sessionId → matches the one-in-flight-run-per-agent
- * (single-flight) model of the ConversationBus.
+ * (single-flight) model the fleet vertical runs on.
  *
  * Deliberately NOT a LangGraph checkpointer: the graph rebuilds its state from
  * ChatHistoryService each run and clears its checkpoint thread on completion,

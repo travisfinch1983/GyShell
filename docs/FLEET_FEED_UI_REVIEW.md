@@ -1,3 +1,8 @@
+> **STATUS: HISTORICAL (banner added 2026-09-01).** This review was written while
+> ConversationBus still ran. It was retired on 2026-08-27 and fully removed on 2026-09-01 —
+> its router no longer shadows anything, and the kill switch concerns raised below were
+> resolved by folding delivery control into the single fleetd guard at `/api/fleet/guard`.
+
 # Fleet Feed phase 2 — UI build notes + contract review (Fable, 2026-08-26)
 
 Branch: `fable/fleet-feed-v2`, commit `7faa8ef`. Files: `components/Fleet/FleetPanel.tsx`,

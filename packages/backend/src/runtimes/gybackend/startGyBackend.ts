@@ -36,7 +36,6 @@ import {
 } from '../../services/Gateway/toolingSummary'
 import { ImageAttachmentService } from '../../services/ImageAttachmentService'
 import { TerminalStateStore } from '../../services/terminal/TerminalStateStore'
-import { AgentRegistry, ContextPackStore } from '../../services/ConversationBus'
 import { NotificationsService } from '../../services/Notifications/NotificationsService'
 import { HermesService } from '../../services/Hermes/HermesService'
 import { createHermesRouter } from '../../services/Hermes/hermesHttp'
@@ -133,23 +132,8 @@ export async function startGyBackend(): Promise<void> {
   )
   const terminalCommandDraftService = new TerminalCommandDraftService(terminalService, settingsService)
 
-  // ConversationBus was retired on 2026-08-27 — all fleet messaging goes through fleetd.
-  // The two survivors below are kept because neither is messaging plumbing.
-  const fleetDir = path.join(dataDir, 'fleet')
-  // The agent registry is a LIVE feature seam (per-agent context packs → system prompt),
-  // not messaging plumbing — constructed standalone so it survives ConversationBus
-  // retirement. Nothing below may reach it through the bus.
-  const agentRegistry = new AgentRegistry(path.join(fleetDir, 'registry.json'))
-  // reqs 9-11 (Phase 6): per-agent context packs. Docs live under
-  // <fleetDir>/agent-context-packs/<agentId>/<slot>.md; assembled into the
-  // system prompt for any run whose session maps to a declared local agent.
-  // (Directory being empty today means "feature awaiting content", not dead —
-  // see contextPackSeam.extreme.spec.ts for the seam's regression coverage.)
-  const contextPackStore = new ContextPackStore(path.join(fleetDir, 'agent-context-packs'))
-  agentService.setContextPackProvider((sessionId) => {
-    const entry = agentRegistry.getBySessionId(sessionId)
-    return entry ? contextPackStore.assemble(entry) : undefined
-  })
+  // Fleet messaging lives entirely in fleetd (/opt/fleet-channel, :17900), which owns its
+  // own store. Nothing here holds fleet state.
   // Notifications: events + health board + debug console. Live updates ride the
   // existing gateway raw broadcast — no second transport (notify:* channels).
   const notificationsService = new NotificationsService(dataDir, (channel, data) =>

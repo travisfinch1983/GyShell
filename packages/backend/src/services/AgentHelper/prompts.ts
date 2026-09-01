@@ -401,13 +401,6 @@ export function createBaseSystemPromptText(
     memoryFilePath: string
     memoryContent: string
   },
-  /**
-   * Assembled per-agent context pack (reqs 9-11). Already section-headed by
-   * ContextPackStore.assemble(); injected verbatim ahead of the global memory
-   * block. Undefined for plain UI scratch sessions (no registered agent) — so
-   * the human chat surface is byte-for-byte unchanged.
-   */
-  agentContextPack?: string,
 ): string {
   const baseSections = [
       `Today is ${formatTodayLocalDate()}.`,
@@ -471,9 +464,6 @@ export function createBaseSystemPromptText(
       `- **\`${FILE_CONTENT_TAG.trim()}\`**: This tag precedes the actual content of a file or large text pasted by the user. Use this as primary context for the user's request.`
     ]
 
-  if (agentContextPack && agentContextPack.trim()) {
-    baseSections.push('', agentContextPack.trim())
-  }
 
   if (memoryPrompt) {
     baseSections.push('', buildMemoryPromptBlock(memoryPrompt))

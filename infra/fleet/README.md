@@ -1,6 +1,6 @@
 # Fleet delivery daemons (run on CT180, not here)
 
-Two root-owned systemd daemons on **CT180** that make the AI-Lab ConversationBus
+Two root-owned systemd daemons on **CT180** that make AI-Lab fleet messaging
 actually reach the Claude Code instances. Vendored here for version control and
 review — **the running copies are `/opt/fleet-forwarder/` and
 `/opt/fleet-relay-watcher/` on CT180.** Edit there, then re-vendor.

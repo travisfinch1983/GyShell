@@ -283,7 +283,7 @@ const gyshellApi = {
     onAcked: (cb: (data: any) => void): CleanupFn => onRaw('notify:acked', cb),
   },
   fleet: {
-    // ConversationBus (fleet vertical): feed replay/live-tail, sends, guard config.
+    // Fleet vertical: feed replay/live-tail, sends, guard config.
     send: (request: any) => rpc('fleet:send', request),
     replay: (afterSeq: number, limit?: number) => rpc('fleet:replay', { afterSeq, limit }),
     status: () => rpc('fleet:status'),

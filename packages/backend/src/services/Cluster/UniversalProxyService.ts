@@ -318,7 +318,7 @@ export class UniversalProxyService {
     const { createScriptCatalogRouter } = await import('./proxy/script-catalog.js')
     app.use('/api/script-catalog', express.json({ limit: '10mb' }), createScriptCatalogRouter({ pveApi: llmPve, sshExec: this.sshExec, dataDir: this.dataDir }))
     // Fleet FEED: the Fleet tab's surface, proxied to fleetd. Sole owner of
-    // /api/fleet/* since the ConversationBus router retired (bus-retirement 3/5).
+    // /api/fleet/* since the retired bus's router was removed.
     {
       const { createFleetFeedRouter } = await import('../Fleet/fleetFeedHttp.js')
       app.use(createFleetFeedRouter())

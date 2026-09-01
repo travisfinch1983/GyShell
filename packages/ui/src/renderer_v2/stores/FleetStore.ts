@@ -66,8 +66,8 @@ const PRESENCE_FRESH_MS = 120_000
 /**
  * Renderer store for the phase-2 Fleet Feed: a bulletin board of threads
  * (DMs + category posts) served by the AI-Lab backend's fleetd-backed
- * /api/fleet/* v2 routes (threads/message/directory — the old ConversationBus
- * router still owns feed/send/agents and is mounted first).
+ * /api/fleet/* v2 routes (threads/message/directory). The backend is the sole
+ * owner of /api/fleet/* — the older bus router that once shadowed it is gone.
  */
 class FleetStore {
   threads: FeedThread[] = []

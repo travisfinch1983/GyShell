@@ -22,8 +22,8 @@ export interface HermesServiceConfig {
  *   - HermesManagementService: create/configure/delete agent PROFILES (SSH + CLIs).
  *   - HermesAcpBridge: persistent, backend-owned ACP session runner (headless invariant).
  *
- * Adds `runTurn` (prompt → collect the assistant reply → resolve), used by both the HTTP
- * prompt route and (next increment) the ConversationBus autonomous subscriber. Streaming
+ * Adds `runTurn` (prompt → collect the assistant reply → resolve), used by the HTTP
+ * prompt route. Streaming
  * observers use `bridge.onEvent` directly (SSE/WS). Everything here is server-side; a
  * browser is never required for an agent to run or be driven.
  */
