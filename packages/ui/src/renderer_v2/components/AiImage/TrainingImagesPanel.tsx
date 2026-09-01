@@ -216,6 +216,15 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           </button>
         )}
         <span className={styles.spacer} />
+        <button
+          className={styles.btn}
+          title={store.showAllRoots
+            ? 'Showing every folder under /ai-assets/imagegen — click to show only training folders'
+            : 'Showing training folders only — click to browse the whole imagegen tree'}
+          onClick={() => store.toggleShowAllRoots()}
+        >
+          {store.showAllRoots ? 'All folders' : 'Training only'}
+        </button>
         <button className={styles.btn} onClick={() => void store.browse(store.cwd)}><RefreshCw size={14} className={store.loading ? styles.spin : ''} /></button>
       </div>
 
@@ -253,6 +262,13 @@ export const TrainingImagesPanel: React.FC = observer(() => {
       )}
 
       {store.error && <div className={styles.error}>{store.error}</div>}
+
+      {store.atNarrowedRoot && (
+        <div className={styles.acHint} style={{ padding: '0 12px 6px' }}>
+          Showing training folders only. The rest of <code>/ai-assets/imagegen</code> (checkpoints,
+          loras, vae…) is still reachable — switch to <strong>All folders</strong> above.
+        </div>
+      )}
 
       {store.folders.length > 0 && (
         <div className={styles.folders}>

@@ -49,8 +49,26 @@ export class TrainingImagesStore {
   selected = new Set<string>()
   lastIndex: number | null = null
   msg = ''
+  /** The API root is ALL of /ai-assets/imagegen — deliberately, so agents can reach their own
+   *  ComfyUI outputs (see 4b33347). For a human curating training data that root is 81 folders
+   *  of checkpoints, vae, controlnet and friends. This narrows the TOP LEVEL to the folders that
+   *  actually hold training data; everything below the top level is untouched, and the toggle
+   *  restores the full tree rather than hiding it. */
+  showAllRoots = localStorage.getItem('aig-show-all-roots') === '1'
 
   constructor() { makeAutoObservable(this) }
+
+  /** Top-level folders that hold training data. Anything else at the root is model storage. */
+  static readonly TRAINING_ROOTS = ['training', 'training_images']
+
+  toggleShowAllRoots(): void {
+    this.showAllRoots = !this.showAllRoots
+    localStorage.setItem('aig-show-all-roots', this.showAllRoots ? '1' : '0')
+    void this.browse(this.cwd)
+  }
+
+  /** True when the current view is the narrowed root — used to explain itself in the UI. */
+  get atNarrowedRoot(): boolean { return this.cwd === '' && !this.showAllRoots }
 
   async browse(p = ''): Promise<void> {
     this.cwd = p || ''
@@ -63,9 +81,14 @@ export class TrainingImagesStore {
         this.hasCollage = !!d.has_collage
         this.collageFirst = d.collage_first || '_collage.jpg'
         this.crumbs = d.crumbs || []
-        this.folders = d.folders || []
+        const roots = TrainingImagesStore.TRAINING_ROOTS
+        this.folders = (this.cwd === '' && !this.showAllRoots)
+          ? (d.folders || []).filter((f: any) => roots.includes(f.name))
+          : (d.folders || [])
         const prefix = d.path ? d.path + '/' : ''
-        this.images = (d.images || []).map((im: any) => ({
+        // Loose files at the imagegen root are strays, not training data — hide them with the
+        // folders rather than leaving one orphan image to imply this is a real image directory.
+        this.images = ((this.cwd === '' && !this.showAllRoots) ? [] : (d.images || [])).map((im: any) => ({
           name: im.name, rel: prefix + im.name, mtime: im.mtime || 0, ctime: im.ctime || 0,
           birthtime: im.birthtime || 0, size: im.size || 0, w: im.w || 0, h: im.h || 0,
           cropped: !!im.cropped, has_alt: !!im.has_alt, has_caption: !!im.has_caption,
