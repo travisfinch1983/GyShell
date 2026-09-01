@@ -597,7 +597,22 @@ export class HermesManagementService {
     return 'stale'
   }
 
+  /** True while a sweep is running — the early post-boot sweep and the
+   *  20th-tick sweep can overlap on a slow fleet (2 ssh calls × ~20 agents),
+   *  and two concurrent sweeps race on the latch file: last writer wins and
+   *  can clobber a claim the other just made (a lost alarm). One at a time. */
+  private sweepInFlight = false
   private async sweepToolHealth(): Promise<void> {
+    if (this.sweepInFlight) return
+    this.sweepInFlight = true
+    try {
+      await this.sweepToolHealthInner()
+    } finally {
+      this.sweepInFlight = false
+    }
+  }
+
+  private async sweepToolHealthInner(): Promise<void> {
     let agents: string[]
     try { agents = await this.listAgentsStrict() } catch { return }   // cannot-check ≠ failed
     const latch = this.toolAlarms()
@@ -686,6 +701,26 @@ export class HermesManagementService {
 
   startFailoverWatch(intervalMs = 30000): void {
     if (this.failoverTimer) return
+    // One EARLY sweep shortly after start, alongside the 20th-tick cadence.
+    // The tick counter resets on every restart and the sweep needs 20 ticks
+    // (10 min at default): a deploy loop restarting faster than that starves
+    // tool-health checking entirely — on a 28-restart day it may not run for
+    // hours, and quiet reads as health (m-c, 2026-09-01). The persisted
+    // AlarmLatch is what makes this free: an early sweep re-claims known
+    // conditions SILENTLY, so it costs nothing on a quiet system.
+    //
+    // The delay is a BOOT-SETTLE window, and the env var is named for that
+    // reason rather than its mechanism: agent gateways restart with the
+    // backend, and a sweep at t=0 alarms on conditions that resolve during
+    // startup. "Optimising" this to zero re-creates the boot-transient false
+    // alarms; lower it only in tests.
+    const earlyMs = Number(process.env.AILAB_TOOLHEALTH_BOOT_SETTLE_MS ?? 120_000)
+    if (Number.isFinite(earlyMs) && earlyMs >= 0) {
+      setTimeout(() => {
+        void this.sweepToolHealth().catch((e) =>
+          console.warn('[hermes-tools] early sweep failed:', (e as Error)?.message || e))
+      }, earlyMs).unref?.()
+    }
     this.failoverTimer = setInterval(() => {
       void this.checkSupportModelFailover().catch((e) =>
         console.warn('[failover] pass failed:', (e as Error)?.message || e))
