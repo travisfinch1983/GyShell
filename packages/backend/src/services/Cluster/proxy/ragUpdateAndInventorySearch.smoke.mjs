@@ -159,7 +159,8 @@ async function main() {
   const FILE1 = 'src/alpha.js'
   const FILE2 = 'src/beta.py'
   const manifestWrites = []
-  const makeExec = ({ cloneOk = true }) => async (_host, cmd) => {
+  const makeExec = ({ cloneOk = true, reachable = true }) => async (_host, cmd) => {
+    if (cmd.includes('ls-remote')) return { stdout: reachable ? '__REACHABLE__' : '__UNREACHABLE__' }
     if (cmd.includes('collections.json') && cmd.startsWith('cat')) {
       // Production manifests store the SANITIZED name (phase 5 writes colName)
       return { stdout: JSON.stringify([{ name: 'codebase_demo', repo_url: 'http://git.test/demo.git', branch: 'default', description: 'demo repo' }]) }
@@ -207,6 +208,19 @@ async function main() {
   ok(await until(() => manifestWrites.length > 0), 'the collection manifest is refreshed after the run')
   ok(!calls.some(c => c.url.includes('/api/notifications/emit')),
     'a clean refresh emits NOTHING (silent-clean rule)')
+
+  // THE PROXLAB INCIDENT: repo not cloneable (private/404) → the refresh must
+  // SKIP WITHOUT DELETING — delete-then-failed-clone destroyed a working
+  // collection, announced by the very alert this lane emits.
+  rag.registerRagRoutes(app, { exec: makeExec({ reachable: false }), selfPort: 0 })
+  calls.length = 0
+  const ua3 = await call('POST /api/ai/rag/update-all')
+  ok(ua3.body.queued === 1, 'unreachable-repo scenario queues')
+  ok(await until(() => calls.some(c => c.url.includes('/api/notifications/emit'))),
+    'an uncloneable repo emits a skip warning')
+  ok(!calls.some(c => c.method === 'DELETE'),
+    'AND THE VECTORS SURVIVE: no DELETE was issued — preflight runs before anything destructive')
+  ok(!calls.some(c => c.url.includes('/upsert')), 'nothing was re-indexed either — a clean skip')
 
   // failure path: clone fails after the delete — the warning must name the collection
   const rag2 = await import('./rag.js?fail=1').catch(() => null)
