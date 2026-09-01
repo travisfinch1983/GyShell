@@ -32,6 +32,16 @@ export interface ClaudeInstance {
   /** Unix user on the instance container. */
   user?: string
   ttydPort?: number
+  /** Refresh-token life. The tier is computed by the instance-manager, NOT here — one
+   *  definition of what "orange" means, so the badge can never disagree with an alert
+   *  built on the same thresholds. `unknown` is its own tier: a credentials file we
+   *  cannot read is not a healthy login and must not render green. */
+  login?: {
+    tier: 'ok' | 'warn' | 'soon' | 'critical' | 'expired' | 'unknown'
+    daysLeft: number | null
+    expiresAt: string | null
+    detail: string
+  }
 }
 
 /**

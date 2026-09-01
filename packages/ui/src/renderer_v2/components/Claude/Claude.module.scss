@@ -100,6 +100,38 @@
 .permBadge { font-size: 11.5px; font-family: var(--font-mono); padding: 4px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--control-bg); color: var(--fg-faint); cursor: pointer; &:hover { color: var(--fg); } }
 .permBadgeOn { border-color: var(--accent); color: var(--fg); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .permBadgePrimary { border-width: 2px; border-color: var(--accent); font-weight: 600; }
+
+/* ── login-expiry pip ──────────────────────────────────────────────────────
+   Sits AFTER the instance name so it reads as a property of that instance and
+   never collides with the run-status dot on the left. Deliberately a different
+   SHAPE (bar, not circle) from .instDot: two same-shaped dots in one tab invite
+   misreading one for the other, and these mean unrelated things — the dot is
+   "is it running", the bar is "can it still authenticate". */
+.loginPip {
+  display: inline-block;
+  width: 3px; height: 11px;
+  border-radius: 2px;
+  margin-left: 7px;
+  vertical-align: -1px;
+  /* Explicit neutral, NOT var(--fg-faint): that token resolves GREEN in this theme, which
+     made an unreadable login render as the healthy colour — the precise failure this badge
+     exists to prevent. A default must never borrow the success signal. */
+  background: #8a8f98;
+  flex: none;
+}
+/* Healthy is deliberately quiet — if green shouts, the eye stops finding red. */
+.loginOk { background: var(--success); opacity: .45; }
+.loginWarn { background: #e5c07b; }
+.loginSoon { background: #e5a50a; }
+.loginCritical { background: var(--danger, #f87171); }
+/* Expired is also red, so it PULSES to separate "already dead" from "2 days left" —
+   they need different urgency and colour alone cannot carry that. */
+.loginExpired { background: var(--danger, #f87171); animation: loginPulse 1.4s ease-in-out infinite; }
+/* Unknown is grey, never green: an unreadable credentials file is an unread check. */
+.loginUnknown { background: #8a8f98; opacity: .95; }
+
+@keyframes loginPulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+
 .instDotStarting { background: var(--accent); animation: instPulse 1.2s ease-in-out infinite; }
 .inst_starting { color: var(--accent); border-color: var(--accent); }
 @keyframes instPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }

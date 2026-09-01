@@ -189,6 +189,27 @@ const AddView: React.FC<{ onAdded: (id: string) => void }> = observer(({ onAdded
   )
 })
 
+/** Login-expiry pip. Travis is in AI-Lab daily, so the header is where this belongs:
+ *  an instance whose refresh token is dying looks perfectly healthy everywhere else —
+ *  systemd says active because the PROCESS is up, and only the auth is gone. */
+const LOGIN_PIP: Record<string, string> = {
+  ok: 'loginOk',
+  warn: 'loginWarn',
+  soon: 'loginSoon',
+  critical: 'loginCritical',
+  expired: 'loginExpired',
+  unknown: 'loginUnknown',
+}
+
+const LOGIN_LABEL: Record<string, string> = {
+  ok: 'Login healthy',
+  warn: 'Login expires within 2 weeks',
+  soon: 'Login expires within a week',
+  critical: 'Login expires in under 2 days — re-login now',
+  expired: 'LOGIN EXPIRED — this instance cannot authenticate',
+  unknown: 'Login state unknown',
+}
+
 const INSTANCE_DOT: Record<string, string> = {
   running: 'instDotRunning',
   stopped: 'instDotStopped',
@@ -241,6 +262,14 @@ export const ClaudePanel: React.FC = observer(() => {
           >
             <span className={`${styles.instDot} ${styles[INSTANCE_DOT[i.status]] ?? ''}`} />
             {i.name}
+            {i.login && (
+              <span
+                className={`${styles.loginPip} ${styles[LOGIN_PIP[i.login.tier]] ?? ''}`}
+                // The tooltip carries the actual date + days. A colour alone says
+                // "something", never "what" or "by when".
+                title={`${LOGIN_LABEL[i.login.tier] ?? 'Login'} — ${i.login.detail}`}
+              />
+            )}
           </button>
         ))}
         <button className={`${styles.navTab} ${styles.addTab} ${active === SPAWN ? styles.navTabActive : ''}`} onClick={() => setActive(SPAWN)}><Plus size={13} /> Spawn</button>
