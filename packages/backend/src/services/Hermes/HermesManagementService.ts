@@ -486,10 +486,38 @@ export class HermesManagementService {
         await this.applyEffectiveModel(key, primary, 'primary is reachable again')
       } else if (want === 'down' && active !== backup) {
         if (!served.has(backup)) {
+          // A DOUBLE failure was silent: primary down AND backup unserved
+          // logged to journald and woke nobody — the "work stops and no
+          // surface says so" family, at exactly the moment the fallback tier
+          // matters. The bug fixed here is the SILENCE, not an outage (the
+          // tier was healthy when this shipped; m-c's OR-credit signal was a
+          // deliberate credential strip reading as a payment error). Latched
+          // per role via the shared AlarmLatch; the served-list read
+          // succeeding is what makes both the claim and the clear positive
+          // evidence rather than inference.
+          const suffix = this.toolAlarms().claim(`role:${key}`, 'failover-dead')
+          if (suffix !== null) {
+            this.cfg.notify?.({
+              severity: 'warning', source: 'hermes-failover',
+              message: `Support role '${key}' has NO working tier — primary down, backup not served`,
+              detail: `Primary '${primary}' is unreachable and backup '${backup}' is not in the served-model list, so no failover is possible: the role's function (${key}) is doing nothing until one tier returns. Both names were checked against the live served list this pass.` + suffix,
+            })
+            this.toolAlarms().save()
+          }
           console.warn(`[failover] ${key}: primary '${primary}' is down and backup '${backup}' is not served either — leaving as-is`)
           continue
         }
         await this.applyEffectiveModel(key, backup, `primary '${primary}' unreachable`)
+      }
+      // Positive-evidence clear: this pass READ the served list and the double
+      // failure is not present for this role (primary up, or backup served).
+      if (this.toolAlarms().clear(`role:${key}`, ['failover-dead']).length > 0) {
+        this.toolAlarms().save()
+        this.cfg.notify?.({
+          severity: 'info', source: 'hermes-failover',
+          message: `Support role '${key}' has a working tier again`,
+          detail: `Primary '${primary}' or backup '${backup}' is back in the served-model list — failover is possible again.`,
+        })
       }
     }
   }
@@ -597,7 +625,22 @@ export class HermesManagementService {
     return 'stale'
   }
 
+  /** True while a sweep is running — the early post-boot sweep and the
+   *  20th-tick sweep can overlap on a slow fleet (2 ssh calls × ~20 agents),
+   *  and two concurrent sweeps race on the latch file: last writer wins and
+   *  can clobber a claim the other just made (a lost alarm). One at a time. */
+  private sweepInFlight = false
   private async sweepToolHealth(): Promise<void> {
+    if (this.sweepInFlight) return
+    this.sweepInFlight = true
+    try {
+      await this.sweepToolHealthInner()
+    } finally {
+      this.sweepInFlight = false
+    }
+  }
+
+  private async sweepToolHealthInner(): Promise<void> {
     let agents: string[]
     try { agents = await this.listAgentsStrict() } catch { return }   // cannot-check ≠ failed
     const latch = this.toolAlarms()
@@ -686,6 +729,26 @@ export class HermesManagementService {
 
   startFailoverWatch(intervalMs = 30000): void {
     if (this.failoverTimer) return
+    // One EARLY sweep shortly after start, alongside the 20th-tick cadence.
+    // The tick counter resets on every restart and the sweep needs 20 ticks
+    // (10 min at default): a deploy loop restarting faster than that starves
+    // tool-health checking entirely — on a 28-restart day it may not run for
+    // hours, and quiet reads as health (m-c, 2026-09-01). The persisted
+    // AlarmLatch is what makes this free: an early sweep re-claims known
+    // conditions SILENTLY, so it costs nothing on a quiet system.
+    //
+    // The delay is a BOOT-SETTLE window, and the env var is named for that
+    // reason rather than its mechanism: agent gateways restart with the
+    // backend, and a sweep at t=0 alarms on conditions that resolve during
+    // startup. "Optimising" this to zero re-creates the boot-transient false
+    // alarms; lower it only in tests.
+    const earlyMs = Number(process.env.AILAB_TOOLHEALTH_BOOT_SETTLE_MS ?? 120_000)
+    if (Number.isFinite(earlyMs) && earlyMs >= 0) {
+      setTimeout(() => {
+        void this.sweepToolHealth().catch((e) =>
+          console.warn('[hermes-tools] early sweep failed:', (e as Error)?.message || e))
+      }, earlyMs).unref?.()
+    }
     this.failoverTimer = setInterval(() => {
       void this.checkSupportModelFailover().catch((e) =>
         console.warn('[failover] pass failed:', (e as Error)?.message || e))

@@ -11,6 +11,8 @@
  * about an action applied to NOBODY. All stubs; no ssh, no live fleet.
  */
 import { existsSync, mkdirSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import { AlarmLatch } from '../AlarmLatch'
 import { HermesManagementService } from './HermesManagementService'
 
@@ -341,6 +343,41 @@ async function main(): Promise<void> {
   // teardown reads as a trivial lint warning right up until it isn't.
   globalThis.fetch = realFetch
 
+  // ── sweep starvation: the early sweep runs without waiting for tick 20 ────
+  // The tick counter resets per restart; restarts faster than 10min apart
+  // meant tool health was NEVER checked — quiet read as health, in the
+  // scheduler rather than a probe. One early sweep closes the window; the
+  // persisted latch makes it silent on known conditions.
+  process.env.AILAB_TOOLHEALTH_BOOT_SETTLE_MS = '30'
+  const svcW: any = new HermesManagementService({ user: 'spec', notify: () => {} } as any)
+  let earlySweeps = 0
+  svcW.sweepToolHealth = async () => { earlySweeps++ }
+  svcW.checkSupportModelFailover = async () => {}
+  svcW.checkModelBindings = async () => {}
+  svcW.startFailoverWatch(3_600_000)   // interval so long tick-20 can never fire in-test
+  await new Promise((r) => setTimeout(r, 150))
+  ok(earlySweeps === 1, 'ONE early sweep fires shortly after start — rapid restarts can no longer starve tool health to zero checks')
+  if (svcW.failoverTimer) clearInterval(svcW.failoverTimer)
+  delete process.env.AILAB_TOOLHEALTH_BOOT_SETTLE_MS
+
+  // ── concurrent sweeps cannot race the latch file ──────────────────────────
+  // Early sweep + tick-20 sweep overlapping on a slow fleet = two writers on
+  // the latch, last one wins, a fresh claim can be clobbered (a lost alarm).
+  const svcX: any = new HermesManagementService({ user: 'spec', notify: () => {} } as any)
+  let innerRuns = 0
+  let releaseSweep: () => void = () => {}
+  // Block only the FIRST run — the empirical repro showed a per-invocation
+  // blocking stub hangs the post-release sweep on a promise nobody resolves.
+  svcX.sweepToolHealthInner = async () => { innerRuns++; if (innerRuns === 1) await new Promise<void>((r) => { releaseSweep = r }) }
+  const first = svcX.sweepToolHealth()
+  const second = svcX.sweepToolHealth()   // fired while the first is in flight
+  await second
+  ok(innerRuns === 1, 'a sweep fired while another is IN FLIGHT returns without running — one latch writer at a time')
+  releaseSweep()
+  await first
+  await svcX.sweepToolHealth()
+  ok(innerRuns === 2, 'and the guard releases — the next sweep after completion runs normally')
+
   // ── strict enumeration: the failover no-op family ─────────────────────────
   const svc2: any = new HermesManagementService({ user: 'spec', notify: (e: any) => emitted.push(e), supportModelsFile: undefined } as any)
   svc2.loadSupportModels = () => ({ tts: { model: 'primary-x', primaryModel: 'primary-x' } })
@@ -359,6 +396,30 @@ async function main(): Promise<void> {
   resetLatch()
   if (existsSync(`${LATCH}.exp`)) rmSync(`${LATCH}.exp`)
   for (const x of ['.prune', '.prune2', '.survive']) if (existsSync(`${LATCH}${x}`)) rmSync(`${LATCH}${x}`)
+  // ── the double failure is no longer silent ────────────────────────────────
+  // Primary down AND backup unserved logged to journald and woke nobody — at
+  // exactly the moment the fallback tier matters. Latched via the shared
+  // AlarmLatch; the served-list read is the positive evidence both ways.
+  const emitted3: Array<{ severity: string; source: string; message: string }> = []
+  const svcF: any = new HermesManagementService({ user: 'spec', notify: (e: any) => emitted3.push(e) } as any)
+  process.env.HERMES_TOOL_ALARMS_FILE = join(tmpdir(), `failover-latch-${Date.now()}.json`)
+  svcF.toolAlarmsLatch = null   // force re-read of the env path
+  svcF.loadSupportModels = () => ({ tts: { model: 'p1', primaryModel: 'p1', fallbackModel: 'b1' } })
+  svcF.applyEffectiveModel = async () => { throw new Error('spec: must not fail over with backup unserved') }
+  svcF.servedModels = async () => new Set(['something-else'])   // neither p1 nor b1 served
+  for (let i = 0; i < 3; i++) await svcF.checkSupportModelFailover()   // 3 confirmations
+  const dead = emitted3.filter((e) => e.source === 'hermes-failover' && e.message.includes('NO working tier'))
+  ok(dead.length === 1 && dead[0].severity === 'warning',
+    'primary-down + backup-unserved raises ONE latched warning — the double failure is no longer journald-only')
+  for (let i = 0; i < 2; i++) await svcF.checkSupportModelFailover()
+  ok(emitted3.filter((e) => e.message.includes('NO working tier')).length === 1,
+    'and it stays latched across passes — one wake per condition')
+  svcF.servedModels = async () => new Set(['b1'])   // backup returns to the served list
+  for (let i = 0; i < 3; i++) { svcF.applyEffectiveModel = async () => {}; await svcF.checkSupportModelFailover() }
+  ok(emitted3.some((e) => e.message.includes('working tier again')),
+    'a tier returning to the served list clears on POSITIVE evidence and says so')
+  delete process.env.HERMES_TOOL_ALARMS_FILE
+
   console.log(`\n${n} assertions passed`)
   process.exit(0)
 }
