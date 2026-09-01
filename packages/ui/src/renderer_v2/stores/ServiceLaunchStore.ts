@@ -24,6 +24,8 @@ export class ServiceLaunchStore {
   category: Cat
   templates: Record<string, any>
   providers: any[] = []
+  revalidating = false
+  lastVerifiedAt = 0
   agents: any[] = []
   cards: Record<string, CardState> = {}
   loaded = false
@@ -70,10 +72,55 @@ export class ServiceLaunchStore {
         }
         this.loaded = true
       })
+      // The list above comes from a CACHE (ai-config.json), refreshed only when something
+      // explicitly re-checks a provider. It silently under-reported for months: three trainers
+      // were listed while five were installed on px-epyc, so a tool you owned looked unavailable.
+      // Re-verify against the hosts in the background and fill in whatever the cache missed.
+      void this.revalidate()
     } catch (e: any) {
       runInAction(() => { this.err = e?.message || 'Failed to load providers' })
     } finally {
       runInAction(() => { this.loading = false })
+    }
+  }
+
+  /** Live install check per provider in this category, merged over the cached map. Runs after
+   *  load() and never blocks it: a slow or unreachable node degrades to the cached answer rather
+   *  than an empty page. Discoveries are logged — a list that silently corrects itself is how the
+   *  original gap stayed invisible. */
+  async revalidate(): Promise<void> {
+    if (this.revalidating) return
+    runInAction(() => { this.revalidating = true })
+    const discovered: string[] = []
+    try {
+      for (const p of this.providers) {
+        try {
+          const r: any = await bridge().request('POST', `/api/ai/providers/${encodeURIComponent(p.id)}/status`, {})
+          const results = r?.results ?? {}
+          const before = this.installedNodes(p).join(',')
+          runInAction(() => {
+            const agents = { ...(p.agents || {}) }
+            for (const [node, st] of Object.entries(results as Record<string, any>)) {
+              if (!st?.ok) continue                       // cannot-check is not not-installed
+              agents[node] = st.status === 'installed'
+                ? { ...(agents[node] || {}), installed: true, version: st.version || null }
+                : { ...(agents[node] || {}), installed: false }
+            }
+            p.agents = agents
+            const nodes = this.installedNodes(p)
+            if (nodes.length && !this.cards[p.id]) {
+              const t = this.templates[p.id] || {}
+              this.cards[p.id] = { node: nodes[0], gpus: [], port: t.defaultPort || 0, model: t.defaultModel, backend: t.defaultBackend, configName: 'default' }
+            }
+            if (nodes.join(',') !== before) discovered.push(`${p.id}: ${before || 'none'} -> ${nodes.join(',') || 'none'}`)
+          })
+        } catch { /* one provider's check failing must not hide the rest */ }
+      }
+      if (discovered.length) {
+        console.warn(`[service-launch] ${this.category}: cached install state was STALE — ${discovered.join(' | ')}`)
+      }
+    } finally {
+      runInAction(() => { this.revalidating = false; this.lastVerifiedAt = Date.now() })
     }
   }
 
