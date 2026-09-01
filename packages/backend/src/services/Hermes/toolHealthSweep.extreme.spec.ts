@@ -25,8 +25,8 @@ async function main(): Promise<void> {
   // ── sweep latch ───────────────────────────────────────────────────────────
   svc.listAgentsStrict = async () => ['alpha', 'beta']
   const health: Record<string, any> = {
-    alpha: { groupTools: 5, registeredTools: null, gaveUp: true, gatewayActive: true, healthy: false, detail: 'gave up' },
-    beta: { groupTools: 5, registeredTools: 5, gaveUp: false, gatewayActive: true, healthy: true, detail: 'ok' },
+    alpha: { groupTools: 5, registeredTools: null, gaveUp: true, gatewayActive: true, known: true, healthy: false, detail: 'gave up' },
+    beta: { groupTools: 5, registeredTools: 5, gaveUp: false, gatewayActive: true, known: true, healthy: true, detail: 'ok' },
   }
   svc.getToolHealth = async (id: string) => health[id]
 
@@ -43,7 +43,7 @@ async function main(): Promise<void> {
   ok(emitted.length === 3, 'a NEW give-up after recovery fires again')
 
   // gateway-less agents are not watched (no unit = nothing to be down)
-  health.gamma = { groupTools: 0, registeredTools: null, gaveUp: true, gatewayActive: false, healthy: false, detail: 'x' }
+  health.gamma = { groupTools: 0, registeredTools: null, gaveUp: true, gatewayActive: false, known: true, healthy: false, detail: 'x' }
   svc.listAgentsStrict = async () => ['gamma']
   const before = emitted.length
   await svc.sweepToolHealth()
@@ -60,11 +60,49 @@ async function main(): Promise<void> {
   // "stale — reconnect to resync". The (K failed) count on the registration
   // line is the structured signal.
   svc.listAgentsStrict = async () => ['delta']
-  health.delta = { groupTools: 60, registeredTools: 58, gaveUp: false, parkedServers: 1, parkedNames: ['view-screen'], gatewayActive: true, healthy: false, detail: 'parked' }
+  health.delta = { groupTools: 60, registeredTools: 58, gaveUp: false, parkedServers: 1, parkedNames: ['view-screen'], gatewayActive: true, known: true, healthy: false, detail: 'parked' }
   const bp = emitted.length
   await svc.sweepToolHealth()
   ok(emitted.length === bp + 1 && emitted[bp].severity === 'error' && emitted[bp].message.includes('parked after failed connections'),
     'a parked server alarms at ERROR with its own message — permanence, not staleness')
+
+  // ── UNKNOWN: an unread check is neither a pass nor a fault ───────────────
+  // The old code set healthy=true when no registration line was found, so a rotated
+  // or truncated log read as a clean bill of health — and, worse, satisfied the
+  // recovery branch, letting an unreadable log RETRACT a live alarm. m-c saw the
+  // effect from outside: cinder-kyla was absent from a batch of five true alerts.
+  svc.listAgentsStrict = async () => ['zeta']
+  health.zeta = { groupTools: 60, registeredTools: null, gaveUp: false, parkedServers: 0, gatewayActive: true, known: false, healthy: false, detail: 'unknown' }
+  const bu = emitted.length
+  await svc.sweepToolHealth()
+  ok(emitted.length === bu + 1 && emitted[bu].severity === 'warning' && emitted[bu].message.includes('cannot be determined'),
+    'an unreadable registration warns that health is UNKNOWN — it does not pass silently')
+  await svc.sweepToolHealth()
+  ok(emitted.length === bu + 1, 'the unknown state latches on its own — no repeat every sweep')
+
+  // The load-bearing one: a real alarm must survive a blind check.
+  svc.listAgentsStrict = async () => ['eta']
+  health.eta = { groupTools: 5, registeredTools: null, gaveUp: true, parkedServers: 0, gatewayActive: true, known: true, healthy: false, detail: 'gave up' }
+  const bs = emitted.length
+  await svc.sweepToolHealth()
+  ok(emitted.length === bs + 1 && emitted[bs].severity === 'error', 'eta alarms for real')
+  health.eta = { ...health.eta, known: false, detail: 'log rotated' }
+  await svc.sweepToolHealth()
+  const last = emitted[emitted.length - 1]
+  ok(last.severity === 'warning' && last.message.includes('cannot be determined'),
+    'when the log then becomes unreadable, the sweep says UNKNOWN — it does NOT emit "recovered"')
+  ok(!emitted.slice(bs).some((e) => e.message.includes('recovered')),
+    'no false recovery: an alarm is retracted only by positive evidence of health')
+  ok(svc.toolHealthAlarmed.has('eta'), 'and the original alarm stays latched/open underneath')
+  ok((last as any).detail.includes('REMAINS OPEN'),
+    'the unknown warning tells the reader the earlier alarm is still open')
+
+  // Recovery still works when the evidence actually returns.
+  health.eta = { ...health.eta, known: true, gaveUp: false, healthy: true, detail: 'ok now' }
+  const br = emitted.length
+  await svc.sweepToolHealth()
+  ok(emitted.length === br + 1 && emitted[br].severity === 'info' && emitted[br].message.includes('recovered'),
+    'a readable, healthy registration DOES clear the alarm')
 
   // ── getToolHealth parser + honest arithmetic (real method, stubbed I/O) ───
   const svc3: any = new HermesManagementService({ user: 'spec' } as any)
@@ -168,7 +206,7 @@ async function main(): Promise<void> {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
   }
   const recent = localTs(3600_000)
-  health.echo = { groupTools: 60, registeredTools: 58, gaveUp: false, parkedServers: 0, pending: true, gatewayRestartedAt: recent, gatewayActive: true, healthy: false, detail: 'pending' }
+  health.echo = { groupTools: 60, registeredTools: 58, gaveUp: false, parkedServers: 0, pending: true, gatewayRestartedAt: recent, gatewayActive: true, known: true, healthy: false, detail: 'pending' }
   const bq = emitted.length
   await svc.sweepToolHealth()
   ok(emitted.length === bq + 1 && emitted[bq].severity === 'info' && emitted[bq].message.includes('pending its next turn'),

@@ -575,6 +575,9 @@ export class HermesManagementService {
   private toolHealthTick = 0
   /** Agents whose gave-up/unhealthy state has already been notified (re-armed on recovery). */
   private readonly toolHealthAlarmed = new Set<string>()
+  /** Agents whose health could not be READ. Latched separately from a real fault so an
+   *  unreadable log neither spams every sweep nor masquerades as either verdict. */
+  private readonly toolHealthUnknown = new Set<string>()
 
   /**
    * The tool-health SWEEP — getToolHealth existed, detected "Hermes stopped
@@ -591,6 +594,25 @@ export class HermesManagementService {
       let h: Awaited<ReturnType<HermesManagementService['getToolHealth']>>
       try { h = await this.getToolHealth(id) } catch { continue }
       if (!h.gatewayActive) continue   // no gateway unit = not a gateway agent; nothing to watch
+      // UNKNOWN is handled first and on its own latch, because the two things it must
+      // never do are both below: it must not raise a fault it did not observe, and it
+      // must NOT reach the recovery branch — a log we cannot read is not evidence that
+      // a previously-alarmed agent got better. Silently clearing a real alarm is the
+      // worse of the two failures, since it also un-warns the reader.
+      if (!h.known) {
+        if (this.toolHealthUnknown.has(id)) continue
+        this.toolHealthUnknown.add(id)
+        console.warn(`[hermes-tools] ${id}: tool health unknown — ${h.detail}`)
+        this.cfg.notify?.({
+          severity: 'warning', source: 'hermes-tools',
+          message: `Agent '${id}' tool health cannot be determined`,
+          detail: h.detail + (this.toolHealthAlarmed.has(id)
+            ? ' An earlier alarm for this agent REMAINS OPEN and has not been cleared — this check cannot confirm a recovery.'
+            : ''),
+        })
+        continue
+      }
+      this.toolHealthUnknown.delete(id)
       if (h.gaveUp || !h.healthy) {
         if (this.toolHealthAlarmed.has(id)) continue
         this.toolHealthAlarmed.add(id)
@@ -2082,6 +2104,13 @@ export class HermesManagementService {
   async getToolHealth(agentId: string): Promise<{
     groupTools: number; registeredTools: number | null; gaveUp: boolean
     parkedServers: number; parkedNames: string[]; gatewayActive: boolean; healthy: boolean
+    /** Did we actually READ the agent's registration? False when the log holds no
+     *  registration line at all (rotated, truncated, or the agent has never
+     *  registered). Health is then UNKNOWN — not healthy. `healthy` was previously
+     *  true in this case, which made an unreadable log look like a pass AND let it
+     *  retract a live alarm as a false "recovered" (m-c: cinder-kyla vanished from a
+     *  batch of five real alerts this way). cannot-check is its own state. */
+    known: boolean
     /** the parked count came from a registration PREDATING the reconnect — it may
      *  already be fixed, so it must not raise a live ERROR. */
     parkedStale: boolean
@@ -2158,7 +2187,10 @@ export class HermesManagementService {
     // have changed in between. Still reported (never suppressed: unknown is not healthy),
     // but at its true weight, and the next registration settles it.
     const parkedStale = parkedServers > 0 && registrationStale
-    const healthy = !gaveUp && parkedServers === 0 && (registeredTools === null || matches)
+    // 🛑 ABSENCE OF EVIDENCE IS NOT A PASS. An unread registration means the check did
+    // not run, so it can neither assert health nor deny it — see `known`.
+    const known = registeredTools !== null
+    const healthy = known && !gaveUp && parkedServers === 0 && matches
     // The allowance belongs in the COMPARISON, never in the numbers a reader
     // sees: printing raw 58-vs-60 sent triage hunting two missing tools when
     // the real shortfall was the entire six-tool reports set (the 4 built-ins
@@ -2177,13 +2209,13 @@ export class HermesManagementService {
     const detail = gaveUp
       ? 'Hermes stopped retrying its MCP connection and is running with no tools. Reconnect to restore them.'
       : registeredTools === null
-        ? 'No registration seen in the agent log yet.' + parkedNote
+        ? 'Tool health UNKNOWN: no registration line in the agent log (rotated, truncated, or never registered), so the served tool set cannot be compared with the group. This is not a clean bill of health — it is an unread check.' + parkedNote
         : matches
           ? `Serving ${registeredTools} tools for a group of ${groupTools}.` + parkedNote
           : pending
             ? `Registration is ~${realGap} tool(s) short of the group, but the gateway was already reconnected at ${gatewayRestartedAt} (after that registration) — the refreshed set loads on the agent's NEXT TURN.${parkedServers > 0 && !parkedStale ? '' : ' No action needed; do NOT reconnect again.'}` + parkedNote
             : `Group has ${groupTools} tools but the agent last registered ${registeredTools} — and that count includes up to ${PROTOCOL_EXTRAS} MCP protocol built-ins, so the real shortfall is ~${realGap} tool(s), not ${Math.max(0, groupTools - registeredTools)}.${parkedServers > 0 ? '' : ' Reconnect to resync.'}` + parkedNote
-    return { groupTools, registeredTools, gaveUp, parkedServers, parkedNames, parkedStale, gatewayActive, healthy, pending, gatewayRestartedAt, detail }
+    return { groupTools, registeredTools, gaveUp, parkedServers, parkedNames, parkedStale, gatewayActive, healthy, known, pending, gatewayRestartedAt, detail }
   }
 
   /** Restart the agent's messaging gateway so it re-reads config and reconnects its MCP link.
