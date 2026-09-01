@@ -2210,8 +2210,22 @@ export class HermesManagementService {
 
     const log = `${this.profileHome(agentId)}/logs/agent.log`
     // Last registration line, and anything after it, in one hop.
+    // Read the ROTATED file too, oldest first, then the live one. Hermes rotates agent.log at
+    // ~5 MiB, and a fresh post-rotation file can hold four lines and no registration — so a
+    // perfectly healthy agent reported UNKNOWN while its registration sat in agent.log.1 one
+    // file away. maintenance-claude caught this on idris: group 110 + 4 built-ins = 114, and
+    // the matching "registered 114 tool(s)" line was in the rotated file.
+    //
+    // The class is worth naming: the evidence existed and was accurate — it was simply OUTSIDE
+    // THE PROBE'S APERTURE. Same family as letting `tail -n 4000` decide a verdict by log
+    // volume. Left alone, UNKNOWN would have become the routine resting state of every agent on
+    // a rotation cycle, draining the meaning out of the one signal standing between us and the
+    // false-recovery bug. A warning that fires on healthy subjects stops being read.
+    //
+    // Chronological order matters: .1 is older, so it is concatenated FIRST and the trailing
+    // `tail -n 20` still keeps the newest lines.
     const raw = await this.ssh(
-      `tail -n 4000 ${shq(log)} 2>/dev/null | grep -aE 'registered [0-9]+ tool\\(s\\) from|reconnection attempts, giving up|parking until a reconnect' | tail -n 20 || true`,
+      `{ tail -n 4000 ${shq(log)}.1 2>/dev/null; tail -n 4000 ${shq(log)} 2>/dev/null; } | grep -aE 'registered [0-9]+ tool\\(s\\) from|reconnection attempts, giving up|parking until a reconnect' | tail -n 20 || true`,
     ).catch(() => '')
     let registeredTools: number | null = null
     let gaveUp = false
