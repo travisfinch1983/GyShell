@@ -673,9 +673,14 @@ export class HermesManagementService {
       }
     }
     // Agents that have LEFT the roster keep no latch: an id recreated later must start clean.
-    // Safe only because listAgentsStrict THREW on failure and the sweep returned above — so
-    // `agents` is a trusted roster here, never a best-effort or empty one.
-    latch.pruneSubjects(agents)
+    // TWO independent guards, because getting this wrong silently disarms every alarm and
+    // persists that state to disk:
+    //   1. listAgentsStrict now genuinely throws on an unreadable roster (the sweep returns above).
+    //   2. this empty-roster check, which would have contained the damage even while (1) was
+    //      broken — as it was until 2026-09-01.
+    // Skipping the prune on an empty roster costs nothing real: with no agents there is nothing
+    // to re-announce, and stale entries are still bounded by the re-announce expiry.
+    if (agents.length) latch.pruneSubjects(agents)
     latch.save()
   }
 
@@ -2854,7 +2859,18 @@ export class HermesManagementService {
    * the failover to NOBODY: an alarm asserting an action that did not happen.
    */
   async listAgentsStrict(): Promise<string[]> {
-    const out = await this.ssh(`ls -1 ${shq(this.profileHomeBase)} 2>/dev/null || true`)
+    // 🛑 NO `|| true`, NO `2>/dev/null`. Both were here, and between them they forced exit 0 for
+    // ANY failure — an unreadable profiles dir, a wrong profileHomeBase, a bad mount, a
+    // permissions change — so ssh() could never reject and this function returned [] instead of
+    // throwing. Every call site documented the opposite ("a failed enumeration must surface as an
+    // error, not as {agents:0} ok") and none of them had it: the guarantee lived in the NAME and
+    // in comments, never in the body. Found by maintenance-claude reading the implementation
+    // after I asserted the guarantee in a comment of my own.
+    //
+    // A legitimately EMPTY directory still returns [] without throwing — `ls -1` on an empty dir
+    // exits 0 — so "no agents" and "cannot read agents" stay distinguishable, which is the whole
+    // point. Suppressing stderr also destroyed the reason; it now reaches the caller.
+    const out = await this.ssh(`ls -1 ${shq(this.profileHomeBase)}`)
     return out.split('\n').map((s) => s.trim()).filter(Boolean)
   }
 

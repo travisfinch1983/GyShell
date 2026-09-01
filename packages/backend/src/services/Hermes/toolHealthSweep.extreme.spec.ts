@@ -10,7 +10,7 @@
  * fleet-wide no-op — worst as applyEffectiveModel's "failed over to X" notify
  * about an action applied to NOBODY. All stubs; no ssh, no live fleet.
  */
-import { existsSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, rmSync } from 'fs'
 import { AlarmLatch } from '../AlarmLatch'
 import { HermesManagementService } from './HermesManagementService'
 
@@ -181,6 +181,44 @@ async function main(): Promise<void> {
   ok(pl2.pruneSubjects([]).length === 2,
     'an EMPTY roster removes every entry — proving why only a TRUSTED (throwing) enumeration may be passed')
 
+  // ── listAgentsStrict must EARN its name (real method, real filesystem) ────
+  // It carried `|| true` and `2>/dev/null`, which forced exit 0 for every failure — so it could
+  // never throw, and returned [] instead. Five call sites documented the opposite guarantee
+  // ("a failed enumeration must surface as an error, not as {agents:0} ok") and none of them had
+  // it. The guarantee lived in the NAME and in comments, never in the body. These run the REAL
+  // method against the REAL filesystem, because a stubbed ssh() would have passed either way.
+  const emptyDir = `/tmp/hermes-profiles-empty.${process.pid}`
+  mkdirSync(emptyDir, { recursive: true })
+  const svcEnum: any = new HermesManagementService({ user: 'spec', profileHomeBase: emptyDir } as any)
+  ok((await svcEnum.listAgentsStrict()).length === 0,
+    'an EMPTY profiles dir returns [] and does NOT throw — "no agents" stays a legitimate answer')
+
+  svcEnum.profileHomeBase = `/tmp/hermes-profiles-missing.${process.pid}`
+  let enumThrew = false
+  try { await svcEnum.listAgentsStrict() } catch { enumThrew = true }
+  ok(enumThrew, 'an UNREADABLE profiles dir THROWS — cannot-check must never collapse into zero')
+  rmSync(emptyDir, { recursive: true, force: true })
+
+  // …and the sweep must not destroy state on that path. This is the bug that shipped in 8a36dfa:
+  // enumeration returning [] meant the loop iterated nothing and pruneSubjects([]) wiped every
+  // latch, persisting the disarmed state. Two guards now; assert BOTH hold.
+  const survivor = new AlarmLatch(`${LATCH}.survive`)
+  survivor.claim('someone', 'gaveup')
+  survivor.save()
+  const svcWipe: any = new HermesManagementService({ user: 'spec', notify: () => {} } as any)
+  svcWipe.toolAlarmsLatch = new AlarmLatch(`${LATCH}.survive`)
+  svcWipe.listAgentsStrict = async () => { throw new Error('profiles unreadable') }
+  await svcWipe.sweepToolHealth()
+  ok(new AlarmLatch(`${LATCH}.survive`).has('someone', 'gaveup'),
+    'a THROWING enumeration leaves every latch intact — the sweep returns before pruning')
+
+  const svcEmpty: any = new HermesManagementService({ user: 'spec', notify: () => {} } as any)
+  svcEmpty.toolAlarmsLatch = new AlarmLatch(`${LATCH}.survive`)
+  svcEmpty.listAgentsStrict = async () => []
+  await svcEmpty.sweepToolHealth()
+  ok(new AlarmLatch(`${LATCH}.survive`).has('someone', 'gaveup'),
+    'and an EMPTY roster prunes NOTHING — the second guard, which would have contained the damage on its own')
+
   // ── getToolHealth parser + honest arithmetic (real method, stubbed I/O) ───
   const svc3: any = new HermesManagementService({ user: 'spec' } as any)
   const groupToolNames = Array.from({ length: 60 }, (_, i) => `srv__t${i}`)
@@ -320,7 +358,7 @@ async function main(): Promise<void> {
 
   resetLatch()
   if (existsSync(`${LATCH}.exp`)) rmSync(`${LATCH}.exp`)
-  for (const x of ['.prune', '.prune2']) if (existsSync(`${LATCH}${x}`)) rmSync(`${LATCH}${x}`)
+  for (const x of ['.prune', '.prune2', '.survive']) if (existsSync(`${LATCH}${x}`)) rmSync(`${LATCH}${x}`)
   console.log(`\n${n} assertions passed`)
   process.exit(0)
 }
