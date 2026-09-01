@@ -1,6 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve as dnsResolve } from 'node:dns/promises'
 import path from 'node:path'
+import { AlarmLatch } from '../AlarmLatch'
 
 /**
  * NotificationsService — the answer to "far too many things can fail silently
@@ -158,7 +159,13 @@ export class NotificationsService {
   /** Consecutive down-probes per check id. Reset by any ok, untouched by unknown. */
   private downStreak = new Map<string, number>()
   /** Check ids we have actually raised a DOWN event for, so recovery pairs with it. */
-  private alarmed = new Set<string>()
+  /** Health-dot alarm latch — PERSISTED (shared AlarmLatch): a backend restart
+   *  must be silent about dots it already announced and loud only about new
+   *  faults. Same disease as the hermes-tools set, same cure, one definition.
+   *  Assigned in the CONSTRUCTOR BODY, not a field initializer: class fields
+   *  initialize before parameter properties are assigned, so `this.dataDir`
+   *  is undefined here — the spec caught the crash before production did. */
+  private readonly alarmLatch: AlarmLatch
   private checks: HealthCheckConfig[] = []
   private readonly bootAt = Date.now()
   private timer: ReturnType<typeof setInterval> | null = null
@@ -181,6 +188,7 @@ export class NotificationsService {
     // fires every ~1ms — a probe STORM from a typo'd env var, with state()
     // reporting NaN to the panel. Below 5s the probes overlap their own
     // timeouts. Both are config mistakes the board must survive, not obey.
+    this.alarmLatch = new AlarmLatch(path.join(dataDir, 'notifications-alarms.json'))
     if (!Number.isFinite(intervalMs) || intervalMs < 5_000) {
       const bad = intervalMs
       intervalMs = 30_000
@@ -384,6 +392,18 @@ export class NotificationsService {
             detail: `Not probed: ${missing.join(', ')}. The config was seeded once and is operator-owned, so these are either deliberately removed (fine — ack this) or were added to the defaults AFTER this install seeded and silently never started running. Add them to ${this.checksFile()} if wanted.`,
           })
         }
+      }
+      // Subject-gone pruning (AlarmLatch contract: a TRUSTED roster only).
+      // This branch means the operator's config file PARSED — the checks list
+      // is the deliberate roster, so a check removed from it takes its latch
+      // along (subject gone ≠ fault gone ≠ cannot-check). The corrupt-file
+      // path below deliberately does NOT prune: falling back to defaults is a
+      // best-effort roster, and pruning against it would wipe latches for
+      // operator-added checks — the exact trap the method's contract names.
+      const pruned = this.alarmLatch.pruneSubjects(this.checks.map((c) => c.id))
+      if (pruned.length) {
+        this.alarmLatch.save()
+        console.log(`[notifications] dropped alarm latches for removed checks: ${pruned.join(', ')}`)
       }
     } catch (e) {
       let saved = ''
@@ -787,17 +807,22 @@ export class NotificationsService {
             this.debug('health', `${r.label}: down, but its transport '${dep}' is already reported down — event suppressed as duplicate of the root cause`)
             continue
           }
-          // Latched: re-raising every 30s for one ongoing outage is a pager loop.
-          if (!this.alarmed.has(r.id)) {
-            this.alarmed.add(r.id)
+          // Latched AND persisted: re-raising every 30s is a pager loop, and
+          // re-raising on every backend restart was the same loop on a deploy
+          // cadence (~28 restarts in one dev day). claim() suppresses within
+          // the window, marks a 7-day restatement as a restatement, and a
+          // fresh process inherits what was already announced.
+          const suffix = this.alarmLatch.claim(r.id, 'down')
+          if (suffix !== null) {
             const bootNote = sinceBoot < BOOT_CONTEXT_WINDOW_MS
               ? ` The backend itself started ${Math.round(sinceBoot / 1000)}s ago and this dependency never came up with it — a listener that did not bind (check the last deploy), not a service that fell over.`
               : ''
             this.notify({
               severity: r.downSeverity, source: 'health',
               message: `${r.label} is DOWN`,
-              detail: `${r.reason} (failed ${streak} consecutive checks)` + bootNote,
+              detail: `${r.reason} (failed ${streak} consecutive checks)` + bootNote + suffix,
             })
+            this.alarmLatch.save()
           }
         } else {
           this.debug('health', `${r.label}: probe failed (${streak}/${needed}) - ${r.reason}`)
@@ -808,7 +833,12 @@ export class NotificationsService {
       this.downStreak.set(r.id, 0)
       // Only announce recovery from an outage we actually announced, or the panel
       // fills with "recovered" lines for failures nobody was ever told about.
-      if (this.alarmed.delete(r.id)) {
+      // An OK probe IS positive evidence — the only thing allowed to clear the
+      // latch. This also fires correctly for a dot that healed while the
+      // backend was down: the persisted latch survives the restart, the first
+      // good probe clears it, the recovery is announced exactly once.
+      if (this.alarmLatch.clear(r.id, ['down']).length > 0) {
+        this.alarmLatch.save()
         this.notify({ severity: 'info', source: 'health', message: `${r.label} recovered` })
       }
     }

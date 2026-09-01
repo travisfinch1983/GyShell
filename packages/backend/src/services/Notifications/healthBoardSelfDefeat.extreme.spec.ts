@@ -16,7 +16,7 @@
  * Everything runs against a scratch dataDir and a recorded fetch — no live
  * store, no live fleetd (the standing rule from the support-models incident).
  */
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { NotificationsService } from './NotificationsService'
@@ -279,6 +279,71 @@ async function main(): Promise<void> {
     'a dependent still dead after its transport recovers alarms on its own — suppression is not forgiveness')
   ok(!healthEvts().some((e: any) => e.message === 'Embeddings pool recovered'),
     'and no recovery was ever emitted for the suppressed period')
+
+  // ── the latch survives the watcher: deploys stop re-announcing ────────────
+  // ~28 backend restarts in one dev day re-announced every still-true dot: a
+  // notification must describe a change in the WORLD, not in the watcher.
+  const latchDir = mkdtempSync(join(tmpdir(), 'notif8-'))
+  const NS = (await import('./NotificationsService')).NotificationsService
+  const DOT_A = { id: 'dot-a', label: 'Dot A', kind: 'http', target: 'http://t/a', expect: '2xx3xx', downSeverity: 'error', confirmations: 1 }
+  // The config FILE must carry dot-a: construction parses it and prunes latch
+  // subjects against it — a check absent from the parsed roster is a departed
+  // subject and its latch is (correctly) dropped at construction.
+  writeFileSync(join(latchDir, 'notifications-health.json'), JSON.stringify({ checks: [DOT_A] }))
+  const mkSvc = () => {
+    const v: any = new NS(latchDir, () => {})
+    v.checks = [DOT_A]
+    return v
+  }
+  let dotUp = false
+  ;(globalThis as any).fetch = async (url: string) => {
+    if (String(url).includes('/send')) return { ok: true, json: async () => ({ recipients: {} }), text: async () => '' }
+    if (!dotUp) throw new Error('ECONNREFUSED')
+    return { ok: true, status: 200, text: async () => '', json: async () => ({}) } as any
+  }
+  const svcA = mkSvc()
+  await svcA.probeAll()
+  const dotEvts = (v: any) => v.state().events.filter((e: any) => e.source === 'health' && e.message.includes('Dot A'))
+  ok(dotEvts(svcA).length === 1, 'first confirmation announces the down dot once')
+  await svcA.probeAll()
+  ok(dotEvts(svcA).length === 1, 'and re-probes stay latched in-process')
+
+  const svcB = mkSvc()   // "the deploy": a fresh process on the same dataDir
+  await svcB.probeAll()
+  ok(dotEvts(svcB).length === 0,
+    'THE DEPLOY IS SILENT: a fresh process inherits the persisted latch — a still-true dot is NOT re-announced')
+
+  dotUp = true           // healed while "down between deploys"
+  const svcC = mkSvc()
+  await svcC.probeAll()
+  const recovered = svcC.state().events.filter((e: any) => e.message === 'Dot A recovered')
+  ok(recovered.length === 1,
+    'a dot that healed across a restart still gets its recovery — the persisted latch is what makes the OK probe mean something')
+  await svcC.probeAll()
+  ok(svcC.state().events.filter((e: any) => e.message === 'Dot A recovered').length === 1,
+    'and recovery fires exactly once — the clear persisted too')
+
+  // ── subject-gone pruning: only a TRUSTED roster may disarm ────────────────
+  const cfgFile = join(latchDir, 'notifications-health.json')
+  const svcD0 = mkSvc(); dotUp = false; await svcD0.probeAll()   // latch dot-a again
+  ok(JSON.parse(readFileSync(join(latchDir, 'notifications-alarms.json'), 'utf8'))['dot-a:down'] !== undefined,
+    '(setup) dot-a latched')
+  writeFileSync(cfgFile, JSON.stringify({ checks: [] }))   // operator deliberately empties the board
+  const svcD = mkSvc()   // construction parses the (empty) roster and prunes
+  void svcD
+  ok(Object.keys(JSON.parse(readFileSync(join(latchDir, 'notifications-alarms.json'), 'utf8'))).length === 0,
+    'a check removed from a PARSED config takes its latch along — subject gone, not fault gone')
+  // corrupt config: falling back to defaults is a best-effort roster — pruning
+  // against it would wipe latches for operator-added checks. Assert NO prune.
+  writeFileSync(cfgFile, JSON.stringify({ checks: [DOT_A] }))
+  const svcE0 = mkSvc(); await svcE0.probeAll()   // re-latch dot-a
+  ok(JSON.parse(readFileSync(join(latchDir, 'notifications-alarms.json'), 'utf8'))['dot-a:down'] !== undefined,
+    '(setup) dot-a latched again')
+  writeFileSync(cfgFile, '{corrupt')
+  const svcE = mkSvc()
+  void svcE
+  ok(JSON.parse(readFileSync(join(latchDir, 'notifications-alarms.json'), 'utf8'))['dot-a:down'] !== undefined,
+    'a CORRUPT config does NOT prune — best-effort rosters never disarm (the pruneSubjects contract, upheld at the call site)')
 
   // ── /emit truncation is marked in the response ────────────────────────────
   // @ts-expect-error — express ships untyped in this repo (same pattern as the routers)
