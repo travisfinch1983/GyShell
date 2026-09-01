@@ -331,6 +331,38 @@ async function runRagUpdate(collection) {
   }
   const branch = entry.branch && entry.branch !== 'default' ? entry.branch : '';
 
+  // PREFLIGHT before anything destructive (m-c's incident, 2026-08-31:
+  // delete-then-clone destroyed codebase_proxlab when the repo went private —
+  // the clone 404'd AFTER the vectors were gone, and this function's own
+  // alert announced the loss it had just caused). ls-remote is cheap, needs
+  // no disk, and fails on exactly the class that killed us: unreachable,
+  // unauthorized, or deleted upstream.
+  //
+  // ⚠ DELIBERATE RESIDUAL WINDOW (claude1's TOCTOU review): delete still
+  // precedes clone, so a repo that passes preflight and then dies seconds
+  // later (network reset mid-clone, disk-full, remote vanishing) still loses
+  // the collection until checkpoint/resume or the next successful run. This
+  // is a narrowing, not a closure, and it is CHOSEN: the closing fix is
+  // stage-and-swap (index into <col>__staging, atomically repoint on
+  // success), which needs a rename/alias primitive the vector proxy does not
+  // have across its four backends — qdrant has aliases, milvus/weaviate/
+  // chroma need per-backend work. If refreshes ever lose a collection
+  // through THIS window, build that primitive rather than widening the
+  // preflight: a second verification clone would double traffic and still
+  // share fate with the real clone seconds later.
+  const preflight = await exec(MCPJUNGLE_HOST,
+    `GIT_TERMINAL_PROMPT=0 git ls-remote "${entry.repo_url}" HEAD >/dev/null 2>&1 && echo __REACHABLE__ || echo __UNREACHABLE__`,
+    { timeout: 30000 });
+  if (!(preflight.stdout || '').includes('__REACHABLE__')) {
+    console.warn(`[rag-update] '${colName}': repo ${entry.repo_url} is NOT cloneable (auth/404/network) — refresh SKIPPED, existing vectors preserved`);
+    void emitNotification('warning', 'codebase-rag',
+      'A codebase-RAG refresh was skipped — its repo is not cloneable',
+      `Collection '${colName}': git ls-remote failed for ${entry.repo_url} (private repo without credentials, deleted upstream, or network). `
+      + `The EXISTING vectors are preserved — search keeps working on the last successful index. `
+      + `Fix the repo access (or remove the collection's repo_url) to resume refreshes.`);
+    return;
+  }
+
   // Drop the old vectors (all backends). A failed delete aborts the refresh
   // rather than layering new chunks over stale ones.
   const delResp = await fetch(`http://127.0.0.1:${selfPort}/api/proxy/vector/all/collections/${colName}`, {

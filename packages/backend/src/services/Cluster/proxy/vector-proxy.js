@@ -544,6 +544,68 @@ export function createVectorProxyRouter() {
   });
 
   // GET /api/proxy/vector/all/collections — List collections from all eligible DBs
+  // Live per-backend point counts for ONE collection. Exists because
+  // collection_stats reported a DEAD collection as healthy (files_indexed 118
+  // on a store holding zero vectors — m-c, 2026-08-31): an authoritative
+  // surface must read the thing it claims to describe, or say it cannot.
+  // A backend that errors reports null — cannot-count ≠ zero.
+  router.get('/all/collections/:name/count', async (req, res) => {
+    const name = String(req.params.name || '');
+    if (!/^[a-zA-Z0-9_]+$/.test(name)) return res.status(400).json({ error: 'invalid collection name' });
+    const dbs = getEligibleDbs();
+    const counts = {};
+    await Promise.all(dbs.map(async (db) => {
+      const url = `http://${db.host}:${db.port}`;
+      try {
+        switch (db.type) {
+          case 'qdrant': {
+            const r = await fetch(`${url}/collections/${name}`, { signal: AbortSignal.timeout(5000) });
+            if (!r.ok) { counts[db.name] = r.status === 404 ? 0 : null; return; }
+            const d = await r.json();
+            counts[db.name] = d.result?.points_count ?? null;
+            return;
+          }
+          case 'milvus': {
+            const r = await fetch(`${url}/v2/vectordb/collections/get_stats`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ collectionName: name }), signal: AbortSignal.timeout(5000),
+            });
+            const d = await r.json();
+            counts[db.name] = typeof d.data?.rowCount === 'number' ? d.data.rowCount
+              : Number.isFinite(parseInt(d.data?.rowCount, 10)) ? parseInt(d.data.rowCount, 10) : null;
+            return;
+          }
+          case 'weaviate': {
+            const cls = name[0].toUpperCase() + name.slice(1);
+            const r = await fetch(`${url}/v1/graphql`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ query: `{ Aggregate { ${cls} { meta { count } } } }` }),
+              signal: AbortSignal.timeout(5000),
+            });
+            const d = await r.json();
+            const agg = d.data?.Aggregate?.[cls];
+            counts[db.name] = Array.isArray(agg) ? (agg[0]?.meta?.count ?? 0) : null;
+            return;
+          }
+          case 'chromadb': {
+            const base = `${url}/api/v2/tenants/default_tenant/databases/default_database/collections`;
+            const cols = await (await fetch(base, { signal: AbortSignal.timeout(5000) })).json();
+            const col = (Array.isArray(cols) ? cols : []).find((c) => c.name === name);
+            if (!col) { counts[db.name] = 0; return; }
+            const r = await fetch(`${base}/${col.id}/count`, { signal: AbortSignal.timeout(5000) });
+            const n = await r.json();
+            counts[db.name] = typeof n === 'number' ? n : null;
+            return;
+          }
+          default:
+            counts[db.name] = null;
+        }
+      } catch { counts[db.name] = null; }
+    }));
+    const known = Object.values(counts).filter((v) => typeof v === 'number');
+    res.json({ collection: name, counts, maxCount: known.length ? Math.max(...known) : null, backendsAnswering: known.length });
+  });
+
   router.get('/all/collections', async (req, res) => {
     const dbs = getEligibleDbs();
     const results = await Promise.all(dbs.map(async (db) => {
