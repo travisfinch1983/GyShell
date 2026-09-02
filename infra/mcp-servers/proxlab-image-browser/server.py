@@ -1034,7 +1034,52 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
                    "unlabeled": unlabeled[:20], "count": len(unlabeled),
                    "fix": "caption them (run_tagger) or remove_from_training_batch them"})
 
-    trig = (trigger or output_name).strip().replace(" ", "_")
+    # ── the trigger must be a token the model will ACTUALLY see ──
+    # kohya names the concept dir <repeats>_<trigger>, and that name becomes the
+    # ss_tag_frequency key in the LoRA metadata. A trigger that is not in the captions
+    # therefore publishes a token the model never learned, and whoever reads the metadata
+    # to find the trigger prompts the wrong word. That happened once already.
+    def _leading_tokens(folder, files):
+        lead, seen = {}, 0
+        for f in files:
+            p = os.path.join(folder, os.path.splitext(f)[0] + ".txt")
+            try:
+                txt = open(p, encoding="utf-8", errors="replace").read().strip()
+            except OSError:
+                continue
+            if not txt:
+                continue
+            seen += 1
+            first = txt.split(",")[0].strip()
+            if first:
+                lead[first] = lead.get(first, 0) + 1
+        return lead, seen
+
+    _lead, _seen = _leading_tokens(batch_abs, imgs)
+    detected, detected_n = (max(_lead.items(), key=lambda kv: kv[1]) if _lead else (None, 0))
+    # "dominant" = leads at least 90% of the captions we could read.
+    dominant = detected if (_seen and detected_n >= 0.9 * _seen) else None
+
+    trig = (trigger or "").strip().replace(" ", "_")
+    if trig:
+        # Accept it only if it genuinely appears in the captions.
+        present = sum(1 for f in imgs
+                      if trig in open(os.path.join(batch_abs, os.path.splitext(f)[0] + ".txt"),
+                                      encoding="utf-8", errors="replace").read())
+        if present < 0.9 * len(imgs):
+            return _j({"error": "REFUSING to train: the trigger is not in the captions, so the "
+                                "LoRA would be published under a token the model never sees",
+                       "trigger_given": trig,
+                       "captions_containing_it": present,
+                       "captions_total": len(imgs),
+                       "trigger_detected_in_captions": dominant,
+                       "detected_leads_n_captions": detected_n,
+                       "fix": (f"pass trigger='{dominant}' (what the captions actually lead with), "
+                               "or omit trigger to use it automatically, or re-caption with the "
+                               "trigger you want")})
+    else:
+        trig = dominant or output_name.strip().replace(" ", "_")
+
     if not base_model:
         rc, out, _ = _ssh(f"ls -t {_CKPT_ROOT}/Illustrious/*.safetensors 2>/dev/null | head -1")
         base_model = out.strip()
@@ -1110,6 +1155,9 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
         f"--pretrained_model_name_or_path='{base_model}' "
         f"--train_data_dir='{os.path.join(rdir, 'dataset')}' "
         f"--output_dir='{outdir}' --output_name='{output_name}' "
+        # ss_training_comment: an explicit trigger record. ss_tag_frequency's key is a
+        # directory name and is easy to misread as the trigger; this is unambiguous.
+        f"--training_comment='trigger: {trig}' "
         f"--caption_extension='.txt' --resolution={resolution},{resolution} "
         f"--enable_bucket --min_bucket_reso=512 --max_bucket_reso=2048 --bucket_reso_steps=64 "
         f"--network_module=networks.lora --network_dim={network_dim} --network_alpha={network_alpha} "
@@ -1216,7 +1264,9 @@ def train_lora_status(run_id: str) -> str:
     steps = _re.findall(r"(\d+)/(\d+)\s*\[", tail)
     loss = _re.findall(r"loss[=:]\s*([0-9.]+)", tail, _re.I)
     epoch = _re.findall(r"epoch\s+(\d+)\s*/\s*(\d+)", tail, _re.I)
-    rc, ck, _ = _ssh(f"ls -t '{meta.get('output_dir','')}/{meta.get('output_name','')}'*.safetensors 2>/dev/null | head -3")
+    # No head -N here: a truncated list under a plain "checkpoints" key is a subset presented as
+    # the whole, and a caller counting it silently gets the wrong number.
+    rc, ck, _ = _ssh(f"ls -t '{meta.get('output_dir','')}/{meta.get('output_name','')}'*.safetensors 2>/dev/null")
     if not alive and meta.get("state") == "running":
         meta["state"] = "finished" if ck.strip() else "stopped_without_output"
         _write_run(run_id, meta)
@@ -1230,6 +1280,8 @@ def train_lora_status(run_id: str) -> str:
         "log_idle_seconds": mtime_age,
         "log_stalled": (mtime_age is not None and mtime_age > 600 and alive),
         "checkpoints": [c for c in ck.splitlines() if c.strip()],
+        "checkpoint_count": len([c for c in ck.splitlines() if c.strip()]),
+        "latest_checkpoint": next((c for c in ck.splitlines() if c.strip()), None),
         "log_tail": tail[-1200:],
     })
 
