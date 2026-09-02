@@ -321,11 +321,20 @@ export class NotificationsService {
       this.routing = { suspended: false, reason: '', since: '', suppressed: 0, suppressedEvents: [] }
       this.notify({
         severity: 'info', source: 'notify-routing',
-        // routeInfo: the agent whose alert path just reopened must hear it ON
-        // that path — maintenance-claude only learned resumption had happened
-        // when unrelated alerts started arriving (2026-08-31), and the missed-
-        // while-suspended summary below is exactly what it needs on wake.
-        routeInfo: true,
+        // routeInfo: the agent whose alert path just reopened must hear it ON that path —
+        // maintenance-claude only learned resumption had happened when unrelated alerts started
+        // arriving (2026-08-31), and the missed-while-suspended summary below is exactly what it
+        // needs on wake.
+        //
+        // 🛑 ONLY WHEN SOMETHING WAS ACTUALLY WITHHELD. With missed === 0 the entire content is
+        // "an event occurred that had no effect on you", and it still costs a wake. That was
+        // rare until ailab-restart made short controlled suspensions routine — every restart
+        // would now page the maintainer to report an absence. The event is still recorded and
+        // badged, so the resumption stays visible in the panel; it just stops waking anyone.
+        // Raised by maintenance-claude about his own alert path, with the four-event history
+        // behind it: the two informative notices carried counts of 2 and 54; the two empty ones
+        // were 35-second windows from the restart tool.
+        routeInfo: missed > 0,
         message: `Forwarding to the maintenance agent RESUMED`,
         detail: missed
           ? `${missed} event(s) were raised while suspended since ${since} and were NOT forwarded (worst: ${worst}). They are in the panel; the agent was not woken for them.`
