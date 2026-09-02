@@ -247,6 +247,8 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   const [merge, setMerge] = useState(false)
   const [crop, setCrop] = useState<{ rel: string; name: string } | null>(null)
   const cropIdxRef = useRef(0)
+  // undefined = whole folder; a list = caption only these (selection, or one from the editor)
+  const [capFiles, setCapFiles] = useState<string[] | undefined>(undefined)
   const [autoCap, setAutoCap] = useState(false)
   const [blanket, setBlanket] = useState(false)
   const [batchAdd, setBatchAdd] = useState(false)
@@ -350,7 +352,16 @@ export const TrainingImagesPanel: React.FC = observer(() => {
 
       {store.images.length > 0 && (
         <div className={styles.setbar}>
-          <button className={styles.btn} onClick={() => setAutoCap(true)}>🏷 Auto-caption…</button>
+          <button className={styles.btn}
+            title={store.selectionMode && store.selected.size ? 'Caption ONLY the selected images' : 'Caption every image in this folder'}
+            onClick={() => {
+              setCapFiles(store.selectionMode && store.selected.size
+                ? store.visibleImages.filter((im) => store.selected.has(im.name)).map((im) => im.name)
+                : undefined)
+              setAutoCap(true)
+            }}>
+            {store.selectionMode && store.selected.size ? `🏷 Auto-caption (${store.selected.size})…` : '🏷 Auto-caption…'}
+          </button>
           <button className={styles.btn} title="Add or remove the same booru tags across this folder" onClick={() => setBlanket(true)}>🏷 Blanket tags…</button>
           <button className={styles.btn} onClick={() => void doCollage()}>🖼 Generate collage</button>
           {store.hasCollage && <button className={styles.btn} onClick={() => setLb({ rel: `${store.cwd}/${store.collageFirst}`, name: 'collage', bust: Date.now() })}>View collage</button>}
@@ -429,9 +440,11 @@ export const TrainingImagesPanel: React.FC = observer(() => {
             const next = at >= 0 ? l[at + dir] : (dir > 0 ? l[cropIdxRef.current] : l[cropIdxRef.current - 1])
             if (next) setCrop({ rel: next.rel, name: next.name })
             else if (at < 0) setCrop(null)   // list emptied under us — nothing left to page to
-          }} />
+          }}
+          onCaption={() => { setCapFiles([crop.name]); setAutoCap(true) }} />
       })()}
-      {autoCap && <AutoCaptionModal onClose={() => setAutoCap(false)} />}
+      {autoCap && <AutoCaptionModal files={capFiles} onClose={() => setAutoCap(false)} />}
+
       {blanket && <BlanketTagModal files={[...store.selected]} onClose={() => setBlanket(false)} onDone={() => void store.browse(store.cwd)} />}
       {batchAdd && <AddToBatchModal kind="batch" files={[...store.selected]} onClose={() => setBatchAdd(false)} />}
       {setAdd && <AddToBatchModal kind="set" files={[...store.selected]} onClose={() => setSetAdd(false)} />}

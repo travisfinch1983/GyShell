@@ -11,7 +11,7 @@ const CROP_PRESETS = [
 ]
 const CORNERS: Record<string, [number, number]> = { nw: [-1, -1], ne: [1, -1], sw: [-1, 1], se: [1, 1] }
 
-export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => void; onChanged: () => void; navPos?: { i: number; n: number }; onNav?: (dir: 1 | -1) => void }> = observer(({ rel, name, onClose, onChanged, navPos, onNav }) => {
+export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => void; onChanged: () => void; navPos?: { i: number; n: number }; onNav?: (dir: 1 | -1) => void; onCaption?: () => void }> = observer(({ rel, name, onClose, onChanged, navPos, onNav, onCaption }) => {
   const imgRef = useRef<HTMLImageElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
@@ -141,6 +141,23 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
       setMsg('Saved.'); onChanged()
     } catch (e: any) { setMsg('Save failed: ' + (e?.message || e)) }
   }
+  // When a caption job finishes while this editor is open, pull the fresh sidecars into
+  // any box the user has NOT edited — otherwise a single-image caption looks like a no-op
+  // until the image is reopened. Edited boxes are left alone: the user's text wins.
+  const capJobState = store.captionJob?.state
+  const capConsumed = useRef('')
+  useEffect(() => {
+    if (capJobState !== 'done') return
+    const jobId = store.captionJob?.jobId || ''
+    if (!jobId || capConsumed.current === jobId) return
+    capConsumed.current = jobId
+    void (async () => {
+      try { const r = await store.getCaption(rel, 'txt'); if (tags === tagsOrig.current) { setTags(r.caption || ''); tagsOrig.current = r.caption || '' } } catch {}
+      try { const r = await store.getCaption(rel, 'caption'); if (nl === nlOrig.current) { setNl(r.caption || ''); nlOrig.current = r.caption || '' } } catch {}
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [capJobState])
+
   const closeSave = () => { void saveAll().finally(onClose) }
   // Navigation saves like Close does — moving on must not discard caption/rating
   // edits typed on this image. The parent remounts the editor (key=rel) so every
@@ -179,6 +196,7 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
           </label>
           <span className={styles.crInfo}>{info}</span>
           <span className={styles.spacer} />
+          {onCaption && <button className={styles.btn} disabled={busy} title="Run the auto-captioner on THIS image only" onClick={onCaption}>🏷 Caption</button>}
           <button className={styles.btn} disabled={busy} onClick={() => void upscale()} title="Re-upscale via SeedVR2">⤴ Upscale</button>
           <button className={styles.btn} disabled={busy} onClick={() => void swap()} title="Toggle upscaled ↔ pre-upscale">⇄ Swap</button>
           <button className={styles.btn} disabled={busy} onClick={() => void reset()}>Reset</button>

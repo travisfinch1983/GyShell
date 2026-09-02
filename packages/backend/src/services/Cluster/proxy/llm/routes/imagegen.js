@@ -681,6 +681,21 @@ export function createImagegenRouter(config) {
       return res.status(400).json({ error: 'bad model' });
     }
     const device = b.device === 'cuda' ? 'cuda' : 'cpu';
+    // Optional subset: caption only these images (selection, or ONE image from the crop
+    // editor) instead of the whole folder. Validated here so the remote --files filter
+    // only ever sees clean names; a name that vanished between select and run is refused
+    // rather than silently skipped by the remote filter.
+    let onlyFiles = [];
+    if (Array.isArray(b.files) && b.files.length) {
+      for (const name of b.files) {
+        if (typeof name !== 'string' || !name || name.includes('/') || name.includes('..') || name.startsWith('.') || name.includes(',')) {
+          return res.status(400).json({ error: `bad filename: ${name}` });
+        }
+        if (!existsSync(path.join(dir, name))) return res.status(404).json({ error: `not found: ${name}` });
+      }
+      onlyFiles = b.files.map(String);
+    }
+
     // Per-request GPU pick (PCI/nvidia-smi order, same as the /taggers roster — CUDA_ORDER
     // pins the dispatched process to that numbering). Absent -> the default card.
     let gpuIndex = TAGGER_GPU_INDEX;
@@ -700,12 +715,13 @@ export function createImagegenRouter(config) {
     if (!/^[a-z0-9]{1,8}$/i.test(ext)) ext = isNl ? 'caption' : 'txt';
     const remoteFolder = `${TAGGER_REMOTE_TI}/${rel}`;
     const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;   // single-quote for the remote shell
+    const filesArg = onlyFiles.length ? ` --files ${q(onlyFiles.join(','))}` : '';   // q must exist first (TDZ)
     let cmd;
     if (engine === 'vlm') {
       // --context carries the domain hint ("these are all X") so the model knows what it is
       // looking at. --avoid keeps the trigger phrase OUT of the prose: the trigger is prepended
       // separately, and saying it twice is redundant. Defaults to the trigger when not given.
-      cmd = `${BLIP_PY} ${VLM_SCRIPT} --folder ${q(remoteFolder)} --caption-ext ${ext} `
+      cmd = `${BLIP_PY} ${VLM_SCRIPT} --folder ${q(remoteFolder)}${filesArg} --caption-ext ${ext} `
           + `--api ${q(VLM_API)} --model ${q(String(b.vlm_model || VLM_MODEL))}`
           + (b.instruction ? ` --instruction ${q(String(b.instruction))}` : '')
           + (b.context ? ` --context ${q(String(b.context))}` : '')
@@ -714,12 +730,12 @@ export function createImagegenRouter(config) {
           + (b.trigger ? ` --trigger ${q(b.trigger)}` : '')
           + (b.overwrite ? ' --overwrite' : '') + ' --json';
     } else if (engine === 'blip') {
-      cmd = `${CUDA_ORDER} ${BLIP_PY} ${BLIP_SCRIPT} --folder ${q(remoteFolder)} --model-dir ${q(BLIP_MODEL_DIR)} `
+      cmd = `${CUDA_ORDER} ${BLIP_PY} ${BLIP_SCRIPT} --folder ${q(remoteFolder)}${filesArg} --model-dir ${q(BLIP_MODEL_DIR)} `
           + `--device cuda --gpu-index ${gpuIndex} --caption-ext ${ext}`
           + (b.trigger ? ` --trigger ${q(b.trigger)}` : '')
           + (b.overwrite ? ' --overwrite' : '') + ' --json';
     } else {
-      cmd = `${CUDA_ORDER} ${ONNX_LD} ${ONNX_PY} ${ONNX_SCRIPT} --folder ${q(remoteFolder)} --model-dir ${q(`${TAGGER_REMOTE_MODELS}/${model}`)} `
+      cmd = `${CUDA_ORDER} ${ONNX_LD} ${ONNX_PY} ${ONNX_SCRIPT} --folder ${q(remoteFolder)}${filesArg} --model-dir ${q(`${TAGGER_REMOTE_MODELS}/${model}`)} `
           + `--device ${device} --gpu-index ${gpuIndex} --caption-ext ${ext} `
           + `--threshold ${Number(b.threshold) || 0.35} --char-threshold ${Number(b.char_threshold) || 0.85}`
           + (b.trigger ? ` --trigger ${q(b.trigger)}` : '')
@@ -732,7 +748,8 @@ export function createImagegenRouter(config) {
     captionJobs.set(jobId, { state: 'running', total: 0, done: 0, wrote: 0, skipped: 0, errors: 0, gpu_index: gpuIndex, model: jobModel });
     const taskId = `auto-caption:${jobId}`;
     taskReport({ id: taskId, source: 'auto-caption', state: 'running', done: 0, total: 0,
-                 label: `Auto-caption · ${jobModel} · ${rel.split('/').pop() || rel}` });
+                 label: `Auto-caption · ${jobModel} · ${rel.split('/').pop() || rel}`
+                   + (onlyFiles.length ? ` (${onlyFiles.length} selected)` : '') });
     const sshArgs = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no',
       '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=20'];
     if (SSH_KEY) sshArgs.push('-i', SSH_KEY);

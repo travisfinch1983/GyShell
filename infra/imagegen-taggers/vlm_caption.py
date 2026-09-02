@@ -221,6 +221,7 @@ def main():
     ap.add_argument("--retries", type=int, default=2)
     ap.add_argument("--trigger", default="")
     ap.add_argument("--overwrite", action="store_true")
+    ap.add_argument("--files", default="")   # comma-separated names within --folder; empty = whole folder
     ap.add_argument("--caption-ext", default="caption")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
@@ -241,6 +242,9 @@ def main():
         )
 
     imgs = list_images(a.folder)
+    if a.files:
+        _want = {n.strip() for n in a.files.split(",") if n.strip()}
+        imgs = [n for n in imgs if n in _want]
     total = len(imgs)
     log({"event": "start", "total": total, "engine": "vlm", "device": "proxy",
          "provider": a.model, "model": a.model})

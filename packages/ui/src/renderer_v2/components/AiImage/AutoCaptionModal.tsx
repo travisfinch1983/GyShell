@@ -36,7 +36,7 @@ const OUT_INFO: Record<OutKind, { label: string; ext: string; blurb: string }> =
   },
 }
 
-export const AutoCaptionModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[] }> = ({ onClose, files }) => {
   const [taggers, setTaggers] = useState<any[]>([])
   const [outKind, setOutKind] = useState<OutKind>('tags')
   const [model, setModel] = useState('')
@@ -122,6 +122,7 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void }> = ({ onClose })
       spaces, trigger: trigger.trim(), overwrite,
     }
     if (usesLocalGpu && gpuIndex !== '') body.gpu_index = parseInt(gpuIndex, 10)
+    if (files?.length) body.files = files
     // `avoid` defaults to the trigger backend-side, so the phrase is stated
     // once (by the prepend) instead of twice.
     if (isVlm && context.trim()) body.context = context.trim()
@@ -140,7 +141,7 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void }> = ({ onClose })
     <div className={styles.modalBg} onClick={onClose}>
       <div className={styles.pkBox} style={{ width: 'min(560px,94%)' }} onClick={(e) => e.stopPropagation()}>
         <div className={styles.modalHead}>
-          <strong>Auto-caption — {store.cwd.split('/').pop() || 'training_images'}</strong>
+          <strong>Auto-caption — {files?.length ? `${files.length} selected image${files.length > 1 ? 's' : ''}` : (store.cwd.split('/').pop() || 'training_images')}</strong>
           <button className={styles.btn} onClick={onClose}>Close</button>
         </div>
 
