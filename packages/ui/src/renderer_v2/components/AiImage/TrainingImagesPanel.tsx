@@ -246,6 +246,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   const [picker, setPicker] = useState<'move' | 'copy' | null>(null)
   const [merge, setMerge] = useState(false)
   const [crop, setCrop] = useState<{ rel: string; name: string } | null>(null)
+  const cropIdxRef = useRef(0)
   const [autoCap, setAutoCap] = useState(false)
   const [blanket, setBlanket] = useState(false)
   const [batchAdd, setBatchAdd] = useState(false)
@@ -279,6 +280,18 @@ export const TrainingImagesPanel: React.FC = observer(() => {
     try { const r = await store.wipeRatings(files); store.msg = `Wiped ${r.cleared} rating(s).`; void store.browse(store.cwd) }
     catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
   }
+  const doRenameFiles = async () => {
+    const base = await promptStore.prompt({ title: `Rename ${store.selected.size} images`, placeholder: 'base name, e.g. white → white-1..N (lowercased)', confirmText: 'Rename' })
+    if (base === null || !base.trim()) return
+    // Number in DISPLAY order, not click order — white-1 is the first tile on screen.
+    const ordered = store.visibleImages.filter((im) => store.selected.has(im.name)).map((im) => im.name)
+    store.msg = `Renaming ${ordered.length}…`
+    try {
+      const r = await store.renameFiles(ordered, base.trim())
+      store.msg = `Renamed ${r.renamed.length} → ${base.trim().toLowerCase()}-1..${r.renamed.length}${r.ratings_moved ? ` (${r.ratings_moved} ratings followed)` : ''}.`
+      store.exitSelection(); void store.browse(store.cwd)
+    } catch (e: any) { store.msg = 'Rename failed: ' + (e?.message || e) }
+  }
   const doRename = async (path: string, name: string) => {
     // Sets and batches share the flow; the server keeps the prefix that matches what the
     // folder IS, so a rename can never turn one kind into the other.
@@ -300,6 +313,15 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           </select>
         </label>
         <button className={styles.btn} title="Toggle asc/desc" onClick={() => store.toggleDir()}>{store.sortDir === 'desc' ? <ChevronDown size={14} /> : <ChevronUp size={14} />}</button>
+        {store.images.length > 0 && (
+          <label className={styles.sortLbl}>Show
+            <select className={styles.input} value={store.cropFilter} onChange={(e) => store.setCropFilter(e.target.value as any)}>
+              <option value="all">All ({store.images.length})</option>
+              <option value="uncropped">Needs crop ({store.images.filter((im) => !im.cropped).length})</option>
+              <option value="cropped">Cropped ({store.images.filter((im) => im.cropped).length})</option>
+            </select>
+          </label>
+        )}
         {store.ratedCount > 0 && (
           <button className={styles.btn} title="Clear all ratings + comments in this folder/set (images, tags & captions untouched)" onClick={() => void doWipe()}>
             <Star size={14} /> Wipe ratings ({store.ratedCount})
@@ -341,12 +363,13 @@ export const TrainingImagesPanel: React.FC = observer(() => {
         <div className={styles.selbar}>
           <button className={styles.iconBtn} title="Clear" onClick={() => store.exitSelection()}><X size={14} /></button>
           <span>{store.selected.size} selected</span>
-          <button className={styles.btn} onClick={() => store.selectAll()}>Select all ({store.images.length})</button>
+          <button className={styles.btn} onClick={() => store.selectAll()}>Select all ({store.visibleImages.length})</button>
           <span className={styles.spacer} />
           <button className={styles.btnPrimary} title="Copy the selection + caption sidecars into an existing training set, or create a new one beside this folder — works from inside a set too, for cherry-picking an already-curated selection" onClick={() => setSetAdd(true)}>Add to Training Set</button>
           <button className={styles.btn} onClick={() => setPicker('move')}>Move…</button>
           <button className={styles.btn} onClick={() => setPicker('copy')}>Copy…</button>
           <button className={styles.btn} title="Copy the selection + caption sidecars into a training batch assembled from many sets" onClick={() => setBatchAdd(true)}>Add to batch…</button>
+          <button className={styles.btn} title="Rename the selection to <name>-1..N in display order — sidecars and ratings follow" onClick={() => void doRenameFiles()}>Rename…</button>
           {store.inTrainingSet && <button className={styles.btnDanger} onClick={() => void doDelete()}>Delete</button>}
           <button className={styles.btn} title="Add or remove the same booru tags across the selected images" onClick={() => setBlanket(true)}>Blanket tags…</button>
           <button className={styles.btn} title="Strip .txt tag sidecars for the selected images" onClick={() => void doStrip([...store.selected])}>Strip tags</button>
@@ -383,21 +406,29 @@ export const TrainingImagesPanel: React.FC = observer(() => {
 
       <div className={styles.grid}>
         {store.images.length === 0 && !store.loading && <div className={styles.dim}>No images here.</div>}
-        {store.images.map((im, i) => <Tile key={im.rel} im={im} i={i} onOpen={() => openImage(im)} />)}
+        {store.visibleImages.map((im, i) => <Tile key={im.rel} im={im} i={i} onOpen={() => openImage(im)} />)}
       </div>
 
       {lb && <Lightbox rel={lb.rel} name={lb.name} bust={lb.bust} onClose={() => setLb(null)} />}
       {crop && (() => {
         // key=rel: every image gets a freshly mounted editor — box, tags, rating and
         // message state must never leak from the previous image while paging through.
-        const i = store.images.findIndex((x) => x.rel === crop.rel)
+        // Nav runs over the FILTERED list: under "Needs crop", cropping an image drops
+        // it from the list and the next uncropped one slides into its slot — so when
+        // the current rel is gone, "next" is whatever now sits at the remembered index.
+        const list = store.visibleImages
+        const i = list.findIndex((x) => x.rel === crop.rel)
+        if (i >= 0) cropIdxRef.current = i
+        const held = cropIdxRef.current
         return <CropEditor key={crop.rel} rel={crop.rel} name={crop.name}
           onClose={() => setCrop(null)} onChanged={() => void store.browse(store.cwd)}
-          navPos={i >= 0 ? { i, n: store.images.length } : undefined}
+          navPos={i >= 0 ? { i, n: list.length } : { i: held, n: list.length + 1 }}
           onNav={(dir) => {
-            const at = store.images.findIndex((x) => x.rel === crop.rel)
-            const next = at >= 0 ? store.images[at + dir] : undefined
+            const l = store.visibleImages
+            const at = l.findIndex((x) => x.rel === crop.rel)
+            const next = at >= 0 ? l[at + dir] : (dir > 0 ? l[cropIdxRef.current] : l[cropIdxRef.current - 1])
             if (next) setCrop({ rel: next.rel, name: next.name })
+            else if (at < 0) setCrop(null)   // list emptied under us — nothing left to page to
           }} />
       })()}
       {autoCap && <AutoCaptionModal onClose={() => setAutoCap(false)} />}

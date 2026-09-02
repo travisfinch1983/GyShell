@@ -848,6 +848,85 @@ export function createImagegenRouter(config) {
     } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
   });
 
+  // ---- Batch-rename a selection to <base>-1..N (display order = caller's list order).
+  // "Select 20, name them White, get white-1..white-20" (Travis, 2026-09-02). Everything
+  // that KNOWS the old name travels with it: .txt/.caption sidecars, .orig/.preup backups,
+  // the _ratings.json entry. TWO-PHASE (all to temp, then to final) because a batch like
+  // white-3.png -> white-1.png overlaps its own targets — single-phase would clobber.
+  router.post('/rename-files', express.json(), (req, res) => {
+    const rel = (req.body && req.body.path) || '';
+    const files = req.body && req.body.files;
+    let base = String((req.body && req.body.base) || '').trim().toLowerCase();
+    let dir;
+    try { dir = safeResolve(rel); } catch { return res.status(400).json({ error: 'bad path' }); }
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'no such folder' });
+    if (!Array.isArray(files) || !files.length) return res.status(400).json({ error: 'no files' });
+    if (!/^[a-z0-9][a-z0-9_-]*$/.test(base)) {
+      return res.status(400).json({ error: 'base must be letters/digits/_/- (it becomes <base>-1..N, lowercased)' });
+    }
+    for (const name of files) {
+      if (typeof name !== 'string' || !name || name.includes('/') || name.includes('..') || name.startsWith('.')) {
+        return res.status(400).json({ error: `bad filename: ${name}` });
+      }
+      if (!existsSync(path.join(dir, name))) return res.status(404).json({ error: `not found: ${name}` });
+    }
+    const targets = files.map((name, i) => `${base}-${i + 1}${path.extname(name).toLowerCase()}`);
+    // A target that already exists and is NOT itself being renamed away would be clobbered.
+    const srcSet = new Set(files);
+    const clash = targets.filter((t, i) => t !== files[i] && existsSync(path.join(dir, t)) && !srcSet.has(t));
+    if (clash.length) return res.status(409).json({ error: 'target names already exist in this folder', clash });
+    const dupTargets = new Set(targets);
+    if (dupTargets.size !== targets.length) return res.status(400).json({ error: 'duplicate target names (same extension order collision)' });
+
+    const stem = (n) => n.replace(/\.[^.]+$/, '');
+    const companionsOf = (name) => {
+      const out = [[path.join(dir, name), null]];
+      for (const ext of ['.txt', '.caption']) {
+        const c = path.join(dir, stem(name) + ext);
+        if (existsSync(c)) out.push([c, ext]);
+      }
+      for (const sub of ['.orig', '.preup']) {
+        const c = path.join(dir, sub, name);
+        if (existsSync(c)) out.push([c, sub]);
+      }
+      return out;
+    };
+    const ratings = loadRatings(dir);
+    const plan = [];   // [tmpPath, finalPath]
+    try {
+      // Phase A: everything out of the namespace.
+      files.forEach((name, i) => {
+        for (const [from, kind] of companionsOf(name)) {
+          const tmp = path.join(path.dirname(from), `.__ren${i}__${path.basename(from)}`);
+          renameSync(from, tmp);
+          const finalName = kind === '.txt' || kind === '.caption'
+            ? stem(targets[i]) + kind
+            : targets[i];
+          plan.push([tmp, path.join(path.dirname(from), finalName)]);
+        }
+      });
+      // Phase B: temp -> final.
+      for (const [tmp, fin] of plan) renameSync(tmp, fin);
+    } catch (e) {
+      // Roll temps back to their original names so a half-failure leaves no .__ren litter.
+      for (const [tmp] of plan) {
+        if (existsSync(tmp)) {
+          try { renameSync(tmp, path.join(path.dirname(tmp), path.basename(tmp).replace(/^\.__ren\d+__/, ''))); } catch { /* report below */ }
+        }
+      }
+      return res.status(500).json({ error: `rename failed and was rolled back: ${String(e.message || e)}` });
+    }
+    // Ratings follow the image.
+    let ratingsMoved = 0;
+    files.forEach((name, i) => {
+      // Self-renames must be skipped: assign-then-delete on the SAME key destroys the
+      // rating (caught live — white-2 -> white-2 in a reversal batch lost its score).
+      if (name !== targets[i] && ratings[name]) { ratings[targets[i]] = ratings[name]; delete ratings[name]; ratingsMoved++; }
+    });
+    if (ratingsMoved) saveRatings(dir, ratings);
+    res.json({ ok: true, renamed: files.map((name, i) => ({ from: name, to: targets[i] })), ratings_moved: ratingsMoved });
+  });
+
   // ---- Delete images from a training set (working copies only; never originals).
   router.post('/delete', express.json(), (req, res) => {
     const rel = (req.body && req.body.path) || '';

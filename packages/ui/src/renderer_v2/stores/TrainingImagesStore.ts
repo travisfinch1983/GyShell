@@ -55,6 +55,9 @@ export class TrainingImagesStore {
    *  actually hold training data; everything below the top level is untouched, and the toggle
    *  restores the full tree rather than hiding it. */
   showAllRoots = localStorage.getItem('aig-show-all-roots') === '1'
+  /** Crop-status filter: trim the grid to what still NEEDS cropping, then page through
+   *  just those in the editor. Persisted — a cropping session survives a reload. */
+  cropFilter: 'all' | 'uncropped' | 'cropped' = (localStorage.getItem('aig-crop-filter') as any) || 'all'
 
   constructor() { makeAutoObservable(this) }
 
@@ -121,26 +124,46 @@ export class TrainingImagesStore {
   }
 
   // ── selection ──
+  setCropFilter(f: 'all' | 'uncropped' | 'cropped') {
+    this.cropFilter = f
+    localStorage.setItem('aig-crop-filter', f)
+    // Selection indices are positions in the VISIBLE list; a filter change re-numbers
+    // them, so a kept selection would silently point at different images.
+    this.exitSelection()
+  }
+
+  /** What the grid shows and the editor pages through. All index-based selection ops
+   *  (toggleOne/selectRange) are positions in THIS list, never in the raw one. */
+  get visibleImages(): IgImage[] {
+    if (this.cropFilter === 'all') return this.images
+    return this.images.filter((im) => (this.cropFilter === 'cropped' ? im.cropped : !im.cropped))
+  }
+
   enterSelection() { this.selectionMode = true }
   exitSelection() { this.selectionMode = false; this.lastIndex = null; this.selected.clear() }
   toggleOne(i: number) {
-    const name = this.images[i].name
+    const name = this.visibleImages[i].name
     if (this.selected.has(name)) this.selected.delete(name); else this.selected.add(name)
     this.selected = new Set(this.selected)
     if (!this.selected.size) this.exitSelection()
   }
   selectRange(a: number, b: number) {
     const [lo, hi] = a <= b ? [a, b] : [b, a]
-    for (let i = lo; i <= hi; i++) this.selected.add(this.images[i].name)
+    for (let i = lo; i <= hi; i++) this.selected.add(this.visibleImages[i].name)
     this.selected = new Set(this.selected); this.lastIndex = b
   }
-  selectAll() { this.images.forEach((im) => this.selected.add(im.name)); this.selected = new Set(this.selected) }
+  selectAll() { this.visibleImages.forEach((im) => this.selected.add(im.name)); this.selected = new Set(this.selected) }
 
   // ── actions ──
   async sendToTrainingSet(suffix: string): Promise<any> {
     const files = [...this.selected]
     return ig('/send-to-training-set', { method: 'POST', body: { path: this.cwd, files, suffix } })
   }
+  /** Batch rename to <base>-1..N. Order = display order; sidecars + ratings travel. */
+  async renameFiles(files: string[], base: string): Promise<any> {
+    return ig('/rename-files', { method: 'POST', body: { path: this.cwd, files, base } })
+  }
+
   async deleteFiles(files: string[]): Promise<any> {
     return ig('/delete', { method: 'POST', body: { path: this.cwd, files } })
   }
