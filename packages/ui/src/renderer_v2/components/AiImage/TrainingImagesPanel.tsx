@@ -443,7 +443,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
             title={store.selectionMode && store.selected.size ? 'Caption ONLY the selected images' : 'Caption every image in this folder'}
             onClick={() => {
               setCapFiles(store.selectionMode && store.selected.size
-                ? store.visibleImages.filter((im) => store.selected.has(im.name)).map((im) => im.name)
+                ? store.visibleImages.filter((im) => store.selected.has(imKey(im))).map((im) => imKey(im))
                 : undefined)
               setAutoCap(true)
             }}>
@@ -576,7 +576,12 @@ export const TrainingImagesPanel: React.FC = observer(() => {
             if (next) setCrop({ rel: next.rel, name: next.name })
             else if (at < 0) setCrop(null)   // list emptied under us — nothing left to page to
           }}
-          onCaption={() => { setCapFiles([crop.name]); setAutoCap(true) }} />
+          onCaption={() => {
+            // The section-qualified KEY, not the bare name — a subsection image captioned
+            // with path=batch-root 404s ('not found: green-12.png', caught live).
+            const key = crop.rel.startsWith(store.cwd + '/') ? crop.rel.slice(store.cwd.length + 1) : crop.name
+            setCapFiles([key]); setAutoCap(true)
+          }} />
       })()}
       {autoCap && <AutoCaptionModal files={capFiles} onClose={() => setAutoCap(false)} />}
 

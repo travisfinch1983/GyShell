@@ -131,17 +131,38 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[] 
       spaces, trigger: trigger.trim(), overwrite,
     }
     if (usesLocalGpu && gpuIndex !== '') body.gpu_index = parseInt(gpuIndex, 10)
-    if (files?.length) body.files = files
+
     // `avoid` defaults to the trigger backend-side, so the phrase is stated
     // once (by the prepend) instead of twice.
     if (isVlm && context.trim()) body.context = context.trim()
     if (isVlm && vlmModel.trim()) body.vlm_model = vlmModel.trim()
     setRunning(true); setStatus('Starting…')
     try {
-      const { jobId } = await store.autoCaption(body)
-      // Progress lives on the browser page now (store.captionJob renders a bar above the
-      // grid) — the modal closes instead of greying out the screen for the whole run.
-      store.trackCaptionJob(jobId, isVlm ? vlmModel.trim() : (model || cur.label))
+      // ONE JOB PER FOLDER: the tagger walks a single directory, so a selection spanning
+      // batch subsections fans out (files are dir-qualified keys), and a whole-folder run
+      // on a SECTIONED batch covers every subsection plus any loose root images — without
+      // this, subsection images 404'd ('not found: green-12.png') or were silently skipped.
+      let jobs: Array<{ sub: string; names?: string[] }>
+      if (files?.length) {
+        jobs = store.splitKeys(files)
+      } else if (store.sections.length) {
+        jobs = store.sections.map((s) => ({ sub: s.folder }))
+        if (store.images.some((im) => !im.dir)) jobs.unshift({ sub: '' })
+      } else {
+        jobs = [{ sub: '' }]
+      }
+      let lastJob = ''
+      for (const j of jobs) {
+        const jbody: Record<string, unknown> = { ...body, path: store.dirPath(j.sub) }
+        if (j.names) jbody.files = j.names
+        else delete jbody.files
+        const { jobId } = await store.autoCaption(jbody)
+        lastJob = jobId
+        // Progress lives on the browser page + Task Progress panel; each folder's job is
+        // tracked server-side, the store follows the last one for the grid refresh.
+        store.trackCaptionJob(jobId, `${isVlm ? vlmModel.trim() : (model || cur.label)}${j.sub ? ` · ${j.sub}` : ''}`)
+      }
+      void lastJob
       onClose()
     } catch (e: any) { setRunning(false); setStatus('Failed: ' + (e?.message || e)) }
   }
