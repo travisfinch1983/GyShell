@@ -1,0 +1,9 @@
+[Unit]
+Description=Hermes profile guard — detect gutted provider blocks that silently break compaction
+After=network-online.target
+
+[Service]
+Type=oneshot
+# NOT --repair by default: healing on a timer without a human noticing is how a recurring
+# corruption stays invisible. The guard reports; a person decides whether to run --repair.
+ExecStart=/usr/local/bin/hermes-profile-guard --quiet

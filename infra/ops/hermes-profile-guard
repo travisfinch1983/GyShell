@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""Detect (and optionally heal) Hermes profiles whose provider block has been gutted.
+
+WHY THIS EXISTS
+Something stripped name/api/transport from providers.ailab in all 19 profiles, leaving only
+default_model. auxiliary.compression resolves that provider BY NAME, so the summary client could
+not be built and every compaction aborted -- and the chat surface rendered the abort as
+"1323 -> 1323 tokens" SUCCESS. Loom reached 905k tokens before anyone noticed. Nothing anywhere
+said a thing.
+
+The writer that strips it has not been found, so this assumes recurrence rather than a one-off.
+
+DESIGN RULES, learned the hard way today:
+  * Healthy runs are SILENT. An all-clear every 15 minutes trains you to ignore the channel.
+  * CANNOT-CHECK IS NOT HEALTHY. If this script cannot read a profile or resolve a provider, it
+    says so at warning severity rather than returning a clean bill.
+  * HEALING IS NEVER SILENT. --repair fixes the config AND emits a warning naming what it fixed,
+    because a self-healing loop that says nothing hides the fact that something keeps breaking it.
+  * A stamp file records every successful run, so "the guard stopped running" is detectable
+    instead of looking identical to "nothing is wrong".
+"""
+import argparse, json, os, shutil, sys, time, urllib.request
+
+PROFILES = "/root/.hermes/profiles"
+GLOBAL   = "/root/.hermes/config.yaml"
+STAMP    = "/run/hermes-profile-guard.stamp"
+EMIT     = "http://127.0.0.1:17889/api/notifications/emit"
+REQUIRED = ("name", "api", "transport")
+
+
+def emit(severity, message, detail=None):
+    body = {"severity": severity, "source": "hermes-profile-guard", "message": message}
+    if detail:
+        body["detail"] = detail
+    try:
+        req = urllib.request.Request(EMIT, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status == 200
+    except Exception as e:
+        # The alerting channel itself failing must not be silent either.
+        print("EMIT FAILED (%s): %s" % (type(e).__name__, e), file=sys.stderr)
+        return False
+
+
+def reference_block():
+    import yaml
+    d = yaml.safe_load(open(GLOBAL, encoding="utf-8")) or {}
+    return ((d.get("providers") or {}).get("ailab") or {})
+
+
+def audit():
+    """Return (broken, unreadable). broken = [(profile, [missing keys], aux_missing_key)]."""
+    import yaml
+    broken, unreadable = [], []
+    for prof in sorted(os.listdir(PROFILES)):
+        f = os.path.join(PROFILES, prof, "config.yaml")
+        if not os.path.isfile(f):
+            continue
+        try:
+            d = yaml.safe_load(open(f, encoding="utf-8")) or {}
+        except Exception as e:
+            unreadable.append((prof, "%s: %s" % (type(e).__name__, e)))
+            continue
+        provs = d.get("providers") or {}
+        if "ailab" not in provs:
+            continue                       # legitimately not using it (e.g. the default profile)
+        blk = provs.get("ailab") or {}
+        missing = [k for k in REQUIRED if not blk.get(k)]
+        aux = ((d.get("auxiliary") or {}).get("compression") or {})
+        aux_missing = bool(aux.get("provider") == "ailab" and not aux.get("api_key"))
+        if missing or aux_missing:
+            broken.append((prof, missing, aux_missing))
+    return broken, unreadable
+
+
+def repair(broken, ref):
+    """Surgical line insert — never a YAML round-trip, which would reorder every key."""
+    import re
+    bak = "/root/hermes-profile-guard-backups-%s" % time.strftime("%Y%m%d-%H%M%S")
+    os.makedirs(bak, exist_ok=True)
+    fixed = []
+    for prof, missing, aux_missing in broken:
+        f = os.path.join(PROFILES, prof, "config.yaml")
+        lines = open(f, encoding="utf-8").read().split("\n")
+        pi = next((i for i, l in enumerate(lines) if l.rstrip() == "providers:"), -1)
+        ai = next((i for i in range(pi + 1, len(lines)) if lines[i].rstrip() == "  ailab:"), -1) if pi >= 0 else -1
+        if ai < 0:
+            continue
+        shutil.copy2(f, os.path.join(bak, "%s-config.yaml" % prof))
+        if aux_missing:
+            ci = next((i for i, l in enumerate(lines) if l.rstrip() == "  compression:"), -1)
+            if ci >= 0:
+                lines.insert(ci + 1, "    api_key: proxlab-no-auth")
+        for k in reversed(missing):
+            if ref.get(k):
+                lines.insert(ai + 1, "    %s: %s" % (k, ref[k]))
+        open(f, "w", encoding="utf-8").write("\n".join(lines))
+        fixed.append(prof)
+    return fixed, bak
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--repair", action="store_true", help="fix what is broken (and say so)")
+    ap.add_argument("--quiet", action="store_true", help="suppress stdout on a clean run")
+    a = ap.parse_args()
+
+    try:
+        ref = reference_block()
+        broken, unreadable = audit()
+    except Exception as e:
+        emit("warning", "Hermes profile guard could not run",
+             "%s: %s\nThis is CANNOT-CHECK, not a clean bill of health." % (type(e).__name__, e))
+        print("guard failed to run: %s" % e, file=sys.stderr)
+        return 2
+
+    if unreadable:
+        emit("warning", "Hermes profile guard could not read %d profile(s)" % len(unreadable),
+             "\n".join("%s — %s" % u for u in unreadable))
+
+    if not broken:
+        try:
+            open(STAMP, "w").write(str(int(time.time())))
+        except OSError:
+            pass
+        if not a.quiet:
+            print("ok: all profiles carry a complete providers.ailab block")
+        return 0
+
+    names = ", ".join(p for p, _, _ in broken)
+    detail = "\n".join(
+        "%-18s missing providers.ailab: %s%s" % (p, ", ".join(m) or "-",
+                                                 "  + auxiliary.compression.api_key" if x else "")
+        for p, m, x in broken)
+    detail += ("\n\nEffect: auxiliary.compression names provider 'ailab', so the summary client "
+               "cannot be built and EVERY compaction aborts — reported in chat as a successful "
+               "'N -> N' compression with the real reason only in the logs.")
+
+    if a.repair:
+        fixed, bak = repair(broken, ref)
+        emit("warning",
+             "Hermes profile guard REPAIRED %d gutted profile(s): %s" % (len(fixed), ", ".join(fixed)),
+             detail + "\n\nRepaired automatically; backups: %s\nSomething is still stripping these "
+                      "— the writer has not been identified." % bak)
+        print("repaired: %s (backups %s)" % (", ".join(fixed), bak))
+        return 0
+
+    emit("error", "Hermes compaction is broken on %d profile(s): %s" % (len(broken), names), detail)
+    print("BROKEN: %s" % names, file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
