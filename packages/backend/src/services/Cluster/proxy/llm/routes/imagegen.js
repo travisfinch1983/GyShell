@@ -1073,7 +1073,15 @@ export function createImagegenRouter(config) {
     if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'no such folder' });
     const all = readdirSync(dir).filter((n) => !n.startsWith('.') && isImage(n) && !isCollageFile(n))
       .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));   // red-2 before red-10
-    if (!all.length) return res.status(400).json({ error: 'no images in this set' });
+    if (!all.length) {
+      // A sectioned batch root has no loose images BY DESIGN — point at the subsections
+      // instead of claiming emptiness (the root-only-counting family, third instance).
+      let subs = [];
+      try { subs = readdirSync(dir).filter((n) => isSubsectionName(n) && statSync(path.join(dir, n)).isDirectory()); } catch { /* fall through */ }
+      return res.status(400).json(subs.length
+        ? { error: 'no loose images at this level — generate collages per subsection', subsections: subs }
+        : { error: 'no images in this set' });
+    }
     // Above PER_PAGE images, split into pages (_collage-1.jpg, -2, ...) so no single
     // sheet gets too huge to load and cells stay big enough to read. Fixed cell size.
     const PER_PAGE = Math.max(16, Math.min(150, parseInt(req.body && req.body.per_page, 10) || COLLAGE_PER_PAGE));

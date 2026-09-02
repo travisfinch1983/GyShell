@@ -912,8 +912,12 @@ def list_training_batch(batch_folder: str) -> str:
         }
     if orphans:
         out["orphan_sidecars"] = orphans
-    if not imgs:
+    if not imgs and not subsections:
         out["note"] = "batch is EMPTY — nothing to train"
+    elif not imgs:
+        # Root-only counting called a fully-subsectioned batch empty (Loom hit this live,
+        # 2026-09-02). No root images + populated subsections is the ORGANISED state.
+        out["note"] = "no loose root images — all content lives in the subsections (correct for kohya)"
     return _j(out)
 
 
@@ -1283,7 +1287,10 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
         # arrives long after launch (post model load and latent caching), so screen it here.
         _MIN_FREE_MIB = 20000 if trainer == "aitoolkit" else 10000
         gpu_index = best
-        if best_free < _MIN_FREE_MIB:
+        # A dry run builds and inspects a config; it needs no GPU at all. Refusing one because
+        # the cards are busy makes the tool useless exactly when you want to check your work
+        # before queueing it.
+        if best_free < _MIN_FREE_MIB and not dry_run:
             return _j({"error": f"no GPU has enough free VRAM (best: GPU{best} with {best_free} MiB)",
                        "needed_mib": _MIN_FREE_MIB,
                        "note": ("Krea 2 at qfloat8 needs ~23 GiB and only the 4090 qualifies here; "
