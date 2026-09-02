@@ -28,6 +28,10 @@ export interface TaskEntry {
   /** Derived from done/total when total > 0, or reported directly; null = indeterminate. */
   percent: number | null
   detail?: string
+  /** Who wrote the row last: 'reporter' (something that KNOWS — a launcher, an in-process
+   *  hook) or 'poller' (something that INFERS from artifacts). A knower's fresh row must
+   *  not be overwritten by an inferrer — see loraRunsPoller. */
+  origin?: string
   startedAt: string
   updatedAt: string
   finishedAt?: string
@@ -42,6 +46,7 @@ export interface TaskReportInput {
   total?: number
   percent?: number
   detail?: string
+  origin?: string
 }
 
 const FINISHED_LINGER_MS = 30_000
@@ -76,6 +81,7 @@ export class TaskProgress {
       }
       this.tasks.set(id, t)
     }
+    t.origin = input.origin === undefined ? 'reporter' : String(input.origin).slice(0, 20)
     if (input.source !== undefined) t.source = String(input.source).slice(0, 60)
     if (input.label !== undefined) t.label = String(input.label).slice(0, 160)
     if (input.detail !== undefined) t.detail = String(input.detail).slice(0, 400)

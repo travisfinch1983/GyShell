@@ -97,6 +97,18 @@ function consoleScan(): Promise<Map<string, ConsoleRun>> {
 export function startLoraRunsWatch(tasks: TaskProgress): void {
   /** Runs whose final state has been reported (or deliberately skipped as history). */
   const settled = new Set<string>()
+  /**
+   * A reporter that KNOWS beats an observer that INFERS (claude1, 2026-09-02): when a
+   * launcher is posting facts about a run, this poller's filename-and-tqdm inference
+   * must not overwrite them. 60s (2 pass intervals) so one slow pass cannot slip an
+   * inferred write under a live knower; the moment the knower goes quiet, the poller
+   * resumes the row within a pass — a dead launcher freezes nothing.
+   */
+  const KNOWER_FRESH_MS = 60_000
+  const knowerFresh = (id: string): boolean => {
+    const t = tasks.state().tasks.find((x) => x.id === id)
+    return !!t && t.origin !== 'poller' && Date.now() - Date.parse(t.updatedAt) < KNOWER_FRESH_MS
+  }
   let warnedUnreadable = false
 
   const pass = (): void => {
@@ -123,12 +135,13 @@ export function startLoraRunsWatch(tasks: TaskProgress): void {
       const trainer = String(meta.trainer || 'kohya')
       const label = `LoRA · ${String(meta.output_name || rid)} (${trainer})`
 
+      if (knowerFresh(taskId)) continue   // a live launcher owns this row right now
       if (meta.state && meta.state !== 'running') {
         // Something (the MCP status tool) already ruled on this run. Report the ruling
         // once if we were tracking it live; otherwise it is history.
         if (tasks.state().tasks.some((t) => t.id === taskId)) {
           const ok = meta.state === 'finished'
-          tasks.report({ id: taskId, state: ok ? 'done' : 'failed', detail: String(meta.state) })
+          tasks.report({ origin: 'poller', id: taskId, state: ok ? 'done' : 'failed', detail: String(meta.state) })
         }
         settled.add(rid)
         continue
@@ -153,15 +166,15 @@ export function startLoraRunsWatch(tasks: TaskProgress): void {
       ].filter(Boolean).join(' · ')
 
       if (finishedByLog) {
-        tasks.report({ id: taskId, source: `lora-${trainer}`, label, state: 'done', done, total,
+        tasks.report({ origin: 'poller', id: taskId, source: `lora-${trainer}`, label, state: 'done', done, total,
                        detail: `checkpoint saved · ${detail}` })
         settled.add(rid)
       } else if (idleMs > DEAD_IDLE_MS) {
-        tasks.report({ id: taskId, source: `lora-${trainer}`, label, state: 'failed', done, total,
+        tasks.report({ origin: 'poller', id: taskId, source: `lora-${trainer}`, label, state: 'failed', done, total,
                        detail: `log idle ${Math.round(idleMs / 60_000)}m under a "running" meta — presumed dead` })
         settled.add(rid)
       } else {
-        tasks.report({ id: taskId, source: `lora-${trainer}`, label, state: 'running', done, total, detail })
+        tasks.report({ origin: 'poller', id: taskId, source: `lora-${trainer}`, label, state: 'running', done, total, detail })
       }
     }
   }
@@ -218,6 +231,7 @@ export function startLoraRunsWatch(tasks: TaskProgress): void {
       const taskId = `lora:aitoolkit:${dir}`
       // Console truth beats checkpoint truth: per-step vs per-save_every resolution.
       // A live console line is also LIVENESS — the process exists and is stepping.
+      if (knowerFresh(taskId)) { live.delete(name); continue }   // knower owns the row
       const con = live.get(name)
       if (con && con.step > step) step = con.step
       const idleMs = con ? 0 : Date.now() - lastMtime
@@ -225,16 +239,16 @@ export function startLoraRunsWatch(tasks: TaskProgress): void {
       const label = `LoRA · ${name} (ai-toolkit)`
 
       if (step >= total) {
-        if (tracking) tasks.report({ id: taskId, source: 'lora-aitoolkit', label, state: 'done', done: step, total, detail: 'final checkpoint saved' })
+        if (tracking) tasks.report({ origin: 'poller', id: taskId, source: 'lora-aitoolkit', label, state: 'done', done: step, total, detail: 'final checkpoint saved' })
         settled.add(settleKey)   // finished dirs live in this tree forever — history, not a task
       } else if (idleMs > DEAD_IDLE_MS) {
         if (tracking) {
-          tasks.report({ id: taskId, source: 'lora-aitoolkit', label, state: 'failed', done: step, total,
+          tasks.report({ origin: 'poller', id: taskId, source: 'lora-aitoolkit', label, state: 'failed', done: step, total,
                          detail: `no directory activity for ${Math.round(idleMs / 60_000)}m at step ${step}/${total} — presumed dead` })
         }
         settled.add(settleKey)   // first seen already-idle = abandoned history, silently
       } else {
-        tasks.report({ id: taskId, source: 'lora-aitoolkit', label, state: 'running', done: step, total,
+        tasks.report({ origin: 'poller', id: taskId, source: 'lora-aitoolkit', label, state: 'running', done: step, total,
                        detail: con
                          ? `step ${step}/${total} · ${con.perf || 'live console'}`
                          : `step ${step}/${total} · checkpoint resolution — saves land in bursts, quiet between them is normal` })
@@ -252,7 +266,8 @@ export function startLoraRunsWatch(tasks: TaskProgress): void {
       // A name that is a strict SUFFIX of another known run is a torn-line fragment,
       // never a real second run (second guard behind the TAILCUT sentinel).
       if ([...knownNames].some((o) => o !== name && o.endsWith(name))) continue
-      tasks.report({ id: `lora:aitoolkit:${name}`, source: 'lora-aitoolkit',
+      if (knowerFresh(`lora:aitoolkit:${name}`)) continue
+      tasks.report({ origin: 'poller', id: `lora:aitoolkit:${name}`, source: 'lora-aitoolkit',
                      label: `LoRA · ${name} (ai-toolkit)`, state: 'running',
                      done: con.step, total: con.total,
                      detail: `step ${con.step}/${con.total} · ${con.perf || 'live console'}` })
@@ -261,6 +276,10 @@ export function startLoraRunsWatch(tasks: TaskProgress): void {
     // ever resolve it — remove it rather than leaving a forever-"running" ghost.
     for (const t of tasks.state().tasks) {
       if (!t.id.startsWith('lora:aitoolkit:') || t.state !== 'running') continue
+      // Only reap what the POLLER wrote: a launcher may be reporting a run this poller
+      // cannot see at all (custom output root, stdout on a pts) — deleting the knower's
+      // row from a blind spot would be the sweep's own aperture bug.
+      if (t.origin !== 'poller') continue
       const name = t.id.slice('lora:aitoolkit:'.length)
       if (!dirs.includes(name) && !live.has(name)) tasks.remove(t.id)
     }
