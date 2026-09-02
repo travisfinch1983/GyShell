@@ -1138,11 +1138,130 @@ def _aitk_config(output_name, blocks, base_model, steps, network_dim, network_al
     }]}, "meta": {"name": "[name]"}}
 
 
+def _gpu_alias(name: str) -> str:
+    """'NVIDIA GeForce RTX 5060 Ti' -> '5060ti'. The model number is what a human says out loud."""
+    n = name.lower().replace("nvidia", "").replace("geforce", "").replace("rtx", "")
+    n = n.replace("tesla", "").replace("-", " ")
+    return "".join(n.split())
+
+
+def _gpu_inventory():
+    """Every GPU on the training host with its alias, memory and what is running on it.
+
+    Aliases are unique: a model appearing once keeps the bare slug ('4090'); repeats get the PCI
+    index appended ('5060ti-0'), because four identical cards still need to be told apart and the
+    PCI index is the number nvidia-smi shows.
+    """
+    rc, out, _ = _ssh("nvidia-smi --query-gpu=index,name,memory.total,memory.used,utilization.gpu "
+                      "--format=csv,noheader,nounits")
+    rows = []
+    for line in out.splitlines():
+        p = [x.strip() for x in line.split(",")]
+        if len(p) < 5 or not p[0].isdigit():
+            continue
+        total, used = int(p[2]), int(p[3])
+        rows.append({"index": int(p[0]), "name": p[1], "_slug": _gpu_alias(p[1]),
+                     "total_mib": total, "used_mib": used, "free_mib": total - used,
+                     "utilization_pct": int(p[4]) if p[4].isdigit() else None})
+    counts = {}
+    for r in rows:
+        counts[r["_slug"]] = counts.get(r["_slug"], 0) + 1
+    for r in rows:
+        r["alias"] = r["_slug"] if counts[r["_slug"]] == 1 else "%s-%d" % (r["_slug"], r["index"])
+        r.pop("_slug")
+    # What is actually holding the memory — "10GB used" is not actionable without the culprit.
+    rc, apps, _ = _ssh("nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory,process_name "
+                       "--format=csv,noheader,nounits")
+    rc2, uuids, _ = _ssh("nvidia-smi --query-gpu=index,gpu_uuid --format=csv,noheader")
+    by_uuid = {}
+    for line in uuids.splitlines():
+        p = [x.strip() for x in line.split(",")]
+        if len(p) == 2 and p[0].isdigit():
+            by_uuid[p[1]] = int(p[0])
+    for r in rows:
+        r["processes"] = []
+    for line in apps.splitlines():
+        p = [x.strip() for x in line.split(",")]
+        if len(p) < 4:
+            continue
+        idx = by_uuid.get(p[0])
+        for r in rows:
+            if r["index"] == idx:
+                r["processes"].append({"pid": p[1], "used_mib": int(p[2]) if p[2].isdigit() else None,
+                                       "name": p[3].split("/")[-1]})
+    return rows
+
+
+def _resolve_gpu(spec, inventory):
+    """'4090' | '5060ti-2' | '3' -> (index, None) or (None, error_dict). Never guesses."""
+    spec = str(spec).strip()
+    if spec == "":
+        return None, None
+    low = spec.lower()
+    # NAME FIRST. Model numbers are digits ('4090'), so a numeric-index branch ahead of this
+    # swallows the most natural thing anyone types and refuses it as a bad index.
+    if any(r["alias"] == low for r in inventory):
+        return next(r["index"] for r in inventory if r["alias"] == low), None
+    if spec.lstrip("-").isdigit():
+        i = int(spec)
+        if any(r["index"] == i for r in inventory):
+            return i, None
+        return None, {"error": f"no GPU with index {i}",
+                      "gpus": [{"alias": r["alias"], "index": r["index"]} for r in inventory]}
+    exact = [r for r in inventory if r["alias"] == low]
+    if len(exact) == 1:
+        return exact[0]["index"], None
+    partial = [r for r in inventory if low in r["alias"] or low in r["name"].lower()]
+    if len(partial) == 1:
+        return partial[0]["index"], None
+    if not partial:
+        return None, {"error": f"no GPU matches {spec!r}",
+                      "available": [{"alias": r["alias"], "name": r["name"],
+                                     "free_mib": r["free_mib"]} for r in inventory]}
+    # Ambiguous is an ERROR, never a silent pick — choosing for the caller here is how a job lands
+    # on the wrong card and nobody finds out until it OOMs or finishes slowly.
+    return None, {"error": f"{spec!r} matches {len(partial)} GPUs — name one exactly",
+                  "candidates": [{"alias": r["alias"], "free_mib": r["free_mib"]} for r in partial]}
+
+
+@mcp.tool()
+def gpu_status() -> str:
+    """Show every GPU on the training host: name, friendly alias, VRAM free/total, and what is
+    using it. Call this BEFORE train_lora to pick a card by name.
+
+    Pass the alias to train_lora(gpu=...) — e.g. gpu="4090". Selecting by nvidia-smi index is
+    error-prone here: the number says nothing about the card, and CUDA's own default ordering
+    disagrees with nvidia-smi's on this host.
+
+    Rough requirements: SDXL/kohya at 1024 wants ~10-12 GiB free; Krea 2 via AI Toolkit needs
+    ~23 GiB, so only the 4090 qualifies for it.
+    """
+    inv = _gpu_inventory()
+    if not inv:
+        return _j({"error": "could not read any GPU from the training host",
+                   "note": "this is CANNOT-READ, not 'no GPUs' — check the host before assuming"})
+    for r in inv:
+        r["fits_sdxl_1024"] = r["free_mib"] >= 10000
+        r["fits_krea2"] = r["free_mib"] >= 20000
+    best_sdxl = max((r for r in inv if r["fits_sdxl_1024"]), key=lambda r: r["free_mib"], default=None)
+    best_krea = max((r for r in inv if r["fits_krea2"]), key=lambda r: r["free_mib"], default=None)
+    return _j({
+        "host": _TRAIN_HOST,
+        "gpus": inv,
+        "roomiest_for_sdxl": best_sdxl["alias"] if best_sdxl else None,
+        "roomiest_for_krea2": best_krea["alias"] if best_krea else None,
+        "note": ("Pass an alias as train_lora(gpu=...). Free VRAM is a SNAPSHOT — another job can "
+                 "claim a card between this call and the launch, so train_lora re-checks and "
+                 "refuses rather than OOMing twenty minutes in."),
+    })
+
+
 @mcp.tool()
 def train_lora(batch_folder: str, output_name: str, base_model: str = "",
                trigger: str = "", trainer: str = "kohya", repeats: int = 10,
                resolution: int = 1024, network_dim: int = 16, network_alpha: int = 16,
                steps: int = 0,
+               gpu: str = "",
                learning_rate: str = "1e-4", optimizer: str = "AdamW8bit",
                scheduler: str = "cosine", train_batch_size: int = 2, max_epochs: int = 10,
                save_every_n_epochs: int = 2, gpu_index: int = -1,
@@ -1171,7 +1290,11 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
             <repeats>_<concept> subsection with num_repeats taken from the folder prefix,
             and needs ~23 GiB so only the 4090 qualifies.
         repeats: dataset repeats per epoch (kohya's N_ prefix).
-        gpu_index: -1 picks the GPU with the most free VRAM.
+        gpu: WHICH GPU, by friendly alias — gpu="4090" or gpu="5060ti-2". REQUIRED for a real
+            run: the tool will not choose for you. Call gpu_status() first to see free VRAM and
+            what each card is busy with, then pick one that suits what you are training.
+        gpu_index: raw nvidia-smi index, if you already know it. Prefer `gpu`; the index means
+            nothing about the card and CUDA's default ordering disagrees with nvidia-smi's here.
         dry_run: build everything and return the exact command WITHOUT launching.
     """
     if trainer not in ("kohya", "aitoolkit"):
@@ -1274,15 +1397,36 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
     elif trainer == "kohya":
         return _j({"error": f"kohya needs an absolute checkpoint path, got {base_model!r}"})
 
+    # ── GPU CHOICE IS THE CALLER'S, NOT THE TOOL'S ──────────────────────────────────
+    # An implicit "most free VRAM right now" pick makes the card depend on whatever else happened
+    # to be running, and records a number in run.json that looks like a decision. Name a GPU.
+    _inv = _gpu_inventory()
+    if gpu:
+        _idx, _err = _resolve_gpu(gpu, _inv)
+        if _err:
+            return _j(_err)
+        gpu_index = _idx
     if gpu_index < 0:
-        rc, out, _ = _ssh("nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader")
+        if not dry_run:
+            return _j({
+                "error": "no GPU chosen — pass gpu='<alias>' (e.g. gpu='4090')",
+                "why": ("the tool no longer picks for you: an automatic most-free-VRAM choice "
+                        "depends on whatever else is running at that second, and lands a job on a "
+                        "card nobody evaluated"),
+                "gpus": [{"alias": r["alias"], "name": r["name"], "free_mib": r["free_mib"],
+                          "total_mib": r["total_mib"], "utilization_pct": r["utilization_pct"],
+                          "fits_sdxl_1024": r["free_mib"] >= 10000,
+                          "fits_krea2": r["free_mib"] >= 20000,
+                          "busy_with": [p["name"] for p in r["processes"]][:3]} for r in _inv],
+                "guidance": ("SDXL/kohya at 1024 needs ~10-12 GiB free — a 5060 Ti is fine for it. "
+                             "Krea 2 via aitoolkit needs ~23 GiB, so only the 4090 qualifies. "
+                             "Call gpu_status() any time for this same view."),
+            })
+        # A dry run needs no GPU; report the roomiest card so the config is inspectable.
         best, best_free = 0, -1
-        for line in out.splitlines():
-            p = [x.strip() for x in line.split(",")]
-            if len(p) == 3 and p[0].isdigit():
-                free = int(p[2].split()[0]) - int(p[1].split()[0])
-                if free > best_free:
-                    best, best_free = int(p[0]), free
+        for r in _inv:
+            if r["free_mib"] > best_free:
+                best, best_free = r["index"], r["free_mib"]
         # Krea 2 measured 23.3 GiB in use at qfloat8; a 16GB card cannot hold it, and the OOM
         # arrives long after launch (post model load and latent caching), so screen it here.
         _MIN_FREE_MIB = 20000 if trainer == "aitoolkit" else 10000
