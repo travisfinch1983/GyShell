@@ -14,6 +14,7 @@ import os
 import shlex
 import subprocess
 import shutil
+import re
 import struct as _struct
 import hashlib as _hashlib
 import json as _json
@@ -987,10 +988,10 @@ def kohya_status() -> str:
 def aitoolkit_status() -> str:
     """Is AI Toolkit installed, what version, and can it actually train Krea 2 today.
 
-    🛑 READ THE VERDICT. Travis's plan routes Krea 2 here because kohya cannot train it. The
-    INSTALLED checkout is from 2026-03-28 and its model registry has no Krea entry, so Krea 2
-    is not trainable on this box as it stands. That is reported rather than left to fail
-    halfway through a run.
+    Krea 2 IS trainable here as of 2026-09-02: the checkout was updated to 9d6a9a0, which
+    carries extensions_built_in/diffusion_models/krea2, and a Krea 2 LoRA trained end to end on
+    the 4090 (qfloat8, 23.3/24.5 GiB, 2500 steps). Use train_lora(trainer='aitoolkit').
+    🛑 Only the 4090 can hold it — the 5060 Tis are 16 GiB and OOM after the model load.
     """
     rc, out, err = _ssh(
         f"test -f {_AITK_DIR}/run.py && echo RUN_OK; test -x {_AITK_PY} && echo PY_OK; "
@@ -1045,10 +1046,78 @@ def _active_runs():
     return live
 
 
+_AITK_TRAINED = "/imagegen/loras/trained"
+_SUBSECTION_RE = re.compile(r"^(\d+)_(.+)$")
+
+
+def _aitk_datasets(batch_abs, default_repeats, caption_ext):
+    """One dataset block per <repeats>_<concept> subsection; the root only if there are none.
+
+    AI Toolkit ignores the numeric prefix and applies num_repeats per BLOCK, so emitting a single
+    block over a subsectioned root silently flattens the ratio the folder names describe.
+    """
+    imgexts = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+    blocks, subs = [], []
+    for name in sorted(os.listdir(batch_abs)):
+        d = os.path.join(batch_abs, name)
+        if not os.path.isdir(d) or name.startswith((".", "_")):
+            continue
+        m = _SUBSECTION_RE.match(name)
+        n_img = sum(1 for f in os.listdir(d) if f.lower().endswith(imgexts) and not f.startswith("_collage"))
+        if n_img == 0:
+            continue
+        reps = int(m.group(1)) if m else default_repeats
+        blocks.append({"folder_path": d, "caption_ext": caption_ext, "num_repeats": reps,
+                       "caption_dropout_rate": 0.05, "shuffle_tokens": False,
+                       "cache_latents_to_disk": True, "resolution": [768, 1024]})
+        subs.append({"folder": name, "images": n_img, "num_repeats": reps,
+                     "repeats_from": "folder prefix" if m else "repeats argument"})
+    if not blocks:
+        n_img = sum(1 for f in os.listdir(batch_abs)
+                    if f.lower().endswith(imgexts) and not f.startswith("_collage"))
+        blocks.append({"folder_path": batch_abs, "caption_ext": caption_ext,
+                       "num_repeats": default_repeats, "caption_dropout_rate": 0.05,
+                       "shuffle_tokens": False, "cache_latents_to_disk": True,
+                       "resolution": [768, 1024]})
+        subs.append({"folder": "(batch root, no subsections)", "images": n_img,
+                     "num_repeats": default_repeats, "repeats_from": "repeats argument"})
+    return blocks, subs
+
+
+def _aitk_config(output_name, blocks, base_model, steps, network_dim, network_alpha, learning_rate,
+                 train_batch_size):
+    """The ai-toolkit job config.
+
+    NO trigger_word: cache_text_embeddings (required to fit 24GB) bakes captions BEFORE trigger
+    substitution, so setting it silently does nothing. The trigger must already lead the captions.
+    qfloat8 because the 26.3GB bf16 base does not fit a 4090 unquantized; the LoRA itself still
+    trains in full precision. device is cuda:0 because the launch pins one GPU with
+    CUDA_VISIBLE_DEVICES, so the process sees exactly one.
+    """
+    return {"job": "extension", "config": {"name": output_name, "process": [{
+        "type": "sd_trainer",
+        "training_folder": _AITK_TRAINED,
+        "device": "cuda:0",
+        "network": {"type": "lora", "linear": network_dim, "linear_alpha": network_alpha},
+        "save": {"dtype": "float16", "save_every": 250, "max_step_saves_to_keep": 4},
+        "datasets": blocks,
+        "train": {"batch_size": train_batch_size, "cache_text_embeddings": True, "steps": steps,
+                  "gradient_accumulation": 1, "train_unet": True, "train_text_encoder": False,
+                  "gradient_checkpointing": True, "noise_scheduler": "flowmatch",
+                  "optimizer": "adamw8bit", "lr": float(learning_rate), "dtype": "bf16"},
+        "model": {"name_or_path": base_model, "arch": "krea2", "quantize": True,
+                  "qtype": "qfloat8", "quantize_te": True, "qtype_te": "qfloat8", "low_vram": True},
+        "sample": {"sampler": "flowmatch", "sample_every": 250, "sample_start_step": 0,
+                   "width": 1024, "height": 1024, "prompts": [], "neg": "", "seed": 42,
+                   "walk_seed": True, "guidance_scale": 3, "sample_steps": 25},
+    }]}, "meta": {"name": "[name]"}}
+
+
 @mcp.tool()
 def train_lora(batch_folder: str, output_name: str, base_model: str = "",
                trigger: str = "", trainer: str = "kohya", repeats: int = 10,
                resolution: int = 1024, network_dim: int = 16, network_alpha: int = 16,
+               steps: int = 0,
                learning_rate: str = "1e-4", optimizer: str = "AdamW8bit",
                scheduler: str = "cosine", train_batch_size: int = 2, max_epochs: int = 10,
                save_every_n_epochs: int = 2, gpu_index: int = -1,
@@ -1072,18 +1141,16 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
         output_name: LoRA name, e.g. satin_string_bikini_panties_v1.
         base_model: absolute path to the base checkpoint. Empty = pick the newest Illustrious.
         trigger: concept/trigger word for the dataset folder. Empty = output_name.
-        trainer: 'kohya' (SDXL). 'aitoolkit' is refused until its Krea support exists.
+        trainer: 'kohya' (SDXL) or 'aitoolkit' (Krea 2). aitoolkit defaults base_model to
+            krea/Krea-2-Raw, reads captions from .caption, emits ONE dataset block per
+            <repeats>_<concept> subsection with num_repeats taken from the folder prefix,
+            and needs ~23 GiB so only the 4090 qualifies.
         repeats: dataset repeats per epoch (kohya's N_ prefix).
         gpu_index: -1 picks the GPU with the most free VRAM.
         dry_run: build everything and return the exact command WITHOUT launching.
     """
     if trainer not in ("kohya", "aitoolkit"):
         return _j({"error": f"unknown trainer {trainer!r} — use 'kohya' or 'aitoolkit'"})
-    if trainer == "aitoolkit":
-        return _j({"error": "AI Toolkit training is not wired up: the installed checkout "
-                            "(2026-03-28) has no Krea support, which is the only reason to use "
-                            "it here. Call aitoolkit_status() for the detail.",
-                   "action": "update /opt/ai-toolkit on ai-epyc first — a deliberate change"})
 
     # ── validate the dataset BEFORE doing anything expensive ──
     try:
@@ -1161,15 +1228,26 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
     else:
         trig = dominant or output_name.strip().replace(" ", "_")
 
+    if trainer == "aitoolkit" and not base_model:
+        # The krea2 arch derives the weight filename from the repo name; the HF cache on ai-epyc
+        # already holds raw.safetensors. An Illustrious .safetensors here would be an SDXL
+        # checkpoint handed to a diffusion-transformer arch.
+        base_model = "krea/Krea-2-Raw"
     if not base_model:
         rc, out, _ = _ssh(f"ls -t {_CKPT_ROOT}/Illustrious/*.safetensors 2>/dev/null | head -1")
         base_model = out.strip()
         if not base_model:
             return _j({"error": "no base_model given and no Illustrious checkpoint found",
                        "hint": f"pass base_model, e.g. {_CKPT_ROOT}/Pony_XL/PonyMegaMixXL_v20.safetensors"})
-    rc, out, _ = _ssh(f"test -f '{base_model}' && echo OK")
-    if "OK" not in out:
-        return _j({"error": f"base_model not found on {_TRAIN_HOST}: {base_model}"})
+    # A hub repo id (krea/Krea-2-Raw) is not a file. Only path-shaped base_models get the
+    # existence check; ai-toolkit resolves repo ids through the HF cache on the training host,
+    # and testing -f on one would reject a perfectly valid model.
+    if base_model.startswith("/"):
+        rc, out, _ = _ssh(f"test -f '{base_model}' && echo OK")
+        if "OK" not in out:
+            return _j({"error": f"base_model not found on {_TRAIN_HOST}: {base_model}"})
+    elif trainer == "kohya":
+        return _j({"error": f"kohya needs an absolute checkpoint path, got {base_model!r}"})
 
     if gpu_index < 0:
         rc, out, _ = _ssh("nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader")
@@ -1180,13 +1258,86 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
                 free = int(p[2].split()[0]) - int(p[1].split()[0])
                 if free > best_free:
                     best, best_free = int(p[0]), free
+        # Krea 2 measured 23.3 GiB in use at qfloat8; a 16GB card cannot hold it, and the OOM
+        # arrives long after launch (post model load and latent caching), so screen it here.
+        _MIN_FREE_MIB = 20000 if trainer == "aitoolkit" else 10000
         gpu_index = best
-        if best_free < 10000:
+        if best_free < _MIN_FREE_MIB:
             return _j({"error": f"no GPU has enough free VRAM (best: GPU{best} with {best_free} MiB)",
-                       "note": "SDXL LoRA at 1024 needs roughly 10-12 GiB free; wait or free a GPU"})
+                       "needed_mib": _MIN_FREE_MIB,
+                       "note": ("Krea 2 at qfloat8 needs ~23 GiB and only the 4090 qualifies here; "
+                                "the 5060 Tis are 16 GiB cards"
+                                if trainer == "aitoolkit"
+                                else "SDXL LoRA at 1024 needs roughly 10-12 GiB free")})
 
     run_id = f"{output_name}-{_time.strftime('%Y%m%d-%H%M%S')}"
     rdir = os.path.join(_RUNS_ROOT, run_id)
+
+    if trainer == "aitoolkit":
+        # ── AI TOOLKIT PATH (Krea 2) ──────────────────────────────────────────────────────
+        # No dataset copy. kohya needs one because a symlink written here is invisible on the
+        # training host; ai-toolkit reads the batch IN PLACE over the shared mount, and plain
+        # files do propagate. Copying 77 images to say the same thing would just be drift.
+        os.makedirs(rdir, exist_ok=True)
+        blocks, subs = _aitk_datasets(batch_abs, repeats, "caption")
+        eff = sum(x["images"] * x["num_repeats"] for x in subs)
+        n_steps = steps if steps > 0 else max(500, min(6000, int(eff * max_epochs / max(1, train_batch_size))))
+        cfg = _aitk_config(output_name, blocks, base_model, n_steps, network_dim, network_alpha,
+                           learning_rate, train_batch_size)
+        cfg_path = os.path.join(rdir, "config.yaml")
+        with open(cfg_path, "w") as f:
+            _json.dump(cfg, f, indent=2)   # JSON is valid YAML 1.2; no yaml writer needed here
+        log = os.path.join(rdir, "train.log")
+        pidfile = os.path.join(rdir, "pid")
+        # CUDA_DEVICE_ORDER: without it index 4 is a 5060 Ti and the 4090 is 0 -- the opposite of
+        # what the caller asked for. HF_TOKEN because krea/Krea-2-Raw is a gated repo.
+        cmd = (f"cd {_AITK_DIR} && CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={gpu_index} "
+               f'HF_TOKEN="$(cat /root/.cache/huggingface/token 2>/dev/null)" '
+               f"{_AITK_PY} run.py {shlex.quote(cfg_path)}")
+        meta = {"run_id": run_id, "trainer": "aitoolkit", "state": "launching",
+                "output_name": output_name, "base_model": base_model, "trigger": trig,
+                "batch_folder": _scope(batch_folder), "images": len(imgs), "steps": n_steps,
+                "steps_source": "argument" if steps > 0 else "derived from images x repeats x epochs",
+                "subsections": subs, "gpu_index": gpu_index, "config": cfg_path, "log": log,
+                "network_dim": network_dim, "network_alpha": network_alpha,
+                "started": _time.strftime("%Y-%m-%d %H:%M:%S")}
+        if dry_run:
+            return _j({"dry_run": True, "run_id": run_id, "command": cmd, "config": cfg_path,
+                       "steps": n_steps, "subsections": subs,
+                       "note": "nothing launched; the config IS written so it can be inspected"})
+        _write_run(run_id, meta)          # written BEFORE launch: an untrackable GPU job is worse
+        launch = (f"{{ setsid nohup bash -c {shlex.quote(cmd)} > '{log}' 2>&1 < /dev/null & "
+                  f"echo $! > '{pidfile}'; }} > /dev/null 2>&1 < /dev/null; exit 0")
+        try:
+            _ssh(launch, timeout=45)
+        except Exception as e:
+            meta["launch_note"] = f"ssh returned {e.__class__.__name__}; checking for the pid file"
+        pid = None
+        for _ in range(15):
+            try:
+                txt = open(pidfile).read().strip()
+                if txt.isdigit():
+                    pid = int(txt); break
+            except OSError:
+                pass
+            _time.sleep(1)
+        if pid is None:
+            meta["state"] = "launch_failed"
+            meta["error"] = "no pid file appeared; the trainer did not start"
+            _write_run(run_id, meta)
+            return _j({"error": "launch failed", "run_id": run_id, "log": log,
+                       "detail": "no pid file appeared on the training host"})
+        meta["pid"] = pid
+        meta["state"] = "running"
+        _write_run(run_id, meta)
+        return _j({"run_id": run_id, "state": "running", "pid": pid, "trainer": "aitoolkit",
+                   "gpu_index": gpu_index, "steps": n_steps, "trigger": trig,
+                   "subsections": subs, "output_name": output_name, "config": cfg_path,
+                   "poll_with": f"train_lora_status('{run_id}')",
+                   "note": (f"{len(imgs)} images across {len(subs)} dataset block(s) for {n_steps} "
+                            f"steps on GPU{gpu_index} (PCI order). Panel row: "
+                            f"lora:aitoolkit:{output_name}")})
+
     dsdir = os.path.join(rdir, "dataset", f"{repeats}_{trig}")
     os.makedirs(dsdir, exist_ok=True)
     # 🛑 COPY, NOT SYMLINK. The training host cannot see symlinks written here: /imagegen is
