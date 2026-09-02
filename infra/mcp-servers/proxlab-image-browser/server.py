@@ -1312,6 +1312,261 @@ def train_lora_stop(run_id: str) -> str:
     return _j({"run_id": run_id, "state": "stopped", "pid": pid})
 
 
+import re
+
+# ── Finalization: an ACCEPTED LoRA enters the library under Travis's v5 naming spec ──
+# Spec source of truth: /imagegen/_custodian-spec/naming-conventions.md (LOCKED v5).
+# Self-trained LoRAs have no Civitai versionId, so the name is 4 slots:
+#   <SubType-or-PrimaryLongName>-<PRI_ABB>-<Title>-<Version>.safetensors
+# e.g.  Panties-CON-Red_Satin_String_Bikini_Panties-V1.0.safetensors
+# The preview image shares the basename (that is how SDNext/Comfy pickers find it).
+
+# Closed primary-tag table (spec v5). Keys are long names, values the ALL-CAPS abbreviation.
+_LORA_PRI_TAGS = {
+    "Action": "ACT", "Animal": "ANIM", "Assets": "ASST", "Background": "BG",
+    "Base_Model": "BASE", "Buildings": "BD", "Celebrity": "CELEB", "Character": "CHAR",
+    "Clothing": "CLOTH", "Concept": "CON", "Objects": "OBJ", "Poses": "POSE",
+    "Style": "STYLE", "Tool": "TOOL", "Vehicle": "VH",
+}
+# CLOSED sub-type whitelist (spec rule 9: NEVER invent new sub-types).
+_LORA_SUB_TYPES = {
+    "Artist_Style", "Ass", "Body_Style", "BDSM", "Buttplug", "Chastity",
+    "Detailer", "Futanari", "Panties", "Penis", "Tits",
+}
+
+
+def _abs_imagegen_wide(rel: str) -> str:
+    """Whole-tree resolver with the same traversal guard as _abs_under_imagegen.
+
+    _abs_under_imagegen routes through _scope, which deliberately confines the curation
+    tools to training_images/ — but finalization spans the tree (loras/, outputs/).
+    Accepts bare, imagegen/-prefixed and /imagegen/-prefixed forms.
+    """
+    q = str(rel or "").strip().lstrip("/")
+    if q.startswith("imagegen/"):
+        q = q[len("imagegen/"):]
+    base = os.path.realpath(_IMAGEGEN_ROOT)
+    full = os.path.realpath(os.path.join(base, q))
+    if full != base and not full.startswith(base + os.sep):
+        raise ValueError(f"path escapes the imagegen tree: {rel}")
+    return full
+
+
+def _lora_slotify(s: str) -> str:
+    """Spec slot text: runs of space/junk -> single _, first letter of each word capitalized."""
+    words = [w for w in re.split(r"[\s_]+", str(s).strip()) if w]
+    words = [(w[0].upper() + w[1:]) if w else w for w in words]
+    out = "_".join(words)
+    return re.sub(r"[^A-Za-z0-9._-]", "", out)
+
+
+def _lora_norm_version(v: str) -> str:
+    """Spec: capital V with decimal — v1 -> V1.0, V1 -> V1.0, V1.2 unchanged. '' omits the slot."""
+    v = str(v).strip()
+    if not v:
+        return ""
+    m = re.fullmatch(r"[vV](\d+)(?:\.(\d+))?", v)
+    if not m:
+        raise ValueError(f"version must look like V1 / v2 / V1.2 (got {v!r})")
+    return f"V{int(m.group(1))}.{m.group(2) or '0'}"
+
+
+def _lora_families() -> list[str]:
+    root = os.path.join(_IMAGEGEN_ROOT, "loras")
+    skip = {"trained", "recipes", "OLD"}
+    try:
+        return sorted(d for d in os.listdir(root)
+                      if os.path.isdir(os.path.join(root, d)) and d not in skip)
+    except OSError:
+        return []
+
+
+def _lora_audit(entry: dict) -> None:
+    """Same JSONL audit stream Custodian writes — one durable line per library mutation."""
+    try:
+        log_dir = os.path.join(_IMAGEGEN_ROOT, "_organizer-log")
+        os.makedirs(log_dir, exist_ok=True)
+        entry = {"ts": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()), **entry}
+        with open(os.path.join(log_dir, _time.strftime("%Y-%m-%d") + ".jsonl"), "a") as f:
+            f.write(_json.dumps(entry) + "\n")
+    except OSError:
+        pass  # the move itself must not fail because the audit line could not be written
+
+
+@mcp.tool()
+def finalize_lora(source: str, family: str, primary_tag: str, title: str,
+                  sub_type: str = "", version: str = "V1.0", preview_image: str = "",
+                  trigger: str = "", base_model: str = "", notes: str = "") -> str:
+    """Accept a trained LoRA as COMPLETE: apply Travis's naming convention and move it into the library.
+
+    Call this only after the LoRA has been reviewed and accepted (test generation looked
+    good). It renames per the v5 spec (/imagegen/_custodian-spec/naming-conventions.md)
+    and moves the weight from the training area into /imagegen/loras/<family>/.
+
+    Name = <sub_type or primary long-name>-<PRI_ABB>-<Title>-<Version>.safetensors
+    (self-trained LoRAs have no Civitai versionId, so there is no 5th slot).
+    Example: sub_type=Panties, primary_tag=Concept, title="Red Satin String Bikini Panties"
+    -> Panties-CON-Red_Satin_String_Bikini_Panties-V1.0.safetensors
+
+    NEVER overwrites an existing library file. Writes a provenance .json sidecar and an
+    audit line to /imagegen/_organizer-log/. Pass preview_image now, or add it later with
+    set_lora_preview once a test image exists.
+
+    Args:
+        source: output name from training (finds /imagegen/loras/trained/<name>/<name>.safetensors
+            or trained/<name>.safetensors), OR an explicit /imagegen-relative path to the exact
+            .safetensors to promote (useful when an intermediate checkpoint is the accepted one).
+        family: target family folder under /imagegen/loras/ — must already exist (e.g. Pony_XL,
+            Illustrious, Krea_2). Case-exact; the error lists valid families.
+        primary_tag: the model layer this LoRA touches, from the CLOSED table: Action, Animal,
+            Assets, Background, Base_Model, Buildings, Celebrity, Character, Clothing, Concept,
+            Objects, Poses, Style, Tool, Vehicle. (Abbreviations like CON also accepted.)
+        title: human title; spaces become underscores, words capitalized.
+        sub_type: optional, from the CLOSED whitelist (Artist_Style, Ass, Body_Style, BDSM,
+            Buttplug, Chastity, Detailer, Futanari, Panties, Penis, Tits). Leave empty to use
+            the primary tag's long name in slot 1. Never invent new sub-types.
+        version: V1 / V1.2 style; normalized to V#.# per spec. Empty string omits the slot.
+        preview_image: optional /imagegen-relative path to the accepted test image; installed
+            beside the weight with the matching basename.
+        trigger: the trigger word/phrase (recorded in the provenance sidecar).
+        base_model: base checkpoint the LoRA was trained on (recorded in provenance).
+        notes: free text for provenance.
+    """
+    # ---- resolve the source weight ----
+    try:
+        if "/" in source:
+            src = _abs_imagegen_wide(source)
+        else:
+            cands = [os.path.join(_IMAGEGEN_ROOT, "loras", "trained", source, f"{source}.safetensors"),
+                     os.path.join(_IMAGEGEN_ROOT, "loras", "trained", f"{source}.safetensors")]
+            src = next((c for c in cands if os.path.isfile(c)), "")
+            if not src:
+                return _j({"error": f"no trained weight found for {source!r}",
+                           "looked_at": [os.path.relpath(c, _IMAGEGEN_ROOT) for c in cands],
+                           "hint": "pass an explicit path if the accepted file is an intermediate checkpoint"})
+    except ValueError as e:
+        return _j({"error": str(e)})
+    if not os.path.isfile(src) or not src.endswith(".safetensors"):
+        return _j({"error": f"source is not a .safetensors file: {source}"})
+
+    # ---- validate the closed vocabularies (spec rules 1-3, 9) ----
+    fams = _lora_families()
+    if family not in fams:
+        return _j({"error": f"family {family!r} is not a library folder", "valid_families": fams,
+                   "note": "family folders are created by Travis, not by this tool"})
+    pt = str(primary_tag).strip().replace(" ", "_")
+    long_name = next((k for k in _LORA_PRI_TAGS
+                      if k.lower() == pt.lower() or _LORA_PRI_TAGS[k] == pt.upper()), "")
+    if not long_name:
+        return _j({"error": f"primary_tag {primary_tag!r} is not in the closed table",
+                   "valid": _LORA_PRI_TAGS})
+    st = ""
+    if str(sub_type).strip():
+        st = next((s for s in _LORA_SUB_TYPES
+                   if s.lower() == str(sub_type).strip().replace(" ", "_").lower()), "")
+        if not st:
+            return _j({"error": f"sub_type {sub_type!r} is not in the CLOSED whitelist — never invent sub-types",
+                       "valid": sorted(_LORA_SUB_TYPES),
+                       "fallback": "omit sub_type to use the primary tag's long name in slot 1"})
+    try:
+        ver = _lora_norm_version(version)
+    except ValueError as e:
+        return _j({"error": str(e)})
+    t = _lora_slotify(title)
+    if not t:
+        return _j({"error": "title is empty after normalization"})
+
+    name = f"{st or long_name}-{_LORA_PRI_TAGS[long_name]}-{t}" + (f"-{ver}" if ver else "")
+    dest_dir = os.path.join(_IMAGEGEN_ROOT, "loras", family)
+    dest = os.path.join(dest_dir, f"{name}.safetensors")
+    if os.path.exists(dest):
+        return _j({"error": f"destination already exists: {os.path.relpath(dest, _IMAGEGEN_ROOT)}",
+                   "note": "never overwrites — bump the version, or ask Travis"})
+
+    # ---- optional preview, validated BEFORE the move so a bad path aborts cleanly ----
+    prev_src = ""
+    if str(preview_image).strip():
+        try:
+            prev_src = _abs_imagegen_wide(preview_image)
+        except ValueError as e:
+            return _j({"error": f"preview_image: {e}"})
+        if not os.path.isfile(prev_src):
+            return _j({"error": f"preview_image not found: {preview_image}"})
+
+    # ---- move (same mount -> atomic rename), provenance, audit ----
+    size = os.path.getsize(src)
+    shutil.move(src, dest)
+    if os.path.getsize(dest) != size:
+        return _j({"error": "size mismatch after move — INVESTIGATE before using this file",
+                   "dest": os.path.relpath(dest, _IMAGEGEN_ROOT)})
+    result = {"ok": True, "name": name,
+              "lora": os.path.relpath(dest, _IMAGEGEN_ROOT),
+              "slots": {"slot1": st or long_name, "slot2": _LORA_PRI_TAGS[long_name],
+                        "slot3": t, "slot4": ver or "(omitted)"}}
+    if prev_src:
+        prev_ext = os.path.splitext(prev_src)[1].lower() or ".png"
+        prev_dest = os.path.join(dest_dir, f"{name}{prev_ext}")
+        shutil.copy2(prev_src, prev_dest)
+        result["preview"] = os.path.relpath(prev_dest, _IMAGEGEN_ROOT)
+    else:
+        result["preview"] = None
+        result["next_step"] = "generate a test image and install it with set_lora_preview — a LoRA without a preview is a blank square in every picker"
+    sidecar = {"finalized": _time.strftime("%Y-%m-%d %H:%M:%S"),
+               "source": os.path.relpath(src, _IMAGEGEN_ROOT), "trigger": trigger,
+               "base_model": base_model, "family": family, "notes": notes,
+               "trained_locally": True}
+    try:
+        with open(os.path.join(dest_dir, f"{name}.json"), "w") as f:
+            _json.dump(sidecar, f, indent=2)
+        result["sidecar"] = os.path.relpath(os.path.join(dest_dir, f"{name}.json"), _IMAGEGEN_ROOT)
+    except OSError as e:
+        result["sidecar_error"] = str(e)
+    _lora_audit({"op": "finalize_lora", "src": os.path.relpath(src, _IMAGEGEN_ROOT),
+                 "dest": os.path.relpath(dest, _IMAGEGEN_ROOT), "trigger": trigger, "by": "mcp"})
+    return _j(result)
+
+
+@mcp.tool()
+def set_lora_preview(lora_path: str, image_path: str, replace: bool = False) -> str:
+    """Install (or replace) the preview image for a library LoRA.
+
+    Copies the image beside the weight with the SAME basename — that filename match is
+    what makes it show up as the LoRA's preview in the pickers. Name the test generation
+    after the LoRA by calling this; no manual renaming needed.
+
+    Args:
+        lora_path: /imagegen-relative path to the .safetensors in the library
+            (e.g. loras/Pony_XL/Panties-CON-Red_Satin_String_Bikini_Panties-V1.0.safetensors).
+        image_path: /imagegen-relative path to the image (a ComfyUI output is fine).
+        replace: must be True to overwrite an existing preview.
+    """
+    try:
+        lora = _abs_imagegen_wide(lora_path)
+        img = _abs_imagegen_wide(image_path)
+    except ValueError as e:
+        return _j({"error": str(e)})
+    if not os.path.isfile(lora) or not lora.endswith(".safetensors"):
+        return _j({"error": f"not a library .safetensors: {lora_path}"})
+    if not os.path.isfile(img):
+        return _j({"error": f"image not found: {image_path}"})
+    base = os.path.splitext(lora)[0]
+    ext = os.path.splitext(img)[1].lower() or ".png"
+    dest = base + ext
+    existing = [base + e for e in (".png", ".jpg", ".jpeg", ".webp") if os.path.exists(base + e)]
+    if existing and not replace:
+        return _j({"error": "a preview already exists — pass replace=true to swap it",
+                   "existing": [os.path.relpath(e, _IMAGEGEN_ROOT) for e in existing]})
+    for e in existing:
+        if e != dest:
+            os.remove(e)   # one preview, one basename — two different-ext previews confuse pickers
+    shutil.copy2(img, dest)
+    _lora_audit({"op": "set_lora_preview", "lora": os.path.relpath(lora, _IMAGEGEN_ROOT),
+                 "image": os.path.relpath(img, _IMAGEGEN_ROOT),
+                 "dest": os.path.relpath(dest, _IMAGEGEN_ROOT), "replaced": bool(existing), "by": "mcp"})
+    return _j({"ok": True, "preview": os.path.relpath(dest, _IMAGEGEN_ROOT),
+               "replaced": [os.path.relpath(e, _IMAGEGEN_ROOT) for e in existing]})
+
+
 @mcp.tool()
 def list_lora_outputs() -> str:
     """List trained LoRA .safetensors with size and mtime, newest first, plus known runs."""
