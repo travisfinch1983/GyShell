@@ -329,6 +329,12 @@ export const TrainingImagesPanel: React.FC = observer(() => {
             <Star size={14} /> Wipe ratings ({store.ratedCount})
           </button>
         )}
+        {!store.selectionMode && store.visibleImages.length > 0 && (
+          <button className={styles.btn} title="Select every image shown (respects the crop filter)"
+                  onClick={() => { store.enterSelection(); store.selectAll() }}>
+            Select all ({store.visibleImages.length})
+          </button>
+        )}
         <span className={styles.spacer} />
         <button
           className={styles.btn}
@@ -375,6 +381,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           <button className={styles.iconBtn} title="Clear" onClick={() => store.exitSelection()}><X size={14} /></button>
           <span>{store.selected.size} selected</span>
           <button className={styles.btn} onClick={() => store.selectAll()}>Select all ({store.visibleImages.length})</button>
+          <button className={styles.btn} disabled={!store.selected.size} onClick={() => store.deselectAll()}>Deselect all</button>
           <span className={styles.spacer} />
           <button className={styles.btnPrimary} title="Copy the selection + caption sidecars into an existing training set, or create a new one beside this folder — works from inside a set too, for cherry-picking an already-curated selection" onClick={() => setSetAdd(true)}>Add to Training Set</button>
           <button className={styles.btn} onClick={() => setPicker('move')}>Move…</button>

@@ -338,6 +338,7 @@ const ModelCuration: React.FC<{
   const [statsSince, setStatsSince] = useState<number>(0)
   const [loading, setLoading] = useState(true)
   const [q, setQ] = useState('')
+  const [capF, setCapF] = useState<'any' | 'image' | 'video' | 'audio'>('any')
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
@@ -358,7 +359,10 @@ const ModelCuration: React.FC<{
     return () => { alive = false }
   }, [sourceId])
 
-  const filtered = q ? models.filter((m) => (m.id + ' ' + (m.name || '')).toLowerCase().includes(q.toLowerCase())) : models
+  const hasCap = (m: AvailableModel, c: string) => Array.isArray(m.modalities) && m.modalities.includes(c)
+  const filtered = models.filter((m) =>
+    (!q || (m.id + ' ' + (m.name || '')).toLowerCase().includes(q.toLowerCase()))
+    && (capF === 'any' || hasCap(m, capF)))
   const toggle = (id: string) => setChecked((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
   const setAllVisible = (on: boolean) => setChecked((s) => { const n = new Set(s); filtered.forEach((m) => on ? n.add(m.id) : n.delete(m.id)); return n })
   // Report the current allow-list up to the parent (which owns the Save button, next to the
@@ -389,8 +393,15 @@ const ModelCuration: React.FC<{
     <div style={{ marginTop: 6 }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' }}>
         <input style={{ ...smallInp, flex: 1, minWidth: 150 }} placeholder={`Filter ${models.length} models…`} value={q} onChange={(e) => setQ(e.target.value)} />
-        <button style={{ ...btn, padding: '4px 10px', fontSize: 12 }} onClick={() => setAllVisible(true)}>Select all{q ? ' shown' : ''}</button>
-        <button style={{ ...btn, padding: '4px 10px', fontSize: 12 }} onClick={() => setAllVisible(false)}>Deselect all{q ? ' shown' : ''}</button>
+        <select style={{ ...smallInp, width: 'auto' }} value={capF} onChange={(e) => setCapF(e.target.value as any)}
+                title="Filter by INPUT modality. Counts cover only models whose provider reports modalities — unknown is not the same as text-only.">
+          <option value="any">Any modality</option>
+          <option value="image">👁 Vision ({models.filter((m) => hasCap(m, 'image')).length})</option>
+          <option value="video">🎬 Video ({models.filter((m) => hasCap(m, 'video')).length})</option>
+          <option value="audio">🎧 Audio ({models.filter((m) => hasCap(m, 'audio')).length})</option>
+        </select>
+        <button style={{ ...btn, padding: '4px 10px', fontSize: 12 }} onClick={() => setAllVisible(true)}>Select all{q || capF !== 'any' ? ' shown' : ''}</button>
+        <button style={{ ...btn, padding: '4px 10px', fontSize: 12 }} onClick={() => setAllVisible(false)}>Deselect all{q || capF !== 'any' ? ' shown' : ''}</button>
         <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{checked.size}/{models.length} enabled</span>
       </div>
       <div style={{ maxHeight: 300, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
@@ -398,6 +409,7 @@ const ModelCuration: React.FC<{
           <thead>
             <tr style={{ position: 'sticky', top: 0, background: 'var(--bg-elev, var(--bg))', color: 'var(--fg-muted)' }}>
               <th style={thc}></th><th style={{ ...thc, textAlign: 'left' }}>Model</th>
+              <th style={thc} title="Input modalities the provider reports. — means the catalog doesn't say (unknown, not text-only).">Sees</th>
               <th style={thc}>Ctx</th><th style={thc}>In $/M</th><th style={thc}>Out $/M</th><th style={thc}>Cache $/M</th>
               {anyCache && <th style={thc} title="Prompt caching. ON = the proxy injects cache breakpoints for you; 1h = keep the system prefix cached an hour instead of 5 minutes.">Caching</th>}
               {anyCache && <th style={thc} title={statsSince ? `Cache tokens the upstream reported since the proxy started (${new Date(statsSince).toLocaleString()}).` : 'Cache tokens reported by the upstream.'}>Read / Wrote</th>}
@@ -408,6 +420,19 @@ const ModelCuration: React.FC<{
               <tr key={m.id} style={{ borderTop: '1px solid var(--border)', cursor: 'pointer' }} onClick={() => toggle(m.id)}>
                 <td style={tdc}><input type="checkbox" checked={checked.has(m.id)} readOnly /></td>
                 <td style={{ ...tdc, textAlign: 'left', fontFamily: 'var(--font-mono)' }} title={m.name}>{m.id}</td>
+                <td style={tdc}>
+                  {Array.isArray(m.modalities) ? (
+                    <span style={{ display: 'inline-flex', gap: 3, justifyContent: 'center' }}>
+                      {hasCap(m, 'image') && <span title="Vision — accepts image input">👁</span>}
+                      {hasCap(m, 'video') && <span title="Accepts video input">🎬</span>}
+                      {hasCap(m, 'audio') && <span title="Accepts audio input">🎧</span>}
+                      {!hasCap(m, 'image') && !hasCap(m, 'video') && !hasCap(m, 'audio') &&
+                        <span style={{ color: 'var(--fg-muted)' }}>text</span>}
+                    </span>
+                  ) : (
+                    <span style={{ color: 'var(--fg-muted)' }} title="This provider's catalog doesn't report modalities — unknown, not text-only.">—</span>
+                  )}
+                </td>
                 <td style={tdc}>{fmtCtx(m.contextLength)}</td>
                 <td style={tdc}>{fmtCost(m.pricing?.inputPerM)}</td>
                 <td style={tdc}>{fmtCost(m.pricing?.outputPerM)}</td>

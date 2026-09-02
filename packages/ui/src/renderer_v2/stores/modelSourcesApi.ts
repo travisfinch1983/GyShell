@@ -17,6 +17,9 @@ export type ExternalModelSourceWire = ExternalModelSource & { hasKey?: boolean; 
 export interface AvailableModel {
   id: string
   name?: string
+  /** Input modalities from the provider catalog (image/video/audio/text). null/absent =
+   *  the provider doesn't report them — UNKNOWN, not text-only. */
+  modalities?: string[] | null
   contextLength?: number | null
   pricing?: {
     inputPerM?: number | null

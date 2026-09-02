@@ -153,6 +153,8 @@ export class TrainingImagesStore {
     this.selected = new Set(this.selected); this.lastIndex = b
   }
   selectAll() { this.visibleImages.forEach((im) => this.selected.add(im.name)); this.selected = new Set(this.selected) }
+  /** Empty the selection but STAY in selection mode (Clear/X is the exit). */
+  deselectAll() { this.selected = new Set(); this.lastIndex = null }
 
   // ── actions ──
   async sendToTrainingSet(suffix: string): Promise<any> {

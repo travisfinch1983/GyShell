@@ -30,7 +30,7 @@ import { spawn } from 'child_process';
 import { isAuthenticated, getAuthStatus, CLAUDE_MODELS } from './anthropic-proxy.js';
 import { extractToolCalls, recordToolUsage } from './tool-call-metrics.js';
 import { createBalanceHistory } from './balance-history.js';
-import { resolveModelCapabilities } from './model-capabilities.js';
+import { resolveModelCapabilities, registerCatalogModalities } from './model-capabilities.js';
 import { refreshPool, pickInstance, markFailure, markSuccess, invalidatePools } from './servicePools.js';
 import { listBackends, emptyReason, nextIndex, createHealthCache,
          setProviderCaps, getModelCatalog, selectBackends,
@@ -285,6 +285,20 @@ async function fetchExternalSourceModels(source) {
     clearTimeout(timer);
     if (!resp.ok) return [];
     const json = await resp.json();
+    // Feed the capability resolver the catalog's OWN modality claims — the annotation
+    // pass a few lines later (and every other resolveModelCapabilities caller) then
+    // answers from measured data instead of name patterns.
+    for (const m of (json.data || json.models || [])) {
+      if (m && typeof m === 'object' && m.id) {
+        const arch = m.architecture || {};
+        const inputs = Array.isArray(arch.input_modalities)
+          ? arch.input_modalities
+          : (typeof arch.modality === 'string' && arch.modality.includes('->')
+              ? arch.modality.split('->')[0].split('+').map((x) => x.trim()).filter(Boolean)
+              : null);
+        if (inputs) registerCatalogModalities(m.id, inputs);
+      }
+    }
     let ids = (json.data || json.models || []).map((m) => (typeof m === 'string' ? m : m && m.id)).filter(Boolean);
     if (Array.isArray(source.models) && source.models.length) {
       const allow = new Set(source.models);
@@ -319,9 +333,20 @@ async function fetchExternalSourceModelsRaw(source) {
     return raw.map((m) => {
       if (typeof m === 'string') return { id: m, name: m };
       const p = m.pricing || {};
+      // Input modalities where the catalog reports them (OpenRouter: architecture.
+      // input_modalities or "text+image->text"). null = the provider doesn't say —
+      // UNKNOWN, which the UI must never render as text-only.
+      const arch = m.architecture || {};
+      const inputs = Array.isArray(arch.input_modalities)
+        ? arch.input_modalities.map((x) => String(x).toLowerCase())
+        : (typeof arch.modality === 'string' && arch.modality.includes('->')
+            ? arch.modality.split('->')[0].split('+').map((x) => x.trim().toLowerCase()).filter(Boolean)
+            : null);
+      if (inputs) registerCatalogModalities(m.id, inputs);
       return {
         id: m.id,
         name: m.name || m.id,
+        modalities: inputs,
         contextLength: m.context_length ?? m.context_window ?? m.top_provider?.context_length ?? null,
         pricing: {
           inputPerM: perM(p.prompt ?? p.input),

@@ -48,13 +48,15 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[] 
   const [gpus, setGpus] = useState<any[]>([])
   const [gpuIndex, setGpuIndex] = useState<string>('')
   const [thr, setThr] = useState('0.35'); const [cthr, setCthr] = useState('0.85')
-  const [spaces, setSpaces] = useState(false); const [overwrite, setOverwrite] = useState(false)
-  // Trigger + context persist PER FOLDER so a set's phrasing survives reopening the
-  // dialog and page reloads. Trigger deliberately has no cross-folder fallback — a
-  // stale trigger from another set, silently prepended, would poison this set's
-  // captions. Context (style guidance) falls back to the last one used anywhere.
-  const [trigger, setTriggerRaw] = useState(() => { try { return localStorage.getItem('aig-cap-trigger:' + store.cwd) || '' } catch { return '' } })
-  const setTrigger = (v: string) => { setTriggerRaw(v); try { localStorage.setItem('aig-cap-trigger:' + store.cwd, v) } catch {} }
+  const [spaces, setSpaces] = useState(false)
+  // Trigger, context and the overwrite toggle persist across reopen/reload: per-FOLDER
+  // first, falling back to the last value used anywhere (Travis, 2026-09-02 — he chose
+  // convenience over the stale-trigger caution, so DO CHECK the trigger when captioning
+  // a different set: it carries over and gets prepended to every caption).
+  const [overwrite, setOverwriteRaw] = useState(() => { try { return localStorage.getItem('aig-cap-overwrite') === '1' } catch { return false } })
+  const setOverwrite = (v: boolean) => { setOverwriteRaw(v); try { localStorage.setItem('aig-cap-overwrite', v ? '1' : '0') } catch {} }
+  const [trigger, setTriggerRaw] = useState(() => { try { return localStorage.getItem('aig-cap-trigger:' + store.cwd) ?? localStorage.getItem('aig-cap-trigger:*') ?? '' } catch { return '' } })
+  const setTrigger = (v: string) => { setTriggerRaw(v); try { localStorage.setItem('aig-cap-trigger:' + store.cwd, v); localStorage.setItem('aig-cap-trigger:*', v) } catch {} }
   // vlm only: what this SET is. Goes into the instruction so the model knows
   // what it is looking at; the trigger phrase stays OUT of the prose.
   const [context, setContextRaw] = useState(() => { try { return localStorage.getItem('aig-cap-context:' + store.cwd) ?? localStorage.getItem('aig-cap-context:*') ?? '' } catch { return '' } })
