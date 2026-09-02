@@ -253,6 +253,11 @@ export function createImagegenRouter(config) {
   const router = Router();
   // AI-Lab: CT152 has no default SSH identity for the tagger host, so pass its managed key explicitly.
   const SSH_KEY = (config && config.keyPath) || process.env.AILAB_SSH_KEY || '';
+  // Central Task Progress registry (notifications panel). Caption jobs report their
+  // lifecycle here so progress is visible from ANY page — including jobs started by
+  // agents through this API, which no browser tab was ever watching. No-op when the
+  // registry isn't wired (tests construct this router bare).
+  const taskReport = (config && config.taskReport) || (() => {});
   try { mkdirSync(THUMB_DIR, { recursive: true }); } catch { /* ignore */ }
 
   // ---- browse a folder ----
@@ -723,7 +728,11 @@ export function createImagegenRouter(config) {
           + (b.overwrite ? ' --overwrite' : '') + ' --json';
     }
     const jobId = crypto.randomBytes(6).toString('hex');
-    captionJobs.set(jobId, { state: 'running', total: 0, done: 0, wrote: 0, skipped: 0, errors: 0, gpu_index: gpuIndex, model: engine === 'blip' ? 'blip-large' : (engine === 'vlm' ? String(b.vlm_model || VLM_MODEL) : model) });
+    const jobModel = engine === 'blip' ? 'blip-large' : (engine === 'vlm' ? String(b.vlm_model || VLM_MODEL) : model);
+    captionJobs.set(jobId, { state: 'running', total: 0, done: 0, wrote: 0, skipped: 0, errors: 0, gpu_index: gpuIndex, model: jobModel });
+    const taskId = `auto-caption:${jobId}`;
+    taskReport({ id: taskId, source: 'auto-caption', state: 'running', done: 0, total: 0,
+                 label: `Auto-caption · ${jobModel} · ${rel.split('/').pop() || rel}` });
     const sshArgs = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no',
       '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=20'];
     if (SSH_KEY) sshArgs.push('-i', SSH_KEY);
@@ -741,6 +750,8 @@ export function createImagegenRouter(config) {
         if (ev.event === 'start') { j.total = ev.total; j.engine = ev.engine; j.provider = ev.provider || ev.device; }
         else if (ev.event === 'img') { j.done = ev.done; if (ev.status === 'error' && ev.error) j.lastError = `${ev.file}: ${ev.error}`; }
         else if (ev.event === 'done') { j.wrote = ev.wrote; j.skipped = ev.skipped; j.errors = ev.errors; }
+        taskReport({ id: taskId, done: j.done, total: j.total,
+                     detail: j.provider ? `on ${j.provider}` : undefined });
       }
     });
     child.stdout.on('data', (d) => { tail += d.toString(); });
@@ -749,11 +760,17 @@ export function createImagegenRouter(config) {
       if (code === 0) {
         j.state = 'done';
         try { Object.assign(j, JSON.parse(tail.trim().split('\n').pop())); } catch { /* keep parsed-from-stderr */ }
-      } else { j.state = 'error'; j.error = `tagger exited ${code}`; }
+        taskReport({ id: taskId, state: 'done', done: j.done, total: j.total,
+                     detail: `wrote ${j.wrote}, skipped ${j.skipped}, errors ${j.errors}` + (j.provider ? ` · ran on ${j.provider}` : '') });
+      } else {
+        j.state = 'error'; j.error = `tagger exited ${code}`;
+        taskReport({ id: taskId, state: 'failed', detail: j.error });
+      }
       setTimeout(() => captionJobs.delete(jobId), 120000);
     });
     child.on('error', (e) => {
       const j = captionJobs.get(jobId); if (j) { j.state = 'error'; j.error = String(e.message || e); }
+      taskReport({ id: taskId, state: 'failed', detail: String(e.message || e) });
     });
     res.json({ jobId });
   });
@@ -1237,8 +1254,11 @@ export function createImagegenRouter(config) {
     if (!files.length) return res.status(400).json({ error: 'no files' });
     let srcDir, batchDir;
     try { srcDir = safeResolve(rel); batchDir = safeResolve(batchRel); } catch { return res.status(400).json({ error: 'bad path' }); }
-    if (!isTrainingBatchName(path.basename(batchDir))) {
-      return res.status(400).json({ error: 'destination is not a training batch (training_batch…)' });
+    // Sets and batches take the same additive copy — the guard only refuses folders that
+    // are NEITHER, so a stray path can't silently become a fake set/batch via create:true.
+    const destBase = path.basename(batchDir);
+    if (!isTrainingBatchName(destBase) && !isTrainingSetName(destBase)) {
+      return res.status(400).json({ error: 'destination is not a training batch or training set (training_batch…/training_set…)' });
     }
     if (!existsSync(batchDir)) {
       if (!create) return res.status(404).json({ error: 'no such batch' });

@@ -281,6 +281,7 @@ const gyshellApi = {
     onDebug: (cb: (entry: any) => void): CleanupFn => onRaw('notify:debug', cb),
     onHealth: (cb: (health: any[]) => void): CleanupFn => onRaw('notify:health', cb),
     onAcked: (cb: (data: any) => void): CleanupFn => onRaw('notify:acked', cb),
+    onTasks: (cb: (data: any) => void): CleanupFn => onRaw('notify:tasks', cb),
   },
   fleet: {
     // Fleet vertical: feed replay/live-tail, sends, guard config.

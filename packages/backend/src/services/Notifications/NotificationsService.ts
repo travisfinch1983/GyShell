@@ -2,6 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { resolve as dnsResolve } from 'node:dns/promises'
 import path from 'node:path'
 import { AlarmLatch } from '../AlarmLatch'
+import { TaskProgress, type TaskReportInput } from './TaskProgress'
 
 /**
  * NotificationsService — the answer to "far too many things can fail silently
@@ -193,6 +194,10 @@ export class NotificationsService {
     // reporting NaN to the panel. Below 5s the probes overlap their own
     // timeouts. Both are config mistakes the board must survive, not obey.
     this.alarmLatch = new AlarmLatch(path.join(dataDir, 'notifications-alarms.json'))
+    // Constructed HERE, not as a field initializer: class fields run before parameter
+    // properties are assigned, and `broadcast` would be undefined (the AlarmLatch
+    // lesson, same class of crash).
+    this.tasks = new TaskProgress((ch, data) => this.broadcast(ch, data))
     if (!Number.isFinite(intervalMs) || intervalMs < 5_000) {
       const bad = intervalMs
       intervalMs = 30_000
@@ -820,9 +825,15 @@ export class NotificationsService {
     return n
   }
 
-  state(): { health: HealthState[]; events: NotifyEvent[]; debug: Array<{ ts: string; source: string; message: string }>; intervalMs: number; routing: ReturnType<NotificationsService['routingState']> } {
+  /** Task Progress registry (panel section + bell pip). Public: routers and pollers report into it. */
+  readonly tasks: TaskProgress
+  /** In-process reporting hook for routers that predate this service (imagegen.js etc.). */
+  taskReport(t: TaskReportInput): void { this.tasks.report(t) }
+
+  state(): { health: HealthState[]; events: NotifyEvent[]; debug: Array<{ ts: string; source: string; message: string }>; intervalMs: number; routing: ReturnType<NotificationsService['routingState']>; tasks: ReturnType<TaskProgress['state']> } {
     return {
       health: [...this.health.values()],
+      tasks: this.tasks.state(),
       // EVERY unacked event, plus the newest ACKED_VIEW acked ones, in original order.
       // slice(-200) hid outstanding events behind a burst of routine ones, and this is
       // the surface maintenance-claude triages from.

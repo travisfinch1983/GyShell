@@ -23,6 +23,34 @@ export function createNotificationsRouter(svc: NotificationsService): express.Ro
     res.json(svc.state())
   })
 
+  /** Task-progress reporting for anything that can curl — the /emit of progress meters.
+   *  Same estate-wide cheap path: the RAG indexer, a training wrapper, a systemd job. */
+  router.post('/api/notifications/task', json, (req: Req, res: Res) => {
+    const b = (req.body ?? {}) as Record<string, unknown>
+    const id = String(b.id ?? '').trim()
+    if (!id) return res.status(400).json({ ok: false, error: 'id is required (stable per task, e.g. rag:ai-lab)' })
+    const state = b.state === undefined ? undefined : String(b.state)
+    if (state !== undefined && !['running', 'done', 'failed'].includes(state)) {
+      return res.status(400).json({ ok: false, error: "state must be running | done | failed" })
+    }
+    const t = svc.tasks.report({
+      id,
+      source: b.source === undefined ? undefined : String(b.source),
+      label: b.label === undefined ? undefined : String(b.label),
+      state: state as 'running' | 'done' | 'failed' | undefined,
+      done: b.done === undefined ? undefined : Number(b.done),
+      total: b.total === undefined ? undefined : Number(b.total),
+      percent: b.percent === undefined ? undefined : Number(b.percent),
+      detail: b.detail === undefined ? undefined : String(b.detail),
+    })
+    if (!t) return res.status(429).json({ ok: false, error: 'task registry full of RUNNING tasks — a reporter is leaking ids' })
+    res.json({ ok: true, task: t })
+  })
+
+  router.get('/api/notifications/tasks', (_req: Req, res: Res) => {
+    res.json(svc.tasks.state())
+  })
+
   router.get('/api/notifications/routing', (_req: Req, res: Res) => {
     res.json(svc.routingState())
   })

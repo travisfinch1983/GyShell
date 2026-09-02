@@ -57,6 +57,11 @@ export const TopBar: React.FC<{
         {badgeCount === 0 && notificationsStore.hasUnknown && (
           <span className="topbar-notif-badge topbar-notif-unknown" title="Some health checks cannot run">?</span>
         )}
+        {notificationsStore.runningTaskCount > 0 && (
+          <span className="topbar-notif-badge topbar-notif-tasks" title={`${notificationsStore.runningTaskCount} tracked task(s) running`}>
+            {notificationsStore.runningTaskCount}
+          </span>
+        )}
       </button>
       <button
         className={`topbar-services-btn${servicesOpen ? ' active' : ''}`}

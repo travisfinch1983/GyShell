@@ -5,6 +5,7 @@ import {
   notificationsStore as store,
   type HealthState,
   type NotifyEvent,
+  type TaskEntry,
 } from '../../stores/NotificationsStore'
 import styles from './Notifications.module.scss'
 
@@ -15,6 +16,37 @@ function fmtTime(iso: string): string {
   return sameDay
     ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     : `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+}
+
+const TaskRow: React.FC<{ t: TaskEntry }> = ({ t }) => {
+  const pct = t.state === 'done' ? 100 : t.percent
+  // A running task whose reporter has gone quiet is SAID to be quiet — a frozen bar
+  // that still claims "running" is the panel lying by omission.
+  const idleS = t.state === 'running' ? Math.round((Date.now() - new Date(t.updatedAt).getTime()) / 1000) : 0
+  const stale = idleS > 90
+  return (
+    <div className={styles.taskRow}>
+      <div className={styles.taskTop}>
+        <span className={styles.taskLabel} title={t.detail || t.label}>{t.label}</span>
+        <span className={styles.taskCount}>
+          {t.state === 'failed' ? 'Failed'
+            : t.state === 'done' ? 'Complete'
+              : t.total > 0 ? `${t.done}/${t.total} — ${pct}%` : 'running…'}
+        </span>
+      </div>
+      <div className={styles.taskTrack}>
+        <div
+          className={`${styles.taskFill} ${t.state === 'failed' ? styles.taskFillFail : ''} ${pct === null && t.state === 'running' ? styles.taskFillIndet : ''}`}
+          style={pct !== null ? { width: `${pct}%` } : undefined}
+        />
+      </div>
+      {(t.detail || stale) && (
+        <div className={styles.taskDetail}>
+          {t.detail}{stale ? `${t.detail ? ' · ' : ''}⚠ no update for ${idleS >= 120 ? Math.round(idleS / 60) + 'm' : idleS + 's'}` : ''}
+        </div>
+      )}
+    </div>
+  )
 }
 
 const HealthDot: React.FC<{ h: HealthState }> = ({ h }) => (
@@ -146,6 +178,15 @@ export const NotificationsPanel: React.FC<{ onClose: () => void }> = observer(({
               store.health.map((h) => <HealthDot key={h.id} h={h} />)
             )}
           </div>
+        </div>
+
+        <div className={styles.section}>
+          <div className={styles.sectionHead}>Task progress</div>
+          {store.tasks.length === 0 ? (
+            <div className={styles.emptyNote}>No tracked tasks running.</div>
+          ) : (
+            store.tasks.map((t) => <TaskRow key={t.id} t={t} />)
+          )}
         </div>
 
         <div className={styles.section}>

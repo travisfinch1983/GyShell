@@ -14,26 +14,40 @@ const SORT_KEYS: { v: any; label: string }[] = [
   { v: 'added', label: 'Date added' }, { v: 'size', label: 'Size' },
 ]
 
-// ── Add to training batch: pick (or create) the batch the selection is COPIED into ──
-const AddToBatchModal: React.FC<{ files: string[]; onClose: () => void }> = ({ files, onClose }) => {
+// ── Add to training batch/set: pick (or create) the folder the selection is COPIED into ──
+// One modal, two kinds. Batches and sets differ only in what is listed and where a NEW one
+// is created: batches under _batches/, sets inside the folder being curated (the old
+// send-to-training-set convention, kept so has_training_set badges stay meaningful).
+const AddToBatchModal: React.FC<{ kind: 'batch' | 'set'; files: string[]; onClose: () => void }> = ({ kind, files, onClose }) => {
+  const noun = kind === 'batch' ? 'batch' : 'set'
   const [batches, setBatches] = useState<any[] | null>(null)
   const [sel, setSel] = useState('')
   const [newName, setNewName] = useState('')
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
   useEffect(() => {
-    store.listTrainingBatches()
-      .then((d) => setBatches(d.training_batches || []))
-      .catch((e) => { setBatches([]); setMsg('Could not list batches: ' + (e?.message || e)) })
+    (kind === 'batch' ? store.listTrainingBatches() : store.listTrainingSets())
+      .then((d) => setBatches((kind === 'batch' ? d.training_batches : d.training_sets) || []))
+      .catch((e) => { setBatches([]); setMsg(`Could not list ${noun}s: ` + (e?.message || e)) })
   }, [])
   const go = async () => {
     const clean = newName.trim().replace(/[^a-zA-Z0-9_-]/g, '')
     const creating = !sel && !!clean
-    const batch = sel || (creating ? `_batches/training_batch_${clean}` : '')
-    if (!batch) { setMsg('Pick a batch or name a new one.'); return }
+    // A new set is created BESIDE the folder being curated, never nested inside a
+    // set/batch: picking the best few out of an already-curated set into a new sibling
+    // set is the whole workflow (Travis, 2026-09-02).
+    const parts = store.cwd.split('/').filter(Boolean)
+    while (parts.length && /^training_(set|batch)(_|$)/.test(parts[parts.length - 1])) parts.pop()
+    const setBase = parts.join('/')
+    const newRel = kind === 'batch'
+      ? `_batches/training_batch_${clean}`
+      : `${setBase ? setBase + '/' : ''}training_set_${clean}`
+    const batch = sel || (creating ? newRel : '')
+    if (!batch) { setMsg(`Pick a ${noun} or name a new one.`); return }
     setBusy(true); setMsg('Copying…')
     try {
       const r = await store.batchAdd(batch, files, creating)
+      if (kind === 'set') void store.browse(store.cwd)   // a new set under cwd changes badges
       // The tag warning is the load-bearing part: an image without .txt trains UNLABELED.
       setMsg(`Copied ${r.copied}${r.replaced ? `, replaced ${r.replaced}` : ''} → ${r.batch}`
         + `${r.missing_tags?.length ? ` · ⚠ ${r.missing_tags.length} without .txt tags` : ''}`
@@ -45,27 +59,29 @@ const AddToBatchModal: React.FC<{ files: string[]; onClose: () => void }> = ({ f
     <div className={styles.modalBg} onClick={onClose}>
       <div className={styles.pkBox} style={{ width: 'min(560px,94%)' }} onClick={(e) => e.stopPropagation()}>
         <div className={styles.modalHead}>
-          <strong>Add {files.length} image{files.length > 1 ? 's' : ''} to training batch</strong>
+          <strong>Add {files.length} image{files.length > 1 ? 's' : ''} to training {noun}</strong>
           <button className={styles.btn} onClick={onClose}>Cancel</button>
         </div>
         <div className={styles.acHint}>
           Copies the images and their .txt / .caption sidecars — originals stay where they are.
-          Adding from several sets accumulates; nothing already in the batch is removed.
+          Adding accumulates; nothing already in the {noun} is removed.
         </div>
         {batches === null ? <div className={styles.acHint}>Loading batches…</div> : (
           <>
-            {batches.length === 0 && <div className={styles.acHint}>No training batches yet — name one below to create it.</div>}
+            {batches.length === 0 && <div className={styles.acHint}>No training {noun}s yet — name one below to create it.</div>}
             <div className={styles.pkFolders}>
               {batches.map((b) => (
                 <button key={b.path} className={styles.pkFolder}
                         style={sel === b.path ? { outline: '2px solid var(--accent)' } : undefined}
                         onClick={() => { setSel(sel === b.path ? '' : b.path); setNewName('') }}>
-                  📦 {b.name} <span className={styles.dim}>{b.parent || '/'} · {b.count} img</span>
+                  {kind === 'batch' ? '📦' : '🗂'} {b.name} <span className={styles.dim}>{b.parent || '/'} · {b.count} img</span>
                 </button>
               ))}
             </div>
-            <label className={styles.acl}>New batch
-              <input className={styles.input} placeholder="name — creates _batches/training_batch_<name>" value={newName}
+            <label className={styles.acl}>New {noun}
+              <input className={styles.input}
+                     placeholder={kind === 'batch' ? 'name — creates _batches/training_batch_<name>' : 'name — creates training_set_<name> beside this folder'}
+                     value={newName}
                      disabled={busy} onChange={(e) => { setNewName(e.target.value); setSel('') }} />
             </label>
           </>
@@ -74,7 +90,7 @@ const AddToBatchModal: React.FC<{ files: string[]; onClose: () => void }> = ({ f
         <div className={styles.pkFoot}>
           <span className={styles.spacer} />
           <button className={styles.btnPrimary} disabled={busy || (!sel && !newName.trim())} onClick={() => void go()}>
-            {busy ? 'Copying…' : 'Copy into batch'}
+            {busy ? 'Copying…' : `Copy into ${noun}`}
           </button>
         </div>
       </div>
@@ -227,6 +243,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   const [autoCap, setAutoCap] = useState(false)
   const [blanket, setBlanket] = useState(false)
   const [batchAdd, setBatchAdd] = useState(false)
+  const [setAdd, setSetAdd] = useState(false)
   useEffect(() => { void store.browse('') }, [])
   // In a training_set, click = crop/resize editor; elsewhere, click = zoom preview.
   // The crop editor is really the image DETAIL view — it carries the crop box, the .txt tag
@@ -235,13 +252,6 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   // sidecars into any folder. Collages still open in the lightbox.
   const openImage = (im: IgImage) => setCrop({ rel: im.rel, name: im.name })
 
-  const doSend = async () => {
-    const suffix = await promptStore.prompt({ title: 'Send to training set', placeholder: 'optional suffix, e.g. yellow_glossy (blank = training_set)', confirmText: 'Send' })
-    if (suffix === null) return
-    store.msg = `Copying ${store.selected.size}…`
-    try { const r = await store.sendToTrainingSet(suffix); store.msg = `Copied ${r.copied}${r.errors?.length ? ` (${r.errors.length} failed)` : ''}.`; void store.browse(store.cwd) }
-    catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
-  }
   const doDelete = async () => {
     const n = store.selected.size
     if (!(await confirmStore.confirm({ title: 'Delete from training set', message: `Delete ${n} image${n > 1 ? 's' : ''} from this set? Originals are not affected.`, confirmText: 'Delete' }))) return
@@ -302,25 +312,8 @@ export const TrainingImagesPanel: React.FC = observer(() => {
         <button className={styles.btn} onClick={() => void store.browse(store.cwd)}><RefreshCw size={14} className={store.loading ? styles.spin : ''} /></button>
       </div>
 
-      {store.captionJob && (() => {
-        const j = store.captionJob
-        const pct = j.total ? Math.round((j.done / j.total) * 100) : 0
-        return (
-          <div className={styles.capBar}>
-            <span>
-              {j.state === 'running'
-                ? `Auto-captioning (${j.label}): ${j.done}/${j.total || '…'}${j.total ? ` — ${pct}%` : ''}`
-                : j.state === 'done'
-                  ? `Auto-caption done — wrote ${j.wrote}, skipped ${j.skipped}, errors ${j.errors}${j.provider ? ` · ran on ${j.provider}` : ''}`
-                  : j.state === 'lost'
-                    ? `Auto-caption: lost contact — ${j.error}`
-                    : `Auto-caption failed: ${j.error}`}
-            </span>
-            <div className={styles.capTrack}><div className={styles.capFill} style={{ width: `${j.state === 'done' ? 100 : pct}%` }} /></div>
-            <button className={styles.btn} title={j.state === 'running' ? 'Hide — the job keeps running server-side' : 'Dismiss'} onClick={() => store.dismissCaptionJob()}><X size={14} /></button>
-          </div>
-        )
-      })()}
+      {/* Caption progress renders in the notifications panel's Task Progress section
+          (bell, any page) — the store keeps polling so the grid still refreshes on completion. */}
 
       <div className={styles.crumbs}>
         <a onClick={() => void store.browse('')}>training_images</a>
@@ -344,7 +337,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           <span>{store.selected.size} selected</span>
           <button className={styles.btn} onClick={() => store.selectAll()}>Select all ({store.images.length})</button>
           <span className={styles.spacer} />
-          {!store.inTrainingSet && <button className={styles.btnPrimary} onClick={() => void doSend()}>Send to Training Set</button>}
+          <button className={styles.btnPrimary} title="Copy the selection + caption sidecars into an existing training set, or create a new one beside this folder — works from inside a set too, for cherry-picking an already-curated selection" onClick={() => setSetAdd(true)}>Add to Training Set</button>
           <button className={styles.btn} onClick={() => setPicker('move')}>Move…</button>
           <button className={styles.btn} onClick={() => setPicker('copy')}>Copy…</button>
           <button className={styles.btn} title="Copy the selection + caption sidecars into a training batch assembled from many sets" onClick={() => setBatchAdd(true)}>Add to batch…</button>
@@ -391,7 +384,8 @@ export const TrainingImagesPanel: React.FC = observer(() => {
       {crop && <CropEditor rel={crop.rel} name={crop.name} onClose={() => setCrop(null)} onChanged={() => void store.browse(store.cwd)} />}
       {autoCap && <AutoCaptionModal onClose={() => setAutoCap(false)} />}
       {blanket && <BlanketTagModal files={[...store.selected]} onClose={() => setBlanket(false)} onDone={() => void store.browse(store.cwd)} />}
-      {batchAdd && <AddToBatchModal files={[...store.selected]} onClose={() => setBatchAdd(false)} />}
+      {batchAdd && <AddToBatchModal kind="batch" files={[...store.selected]} onClose={() => setBatchAdd(false)} />}
+      {setAdd && <AddToBatchModal kind="set" files={[...store.selected]} onClose={() => setSetAdd(false)} />}
       {picker && <Picker op={picker} files={[...store.selected]} onClose={() => setPicker(null)} onDone={() => void store.browse(store.cwd)} />}
       {merge && <MergeModal onClose={() => setMerge(false)} />}
     </div>

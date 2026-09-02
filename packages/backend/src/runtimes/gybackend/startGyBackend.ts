@@ -140,6 +140,14 @@ export async function startGyBackend(): Promise<void> {
     gatewayService.broadcastRaw(channel, data),
   )
   notificationsService.start()
+  // LoRA training runs (kohya + ai-toolkit, via the shared /imagegen mount) feed the
+  // Task Progress registry. Fire-and-forget: a poller failure must never take the backend.
+  try {
+    const { startLoraRunsWatch } = await import('../../services/Notifications/loraRunsPoller')
+    startLoraRunsWatch(notificationsService.tasks)
+  } catch (e) {
+    console.warn('[lora-tasks] watcher failed to start:', (e as Error)?.message || e)
+  }
 
   const catalogInstallService = new CatalogInstallService({
     publish: (channel, data) => gatewayService.broadcastRaw(channel, data),

@@ -120,6 +120,8 @@
 .topbar-notif-error { background: #e07b39; }
 .topbar-notif-critical { background: var(--danger); color: #fff; animation: notif-badge-pulse 1.2s ease-in-out infinite; }
 .topbar-notif-unknown { background: var(--fg-faint); color: var(--app-bg); }
+/* Blue = activity, deliberately outside the severity ramp: running tasks are not a fault. */
+.topbar-notif-tasks { background: #3584e4; color: #fff; }
 
 @keyframes notif-badge-pulse {
   0%, 100% { opacity: 1; }

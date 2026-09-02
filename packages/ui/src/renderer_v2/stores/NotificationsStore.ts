@@ -31,6 +31,20 @@ export interface DebugEntry {
   message: string
 }
 
+export interface TaskEntry {
+  id: string
+  source: string
+  label: string
+  state: 'running' | 'done' | 'failed'
+  done: number
+  total: number
+  percent: number | null
+  detail?: string
+  startedAt: string
+  updatedAt: string
+  finishedAt?: string
+}
+
 const EVENT_CAP = 300
 const DEBUG_CAP = 500
 const FALLBACK_POLL_MS = 30_000
@@ -59,6 +73,8 @@ class NotificationsStore {
   events: NotifyEvent[] = []
   health: HealthState[] = []
   debug: DebugEntry[] = []
+  /** Task Progress registry — every tracked long-running task in AI-Lab. */
+  tasks: TaskEntry[] = []
   loaded = false
   available = true
   error: string | null = null
@@ -109,6 +125,11 @@ class NotificationsStore {
     return this.health.some((h) => h.status === 'unknown')
   }
 
+  /** Drives the blue pip on the bell. */
+  get runningTaskCount(): number {
+    return this.tasks.filter((t) => t.state === 'running').length
+  }
+
   async ensureLoaded(): Promise<void> {
     if (this.loaded) return
     if (!cluster()) {
@@ -135,6 +156,15 @@ class NotificationsStore {
         })),
         live.onAcked(() => void this.refresh()),
       )
+      // Older shims lack the tasks channel; the panel then shows tasks only on refresh
+      // rather than never — degraded, not broken.
+      if (live.onTasks) {
+        this.cleanups.push(
+          live.onTasks((data: { tasks?: TaskEntry[] }) => runInAction(() => {
+            this.tasks = data?.tasks ?? []
+          })),
+        )
+      }
       // Belt over braces: a very slow poll heals any missed broadcast.
       this.pollTimer = setInterval(() => void this.refresh(), 5 * 60_000)
       // Stream watchdog (the HermesChatStore heartbeat pattern): this store is
@@ -184,6 +214,7 @@ class NotificationsStore {
         this.events = s.events ?? []
         this.health = s.health ?? []
         this.debug = s.debug ?? []
+        this.tasks = s.tasks?.tasks ?? []
         this.routing = s.routing ?? null
         this.error = null
       })

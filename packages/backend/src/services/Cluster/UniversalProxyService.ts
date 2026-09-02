@@ -40,7 +40,7 @@ export class UniversalProxyService {
   private claudeConsole?: import('../ClaudeConsole/ClaudeConsoleService').ClaudeConsoleService
 
   /** NotificationsService — set via start opts; receives ai.js broadcast() events + mounts /api/notifications. */
-  private notifications: { ingestAiEvent: (msg: any) => void; notify?: (e: any) => void } | null = null
+  private notifications: { ingestAiEvent: (msg: any) => void; notify?: (e: any) => void; taskReport?: (t: any) => void } | null = null
   private agentToolsRouter: unknown = null
 
   private detectLanIp(): string {
@@ -300,7 +300,7 @@ export class UniversalProxyService {
     app.use('/api/claude', createClaudeRouter({ exec: this.sshExec }))
     // @ts-expect-error — JS router: LoRA training-image browser/organizer (local-fs + sharp on /ai-assets/imagegen)
     const { createImagegenRouter } = await import('./proxy/llm/routes/imagegen.js')
-    app.use('/api/imagegen', createImagegenRouter({ keyPath: this.keyPath }))
+    app.use('/api/imagegen', createImagegenRouter({ keyPath: this.keyPath, taskReport: (t: any) => this.notifications?.taskReport?.(t) }))
     // @ts-expect-error — JS router: native service discovery (replaces ProxLab-bridged /api/discovery)
     const { createDiscoveryRouter } = await import('./proxy/discovery.js')
     app.use('/api/discovery', createDiscoveryRouter({ dataDir: this.dataDir }))
