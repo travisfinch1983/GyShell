@@ -188,17 +188,41 @@ def call_model(api, model, b64, instruction, max_tokens, timeout, retries):
         ],
     }
     last = None
-    for attempt in range(retries + 1):
+    budget = max_tokens
+    # +2: budget escalations need their own attempts on top of the transient-error retries.
+    for attempt in range(retries + 3):
+        body["max_tokens"] = budget
         try:
             req = urllib.request.Request(
                 api, data=json.dumps(body).encode(),
                 headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 d = json.loads(r.read())
-            return d["choices"][0]["message"]["content"]
+            ch = d["choices"][0]
+            m = ch["message"]
+            content = (m.get("content") or "").strip()
+            reasoning = m.get("reasoning_content") or m.get("reasoning") or ""
+            if content and (ch.get("finish_reason") != "length" or len(content) >= 60):
+                # A length-cut reply with real content is usable — complete_sentences()
+                # trims it back to the last full sentence downstream.
+                return content
+            if reasoning or ch.get("finish_reason") == "length":
+                # Reasoning models burn the budget THINKING and the caption never arrives:
+                # measured on (DS) deepseek-v4-flash-vision-exp — 98 of 100 completion tokens
+                # went to reasoning_content, content='This', finish_reason=length. That is why
+                # a 235-image folder captioned only a handful (2026-09-02). /no_think and
+                # chat_template_kwargs are Qwen dialects other providers ignore; MORE BUDGET
+                # is the fix that works for every model. Escalate and re-ask.
+                budget = min(budget * 4, 4096)
+                last = RuntimeError(
+                    "reasoning consumed the token budget (finish=%s, %d reasoning chars, "
+                    "content=%r) — retried at max_tokens=%d"
+                    % (ch.get("finish_reason"), len(reasoning), content[:40], budget))
+                continue
+            return content   # empty with no reasoning: surface to validate(), not a budget issue
         except Exception as e:  # transient proxy/model hiccups are common; a caption is worth a retry
             last = e
-            if attempt < retries:
+            if attempt < retries + 2:
                 time.sleep(1.5 * (attempt + 1))
     raise last
 

@@ -48,10 +48,17 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[] 
   const [gpus, setGpus] = useState<any[]>([])
   const [gpuIndex, setGpuIndex] = useState<string>('')
   const [thr, setThr] = useState('0.35'); const [cthr, setCthr] = useState('0.85')
-  const [spaces, setSpaces] = useState(false); const [trigger, setTrigger] = useState(''); const [overwrite, setOverwrite] = useState(false)
+  const [spaces, setSpaces] = useState(false); const [overwrite, setOverwrite] = useState(false)
+  // Trigger + context persist PER FOLDER so a set's phrasing survives reopening the
+  // dialog and page reloads. Trigger deliberately has no cross-folder fallback — a
+  // stale trigger from another set, silently prepended, would poison this set's
+  // captions. Context (style guidance) falls back to the last one used anywhere.
+  const [trigger, setTriggerRaw] = useState(() => { try { return localStorage.getItem('aig-cap-trigger:' + store.cwd) || '' } catch { return '' } })
+  const setTrigger = (v: string) => { setTriggerRaw(v); try { localStorage.setItem('aig-cap-trigger:' + store.cwd, v) } catch {} }
   // vlm only: what this SET is. Goes into the instruction so the model knows
   // what it is looking at; the trigger phrase stays OUT of the prose.
-  const [context, setContext] = useState('')
+  const [context, setContextRaw] = useState(() => { try { return localStorage.getItem('aig-cap-context:' + store.cwd) ?? localStorage.getItem('aig-cap-context:*') ?? '' } catch { return '' } })
+  const setContext = (v: string) => { setContextRaw(v); try { localStorage.setItem('aig-cap-context:' + store.cwd, v); localStorage.setItem('aig-cap-context:*', v) } catch {} }
   const [status, setStatus] = useState(''); const [running, setRunning] = useState(false)
   // Custom NL engine: which proxy model does the captioning. The list is fetched lazily
   // (only when the vlm engine is chosen); on failure the picker degrades to a free-text
@@ -138,7 +145,7 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[] 
   }
 
   return (
-    <div className={styles.modalBg} onClick={onClose}>
+    <div className={styles.modalBg}>{/* deliberately NOT click-to-close: a stray backdrop click was eating typed input */}
       <div className={styles.pkBox} style={{ width: 'min(560px,94%)' }} onClick={(e) => e.stopPropagation()}>
         <div className={styles.modalHead}>
           <strong>Auto-caption — {files?.length ? `${files.length} selected image${files.length > 1 ? 's' : ''}` : (store.cwd.split('/').pop() || 'training_images')}</strong>

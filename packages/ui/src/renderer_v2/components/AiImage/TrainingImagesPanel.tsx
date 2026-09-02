@@ -56,7 +56,7 @@ const AddToBatchModal: React.FC<{ kind: 'batch' | 'set'; files: string[]; onClos
     } catch (e: any) { setBusy(false); setMsg('Failed: ' + (e?.message || e)) }
   }
   return (
-    <div className={styles.modalBg} onClick={onClose}>
+    <div className={styles.modalBg}>{/* deliberately NOT click-to-close: a stray backdrop click was eating typed input */}
       <div className={styles.pkBox} style={{ width: 'min(560px,94%)' }} onClick={(e) => e.stopPropagation()}>
         <div className={styles.modalHead}>
           <strong>Add {files.length} image{files.length > 1 ? 's' : ''} to training {noun}</strong>
@@ -144,7 +144,7 @@ const Picker: React.FC<{ op: 'move' | 'copy'; files: string[]; onClose: () => vo
     catch (e: any) { setMsg('Failed: ' + (e?.message || e)) }
   }
   return (
-    <div className={styles.modalBg} onClick={onClose}>
+    <div className={styles.modalBg}>{/* deliberately NOT click-to-close: a stray backdrop click was eating typed input */}
       <div className={styles.pkBox} onClick={(e) => e.stopPropagation()}>
         <div className={styles.modalHead}><strong>{verb} {files.length} image{files.length > 1 ? 's' : ''} to…</strong><button className={styles.btn} onClick={onClose}>Cancel</button></div>
         <div className={styles.crumbs}>
@@ -184,7 +184,7 @@ const MergeModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     catch (e: any) { setMsg('Failed: ' + (e?.message || e)) }
   }
   return (
-    <div className={styles.modalBg} onClick={onClose}>
+    <div className={styles.modalBg}>{/* deliberately NOT click-to-close: a stray backdrop click was eating typed input */}
       <div className={styles.pkBox} onClick={(e) => e.stopPropagation()}>
         <div className={styles.modalHead}><strong>Merge training sets</strong><button className={styles.btn} onClick={onClose}>Close</button></div>
         <div className={styles.dim}>Images are copied into a new independent set under <code>_merged/</code> — editing there won't touch the originals.</div>

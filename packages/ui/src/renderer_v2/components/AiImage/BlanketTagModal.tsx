@@ -41,7 +41,7 @@ export const BlanketTagModal: React.FC<{ files: string[]; onClose: () => void; o
     }
 
     return (
-      <div className={styles.modalBg} onClick={onClose}>
+      <div className={styles.modalBg}>{/* deliberately NOT click-to-close: a stray backdrop click was eating typed input */}
         <div className={styles.pkBox} style={{ width: 'min(520px,94%)' }} onClick={(e) => e.stopPropagation()}>
           <div className={styles.modalHead}>
             <strong>Blanket tags</strong>
