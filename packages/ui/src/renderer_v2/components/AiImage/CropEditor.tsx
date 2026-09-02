@@ -146,6 +146,18 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
   // edits typed on this image. The parent remounts the editor (key=rel) so every
   // image opens with clean state.
   const goNav = (dir: 1 | -1) => { void saveAll().finally(() => onNav?.(dir)) }
+  const deleteThis = async () => {
+    if (!(await confirmStore.confirm({ title: 'Delete image', message: `Delete ${name} from this training set? Its caption sidecars go with it; originals outside the set are not affected. Cannot be undone.`, confirmText: 'Delete' }))) return
+    setBusy(true); setMsg('Deleting…')
+    try {
+      await store.deleteFiles([name])
+      onChanged()
+      // Keep paging: next image, else previous, else nothing left — close.
+      if (navPos && onNav && navPos.i < navPos.n - 1) onNav(1)
+      else if (navPos && onNav && navPos.i > 0) onNav(-1)
+      else onClose()
+    } catch (e: any) { setBusy(false); setMsg('Delete failed: ' + (e?.message || e)) }
+  }
   const cropAndContinue = async () => {
     // A failed crop STAYS on the image with its error message — auto-advancing past
     // a failure would turn one bad crop into a silently skipped image.
@@ -170,6 +182,7 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
           <button className={styles.btn} disabled={busy} onClick={() => void upscale()} title="Re-upscale via SeedVR2">⤴ Upscale</button>
           <button className={styles.btn} disabled={busy} onClick={() => void swap()} title="Toggle upscaled ↔ pre-upscale">⇄ Swap</button>
           <button className={styles.btn} disabled={busy} onClick={() => void reset()}>Reset</button>
+          {store.inTrainingSet && <button className={styles.btnDanger} disabled={busy} title="Delete this image + its sidecars from the set (originals untouched)" onClick={() => void deleteThis()}>🗑 Delete</button>}
           <button className={styles.btnPrimary} disabled={busy} onClick={() => void apply()}>Apply crop</button>
           <button className={styles.btn} onClick={closeSave}>Close</button>
         </div>

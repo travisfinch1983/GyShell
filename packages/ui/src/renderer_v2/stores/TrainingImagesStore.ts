@@ -141,8 +141,12 @@ export class TrainingImagesStore {
     const files = [...this.selected]
     return ig('/send-to-training-set', { method: 'POST', body: { path: this.cwd, files, suffix } })
   }
+  async deleteFiles(files: string[]): Promise<any> {
+    return ig('/delete', { method: 'POST', body: { path: this.cwd, files } })
+  }
+
   async deleteSelected(): Promise<any> {
-    return ig('/delete', { method: 'POST', body: { path: this.cwd, files: [...this.selected] } })
+    return this.deleteFiles([...this.selected])
   }
   async transfer(op: 'move' | 'copy', dest: string, files: string[]): Promise<any> {
     return ig('/transfer', { method: 'POST', body: { op, src: this.cwd, dest, files } })

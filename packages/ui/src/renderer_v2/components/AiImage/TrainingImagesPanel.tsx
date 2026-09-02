@@ -223,7 +223,13 @@ const Tile: React.FC<{ im: IgImage; i: number; onOpen: () => void }> = observer(
         if (store.selectionMode) { if (e.shiftKey && store.lastIndex != null) store.selectRange(store.lastIndex, i); else { store.toggleOne(i); store.lastIndex = i } }
         else onOpen()
       }}>
-      <span className={styles.pick} onClick={(e) => { e.stopPropagation(); if (!store.selectionMode) store.enterSelection(); store.toggleOne(i); store.lastIndex = i }} />
+      {/* mousedown/mouseup must not reach the tile: mouseup precedes click, and the
+          tile's mouseup opens the editor — which made circle-clicks look broken (they
+          entered selection mode AND opened the image on top of it). */}
+      <span className={styles.pick}
+        onMouseDown={(e) => e.stopPropagation()}
+        onMouseUp={(e) => e.stopPropagation()}
+        onClick={(e) => { e.stopPropagation(); if (!store.selectionMode) store.enterSelection(); store.toggleOne(i); store.lastIndex = i }} />
       {im.cropped && <span className={`${styles.bdg} ${styles.bdgCrop}`} title="Cropped">✓</span>}
       {im.has_alt && <span className={styles.bdg} title="Upscaled — swap available in editor">⤴</span>}
       {im.has_caption && <span className={styles.bdg} title="Has tags (.txt)">✎</span>}
