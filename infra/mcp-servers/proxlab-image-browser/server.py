@@ -109,7 +109,13 @@ def list_image_folders(path: str = "") -> str:
     folders = [{"name": f["name"], "path": (base + "/" + f["name"]).strip("/"),
                 "images": f.get("n_images", 0), "subfolders": f.get("n_subfolders", 0),
                 "is_training_set": f.get("is_training_set", False),
-                "has_training_set": f.get("has_training_set", False)} for f in d.get("folders", [])]
+                "has_training_set": f.get("has_training_set", False),
+                # batch subsections: kohya <repeats>_<concept> dirs — the repeats prefix IS
+                # the per-epoch weight; change it with set_subsection_repeats.
+                **({"is_training_batch": True} if f.get("is_training_batch") else {}),
+                **({"is_batch_subsection": True, "repeats": f.get("repeats"),
+                    "concept": f.get("concept")} if f.get("is_batch_subsection") else {})}
+               for f in d.get("folders", [])]
     return _j({"path": base, "folder_count": len(folders),
                "images_here": len(d.get("images", [])), "folders": folders})
 
@@ -135,17 +141,32 @@ def list_images(path: str) -> str:
     """
     d = _ig_get("/api/imagegen/browse", path=_scope(path))
     base = (d.get("path") or path).strip("/")
+    # _batches lives at the imagegen ROOT, not under training_images — composing its
+    # agent_path with the training_images prefix produced paths that do not exist.
+    agent_base = f"/imagegen/{base}" if base.startswith("_batches") else f"{_AGENT_TI}/{base}"
     out = []
     for im in d.get("images", []):
         nm = im["name"]
         out.append({"name": nm, "path": f"{base}/{nm}".replace("//", "/"),
-                    "agent_path": f"{_AGENT_TI}/{base}/{nm}".replace("//", "/"),
+                    "agent_path": f"{agent_base}/{nm}".replace("//", "/"),
                     "type": nm.rsplit(".", 1)[-1].lower() if "." in nm else "",
                     "w": im.get("w"), "h": im.get("h"), "size": im.get("size"),
                     "cropped": im.get("cropped", False),
                     "score": im.get("score"), "comment": im.get("comment")})
-    return _j({"path": base, "count": len(out), "is_training_set": d.get("is_training_set", False),
-               "has_collage": d.get("has_collage", False), "images": out})
+    result = {"path": base, "count": len(out), "is_training_set": d.get("is_training_set", False),
+              "has_collage": d.get("has_collage", False), "images": out}
+    # A training batch with subsections is NOT a flat folder: say so, list them, and point
+    # at the per-subsection workflow — a flat listing here silently hides the real dataset.
+    subs = [f for f in d.get("folders", []) if f.get("is_batch_subsection")]
+    if subs:
+        result["subsections"] = [{"folder": f["name"], "concept": f.get("concept"),
+                                  "repeats": f.get("repeats"), "images": f.get("n_images", 0),
+                                  "path": (base + "/" + f["name"]).strip("/")} for f in subs]
+        result["note"] = ("this batch has SUBSECTIONS — the images above are only the loose "
+                         "root files (kohya IGNORES those). Call list_images on each "
+                         "subsection path for its contents, generate_collage on it for a "
+                         "review sheet, and set_subsection_repeats to change its weight.")
+    return _j(result)
 
 
 @mcp.tool()
