@@ -391,6 +391,26 @@ export class NotificationsService {
         // Seed-once means a dependency added to DEFAULT_CHECKS later is never
         // probed on an existing install — the board looks complete and simply
         // lacks a dot for the new thing, which nobody notices by looking.
+        // 🛑 BACK-FILL `dependsOn` FROM THE DEFAULTS. Seed-once is correct for ports and
+        // targets — an operator tunes those. It is wrong for a field describing a STRUCTURAL
+        // relationship between two checks: the operator did not decide to omit it, it did not
+        // exist when their file was seeded. Without this the dependency suppression below is
+        // dead code on every existing install, which is exactly what happened — on
+        // 2026-09-02 one dead proxy port raised CRITICAL + ERROR + WARNING in a single pass,
+        // for embeddings and reranker that only fail BECAUSE they route through that proxy.
+        // Only fills where absent, so an explicit operator value always wins.
+        const defDep = new Map(DEFAULT_CHECKS.filter((c) => c.dependsOn).map((c) => [c.id, c.dependsOn]))
+        const filled: string[] = []
+        for (const c of this.checks) {
+          if (!c.dependsOn && defDep.has(c.id)) {
+            c.dependsOn = defDep.get(c.id)
+            filled.push(`${c.id}->${c.dependsOn}`)
+          }
+        }
+        if (filled.length) {
+          console.log(`[notifications] back-filled dependsOn from defaults: ${filled.join(', ')}`)
+        }
+
         const present = new Set(this.checks.map((c) => c.id))
         const missing = DEFAULT_CHECKS.filter((c) => !present.has(c.id)).map((c) => c.id)
         if (missing.length) {

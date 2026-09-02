@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Restart (or rebuild+restart) the AI-Lab backend without paging maintenance-claude.
+
+WHY: every restart raised CRITICAL/ERROR/WARNING at the maintenance agent for a service that was
+simply not listening YET. Travis had to catch him mid-triage and tell him to ignore it. An alert
+channel that cries wolf on every deploy is one you learn to ignore, which is the whole failure
+this estate keeps trying to avoid.
+
+WHAT IT DOES
+  1. Arms a DEAD-MAN RESUME first (systemd timer) — before anything is suspended.
+  2. Suspends forwarding to the maintenance agent, with a reason naming this script.
+  3. Restarts ai-lab.service out-of-process (systemd-run), so killing our own parent shell or
+     the backend we are talking to cannot orphan the restart.
+  4. Waits for the proxy port to answer AND the health board to report the proxy ok.
+  5. Resumes forwarding and cancels the dead-man.
+
+🛑 THE SUSPEND MUST NEVER OUTLIVE THE RESTART. A silent notification channel looks exactly like
+a quiet one. So: the dead-man timer is armed BEFORE the suspend and only cancelled after a
+successful resume; every exit path resumes; and if the backend never comes back, routing is
+resumed anyway so the REAL alarms get through. A failed restart is precisely when you want the
+pager working.
+
+Events raised while suspended are recorded, not dropped — the resume announces what was missed.
+"""
+import argparse
+import json
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+BASE = "http://127.0.0.1:17890"
+UNIT = "ai-lab.service"
+DEADMAN_UNIT = "ailab-restart-deadman"
+
+
+def api(path, body=None, timeout=15):
+    req = urllib.request.Request(
+        BASE + path,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Content-Type": "application/json"},
+        method="POST" if body is not None else "GET",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read() or b"{}")
+
+
+def set_routing(suspended, reason):
+    try:
+        api("/api/notifications/routing", {"suspended": suspended, "reason": reason})
+        return True
+    except Exception as e:
+        print("  ! could not %s routing: %s" % ("suspend" if suspended else "RESUME", e))
+        return False
+
+
+def run(cmd, **kw):
+    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+
+def arm_deadman(minutes):
+    """A timer that resumes routing even if this script dies between suspend and resume."""
+    run(["systemctl", "stop", DEADMAN_UNIT + ".timer"])
+    run(["systemctl", "reset-failed", DEADMAN_UNIT + ".service"])
+    curl = (
+        "curl -s -X POST -H 'Content-Type: application/json' "
+        "-d '{\"suspended\": false, \"reason\": \"dead-man: ailab-restart did not resume in time\"}' "
+        + BASE + "/api/notifications/routing"
+    )
+    r = run(["systemd-run", "--unit=" + DEADMAN_UNIT, "--on-active=%dmin" % minutes,
+             "--timer-property=AccuracySec=5s", "/bin/sh", "-c", curl])
+    if r.returncode != 0:
+        print("  ! dead-man timer FAILED to arm: %s" % (r.stderr or "").strip()[:160])
+        print("  ! refusing to suspend routing without it — an un-cancelled suspend is a silent pager")
+        return False
+    print("  dead-man resume armed (+%dmin)" % minutes)
+    return True
+
+
+def cancel_deadman():
+    run(["systemctl", "stop", DEADMAN_UNIT + ".timer"])
+    run(["systemctl", "reset-failed", DEADMAN_UNIT + ".service"])
+
+
+def wait_healthy(deadline_s):
+    """Port answering AND the board's own proxy check reporting ok."""
+    start = time.time()
+    port_ok = False
+    while time.time() - start < deadline_s:
+        time.sleep(3)
+        if not port_ok:
+            try:
+                urllib.request.urlopen(BASE + "/api/notifications/state", timeout=8).read(1)
+                port_ok = True
+                print("  port answering after %ds" % int(time.time() - start))
+            except Exception:
+                continue
+        try:
+            st = json.loads(urllib.request.urlopen(BASE + "/api/notifications/state", timeout=10).read())
+        except Exception:
+            continue
+        checks = {h.get("id"): h.get("status") for h in st.get("health", [])}
+        proxy = checks.get("ailab-proxy")
+        if proxy == "ok":
+            print("  health board reports the proxy ok after %ds" % int(time.time() - start))
+            return True
+        # 'unknown' means the probe could not run yet — that is not a failure, keep waiting.
+    return False
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--reason", default="", help="why (shown in the resume announcement)")
+    ap.add_argument("--build", action="store_true", help="npm run build:web before restarting")
+    ap.add_argument("--wait", type=int, default=180, help="seconds to wait for health (default 180)")
+    ap.add_argument("--deadman", type=int, default=10, help="dead-man resume, minutes (default 10)")
+    a = ap.parse_args()
+    why = a.reason.strip() or "backend restart"
+
+    if a.build:
+        print("  building web bundle...")
+        r = run(["npm", "run", "build:web"], cwd="/opt/ai-lab", timeout=900)
+        if r.returncode != 0:
+            print("  BUILD FAILED — not restarting. Nothing was suspended.")
+            print((r.stdout or "")[-800:])
+            return 2
+        print("  build ok")
+
+    if not arm_deadman(a.deadman):
+        return 3
+
+    suspended = set_routing(True, "ailab-restart: %s" % why)
+    if not suspended:
+        # Could not suspend: proceed anyway (the restart is still wanted) but say so, and let
+        # the alerts through rather than pretending they are handled.
+        print("  ! proceeding WITHOUT suspension — expect restart alerts to reach the maintainer")
+    else:
+        print("  routing suspended")
+
+    print("  restarting %s (out-of-process)..." % UNIT)
+    r = run(["systemd-run", "--on-active=1", "--timer-property=AccuracySec=100ms",
+             "systemctl", "restart", UNIT])
+    if r.returncode != 0:
+        print("  ! could not schedule the restart: %s" % (r.stderr or "").strip()[:200])
+        set_routing(False, "ailab-restart aborted — restart could not be scheduled")
+        cancel_deadman()
+        return 4
+
+    ok = wait_healthy(a.wait)
+    if ok:
+        set_routing(False, "ailab-restart complete: %s" % why)
+        cancel_deadman()
+        print("  routing resumed, dead-man cancelled — done")
+        return 0
+
+    # Never came back in time. RESUME ANYWAY: a failed restart is exactly when the pager must work.
+    print("  ! backend did not report healthy within %ds — resuming routing so real alarms get through" % a.wait)
+    set_routing(False, "ailab-restart: backend did NOT come back healthy within %ds — alerts re-enabled deliberately" % a.wait)
+    cancel_deadman()
+    return 5
+
+
+if __name__ == "__main__":
+    sys.exit(main())
