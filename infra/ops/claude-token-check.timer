@@ -1,0 +1,18 @@
+[Unit]
+Description=Claude Code login expiry check (hourly; also feeds fleetd's actionability signal)
+
+[Timer]
+# WAS daily at 10:00. Hourly since 2026-09-02, because this check is no longer only a
+# human-facing warning: it is the ONLY source of fleetd's auth_state, which tells a sender at
+# handoff time that a recipient cannot act on work. At daily cadence that answer could be 24h
+# stale in BOTH directions — a login that expired at 10:05 would not be flagged until the next
+# morning, and one Travis had just repaired would keep warning all day. An hour bounds both.
+# The check itself is cheap: local credential reads plus one small POST per instance.
+OnCalendar=hourly
+# Fire on boot too: a box that was off past an expiry should say so as soon as it is back.
+OnBootSec=10min
+Persistent=true
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target

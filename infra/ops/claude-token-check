@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Warn BEFORE a Claude Code login dies, instead of discovering it mid-task.
+
+Claude Code refreshes its ~8h access token automatically using a refresh token. The
+refresh token itself has a hard finite life (~4 weeks) that auto-refresh does NOT extend
+-- when it lapses, only an interactive `/login` restores the instance. Nothing watched
+for that, and nothing logged it when it happened: on 2026-08-31 claude1 dropped
+mid-session with no trace, and four other fleet instances were found running with
+credentials that had been dead for up to 22 days. systemd reported every one of them
+`active`, because the process was up; only the auth was gone.
+
+Emits to the AI-Lab notification panel at INFO severity, deliberately:
+  expired            -> info     (that instance cannot authenticate at all)
+  under WARN_DAYS    -> info     (re-login on your own schedule, not mid-task)
+  unreadable/absent  -> info, stated as UNKNOWN -- cannot-check is never reported as
+                       healthy, and never as failed either
+
+🛑 WHY INFO AND NOT ERROR. Severity here decides ROUTING, not importance: NotificationsService
+routes anything above info to the maintenance agent, and the maintenance agent cannot fix a
+login. Only an interactive `/login` at that instance's terminal can. Travis's instruction
+(2026-09-01): expired logins are informational in the console and are not forwarded. These
+events still record, badge and persist in the panel -- the surface Travis actually reads -- they
+just do not wake an agent that would be powerless on arrival.
+
+⚠ WHAT THIS MUST NOT HIDE: an instance that cannot authenticate also cannot act on a handed-off
+work order, and that IS actionable by another agent. That signal belongs in the fleet WAKE path
+(fleet-channel 05e316a), not here -- an expired login should never present as a wake failure, and
+silencing it here without that path existing would trade noise for a blind spot.
+
+Never prints or transmits a token value; only expiry timestamps and lengths.
+"""
+import datetime
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+NOTIFY = os.environ.get("AILAB_NOTIFY_URL", "http://10.0.0.219:17890/api/notifications/emit")
+WARN_DAYS = float(os.environ.get("CLAUDE_TOKEN_WARN_DAYS", "7"))
+HOMES = ["/root"] + sorted(
+    os.path.join("/home", d) for d in os.listdir("/home") if os.path.isdir(os.path.join("/home", d))
+)
+
+
+def discover():
+    """-> [(name, config_dir)] for every Claude Code instance on this box.
+
+    🛑 Enumerating by HOME misses any instance that sets CLAUDE_CONFIG_DIR. /root hosts BOTH
+    claude1 (/root/.claude) and fable-builder (/root/.claude-fable); the old version checked
+    only the first and silently reported the fleet as complete.
+
+    Names come from the RUNNING process's FLEET_AGENT_ID where available -- that is the same
+    identity fleetd uses, so the panel and the fleet directory cannot disagree. A stopped
+    instance falls back to the directory suffix, which is a guess and is only used when nothing
+    authoritative exists.
+    """
+    live = {}
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open("/proc/%s/environ" % pid, "rb") as fh:
+                raw = fh.read().decode("utf-8", "replace")
+        except Exception:
+            continue
+        kv = dict(p.split("=", 1) for p in raw.split("\0") if "=" in p)
+        cfg, agent = kv.get("CLAUDE_CONFIG_DIR"), kv.get("FLEET_AGENT_ID")
+        if cfg and agent:
+            try:
+                live[os.path.realpath(cfg)] = agent
+            except Exception:
+                pass
+
+    out, seen = [], set()
+    for home in HOMES:
+        try:
+            names = sorted(os.listdir(home))
+        except Exception:
+            continue
+        for entry in names:
+            if not entry.startswith(".claude"):
+                continue
+            cfg = os.path.join(home, entry)
+            if not os.path.isdir(cfg):
+                continue
+            if not os.path.exists(os.path.join(cfg, ".credentials.json")):
+                continue
+            real = os.path.realpath(cfg)
+            if real in seen:
+                continue
+            seen.add(real)
+            if entry == ".claude":
+                # The default dir for this home is always a real instance.
+                out.append((live.get(real, "claude1" if home == "/root" else os.path.basename(home)), cfg))
+                continue
+
+            # A non-default dir needs CORROBORATION that it is an instance and not a leftover.
+            # /root/.claude-broken-1783121398 is a repair backup holding real credentials; counting
+            # it reported a phantom instance as "never logged in". A directory is not an instance.
+            fallback = entry[len(".claude-"):] or os.path.basename(home)
+            claimed = live.get(real)
+            has_unit = False
+            if not claimed:
+                for unit in (f"{fallback}-session.service", f"{fallback}.service"):
+                    try:
+                        r = subprocess.run(["systemctl", "list-unit-files", unit],
+                                           capture_output=True, text=True, timeout=10)
+                        if unit in r.stdout:
+                            has_unit = True
+                            break
+                    except Exception:
+                        pass
+            if claimed or has_unit:
+                out.append((claimed or fallback, cfg))
+            else:
+                # Skipped, never silently: an unexplained credential store is worth seeing.
+                print(f"  (skipped {cfg} — no running process and no systemd unit claims it)",
+                      file=sys.stderr)
+    return out
+
+
+def session_state(name):
+    # Unit naming is not uniform: most instances are "<name>-session.service" but
+    # fable-builder is plain "fable-builder.service". Trying only the first reported a
+    # perfectly healthy instance as unknown.
+    for unit in (f"{name}-session.service", f"{name}.service"):
+        try:
+            out = subprocess.run(
+                ["systemctl", "is-active", unit],
+                capture_output=True, text=True, timeout=10,
+            )
+            state = out.stdout.strip()
+        except Exception:
+            return "unknown"
+        if state and state != "inactive":
+            return state
+        if state == "inactive":
+            last = state
+    return locals().get("last", "unknown")
+
+
+def inspect(config_dir):
+    """-> (status, days_left_or_None, detail). status in ok|warn|expired|unknown."""
+    path = os.path.join(config_dir, ".credentials.json")
+    if not os.path.exists(path):
+        return None  # not a Claude Code home at all; silently skip
+    try:
+        oauth = (json.load(open(path)) or {}).get("claudeAiOauth") or {}
+    except Exception as e:
+        return ("unknown", None, f"credentials file unreadable ({e.__class__.__name__})")
+    exp = oauth.get("refreshTokenExpiresAt")
+    if not exp:
+        return ("unknown", None, "no refreshTokenExpiresAt recorded — this instance was never "
+                                "logged in, or was logged out")
+    try:
+        when = datetime.datetime.fromtimestamp(int(exp) / 1000)
+    except Exception:
+        return ("unknown", None, f"refreshTokenExpiresAt is not a timestamp: {exp!r}")
+    days = (when - datetime.datetime.now()).total_seconds() / 86400.0
+    stamp = when.strftime("%Y-%m-%d %H:%M")
+    if days <= 0:
+        return ("expired", days, f"refresh token expired {abs(days):.1f} days ago (on {stamp})")
+    if days < WARN_DAYS:
+        return ("warn", days, f"refresh token expires in {days:.1f} days (on {stamp})")
+    return ("ok", days, f"refresh token valid for {days:.1f} more days (until {stamp})")
+
+
+FLEETD = os.environ.get("FLEETD_URL", "http://10.0.0.219:17900")
+
+
+def report_auth(agent_id, state, detail):
+    """Tell fleetd whether this instance can act on work at all.
+
+    fleetd cannot see credential files (they are here on CT181; it runs on CT152), so this is
+    the only place the answer exists. It uses it to warn a SENDER at handoff time rather than
+    letting them wait out a wake timeout for a message that was never going to be answered.
+
+    🛑 Never fatal and never silent: a fleetd outage must not stop the login check doing its own
+    job, but a lost report still prints, because a report that vanishes quietly is how you end
+    up trusting a stale 'ok'.
+    """
+    try:
+        req = urllib.request.Request(
+            FLEETD + "/auth-state",
+            data=json.dumps({"agent_id": agent_id, "state": state,
+                             "detail": (detail or "")[:300]}).encode(),
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=8).read()
+        return True
+    except Exception as e:
+        print(f"  auth-state report FAILED for {agent_id} ({e.__class__.__name__}: {e})",
+              file=sys.stderr)
+        return False
+
+
+def emit(severity, message, detail):
+    body = json.dumps({
+        "severity": severity, "source": "claude-fleet-auth",
+        "message": message, "detail": detail,
+    }).encode()
+    req = urllib.request.Request(NOTIFY, data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status == 200
+    except Exception as e:
+        # A monitor that cannot report is itself a failure worth seeing on stderr, where
+        # the systemd journal keeps it.
+        print(f"  NOTIFY FAILED ({e}) — {severity}: {message}", file=sys.stderr)
+        return False
+
+
+def main():
+    rows = []
+    for name, config_dir in discover():
+        res = inspect(config_dir)
+        if res is None:
+            continue
+        status, days, detail = res
+        rows.append((name, status, days, detail, session_state(name)))
+
+    for name, status, days, detail, sess in rows:
+        print(f"  {name:<24} session={sess:<10} {status:<8} {detail}")
+        # The instance NAME here is the same identity fleetd uses for Claude Code agents
+        # (discover() prefers the running process's FLEET_AGENT_ID for exactly this reason),
+        # so no mapping is needed and none can drift.
+        report_auth(name, status, detail)
+
+    dead = [r for r in rows if r[1] == "expired"]
+    soon = [r for r in rows if r[1] == "warn"]
+    unk = [r for r in rows if r[1] == "unknown"]
+
+    if dead:
+        # info, not error: routing-only decision -- see the module docstring.
+        emit("info",
+             f"{len(dead)} Claude instance(s) cannot authenticate — login expired",
+             "; ".join(f"{n} ({d}; session {s})" for n, _, _, d, s in dead)
+             + ". systemd reports these sessions active because the PROCESS is up — only the "
+               "login is gone. Fix is an interactive /login in that instance's terminal; "
+               "auto-refresh cannot recover an expired refresh token.")
+    if soon:
+        emit("info",
+             f"{len(soon)} Claude login(s) expire within {WARN_DAYS:.0f} days",
+             "; ".join(f"{n} ({d})" for n, _, _, d, _ in soon)
+             + ". Re-login at a convenient moment rather than being dropped mid-task.")
+    if unk:
+        emit("info",
+             f"{len(unk)} Claude instance(s): login state UNKNOWN",
+             "; ".join(f"{n} ({d})" for n, _, _, d, _ in unk)
+             + ". Reported as unknown, not as healthy and not as failed.")
+
+    if not (dead or soon or unk):
+        print(f"  all {len(rows)} instance(s) hold a login valid for more than {WARN_DAYS:.0f} days")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
