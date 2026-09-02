@@ -14,6 +14,8 @@ import os
 import shlex
 import subprocess
 import shutil
+import struct as _struct
+import hashlib as _hashlib
 import json as _json
 import time as _time
 
@@ -1335,6 +1337,95 @@ _LORA_SUB_TYPES = {
 }
 
 
+def _st_header(path):
+    """Read a safetensors header without loading tensors. Returns (header, data_start)."""
+    with open(path, "rb") as f:
+        n = _struct.unpack("<Q", f.read(8))[0]
+        return _json.loads(f.read(n)), 8 + n
+
+
+def _st_data_digest(path, data_start):
+    """sha256 of the tensor region only — proves a header rewrite did not touch the weights."""
+    h = _hashlib.sha256()
+    with open(path, "rb") as f:
+        f.seek(data_start)
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _derive_trigger(path):
+    """Recover the trigger a weight actually learned, from its own metadata.
+
+    ss_tag_frequency's KEY is the kohya concept DIRECTORY name (<repeats>_<whatever string the
+    launcher was handed>) and is NOT the trigger — that is exactly what misled a reviewer once.
+    The evidence is the highest-count TAG that appears on essentially every image.
+    """
+    try:
+        hdr, _ = _st_header(path)
+    except Exception:
+        return None, "unreadable header"
+    md = hdr.get("__metadata__") or {}
+    m = re.search(r"trigger:\s*(\S+)", str(md.get("ss_training_comment", "")))
+    if m:
+        return m.group(1), "ss_training_comment"
+    if md.get("ss_trigger"):
+        return str(md["ss_trigger"]), "ss_trigger"
+    tf = md.get("ss_tag_frequency")
+    if tf:
+        try:
+            counts = {}
+            for _concept, tags in _json.loads(tf).items():
+                for t, c in tags.items():
+                    counts[t] = counts.get(t, 0) + c
+            if counts:
+                top, n = max(counts.items(), key=lambda kv: kv[1])
+                if n >= 0.9 * max(counts.values()):
+                    return top, "ss_tag_frequency (top tag, %d occurrences)" % n
+        except Exception:
+            pass
+    return None, "no trigger recorded in this weight"
+
+
+def _stamp_trigger(path, trigger):
+    """Record the trigger in the weight's own metadata. Never edits in place.
+
+    Writes a new file, verifies the tensor region is byte-identical by digest and that the tensor
+    set is unchanged, and only then atomically replaces. A failure here must never cost the weight.
+    """
+    hdr, data_start = _st_header(path)
+    before_keys = sorted(k for k in hdr if k != "__metadata__")
+    before_digest = _st_data_digest(path, data_start)
+
+    md = dict(hdr.get("__metadata__") or {})
+    md["ss_training_comment"] = "trigger: %s" % trigger
+    md["ss_trigger"] = trigger
+    new_hdr = {k: v for k, v in hdr.items() if k != "__metadata__"}
+    new_hdr["__metadata__"] = md
+    blob = _json.dumps(new_hdr, separators=(",", ":")).encode("utf-8")
+
+    tmp = path + ".stamping"
+    try:
+        with open(path, "rb") as fi, open(tmp, "wb") as fo:
+            fo.write(_struct.pack("<Q", len(blob)))
+            fo.write(blob)
+            fi.seek(data_start)
+            shutil.copyfileobj(fi, fo, 1 << 20)
+        vh, vstart = _st_header(tmp)
+        if sorted(k for k in vh if k != "__metadata__") != before_keys:
+            raise ValueError("tensor set changed")
+        if _st_data_digest(tmp, vstart) != before_digest:
+            raise ValueError("tensor bytes changed")
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    return before_digest
+
+
 def _abs_imagegen_wide(rel: str) -> str:
     """Whole-tree resolver with the same traversal guard as _abs_under_imagegen.
 
@@ -1428,7 +1519,13 @@ def finalize_lora(source: str, family: str, primary_tag: str, title: str,
         version: V1 / V1.2 style; normalized to V#.# per spec. Empty string omits the slot.
         preview_image: optional /imagegen-relative path to the accepted test image; installed
             beside the weight with the matching basename.
-        trigger: the trigger word/phrase (recorded in the provenance sidecar).
+        trigger: the token the training captions actually lead with. Stamped into the
+            weight's own metadata (ss_trigger + ss_training_comment) as well as the
+            provenance sidecar, so a generating agent can recover it from the file.
+            If omitted it is derived from the weight's existing metadata; kohya weights
+            usually carry it, AI Toolkit weights record NO trigger and always need it
+            passed. Finalize REFUSES when none can be determined -- a LoRA in the library
+            that nobody can prompt is the defect this guards.
         base_model: base checkpoint the LoRA was trained on (recorded in provenance).
         notes: free text for provenance.
     """
@@ -1493,16 +1590,45 @@ def finalize_lora(source: str, family: str, primary_tag: str, title: str,
         if not os.path.isfile(prev_src):
             return _j({"error": f"preview_image not found: {preview_image}"})
 
+    # ---- the trigger must be KNOWN before this weight enters the library ----
+    # Checked before the move so a refusal leaves everything where it was. A LoRA in the library
+    # whose trigger nobody can recover is the defect that made a reviewer pass a LoRA that was
+    # never firing: they read the published label and prompted it.
+    trig = (trigger or "").strip()
+    trig_from = "caller"
+    if not trig:
+        trig, trig_from = _derive_trigger(src)
+    if not trig:
+        return _j({"error": "REFUSING to finalize: no trigger given and none recoverable from the "
+                            "weight, so this LoRA would enter the library unprompteable",
+                   "source": os.path.relpath(src, _IMAGEGEN_ROOT),
+                   "why": trig_from,
+                   "fix": "pass trigger='<the token the captions actually lead with>'. AI Toolkit "
+                          "records no trigger at all, so its weights ALWAYS need it passed "
+                          "explicitly; the output name is NOT the trigger."})
+
     # ---- move (same mount -> atomic rename), provenance, audit ----
     size = os.path.getsize(src)
     shutil.move(src, dest)
     if os.path.getsize(dest) != size:
         return _j({"error": "size mismatch after move — INVESTIGATE before using this file",
                    "dest": os.path.relpath(dest, _IMAGEGEN_ROOT)})
+    # Stamp the trigger into the weight itself. A sidecar only helps someone who opens it;
+    # the metadata is what a generating agent reads. Failure here must not cost the weight,
+    # which is already safely moved — so it degrades to a loud flag, not an error.
+    stamp_note = None
+    try:
+        _stamp_trigger(dest, trig)
+        stamp_note = "ss_training_comment + ss_trigger = %r (source: %s)" % (trig, trig_from)
+    except Exception as e:
+        stamp_note = "STAMP FAILED (%s: %s) — weight is intact but carries NO trigger metadata; " \
+                     "record it manually before anyone generates with it" % (type(e).__name__, e)
+
     result = {"ok": True, "name": name,
               "lora": os.path.relpath(dest, _IMAGEGEN_ROOT),
               "slots": {"slot1": st or long_name, "slot2": _LORA_PRI_TAGS[long_name],
-                        "slot3": t, "slot4": ver or "(omitted)"}}
+                        "slot3": t, "slot4": ver or "(omitted)"},
+              "trigger": trig, "trigger_source": trig_from, "trigger_stamped": stamp_note}
     if prev_src:
         prev_ext = os.path.splitext(prev_src)[1].lower() or ".png"
         prev_dest = os.path.join(dest_dir, f"{name}{prev_ext}")
@@ -1512,7 +1638,8 @@ def finalize_lora(source: str, family: str, primary_tag: str, title: str,
         result["preview"] = None
         result["next_step"] = "generate a test image and install it with set_lora_preview — a LoRA without a preview is a blank square in every picker"
     sidecar = {"finalized": _time.strftime("%Y-%m-%d %H:%M:%S"),
-               "source": os.path.relpath(src, _IMAGEGEN_ROOT), "trigger": trigger,
+               "source": os.path.relpath(src, _IMAGEGEN_ROOT), "trigger": trig,
+               "trigger_source": trig_from,
                "base_model": base_model, "family": family, "notes": notes,
                "trained_locally": True}
     try:
