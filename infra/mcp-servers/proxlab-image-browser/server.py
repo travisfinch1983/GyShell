@@ -1,0 +1,1236 @@
+"""
+ProxLab Image Browser MCP Server
+
+LoRA training-set dataset management over ProxLab's /api/imagegen API: browse
+image folders, manage training/merged sets, crop/reset, generate collages, rate
+images (1-10 + comment), auto-caption (WD/JoyTag/BLIP taggers), and edit tags.
+Narrowly scoped to the image browser — separate from the general cluster tools.
+
+Dataset lives at training_images/<path>; AI containers see it at
+/imagegen/training_images/<path> (returned as agent_path).
+"""
+
+import os
+import shlex
+import subprocess
+import shutil
+import json as _json
+import time as _time
+
+import httpx
+from mcp.server.fastmcp import FastMCP, Image
+
+PROXLAB_URL = os.environ.get("PROXLAB_URL", "http://127.0.0.1:17890")
+
+mcp = FastMCP(
+    "proxlab-image-browser",
+    instructions=(
+        "ProxLab AI Imagegen dataset tools for building LoRA training sets: list image "
+        "folders / training sets / images (resolution + your own ratings only); create, "
+        "rename, delete training sets and add/remove images; crop & reset images; generate/"
+        "delete labeled collages; rate images 1-10 with comments (one image at a time); "
+        "auto-caption with tagger models (WD family / JoyTag / BLIP); write natural-language "
+        "captions (.caption). IMPORTANT: there is NO tool to read or edit booru tags — rate "
+        "from what you actually SEE in the image, never from tags. Booru .txt tags are managed "
+        "outside the toolset (run_tagger generates them; the proxlab Strip Tags button clears "
+        "them; open the .txt directly for hand edits). Collages are for navigation/counting, "
+        "not for rating. Paths are relative to training_images; agent_path is the /imagegen mount. To SEE an image (required before you rate or caption it) call view_image(path) — it returns the pixels natively into your context; NEVER use read_file / terminal / vision_analyze on agent_path, that mount is not present where you run and will fail."
+    ),
+)
+
+client = httpx.Client(base_url=PROXLAB_URL, timeout=30.0)
+_AGENT_TI = "/imagegen/training_images"
+_TI = "training_images"
+
+
+def _scope(path: str) -> str:
+    """Scope an agent-supplied path to the training-images subtree.
+
+    The AI-Lab /api/imagegen/* endpoints are rooted at the WHOLE imagegen tree, so an empty
+    path listed 81 folders of models -- checkpoints, loras, vae, text-encoders -- and an agent
+    looking for training images had to know to type "training_images/" first. That is how Loom
+    ended up wandering the model tree.
+
+    Idempotent, so a path that already carries the prefix (everything list_images returns) is
+    passed through unchanged. Accepts the /imagegen mount form too.
+    """
+    p = (path or "").strip().strip("/")
+    for pre in ("imagegen/training_images", "training_images"):
+        if p == pre:
+            return _TI
+        if p.startswith(pre + "/"):
+            return _TI + "/" + p[len(pre) + 1:]
+    if p.startswith("imagegen/"):
+        p = p[len("imagegen/"):]
+    return f"{_TI}/{p}" if p else _TI
+# Longest side served to the agent. Full-res is overkill for rating (some sources are ~9MB)
+# and would blow up vision-token / KV cost on long runs.
+VIEW_MAXDIM = int(os.environ.get("VIEW_MAXDIM", "1280"))
+
+from urllib.parse import urlencode as _urlencode
+
+
+def _ig_get(endpoint, **params):
+    r = client.get(endpoint, params={k: v for k, v in params.items() if v not in (None, "")})
+    r.raise_for_status()
+    return r.json()
+
+
+def _ig_post(endpoint, body):
+    r = client.post(endpoint, json=body)
+    r.raise_for_status()
+    return r.json()
+
+
+def _j(obj):
+    return _json.dumps(obj, indent=2, default=str)
+
+
+@mcp.tool()
+def list_image_folders(path: str = "") -> str:
+    """List subfolders under a training_images path, each with its image count.
+
+    Args:
+        path: relative folder under training_images ("" = root).
+    """
+    d = _ig_get("/api/imagegen/browse", path=_scope(path))
+    base = (d.get("path") or "").strip("/")
+    folders = [{"name": f["name"], "path": (base + "/" + f["name"]).strip("/"),
+                "images": f.get("n_images", 0), "subfolders": f.get("n_subfolders", 0),
+                "is_training_set": f.get("is_training_set", False),
+                "has_training_set": f.get("has_training_set", False)} for f in d.get("folders", [])]
+    return _j({"path": base, "folder_count": len(folders),
+               "images_here": len(d.get("images", [])), "folders": folders})
+
+
+@mcp.tool()
+def list_training_sets() -> str:
+    """List all training sets and merged sets with their image counts and paths."""
+    return _j(_ig_get("/api/imagegen/training-sets"))
+
+
+@mcp.tool()
+def list_images(path: str) -> str:
+    """List image files in a folder/training set: name, full agent path, type,
+    resolution, size, and Cinder's own score/comment if she rated it.
+
+    Deliberately returns NO tag/caption data — tags must never arrive as a side
+    effect of looking at images (they bias ratings). There is no tag-read tool at
+    all; booru .txt tags live as plain files you can open directly if ever needed.
+    Use this listing for navigation + identifying files; rate from the actual image.
+
+    Args:
+        path: relative folder under training_images.
+    """
+    d = _ig_get("/api/imagegen/browse", path=_scope(path))
+    base = (d.get("path") or path).strip("/")
+    out = []
+    for im in d.get("images", []):
+        nm = im["name"]
+        out.append({"name": nm, "path": f"{base}/{nm}".replace("//", "/"),
+                    "agent_path": f"{_AGENT_TI}/{base}/{nm}".replace("//", "/"),
+                    "type": nm.rsplit(".", 1)[-1].lower() if "." in nm else "",
+                    "w": im.get("w"), "h": im.get("h"), "size": im.get("size"),
+                    "cropped": im.get("cropped", False),
+                    "score": im.get("score"), "comment": im.get("comment")})
+    return _j({"path": base, "count": len(out), "is_training_set": d.get("is_training_set", False),
+               "has_collage": d.get("has_collage", False), "images": out})
+
+
+@mcp.tool()
+def view_image(path: str) -> list:
+    """Fetch a training image and the vision_url you need in order to SEE it.
+
+    READ THIS BEFORE RATING OR CAPTIONING ANYTHING.
+
+    This tool does NOT put the pixels in your context. It cannot. Hermes converts every image
+    an MCP tool returns into a ``MEDIA:<path>`` TEXT string (mcp_tool.py), and a tool result is
+    a plain string with no place to carry an image. The ``MEDIA:`` line you see in the result
+    means the picture was delivered to TRAVIS'S CHAT so a human can look at it. It is not
+    delivered to you, and its presence is not evidence that you can see anything.
+
+    TO ACTUALLY SEE THE IMAGE, CALL:
+
+        vision_analyze(image_url=<the MEDIA: path from THIS result>, question="<what you need>")
+
+    Pass the MEDIA: path — the local .webp in your profile's image cache — NOT the vision_url.
+    vision_analyze refuses the vision_url because it points at 127.0.0.1 and private addresses are
+    blocked as unsafe. The vision_url is kept so a human can open the image.
+
+    vision_analyze is a NATIVE HERMES TOOL. It will NOT appear in your MCP tool catalogue
+    alongside these image tools — looking for it there and not finding it does not mean it was
+    removed. On a vision-capable main model it routes the image to YOUR OWN model, so you see
+    the real pixels rather than another model's description.
+
+    Pass the vision_url, never agent_path — that /imagegen mount does not exist where you run.
+
+    If you have not called vision_analyze, you have not seen the image. Rating or captioning at
+    that point would be fabrication, however confident the reasoning feels. Say you cannot see
+    it instead.
+
+    AND ONCE YOU CAN SEE IT: describe only what is verifiably in the pixels. The folder name is
+    not evidence. An agent looking at satin-1.png in a folder called "satin" reported "shiny red
+    satin" when the image showed multicoloured confetti print — real pixels, wrong description,
+    because expectation filled in for observation. If a detail would read the same whether or not
+    you had actually looked, do not state it.
+
+    Returns two blocks: the image (for Travis's chat) and a JSON block with:
+      vision_url  — pass this to vision_analyze
+      source_w/h  — the ORIGINAL pixel dimensions
+      view_w/h    — the dimensions vision_analyze will see
+      scale       — view / source. Prefer crop_image's normalized center_nx/center_ny/size_frac.
+
+    Args:
+        path: the image's `path` from list_images. Paths are relative to training_images and
+              the prefix is optional — 'satin/satin-1.png' and
+              'training_images/satin/satin-1.png' both work. agent_path works too.
+    """
+    # ⚠ DO NOT strip a leading "training_images/" here.
+    # Every /api/imagegen/* endpoint on the AI-Lab backend is rooted at the WHOLE imagegen
+    # tree, not at training_images -- verified: image?path=training_images/satin/satin-1.png
+    # -> 200, image?path=satin/satin-1.png -> 404. list_images() returns paths WITH the
+    # prefix, so stripping it here meant an agent could list images and then never open one:
+    # every view_image 404'd. That is what sent Loom to a browser tool and a hand-rolled HTTP
+    # server -- not a missing tool, a tool whose two halves disagreed about the root.
+    # Only the /imagegen mount prefix (the agent_path form) is removed.
+    rel = _scope(path)
+    params = {"path": rel, "maxdim": VIEW_MAXDIM}
+    r = client.get("/api/imagegen/image", params=params)
+    r.raise_for_status()
+    # /image?maxdim= returns webp downscaled to <=VIEW_MAXDIM longest side — keeps vision-token / KV
+    # cost sane so long rating runs do not balloon the agent context (full-res is overkill to rate).
+    vision_url = f"{PROXLAB_URL}/api/imagegen/image?{_urlencode(params)}"
+
+    sw, sh = _source_dims(rel)
+    meta = {"vision_url": vision_url,
+            "next_step": "You have NOT seen this image yet. Call the NATIVE tool vision_analyze — it is not in the MCP catalogue with these tools, which is expected. PASS THE MEDIA: PATH PRINTED ABOVE (a local .webp in your profile cache), NOT the vision_url: that url points at 127.0.0.1 and vision_analyze refuses private addresses as unsafe. Use the MEDIA path from THIS call, not one earlier in your context. Then describe only what is verifiably in the pixels — the folder name is not evidence."}
+    if sw and sh:
+        sw, sh = int(sw), int(sh)
+        f = min(1.0, VIEW_MAXDIM / float(max(sw, sh)))
+        meta.update({"source_w": sw, "source_h": sh,
+                     "view_w": int(round(sw * f)), "view_h": int(round(sh * f)),
+                     "scale": round(f, 4),
+                     "note": ("you are viewing a downscaled copy; crop_image takes NORMALIZED "
+                              "center_nx/center_ny/size_frac (0..1) so you never have to convert")})
+    # Two content blocks: the image (the runtime renders it to the user's chat) and the JSON.
+    return [Image(data=r.content, format="webp"), _j(meta)]
+
+
+@mcp.tool()
+def create_training_set(folder: str, suffix: str, files: list[str]) -> str:
+    """Create a training set under <folder>/training_set_<suffix> by copying the
+    named images from <folder> into it (renamed <suffix>-N, with reset baselines).
+
+    Args:
+        folder: source folder (relative) holding the images.
+        suffix: name for the set (becomes training_set_<suffix>).
+        files: image filenames in <folder> to include.
+    """
+    return _j(_ig_post("/api/imagegen/send-to-training-set", {"path": _scope(folder), "suffix": suffix, "files": files}))
+
+
+@mcp.tool()
+def add_images_to_training_set(src_folder: str, set_path: str, files: list[str]) -> str:
+    """Copy images from a source folder into an existing training set (renamed to
+    the set's <base>-N scheme).
+
+    Args:
+        src_folder: folder (relative) containing the images.
+        set_path: destination training set (relative).
+        files: image filenames in src_folder to copy.
+    """
+    return _j(_ig_post("/api/imagegen/transfer", {"op": "copy", "src": _scope(src_folder), "dest": _scope(set_path), "files": files}))
+
+
+@mcp.tool()
+def remove_images_from_training_set(set_path: str, files: list[str]) -> str:
+    """Delete specific images (with caption/baseline/rating) from a training set.
+
+    Args:
+        set_path: the training set (relative).
+        files: image filenames to remove.
+    """
+    return _j(_ig_post("/api/imagegen/delete", {"path": _scope(set_path), "files": files}))
+
+
+@mcp.tool()
+def rename_training_set(path: str, suffix: str) -> str:
+    """Rename a training set's suffix (training_set_<old> -> training_set_<suffix>).
+
+    Args:
+        path: the training set (relative).
+        suffix: new suffix.
+    """
+    return _j(_ig_post("/api/imagegen/rename-set", {"path": _scope(path), "suffix": suffix}))
+
+
+@mcp.tool()
+def delete_training_set(path: str) -> str:
+    """Delete an entire training set (the folder and all its contents).
+
+    Args:
+        path: the training set (relative).
+    """
+    return _j(_ig_post("/api/imagegen/delete-set", {"path": _scope(path)}))
+
+
+# Square crops only, normalized to this edge length. LoRA training sets are
+# 1:1 at 1024px; the tool intentionally cannot produce any other aspect ratio
+# or output size, so an agent can never emit a non-square / non-1024 crop.
+_CROP_OUT = 1024
+
+
+def _source_dims(path: str):
+    """Return (w, h) of a training-set image by browsing its parent folder.
+    Returns (None, None) if the file/dims can't be resolved."""
+    rel = path.strip("/")
+    folder, _, name = rel.rpartition("/")
+    try:
+        d = _ig_get("/api/imagegen/browse", path=_scope(folder))
+    except Exception:
+        return (None, None)
+    for im in d.get("images", []):
+        if im.get("name") == name:
+            return (im.get("w"), im.get("h"))
+    return (None, None)
+
+
+@mcp.tool()
+def crop_image(path: str, center_x: int = -1, center_y: int = -1, size: int = 0,
+               center_nx: float = -1.0, center_ny: float = -1.0,
+               size_frac: float = 0.0) -> str:
+    """Crop a training-set image to a SQUARE and normalize it to 1024x1024.
+
+    Think of a square viewfinder over the source image. You choose WHERE to center it
+    and HOW BIG it is (in SOURCE pixels). The crop is ALWAYS 1:1 and the output is
+    ALWAYS 1024x1024 — you cannot produce any other aspect ratio or output size, so a
+    crop can never come out as a random rectangle. Non-destructive (reset_image undoes).
+
+    COORDINATE SPACE — USE THE NORMALIZED ARGS. The image you look at via vision_analyze
+    is DOWNSCALED from the original, so any x/y you eyeball off it is in the wrong scale
+    (e.g. a 2048x2728 source shown at 961x1280 is off by ~2.13x). Normalized coordinates
+    are fractions of the image, so they mean the same thing at any resolution and need no
+    conversion — aim with these and the mismatch cannot happen:
+
+        center_nx / center_ny : 0..1 fraction of width / height (0.5,0.5 = dead centre)
+        size_frac             : 0..1 fraction of the SHORTER edge (1.0 = biggest square that fits)
+
+    The pixel args (center_x/center_y/size) still work and are ALWAYS in the image's
+    ORIGINAL/source pixels (the w/h list_images reports) — only use them if you got the
+    numbers from list_images, never from eyeballing a view. Normalized args win when both
+    are supplied.
+
+    Args:
+        path: image file (relative, inside a training set).
+        center_x: x (SOURCE pixels) to center on. Omit / -1 to center horizontally.
+        center_y: y (SOURCE pixels) to center on. Omit / -1 to center vertically.
+        size: side length in SOURCE pixels. BIGGER = more of the image (zoom out);
+              SMALLER = tighter (zoom in). Omit / 0 = largest square that fits.
+        center_nx: PREFERRED. x as a 0..1 fraction of width — put this on the subject.
+        center_ny: PREFERRED. y as a 0..1 fraction of height.
+        size_frac: PREFERRED. square side as a 0..1 fraction of the shorter edge.
+
+    Guards you cannot break:
+      * always 1:1, always 1024x1024 output;
+      * NO UPSCALING — size is floored at 1024 source px (a smaller region would have to
+        be enlarged to reach 1024). If the image's shorter edge is < 1024, the whole
+        shorter edge is used (the only unavoidable upscale case);
+      * the square is clamped fully inside the image (center is pulled in as needed).
+    """
+    try:
+        center_x = int(center_x)
+        center_y = int(center_y)
+        size = int(size)
+        center_nx = float(center_nx)
+        center_ny = float(center_ny)
+        size_frac = float(size_frac)
+    except (TypeError, ValueError):
+        return _j({"error": "center_x/center_y/size must be ints (source px); "
+                            "center_nx/center_ny/size_frac must be numbers in 0..1."})
+
+    w, h = _source_dims(path)
+
+    # Normalized coords are resolution-independent, so what was aimed at on the downscaled
+    # view maps onto the original with no conversion. They take precedence over the pixel
+    # args precisely so a stale pixel value can never silently win.
+    _norm_used = (center_nx >= 0) or (center_ny >= 0) or (size_frac > 0)
+    if _norm_used:
+        if not (w and h):
+            return _j({"error": "cannot resolve normalized coords: source dimensions unavailable "
+                                "for this image; pass source-pixel center_x/center_y/size instead."})
+        _W, _H = int(w), int(h)
+        for _n, _v in (("center_nx", center_nx), ("center_ny", center_ny), ("size_frac", size_frac)):
+            if _v > 1.0:
+                return _j({"error": f"{_n} must be a fraction in 0..1, got {_v}."})
+        if center_nx >= 0:
+            center_x = int(round(center_nx * _W))
+        if center_ny >= 0:
+            center_y = int(round(center_ny * _H))
+        if size_frac > 0:
+            size = int(round(size_frac * min(_W, _H)))
+    if w and h:
+        w, h = int(w), int(h)
+        short = min(w, h)
+        # size: default = largest square that fits; clamp to <= shorter edge and
+        # >= 1024 (no upscaling), but never above the shorter edge.
+        if size <= 0:
+            size = short
+        size = min(size, short)
+        size = max(size, min(_CROP_OUT, short))
+        # center: default = image center; then clamp the square fully in-bounds.
+        if center_x < 0:
+            center_x = w // 2
+        if center_y < 0:
+            center_y = h // 2
+        left = max(0, min(center_x - size // 2, w - size))
+        top = max(0, min(center_y - size // 2, h - size))
+    else:
+        # Dims unknown (couldn't browse the folder): still guarantee a square >= 1024
+        # (no upscale) centered at the requested point (default top-left).
+        if size <= 0:
+            size = _CROP_OUT
+        size = max(size, _CROP_OUT)
+        left = max(0, center_x - size // 2) if center_x >= 0 else 0
+        top = max(0, center_y - size // 2) if center_y >= 0 else 0
+
+    return _j(_ig_post("/api/imagegen/crop", {
+        "path": _scope(path), "left": left, "top": top,
+        "width": size, "height": size,
+        "target_w": _CROP_OUT, "target_h": _CROP_OUT,
+    }))
+
+
+@mcp.tool()
+def reset_image(path: str) -> str:
+    """Restore a training-set image to its pristine original (undo crops/upscales).
+
+    Args:
+        path: image file (relative, inside a training set).
+    """
+    return _j(_ig_post("/api/imagegen/reset-crop", {"path": _scope(path)}))
+
+
+@mcp.tool()
+def generate_collage(path: str) -> str:
+    """Build a numbered contact-sheet collage of a training set (each cell labeled
+    with the image's number). Saved as _collage.jpg; returns its agent_path.
+
+    Args:
+        path: the training set (relative).
+    """
+    return _j(_ig_post("/api/imagegen/collage", {"path": _scope(path)}))
+
+
+@mcp.tool()
+def delete_collage(path: str) -> str:
+    """Delete a folder's _collage.jpg.
+
+    Args:
+        path: the folder/training set (relative).
+    """
+    return _j(_ig_post("/api/imagegen/collage-delete", {"path": _scope(path)}))
+
+
+@mcp.tool()
+def rate_image(folder: str, file: str, score: int, comment: str = "") -> str:
+    """Set Cinder's trainability rating (1-10) and comment for an image. Stored in
+    the folder's _ratings.json, pruned automatically if the image is deleted.
+    Pass score=0 to clear the rating.
+
+    Args:
+        folder: the folder/training set (relative) containing the image.
+        file: image filename.
+        score: 1-10 (0 to clear).
+        comment: optional note.
+    """
+    return _j(_ig_post("/api/imagegen/rating",
+              {"path": _scope(folder), "file": file, "score": (None if score == 0 else score), "comment": comment}))
+
+# --- Ultra-Coder 2026-07-02: sanitize ratings payload at this boundary ---
+# The AI-Lab /api/imagegen/ratings backend (127.0.0.1:17890) includes collage
+# artifacts (e.g. _collage.jpg / .collage.jpg) in `unscored` and counts them in
+# `total`. list_images (via /browse) filters these out; the ratings endpoint
+# does NOT, so an agent's unscored queue got polluted with a collage it could
+# mistakenly try to rate, and scored/total math was off by the collage file(s).
+# Filter to real, rateable training images here and recompute total. The true
+# fix belongs in the AI-Lab backend too (flagged to claude1); this keeps the
+# tool correct regardless.
+_IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
+
+
+def _is_real_image(name: str) -> bool:
+    low = name.lower()
+    if low.startswith(".") or low.startswith("_") or "collage" in low:
+        return False
+    return os.path.splitext(low)[1] in _IMG_EXTS
+
+
+def _sanitize_ratings(d: dict) -> dict:
+    if not isinstance(d, dict):
+        return d
+    unscored = [n for n in d.get("unscored", []) if _is_real_image(n)]
+    d["unscored"] = unscored
+    scored = d.get("scored")
+    if scored is None:
+        scored = len(d.get("ratings", {}) or {})
+    d["scored"] = scored
+    d["total"] = scored + len(unscored)
+    return d
+# --- end Ultra-Coder patch ---
+
+
+@mcp.tool()
+def get_ratings(folder: str) -> str:
+    """Get all of Cinder's ratings for a folder plus the list of unscored images.
+
+    Args:
+        folder: the folder/training set (relative).
+    """
+    return _j(_sanitize_ratings(_ig_get("/api/imagegen/ratings", path=_scope(folder))))
+
+
+@mcp.tool()
+def list_unscored_images(folder: str) -> str:
+    """List images in a folder Cinder hasn't rated yet.
+
+    Args:
+        folder: the folder/training set (relative).
+    """
+    d = _sanitize_ratings(_ig_get("/api/imagegen/ratings", path=_scope(folder)))
+    return _j({"path": folder, "unscored": d.get("unscored", []),
+               "scored": d.get("scored", 0), "total": d.get("total", 0)})
+
+
+@mcp.tool()
+def list_taggers() -> str:
+    """List available auto-caption models (WD tagger family, JoyTag, BLIP)."""
+    return _j(_ig_get("/api/imagegen/taggers"))
+
+
+@mcp.tool()
+def run_tagger(path: str, model: str, engine: str = "onnx", device: str = "cpu",
+               threshold: float = 0.35, char_threshold: float = 0.85, trigger: str = "",
+               spaces: bool = False, overwrite: bool = False, wait: bool = True) -> str:
+    """Auto-caption every image in a folder/training set. WD/JoyTag (engine=onnx)
+    write booru tags to .txt; BLIP (engine=blip) writes a natural-language caption
+    to .caption — so both can co-exist on the same images. Runs on ai-epyc.
+    Use list_taggers() to pick a model.
+
+    Args:
+        path: the folder/training set (relative).
+        model: tagger id from list_taggers (e.g. wd-eva02-large-tagger-v3, joytag, blip-large).
+        engine: "onnx" (WD/JoyTag tags) or "blip" (natural-language caption).
+        device: "cpu" or "cuda" (cuda = the 4090; BLIP always uses cuda).
+        threshold: general tag confidence (ONNX, default 0.35).
+        char_threshold: character tag confidence (ONNX, default 0.85).
+        trigger: optional tag(s)/word prepended to every caption.
+        spaces: convert underscores to spaces in tags.
+        overwrite: re-caption images that already have a .txt (else skip).
+        wait: block until the job finishes and return its result (default True).
+    """
+    body = {"path": path, "model": model, "engine": engine, "device": device,
+            "threshold": threshold, "char_threshold": char_threshold, "trigger": trigger,
+            "spaces": spaces, "overwrite": overwrite}
+    r = _ig_post("/api/imagegen/auto-caption", body)
+    job = r.get("jobId")
+    if not job:
+        return _j(r)
+    if not wait:
+        return _j({"jobId": job, "state": "started"})
+    # Return BEFORE the MCP gateway's 60s budget: small sets finish here; large
+    # sets come back with the jobId to poll via tagger_status (no gateway timeout).
+    for _ in range(15):                  # ~45s
+        _time.sleep(3)
+        s = _ig_get("/api/imagegen/auto-caption-status", jobId=job)
+        if s.get("state") != "running":
+            return _j(s)
+    return _j({"jobId": job, "state": "running",
+               "note": "large set still tagging — call tagger_status('" + str(job) + "') to track it to completion"})
+
+
+@mcp.tool()
+def tagger_status(job_id: str) -> str:
+    """Check an auto-caption job's progress/result (for jobs started with wait=False).
+
+    Args:
+        job_id: the jobId returned by run_tagger.
+    """
+    return _j(_ig_get("/api/imagegen/auto-caption-status", jobId=job_id))
+
+
+@mcp.tool()
+def get_caption(path: str) -> str:
+    """Read an image's natural-language caption (the .caption sidecar). Booru tags
+    (.txt) are intentionally NOT accessible through any tool — rate from what you
+    SEE in the image, not from tags. If you ever genuinely need the booru tags, open
+    the image's .txt file directly with normal file tools.
+
+    Args:
+        path: image file (relative).
+    """
+    return _j(_ig_get("/api/imagegen/caption", path=_scope(path), ext="caption"))
+
+
+@mcp.tool()
+def set_caption(path: str, caption: str) -> str:
+    """Write/replace an image's natural-language caption (the .caption sidecar; empty
+    string removes it). Only touches .caption — booru tags (.txt) are managed outside
+    the toolset (run_tagger generates them; the proxlab Strip Tags button clears them;
+    hand-edit via direct file ops).
+
+    Args:
+        path: image file (relative).
+        caption: natural-language caption text.
+    """
+    return _j(_ig_post("/api/imagegen/caption", {"path": _scope(path), "caption": caption, "ext": "caption"}))
+
+
+@mcp.tool()
+def comfyui_instances() -> str:
+    """List every running ComfyUI server on the cluster so you can choose which one to use.
+
+    Returns, per instance: container, url (ip:port to send workflows to), status, and the
+    GPUs ASSIGNED TO IT AT LAUNCH (with model, arch, and live VRAM). These GPUs are
+    AUTHORITATIVE. ComfyUI's own /system_stats only ever reports GPU 0 — so NEVER decide GPU
+    count from /system_stats, and NEVER add GPUs or restart a container because it "only shows
+    one GPU": the GPUs in this tool's output are what the instance actually has.
+
+    Choosing an instance — match the GPU to the job:
+      - Large / high-VRAM models (e.g. LTX 2.3 and other video, big SDXL or FLUX workflows) ->
+        use an instance on the V100 rig (32 GB per GPU, more headroom).
+      - Smaller / lighter models -> use an instance on a newer, lower-VRAM GPU (e.g. the 4090)
+        for faster generation.
+      - When two instances both fit, prefer the one with the most free VRAM (vram_available_mb).
+
+    Call this first whenever you're about to run a ComfyUI workflow; the instance list changes
+    as servers are launched or stopped, so don't hardcode a host.
+    """
+    return _j(_ig_get("/api/ai/comfyui-instances"))
+
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Tool Set A — training_batch creator (Loom's LoRA pipeline, 2026-09-02)
+#
+# A training_batch is the curated PICK, assembled for a trainer. It is derived from a
+# training set, never the set itself: the set stays the source of truth so a batch can be
+# rebuilt, re-picked or thrown away without touching curation work.
+#
+# Sidecars travel with the image, because a trainer reads them by filename convention:
+#   .txt      booru tags  — what kohya reads. MISSING = the image trains UNLABELED.
+#   .caption  natural language — used by some trainers, carried along regardless.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# The image library, as seen from THIS container (CT152). The rest of this server talks to
+# AI-Lab HTTP API, but assembling a batch is a pure file operation — copying images and their
+# sidecars — and doing it directly is both simpler and less likely to half-succeed than a
+# sequence of API round-trips. _scope() already yields paths relative to this root.
+_IMAGEGEN_ROOT = os.environ.get("IMAGEGEN_ROOT", "/imagegen")
+
+_SIDECAR_EXTS = (".txt", ".caption")
+
+
+def _batch_paths(folder: str, name: str):
+    """(image, [existing sidecars]) for one entry, resolved on disk."""
+    stem = os.path.splitext(name)[0]
+    img = os.path.join(folder, name)
+    cars = [os.path.join(folder, stem + e) for e in _SIDECAR_EXTS]
+    return img, [c for c in cars if os.path.exists(c)]
+
+
+def _abs_under_imagegen(rel: str) -> str:
+    """Resolve a relative imagegen path and REFUSE anything escaping the tree.
+
+    These tools delete files. A traversal here would delete outside the image library, so the
+    check is explicit rather than relying on the caller passing something sane.
+    """
+    base = os.path.realpath(_IMAGEGEN_ROOT)
+    full = os.path.realpath(os.path.join(base, _scope(rel).lstrip("/")))
+    if full != base and not full.startswith(base + os.sep):
+        raise ValueError(f"path escapes the imagegen tree: {rel}")
+    return full
+
+
+@mcp.tool()
+def create_training_batch(from_folder: str, images: list[str], batch_folder: str) -> str:
+    """Assemble a curated pick into a training batch, copying images + their sidecars.
+
+    COPIES (never moves) each named image from from_folder into batch_folder, along with its
+    .txt (booru tags) and .caption (natural language) sidecars, keeping original filenames.
+
+    IDEMPOTENT AND CONVERGENT: re-running makes the batch MATCH `images` exactly — anything in
+    the batch that is no longer in the list is removed, so an updated pick converges instead of
+    accumulating. Safe to run repeatedly while iterating.
+
+    Returns a manifest: per image, whether it copied, and whether it has the .txt a trainer
+    needs. An image WITHOUT .txt would train unlabeled, so it is reported as a warning rather
+    than passed over.
+
+    Args:
+        from_folder: the curated set, relative (e.g. satin/solids/red/training_set_red).
+        images: filenames to include (e.g. ["red-1.png", "red-2.png"]).
+        batch_folder: destination, relative (e.g. satin/solids/red/training_batch).
+    """
+    try:
+        src = _abs_under_imagegen(from_folder)
+        dst = _abs_under_imagegen(batch_folder)
+    except ValueError as e:
+        return _j({"error": str(e)})
+    if not os.path.isdir(src):
+        return _j({"error": f"source folder not found: {from_folder}"})
+    os.makedirs(dst, exist_ok=True)
+
+    wanted = [n for n in images if n and not n.startswith(".")]
+    manifest, copied, missing_tags, not_found = [], 0, [], []
+
+    for name in wanted:
+        img, cars = _batch_paths(src, name)
+        if not os.path.exists(img):
+            not_found.append(name)
+            manifest.append({"file": name, "status": "SOURCE MISSING"})
+            continue
+        shutil.copy2(img, os.path.join(dst, name))
+        exts = []
+        for c in cars:
+            shutil.copy2(c, os.path.join(dst, os.path.basename(c)))
+            exts.append(os.path.splitext(c)[1])
+        copied += 1
+        has_tags = ".txt" in exts
+        if not has_tags:
+            missing_tags.append(name)
+        manifest.append({"file": name, "status": "copied", "sidecars": exts,
+                         "trains_labeled": has_tags})
+
+    # Convergence: drop anything the batch holds that is no longer wanted.
+    keep_stems = {os.path.splitext(n)[0] for n in wanted}
+    removed = []
+    for f in sorted(os.listdir(dst)):
+        stem, ext = os.path.splitext(f)
+        if ext.lower() in _SIDECAR_EXTS or ext.lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
+            if stem not in keep_stems:
+                try:
+                    os.remove(os.path.join(dst, f))
+                    removed.append(f)
+                except OSError:
+                    pass
+
+    out = {
+        "batch_folder": _scope(batch_folder),
+        "requested": len(wanted), "copied": copied,
+        "removed_no_longer_listed": removed,
+        "manifest": manifest,
+    }
+    if not_found:
+        out["SOURCE_MISSING"] = not_found
+    if missing_tags:
+        out["WARNING_UNLABELED"] = {
+            "files": missing_tags,
+            "note": "these have no .txt sidecar and would train UNLABELED — caption them or "
+                    "drop them before training",
+        }
+    return _j(out)
+
+
+@mcp.tool()
+def remove_from_training_batch(batch_folder: str, images: list[str]) -> str:
+    """Remove specific images (and their sidecars) from a training batch.
+
+    For iterating on a pick without rebuilding it. Removing something not present is not an
+    error — it is reported as 'absent' so a repeated call is safe.
+
+    Args:
+        batch_folder: the batch, relative.
+        images: filenames to remove.
+    """
+    try:
+        dst = _abs_under_imagegen(batch_folder)
+    except ValueError as e:
+        return _j({"error": str(e)})
+    if not os.path.isdir(dst):
+        return _j({"error": f"batch folder not found: {batch_folder}"})
+
+    results = []
+    for name in images:
+        img, cars = _batch_paths(dst, name)
+        gone = []
+        for p in [img] + cars:
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                    gone.append(os.path.basename(p))
+                except OSError as e:
+                    return _j({"error": f"could not remove {p}: {e}"})
+        results.append({"file": name, "removed": gone} if gone
+                       else {"file": name, "status": "absent"})
+    remaining = len([f for f in os.listdir(dst)
+                     if os.path.splitext(f)[1].lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}])
+    return _j({"batch_folder": _scope(batch_folder), "results": results,
+               "images_remaining": remaining})
+
+
+@mcp.tool()
+def list_training_batch(batch_folder: str) -> str:
+    """List a training batch's contents and per-image sidecar presence.
+
+    FLAGS any image missing its .txt sidecar — that image would train UNLABELED, which quietly
+    degrades the LoRA rather than failing, so it is surfaced as a blocking warning and counted
+    separately. Also reports orphan sidecars (a .txt whose image is gone).
+
+    Args:
+        batch_folder: the batch, relative.
+    """
+    try:
+        dst = _abs_under_imagegen(batch_folder)
+    except ValueError as e:
+        return _j({"error": str(e)})
+    if not os.path.isdir(dst):
+        return _j({"error": f"batch folder not found: {batch_folder}"})
+
+    files = sorted(os.listdir(dst))
+    imgs = [f for f in files
+            if os.path.splitext(f)[1].lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+            and not f.startswith("_collage")]
+    img_stems = {os.path.splitext(f)[0] for f in imgs}
+
+    rows, unlabeled = [], []
+    for f in imgs:
+        stem = os.path.splitext(f)[0]
+        has_txt = os.path.exists(os.path.join(dst, stem + ".txt"))
+        has_cap = os.path.exists(os.path.join(dst, stem + ".caption"))
+        if not has_txt:
+            unlabeled.append(f)
+        try:
+            size = os.path.getsize(os.path.join(dst, f))
+        except OSError:
+            size = None
+        rows.append({"file": f, "txt": has_txt, "caption": has_cap, "bytes": size})
+
+    orphans = [f for f in files
+               if os.path.splitext(f)[1].lower() in _SIDECAR_EXTS
+               and os.path.splitext(f)[0] not in img_stems]
+
+    out = {"batch_folder": _scope(batch_folder), "images": len(imgs), "files": rows,
+           "ready_to_train": not unlabeled and len(imgs) > 0}
+    if unlabeled:
+        out["BLOCKING_UNLABELED"] = {
+            "count": len(unlabeled), "files": unlabeled,
+            "note": "no .txt sidecar — these would train UNLABELED. Fix before training.",
+        }
+    if orphans:
+        out["orphan_sidecars"] = orphans
+    if not imgs:
+        out["note"] = "batch is EMPTY — nothing to train"
+    return _j(out)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Tool Set B — LoRA training control (Loom's pipeline, 2026-09-02)
+#
+# B1 kohya_ss   → SDXL-family bases (Pony_XL, Illustrious, NoobAI)
+# B2 AI Toolkit → everything else (flux/chroma/flex/lumina). NOT Krea 2 — see aitoolkit_status.
+#
+# Runs are DETACHED (setsid) on ai-epyc and tracked in a run directory on the shared mount, so a
+# tool call that returns in a second can still be followed for hours.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_TRAIN_HOST = os.environ.get("LORA_TRAIN_HOST", "root@10.0.0.234")
+_TRAIN_KEY = os.environ.get("LORA_TRAIN_KEY", "/opt/ai-lab/.gybackend-data/ssh/id_ed25519")
+_RUNS_ROOT = os.environ.get("LORA_RUNS_ROOT", "/imagegen/lora_runs")
+_KOHYA_DIR = "/opt/kohya-ss"
+_KOHYA_PY = "/opt/conda/envs/kohya-ss/bin/python"
+_KOHYA_ACCEL = "/opt/conda/envs/kohya-ss/bin/accelerate"
+_AITK_DIR = "/opt/ai-toolkit"
+_AITK_PY = "/opt/conda/envs/ai-toolkit/bin/python"
+_CKPT_ROOT = "/imagegen/checkpoints"
+_LORA_OUT = "/imagegen/loras"
+
+
+def _ssh(cmd: str, timeout: int = 60):
+    """Run a command on the training host. Returns (rc, stdout, stderr)."""
+    p = subprocess.run(
+        ["ssh", "-i", _TRAIN_KEY, "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes",
+         "-o", "ConnectTimeout=10", _TRAIN_HOST, cmd],
+        capture_output=True, text=True, timeout=timeout)
+    return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
+
+
+def _run_dir(run_id: str) -> str:
+    d = os.path.realpath(os.path.join(_RUNS_ROOT, run_id))
+    if not d.startswith(os.path.realpath(_RUNS_ROOT) + os.sep):
+        raise ValueError(f"bad run_id: {run_id}")
+    return d
+
+
+def _read_run(run_id: str) -> dict:
+    with open(os.path.join(_run_dir(run_id), "run.json")) as f:
+        return _json.load(f)
+
+
+def _write_run(run_id: str, meta: dict) -> None:
+    with open(os.path.join(_run_dir(run_id), "run.json"), "w") as f:
+        _json.dump(meta, f, indent=2)
+
+
+@mcp.tool()
+def kohya_status() -> str:
+    """Is kohya_ss installed, where, is a run active, and what GPU capacity is free.
+
+    Also answers the question Loom asked explicitly: kohya_ss does NOT train Krea 2. kohya's
+    SDXL trainer targets the SDXL architecture; Krea 2 is a different (diffusion transformer)
+    model and needs AI Toolkit — see aitoolkit_status, which reports its own bad news.
+    """
+    rc, out, err = _ssh(
+        f"test -f {_KOHYA_DIR}/sd-scripts/sdxl_train_network.py && echo SCRIPT_OK; "
+        f"test -x {_KOHYA_PY} && echo PY_OK; test -x {_KOHYA_ACCEL} && echo ACCEL_OK; "
+        f"cd {_KOHYA_DIR} && git log -1 --format='COMMIT %h %ad' --date=short 2>/dev/null; "
+        f"nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv,noheader")
+    if rc != 0 and not out:
+        return _j({"installed": "UNKNOWN", "error": f"cannot reach {_TRAIN_HOST}: {err[:160]}",
+                   "note": "cannot-check is not the same as not-installed"})
+    gpus = []
+    for line in out.splitlines():
+        parts = [x.strip() for x in line.split(",")]
+        if len(parts) == 4 and parts[0].isdigit():
+            used, total = int(parts[2].split()[0]), int(parts[3].split()[0])
+            gpus.append({"index": int(parts[0]), "name": parts[1],
+                         "free_mib": total - used, "total_mib": total})
+    active = _active_runs()
+    return _j({
+        "installed": "SCRIPT_OK" in out and "PY_OK" in out,
+        "host": _TRAIN_HOST, "path": _KOHYA_DIR,
+        "version": next((l.replace("COMMIT ", "") for l in out.splitlines() if l.startswith("COMMIT")), "unknown"),
+        "entry_point": "sd-scripts/sdxl_train_network.py (via accelerate)",
+        "trains": ["SDXL-family: Pony_XL, Illustrious, NoobAI"],
+        "does_NOT_train": {
+            "Krea 2": "different architecture (diffusion transformer, not SDXL). kohya cannot "
+                      "train it — route to AI Toolkit, but read aitoolkit_status first.",
+        },
+        "gpus": gpus,
+        "recommended_gpu": max(gpus, key=lambda g: g["free_mib"])["index"] if gpus else None,
+        "active_runs": active,
+    })
+
+
+@mcp.tool()
+def aitoolkit_status() -> str:
+    """Is AI Toolkit installed, what version, and can it actually train Krea 2 today.
+
+    🛑 READ THE VERDICT. Travis's plan routes Krea 2 here because kohya cannot train it. The
+    INSTALLED checkout is from 2026-03-28 and its model registry has no Krea entry, so Krea 2
+    is not trainable on this box as it stands. That is reported rather than left to fail
+    halfway through a run.
+    """
+    rc, out, err = _ssh(
+        f"test -f {_AITK_DIR}/run.py && echo RUN_OK; test -x {_AITK_PY} && echo PY_OK; "
+        f"cd {_AITK_DIR} && git log -1 --format='COMMIT %h %ad' --date=short 2>/dev/null; "
+        f"ls {_AITK_DIR}/toolkit/models/ 2>/dev/null | tr '\\n' ' '; echo; "
+        f"grep -rli krea {_AITK_DIR}/toolkit {_AITK_DIR}/config 2>/dev/null | head -3")
+    if rc != 0 and not out:
+        return _j({"installed": "UNKNOWN", "error": f"cannot reach {_TRAIN_HOST}: {err[:160]}"})
+    krea_hits = [l for l in out.splitlines() if "/krea" in l.lower() or l.lower().endswith("krea.py")]
+    version = next((l.replace("COMMIT ", "") for l in out.splitlines() if l.startswith("COMMIT")), "unknown")
+    return _j({
+        "installed": "RUN_OK" in out and "PY_OK" in out,
+        "host": _TRAIN_HOST, "path": _AITK_DIR, "version": version,
+        "invocation": f"{_AITK_PY} run.py <config.yaml>  (YAML config, see config/examples/)",
+        "krea_2_supported": bool(krea_hits),
+        "VERDICT": (
+            "Krea 2 is NOT trainable with this install. The checkout is from "
+            f"{version} and its model registry contains no Krea architecture "
+            "(flux / chroma / flex / lumina / auraflow / cogview4 only). Training would fail at "
+            "model load, not at config time. To enable it: update /opt/ai-toolkit and its deps "
+            "on ai-epyc, then re-check — that is a deliberate change to a training rig and "
+            "should be a decision, not a side effect of a training request."
+        ) if not krea_hits else "Krea architecture present — verify against a short run.",
+        "usable_today_for": ["flux", "chroma", "flex", "lumina"],
+    })
+
+
+def _active_runs():
+    """Runs whose recorded PID is still alive on the training host."""
+    try:
+        ids = [d for d in os.listdir(_RUNS_ROOT) if os.path.isdir(os.path.join(_RUNS_ROOT, d))]
+    except OSError:
+        return []
+    live = []
+    for rid in ids:
+        try:
+            meta = _read_run(rid)
+        except Exception:
+            continue
+        if meta.get("state") not in ("running",):
+            continue
+        rc, out, _ = _ssh(f"kill -0 {meta.get('pid')} 2>/dev/null && echo ALIVE", timeout=25)
+        if "ALIVE" in out:
+            live.append({"run_id": rid, "output_name": meta.get("output_name"),
+                         "started": meta.get("started")})
+        else:
+            meta["state"] = "finished_or_died"
+            try:
+                _write_run(rid, meta)
+            except Exception:
+                pass
+    return live
+
+
+@mcp.tool()
+def train_lora(batch_folder: str, output_name: str, base_model: str = "",
+               trigger: str = "", trainer: str = "kohya", repeats: int = 10,
+               resolution: int = 1024, network_dim: int = 16, network_alpha: int = 16,
+               learning_rate: str = "1e-4", optimizer: str = "AdamW8bit",
+               scheduler: str = "cosine", train_batch_size: int = 2, max_epochs: int = 10,
+               save_every_n_epochs: int = 2, gpu_index: int = -1,
+               mixed_precision: str = "bf16", dry_run: bool = False) -> str:
+    """Launch a LoRA training run from a training_batch. Returns a run_id immediately.
+
+    VALIDATES BEFORE LAUNCHING, because a run that dies twenty minutes in for a reason visible
+    up front wastes an hour: the batch must exist, hold images, and every image must have its
+    .txt sidecar (an unlabeled image trains as noise). Refuses rather than warns.
+
+    Builds kohya's expected dataset layout automatically — kohya wants
+    <dataset>/<repeats>_<concept>/ containing the images, not a flat folder — using symlinks so
+    nothing is duplicated.
+
+    Bucketing is ON (enable_bucket, 1024 base) because the batch mixes cropped 1024x1024 with
+    native-resolution portrait/landscape images.
+
+    Args:
+        batch_folder: the training batch, relative (e.g. satin/solids/red/training_batch).
+        output_name: LoRA name, e.g. satin_string_bikini_panties_v1.
+        base_model: absolute path to the base checkpoint. Empty = pick the newest Illustrious.
+        trigger: concept/trigger word for the dataset folder. Empty = output_name.
+        trainer: 'kohya' (SDXL). 'aitoolkit' is refused until its Krea support exists.
+        repeats: dataset repeats per epoch (kohya's N_ prefix).
+        gpu_index: -1 picks the GPU with the most free VRAM.
+        dry_run: build everything and return the exact command WITHOUT launching.
+    """
+    if trainer not in ("kohya", "aitoolkit"):
+        return _j({"error": f"unknown trainer {trainer!r} — use 'kohya' or 'aitoolkit'"})
+    if trainer == "aitoolkit":
+        return _j({"error": "AI Toolkit training is not wired up: the installed checkout "
+                            "(2026-03-28) has no Krea support, which is the only reason to use "
+                            "it here. Call aitoolkit_status() for the detail.",
+                   "action": "update /opt/ai-toolkit on ai-epyc first — a deliberate change"})
+
+    # ── validate the dataset BEFORE doing anything expensive ──
+    try:
+        batch_abs = _abs_under_imagegen(batch_folder)
+    except ValueError as e:
+        return _j({"error": str(e)})
+    if not os.path.isdir(batch_abs):
+        return _j({"error": f"batch folder not found: {batch_folder}"})
+    imgs = [f for f in sorted(os.listdir(batch_abs))
+            if os.path.splitext(f)[1].lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+            and not f.startswith("_collage")]
+    if not imgs:
+        return _j({"error": f"batch is EMPTY: {batch_folder}"})
+    unlabeled = [f for f in imgs
+                 if not os.path.exists(os.path.join(batch_abs, os.path.splitext(f)[0] + ".txt"))]
+    if unlabeled:
+        return _j({"error": "REFUSING to train: images without a .txt sidecar would train "
+                            "UNLABELED and quietly degrade the LoRA",
+                   "unlabeled": unlabeled[:20], "count": len(unlabeled),
+                   "fix": "caption them (run_tagger) or remove_from_training_batch them"})
+
+    trig = (trigger or output_name).strip().replace(" ", "_")
+    if not base_model:
+        rc, out, _ = _ssh(f"ls -t {_CKPT_ROOT}/Illustrious/*.safetensors 2>/dev/null | head -1")
+        base_model = out.strip()
+        if not base_model:
+            return _j({"error": "no base_model given and no Illustrious checkpoint found",
+                       "hint": f"pass base_model, e.g. {_CKPT_ROOT}/Pony_XL/PonyMegaMixXL_v20.safetensors"})
+    rc, out, _ = _ssh(f"test -f '{base_model}' && echo OK")
+    if "OK" not in out:
+        return _j({"error": f"base_model not found on {_TRAIN_HOST}: {base_model}"})
+
+    if gpu_index < 0:
+        rc, out, _ = _ssh("nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader")
+        best, best_free = 0, -1
+        for line in out.splitlines():
+            p = [x.strip() for x in line.split(",")]
+            if len(p) == 3 and p[0].isdigit():
+                free = int(p[2].split()[0]) - int(p[1].split()[0])
+                if free > best_free:
+                    best, best_free = int(p[0]), free
+        gpu_index = best
+        if best_free < 10000:
+            return _j({"error": f"no GPU has enough free VRAM (best: GPU{best} with {best_free} MiB)",
+                       "note": "SDXL LoRA at 1024 needs roughly 10-12 GiB free; wait or free a GPU"})
+
+    run_id = f"{output_name}-{_time.strftime('%Y%m%d-%H%M%S')}"
+    rdir = os.path.join(_RUNS_ROOT, run_id)
+    dsdir = os.path.join(rdir, "dataset", f"{repeats}_{trig}")
+    os.makedirs(dsdir, exist_ok=True)
+    # Symlink rather than copy: the batch can be gigabytes and the run dir is only a view of it.
+    for f in os.listdir(batch_abs):
+        src, dst = os.path.join(batch_abs, f), os.path.join(dsdir, f)
+        if not os.path.exists(dst):
+            try:
+                os.symlink(src, dst)
+            except OSError:
+                shutil.copy2(src, dst)
+
+    outdir = os.path.join(_LORA_OUT, "trained")
+    log = os.path.join(rdir, "train.log")
+    cmd = (
+        f"cd {_KOHYA_DIR}/sd-scripts && CUDA_VISIBLE_DEVICES={gpu_index} "
+        f"{_KOHYA_ACCEL} launch --num_cpu_threads_per_process 4 sdxl_train_network.py "
+        f"--pretrained_model_name_or_path='{base_model}' "
+        f"--train_data_dir='{os.path.join(rdir, 'dataset')}' "
+        f"--output_dir='{outdir}' --output_name='{output_name}' "
+        f"--caption_extension='.txt' --resolution={resolution},{resolution} "
+        f"--enable_bucket --min_bucket_reso=512 --max_bucket_reso=2048 --bucket_reso_steps=64 "
+        f"--network_module=networks.lora --network_dim={network_dim} --network_alpha={network_alpha} "
+        f"--learning_rate={learning_rate} --optimizer_type={optimizer} --lr_scheduler={scheduler} "
+        f"--train_batch_size={train_batch_size} --max_train_epochs={max_epochs} "
+        f"--save_every_n_epochs={save_every_n_epochs} --save_model_as=safetensors "
+        f"--mixed_precision={mixed_precision} --cache_latents --xformers --gradient_checkpointing "
+        f"--seed=42 --logging_dir='{os.path.join(rdir, 'logs')}'"
+    )
+    meta = {
+        "run_id": run_id, "trainer": "kohya", "state": "dry_run" if dry_run else "running",
+        "output_name": output_name, "base_model": base_model, "trigger": trig,
+        "batch_folder": _scope(batch_folder), "images": len(imgs), "repeats": repeats,
+        "gpu_index": gpu_index, "resolution": resolution, "epochs": max_epochs,
+        "network_dim": network_dim, "network_alpha": network_alpha,
+        "output_dir": outdir, "log": log, "command": cmd,
+        "started": _time.strftime("%Y-%m-%d %H:%M:%S"), "pid": None,
+    }
+    if dry_run:
+        _write_run(run_id, meta)
+        return _j({**meta, "note": "DRY RUN — nothing launched. Inspect 'command', then re-call "
+                                   "with dry_run=false."})
+
+    _ssh(f"mkdir -p '{outdir}' '{os.path.join(rdir, 'logs')}'")
+    # setsid: a training run outlives this call by hours. Without it the job dies with the SSH
+    # channel and a later status poll would report a run that never really started.
+    launch = f"cd {_KOHYA_DIR}/sd-scripts && setsid nohup bash -c {shlex.quote(cmd)} > '{log}' 2>&1 < /dev/null & echo $!"
+    rc, out, err = _ssh(launch, timeout=90)
+    pid = out.strip().split()[-1] if out.strip() else None
+    if not pid or not pid.isdigit():
+        meta["state"] = "launch_failed"
+        meta["error"] = (err or out)[:400]
+        _write_run(run_id, meta)
+        return _j({"error": "launch failed", "run_id": run_id, "detail": (err or out)[:400]})
+    meta["pid"] = int(pid)
+    _write_run(run_id, meta)
+    return _j({"run_id": run_id, "state": "running", "pid": int(pid), "gpu_index": gpu_index,
+               "images": len(imgs), "base_model": base_model, "output_name": output_name,
+               "poll_with": f"train_lora_status('{run_id}')",
+               "note": f"{len(imgs)} images x{repeats} repeats over {max_epochs} epochs on GPU{gpu_index}"})
+
+
+@mcp.tool()
+def train_lora_status(run_id: str) -> str:
+    """Progress for a run: alive/finished, current epoch/step, recent loss, last checkpoint.
+
+    Pollable. Reads the training log rather than guessing from elapsed time — a run that has
+    silently stopped writing is reported as such, not as 'probably still going'.
+
+    Args:
+        run_id: from train_lora.
+    """
+    try:
+        meta = _read_run(run_id)
+    except Exception as e:
+        return _j({"error": f"no such run: {run_id} ({e.__class__.__name__})"})
+    alive = False
+    if meta.get("pid"):
+        rc, out, _ = _ssh(f"kill -0 {meta['pid']} 2>/dev/null && echo ALIVE", timeout=25)
+        alive = "ALIVE" in out
+    log = meta.get("log", "")
+    tail, mtime_age = "", None
+    try:
+        with open(log, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 6000))
+            tail = f.read().decode("utf-8", "replace")
+        mtime_age = int(_time.time() - os.path.getmtime(log))
+    except OSError:
+        pass
+    import re as _re
+    steps = _re.findall(r"(\d+)/(\d+)\s*\[", tail)
+    loss = _re.findall(r"loss[=:]\s*([0-9.]+)", tail, _re.I)
+    epoch = _re.findall(r"epoch\s+(\d+)\s*/\s*(\d+)", tail, _re.I)
+    rc, ck, _ = _ssh(f"ls -t '{meta.get('output_dir','')}/{meta.get('output_name','')}'*.safetensors 2>/dev/null | head -3")
+    if not alive and meta.get("state") == "running":
+        meta["state"] = "finished" if ck.strip() else "stopped_without_output"
+        _write_run(run_id, meta)
+    return _j({
+        "run_id": run_id, "state": meta.get("state"), "alive": alive,
+        "output_name": meta.get("output_name"), "gpu_index": meta.get("gpu_index"),
+        "started": meta.get("started"),
+        "progress": {"last_step": steps[-1] if steps else None,
+                     "epoch": epoch[-1] if epoch else None,
+                     "recent_loss": loss[-1] if loss else None},
+        "log_idle_seconds": mtime_age,
+        "log_stalled": (mtime_age is not None and mtime_age > 600 and alive),
+        "checkpoints": [c for c in ck.splitlines() if c.strip()],
+        "log_tail": tail[-1200:],
+    })
+
+
+@mcp.tool()
+def train_lora_stop(run_id: str) -> str:
+    """Stop a running training job cleanly (SIGTERM, then SIGKILL if it ignores it).
+
+    Args:
+        run_id: from train_lora.
+    """
+    try:
+        meta = _read_run(run_id)
+    except Exception as e:
+        return _j({"error": f"no such run: {run_id} ({e.__class__.__name__})"})
+    pid = meta.get("pid")
+    if not pid:
+        return _j({"error": "run has no recorded pid", "state": meta.get("state")})
+    # Kill the PROCESS GROUP: accelerate spawns children, and killing only the parent leaves the
+    # trainer holding the GPU. setsid at launch is what makes the group addressable.
+    _ssh(f"kill -TERM -{pid} 2>/dev/null || kill -TERM {pid} 2>/dev/null; true", timeout=25)
+    _ssh("sleep 5; true", timeout=25)
+    rc, out, _ = _ssh(f"kill -0 {pid} 2>/dev/null && echo STILL", timeout=25)
+    if "STILL" in out:
+        _ssh(f"kill -KILL -{pid} 2>/dev/null || kill -KILL {pid} 2>/dev/null; true", timeout=25)
+    meta["state"] = "stopped"
+    _write_run(run_id, meta)
+    return _j({"run_id": run_id, "state": "stopped", "pid": pid})
+
+
+@mcp.tool()
+def list_lora_outputs() -> str:
+    """List trained LoRA .safetensors with size and mtime, newest first, plus known runs."""
+    rc, out, _ = _ssh(
+        f"ls -lt --time-style=+%Y-%m-%d_%H:%M '{_LORA_OUT}/trained/'*.safetensors 2>/dev/null | head -25")
+    files = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 7:
+            files.append({"file": parts[-1], "bytes": int(parts[4]) if parts[4].isdigit() else None,
+                          "modified": parts[5]})
+    runs = []
+    try:
+        for rid in sorted(os.listdir(_RUNS_ROOT), reverse=True)[:15]:
+            try:
+                m = _read_run(rid)
+                runs.append({"run_id": rid, "state": m.get("state"),
+                             "output_name": m.get("output_name"), "started": m.get("started")})
+            except Exception:
+                continue
+    except OSError:
+        pass
+    return _j({"output_dir": f"{_LORA_OUT}/trained", "loras": files, "runs": runs})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ENTRY POINT — MUST STAY LAST IN THIS FILE.
+#
+# mcp.run() blocks. Anything defined BELOW it never executes when the module is run as a
+# server, so a tool appended after this line is silently absent from tools/list while still
+# importable and still passing any test that imports the module. That exact mistake cost a
+# debugging round on 2026-09-02: the file held 31 tools and the server advertised 22.
+#
+# Append new tools ABOVE this block.
+# ══════════════════════════════════════════════════════════════════════════════
+if __name__ == "__main__":
+    mcp.run(transport="stdio")

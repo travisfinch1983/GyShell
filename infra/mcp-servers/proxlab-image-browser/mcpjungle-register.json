@@ -1,0 +1,7 @@
+{
+  "name": "proxlab-image-browser",
+  "transport": "stdio",
+  "description": "AI Imagegen / LoRA training-set browser, cropper, captioner, training batches and LoRA training control",
+  "command": "/opt/mcp-proxlab-cluster/.venv/bin/python",
+  "args": ["/opt/mcp-proxlab-image-browser/server.py"]
+}
