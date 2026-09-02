@@ -905,25 +905,40 @@ export function createImagegenRouter(config) {
     } catch { /* root readable — safeResolve passed */ }
     const dest = path.join(root, destName);
     try { mkdirSync(dest, { recursive: true }); chmodSync(dest, 0o777); } catch { /* best-effort */ }
+    // Members are named <concept>-<n> and NUMBERING CONTINUES from the highest already
+    // there — a later add picks up where the last one stopped (Travis, 2026-09-02).
+    const concept = subsectionParts(destName).concept;
+    let seq = 0;
+    try {
+      for (const f of readdirSync(dest)) {
+        const m = new RegExp('^' + concept.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '-(\\d+)\\.').exec(f);
+        if (m) seq = Math.max(seq, parseInt(m[1], 10));
+      }
+    } catch { /* fresh dir */ }
     const srcRatings = loadRatings(dir);
     const destRatings = loadRatings(dest);
-    let moved = 0; const notFound = []; let ratingsMoved = 0;
+    let moved = 0; const notFound = []; const alreadyThere = []; const renamed = []; let ratingsMoved = 0;
     for (const nm of files) {
       if (typeof nm !== 'string' || !nm || nm.includes('/') || nm.includes('..') || nm.startsWith('.')) { notFound.push(nm); continue; }
       const f = path.join(dir, nm);
       if (!existsSync(f)) { notFound.push(nm); continue; }
-      renameSync(f, path.join(dest, nm));
+      if (dir === dest) { alreadyThere.push(nm); continue; }   // re-assigning members must not renumber them
+      const newName = `${concept}-${++seq}${path.extname(nm).toLowerCase()}`;
+      renameSync(f, path.join(dest, newName));
       const stem = nm.replace(/\.[^.]+$/, '');
+      const newStem = newName.replace(/\.[^.]+$/, '');
       for (const ext of ['.txt', '.caption']) {
         const car = path.join(dir, stem + ext);
-        if (existsSync(car)) renameSync(car, path.join(dest, stem + ext));
+        if (existsSync(car)) renameSync(car, path.join(dest, newStem + ext));
       }
-      if (srcRatings[nm]) { destRatings[nm] = srcRatings[nm]; delete srcRatings[nm]; ratingsMoved++; }
+      if (srcRatings[nm]) { destRatings[newName] = srcRatings[nm]; delete srcRatings[nm]; ratingsMoved++; }
+      renamed.push({ from: nm, to: newName });
       moved++;
     }
     if (ratingsMoved) { saveRatings(dir, srcRatings); saveRatings(dest, destRatings); }
     res.json({ ok: true, subsection: destName, reused: destName !== `${repeats}_${name}`,
-               path: path.relative(BASE, dest), moved, not_found: notFound, ratings_moved: ratingsMoved });
+               path: path.relative(BASE, dest), moved, renamed, already_in_section: alreadyThere,
+               not_found: notFound, ratings_moved: ratingsMoved });
   });
 
   // ---- Change a subsection's kohya repeats: rename <N>_<concept> → <M>_<concept>. ----
