@@ -389,6 +389,26 @@ async def main():
                                 saw_screen = True
                         except Exception as e:
                             emit({"t": "error", "where": "image", "message": str(e)})
+                    # A leading "/" IS A SLASH COMMAND for the Hermes ACP adapter, which intercepts
+                    # it only when the text starts with "/" AND the content collapses to a plain
+                    # string. Our preamble puts "[Session context]" in front and images make it a
+                    # block LIST, so both halves of that check fail and the command reaches the
+                    # MODEL as prose -- the agent then reasons about being sent the word "/compress".
+                    # A command is a gateway operation: no view context, no images.
+                    is_slash = isinstance(text, str) and text.lstrip().startswith("/")
+                    if is_slash:
+                        bare = text.lstrip()
+                        blocks = [TextContentBlock(type="text", text=bare) if TextContentBlock
+                                  else {"type": "text", "text": bare}]
+                        if current and not current.done():
+                            emit({"t": "error", "where": "prompt",
+                                  "message": "busy: a turn is already running"})
+                        else:
+                            # conv_injected deliberately NOT set: the conversation-id preamble is a
+                            # once-per-conversation injection, and letting a command consume it would
+                            # silently strip it from the next real turn.
+                            current = asyncio.create_task(run_prompt(blocks))
+                        continue
                     preamble = []
                     if saw_screen:
                         preamble.append("[The user's current screen is attached as an image — "
