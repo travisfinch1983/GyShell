@@ -981,7 +981,8 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
                learning_rate: str = "1e-4", optimizer: str = "AdamW8bit",
                scheduler: str = "cosine", train_batch_size: int = 2, max_epochs: int = 10,
                save_every_n_epochs: int = 2, gpu_index: int = -1,
-               mixed_precision: str = "bf16", dry_run: bool = False) -> str:
+               mixed_precision: str = "bf16", attention: str = "sdpa",
+               dry_run: bool = False) -> str:
     """Launch a LoRA training run from a training_batch. Returns a run_id immediately.
 
     VALIDATES BEFORE LAUNCHING, because a run that dies twenty minutes in for a reason visible
@@ -1062,19 +1063,49 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
     rdir = os.path.join(_RUNS_ROOT, run_id)
     dsdir = os.path.join(rdir, "dataset", f"{repeats}_{trig}")
     os.makedirs(dsdir, exist_ok=True)
-    # Symlink rather than copy: the batch can be gigabytes and the run dir is only a view of it.
+    # 🛑 COPY, NOT SYMLINK. The training host cannot see symlinks written here: /imagegen is
+    # shared, but a symlink created on CT152 is invisible on ai-epyc (verified with a plain-file
+    # control, which IS visible), and hardlinks fail with "Invalid cross-device link" because
+    # lora_runs and training_images are separate devices. The first real run died with kohya's
+    # "No data found" against a directory that looked full from here and was empty from there.
+    # An earlier `except OSError: copy` fallback could never fire, because the symlink SUCCEEDS
+    # locally — it just does not propagate. A fallback keyed on the wrong failure is not one.
     for f in os.listdir(batch_abs):
         src, dst = os.path.join(batch_abs, f), os.path.join(dsdir, f)
         if not os.path.exists(dst):
-            try:
-                os.symlink(src, dst)
-            except OSError:
-                shutil.copy2(src, dst)
+            shutil.copy2(src, dst)
+
+    # Confirm the TRAINING HOST can see the dataset. The run that motivated this died because
+    # the directory was full locally and empty remotely; one check turns a 40-second failure
+    # deep inside kohya into an immediate, explicit error.
+    rc, seen, _ = _ssh(f"ls -1 '{dsdir}' 2>/dev/null | wc -l", timeout=40)
+    try:
+        seen_n = int((seen or "0").strip().split()[-1])
+    except (ValueError, IndexError):
+        seen_n = -1
+    if seen_n < len(imgs):
+        return _j({"error": "the training host cannot see the prepared dataset",
+                   "detail": f"{_TRAIN_HOST} sees {seen_n} entries in {dsdir}; expected at least "
+                             f"{len(imgs)} images. The run would fail with kohya's 'No data found'.",
+                   "hint": "check that /imagegen is mounted on the training host and that the "
+                           "dataset was copied rather than linked"})
+
+    # Attention backend. DEFAULT sdpa: xformers 0.0.30 here dispatches to a flash-attention
+    # HOPPER kernel and dies with "no kernel image is available for execution on the device" on
+    # both card types in this box (Ada sm_89, Blackwell sm_120). torch 2.7's native SDPA needs
+    # no per-architecture kernel image.
+    if attention not in ("sdpa", "xformers", "mem_eff_attn"):
+        return _j({"error": f"attention must be sdpa, xformers or mem_eff_attn (got {attention!r})"})
+    attn = attention
 
     outdir = os.path.join(_LORA_OUT, "trained")
     log = os.path.join(rdir, "train.log")
     cmd = (
-        f"cd {_KOHYA_DIR}/sd-scripts && CUDA_VISIBLE_DEVICES={gpu_index} "
+        # CUDA_DEVICE_ORDER=PCI_BUS_ID: without it CUDA numbers devices by its own
+        # heuristic, which does NOT match nvidia-smi — the index we measured free VRAM
+        # on could select a different physical card. Verified they agree with it set.
+        f"cd {_KOHYA_DIR}/sd-scripts && CUDA_DEVICE_ORDER=PCI_BUS_ID "
+        f"CUDA_VISIBLE_DEVICES={gpu_index} "
         f"{_KOHYA_ACCEL} launch --num_cpu_threads_per_process 4 sdxl_train_network.py "
         f"--pretrained_model_name_or_path='{base_model}' "
         f"--train_data_dir='{os.path.join(rdir, 'dataset')}' "
@@ -1085,7 +1116,7 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
         f"--learning_rate={learning_rate} --optimizer_type={optimizer} --lr_scheduler={scheduler} "
         f"--train_batch_size={train_batch_size} --max_train_epochs={max_epochs} "
         f"--save_every_n_epochs={save_every_n_epochs} --save_model_as=safetensors "
-        f"--mixed_precision={mixed_precision} --cache_latents --xformers --gradient_checkpointing "
+        f"--mixed_precision={mixed_precision} --cache_latents --{attn} --gradient_checkpointing "
         f"--seed=42 --logging_dir='{os.path.join(rdir, 'logs')}'"
     )
     meta = {
@@ -1103,17 +1134,49 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
                                    "with dry_run=false."})
 
     _ssh(f"mkdir -p '{outdir}' '{os.path.join(rdir, 'logs')}'")
-    # setsid: a training run outlives this call by hours. Without it the job dies with the SSH
-    # channel and a later status poll would report a run that never really started.
-    launch = f"cd {_KOHYA_DIR}/sd-scripts && setsid nohup bash -c {shlex.quote(cmd)} > '{log}' 2>&1 < /dev/null & echo $!"
-    rc, out, err = _ssh(launch, timeout=90)
-    pid = out.strip().split()[-1] if out.strip() else None
-    if not pid or not pid.isdigit():
+
+    # 🛑 PERSIST BEFORE LAUNCHING. Metadata must exist the moment the run could exist. Writing it
+    # only after a successful launch means any reporting failure leaves an untrackable process
+    # holding a GPU, which is the worst outcome available — and it happened: an ssh launch that
+    # hung past its timeout raised, so a happily-training run had no run.json and
+    # train_lora_status could not find it.
+    meta["state"] = "launching"
+    _write_run(run_id, meta)
+
+    # setsid: a training run outlives this call by hours. The PID goes to a FILE on the shared
+    # mount rather than back over stdout, and the outer shell is redirected too, so ssh has
+    # nothing left to wait on — the backgrounded trainer inherits fds and would otherwise hold
+    # the channel open until the timeout, turning a successful launch into an exception.
+    pidfile = os.path.join(rdir, "pid")
+    launch = (f"cd {_KOHYA_DIR}/sd-scripts && "
+              f"{{ setsid nohup bash -c {shlex.quote(cmd)} > '{log}' 2>&1 < /dev/null & "
+              f"echo $! > '{pidfile}'; }} > /dev/null 2>&1 < /dev/null; exit 0")
+    try:
+        _ssh(launch, timeout=45)
+    except Exception as e:                      # a slow channel must not fail a live launch
+        meta["launch_note"] = f"ssh returned {e.__class__.__name__}; checking for the pid file"
+
+    # The pid file is the authority: if it exists, the launch happened, whatever ssh did.
+    pid = None
+    for _ in range(15):
+        try:
+            with open(pidfile) as f:
+                txt = f.read().strip()
+            if txt.isdigit():
+                pid = int(txt)
+                break
+        except OSError:
+            pass
+        _time.sleep(1)
+
+    if pid is None:
         meta["state"] = "launch_failed"
-        meta["error"] = (err or out)[:400]
+        meta["error"] = "no pid file appeared; the trainer did not start"
         _write_run(run_id, meta)
-        return _j({"error": "launch failed", "run_id": run_id, "detail": (err or out)[:400]})
-    meta["pid"] = int(pid)
+        return _j({"error": "launch failed", "run_id": run_id,
+                   "detail": "no pid file appeared on the training host", "log": log})
+    meta["pid"] = pid
+    meta["state"] = "running"
     _write_run(run_id, meta)
     return _j({"run_id": run_id, "state": "running", "pid": int(pid), "gpu_index": gpu_index,
                "images": len(imgs), "base_model": base_model, "output_name": output_name,
