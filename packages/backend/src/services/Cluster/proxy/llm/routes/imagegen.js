@@ -41,6 +41,15 @@ const ONNX_LD = `LD_LIBRARY_PATH="$(echo /opt/imagegen-tagger/.venv/lib/python*/
 const BLIP_PY = '/opt/photo-upscale/.venv/bin/python';   // has torch cu128 + transformers
 const BLIP_SCRIPT = '/opt/imagegen-tagger/blip_caption.py';
 const BLIP_MODEL_DIR = '/imagegen/blip/hf-large';
+// Instructed natural-language captioner. Sends each image to the AI-Lab proxy's vision model
+// rather than a local captioner, so the caption can actually be STEERED (material, how light
+// behaves on it, cut, view) instead of the generic scene description BLIP tops out at — on the
+// red-satin set BLIP produced "a woman in a pink bikini" (it collapsed a pink tube top and the
+// red garment) and elsewhere omitted the garment entirely. ~3s/image, so ~4 min for 90 images.
+// Runs under the same venv as BLIP (it only needs PIL + stdlib http).
+const VLM_SCRIPT = '/opt/imagegen-tagger/vlm_caption.py';
+const VLM_MODEL = process.env.IMAGEGEN_VLM_MODEL || 'Qwen3.5-9B-INT8-MM-Thinking-Non_preserved-256k';
+const VLM_API = process.env.IMAGEGEN_VLM_API || 'http://10.0.0.219:17890/api/proxy/llm/v1/chat/completions';
 const TAGGER_GPU_INDEX = 4;   // the RTX 4090 (5060 Tis are Blackwell — onnxruntime CUDA EP n/a)
 const captionJobs = new Map();   // jobId -> { state, total, done, wrote, skipped, errors, ... }
 
@@ -611,6 +620,7 @@ export function createImagegenRouter(config) {
       }
     } catch { /* ignore */ }
     out.push({ id: 'blip-large', label: 'BLIP large — natural language (GPU)', kind: 'blip', engine: 'blip' });
+    out.push({ id: 'vlm-qwen', label: 'Qwen3.5-9B — instructed natural language (steerable)', kind: 'vlm', engine: 'vlm' });
     res.json({ taggers: out, default_gpu_index: TAGGER_GPU_INDEX });
   });
 
@@ -627,7 +637,7 @@ export function createImagegenRouter(config) {
     // so force it open before dispatch (best-effort; we own training-set folders).
     try { chmodSync(dir, 0o777); } catch { /* ignore */ }
     const b = req.body || {};
-    const engine = b.engine === 'blip' ? 'blip' : 'onnx';
+    const engine = b.engine === 'blip' ? 'blip' : (b.engine === 'vlm' ? 'vlm' : 'onnx');
     const model = String(b.model || '');
     if (engine === 'onnx' && !/^[\w.-]+$/.test(model)) {   // guard: no shell-meta / traversal
       return res.status(400).json({ error: 'bad model' });
@@ -635,12 +645,27 @@ export function createImagegenRouter(config) {
     const device = b.device === 'cuda' ? 'cuda' : 'cpu';
     // Separate sidecars per engine so booru tags + natural-language captions co-exist:
     // WD/JoyTag -> .txt (training tags), BLIP -> .caption. Override via body.caption_ext.
-    let ext = String(b.caption_ext || (engine === 'blip' ? 'caption' : 'txt'));
-    if (!/^[a-z0-9]{1,8}$/i.test(ext)) ext = engine === 'blip' ? 'caption' : 'txt';
+    // NL engines (blip, vlm) share the .caption sidecar so either can produce it; booru tags
+    // stay in .txt. Both co-exist on the same image.
+    const isNl = engine === 'blip' || engine === 'vlm';
+    let ext = String(b.caption_ext || (isNl ? 'caption' : 'txt'));
+    if (!/^[a-z0-9]{1,8}$/i.test(ext)) ext = isNl ? 'caption' : 'txt';
     const remoteFolder = `${TAGGER_REMOTE_TI}/${rel}`;
     const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;   // single-quote for the remote shell
     let cmd;
-    if (engine === 'blip') {
+    if (engine === 'vlm') {
+      // --context carries the domain hint ("these are all X") so the model knows what it is
+      // looking at. --avoid keeps the trigger phrase OUT of the prose: the trigger is prepended
+      // separately, and saying it twice is redundant. Defaults to the trigger when not given.
+      cmd = `${BLIP_PY} ${VLM_SCRIPT} --folder ${q(remoteFolder)} --caption-ext ${ext} `
+          + `--api ${q(VLM_API)} --model ${q(String(b.vlm_model || VLM_MODEL))}`
+          + (b.instruction ? ` --instruction ${q(String(b.instruction))}` : '')
+          + (b.context ? ` --context ${q(String(b.context))}` : '')
+          + (b.avoid ? ` --avoid ${q(String(b.avoid))}` : '')
+          + (b.max_side ? ` --max-side ${parseInt(b.max_side, 10)}` : '')
+          + (b.trigger ? ` --trigger ${q(b.trigger)}` : '')
+          + (b.overwrite ? ' --overwrite' : '') + ' --json';
+    } else if (engine === 'blip') {
       cmd = `${BLIP_PY} ${BLIP_SCRIPT} --folder ${q(remoteFolder)} --model-dir ${q(BLIP_MODEL_DIR)} `
           + `--device cuda --gpu-index ${TAGGER_GPU_INDEX} --caption-ext ${ext}`
           + (b.trigger ? ` --trigger ${q(b.trigger)}` : '')
@@ -655,7 +680,7 @@ export function createImagegenRouter(config) {
           + (b.overwrite ? ' --overwrite' : '') + ' --json';
     }
     const jobId = crypto.randomBytes(6).toString('hex');
-    captionJobs.set(jobId, { state: 'running', total: 0, done: 0, wrote: 0, skipped: 0, errors: 0, model: engine === 'blip' ? 'blip-large' : model });
+    captionJobs.set(jobId, { state: 'running', total: 0, done: 0, wrote: 0, skipped: 0, errors: 0, model: engine === 'blip' ? 'blip-large' : (engine === 'vlm' ? String(b.vlm_model || VLM_MODEL) : model) });
     const sshArgs = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no',
       '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=20'];
     if (SSH_KEY) sshArgs.push('-i', SSH_KEY);
