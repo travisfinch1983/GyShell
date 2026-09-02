@@ -381,7 +381,19 @@ export const TrainingImagesPanel: React.FC = observer(() => {
       </div>
 
       {lb && <Lightbox rel={lb.rel} name={lb.name} bust={lb.bust} onClose={() => setLb(null)} />}
-      {crop && <CropEditor rel={crop.rel} name={crop.name} onClose={() => setCrop(null)} onChanged={() => void store.browse(store.cwd)} />}
+      {crop && (() => {
+        // key=rel: every image gets a freshly mounted editor — box, tags, rating and
+        // message state must never leak from the previous image while paging through.
+        const i = store.images.findIndex((x) => x.rel === crop.rel)
+        return <CropEditor key={crop.rel} rel={crop.rel} name={crop.name}
+          onClose={() => setCrop(null)} onChanged={() => void store.browse(store.cwd)}
+          navPos={i >= 0 ? { i, n: store.images.length } : undefined}
+          onNav={(dir) => {
+            const at = store.images.findIndex((x) => x.rel === crop.rel)
+            const next = at >= 0 ? store.images[at + dir] : undefined
+            if (next) setCrop({ rel: next.rel, name: next.name })
+          }} />
+      })()}
       {autoCap && <AutoCaptionModal onClose={() => setAutoCap(false)} />}
       {blanket && <BlanketTagModal files={[...store.selected]} onClose={() => setBlanket(false)} onDone={() => void store.browse(store.cwd)} />}
       {batchAdd && <AddToBatchModal kind="batch" files={[...store.selected]} onClose={() => setBatchAdd(false)} />}

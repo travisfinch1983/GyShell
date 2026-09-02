@@ -11,7 +11,7 @@ const CROP_PRESETS = [
 ]
 const CORNERS: Record<string, [number, number]> = { nw: [-1, -1], ne: [1, -1], sw: [-1, 1], se: [1, 1] }
 
-export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => void; onChanged: () => void }> = observer(({ rel, name, onClose, onChanged }) => {
+export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => void; onChanged: () => void; navPos?: { i: number; n: number }; onNav?: (dir: 1 | -1) => void }> = observer(({ rel, name, onClose, onChanged, navPos, onNav }) => {
   const imgRef = useRef<HTMLImageElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
@@ -93,13 +93,14 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
     e.preventDefault(); e.stopPropagation()
   }
 
-  const apply = async () => {
+  const apply = async (): Promise<boolean> => {
     const s = S.current
     setMsg('Applying…')
     try {
       const r = await store.crop({ path: rel, left: Math.round(s.box.x / s.fit), top: Math.round(s.box.y / s.fit), width: Math.round(s.box.w / s.fit), height: Math.round(s.box.h / s.fit), target_w: s.target.w, target_h: s.target.h })
       setMsg(`Saved ${r.w}×${r.h}.`); loadImg(); onChanged()
-    } catch (e: any) { setMsg('Failed: ' + (e?.message || e)) }
+      return true
+    } catch (e: any) { setMsg('Failed: ' + (e?.message || e)); return false }
   }
   const reset = async () => { setMsg('Restoring original…'); try { await store.resetCrop(rel); setMsg('Restored pristine original.'); loadImg(); onChanged() } catch (e: any) { setMsg('Failed: ' + (e?.message || e)) } }
   const upscale = async () => {
@@ -141,6 +142,18 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
     } catch (e: any) { setMsg('Save failed: ' + (e?.message || e)) }
   }
   const closeSave = () => { void saveAll().finally(onClose) }
+  // Navigation saves like Close does — moving on must not discard caption/rating
+  // edits typed on this image. The parent remounts the editor (key=rel) so every
+  // image opens with clean state.
+  const goNav = (dir: 1 | -1) => { void saveAll().finally(() => onNav?.(dir)) }
+  const cropAndContinue = async () => {
+    // A failed crop STAYS on the image with its error message — auto-advancing past
+    // a failure would turn one bad crop into a silently skipped image.
+    if (!(await apply())) return
+    await saveAll()
+    if (navPos && navPos.i < navPos.n - 1) onNav?.(1)
+    else setMsg('Cropped — last image.')
+  }
 
   return (
     <div className={styles.crBg} onClick={closeSave}>
@@ -189,6 +202,12 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
             <span className={styles.msg}>{msg}</span>
             <button className={styles.btnPrimary} onClick={() => void saveAll()}>Save all</button>
           </div>
+        </div>
+        <div className={styles.crNav}>
+          <button className={styles.btn} disabled={busy || !navPos || navPos.i <= 0} onClick={() => goNav(-1)}>‹ Previous Image</button>
+          <button className={styles.btnPrimary} disabled={busy || !onNav} onClick={() => void cropAndContinue()}>Crop and Continue</button>
+          <button className={styles.btn} disabled={busy || !navPos || navPos.i >= navPos.n - 1} onClick={() => goNav(1)}>Next Image ›</button>
+          {navPos && <span className={styles.crNavPos}>{navPos.i + 1} / {navPos.n}</span>}
         </div>
       </div>
     </div>

@@ -128,3 +128,7 @@
 .capBar { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--border); font-size: 12px; flex: 0 0 auto; }
 .capTrack { flex: 1; min-width: 120px; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 15%, transparent); overflow: hidden; }
 .capFill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .5s ease; }
+
+/* crop-editor navigation: page through images without closing the previewer */
+.crNav { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); flex: 0 0 auto; position: relative; }
+.crNavPos { position: absolute; right: 14px; font-size: 11px; color: var(--fg-faint, #888); font-variant-numeric: tabular-nums; }
