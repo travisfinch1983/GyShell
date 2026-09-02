@@ -1,0 +1,116 @@
+#!/bin/bash
+# Catch whatever strips agent model bindings, IN THE ACT.
+#
+# On 2026-08-31 every Hermes profile lost model.provider/model.default. Ruled out: a Hermes
+# auto-update (install untouched since 08-20), `hermes config set` (tested — strips nothing),
+# and model-binding-audit.py (read-only). The trigger was never identified, and a 15-minute
+# poll can only ever say "sometime in the last 15 minutes".
+#
+# This watches the profile configs with inotify and reacts within milliseconds, capturing the
+# process table WHILE the writer is likely still alive. The kernel audit subsystem would name
+# the pid outright, but auditctl cannot register watches in an unprivileged LXC — so this
+# trades certainty for immediacy and records enough to correlate.
+#
+# WHAT THIS TOOL CANNOT DO — stated up front, because the first version implied otherwise.
+# It captures state AFTER the write. A short-lived writer (a `hermes` CLI call, a migration
+# script, a one-off python) has already exited by then: it holds no fd and is absent from the
+# process snapshot. NO amount of post-hoc capture can name it. Naming the writer needs
+# write-time attribution -- an auditd watch or fanotify -- and auditctl is confirmed
+# "Operation not permitted" in this unprivileged LXC (tested 2026-09-01, not assumed). A watch
+# would have to run on the Proxmox HOST against the container's dataset.
+# So this tool answers WHEN, WHAT, and WHAT ELSE WAS RUNNING. It does not answer WHO, and a
+# report that looked comprehensive while omitting the one fact it exists to capture is a
+# thorough measurement of the wrong object. (maintenance-claude's catch.)
+#
+# It only reports a write that actually REMOVED the model keys. Ordinary edits (ours, the
+# guard's, the UI's) are silent, or this would cry wolf every time anyone touches a profile.
+set -uo pipefail
+
+PROFILES=${HERMES_PROFILES:-/root/.hermes/profiles}
+OUT=${TRIPWIRE_DIR:-/opt/ai-lab/.gybackend-data/model-tripwire}
+NOTIFY=${AILAB_NOTIFY_URL:-http://127.0.0.1:17890/api/notifications/emit}
+mkdir -p "$OUT"
+
+emit() {  # severity, message, detail
+  python3 - "$1" "$2" "$3" "$NOTIFY" <<'PY' 2>/dev/null || true
+import json,sys,urllib.request
+sev,msg,det,url=sys.argv[1:5]
+body=json.dumps({"severity":sev,"source":"model-tripwire","message":msg,"detail":det}).encode()
+try:
+    urllib.request.urlopen(urllib.request.Request(url,data=body,headers={"Content-Type":"application/json"}),timeout=15)
+except Exception as e:
+    print("notify failed: %s"%e, file=sys.stderr)
+PY
+}
+
+check_bindings() {  # profile config path -> "yes" | "unknown" | "no:<what was lost>"
+  # Widened 2026-09-02: the original only knew about the model block, so a wholesale deletion of
+  # providers.ailab -- which silently broke compaction on every agent in the fleet -- produced no
+  # report at all. Naming WHAT was lost keeps the two failures from being read as one.
+  python3 -c "
+import yaml,sys
+try:
+    d=yaml.safe_load(open(sys.argv[1])) or {}
+except Exception:
+    print('unknown'); raise SystemExit
+lost=[]
+m=d.get('model') or {}
+if not (m.get('default') and m.get('provider')):
+    lost.append('model.provider/model.default')
+provs=d.get('providers') or {}
+aux=((d.get('auxiliary') or {}).get('compression') or {})
+# Only a profile that ROUTES compression through ailab needs the block; 'default' legitimately
+# does not, and flagging it would train everyone to ignore this alert.
+if aux.get('provider')=='ailab':
+    blk=provs.get('ailab') or {}
+    miss=[k for k in ('name','api','transport') if not blk.get(k)]
+    if miss:
+        lost.append('providers.ailab['+','.join(miss)+']')
+    if not aux.get('api_key'):
+        lost.append('auxiliary.compression.api_key')
+print('yes' if not lost else 'no:'+' + '.join(lost))
+" "$1" 2>/dev/null || echo unknown
+}
+
+echo "[tripwire] watching $PROFILES for model-block AND provider-block removal"
+inotifywait -m -q -e close_write,moved_to --format '%w%f' "$PROFILES"/*/ 2>/dev/null | while read -r path; do
+  case "$path" in *config.yaml) ;; *) continue;; esac
+  agent=$(basename "$(dirname "$path")")
+  state=$(check_bindings "$path")
+  [ "$state" = "yes" ] && continue      # all bindings intact — a normal edit, stay quiet
+
+  ts=$(date -u +%Y%m%dT%H%M%SZ)
+  report="$OUT/${ts}-${agent}.txt"
+  {
+    echo "=== BINDING LOST — $agent @ $(date -u +%FT%TZ) ==="
+    echo "file:  $path"
+    echo "state: $state   (no:<what> names the lost binding; unknown = unreadable)"
+    echo "mtime: $(stat -c %y "$path" 2>/dev/null)"
+    echo
+    echo "--- current model block ---"
+    python3 -c "
+import yaml,sys
+try: print(yaml.safe_dump((yaml.safe_load(open(sys.argv[1])) or {}).get('model'), sort_keys=False))
+except Exception as e: print('unreadable: %s'%e)
+" "$path"
+    echo "--- processes holding the file open (USUALLY EMPTY: a quick write closes before this runs — absence here is NOT evidence of anything) ---"
+    for p in /proc/[0-9]*; do
+      for fd in "$p"/fd/*; do
+        [ -e "$fd" ] || continue
+        if [ "$(readlink -f "$fd" 2>/dev/null)" = "$path" ]; then
+          echo "  pid $(basename "$p")  $(tr '\0' ' ' < "$p/cmdline" 2>/dev/null | cut -c1-160)"
+        fi
+      done 2>/dev/null
+    done
+    echo "--- process table snapshot (hermes/ai-lab/python/node) ---"
+    ps -eo pid,ppid,etimes,args 2>/dev/null | grep -iE "hermes|ai-lab|gybackend|python3|node" | grep -v grep | head -25
+    echo "--- recently-started processes (<120s) — a short-lived writer may be gone, but its PARENT often is not ---"
+    ps -eo pid,ppid,etimes,args --sort=etimes 2>/dev/null | awk 'NR==1 || $3<120' | head -20
+    echo "--- ai-lab journal, 90s window ---"
+    journalctl -u ai-lab.service --since "-90 seconds" --no-pager 2>/dev/null | grep -viE "acp-bridge.*(plugins|registered)" | tail -40
+  } > "$report" 2>&1
+
+  echo "[tripwire] $agent lost its model block — report: $report"
+  emit "error" "Agent '$agent' just LOST its model binding — tripwire caught the write" \
+    "state=$state. Forensics written to $report — note it records WHEN/WHAT, not WHO: a writer that already exited cannot be named without write-time attribution (auditd is unavailable in this LXC). (open fds, process table and the ai-lab journal captured within milliseconds of the write). This is the fault that silently breaks new chats: with no model.default the auxiliary chain falls through to a DIRECT OpenRouter connection that bypasses the proxy, and the ACP bridge dies. hermes-model-guard will restore it within 15 minutes — the point of this report is to identify the WRITER."
+done
