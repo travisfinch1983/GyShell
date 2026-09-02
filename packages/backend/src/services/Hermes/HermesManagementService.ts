@@ -53,6 +53,17 @@ export interface HermesManagementConfig {
 
 /** One Support-Models assignment (a model wired to a Hermes `auxiliary.<key>` role).
  *  `description`/`recommendation` are AI-Lab-side UI metadata (NOT sent to Hermes). */
+/**
+ * Consecutive passes a support-model role must look unserved before it alarms.
+ *
+ * The proxy catalogue is assembled from multiple external sources, so a single source failing
+ * mid-refresh drops its models while leaving the set large — invisible to a size check. The
+ * failover watch already carries FAILOVER_CONFIRMATIONS for exactly this reason; the binding
+ * audit had no equivalent and raised a false ERROR on 2026-09-02. The audit runs every 30s, so
+ * this costs ~90s of delay on a genuine misconfiguration.
+ */
+const MODEL_BINDING_CONFIRMATIONS = Number(process.env.AILAB_MODEL_BINDING_CONFIRMATIONS || 3)
+
 export interface SupportModelRole {
   provider?: string
   /** The model IN USE RIGHT NOW. Normally equals primaryModel; during a failover it is
@@ -543,6 +554,11 @@ export class HermesManagementService {
   private unservedAlarmed = new Set<string>()
   /** Suspend suppressions already logged, so an unchanged suspend is stated once, not per pass. */
   private suspendedLogged = new Set<string>()
+  /** Consecutive passes a role has looked unserved. One bad catalogue read must not alarm. */
+  private readonly unservedStreak = new Map<string, number>()
+  /** Provider prefixes ever seen in the catalogue, e.g. '(DS)'. Used only to EXPLAIN a hold. */
+  private readonly seenPrefixes = new Set<string>()
+
   async checkModelBindings(): Promise<void> {
     let served: Set<string>
     try {
@@ -550,7 +566,21 @@ export class HermesManagementService {
     } catch {
       return // cannot see ≠ broken
     }
-    if (served.size === 0) return
+    if (served.size === 0) return   // wholly unreadable — cannot see ≠ broken
+
+    // Diagnostic only. A whole provider's worth of models vanishing from a catalogue that is
+    // otherwise populated is the signature of a mid-refresh read, and it is what made the
+    // 2026-09-02 false alarm so confusing: 77 of 80 models present looks perfectly healthy.
+    // This does NOT suppress on its own — the confirmations below do that — because a provider
+    // genuinely removed looks identical and must still eventually alarm.
+    const prefixOf = (id: string): string => (id.startsWith('(') ? id.slice(0, id.indexOf(')') + 1) : 'local')
+    const nowPrefixes = new Set([...served].map(prefixOf))
+    for (const p of nowPrefixes) this.seenPrefixes.add(p)
+    const vanished = [...this.seenPrefixes].filter((p) => !nowPrefixes.has(p))
+    if (vanished.length) {
+      console.warn(`[model-bindings] catalogue is missing every model from ${vanished.join(', ')} `
+        + `(${served.size} models present) — likely a mid-refresh read; holding any alarm until confirmed`)
+    }
 
     const suspended = await this.suspendedServedModels()
     const unserved: Array<{ key: string; model: string }> = []
@@ -579,15 +609,33 @@ export class HermesManagementService {
     // broken next pass produces a different message than last pass and reads as new, while
     // the count itself says nothing about WHICH role. Per role the subject is the role.
     const nowUnserved = new Map(unserved.map((u) => [u.key, u.model]))
+    // Drop streaks for roles that came back, so a transient read cannot accumulate across
+    // unrelated passes into a false confirmation.
+    for (const key of [...this.unservedStreak.keys()]) {
+      if (!nowUnserved.has(key)) this.unservedStreak.delete(key)
+    }
     for (const [key, model] of nowUnserved) {
       // Fire on CHANGE only; a standing misconfiguration must not re-alarm every pass.
       if (this.unservedAlarmed.has(key)) continue
+      // 🛑 CONFIRMATIONS. A single pass is not evidence: the catalogue is assembled from several
+      // external sources, so one source failing mid-refresh makes every role bound to it look
+      // unserved while the set stays large enough to pass the size guard. Proven live on
+      // 2026-09-02 — an ERROR was raised for a model that was serving traffic in the same minute.
+      const streak = (this.unservedStreak.get(key) ?? 0) + 1
+      this.unservedStreak.set(key, streak)
+      if (streak < MODEL_BINDING_CONFIRMATIONS) {
+        console.log(`[model-bindings] role '${key}' looks unserved ('${model}') `
+          + `(${streak}/${MODEL_BINDING_CONFIRMATIONS}) — not alarming yet`)
+        continue
+      }
       this.unservedAlarmed.add(key)
       this.cfg.notify?.({
         severity: 'error',
         source: 'model-bindings',
         message: `Support-model role '${key}' names a model the proxy does not serve — that role is a silent no-op`,
-        detail: `'${model}' is not among the served models. The role is configured and runs, but does nothing.`,
+        detail: `'${model}' is not among the served models on ${MODEL_BINDING_CONFIRMATIONS} `
+          + `consecutive checks, so this is not a transient catalogue read. The role is `
+          + `configured and runs, but does nothing.`,
       })
     }
     // Forget roles that are no longer broken, so a genuine RECURRENCE alarms again rather
