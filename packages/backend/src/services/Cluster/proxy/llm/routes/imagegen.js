@@ -137,6 +137,17 @@ const isTrainingSetName = (n) => n === 'training_set' || n.startsWith('training_
 // A training BATCH is the assembly the trainer actually eats: images COPIED (never moved)
 // out of many curated sets into one folder. Same naming convention as sets, batch spelling.
 const isTrainingBatchName = (n) => n === 'training_batch' || n.startsWith('training_batch_');
+// A batch SUBSECTION is kohya's <repeats>_<concept> convention (20_blue) directly inside a
+// training batch: kohya reads the prefix as per-epoch repeats; AI Toolkit ignores the names.
+const isSubsectionName = (n) => /^\d+_.+/.test(n);
+const subsectionParts = (n) => { const m = /^(\d+)_(.+)$/.exec(n); return m ? { repeats: parseInt(m[1], 10), concept: m[2] } : null; };
+/** cwd may be the batch root or a subsection inside it → the batch root, or null. */
+const batchRootOf = (dir) => {
+  if (isTrainingBatchName(path.basename(dir))) return dir;
+  const parent = path.dirname(dir);
+  if (isSubsectionName(path.basename(dir)) && isTrainingBatchName(path.basename(parent))) return parent;
+  return null;
+};
 // A path is INSIDE a training set when one of its segments is a training-set folder.
 const TS_GUARD = /(^|\/)training_set(_[^/]+)?\//;
 
@@ -290,6 +301,8 @@ export function createImagegenRouter(config) {
           name, n_images: nImg, n_subfolders: nSub,
           is_training_set: isTrainingSetName(name), has_training_set: hasTS,
           is_training_batch: isTrainingBatchName(name),
+          ...(isTrainingBatchName(path.basename(dir)) && isSubsectionName(name)
+            ? { is_batch_subsection: true, ...subsectionParts(name) } : {}),
         });
       } else if (isImage(name) && !isCollageFile(name)) {
         // mtime = content modified; birthtime = created; ctime = inode change
@@ -863,6 +876,73 @@ export function createImagegenRouter(config) {
       try { chmodSync(file, 0o664); } catch { /* ignore */ }
       res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+  });
+
+  // ---- Move selected images into a kohya <repeats>_<concept> SUBSECTION of a training
+  // batch (creating it if needed). Sidecars + ratings move with them. Same-concept
+  // subsections are unified regardless of the repeats passed — repeats are edited via
+  // /subsection-repeats, not by accidentally minting 10_blue beside 20_blue.
+  router.post('/subsection', express.json(), (req, res) => {
+    const rel = (req.body && req.body.path) || '';
+    const files = req.body && req.body.files;
+    const name = String((req.body && req.body.name) || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+    const repeats = parseInt(req.body && req.body.repeats, 10);
+    let dir;
+    try { dir = safeResolve(rel); } catch { return res.status(400).json({ error: 'bad path' }); }
+    const root = batchRootOf(dir);
+    if (!root) return res.status(400).json({ error: 'subsections live inside a training batch (training_batch…)' });
+    if (!Array.isArray(files) || !files.length) return res.status(400).json({ error: 'no files' });
+    if (!name || /^\d+_/.test(name)) return res.status(400).json({ error: 'name must be a concept like "blue" — the repeats prefix is added for you' });
+    if (!Number.isInteger(repeats) || repeats < 1 || repeats > 999) return res.status(400).json({ error: 'repeats must be 1-999' });
+    // Reuse an existing subsection with this concept, whatever its repeats.
+    let destName = `${repeats}_${name}`;
+    try {
+      const existing = readdirSync(root).find((d) => {
+        const sp = subsectionParts(d);
+        return sp && sp.concept === name && statSync(path.join(root, d)).isDirectory();
+      });
+      if (existing) destName = existing;
+    } catch { /* root readable — safeResolve passed */ }
+    const dest = path.join(root, destName);
+    try { mkdirSync(dest, { recursive: true }); chmodSync(dest, 0o777); } catch { /* best-effort */ }
+    const srcRatings = loadRatings(dir);
+    const destRatings = loadRatings(dest);
+    let moved = 0; const notFound = []; let ratingsMoved = 0;
+    for (const nm of files) {
+      if (typeof nm !== 'string' || !nm || nm.includes('/') || nm.includes('..') || nm.startsWith('.')) { notFound.push(nm); continue; }
+      const f = path.join(dir, nm);
+      if (!existsSync(f)) { notFound.push(nm); continue; }
+      renameSync(f, path.join(dest, nm));
+      const stem = nm.replace(/\.[^.]+$/, '');
+      for (const ext of ['.txt', '.caption']) {
+        const car = path.join(dir, stem + ext);
+        if (existsSync(car)) renameSync(car, path.join(dest, stem + ext));
+      }
+      if (srcRatings[nm]) { destRatings[nm] = srcRatings[nm]; delete srcRatings[nm]; ratingsMoved++; }
+      moved++;
+    }
+    if (ratingsMoved) { saveRatings(dir, srcRatings); saveRatings(dest, destRatings); }
+    res.json({ ok: true, subsection: destName, reused: destName !== `${repeats}_${name}`,
+               path: path.relative(BASE, dest), moved, not_found: notFound, ratings_moved: ratingsMoved });
+  });
+
+  // ---- Change a subsection's kohya repeats: rename <N>_<concept> → <M>_<concept>. ----
+  router.post('/subsection-repeats', express.json(), (req, res) => {
+    const rel = (req.body && req.body.path) || '';
+    const repeats = parseInt(req.body && req.body.repeats, 10);
+    let dir;
+    try { dir = safeResolve(rel); } catch { return res.status(400).json({ error: 'bad path' }); }
+    const sp = subsectionParts(path.basename(dir));
+    if (!sp || !isTrainingBatchName(path.basename(path.dirname(dir)))) {
+      return res.status(400).json({ error: 'not a training-batch subsection (<repeats>_<concept> inside a training_batch folder)' });
+    }
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'no such subsection' });
+    if (!Number.isInteger(repeats) || repeats < 1 || repeats > 999) return res.status(400).json({ error: 'repeats must be 1-999' });
+    const dest = path.join(path.dirname(dir), `${repeats}_${sp.concept}`);
+    if (dest === dir) return res.json({ ok: true, unchanged: true, path: path.relative(BASE, dir) });
+    if (existsSync(dest)) return res.status(409).json({ error: 'a subsection with those repeats + concept already exists' });
+    try { renameSync(dir, dest); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    res.json({ ok: true, path: path.relative(BASE, dest), repeats, concept: sp.concept });
   });
 
   // ---- Batch-rename a selection to <base>-1..N (display order = caller's list order).

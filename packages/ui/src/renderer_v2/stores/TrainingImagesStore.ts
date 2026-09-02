@@ -27,7 +27,7 @@ export interface IgImage {
   w: number; h: number; cropped: boolean; has_alt: boolean; has_caption: boolean; has_nl_caption: boolean
   score: number | null; comment: string
 }
-export interface IgFolder { name: string; n_images: number; n_subfolders: number; is_training_set: boolean; has_training_set: boolean; is_training_batch?: boolean }
+export interface IgFolder { name: string; n_images: number; n_subfolders: number; is_training_set: boolean; has_training_set: boolean; is_training_batch?: boolean; is_batch_subsection?: boolean; repeats?: number; concept?: string }
 export interface IgCrumb { name: string; path: string }
 
 type SortKey = 'name' | 'created' | 'modified' | 'added' | 'size'
@@ -161,6 +161,28 @@ export class TrainingImagesStore {
     const files = [...this.selected]
     return ig('/send-to-training-set', { method: 'POST', body: { path: this.cwd, files, suffix } })
   }
+  /** cwd's training-batch context: the batch root when cwd IS a batch or a kohya
+   *  <repeats>_<concept> subsection inside one; null anywhere else. */
+  get batchContext(): { root: string; inSubsection: boolean } | null {
+    const parts = this.cwd.split('/').filter(Boolean)
+    const last = parts[parts.length - 1] || ''
+    const isBatch = (n: string) => n === 'training_batch' || n.startsWith('training_batch_')
+    if (isBatch(last)) return { root: this.cwd, inSubsection: false }
+    if (/^\d+_.+/.test(last) && parts.length >= 2 && isBatch(parts[parts.length - 2])) {
+      return { root: parts.slice(0, -1).join('/'), inSubsection: true }
+    }
+    return null
+  }
+
+  /** Move selected images into a <repeats>_<concept> subsection of the current batch. */
+  async subsection(files: string[], name: string, repeats: number): Promise<any> {
+    return ig('/subsection', { method: 'POST', body: { path: this.cwd, files, name, repeats } })
+  }
+
+  async setSubsectionRepeats(rel: string, repeats: number): Promise<any> {
+    return ig('/subsection-repeats', { method: 'POST', body: { path: rel, repeats } })
+  }
+
   /** Batch rename to <base>-1..N. Order = display order; sidecars + ratings travel. */
   async renameFiles(files: string[], base: string): Promise<any> {
     return ig('/rename-files', { method: 'POST', body: { path: this.cwd, files, base } })

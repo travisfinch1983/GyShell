@@ -57,6 +57,14 @@ def _scope(path: str) -> str:
     passed through unchanged. Accepts the /imagegen mount form too.
     """
     p = (path or "").strip().strip("/")
+    # _batches passes through UNSCOPED: UI-assembled training batches live at
+    # /imagegen/_batches, and forcing them under training_images/ made every batch
+    # there invisible to the curation tools (view_image, collages, removals).
+    # RELATIVE, like every _scope return (_TI itself is relative; _abs_under_imagegen
+    # joins onto the imagegen root — an absolute return here double-prefixes the path).
+    for pre in ("imagegen/_batches", "_batches"):
+        if p == pre or p.startswith(pre + "/"):
+            return "_batches" + p[len(pre):]
     for pre in ("imagegen/training_images", "training_images"):
         if p == pre:
             return _TI
@@ -772,6 +780,42 @@ def remove_from_training_batch(batch_folder: str, images: list[str]) -> str:
 
 
 @mcp.tool()
+def set_subsection_repeats(batch_folder: str, concept: str, repeats: int) -> str:
+    """Change a batch subsection's kohya repeats by renaming <old>_<concept> to <repeats>_<concept>.
+
+    Subsections are kohya's dataset convention: the folder-name prefix IS the per-epoch
+    repeat count for that concept's images (e.g. 20_blue). AI Toolkit ignores the names,
+    so changing repeats never affects an AI Toolkit run.
+
+    Args:
+        batch_folder: the training batch, relative (e.g. _batches/training_batch_satin).
+        concept: the subsection's concept name (e.g. blue).
+        repeats: new per-epoch repeats, 1-999.
+    """
+    try:
+        dst = _abs_under_imagegen(batch_folder)
+    except ValueError as e:
+        return _j({"error": str(e)})
+    if not os.path.isdir(dst):
+        return _j({"error": f"batch folder not found: {batch_folder}"})
+    if not isinstance(repeats, int) or not (1 <= repeats <= 999):
+        return _j({"error": "repeats must be an integer 1-999"})
+    cur = next((d for d in sorted(os.listdir(dst))
+                if re.fullmatch(r"\d+_" + re.escape(concept), d)
+                and os.path.isdir(os.path.join(dst, d))), None)
+    if not cur:
+        subs = [d for d in sorted(os.listdir(dst)) if re.fullmatch(r"\d+_.+", d) and os.path.isdir(os.path.join(dst, d))]
+        return _j({"error": f"no subsection for concept {concept!r}", "existing_subsections": subs})
+    new = f"{repeats}_{concept}"
+    if new == cur:
+        return _j({"ok": True, "unchanged": True, "folder": cur})
+    if os.path.exists(os.path.join(dst, new)):
+        return _j({"error": f"{new} already exists in this batch"})
+    os.rename(os.path.join(dst, cur), os.path.join(dst, new))
+    return _j({"ok": True, "folder": new, "was": cur, "concept": concept, "repeats": repeats})
+
+
+@mcp.tool()
 def list_training_batch(batch_folder: str) -> str:
     """List a training batch's contents and per-image sidecar presence.
 
@@ -790,6 +834,22 @@ def list_training_batch(batch_folder: str) -> str:
         return _j({"error": f"batch folder not found: {batch_folder}"})
 
     files = sorted(os.listdir(dst))
+    # kohya subsections: <repeats>_<concept> subdirs. Repeats are read straight from the
+    # folder name — the name IS the setting (change it with set_subsection_repeats).
+    subsections = []
+    for d in files:
+        m = re.fullmatch(r"(\d+)_(.+)", d)
+        if m and os.path.isdir(os.path.join(dst, d)):
+            sfiles = sorted(os.listdir(os.path.join(dst, d)))
+            simgs = [f for f in sfiles
+                     if os.path.splitext(f)[1].lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+                     and not f.startswith("_collage")]
+            sstems = {os.path.splitext(f)[0] for f in simgs}
+            sunlab = [f for f in simgs if not os.path.exists(os.path.join(dst, d, os.path.splitext(f)[0] + ".txt"))]
+            subsections.append({"folder": d, "concept": m.group(2), "repeats": int(m.group(1)),
+                                "path": f"{batch_folder.rstrip('/')}/{d}", "images": len(simgs),
+                                "unlabeled": sunlab,
+                                "note": "unlabeled images train WITHOUT captions" if sunlab else None})
     imgs = [f for f in files
             if os.path.splitext(f)[1].lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
             and not f.startswith("_collage")]
@@ -813,7 +873,16 @@ def list_training_batch(batch_folder: str) -> str:
                and os.path.splitext(f)[0] not in img_stems]
 
     out = {"batch_folder": _scope(batch_folder), "images": len(imgs), "files": rows,
-           "ready_to_train": not unlabeled and len(imgs) > 0}
+           "ready_to_train": (not unlabeled and len(imgs) > 0)
+                             or (bool(subsections) and not any(s["unlabeled"] for s in subsections)
+                                 and any(s["images"] for s in subsections))}
+    if subsections:
+        out["subsections"] = subsections
+        if imgs:
+            out["kohya_note"] = ("this batch has SUBSECTIONS: kohya trains ONLY the "
+                                 "<repeats>_<concept> subfolders — the %d root-level image(s) "
+                                 "would be ignored by kohya (AI Toolkit reads everything). "
+                                 "Move them into a subsection or accept the asymmetry." % len(imgs))
     if unlabeled:
         out["BLOCKING_UNLABELED"] = {
             "count": len(unlabeled), "files": unlabeled,
@@ -1023,13 +1092,23 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
         return _j({"error": str(e)})
     if not os.path.isdir(batch_abs):
         return _j({"error": f"batch folder not found: {batch_folder}"})
-    imgs = [f for f in sorted(os.listdir(batch_abs))
-            if os.path.splitext(f)[1].lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-            and not f.startswith("_collage")]
-    if not imgs:
+    _is_img = lambda f: (os.path.splitext(f)[1].lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+                         and not f.startswith("_collage"))
+    imgs = [f for f in sorted(os.listdir(batch_abs)) if _is_img(f) and os.path.isfile(os.path.join(batch_abs, f))]
+    # Subsectioned batches (<repeats>_<concept> subdirs) usually have NO root-level images —
+    # count and label-check inside the subsections too, or a fully organised batch reads as
+    # empty and a mislabeled subsection image trains silently uncaptioned.
+    sub_imgs = []   # (subdir, filename)
+    for d in sorted(os.listdir(batch_abs)):
+        dp = os.path.join(batch_abs, d)
+        if os.path.isdir(dp) and re.fullmatch(r"\d+_.+", d):
+            sub_imgs += [(d, f) for f in sorted(os.listdir(dp)) if _is_img(f) and os.path.isfile(os.path.join(dp, f))]
+    if not imgs and not sub_imgs:
         return _j({"error": f"batch is EMPTY: {batch_folder}"})
     unlabeled = [f for f in imgs
                  if not os.path.exists(os.path.join(batch_abs, os.path.splitext(f)[0] + ".txt"))]
+    unlabeled += [f"{d}/{f}" for d, f in sub_imgs
+                  if not os.path.exists(os.path.join(batch_abs, d, os.path.splitext(f)[0] + ".txt"))]
     if unlabeled:
         return _j({"error": "REFUSING to train: images without a .txt sidecar would train "
                             "UNLABELED and quietly degrade the LoRA",
@@ -1117,23 +1196,41 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
     # "No data found" against a directory that looked full from here and was empty from there.
     # An earlier `except OSError: copy` fallback could never fire, because the symlink SUCCEEDS
     # locally — it just does not propagate. A fallback keyed on the wrong failure is not one.
+    # SUBSECTION-AWARE (2026-09-02): a batch holding kohya <repeats>_<concept> subdirs is
+    # already the dataset layout — copy each subsection through AS ITS OWN concept dir
+    # (per-section repeats preserved) instead of flattening everything into one folder.
+    # Loose root-level files still go into the default <repeats>_<trigger> dir either way.
+    total_copied = 0
     for f in os.listdir(batch_abs):
-        src, dst = os.path.join(batch_abs, f), os.path.join(dsdir, f)
-        if not os.path.exists(dst):
-            shutil.copy2(src, dst)
+        srcp = os.path.join(batch_abs, f)
+        if os.path.isdir(srcp) and re.fullmatch(r"\d+_.+", f):
+            sub_dst = os.path.join(rdir, "dataset", f)
+            os.makedirs(sub_dst, exist_ok=True)
+            for g in os.listdir(srcp):
+                if os.path.isfile(os.path.join(srcp, g)) and not os.path.exists(os.path.join(sub_dst, g)):
+                    shutil.copy2(os.path.join(srcp, g), os.path.join(sub_dst, g))
+                    total_copied += 1
+            continue
+        if os.path.isfile(srcp):
+            dst = os.path.join(dsdir, f)
+            if not os.path.exists(dst):
+                shutil.copy2(srcp, dst)
+                total_copied += 1
 
     # Confirm the TRAINING HOST can see the dataset. The run that motivated this died because
     # the directory was full locally and empty remotely; one check turns a 40-second failure
     # deep inside kohya into an immediate, explicit error.
-    rc, seen, _ = _ssh(f"ls -1 '{dsdir}' 2>/dev/null | wc -l", timeout=40)
+    dataset_root = os.path.join(rdir, "dataset")
+    rc, seen, _ = _ssh(f"find '{dataset_root}' -type f 2>/dev/null | wc -l", timeout=40)
     try:
         seen_n = int((seen or "0").strip().split()[-1])
     except (ValueError, IndexError):
         seen_n = -1
-    if seen_n < len(imgs):
+    if seen_n < len(imgs) + len(sub_imgs):
         return _j({"error": "the training host cannot see the prepared dataset",
-                   "detail": f"{_TRAIN_HOST} sees {seen_n} entries in {dsdir}; expected at least "
-                             f"{len(imgs)} images. The run would fail with kohya's 'No data found'.",
+                   "detail": f"{_TRAIN_HOST} sees {seen_n} files under {dataset_root}; expected at "
+                             f"least {len(imgs) + len(sub_imgs)} images. The run would fail with "
+                             "kohya's 'No data found'.",
                    "hint": "check that /imagegen is mounted on the training host and that the "
                            "dataset was copied rather than linked"})
 

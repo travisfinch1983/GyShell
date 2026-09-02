@@ -282,6 +282,28 @@ export const TrainingImagesPanel: React.FC = observer(() => {
     try { const r = await store.wipeRatings(files); store.msg = `Wiped ${r.cleared} rating(s).`; void store.browse(store.cwd) }
     catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
   }
+  const doSubsection = async () => {
+    const name = await promptStore.prompt({ title: `Subsection ${store.selected.size} images`, placeholder: 'concept, e.g. blue — becomes <repeats>_blue (kohya convention)', confirmText: 'Next' })
+    if (name === null || !name.trim()) return
+    const repStr = await promptStore.prompt({ title: `Repeats for "${name.trim()}"`, placeholder: 'kohya per-epoch repeats, e.g. 20', defaultValue: '10', confirmText: 'Move' })
+    if (repStr === null) return
+    const repeats = parseInt(repStr, 10)
+    if (!Number.isInteger(repeats) || repeats < 1) { store.msg = 'Repeats must be a positive number.'; return }
+    store.msg = 'Moving…'
+    try {
+      const r = await store.subsection([...store.selected], name.trim(), repeats)
+      store.msg = `Moved ${r.moved} → ${r.subsection}${r.reused ? ' (existing subsection reused — edit repeats on its folder if needed)' : ''}.`
+      store.exitSelection(); void store.browse(store.cwd)
+    } catch (e: any) { store.msg = 'Subsection failed: ' + (e?.message || e) }
+  }
+  const doRepeats = async (folderPath: string, f: any) => {
+    const repStr = await promptStore.prompt({ title: `Repeats for "${f.concept}"`, placeholder: 'kohya per-epoch repeats', defaultValue: String(f.repeats), confirmText: 'Set' })
+    if (repStr === null) return
+    const repeats = parseInt(repStr, 10)
+    if (!Number.isInteger(repeats) || repeats < 1) { store.msg = 'Repeats must be a positive number.'; return }
+    try { await store.setSubsectionRepeats(folderPath, repeats); void store.browse(store.cwd) }
+    catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
+  }
   const doRenameFiles = async () => {
     const base = await promptStore.prompt({ title: `Rename ${store.selected.size} images`, placeholder: 'base name, e.g. white → white-1..N (lowercased)', confirmText: 'Rename' })
     if (base === null || !base.trim()) return
@@ -388,6 +410,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           <button className={styles.btn} onClick={() => setPicker('copy')}>Copy…</button>
           <button className={styles.btn} title="Copy the selection + caption sidecars into a training batch assembled from many sets" onClick={() => setBatchAdd(true)}>Add to batch…</button>
           <button className={styles.btn} title="Rename the selection to <name>-1..N in display order — sidecars and ratings follow" onClick={() => void doRenameFiles()}>Rename…</button>
+          {store.batchContext && <button className={styles.btn} title="Move the selection into a <repeats>_<concept> subsection of this batch (kohya's folder convention; AI Toolkit ignores the names)" onClick={() => void doSubsection()}>Subsection…</button>}
           {store.inTrainingSet && <button className={styles.btnDanger} onClick={() => void doDelete()}>Delete</button>}
           <button className={styles.btn} title="Add or remove the same booru tags across the selected images" onClick={() => setBlanket(true)}>Blanket tags…</button>
           <button className={styles.btn} title="Strip .txt tag sidecars for the selected images" onClick={() => void doStrip([...store.selected])}>Strip tags</button>
@@ -415,6 +438,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
                 <span className={styles.folderName}>{f.name}</span>
                 {f.is_training_set ? <span className={`${styles.fbadge} ${styles.fbadgeTs}`}>training_set</span> : f.has_training_set ? <span className={styles.fbadge}>has set</span> : null}
                 {(f.is_training_set || f.is_training_batch) && <span className={styles.ren} title="Rename suffix" onClick={(e) => { e.stopPropagation(); void doRename(path, f.name) }}>✎</span>}
+                {f.is_batch_subsection && <span className={styles.ren} title={`kohya repeats: ${f.repeats} — click to change`} onClick={(e) => { e.stopPropagation(); void doRepeats(path, f) }}>×{f.repeats}</span>}
                 <span className={styles.folderMeta}>{f.n_images} img{f.n_subfolders ? ` · ${f.n_subfolders} sub` : ''}</span>
               </button>
             )
