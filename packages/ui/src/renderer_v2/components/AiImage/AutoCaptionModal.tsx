@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { trainingImagesStore as store } from '../../stores/TrainingImagesStore'
 import styles from './TrainingImages.module.scss'
 
@@ -15,7 +15,7 @@ const MODEL_NOTES: Record<string, string> = {
   'wd-v1-4-vit-tagger-v2': 'Older v2 generation. Kept for consistency with sets tagged earlier.',
   joytag: 'Booru-style tagger with broad general and NSFW coverage.',
   'blip-large': 'Writes one plain-English sentence describing the image. Fast, but generic - it cannot be steered, and on a material/style set it misread the garment.',
-  'vlm-qwen': 'Sends each image to the Qwen3.5-9B vision model with an instruction, so the caption can be aimed at material, light and cut. About 3s per image. Give it the set context below.',
+  'vlm-custom': 'Sends each image to a model YOU pick from the AI-Lab proxy, with an instruction, so the caption can be aimed at material, light and cut. Roughly 3s per image on a local 9B-class VLM. Give it the set context below.',
 }
 
 type OutKind = 'tags' | 'nl'
@@ -36,24 +36,39 @@ const OUT_INFO: Record<OutKind, { label: string; ext: string; blurb: string }> =
   },
 }
 
-export const AutoCaptionModal: React.FC<{ onClose: () => void; onDone: () => void }> = ({ onClose, onDone }) => {
+export const AutoCaptionModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [taggers, setTaggers] = useState<any[]>([])
   const [outKind, setOutKind] = useState<OutKind>('tags')
   const [model, setModel] = useState('')
   const [device, setDevice] = useState('cuda')
+  // GPU roster from /taggers (PCI order — the same numbering nvidia-smi and the dispatched
+  // job see, because the backend pins CUDA_DEVICE_ORDER=PCI_BUS_ID). An empty roster means
+  // the host could not be read — that is said out loud, never rendered as a confident
+  // empty picker.
+  const [gpus, setGpus] = useState<any[]>([])
+  const [gpuIndex, setGpuIndex] = useState<string>('')
   const [thr, setThr] = useState('0.35'); const [cthr, setCthr] = useState('0.85')
   const [spaces, setSpaces] = useState(false); const [trigger, setTrigger] = useState(''); const [overwrite, setOverwrite] = useState(false)
   // vlm only: what this SET is. Goes into the instruction so the model knows
   // what it is looking at; the trigger phrase stays OUT of the prose.
   const [context, setContext] = useState('')
   const [status, setStatus] = useState(''); const [running, setRunning] = useState(false)
-  const poll = useRef<any>(null)
+  // Custom NL engine: which proxy model does the captioning. The list is fetched lazily
+  // (only when the vlm engine is chosen); on failure the picker degrades to a free-text
+  // field — an honest fallback beats a dead dropdown.
+  const [vlmModels, setVlmModels] = useState<string[]>([])
+  const [vlmModel, setVlmModel] = useState('')
+  const [vlmListErr, setVlmListErr] = useState(false)
 
   useEffect(() => {
     store.taggers()
-      .then((d) => setTaggers(d.taggers || []))
+      .then((d) => {
+        setTaggers(d.taggers || [])
+        setGpus(Array.isArray(d.gpus) ? d.gpus : [])
+        if (d.default_gpu_index !== undefined) setGpuIndex(String(d.default_gpu_index))
+        if (d.vlm_default_model) setVlmModel(String(d.vlm_default_model))
+      })
       .catch(() => setStatus('No taggers available.'))
-    return () => { if (poll.current) clearInterval(poll.current) }
   }, [])
 
   // Models for the chosen output type. Selecting the OUTPUT first, then the model, is the order
@@ -70,8 +85,23 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; onDone: () => voi
   // left the vlm engine showing tag controls that do nothing.
   const isNl = cur?.engine === 'blip' || isVlm
   useEffect(() => { if (isNl) setDevice('cuda') }, [isNl])
+  // BLIP runs on a local card too (forced cuda); the VLM engine leaves the box over the API.
+  const usesLocalGpu = (!isNl && device === 'cuda') || cur?.engine === 'blip'
 
   const info = OUT_INFO[outKind]
+
+  useEffect(() => {
+    if (!isVlm || vlmModels.length || vlmListErr) return
+    fetch('/api/proxy/llm/v1/models')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((d) => {
+        const ids = (d?.data || []).map((m: any) => String(m.id)).filter(Boolean)
+        if (!ids.length) throw new Error('empty model list')
+        setVlmModels(ids)
+        setVlmModel((v) => (v && ids.includes(v) ? v : ids[0]))
+      })
+      .catch(() => setVlmListErr(true))
+  }, [isVlm])
 
   const run = async () => {
     if (!cur) return
@@ -80,35 +110,18 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; onDone: () => voi
       threshold: parseFloat(thr) || 0.35, char_threshold: parseFloat(cthr) || 0.85,
       spaces, trigger: trigger.trim(), overwrite,
     }
+    if (usesLocalGpu && gpuIndex !== '') body.gpu_index = parseInt(gpuIndex, 10)
     // `avoid` defaults to the trigger backend-side, so the phrase is stated
     // once (by the prepend) instead of twice.
     if (isVlm && context.trim()) body.context = context.trim()
+    if (isVlm && vlmModel.trim()) body.vlm_model = vlmModel.trim()
     setRunning(true); setStatus('Starting…')
     try {
       const { jobId } = await store.autoCaption(body)
-      let statusFailures = 0
-      poll.current = setInterval(async () => {
-        let s: any
-        try { s = await store.autoCaptionStatus(jobId); statusFailures = 0 } catch {
-          // Same cap as CropEditor: a dead status endpoint must not leave
-          // "Captioning…" on screen forever with running never released.
-          if (++statusFailures >= 15) {
-            clearInterval(poll.current); poll.current = null; setRunning(false)
-            setStatus('Lost contact with the captioning job (status endpoint unreachable) — it may still finish server-side; refresh to see results.')
-          }
-          return
-        }
-        if (s.state === 'running') { setStatus(`Captioning ${s.done}/${s.total || '…'}${s.provider ? ' (' + s.provider + ')' : ''}…`); return }
-        clearInterval(poll.current); poll.current = null; setRunning(false)
-        if (s.state === 'done') {
-          // Report the provider that ACTUALLY ran. Asking for GPU and silently getting CPU is
-          // the kind of thing that should never be invisible.
-          setStatus(`Done — wrote ${s.wrote}, skipped ${s.skipped}, errors ${s.errors}`
-            + `${s.provider ? ` · ran on ${s.provider}` : ''}`
-            + `${s.lastError ? ' · Last: ' + s.lastError : ''}`)
-          onDone()
-        } else setStatus(`Failed: ${s.error || s.lastError || 'unknown'}`)
-      }, 2000)
+      // Progress lives on the browser page now (store.captionJob renders a bar above the
+      // grid) — the modal closes instead of greying out the screen for the whole run.
+      store.trackCaptionJob(jobId, isVlm ? vlmModel.trim() : (model || cur.label))
+      onClose()
     } catch (e: any) { setRunning(false); setStatus('Failed: ' + (e?.message || e)) }
   }
 
@@ -172,17 +185,72 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; onDone: () => voi
             </label>
             <label className={styles.acl}>Device
               <select className={styles.input} value={device} onChange={(e) => setDevice(e.target.value)}>
-                <option value="cpu">CPU</option><option value="cuda">GPU (4090)</option>
+                <option value="cpu">CPU</option><option value="cuda">GPU</option>
               </select>
             </label>
             <div className={styles.acHint}>
-              The 4090 is shared with ComfyUI — pick CPU if you would rather not contend for it.
-              Either way the result line names the provider that actually ran.
+              The cards are shared with ComfyUI — pick CPU to avoid contending, or choose a
+              quieter card below. Either way the result line names the provider that actually ran.
             </div>
+          </>
+        )}
+        {usesLocalGpu && (
+          <>
+            <div className={styles.acSection}>GPU</div>
+            {gpus.length === 0 ? (
+              <div className={styles.acHint}>
+                GPU list unavailable (could not read the GPU host) — the job will run on the
+                default card (#{gpuIndex || '?'}).
+              </div>
+            ) : (
+              <>
+                <select className={styles.input} style={{ width: '100%' }} value={gpuIndex} disabled={running} onChange={(e) => setGpuIndex(e.target.value)}>
+                  {gpus.map((g) => (
+                    <option key={g.index} value={String(g.index)}>
+                      #{g.index} — {g.name} ({(g.free_mib / 1024).toFixed(1)} GiB free of {Math.round(g.total_mib / 1024)})
+                    </option>
+                  ))}
+                </select>
+                {(() => {
+                  const sel = gpus.find((g) => String(g.index) === gpuIndex)
+                  return sel && sel.free_mib < 2048 ? (
+                    <div className={styles.acHint}>
+                      ⚠ Only {sel.free_mib} MiB free on this card. The tagger needs ~2 GiB and a
+                      full card fails with an allocator error — it does not queue. Pick one with
+                      headroom.
+                    </div>
+                  ) : (
+                    <div className={styles.acHint}>
+                      Numbers match nvidia-smi (PCI order). Free VRAM matters: a full card fails
+                      outright rather than queueing.
+                    </div>
+                  )
+                })()}
+              </>
+            )}
           </>
         )}
         {isVlm && (
           <>
+            <div className={styles.acSection}>Proxy model</div>
+            {vlmListErr ? (
+              <>
+                <input className={styles.input} style={{ width: '100%' }} value={vlmModel} disabled={running}
+                       placeholder="model id exactly as the proxy serves it" onChange={(e) => setVlmModel(e.target.value)} />
+                <div className={styles.acHint}>Could not load the proxy model list — type the model id by hand.</div>
+              </>
+            ) : (
+              <>
+                <select className={styles.input} style={{ width: '100%' }} value={vlmModel} disabled={running || !vlmModels.length} onChange={(e) => setVlmModel(e.target.value)}>
+                  {!vlmModels.length && <option value={vlmModel}>{vlmModel ? `${vlmModel} (loading list…)` : 'loading…'}</option>}
+                  {vlmModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                </select>
+                <div className={styles.acHint}>
+                  Any model the AI-Lab proxy serves. It must be vision-capable to actually see the
+                  images — a text-only model will invent captions from nothing.
+                </div>
+              </>
+            )}
             <div className={styles.acSection}>Set context</div>
             <textarea
               className={styles.input}

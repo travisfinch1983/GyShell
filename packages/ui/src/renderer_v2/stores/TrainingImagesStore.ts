@@ -27,7 +27,7 @@ export interface IgImage {
   w: number; h: number; cropped: boolean; has_alt: boolean; has_caption: boolean; has_nl_caption: boolean
   score: number | null; comment: string
 }
-export interface IgFolder { name: string; n_images: number; n_subfolders: number; is_training_set: boolean; has_training_set: boolean }
+export interface IgFolder { name: string; n_images: number; n_subfolders: number; is_training_set: boolean; has_training_set: boolean; is_training_batch?: boolean }
 export interface IgCrumb { name: string; path: string }
 
 type SortKey = 'name' | 'created' | 'modified' | 'added' | 'size'
@@ -161,6 +161,11 @@ export class TrainingImagesStore {
   /** Count of images in the current view that carry a rating/comment. */
   get ratedCount(): number { return this.images.filter((im) => im.score != null || (im.comment || '').trim()).length }
   async listTrainingSets(): Promise<any> { return ig('/training-sets') }
+  async listTrainingBatches(): Promise<any> { return ig('/training-batches') }
+  /** Additive: copies the images + their .txt/.caption sidecars into the batch. */
+  async batchAdd(batch: string, files: string[], create = false): Promise<any> {
+    return ig('/batch-add', { method: 'POST', body: { path: this.cwd, files, batch, create } })
+  }
   async merge(name: string, sources: string[]): Promise<any> { return ig('/merge', { method: 'POST', body: { name, sources } }) }
   async browseRaw(p: string): Promise<any> { return ig(`/browse?path=${encodeURIComponent(p)}`) }
 
@@ -182,6 +187,54 @@ export class TrainingImagesStore {
   async taggers(): Promise<any> { return ig('/taggers') }
   async autoCaption(body: any): Promise<any> { return ig('/auto-caption', { method: 'POST', body }) }
   async autoCaptionStatus(jobId: string): Promise<any> { return ig(`/auto-caption-status?jobId=${jobId}`) }
+
+  // ── live auto-caption job, tracked HERE so the modal can close the moment the job starts.
+  // Progress used to live only inside the greyed-out popup: closing it to keep working meant
+  // flying blind until the GPUs went quiet. The browser page renders this as a progress bar.
+  captionJob: { jobId: string; label: string; state: 'running' | 'done' | 'failed' | 'lost'
+                total: number; done: number; wrote: number; skipped: number; errors: number
+                provider?: string; error?: string } | null = null
+  private capTimer: ReturnType<typeof setInterval> | null = null
+  trackCaptionJob(jobId: string, label: string): void {
+    if (this.capTimer) { clearInterval(this.capTimer); this.capTimer = null }
+    this.captionJob = { jobId, label, state: 'running', total: 0, done: 0, wrote: 0, skipped: 0, errors: 0 }
+    let failures = 0
+    this.capTimer = setInterval(async () => {
+      let s: any
+      try { s = await this.autoCaptionStatus(jobId); failures = 0 } catch {
+        // Same cap as the old modal poll: a dead status endpoint must not leave a
+        // "running" bar on screen forever — but it is reported as LOST, not done.
+        if (++failures >= 15 && this.capTimer) {
+          clearInterval(this.capTimer); this.capTimer = null
+          runInAction(() => {
+            if (this.captionJob?.jobId === jobId) {
+              this.captionJob.state = 'lost'
+              this.captionJob.error = 'status endpoint unreachable — the job may still finish server-side; refresh to see results'
+            }
+          })
+        }
+        return
+      }
+      runInAction(() => {
+        if (this.captionJob?.jobId !== jobId) return
+        Object.assign(this.captionJob, {
+          total: s.total || 0, done: s.done || 0, wrote: s.wrote || 0,
+          skipped: s.skipped || 0, errors: s.errors || 0, provider: s.provider,
+        })
+        if (s.state !== 'running' && this.capTimer) {
+          clearInterval(this.capTimer); this.capTimer = null
+          this.captionJob.state = s.state === 'done' ? 'done' : 'failed'
+          if (s.state !== 'done') this.captionJob.error = s.error || s.lastError || 'unknown'
+          void this.browse(this.cwd)   // sidecar badges refresh without a manual reload
+        }
+      })
+    }, 2000)
+  }
+  /** Hide the bar. A still-running job keeps running server-side — this only stops watching. */
+  dismissCaptionJob(): void {
+    if (this.capTimer) { clearInterval(this.capTimer); this.capTimer = null }
+    this.captionJob = null
+  }
 }
 
 export const trainingImagesStore = new TrainingImagesStore()

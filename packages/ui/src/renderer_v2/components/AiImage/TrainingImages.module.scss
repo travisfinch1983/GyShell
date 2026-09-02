@@ -123,3 +123,8 @@
   color: var(--fg, inherit);
 }
 .acSegExt { font-size: 10px; opacity: .7; font-family: ui-monospace, monospace; }
+
+/* auto-caption progress strip (top of the browser, so the modal can close at job start) */
+.capBar { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--border); font-size: 12px; flex: 0 0 auto; }
+.capTrack { flex: 1; min-width: 120px; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 15%, transparent); overflow: hidden; }
+.capFill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .5s ease; }

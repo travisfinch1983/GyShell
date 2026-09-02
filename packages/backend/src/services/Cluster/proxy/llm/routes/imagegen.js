@@ -20,7 +20,7 @@ import {
 import path from 'path';
 import crypto from 'crypto';
 import sharp from 'sharp';
-import { spawn } from 'child_process';
+import { spawn, execFile } from 'child_process';
 
 // ---- auto-caption (Phase 6): dispatch the tagger to the GPU container (CT 176,
 // ai-epyc) over SSH. It sees the same data at /imagegen/training_images/<rel>
@@ -50,7 +50,15 @@ const BLIP_MODEL_DIR = '/imagegen/blip/hf-large';
 const VLM_SCRIPT = '/opt/imagegen-tagger/vlm_caption.py';
 const VLM_MODEL = process.env.IMAGEGEN_VLM_MODEL || 'Qwen3.5-9B-INT8-MM-Thinking-Non_preserved-256k';
 const VLM_API = process.env.IMAGEGEN_VLM_API || 'http://10.0.0.219:17890/api/proxy/llm/v1/chat/completions';
-const TAGGER_GPU_INDEX = 4;   // the RTX 4090 (5060 Tis are Blackwell — onnxruntime CUDA EP n/a)
+// CUDA numbers devices by FASTEST_FIRST unless told otherwise, under which index 4 is a
+// 5060 Ti and the 4090 is index 0 -- i.e. the exact inverse of what TAGGER_GPU_INDEX means.
+// Pin the order so the index below refers to the card its comment names.
+const CUDA_ORDER = 'CUDA_DEVICE_ORDER=PCI_BUS_ID';
+// Default only — POST /auto-caption accepts a per-request gpu_index. Index 4 = the RTX 4090
+// in PCI order. The 5060 Tis (Blackwell, sm_120) DO work: onnxruntime-gpu 1.29.0 ran the real
+// wd-eva02 model on device 3 (verified 2026-09-02) — the earlier “CUDA EP n/a” claim was a
+// missing-LD_LIBRARY_PATH failure wearing an unsupported-arch costume (see ONNX_LD above).
+const TAGGER_GPU_INDEX = 4;
 const captionJobs = new Map();   // jobId -> { state, total, done, wrote, skipped, errors, ... }
 
 // Widened 2026-07-28 from .../training_images to the whole imagegen tree so agents
@@ -126,6 +134,9 @@ const isCollageFile = (n) => /^_collage(-\d+)?\.jpg$/i.test(n);
 
 // A "training set" is any folder named training_set or training_set_<suffix>.
 const isTrainingSetName = (n) => n === 'training_set' || n.startsWith('training_set_');
+// A training BATCH is the assembly the trainer actually eats: images COPIED (never moved)
+// out of many curated sets into one folder. Same naming convention as sets, batch spelling.
+const isTrainingBatchName = (n) => n === 'training_batch' || n.startsWith('training_batch_');
 // A path is INSIDE a training set when one of its segments is a training-set folder.
 const TS_GUARD = /(^|\/)training_set(_[^/]+)?\//;
 
@@ -273,6 +284,7 @@ export function createImagegenRouter(config) {
         folders.push({
           name, n_images: nImg, n_subfolders: nSub,
           is_training_set: isTrainingSetName(name), has_training_set: hasTS,
+          is_training_batch: isTrainingBatchName(name),
         });
       } else if (isImage(name) && !isCollageFile(name)) {
         // mtime = content modified; birthtime = created; ctime = inode change
@@ -620,8 +632,29 @@ export function createImagegenRouter(config) {
       }
     } catch { /* ignore */ }
     out.push({ id: 'blip-large', label: 'BLIP large — natural language (GPU)', kind: 'blip', engine: 'blip' });
-    out.push({ id: 'vlm-qwen', label: 'Qwen3.5-9B — instructed natural language (steerable)', kind: 'vlm', engine: 'vlm' });
-    res.json({ taggers: out, default_gpu_index: TAGGER_GPU_INDEX });
+    // Not pinned to one model: the vlm engine takes ANY chat model the proxy serves (body.vlm_model).
+    // The 9B is only the DEFAULT, and it is not always running — the UI offers the full proxy list.
+    out.push({ id: 'vlm-custom', label: 'Custom — instructed natural language (any proxy model)', kind: 'vlm', engine: 'vlm' });
+    // GPU roster for the picker. nvidia-smi enumerates in PCI order — the same order the
+    // dispatched jobs see under CUDA_DEVICE_ORDER=PCI_BUS_ID — so the index shown IS the
+    // index used. Free VRAM ships with each row because “exists” is not “usable”: a probe
+    // on a full card fails with a BFC arena error that reads like a driver fault.
+    const sshArgs = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8'];
+    if (SSH_KEY) sshArgs.push('-i', SSH_KEY);
+    sshArgs.push(TAGGER_SSH, 'nvidia-smi --query-gpu=index,name,memory.free,memory.total --format=csv,noheader,nounits 2>/dev/null');
+    execFile('ssh', sshArgs, { timeout: 10000 }, (err, stdout) => {
+      let gpus = [];
+      if (!err) {
+        gpus = String(stdout).trim().split('\n').filter(Boolean).map((l) => {
+          const [idx, name, free, total] = l.split(',').map((s) => s.trim());
+          return { index: parseInt(idx, 10), name, free_mib: parseInt(free, 10), total_mib: parseInt(total, 10) };
+        }).filter((g) => Number.isInteger(g.index) && g.name);
+      }
+      // gpus: [] means the host could not be read — the UI must say “unknown”, not render
+      // an empty-but-confident picker (cannot-check ≠ no GPUs).
+      res.json({ taggers: out, default_gpu_index: TAGGER_GPU_INDEX, vlm_default_model: VLM_MODEL, gpus,
+                 gpus_error: err ? String(err.message || err) : undefined });
+    });
   });
 
   // ---- run an auto-caption job over a folder (async; dispatched to the GPU host) ----
@@ -643,6 +676,16 @@ export function createImagegenRouter(config) {
       return res.status(400).json({ error: 'bad model' });
     }
     const device = b.device === 'cuda' ? 'cuda' : 'cpu';
+    // Per-request GPU pick (PCI/nvidia-smi order, same as the /taggers roster — CUDA_ORDER
+    // pins the dispatched process to that numbering). Absent -> the default card.
+    let gpuIndex = TAGGER_GPU_INDEX;
+    if (b.gpu_index !== undefined && b.gpu_index !== null && b.gpu_index !== '') {
+      const gi = parseInt(b.gpu_index, 10);
+      if (!Number.isInteger(gi) || gi < 0 || gi > 15 || String(gi) !== String(b.gpu_index).trim()) {
+        return res.status(400).json({ error: 'bad gpu_index' });
+      }
+      gpuIndex = gi;
+    }
     // Separate sidecars per engine so booru tags + natural-language captions co-exist:
     // WD/JoyTag -> .txt (training tags), BLIP -> .caption. Override via body.caption_ext.
     // NL engines (blip, vlm) share the .caption sidecar so either can produce it; booru tags
@@ -666,13 +709,13 @@ export function createImagegenRouter(config) {
           + (b.trigger ? ` --trigger ${q(b.trigger)}` : '')
           + (b.overwrite ? ' --overwrite' : '') + ' --json';
     } else if (engine === 'blip') {
-      cmd = `${BLIP_PY} ${BLIP_SCRIPT} --folder ${q(remoteFolder)} --model-dir ${q(BLIP_MODEL_DIR)} `
-          + `--device cuda --gpu-index ${TAGGER_GPU_INDEX} --caption-ext ${ext}`
+      cmd = `${CUDA_ORDER} ${BLIP_PY} ${BLIP_SCRIPT} --folder ${q(remoteFolder)} --model-dir ${q(BLIP_MODEL_DIR)} `
+          + `--device cuda --gpu-index ${gpuIndex} --caption-ext ${ext}`
           + (b.trigger ? ` --trigger ${q(b.trigger)}` : '')
           + (b.overwrite ? ' --overwrite' : '') + ' --json';
     } else {
-      cmd = `${ONNX_LD} ${ONNX_PY} ${ONNX_SCRIPT} --folder ${q(remoteFolder)} --model-dir ${q(`${TAGGER_REMOTE_MODELS}/${model}`)} `
-          + `--device ${device} --gpu-index ${TAGGER_GPU_INDEX} --caption-ext ${ext} `
+      cmd = `${CUDA_ORDER} ${ONNX_LD} ${ONNX_PY} ${ONNX_SCRIPT} --folder ${q(remoteFolder)} --model-dir ${q(`${TAGGER_REMOTE_MODELS}/${model}`)} `
+          + `--device ${device} --gpu-index ${gpuIndex} --caption-ext ${ext} `
           + `--threshold ${Number(b.threshold) || 0.35} --char-threshold ${Number(b.char_threshold) || 0.85}`
           + (b.trigger ? ` --trigger ${q(b.trigger)}` : '')
           + (b.spaces ? ' --spaces' : '')
@@ -680,7 +723,7 @@ export function createImagegenRouter(config) {
           + (b.overwrite ? ' --overwrite' : '') + ' --json';
     }
     const jobId = crypto.randomBytes(6).toString('hex');
-    captionJobs.set(jobId, { state: 'running', total: 0, done: 0, wrote: 0, skipped: 0, errors: 0, model: engine === 'blip' ? 'blip-large' : (engine === 'vlm' ? String(b.vlm_model || VLM_MODEL) : model) });
+    captionJobs.set(jobId, { state: 'running', total: 0, done: 0, wrote: 0, skipped: 0, errors: 0, gpu_index: gpuIndex, model: engine === 'blip' ? 'blip-large' : (engine === 'vlm' ? String(b.vlm_model || VLM_MODEL) : model) });
     const sshArgs = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no',
       '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=20'];
     if (SSH_KEY) sshArgs.push('-i', SSH_KEY);
@@ -1122,9 +1165,13 @@ export function createImagegenRouter(config) {
     const suffix = (req.body && req.body.suffix || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
     let dir;
     try { dir = safeResolve(rel); } catch { return res.status(400).json({ error: 'bad path' }); }
-    if (!isTrainingSetName(path.basename(dir))) return res.status(400).json({ error: 'not a training set' });
+    // Sets AND batches rename the same way: the prefix comes from what the folder IS
+    // (so a rename can never turn one kind into the other), the suffix from the user.
+    const kindPrefix = isTrainingSetName(path.basename(dir)) ? 'training_set'
+      : (isTrainingBatchName(path.basename(dir)) ? 'training_batch' : null);
+    if (!kindPrefix) return res.status(400).json({ error: 'not a training set or training batch' });
     if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'no such folder' });
-    const newName = 'training_set' + (suffix ? `_${suffix}` : '');
+    const newName = kindPrefix + (suffix ? `_${suffix}` : '');
     const dest = path.join(path.dirname(dir), newName);
     if (dest === dir) return res.json({ ok: true, path: path.relative(BASE, dir), unchanged: true });
     if (existsSync(dest)) return res.status(409).json({ error: 'a set with that name already exists here' });
@@ -1155,6 +1202,75 @@ export function createImagegenRouter(config) {
     })(BASE);
     out.sort((a, b) => a.path.localeCompare(b.path));
     res.json({ training_sets: out });
+  });
+
+  // ---- List every training batch in the tree (for the add-to-batch picker). ----
+  router.get('/training-batches', (_req, res) => {
+    const out = [];
+    (function walk(dir) {
+      let ents; try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of ents) {
+        if (e.name.startsWith('.') || !e.isDirectory()) continue;
+        const abs = path.join(dir, e.name);
+        if (isTrainingBatchName(e.name)) {
+          let n = 0;
+          try { for (const c of readdirSync(abs)) if (!c.startsWith('.') && isImage(c)) n++; } catch { /* ignore */ }
+          out.push({ path: path.relative(BASE, abs), name: e.name, parent: path.relative(BASE, dir), count: n });
+        } else if (!isTrainingSetName(e.name)) {
+          walk(abs);   // batches never live inside curated sets
+        }
+      }
+    })(BASE);
+    out.sort((a, b) => a.path.localeCompare(b.path));
+    res.json({ training_batches: out });
+  });
+
+  // ---- Additively copy selected images (+ .txt/.caption sidecars) into a training batch. ----
+  // ADDITIVE by design: the whole point is accumulating picks from MANY sets into one batch,
+  // so nothing here removes what an earlier add put in. (The MCP create_training_batch is the
+  // opposite — convergent from a single source list — and is deliberately not reused.)
+  router.post('/batch-add', express.json(), (req, res) => {
+    const rel = (req.body && req.body.path || '').replace(/^\/+/, '');
+    const files = Array.isArray(req.body && req.body.files) ? req.body.files : [];
+    const batchRel = (req.body && req.body.batch || '').replace(/^\/+/, '');
+    const create = !!(req.body && req.body.create);
+    if (!files.length) return res.status(400).json({ error: 'no files' });
+    let srcDir, batchDir;
+    try { srcDir = safeResolve(rel); batchDir = safeResolve(batchRel); } catch { return res.status(400).json({ error: 'bad path' }); }
+    if (!isTrainingBatchName(path.basename(batchDir))) {
+      return res.status(400).json({ error: 'destination is not a training batch (training_batch…)' });
+    }
+    if (!existsSync(batchDir)) {
+      if (!create) return res.status(404).json({ error: 'no such batch' });
+      try { mkdirSync(batchDir, { recursive: true }); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    }
+    // Same shared-mount uid drift as auto-caption: the tagger may caption INSIDE the batch later.
+    try { chmodSync(batchDir, 0o777); } catch { /* best-effort */ }
+    let copied = 0, replaced = 0; const missingTags = [], notFound = [];
+    for (const name0 of files) {
+      const name = String(name0);
+      // Collage pages are contact sheets, not training data — the grid never offers them,
+      // but agents hit this endpoint directly.
+      if (!name || name.startsWith('.') || name.includes('/') || name.includes('..') || isCollageFile(name)) { notFound.push(name); continue; }
+      const img = path.join(srcDir, name);
+      if (!existsSync(img)) { notFound.push(name); continue; }
+      const had = existsSync(path.join(batchDir, name));
+      try { copyFileSync(img, path.join(batchDir, name)); } catch (e) {
+        return res.status(500).json({ error: `copy failed at ${name}: ${String(e.message || e)}` });
+      }
+      if (had) replaced++; else copied++;
+      const stem = name.replace(/\.[^.]+$/, '');
+      let hasTags = false;
+      for (const carExt of ['.txt', '.caption']) {
+        const car = path.join(srcDir, stem + carExt);
+        if (existsSync(car)) {
+          try { copyFileSync(car, path.join(batchDir, stem + carExt)); if (carExt === '.txt') hasTags = true; } catch { /* sidecar best-effort */ }
+        }
+      }
+      // An image without .txt trains UNLABELED — reported, never silently passed over.
+      if (!hasTags) missingTags.push(name);
+    }
+    res.json({ ok: true, batch: path.relative(BASE, batchDir), copied, replaced, not_found: notFound, missing_tags: missingTags });
   });
 
   // ---- Merge multiple training sets into one new INDEPENDENT set under _merged/.
