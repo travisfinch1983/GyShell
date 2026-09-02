@@ -1996,6 +1996,58 @@ def list_lora_outputs() -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+@mcp.tool()
+def list_checkpoints(family: str = "") -> str:
+    """List the BASE checkpoints available to train a LoRA against, grouped by family.
+
+    train_lora(base_model=...) takes an absolute path, but until now nothing enumerated the
+    choices, so callers passed "" and silently got the newest Illustrious. This reports what
+    "" resolves to for each family so the fallback can never be mistaken for a decision.
+
+    Pick a path from here and pass it as train_lora(base_model=...). The LoRA is only usable
+    with checkpoints of the SAME family it trained on -- an Illustrious LoRA on a Pony_XL
+    checkpoint produces mush, so the family you choose here is the family it must be used with.
+
+    Args:
+        family: limit to one family (e.g. "Illustrious", "Pony_XL"). Empty = every family.
+    """
+    rc, out, _ = _ssh(f"ls -1d {_CKPT_ROOT}/*/ 2>/dev/null")
+    fams = [f.rstrip("/").split("/")[-1] for f in out.splitlines() if f.strip()]
+    if family:
+        want = family.strip().lower()
+        fams = [f for f in fams if f.lower() == want]
+        if not fams:
+            # Only families that actually CONTAIN a checkpoint. Offering a directory holding
+            # none is a valid-looking answer that wastes the caller's next call.
+            probe = ("for d in %s/*/; do ls \"$d\"*.safetensors >/dev/null 2>&1 "
+                     "&& basename \"$d\"; done") % _CKPT_ROOT
+            rc2, out2, _ = _ssh(probe)
+            return _j({"error": f"no such checkpoint family: {family!r}",
+                       "families_with_checkpoints": [f for f in out2.splitlines() if f.strip()]})
+    families = []
+    for fam in sorted(fams):
+        # -t = newest first, which is the SAME ordering train_lora's empty-base_model fallback
+        # uses, so entry [0] is literally what "" would select for that family.
+        rc, listing, _ = _ssh(
+            f"ls -t {_CKPT_ROOT}/{shlex.quote(fam)}/*.safetensors 2>/dev/null")
+        paths = [p for p in listing.splitlines() if p.strip()]
+        if not paths:
+            continue
+        families.append({
+            "family": fam,
+            "count": len(paths),
+            "default_if_base_model_omitted": paths[0] if fam == "Illustrious" else None,
+            "checkpoints": [{"name": p.split("/")[-1], "path": p} for p in paths],
+        })
+    return _j({
+        "checkpoint_root": _CKPT_ROOT,
+        "families": families,
+        "note": ("train_lora(base_model='') falls back to the NEWEST Illustrious checkpoint — "
+                 "shown above as default_if_base_model_omitted. Pass base_model explicitly to "
+                 "choose; the LoRA can only be used with checkpoints of the family it trained on."),
+    })
+
+
 # ENTRY POINT — MUST STAY LAST IN THIS FILE.
 #
 # mcp.run() blocks. Anything defined BELOW it never executes when the module is run as a
