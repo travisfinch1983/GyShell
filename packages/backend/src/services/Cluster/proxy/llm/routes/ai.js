@@ -2096,7 +2096,21 @@ if out: print(json.dumps(out))
     // (pct exec doesn't always forward the PTY for new-session in attached mode).
     // After creating the session, tmux pipe-pane captures all pane output to a
     // persistent log file at /var/log/proxlab/ so logs survive service shutdown.
-    const combinedCommand = `bash -c 'tmux kill-session -t "${session}" 2>/dev/null; echo ${b64Script} | base64 -d > ${scriptPath} && chmod +x ${scriptPath} && tmux new-session -d -s "${session}" "bash ${scriptPath}" && mkdir -p /var/log/proxlab && : > ${logFile} && tmux pipe-pane -t "${session}" -o "cat >> ${logFile}" && exec tmux attach -t "${session}"'`;
+    // The program below runs INSIDE the agent container: it drives tmux and cd's into paths
+    // like /opt/ai-toolkit that exist there and not on the PVE host.
+    const innerProgram = `tmux kill-session -t "${session}" 2>/dev/null; echo ${b64Script} | base64 -d > ${scriptPath} && chmod +x ${scriptPath} && tmux new-session -d -s "${session}" "bash ${scriptPath}" && mkdir -p /var/log/proxlab && : > ${logFile} && tmux pipe-pane -t "${session}" -o "cat >> ${logFile}" && exec tmux attach -t "${session}"`;
+
+    // 🛑 RUN IT IN THE CONTAINER. This endpoint returns pveHostIp, and the caller
+    // (ServiceLaunchStore -> liveConsoleStore.openInstall) opens a console on THAT HOST and runs the
+    // command verbatim. Without `pct exec` it executed on the Proxmox host, where neither tmux nor
+    // /opt/<provider> exists — "bash: line 1: tmux: command not found", for every provider on such a
+    // node, not just the one being launched.
+    //
+    // The inner program is base64'd so its own quotes (tmux -t "sess", pipe-pane -o "cat >> log")
+    // cannot collide with this wrapper's. base64 is [A-Za-z0-9+/=], always safe in double quotes.
+    const b64Inner = Buffer.from(innerProgram).toString('base64');
+    const innerPath = `/tmp/.launch-${session}.sh`;
+    const combinedCommand = `pct exec ${agent.vmid} -- bash -c "echo ${b64Inner} | base64 -d > ${innerPath} && exec bash ${innerPath}"`;
 
     res.json({
       vmid: agent.vmid,
