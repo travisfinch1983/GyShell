@@ -59,6 +59,10 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void }> = ({ onClose })
   const [vlmModels, setVlmModels] = useState<string[]>([])
   const [vlmModel, setVlmModel] = useState('')
   const [vlmListErr, setVlmListErr] = useState(false)
+  // True when the vision filter had to be bypassed (proxy reported NO vision-capable
+  // models — a regression upstream, not a lab with zero VLMs). The dropdown then shows
+  // everything and says so, instead of rendering empty-but-confident.
+  const [vlmAllShown, setVlmAllShown] = useState(false)
 
   useEffect(() => {
     store.taggers()
@@ -95,8 +99,15 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void }> = ({ onClose })
     fetch('/api/proxy/llm/v1/models')
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((d) => {
-        const ids = (d?.data || []).map((m: any) => String(m.id)).filter(Boolean)
+        const all = (d?.data || []).filter((m: any) => m && m.id)
+        // The proxy annotates every model with capabilities {text, vision, audio} —
+        // captioning needs eyes, so only vision:true is offered. A text-only model
+        // would "caption" from nothing and the output would look plausible.
+        const vision = all.filter((m: any) => m?.capabilities?.vision === true)
+        const list = vision.length ? vision : all
+        const ids = list.map((m: any) => String(m.id))
         if (!ids.length) throw new Error('empty model list')
+        setVlmAllShown(vision.length === 0)
         setVlmModels(ids)
         setVlmModel((v) => (v && ids.includes(v) ? v : ids[0]))
       })
@@ -246,8 +257,9 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void }> = ({ onClose })
                   {vlmModels.map((m) => <option key={m} value={m}>{m}</option>)}
                 </select>
                 <div className={styles.acHint}>
-                  Any model the AI-Lab proxy serves. It must be vision-capable to actually see the
-                  images — a text-only model will invent captions from nothing.
+                  {vlmAllShown
+                    ? '⚠ The proxy reported no vision-capable models, so ALL models are listed — pick one you know can see images.'
+                    : 'Only models the proxy reports as vision-capable are listed — a text-only model would invent captions from nothing.'}
                 </div>
               </>
             )}
