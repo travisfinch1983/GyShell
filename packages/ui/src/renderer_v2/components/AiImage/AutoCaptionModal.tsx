@@ -14,12 +14,14 @@ const MODEL_NOTES: Record<string, string> = {
   'wd-eva02-large-tagger-v3': 'Most accurate of the WD v3 family, and the slowest.',
   'wd-v1-4-vit-tagger-v2': 'Older v2 generation. Kept for consistency with sets tagged earlier.',
   joytag: 'Booru-style tagger with broad general and NSFW coverage.',
-  'blip-large': 'Writes one plain-English sentence describing the image.',
+  'blip-large': 'Writes one plain-English sentence describing the image. Fast, but generic - it cannot be steered, and on a material/style set it misread the garment.',
+  'vlm-qwen': 'Sends each image to the Qwen3.5-9B vision model with an instruction, so the caption can be aimed at material, light and cut. About 3s per image. Give it the set context below.',
 }
 
 type OutKind = 'tags' | 'nl'
 
-const KIND_OF = (t: any): OutKind => (t?.engine === 'blip' ? 'nl' : 'tags')
+// Both natural-language engines write .caption; only the ONNX taggers write .txt tags.
+const KIND_OF = (t: any): OutKind => (t?.engine === 'blip' || t?.engine === 'vlm' ? 'nl' : 'tags')
 
 const OUT_INFO: Record<OutKind, { label: string; ext: string; blurb: string }> = {
   tags: {
@@ -41,6 +43,9 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; onDone: () => voi
   const [device, setDevice] = useState('cuda')
   const [thr, setThr] = useState('0.35'); const [cthr, setCthr] = useState('0.85')
   const [spaces, setSpaces] = useState(false); const [trigger, setTrigger] = useState(''); const [overwrite, setOverwrite] = useState(false)
+  // vlm only: what this SET is. Goes into the instruction so the model knows
+  // what it is looking at; the trigger phrase stays OUT of the prose.
+  const [context, setContext] = useState('')
   const [status, setStatus] = useState(''); const [running, setRunning] = useState(false)
   const poll = useRef<any>(null)
 
@@ -60,18 +65,24 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; onDone: () => voi
   }, [outKind, taggers])
 
   const cur = taggers.find((t) => t.id === model)
-  const isBlip = cur?.engine === 'blip'
-  useEffect(() => { if (isBlip) setDevice('cuda') }, [isBlip])
+  const isVlm = cur?.engine === 'vlm'
+  // Either NL engine: no thresholds, no tag options. Was `isBlip`, which
+  // left the vlm engine showing tag controls that do nothing.
+  const isNl = cur?.engine === 'blip' || isVlm
+  useEffect(() => { if (isNl) setDevice('cuda') }, [isNl])
 
   const info = OUT_INFO[outKind]
 
   const run = async () => {
     if (!cur) return
-    const body = {
+    const body: Record<string, unknown> = {
       path: store.cwd, engine: cur.engine, model, device,
       threshold: parseFloat(thr) || 0.35, char_threshold: parseFloat(cthr) || 0.85,
       spaces, trigger: trigger.trim(), overwrite,
     }
+    // `avoid` defaults to the trigger backend-side, so the phrase is stated
+    // once (by the prepend) instead of twice.
+    if (isVlm && context.trim()) body.context = context.trim()
     setRunning(true); setStatus('Starting…')
     try {
       const { jobId } = await store.autoCaption(body)
@@ -145,7 +156,7 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; onDone: () => voi
           )}
 
         {/* 3. Options that only make sense for tag models. */}
-        {!isBlip && (
+        {!isNl && (
           <>
             <div className={styles.acSection}>Tagging options</div>
             <label className={styles.acl}>General threshold
@@ -167,6 +178,24 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; onDone: () => voi
             <div className={styles.acHint}>
               The 4090 is shared with ComfyUI — pick CPU if you would rather not contend for it.
               Either way the result line names the provider that actually ran.
+            </div>
+          </>
+        )}
+        {isVlm && (
+          <>
+            <div className={styles.acSection}>Set context</div>
+            <textarea
+              className={styles.input}
+              style={{ width: '100%', minHeight: 64, resize: 'vertical' }}
+              placeholder='optional - what every image in this set shows, e.g. "Every image shows red satin string bikini panties; the set is for a LoRA about the MATERIAL and STYLE of the garment."'
+              value={context}
+              disabled={running}
+              onChange={(e) => setContext(e.target.value)}
+            />
+            <div className={styles.acHint}>
+              Tells the model what it is looking at so it uses the right vocabulary. The
+              trigger below is kept OUT of the sentence itself - it is prepended, so saying
+              it twice is redundant.
             </div>
           </>
         )}
