@@ -26,6 +26,16 @@ export interface IgImage {
   name: string; rel: string; mtime: number; ctime: number; birthtime: number; size: number
   w: number; h: number; cropped: boolean; has_alt: boolean; has_caption: boolean; has_nl_caption: boolean
   score: number | null; comment: string
+  /** Subsection folder this image lives in ('' = the browsed folder itself). */
+  dir?: string
+}
+
+/** Selection key: the same filename can exist in two subsections, so bare names collide. */
+export const imKey = (im: Pick<IgImage, 'name' | 'dir'>): string => (im.dir ? `${im.dir}/${im.name}` : im.name)
+
+export interface BatchSection {
+  folder: string; concept: string; repeats: number; count: number
+  hasCollage: boolean; collageFirst: string
 }
 export interface IgFolder { name: string; n_images: number; n_subfolders: number; is_training_set: boolean; has_training_set: boolean; is_training_batch?: boolean; is_batch_subsection?: boolean; repeats?: number; concept?: string }
 export interface IgCrumb { name: string; path: string }
@@ -40,6 +50,8 @@ export class TrainingImagesStore {
   folders: IgFolder[] = []
   crumbs: IgCrumb[] = []
   inTrainingSet = false
+  /** Subsections of the browsed training batch (their images are inlined into `images`). */
+  sections: BatchSection[] = []
   hasCollage = false
   collageFirst = ''
   sortKey: SortKey = (localStorage.getItem('aig-sort-key') as SortKey) || 'name'
@@ -62,7 +74,10 @@ export class TrainingImagesStore {
   constructor() { makeAutoObservable(this) }
 
   /** Top-level folders that hold training data. Anything else at the root is model storage. */
-  static readonly TRAINING_ROOTS = ['training', 'training_images']
+  // _batches: UI-assembled training batches land here (the Add-to-batch modal's
+  // new-batch path) — without it a batch created there was unreachable in the
+  // default narrowed view (Travis, 2026-09-02).
+  static readonly TRAINING_ROOTS = ['training', 'training_images', '_batches']
 
   toggleShowAllRoots(): void {
     this.showAllRoots = !this.showAllRoots
@@ -79,6 +94,20 @@ export class TrainingImagesStore {
     this.loading = true; this.error = ''
     try {
       const d = await ig(`/browse?path=${encodeURIComponent(this.cwd)}`)
+      // A training batch renders as ONE page: each subsection's browse is fetched and its
+      // images inlined under a divider — sidecar flags and ratings come from the
+      // subsection's own browse, so they are as correct as a direct visit.
+      const parts0 = (this.cwd || '').split('/').filter(Boolean)
+      const lastSeg = parts0[parts0.length - 1] || ''
+      const isBatchRoot = lastSeg === 'training_batch' || lastSeg.startsWith('training_batch_')
+      let subPayloads: Array<{ f: any; sd: any }> = []
+      if (isBatchRoot) {
+        const subs = (d.folders || []).filter((f: any) => f.is_batch_subsection)
+        subPayloads = (await Promise.all(subs.map(async (f: any) => {
+          try { return { f, sd: await ig(`/browse?path=${encodeURIComponent(this.cwd + '/' + f.name)}`) } }
+          catch { return null }   // one unreadable subsection must not blank the whole batch
+        }))).filter(Boolean) as Array<{ f: any; sd: any }>
+      }
       runInAction(() => {
         this.inTrainingSet = !!d.is_training_set
         this.hasCollage = !!d.has_collage
@@ -88,15 +117,27 @@ export class TrainingImagesStore {
         this.folders = (this.cwd === '' && !this.showAllRoots)
           ? (d.folders || []).filter((f: any) => roots.includes(f.name))
           : (d.folders || [])
+        if (isBatchRoot) this.folders = this.folders.filter((f: any) => !f.is_batch_subsection)
         const prefix = d.path ? d.path + '/' : ''
-        // Loose files at the imagegen root are strays, not training data — hide them with the
-        // folders rather than leaving one orphan image to imply this is a real image directory.
-        this.images = ((this.cwd === '' && !this.showAllRoots) ? [] : (d.images || [])).map((im: any) => ({
-          name: im.name, rel: prefix + im.name, mtime: im.mtime || 0, ctime: im.ctime || 0,
+        const mapIm = (pre: string, sub: string) => (im: any): IgImage => ({
+          name: im.name, rel: pre + im.name, mtime: im.mtime || 0, ctime: im.ctime || 0,
           birthtime: im.birthtime || 0, size: im.size || 0, w: im.w || 0, h: im.h || 0,
           cropped: !!im.cropped, has_alt: !!im.has_alt, has_caption: !!im.has_caption,
-          has_nl_caption: !!im.has_nl_caption, score: im.score != null ? im.score : null, comment: im.comment || '',
-        }))
+          has_nl_caption: !!im.has_nl_caption, score: im.score != null ? im.score : null,
+          comment: im.comment || '', dir: sub,
+        })
+        // Loose files at the imagegen root are strays, not training data — hide them with the
+        // folders rather than leaving one orphan image to imply this is a real image directory.
+        this.images = ((this.cwd === '' && !this.showAllRoots) ? [] : (d.images || [])).map(mapIm(prefix, ''))
+        const sections: BatchSection[] = []
+        for (const { f, sd } of subPayloads) {
+          const spre = sd.path ? sd.path + '/' : ''
+          sections.push({ folder: f.name, concept: f.concept || f.name, repeats: f.repeats || 0,
+                          count: (sd.images || []).length, hasCollage: !!sd.has_collage,
+                          collageFirst: sd.collage_first || '_collage.jpg' })
+          this.images.push(...(sd.images || []).map(mapIm(spre, f.name)))
+        }
+        this.sections = sections
         this.sortImages()
         this.loading = false
       })
@@ -117,7 +158,13 @@ export class TrainingImagesStore {
       size: (a, b) => (a.size || 0) - (b.size || 0),
     }
     const f = cmp[this.sortKey]
+    // Section-stable: images sort WITHIN their subsection; sections keep their listed
+    // order — a date sort must never interleave 20_blue into 5_red.
+    const rank = new Map<string, number>([['', 0]])
+    this.sections.forEach((s, ix) => rank.set(s.folder, ix + 1))
     this.images = this.images.slice().sort((a, b) => {
+      const r = (rank.get(a.dir || '') ?? 0) - (rank.get(b.dir || '') ?? 0)
+      if (r) return r
       const c = f(a, b) * dir
       return c || a.name.localeCompare(b.name, undefined, { numeric: true })
     })
@@ -142,17 +189,17 @@ export class TrainingImagesStore {
   enterSelection() { this.selectionMode = true }
   exitSelection() { this.selectionMode = false; this.lastIndex = null; this.selected.clear() }
   toggleOne(i: number) {
-    const name = this.visibleImages[i].name
+    const name = imKey(this.visibleImages[i])
     if (this.selected.has(name)) this.selected.delete(name); else this.selected.add(name)
     this.selected = new Set(this.selected)
     if (!this.selected.size) this.exitSelection()
   }
   selectRange(a: number, b: number) {
     const [lo, hi] = a <= b ? [a, b] : [b, a]
-    for (let i = lo; i <= hi; i++) this.selected.add(this.visibleImages[i].name)
+    for (let i = lo; i <= hi; i++) this.selected.add(imKey(this.visibleImages[i]))
     this.selected = new Set(this.selected); this.lastIndex = b
   }
-  selectAll() { this.visibleImages.forEach((im) => this.selected.add(im.name)); this.selected = new Set(this.selected) }
+  selectAll() { this.visibleImages.forEach((im) => this.selected.add(imKey(im))); this.selected = new Set(this.selected) }
   /** Empty the selection but STAY in selection mode (Clear/X is the exit). */
   deselectAll() { this.selected = new Set(); this.lastIndex = null }
 
@@ -174,9 +221,96 @@ export class TrainingImagesStore {
     return null
   }
 
+  /** Selection KEYS ('20_blue/img.png' | 'img.png') grouped per subsection. Every bulk
+   *  action fans out through this: one backend call per directory, so the per-folder
+   *  contracts (ratings files, name guards) stay untouched. */
+  splitKeys(keys: string[]): Array<{ sub: string; names: string[] }> {
+    const valid = new Set(this.sections.map((s) => s.folder))
+    const gs = new Map<string, string[]>()
+    for (const k of keys) {
+      const cut = k.indexOf('/')
+      const sub = cut > 0 && valid.has(k.slice(0, cut)) ? k.slice(0, cut) : ''
+      const name = sub ? k.slice(cut + 1) : k
+      const g = gs.get(sub) || []
+      g.push(name)
+      gs.set(sub, g)
+    }
+    return [...gs].map(([sub, names]) => ({ sub, names }))
+  }
+
+  async deleteKeys(keys: string[]): Promise<{ deleted: number }> {
+    let deleted = 0
+    for (const g of this.splitKeys(keys)) deleted += (await this.deleteFiles(g.names, g.sub)).deleted || 0
+    return { deleted }
+  }
+
+  async stripKeys(keys: string[]): Promise<{ removed: number }> {
+    let removed = 0
+    for (const g of this.splitKeys(keys)) removed += (await this.stripTags(g.names, g.sub)).removed || 0
+    return { removed }
+  }
+
+  async wipeKeys(keys: string[]): Promise<{ cleared: number }> {
+    let cleared = 0
+    for (const g of this.splitKeys(keys)) cleared += (await this.wipeRatings(g.names, g.sub)).cleared || 0
+    return { cleared }
+  }
+
+  /** Numbering restarts per subsection — names only need uniqueness per folder. */
+  async renameKeys(keys: string[], base: string): Promise<{ renamed: number; ratings_moved: number; groups: number }> {
+    const gs = this.splitKeys(keys)
+    let renamed = 0, ratings = 0
+    for (const g of gs) {
+      const r = await this.renameFiles(g.names, base, g.sub)
+      renamed += (r.renamed || []).length; ratings += r.ratings_moved || 0
+    }
+    return { renamed, ratings_moved: ratings, groups: gs.length }
+  }
+
+  async transferKeys(op: 'move' | 'copy', dest: string, keys: string[]): Promise<{ done: number; dest: string }> {
+    let done = 0; let d = dest
+    for (const g of this.splitKeys(keys)) { const r = await this.transfer(op, dest, g.names, g.sub); done += r.done || 0; d = r.dest || d }
+    return { done, dest: d }
+  }
+
+  async batchAddKeys(batch: string, keys: string[], create = false): Promise<any> {
+    const out: any = { copied: 0, replaced: 0, missing_tags: [], not_found: [], batch }
+    let first = create
+    for (const g of this.splitKeys(keys)) {
+      const r = await this.batchAdd(batch, g.names, first, g.sub)
+      first = false   // created on the first group; the rest append
+      out.copied += r.copied || 0; out.replaced += r.replaced || 0
+      out.missing_tags.push(...(r.missing_tags || [])); out.not_found.push(...(r.not_found || []))
+      out.batch = r.batch || out.batch
+    }
+    return out
+  }
+
+  async subsectionKeys(keys: string[], name: string, repeats: number): Promise<{ moved: number; subsection: string; reused: boolean }> {
+    let moved = 0; let subsection = ''; let reused = false
+    for (const g of this.splitKeys(keys)) {
+      const r = await this.subsection(g.names, name, repeats, g.sub)
+      moved += r.moved || 0; subsection = r.subsection || subsection; reused = reused || !!r.reused
+    }
+    return { moved, subsection, reused }
+  }
+
+  async tagsBatchKeys(body: { add?: string[]; remove?: string[]; position?: 'start' | 'end' }, keys: string[]): Promise<{ changed: number; unchanged: number; cleared: number; errors: string[] }> {
+    const out = { changed: 0, unchanged: 0, cleared: 0, errors: [] as string[] }
+    for (const g of this.splitKeys(keys)) {
+      const r = await this.tagsBatch({ ...body, files: g.names }, g.sub)
+      out.changed += r.changed || 0; out.unchanged += r.unchanged || 0
+      out.cleared += r.cleared || 0; out.errors.push(...(r.errors || []))
+    }
+    return out
+  }
+
+  /** cwd, or a subsection under it. */
+  dirPath(sub = ''): string { return sub ? `${this.cwd}/${sub}` : this.cwd }
+
   /** Move selected images into a <repeats>_<concept> subsection of the current batch. */
-  async subsection(files: string[], name: string, repeats: number): Promise<any> {
-    return ig('/subsection', { method: 'POST', body: { path: this.cwd, files, name, repeats } })
+  async subsection(files: string[], name: string, repeats: number, sub = ''): Promise<any> {
+    return ig('/subsection', { method: 'POST', body: { path: this.dirPath(sub), files, name, repeats } })
   }
 
   async setSubsectionRepeats(rel: string, repeats: number): Promise<any> {
@@ -184,29 +318,29 @@ export class TrainingImagesStore {
   }
 
   /** Batch rename to <base>-1..N. Order = display order; sidecars + ratings travel. */
-  async renameFiles(files: string[], base: string): Promise<any> {
-    return ig('/rename-files', { method: 'POST', body: { path: this.cwd, files, base } })
+  async renameFiles(files: string[], base: string, sub = ''): Promise<any> {
+    return ig('/rename-files', { method: 'POST', body: { path: this.dirPath(sub), files, base } })
   }
 
-  async deleteFiles(files: string[]): Promise<any> {
-    return ig('/delete', { method: 'POST', body: { path: this.cwd, files } })
+  async deleteFiles(files: string[], sub = ''): Promise<any> {
+    return ig('/delete', { method: 'POST', body: { path: this.dirPath(sub), files } })
   }
 
   async deleteSelected(): Promise<any> {
-    return this.deleteFiles([...this.selected])
+    return this.deleteKeys([...this.selected])
   }
-  async transfer(op: 'move' | 'copy', dest: string, files: string[]): Promise<any> {
-    return ig('/transfer', { method: 'POST', body: { op, src: this.cwd, dest, files } })
+  async transfer(op: 'move' | 'copy', dest: string, files: string[], sub = ''): Promise<any> {
+    return ig('/transfer', { method: 'POST', body: { op, src: this.dirPath(sub), dest, files } })
   }
   async renameSet(path: string, suffix: string): Promise<any> { return ig('/rename-set', { method: 'POST', body: { path, suffix } }) }
-  async genCollage(): Promise<any> { return ig('/collage', { method: 'POST', body: { path: this.cwd } }) }
-  async stripTags(files?: string[]): Promise<any> {
-    const body: any = { path: this.cwd }; if (files && files.length) body.files = files
+  async genCollage(sub = ''): Promise<any> { return ig('/collage', { method: 'POST', body: { path: this.dirPath(sub) } }) }
+  async stripTags(files?: string[], sub = ''): Promise<any> {
+    const body: any = { path: this.dirPath(sub) }; if (files && files.length) body.files = files
     return ig('/strip-tags', { method: 'POST', body })
   }
   /** Wipe all ratings + comments (the whole _ratings.json) for this folder/set, or just the named files. */
-  async wipeRatings(files?: string[]): Promise<any> {
-    const body: any = { path: this.cwd }; if (files && files.length) body.files = files
+  async wipeRatings(files?: string[], sub = ''): Promise<any> {
+    const body: any = { path: this.dirPath(sub) }; if (files && files.length) body.files = files
     return ig('/wipe-ratings', { method: 'POST', body })
   }
   /** Count of images in the current view that carry a rating/comment. */
@@ -214,8 +348,8 @@ export class TrainingImagesStore {
   async listTrainingSets(): Promise<any> { return ig('/training-sets') }
   async listTrainingBatches(): Promise<any> { return ig('/training-batches') }
   /** Additive: copies the images + their .txt/.caption sidecars into the batch. */
-  async batchAdd(batch: string, files: string[], create = false): Promise<any> {
-    return ig('/batch-add', { method: 'POST', body: { path: this.cwd, files, batch, create } })
+  async batchAdd(batch: string, files: string[], create = false, sub = ''): Promise<any> {
+    return ig('/batch-add', { method: 'POST', body: { path: this.dirPath(sub), files, batch, create } })
   }
   async merge(name: string, sources: string[]): Promise<any> { return ig('/merge', { method: 'POST', body: { name, sources } }) }
   async browseRaw(p: string): Promise<any> { return ig(`/browse?path=${encodeURIComponent(p)}`) }
@@ -223,7 +357,13 @@ export class TrainingImagesStore {
   // ── crop editor + captions + ratings + auto-caption (phase 2c) ──
   async getCaption(rel: string, ext: 'txt' | 'caption'): Promise<any> { return ig(`/caption?path=${encodeURIComponent(rel)}&ext=${ext}`) }
   async setCaption(rel: string, caption: string, ext: 'txt' | 'caption'): Promise<any> { return ig('/caption', { method: 'POST', body: { path: rel, caption, ext } }) }
-  async setRating(file: string, score: number, comment: string): Promise<any> { return ig('/rating', { method: 'POST', body: { path: this.cwd, file, score, comment } }) }
+  /** Takes the image's FULL rel path — a subsection image's rating must land in that
+   *  subsection's _ratings.json, not the batch root's. */
+  async setRating(fileRel: string, score: number, comment: string): Promise<any> {
+    const cut = fileRel.lastIndexOf('/')
+    const body = { path: cut >= 0 ? fileRel.slice(0, cut) : '', file: cut >= 0 ? fileRel.slice(cut + 1) : fileRel, score, comment }
+    return ig('/rating', { method: 'POST', body })
+  }
   async crop(body: any): Promise<any> { return ig('/crop', { method: 'POST', body }) }
   async resetCrop(rel: string): Promise<any> { return ig('/reset-crop', { method: 'POST', body: { path: rel } }) }
   async upscale(rel: string): Promise<any> { return ig('/upscale', { method: 'POST', body: { path: rel } }) }
@@ -232,8 +372,8 @@ export class TrainingImagesStore {
   /** Blanket add/remove the same tags across a whole folder (or a selection) in ONE call.
    *  `position` defaults to 'start' because kohya reads the leading token as the trigger word,
    *  so a blanket trigger has to prepend. Per-image POST /tags would be 650+ round-trips. */
-  async tagsBatch(body: { add?: string[]; remove?: string[]; files?: string[]; position?: 'start' | 'end' }): Promise<any> {
-    return ig('/tags-batch', { method: 'POST', body: { path: this.cwd, ...body } })
+  async tagsBatch(body: { add?: string[]; remove?: string[]; files?: string[]; position?: 'start' | 'end' }, sub = ''): Promise<any> {
+    return ig('/tags-batch', { method: 'POST', body: { path: this.dirPath(sub), ...body } })
   }
   async taggers(): Promise<any> { return ig('/taggers') }
   async autoCaption(body: any): Promise<any> { return ig('/auto-caption', { method: 'POST', body }) }

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Layers, FolderOpen, Star, X, ChevronUp, ChevronDown } from 'lucide-react'
-import { trainingImagesStore as store, igThumb, igImage, type IgImage } from '../../stores/TrainingImagesStore'
+import { trainingImagesStore as store, igThumb, igImage, imKey, type IgImage } from '../../stores/TrainingImagesStore'
 import { confirmStore } from '../../stores/confirmStore'
 import { promptStore } from '../../stores/promptStore'
 import { CropEditor } from './CropEditor'
@@ -13,6 +13,69 @@ const SORT_KEYS: { v: any; label: string }[] = [
   { v: 'name', label: 'Name' }, { v: 'created', label: 'Date created' }, { v: 'modified', label: 'Date modified' },
   { v: 'added', label: 'Date added' }, { v: 'size', label: 'Size' },
 ]
+
+// ── Subsection picker: EXISTING subsections listed first so a typo can't mint 20_bleu
+// beside 20_blue (Travis, 2026-09-02); a new concept takes a name + repeats. ──
+const SubsectionModal: React.FC<{ onClose: () => void }> = observer(({ onClose }) => {
+  const [sel, setSel] = useState('')
+  const [newName, setNewName] = useState('')
+  const [repeats, setRepeats] = useState('10')
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
+  const go = async () => {
+    const existing = store.sections.find((s) => s.folder === sel)
+    const concept = existing ? existing.concept : newName.trim().replace(/[^a-zA-Z0-9_-]/g, '')
+    const reps = existing ? existing.repeats : parseInt(repeats, 10)
+    if (!concept) { setMsg('Pick a subsection or name a new one.'); return }
+    if (!Number.isInteger(reps) || reps < 1) { setMsg('Repeats must be a positive number.'); return }
+    setBusy(true); setMsg('Moving…')
+    try {
+      const r = await store.subsectionKeys([...store.selected], concept, reps)
+      store.msg = `Moved ${r.moved} → ${r.subsection}.`
+      store.exitSelection(); void store.browse(store.cwd); onClose()
+    } catch (e: any) { setBusy(false); setMsg('Failed: ' + (e?.message || e)) }
+  }
+  return (
+    <div className={styles.modalBg}>
+      <div className={styles.pkBox} style={{ width: 'min(520px,94%)' }} onClick={(e) => e.stopPropagation()}>
+        <div className={styles.modalHead}>
+          <strong>Move {store.selected.size} image{store.selected.size > 1 ? 's' : ''} to subsection</strong>
+          <button className={styles.btn} onClick={onClose}>Cancel</button>
+        </div>
+        {store.sections.length > 0 && (
+          <>
+            <div className={styles.acSection}>Existing subsections</div>
+            <div className={styles.pkFolders}>
+              {store.sections.map((s) => (
+                <button key={s.folder} className={styles.pkFolder}
+                        style={sel === s.folder ? { outline: '2px solid var(--accent)' } : undefined}
+                        onClick={() => { setSel(sel === s.folder ? '' : s.folder); setNewName('') }}>
+                  📂 {s.concept} <span className={styles.dim}>×{s.repeats} · {s.count} img</span>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+        <div className={styles.acSection}>New subsection</div>
+        <label className={styles.acl}>Concept
+          <input className={styles.input} placeholder="e.g. blue — becomes <repeats>_blue" value={newName}
+                 disabled={busy} onChange={(e) => { setNewName(e.target.value); setSel('') }} />
+        </label>
+        <label className={styles.acl}>Repeats
+          <input className={styles.input} type="number" min={1} max={999} value={repeats}
+                 disabled={busy || !!sel} onChange={(e) => setRepeats(e.target.value)} />
+        </label>
+        <div className={styles.msg}>{msg}</div>
+        <div className={styles.pkFoot}>
+          <span className={styles.spacer} />
+          <button className={styles.btnPrimary} disabled={busy || (!sel && !newName.trim())} onClick={() => void go()}>
+            {busy ? 'Moving…' : 'Move'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+})
 
 // ── Add to training batch/set: pick (or create) the folder the selection is COPIED into ──
 // One modal, two kinds. Batches and sets differ only in what is listed and where a NEW one
@@ -46,7 +109,7 @@ const AddToBatchModal: React.FC<{ kind: 'batch' | 'set'; files: string[]; onClos
     if (!batch) { setMsg(`Pick a ${noun} or name a new one.`); return }
     setBusy(true); setMsg('Copying…')
     try {
-      const r = await store.batchAdd(batch, files, creating)
+      const r = await store.batchAddKeys(batch, files, creating)
       if (kind === 'set') void store.browse(store.cwd)   // a new set under cwd changes badges
       // The tag warning is the load-bearing part: an image without .txt trains UNLABELED.
       setMsg(`Copied ${r.copied}${r.replaced ? `, replaced ${r.replaced}` : ''} → ${r.batch}`
@@ -140,7 +203,7 @@ const Picker: React.FC<{ op: 'move' | 'copy'; files: string[]; onClose: () => vo
     if (s) { if (s.includes('..')) { setMsg('bad folder name'); return } dest = dest ? `${dest}/${s}` : s }
     if (dest === store.cwd) { setMsg("that's the source folder"); return }
     setMsg(`${verb}ing ${files.length}…`)
-    try { const r = await store.transfer(op, dest, files); setMsg(`${verb}d ${r.done} → ${r.dest}`); setTimeout(() => { onClose(); onDone() }, 700) }
+    try { const r = await store.transferKeys(op, dest, files); setMsg(`${verb}d ${r.done} → ${r.dest}`); setTimeout(() => { onClose(); onDone() }, 700) }
     catch (e: any) { setMsg('Failed: ' + (e?.message || e)) }
   }
   return (
@@ -209,7 +272,7 @@ const MergeModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 }
 
 const Tile: React.FC<{ im: IgImage; i: number; onOpen: () => void }> = observer(({ im, i, onOpen }) => {
-  const sel = store.selected.has(im.name)
+  const sel = store.selected.has(imKey(im))
   const timer = useRef<any>(null); const longRef = useRef(false); const down = useRef({ x: 0, y: 0 })
   const label = im.w && im.h ? `${im.w}×${im.h}` : im.name
   return (
@@ -253,6 +316,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   const [blanket, setBlanket] = useState(false)
   const [batchAdd, setBatchAdd] = useState(false)
   const [setAdd, setSetAdd] = useState(false)
+  const [subMove, setSubMove] = useState(false)
   useEffect(() => { void store.browse('') }, [])
   // In a training_set, click = crop/resize editor; elsewhere, click = zoom preview.
   // The crop editor is really the image DETAIL view — it carries the crop box, the .txt tag
@@ -272,29 +336,24 @@ export const TrainingImagesPanel: React.FC = observer(() => {
     const scope = files?.length ? `${files.length} image(s)` : 'EVERY image in this set'
     if (!(await confirmStore.confirm({ title: 'Strip booru tags (.txt)', message: `Delete the .txt tag sidecars for ${scope}? Images and .caption files are untouched. Cannot be undone.`, confirmText: 'Strip' }))) return
     store.msg = 'Stripping tags…'
-    try { const r = await store.stripTags(files); store.msg = `Stripped ${r.removed} tag file(s).`; void store.browse(store.cwd) }
+    try { const r = files?.length ? await store.stripKeys(files) : await store.stripTags(); store.msg = `Stripped ${r.removed} tag file(s).`; void store.browse(store.cwd) }
     catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
   }
   const doWipe = async (files?: string[]) => {
     const scope = files?.length ? `${files.length} selected image(s)` : `all ${store.ratedCount} rated image(s) in this ${store.inTrainingSet ? 'training set' : 'folder'}`
     if (!(await confirmStore.confirm({ title: 'Wipe ratings & comments', message: `Clear ratings and comments for ${scope}? This removes scores + notes only — images, tags, and captions are untouched. Cannot be undone.`, confirmText: 'Wipe' }))) return
     store.msg = 'Wiping ratings…'
-    try { const r = await store.wipeRatings(files); store.msg = `Wiped ${r.cleared} rating(s).`; void store.browse(store.cwd) }
+    try { const r = files?.length ? await store.wipeKeys(files) : await store.wipeRatings(); store.msg = `Wiped ${r.cleared} rating(s).`; void store.browse(store.cwd) }
     catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
   }
-  const doSubsection = async () => {
-    const name = await promptStore.prompt({ title: `Subsection ${store.selected.size} images`, placeholder: 'concept, e.g. blue — becomes <repeats>_blue (kohya convention)', confirmText: 'Next' })
-    if (name === null || !name.trim()) return
-    const repStr = await promptStore.prompt({ title: `Repeats for "${name.trim()}"`, placeholder: 'kohya per-epoch repeats, e.g. 20', defaultValue: '10', confirmText: 'Move' })
-    if (repStr === null) return
-    const repeats = parseInt(repStr, 10)
-    if (!Number.isInteger(repeats) || repeats < 1) { store.msg = 'Repeats must be a positive number.'; return }
-    store.msg = 'Moving…'
+  const doSectionCollage = async (sub: string) => {
+    store.msg = `Generating ${sub} collage…`
     try {
-      const r = await store.subsection([...store.selected], name.trim(), repeats)
-      store.msg = `Moved ${r.moved} → ${r.subsection}${r.reused ? ' (existing subsection reused — edit repeats on its folder if needed)' : ''}.`
-      store.exitSelection(); void store.browse(store.cwd)
-    } catch (e: any) { store.msg = 'Subsection failed: ' + (e?.message || e) }
+      const r = await store.genCollage(sub)
+      store.msg = `Collage: ${r.total} images, ${r.page_count} page(s).`
+      if (r.pages?.[0]) setLb({ rel: r.pages[0].path, name: `${sub} collage`, bust: Date.now() })
+      void store.browse(store.cwd)
+    } catch (e: any) { store.msg = 'Collage failed: ' + (e?.message || e) }
   }
   const doRepeats = async (folderPath: string, f: any) => {
     const repStr = await promptStore.prompt({ title: `Repeats for "${f.concept}"`, placeholder: 'kohya per-epoch repeats', defaultValue: String(f.repeats), confirmText: 'Set' })
@@ -308,11 +367,11 @@ export const TrainingImagesPanel: React.FC = observer(() => {
     const base = await promptStore.prompt({ title: `Rename ${store.selected.size} images`, placeholder: 'base name, e.g. white → white-1..N (lowercased)', confirmText: 'Rename' })
     if (base === null || !base.trim()) return
     // Number in DISPLAY order, not click order — white-1 is the first tile on screen.
-    const ordered = store.visibleImages.filter((im) => store.selected.has(im.name)).map((im) => im.name)
+    const ordered = store.visibleImages.filter((im) => store.selected.has(imKey(im))).map((im) => imKey(im))
     store.msg = `Renaming ${ordered.length}…`
     try {
-      const r = await store.renameFiles(ordered, base.trim())
-      store.msg = `Renamed ${r.renamed.length} → ${base.trim().toLowerCase()}-1..${r.renamed.length}${r.ratings_moved ? ` (${r.ratings_moved} ratings followed)` : ''}.`
+      const r = await store.renameKeys(ordered, base.trim())
+      store.msg = `Renamed ${r.renamed} → ${base.trim().toLowerCase()}-1..N${r.groups > 1 ? ` (numbering restarts per subsection, ${r.groups} groups)` : ''}${r.ratings_moved ? ` · ${r.ratings_moved} ratings followed` : ''}.`
       store.exitSelection(); void store.browse(store.cwd)
     } catch (e: any) { store.msg = 'Rename failed: ' + (e?.message || e) }
   }
@@ -410,7 +469,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           <button className={styles.btn} onClick={() => setPicker('copy')}>Copy…</button>
           <button className={styles.btn} title="Copy the selection + caption sidecars into a training batch assembled from many sets" onClick={() => setBatchAdd(true)}>Add to batch…</button>
           <button className={styles.btn} title="Rename the selection to <name>-1..N in display order — sidecars and ratings follow" onClick={() => void doRenameFiles()}>Rename…</button>
-          {store.batchContext && <button className={styles.btn} title="Move the selection into a <repeats>_<concept> subsection of this batch (kohya's folder convention; AI Toolkit ignores the names)" onClick={() => void doSubsection()}>Subsection…</button>}
+          {store.batchContext && <button className={styles.btn} title="Move the selection into a <repeats>_<concept> subsection of this batch (kohya's folder convention; AI Toolkit ignores the names)" onClick={() => setSubMove(true)}>Subsection…</button>}
           {store.inTrainingSet && <button className={styles.btnDanger} onClick={() => void doDelete()}>Delete</button>}
           <button className={styles.btn} title="Add or remove the same booru tags across the selected images" onClick={() => setBlanket(true)}>Blanket tags…</button>
           <button className={styles.btn} title="Strip .txt tag sidecars for the selected images" onClick={() => void doStrip([...store.selected])}>Strip tags</button>
@@ -448,7 +507,52 @@ export const TrainingImagesPanel: React.FC = observer(() => {
 
       <div className={styles.grid}>
         {store.images.length === 0 && !store.loading && <div className={styles.dim}>No images here.</div>}
-        {store.visibleImages.map((im, i) => <Tile key={im.rel} im={im} i={i} onOpen={() => openImage(im)} />)}
+        {store.sections.length === 0
+          ? store.visibleImages.map((im, i) => <Tile key={im.rel} im={im} i={i} onOpen={() => openImage(im)} />)
+          : (() => {
+              // One flat element list inside ONE css grid: dividers span the full row
+              // (grid-column 1/-1) so tile indices stay global for selection.
+              const bySub = new Map<string, Array<{ im: IgImage; i: number }>>()
+              store.visibleImages.forEach((im, i) => {
+                const g = bySub.get(im.dir || '') || []
+                g.push({ im, i }); bySub.set(im.dir || '', g)
+              })
+              const out: React.ReactNode[] = []
+              const renderGroup = (sub: string, meta?: (typeof store.sections)[number]) => {
+                const items = bySub.get(sub) || []
+                if (!meta && !items.length) return
+                out.push(
+                  <div key={`div-${sub || 'root'}`} className={styles.secDivider}>
+                    {meta ? (
+                      <>
+                        <span className={styles.secName}>{meta.concept}</span>
+                        <span className={styles.secRepeats} title="kohya per-epoch repeats — click to change"
+                              onClick={() => void doRepeats(`${store.cwd}/${meta.folder}`, meta)}>×{meta.repeats}</span>
+                        <span className={styles.dim}>{items.length} shown / {meta.count}</span>
+                        <span className={styles.spacer} />
+                        <button className={styles.btn} title="Generate a collage of THIS subsection (agents view it with view_image)"
+                                onClick={() => void doSectionCollage(meta.folder)}>🧩 Collage</button>
+                        {meta.hasCollage && (
+                          <button className={styles.btn}
+                                  onClick={() => setLb({ rel: `${store.cwd}/${meta.folder}/${meta.collageFirst}`, name: `${meta.concept} collage`, bust: Date.now() })}>
+                            View
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <span className={styles.secName}>unsectioned</span>
+                        <span className={styles.dim}>{items.length} — kohya IGNORES images outside a subsection; AI Toolkit reads them</span>
+                      </>
+                    )}
+                  </div>,
+                )
+                for (const { im, i } of items) out.push(<Tile key={im.rel} im={im} i={i} onOpen={() => openImage(im)} />)
+              }
+              renderGroup('')
+              for (const s of store.sections) renderGroup(s.folder, s)
+              return out
+            })()}
       </div>
 
       {lb && <Lightbox rel={lb.rel} name={lb.name} bust={lb.bust} onClose={() => setLb(null)} />}
@@ -478,6 +582,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
 
       {blanket && <BlanketTagModal files={[...store.selected]} onClose={() => setBlanket(false)} onDone={() => void store.browse(store.cwd)} />}
       {batchAdd && <AddToBatchModal kind="batch" files={[...store.selected]} onClose={() => setBatchAdd(false)} />}
+      {subMove && <SubsectionModal onClose={() => setSubMove(false)} />}
       {setAdd && <AddToBatchModal kind="set" files={[...store.selected]} onClose={() => setSetAdd(false)} />}
       {picker && <Picker op={picker} files={[...store.selected]} onClose={() => setPicker(null)} onDone={() => void store.browse(store.cwd)} />}
       {merge && <MergeModal onClose={() => setMerge(false)} />}

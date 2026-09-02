@@ -1064,7 +1064,12 @@ export function createImagegenRouter(config) {
     const rel = (req.body && req.body.path || '').replace(/^\/+/, '');
     let dir;
     try { dir = safeResolve(rel); } catch { return res.status(400).json({ error: 'bad path' }); }
-    if (!isTrainingSetName(path.basename(dir))) return res.status(400).json({ error: 'only for training sets' });
+    // Sets, batches and batch SUBSECTIONS all take collages — a subsection collage is how
+    // an agent reviews one concept's images in a single view (Travis, 2026-09-02).
+    const cbase = path.basename(dir);
+    if (!isTrainingSetName(cbase) && !isTrainingBatchName(cbase) && !batchRootOf(dir)) {
+      return res.status(400).json({ error: 'only for training sets, batches, or batch subsections' });
+    }
     if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'no such folder' });
     const all = readdirSync(dir).filter((n) => !n.startsWith('.') && isImage(n) && !isCollageFile(n))
       .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));   // red-2 before red-10

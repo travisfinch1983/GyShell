@@ -23,7 +23,8 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
   const [info, setInfo] = useState('')
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
-  const imRec = store.images.find((x) => x.name === name) || ({} as any)
+  // rel, not name: with batch subsections inlined, the same filename can exist twice.
+  const imRec = store.images.find((x) => x.rel === rel) || ({} as any)
   const [tags, setTags] = useState(''); const tagsOrig = useRef('')
   const [nl, setNl] = useState(''); const nlOrig = useRef('')
   const [score, setScore] = useState(imRec.score ? String(imRec.score) : '')
@@ -137,7 +138,7 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
       if (tags !== tagsOrig.current) { await store.setCaption(rel, tags, 'txt'); tagsOrig.current = tags }
       if (nl !== nlOrig.current) { await store.setCaption(rel, nl, 'caption'); nlOrig.current = nl }
       const sc = imRec.score ? String(imRec.score) : ''; const cm = imRec.comment || ''
-      if (score !== sc || comment !== cm) await store.setRating(name, score ? Number(score) : 0, comment)
+      if (score !== sc || comment !== cm) await store.setRating(rel, score ? Number(score) : 0, comment)
       setMsg('Saved.'); onChanged()
     } catch (e: any) { setMsg('Save failed: ' + (e?.message || e)) }
   }

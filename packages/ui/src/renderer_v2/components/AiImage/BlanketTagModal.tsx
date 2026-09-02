@@ -27,10 +27,9 @@ export const BlanketTagModal: React.FC<{ files: string[]; onClose: () => void; o
       if (!addList.length && !remList.length) { setMsg('Nothing to add or remove.'); return }
       setBusy(true); setMsg('Applying…')
       try {
-        const r = await store.tagsBatch({
-          add: addList, remove: remList, position,
-          ...(scoped ? { files } : {}),
-        })
+        const r = scoped
+          ? await store.tagsBatchKeys({ add: addList, remove: remList, position }, files)
+          : await store.tagsBatch({ add: addList, remove: remList, position })
         setMsg(`Done — ${r.changed} changed, ${r.unchanged} already matched`
           + `${r.cleared ? `, ${r.cleared} emptied` : ''}`
           + `${r.errors?.length ? `, ${r.errors.length} failed` : ''}.`)
