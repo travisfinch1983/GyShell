@@ -34,6 +34,27 @@ export async function emitNotification(severity, source, message, detail = '') {
 }
 
 /**
+ * Write one line to the DEBUG CONSOLE (not the notification panel).
+ *
+ * Same contract as emitNotification: never throws, never blocks meaningfully. Debug lines narrate
+ * work that is going fine - starts, finishes, scheduler ticks - which do not deserve a badge but
+ * are exactly what you want when asking "is this thing actually running?". Faults still go to
+ * emitNotification.
+ */
+export async function emitDebug(source, message) {
+  try {
+    await fetch(`http://127.0.0.1:${PORT}/api/notifications/debug`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, message }),
+      signal: AbortSignal.timeout(3000),
+    });
+  } catch (e) {
+    console.warn(`[notify] DEBUG LOST (${e?.message || e}): ${source}: ${message}`);
+  }
+}
+
+/**
  * Load a JSON state file, refusing to confuse ABSENT with UNREADABLE.
  *
  * 🛑 The old idiom — try { parse } catch {} return fallback — made a corrupt

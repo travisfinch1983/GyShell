@@ -4,7 +4,7 @@
 /* eslint-disable */
 // @ts-nocheck
 import express from 'express'
-import { emitNotification } from './lib/notify.js';
+import { emitNotification, emitDebug } from './lib/notify.js';
 import multer from 'multer'
 import { readFile as readFileAsync, readdir, stat } from 'node:fs/promises'
 import { extname, join, resolve as pathResolve, dirname, basename } from 'node:path'
@@ -268,6 +268,15 @@ const ragJob = {
 
 // ── RAG Queue (FIFO) ��─
 const ragQueue = [];  // { type: 'index'|'update', url, collection, description, branch }
+
+// ── Auto-retry for interrupted indexing ──
+// An interruption is usually transient (clone timeout, embedder blip, a backend restart
+// mid-run). Falling straight to a manual Resume button meant ~10 collections sat half-indexed
+// until someone noticed. Retries RESUME from the existing checkpoint, so each costs only the
+// files that were still outstanding.
+const RAG_MAX_ATTEMPTS = Number(process.env.AILAB_RAG_MAX_ATTEMPTS || 3);
+const RAG_RETRY_DELAYS_MS = [30_000, 120_000, 300_000];   // 30s, 2m, 5m
+const ragAttempts = new Map();   // collection -> attempts so far
 let ragAutoSyncTimer = null;
 
 function ragStatus() {
@@ -388,6 +397,8 @@ function processRagQueue() {
   if (ragJob.active || ragQueue.length === 0) return;
   const next = ragQueue.shift();
   console.log(`[rag-queue] Processing: ${next.type} ${next.collection} (${ragQueue.length} remaining)`);
+  void emitDebug('rag-queue', `dequeued ${next.type} '${next.collection}'`
+    + `${next.resume ? ' (resume)' : ''} — ${ragQueue.length} still queued`);
   try {
     if (next.type === 'update') {
       // Implemented 2026-08-31 (it crashed the backend nightly 2026-08-16→20
@@ -401,7 +412,10 @@ function processRagQueue() {
           `Collection '${next.collection}': ${err?.message ?? err}`);
       });
     } else {
-      const p = runRagIndexing(next.url, next.collection, next.description, next.branch);
+      // next.resume is set by the auto-retry path: resume finishes the outstanding files
+      // from the checkpoint instead of re-cloning and re-indexing the whole repo.
+      const p = runRagIndexing(next.url, next.collection, next.description, next.branch,
+                               !!next.resume);
       // runRagIndexing is async and is deliberately not awaited here; without this
       // catch an unhandled rejection is just as fatal under Node 22 as a throw.
       if (p && typeof p.catch === 'function') {
@@ -543,6 +557,8 @@ async function listCheckpoints() {
 
 /** Run the full indexing pipeline asynchronously (streaming — no full accumulation) */
 async function runRagIndexing(url, collection, description, branch, resume = false) {
+  void emitDebug('rag', `${resume ? 'resuming' : 'starting'} index of ${collection || url}`
+    + `${branch ? ` (branch ${branch})` : ''} from ${url}`);
   const colName = sanitizeCollectionName(collection);
   ragJob.active = true;
   ragJob.phase = resume ? 'resuming' : 'cloning';
@@ -821,21 +837,54 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
     await deleteCheckpoint(colName);
     console.log(`[rag] Checkpoint deleted for ${colName} (indexing complete)`);
 
+    ragAttempts.delete(colName);   // a success resets the retry budget for next time
     ragJob.phase = 'done';
     ragJob.progress = 100;
     ragJob.detail = `Indexed ${filesRead} files (${upsertedCount} chunks)`;
+    emitDebug('rag', `${colName}: finished — ${filesRead} files, ${upsertedCount} chunks`);
     ragJob.result = {
       collection: colName, files_indexed: filesRead,
       chunks_created: upsertedCount, repo_url: url, languages: languageCounts,
     };
   } catch (e) {
-    ragJob.phase = 'error';
+    const attempts = (ragAttempts.get(colName) || 0) + 1;
+    ragAttempts.set(colName, attempts);
+    const willRetry = attempts < RAG_MAX_ATTEMPTS;
+
+    ragJob.phase = willRetry ? 'retrying' : 'error';
     ragJob.progress = 0;
     ragJob.error = e.message;
-    ragJob.detail = `Error: ${e.message}`;
+    ragJob.detail = willRetry
+      ? `Attempt ${attempts}/${RAG_MAX_ATTEMPTS} failed: ${e.message} — retrying automatically`
+      : `Error: ${e.message}`;
     // Preserve partial progress — checkpoint file stays for resume
     // Only clean up the temporary clone directory
     console.warn(`[rag] Indexing failed for ${colName}: ${e.message} — checkpoint preserved for resume`);
+
+    if (willRetry) {
+      const delay = RAG_RETRY_DELAYS_MS[Math.min(attempts - 1, RAG_RETRY_DELAYS_MS.length - 1)];
+      emitDebug('rag', `${colName}: attempt ${attempts}/${RAG_MAX_ATTEMPTS} failed (${e.message}) — retrying in ${Math.round(delay / 1000)}s`);
+      // 🛑 Wrapped: an uncaught throw inside setTimeout takes the whole Node process down.
+      // That is precisely how rag-autosync killed ai-lab.service nightly for weeks.
+      setTimeout(() => {
+        try {
+          ragQueue.push({ type: 'index', url, collection: colName, description, branch, resume: true });
+          emitDebug('rag', `${colName}: queued retry ${attempts + 1}/${RAG_MAX_ATTEMPTS} (resuming from checkpoint)`);
+          processRagQueue();
+        } catch (err) {
+          console.warn(`[rag] retry scheduling failed for ${colName}: ${err?.message || err}`);
+        }
+      }, delay);
+    } else {
+      // Out of automatic attempts: NOW it becomes a human's problem, and it says so where a
+      // human is actually looking rather than on a button in a panel nobody has open.
+      emitNotification('warning', 'rag-index',
+        'Codebase indexing gave up after automatic retries',
+        `${colName} failed ${attempts} times; last error: ${e.message}. Partial progress is `
+        + `checkpointed — resume manually from the Codebase RAG panel, or via `
+        + `POST /api/ai/rag/resume. The collection may be incomplete until then.`);
+      emitDebug('rag', `${colName}: FAILED after ${attempts} attempts — manual resume required`);
+    }
     // Keep clone for resume — move to persistent dir if possible
     if (tmpDir) {
       const repoDir = `/opt/mcp-codebase-rag/data/repos/${colName}`;
@@ -1384,13 +1433,23 @@ function setupRagAutoSync(cfg) {
     if (hhmm !== (cfg.time || '01:00')) return;
     if (cfg.frequency === 'weekly' && now.getDay() !== 0) return;
     console.log('[rag-autosync] Running scheduled update-all at ' + hhmm);
+      void emitDebug('rag-autosync', `scheduled ${cfg.frequency} update-all firing at ${hhmm}`);
     try {
       const resp = await fetch('http://127.0.0.1:' + selfPort + '/api/ai/rag/update-all', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(10000),
       });
       const data = await resp.json();
       console.log('[rag-autosync] Queued ' + data.queued + ' collections for update');
-    } catch (e) { console.warn('[rag-autosync] Failed:', e.message); }
+        void emitDebug('rag-autosync', data.queued
+          ? `queued ${data.queued} collection(s) for update`
+          : 'no collections needed updating');
+    } catch (e) {
+        console.warn('[rag-autosync] Failed:', e.message);
+        // A scheduler that silently stops is indistinguishable from one with nothing to do.
+        void emitNotification('warning', 'rag-autosync',
+          'Scheduled codebase-RAG update failed to start',
+          `The ${cfg.frequency} update-all at ${cfg.time} could not be dispatched: ${e.message}`);
+      }
   }, 60000);
   console.log('[rag-autosync] Scheduled ' + cfg.frequency + ' at ' + cfg.time);
 }
@@ -1403,4 +1462,42 @@ app.put('/api/ai/rag/autosync', express.json(), (req, res) => {
   res.json(cfg);
 });
 try { setupRagAutoSync(loadRagAutoSyncConfig()); } catch {}
+
+  // ── Resume anything a restart interrupted ──
+  // Runs once, shortly after boot so the embedder and vector DBs have settled. Every failure is
+  // contained: this is startup code, and an uncaught throw here would take the backend with it.
+  setTimeout(async () => {
+    try {
+      const cps = await listCheckpoints();
+      if (!cps || !cps.length) {
+        void emitDebug('rag', 'startup: no interrupted indexing to resume');
+        return;
+      }
+      void emitDebug('rag',
+        `startup: found ${cps.length} interrupted collection(s) — queueing automatic resume`);
+      for (const cp of cps) {
+        const colName = cp.collection || cp.name;
+        if (!colName || !cp.url) {
+          void emitDebug('rag', `startup: skipping a checkpoint with no collection/url recorded`);
+          continue;
+        }
+        const displayName = String(colName).replace(/^codebase_/, '');
+        ragQueue.push({
+          type: 'index', url: cp.url, collection: displayName,
+          description: cp.description, branch: cp.branch, resume: true,
+        });
+        const doneN = cp.completedFiles?.length ?? cp.filesCompleted ?? 0;
+        const allN = cp.allFiles?.length ?? cp.filesTotal ?? 0;
+        void emitDebug('rag',
+          `startup: queued resume of ${displayName} (${doneN}/${allN} files already indexed)`);
+      }
+      processRagQueue();
+    } catch (e) {
+      console.warn('[rag] startup resume sweep failed:', e?.message || e);
+      void emitNotification('warning', 'rag-index',
+        'Could not check for interrupted codebase indexing at startup',
+        `The resume sweep failed: ${e?.message || e}. Any half-indexed collection stays on its `
+        + `manual Resume button in the Codebase RAG panel.`);
+    }
+  }, 20_000);
 }

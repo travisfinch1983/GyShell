@@ -41,13 +41,22 @@ export const CodebaseRagPanel: React.FC = observer(() => {
         <label className={styles.formRow}><span className={styles.formLbl}>Description</span><input className={styles.input} value={f.description} placeholder="Short description" onChange={(e) => store.setForm('description', e.target.value)} /></label>
         <label className={styles.formRow}><span className={styles.formLbl}>Branch</span><input className={styles.input} value={f.branch} placeholder="(repo default)" onChange={(e) => store.setForm('branch', e.target.value)} /></label>
         <div className={styles.formActions}>
-          <button className={styles.btnPrimary} disabled={st.active} onClick={() => void store.index()}>{st.active ? 'Indexing…' : 'Index Repository'}</button>
+          <button className={styles.btnPrimary} onClick={() => void store.index()} title="Adds to the queue — you do not have to wait for the current repo to finish">{st.active ? 'Queue Repository' : 'Index Repository'}</button>
         </div>
         {(st.active || st.detail) && (
           <div className={styles.statusBox}>
             <div>{st.detail || st.phase}</div>
             {st.active && <div className={styles.progressWrap}><div className={styles.progressBar} style={{ width: `${st.progress || 0}%` }} /></div>}
           </div>
+        )}
+
+        {/* The backend queues; without showing it, a second repo just looks ignored. */}
+
+        {!!(st.queueLength || 0) && (
+          <div className={styles.statusBox}>
+            <div>Queued ({st.queueLength}): {(st.queue || []).map((q: any) => q.collection).join(', ')}</div>
+          </div>
+
         )}
       </div>
 
@@ -56,7 +65,7 @@ export const CodebaseRagPanel: React.FC = observer(() => {
         <div className={styles.head}>
           <h4 className={styles.h4}>Indexed Collections</h4>
           <span className={styles.spacer} />
-          <button className={styles.btn} disabled={st.active} onClick={() => void store.updateAll()}>Update All</button>
+          <button className={styles.btn} onClick={() => void store.updateAll()}>Update All</button>
           <button className={styles.btn} onClick={() => void store.load()}><RefreshCw size={13} /> Refresh</button>
         </div>
         <div className={styles.autosyncRow}>
@@ -86,7 +95,7 @@ export const CodebaseRagPanel: React.FC = observer(() => {
                   <td className={styles.dim}>{when(c.indexed_at)}</td>
                   <td className={styles.dim}>{when(c.last_checked)}</td>
                   <td className={styles.rowActions}>
-                    <button className={styles.iconBtn} title="Update (re-index)" disabled={st.active} onClick={() => void store.updateCollection(c)}><RotateCw size={13} /></button>
+                    <button className={styles.iconBtn} title="Update (re-index) — queues if something is running" onClick={() => void store.updateCollection(c)}><RotateCw size={13} /></button>
                     <button className={styles.iconDanger} title="Delete" onClick={async () => { if (await confirmStore.confirm({ title: 'Delete collection', message: `Delete collection “${c.display_name || c.name}”? Removes it from all vector DBs.`, confirmText: 'Delete' })) void store.deleteCollection(c.name) }}><Trash2 size={13} /></button>
                   </td>
                 </tr>
