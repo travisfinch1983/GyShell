@@ -24,8 +24,23 @@ version controlled — this is the tracked copy. Spawned by MCPJungle over stdio
    is skipped and the whole file executes — an import-based test passes while the server is
    broken. Probe with a real stdio `tools/list` handshake instead.
 3. **MCPJungle caches tool schemas at registration.** Restarting the server surfaces nothing.
-   Re-register with `--force`, verify THROUGH THE GATEWAY (not the server), then tool-reconnect
-   any live agent — a running session captured its toolset at creation.
+   Re-register with `--force`.
+4. **REGISTERING A SERVER DOES NOT ADD ITS TOOLS TO ANY GROUP.** This is the one that actually
+   bit. Every agent reads from a tool GROUP (`/v0/groups/agent-<name>/mcp`) with an EXPLICIT
+   pinned tool list. `mcpjungle list tools --server X` showed all 31 and looked like success;
+   Loom still saw nothing, because `agent-loom` pinned 60 tools and the new ones were not among
+   them. **"Verify through the gateway" means the GROUP endpoint, not the server listing.**
+
+       mcpjungle get group agent-<name>          # what the agent can actually see
+       mcpjungle export -d /root/backup-$(date +%s)   # ALWAYS, before touching a group
+       mcpjungle update group -c <conf>          # COMPLETELY OVERRIDES the tool list
+
+   `update group` overrides rather than merges, so build the new config PROGRAMMATICALLY from
+   the export and assert two things before applying: the delta is exactly the tools you meant to
+   add, and the existing set is a subset of the new one. A hand-written list silently drops
+   whatever you forgot.
+5. **Then tool-reconnect each live agent** — a running session captured its toolset at creation
+   and will not see a group change until it reconnects.
 
 ## Path scoping
 
