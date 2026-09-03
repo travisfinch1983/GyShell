@@ -162,6 +162,18 @@ const DEFAULT_CONFIG = {
     'Detection': 'detection',
     'Other': 'other',
   },
+  // Base-model families that ship as a single-file DiT/UNet and belong in
+  // diffusion-models/, NOT checkpoints/.  CivitAI declares these as type
+  // "Checkpoint" exactly like an SDXL pipeline, so the declared type alone
+  // routes them wrong.  Matched case-insensitively as a PREFIX of the
+  // version's baseModel ("Flux" covers "Flux.1 D", "Flux.2 Klein 9B"; "Krea"
+  // covers "Krea 2").  Deliberately NOT listed, so they stay in checkpoints/:
+  // SD 1.5, SD 2.x, SDXL 1.0, SD 3.x, Pony, Illustrious, NoobAI.
+  diffusionBaseModels: [
+    'Flux', 'Krea', 'Chroma', 'Flex', 'Lumina',
+    'Wan Video', 'Hunyuan', 'LTXV', 'MiniMax',
+    'ZImage', 'HiDream', 'Qwen', 'CogVideo', 'Mochi',
+  ],
 };
 
 /**
@@ -286,6 +298,9 @@ function loadConfig() {
         ...DEFAULT_CONFIG,
         ...saved,
         folderMap: { ...DEFAULT_CONFIG.folderMap, ...(saved.folderMap || {}) },
+        diffusionBaseModels: Array.isArray(saved.diffusionBaseModels)
+          ? saved.diffusionBaseModels
+          : DEFAULT_CONFIG.diffusionBaseModels,
         typeTemplates: { ...DEFAULT_CONFIG.typeTemplates, ...(saved.typeTemplates || {}) },
       };
     }
@@ -324,6 +339,25 @@ function detectComponentType(versionName, fileName) {
   }
 
   return null; // no override — use the repo's declared type
+}
+
+/**
+ * Family override: a single-file DiT finetune belongs in diffusion-models/, but
+ * CivitAI declares it type "Checkpoint" exactly like an SDXL pipeline.
+ *
+ * Fires ONLY when the declared type already resolved to 'checkpoints' — a Krea 2
+ * LORA stays in loras/, a Flux VAE stays in vae/.  Returns null otherwise so the
+ * caller falls through to the declared type unchanged.
+ */
+function detectDiffusionFamily(baseModel, declaredFolder, cfg) {
+  if (declaredFolder !== 'checkpoints') return null;
+  const bm = String(baseModel || '').trim().toLowerCase();
+  if (!bm) return null;
+  const families = cfg?.diffusionBaseModels || DEFAULT_CONFIG.diffusionBaseModels;
+  for (const fam of families) {
+    if (bm.startsWith(String(fam).trim().toLowerCase())) return 'diffusion-models';
+  }
+  return null;
 }
 
 /**
@@ -969,7 +1003,10 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
     if (extensionOverride) vars['$EXTENSION_OVERRIDE'] = extensionOverride;
     // Use contextual component override if provided, else per-file detection
     const detectedComponent = componentOverride || detectComponentType(version?.name, file?.name);
-    const typeFolder = detectedComponent || vars['$TYPE_FOLDER'] || 'other';
+    // Component detection wins; family override only rescues a declared "Checkpoint"
+    // that is really a single-file DiT (Krea 2, Flux, Wan, ...).
+    const familyFolder = detectDiffusionFamily(version?.baseModel, vars['$TYPE_FOLDER'], cfg);
+    const typeFolder = detectedComponent || familyFolder || vars['$TYPE_FOLDER'] || 'other';
     vars['$TYPE_FOLDER'] = typeFolder; // update so template uses the correct folder
     const typeCfg = cfg.typeTemplates?.[typeFolder] || {};
     const hasCustomTpl = typeCfg.pathTemplate !== undefined && typeCfg.pathTemplate !== null;
