@@ -65,6 +65,11 @@ function tokens(ctx) {
     imgsz: m.imgsz || '', kind: m.kind || '', top_tag: m.top_tag || '',
     i: String(ctx.i + 1), n: String(ctx.total),
     size: m.size != null ? String(m.size) : '',
+    // images — dimensions come from HEADER bytes, and {fmt} is the format sniffed from
+    // MAGIC bytes rather than the extension, which lies on ~1 in 6 CivitAI previews
+    w: m.w != null ? String(m.w) : '', h: m.h != null ? String(m.h) : '',
+    dim: m.dim || '', mp: m.mp != null ? String(m.mp) : '',
+    ar: m.ar || '', orient: m.orient || '', fmt: m.fmt || '',
   };
 }
 
@@ -130,7 +135,9 @@ function applyRules(ctx, rules) {
         stem = r.position === 'prefix' ? num + s + stem : stem + s + num;
         break;
       }
-      case 'extension': if (r.to) ext = '.' + String(r.to).replace(/^\./, ''); break;
+      // expand first: {fmt} here is how a lying extension gets repaired
+      case 'extension': { const v = expand(r.to ?? '', c).replace(/^\./, '');
+        if (v) ext = '.' + v; break; }
       default: return { error: 'unknown rule type: ' + r.type };
     }
   }

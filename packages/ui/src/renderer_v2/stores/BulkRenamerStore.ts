@@ -13,6 +13,8 @@ export interface FileMeta {
   kind?: string; task?: string; head?: string; arch?: string; proto?: boolean
   nc?: number; imgsz?: string; tensors?: number; dtypes?: string[]
   top_tag?: string; size?: number; warn?: string; error?: string; preview?: string
+  w?: number; h?: number; dim?: string; mp?: number; ar?: string
+  orient?: 'sq' | 'land' | 'port'; fmt?: string; ext_mismatch?: boolean
 }
 export type Rule =
   | { type: 'replace'; enabled?: boolean; find: string; to: string; regex?: boolean; ci?: boolean; all?: boolean }

@@ -23,6 +23,8 @@ const MetaBadge: React.FC<{ path: string }> = observer(({ path }) => {
     <>
       {m.task && <span className={`${styles.badge} ${cls}`}>{m.task}</span>}
       {m.arch && <span className={styles.badge}>{m.arch}</span>}
+      {m.dim && <span className={styles.badge}>{m.dim}</span>}
+      {m.ext_mismatch && <span className={`${styles.badge} ${styles.badgeWarn}`} title={m.warn}>.{m.fmt}</span>}
       {m.warn && <span className={`${styles.badge} ${styles.badgeWarn}`} title={m.warn}>!</span>}
     </>
   )
@@ -165,7 +167,10 @@ export const BulkRenamerPanel: React.FC = observer(() => {
           {!store.rules.length && (
             <div className={styles.hint}>
               Add a rule to see a preview. Tokens usable in prefix / suffix / template:
-              <div className={styles.tokens}>{'{name} {ext} {parent} {task} {head} {arch} {proto} {nc} {imgsz} {top_tag} {i} {i:3} {n}'}</div>
+              <div className={styles.tokens}>{'{name} {ext} {parent} {i} {i:3} {n} {size}'}</div>
+              Detectors / models: <span className={styles.tokens}>{'{task} {head} {arch} {proto} {nc} {imgsz} {top_tag}'}</span>
+              <br />Images: <span className={styles.tokens}>{'{w} {h} {dim} {mp} {ar} {orient} {fmt}'}</span>
+              {' '}— {'{fmt}'} is sniffed from magic bytes, so it is the REAL format even when the extension lies.
               Metadata tokens need <b>Read metadata</b> first. Sidecars renames matching
               <span className={styles.tokens}> .json / .jpeg / .civit.info</span> files alongside each model.
             </div>
