@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { Folder, FolderOpen, ArrowUp, RefreshCw, Info, Save, Trash2, Copy } from 'lucide-react'
 import { bulkRenamerStore as store, type Rule } from '../../stores/BulkRenamerStore'
+import { confirmStore } from '../../stores/confirmStore'
 import styles from './Files.module.scss'
 
 const fmtSize = (n: number) =>
@@ -168,7 +169,9 @@ export const BulkRenamerPanel: React.FC = observer(() => {
             <span className={styles.spacer} />
             {store.planning && <RefreshCw size={11} className={styles.spin} />}
             <span className={styles.fsize}>
-              {changed} change{changed === 1 ? '' : 's'}{errs ? <span className={styles.errText}>, {errs} blocked</span> : ''}
+              {changed} change{changed === 1 ? '' : 's'}
+              {store.sidecarCount > 0 && ` (+${store.sidecarCount} companion${store.sidecarCount === 1 ? '' : 's'})`}
+              {errs ? <span className={styles.errText}>, {errs} blocked</span> : ''}
             </span>
           </div>
           <div className={styles.previewBody}>
@@ -227,7 +230,15 @@ export const BulkRenamerPanel: React.FC = observer(() => {
             </select>
             {!!store.templates.length && (
               <button className={styles.iconBtn} title="Delete the loaded template" disabled={!store.tplName}
-                onClick={() => { if (store.tplName && confirm(`Delete template "${store.tplName}"?`)) void store.deleteTemplate(store.tplName) }}>
+                onClick={() => { void (async () => {
+                  if (!store.tplName) return
+                  const ok = await confirmStore.confirm({
+                    title: 'Delete template',
+                    message: `Delete the saved rule template "${store.tplName}"? The rules currently loaded stay in the editor.`,
+                    confirmText: 'Delete', danger: true,
+                  })
+                  if (ok) void store.deleteTemplate(store.tplName)
+                })() }}>
                 <Trash2 size={11} />
               </button>
             )}
@@ -245,8 +256,13 @@ export const BulkRenamerPanel: React.FC = observer(() => {
               <option value="">+ add rule…</option>
               {Object.entries(RULE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
-            <label className={styles.chk}>
-              <input type="checkbox" checked={store.includeSidecars} onChange={(e) => { store.includeSidecars = e.target.checked; void store.plan() }} />
+            <label className={styles.chk} title="Check any file in a group and the whole group is renamed together, using the model file's metadata. Off: every checked file gets its own row, and tokens like {task} resolve to nothing for a .json.">
+              <input type="checkbox" checked={store.groupMode} onChange={(e) => { store.groupMode = e.target.checked; void store.plan() }} />
+              group
+            </label>
+            <label className={styles.chk} title={store.groupMode ? 'Implied by group mode' : 'Rename .json / .jpeg / .civit.info companions alongside each file'}>
+              <input type="checkbox" disabled={store.groupMode} checked={store.groupMode || store.includeSidecars}
+                onChange={(e) => { store.includeSidecars = e.target.checked; void store.plan() }} />
               sidecars
             </label>
           </div>
@@ -269,7 +285,7 @@ export const BulkRenamerPanel: React.FC = observer(() => {
             <span className={styles.spacer} />
             <button className={`${styles.btn} ${errs ? styles.btnDanger : styles.btnPrimary}`}
               disabled={!changed || store.applying}
-              onClick={() => { if (confirm(`Rename ${changed} file(s)?${errs ? `\n\n${errs} blocked row(s) will be SKIPPED.` : ''}`)) void store.apply() }}>
+              onClick={() => void store.apply()}>
               {store.applying ? 'Renaming…' : `Rename ${changed} file${changed === 1 ? '' : 's'}`}
             </button>
           </div>

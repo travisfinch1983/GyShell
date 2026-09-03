@@ -196,6 +196,57 @@ function applyRules(ctx, rules) {
  * Build the full rename plan. Pure: reads the filesystem for collision checks but mutates
  * nothing. Both /plan and /apply go through here.
  */
+/** Is `name` a companion of the file whose stem is `stem`? (".metadata.json", "_1.jpeg") */
+function isCompanionOf(name, stem) {
+  if (name === stem || !name.startsWith(stem)) return false;
+  const rest = name.slice(stem.length);
+  if (!/^\.[^/]+$/.test(rest) && !/^_\d+\.[A-Za-z0-9]+$/.test(rest)) return false;
+  return !MODEL_EXTS.has(extname(name).toLowerCase());
+}
+
+/**
+ * Group mode: collapse a selection to the PRIMARY weights file of each group, so the
+ * rule stack runs once per group against the primary's metadata and the companions
+ * inherit the resulting stem.
+ *
+ * Without this, selecting the .json alongside the .pt gives it its own row, and tokens
+ * like {task}/{arch} resolve to empty for a JSON file — producing "[.] Belly_Torso.json"
+ * next to a correctly named "[segm.y11+] Belly_Torso.pt".
+ *
+ * The group key is the WEIGHTS FILE'S FULL STEM, deliberately not "everything before the
+ * first period": FLUX.1-Dev and FLUX.1-Schnell both reduce to "FLUX" under that rule and
+ * would be merged into one group.
+ */
+function expandToPrimaries(paths) {
+  const dirCache = new Map();
+  const listing = (d) => {
+    if (!dirCache.has(d)) {
+      try { dirCache.set(d, readdirSync(d)); } catch { dirCache.set(d, []); }
+    }
+    return dirCache.get(d);
+  };
+  const out = [];
+  const seen = new Set();
+  for (const p of paths) {
+    let primary = p;
+    if (!MODEL_EXTS.has(extname(p).toLowerCase())) {
+      const d = dirname(p);
+      const nm = basename(p);
+      // the longest weights stem that claims this file wins, so "a.b.safetensors" beats "a"
+      let bestStem = '';
+      for (const cand of listing(d)) {
+        if (!MODEL_EXTS.has(extname(cand).toLowerCase())) continue;
+        const stem = basename(cand, extname(cand));
+        if (isCompanionOf(nm, stem) && stem.length > bestStem.length) {
+          bestStem = stem; primary = join(d, cand);
+        }
+      }
+    }
+    if (!seen.has(primary)) { seen.add(primary); out.push(primary); }
+  }
+  return out;
+}
+
 function planRenames(files, rules, opts = {}) {
   const rows = [];
   const claimed = new Map(); // lowercased target -> first row that claimed it
@@ -250,14 +301,11 @@ function planRenames(files, rules, opts = {}) {
       try {
         row.sidecars = readdirSync(row.dir)
           .filter((n) => {
-            if (n === row.oldName || !n.startsWith(oldStem)) return false;
-            const rest = n.slice(oldStem.length);
-            const isExtChain = /^\.[^/]+$/.test(rest);
-            const isGallery = /^_\d+\.[A-Za-z0-9]+$/.test(rest);
-            if (!isExtChain && !isGallery) return false;
-            if (MODEL_EXTS.has(extname(n).toLowerCase())) return false;
-            // if the user selected it in its own right, its own row renames it
-            return !selected.has(join(row.dir, n));
+            if (n === row.oldName || !isCompanionOf(n, oldStem)) return false;
+            // in group mode the companions are NOT separate rows, so they must follow
+            // here even though they were selected; otherwise their own row would have
+            // renamed them with unresolved tokens
+            return opts.groupMode ? true : !selected.has(join(row.dir, n));
           })
           .map((n) => ({ from: join(row.dir, n), to: join(row.dir, newStem + n.slice(oldStem.length)) }));
       } catch { row.sidecars = []; }
@@ -354,23 +402,31 @@ export function createFilesRouter({ dataDir } = {}) {
 
   router.post('/plan', async (req, res) => {
     const rs = roots();
-    const paths = (req.body?.paths || []).map((p) => safePath(p, rs)).filter(Boolean);
+    let paths = (req.body?.paths || []).map((p) => safePath(p, rs)).filter(Boolean);
     if (!paths.length) return res.json({ rows: [] });
+    const groupMode = !!req.body?.groupMode;
+    if (groupMode) paths = expandToPrimaries(paths);
     const meta = req.body?.withMeta === false ? {} : await readMeta(paths.slice(0, 500));
     const files = paths.map((p) => ({ abs: p, meta: meta[p] || {} }));
-    res.json({ rows: planRenames(files, req.body?.rules || [], { includeSidecars: !!req.body?.includeSidecars }) });
+    // group mode implies sidecars: the companions ARE the group
+    const opts = { includeSidecars: groupMode || !!req.body?.includeSidecars, groupMode };
+    res.json({ rows: planRenames(files, req.body?.rules || [], opts) });
   });
 
   router.post('/apply', async (req, res) => {
     if (req.body?.confirm !== true) return res.status(400).json({ error: 'confirm:true required' });
     const rs = roots();
-    const paths = (req.body?.paths || []).map((p) => safePath(p, rs)).filter(Boolean);
+    let paths = (req.body?.paths || []).map((p) => safePath(p, rs)).filter(Boolean);
     if (!paths.length) return res.status(400).json({ error: 'no valid paths' });
 
-    // Recompute server-side. The client cannot hand us a mapping to execute.
+    // Recompute server-side, INCLUDING the grouping. The client cannot hand us a mapping
+    // to execute, and it cannot hand us a different set of primaries than /plan produced.
+    const groupMode = !!req.body?.groupMode;
+    if (groupMode) paths = expandToPrimaries(paths);
     const meta = await readMeta(paths.slice(0, 500));
     const files = paths.map((p) => ({ abs: p, meta: meta[p] || {} }));
-    const rows = planRenames(files, req.body?.rules || [], { includeSidecars: !!req.body?.includeSidecars });
+    const opts = { includeSidecars: groupMode || !!req.body?.includeSidecars, groupMode };
+    const rows = planRenames(files, req.body?.rules || [], opts);
 
     const bad = rows.filter((r) => r.error);
     if (bad.length && !req.body?.skipErrors) {

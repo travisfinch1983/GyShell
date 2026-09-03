@@ -48,6 +48,10 @@ export class BulkRenamerStore {
 
   rules: Rule[] = []
   includeSidecars = true
+  /** Group mode: a selection collapses to the primary weights file of each group, and the
+   *  companions inherit its new stem. On by default — with it off, selecting a .json next
+   *  to a .pt gives the JSON its own row where {task}/{arch} resolve to nothing. */
+  groupMode = true
   rows: PlanRow[] = []
   planning = false
   applying = false
@@ -68,6 +72,7 @@ export class BulkRenamerStore {
   get selCount() { return this.selected.size }
   get errorRows() { return this.rows.filter((r) => r.error) }
   get changedRows() { return this.rows.filter((r) => r.changed && !r.error) }
+  get sidecarCount() { return this.changedRows.reduce((n, r) => n + (r.sidecars?.length || 0), 0) }
 
   async loadRoots() {
     try {
@@ -160,7 +165,7 @@ export class BulkRenamerStore {
     try {
       const r = await fetch('/api/files/plan', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paths, rules: this.rules, includeSidecars: this.includeSidecars }),
+        body: JSON.stringify({ paths, rules: this.rules, includeSidecars: this.includeSidecars, groupMode: this.groupMode }),
       })
       const d = await r.json()
       runInAction(() => { this.rows = d.rows || [] })
@@ -221,7 +226,7 @@ export class BulkRenamerStore {
     try {
       const r = await fetch('/api/files/apply', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paths, rules: this.rules, includeSidecars: this.includeSidecars, confirm: true }),
+        body: JSON.stringify({ paths, rules: this.rules, includeSidecars: this.includeSidecars, groupMode: this.groupMode, confirm: true }),
       })
       const d = await r.json()
       if (!r.ok) {
