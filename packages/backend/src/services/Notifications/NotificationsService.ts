@@ -413,16 +413,32 @@ export class NotificationsService {
         // 2026-09-02 one dead proxy port raised CRITICAL + ERROR + WARNING in a single pass,
         // for embeddings and reranker that only fail BECAUSE they route through that proxy.
         // Only fills where absent, so an explicit operator value always wins.
-        const defDep = new Map(DEFAULT_CHECKS.filter((c) => c.dependsOn).map((c) => [c.id, c.dependsOn]))
+        // Generalised 2026-09-02: fixing only `dependsOn` fixed the INSTANCE and left the CLASS.
+        // unified-memory's default carries timeoutMs 15_000 and confirmations 3 because that
+        // probe is slow and flaps; the on-disk entry, seeded before those fields existed, holds
+        // neither — so it ran with generic timing and false-alarmed in exactly the way dependsOn
+        // did. EVERY field added to a default after seeding drifts identically.
+        //
+        // Only BEHAVIOURAL fields are listed. target/expect/downSeverity/label/kind are OPERATOR
+        // CHOICES and are never touched: absence there means "I tuned this". Absence of one of
+        // these means "this did not exist when my file was written".
+        const BACKFILL_FIELDS = ['dependsOn', 'timeoutMs', 'confirmations'] as const
         const filled: string[] = []
-        for (const c of this.checks) {
-          if (!c.dependsOn && defDep.has(c.id)) {
-            c.dependsOn = defDep.get(c.id)
-            filled.push(`${c.id}->${c.dependsOn}`)
+        for (const field of BACKFILL_FIELDS) {
+          const defs = new Map(
+            DEFAULT_CHECKS.filter((c) => (c as unknown as Record<string, unknown>)[field] !== undefined)
+              .map((c) => [c.id, (c as unknown as Record<string, unknown>)[field]]),
+          )
+          for (const c of this.checks) {
+            const cur = (c as unknown as Record<string, unknown>)[field]
+            if (cur === undefined && defs.has(c.id)) {
+              ;(c as unknown as Record<string, unknown>)[field] = defs.get(c.id)
+              filled.push(`${c.id}.${field}=${String(defs.get(c.id))}`)
+            }
           }
         }
         if (filled.length) {
-          console.log(`[notifications] back-filled dependsOn from defaults: ${filled.join(', ')}`)
+          console.log(`[notifications] back-filled behavioural defaults: ${filled.join(', ')}`)
         }
 
         const present = new Set(this.checks.map((c) => c.id))
