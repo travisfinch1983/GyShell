@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""Warn when a Hermes agent's Telegram polling has stopped and NOT come back.
+
+Telegram is Travis's primary channel to his agents. A network failure hit idris, loom and wren
+simultaneously on 2026-09-01 at 01:10 and all three self-healed in ~3 minutes -- the retry logic
+works. But those failures exist ONLY as WARNING lines in per-agent logs and nothing watched them,
+so a PERMANENT polling failure would silence his agents on the one channel he'd least want it,
+and he'd discover it by messaging an agent and getting nothing back. Work stops, no surface says
+so.
+
+WHAT IS AND IS NOT A SIGNAL -- checked against real logs before writing the rule:
+  * `attempt N/10` is NOT a failure signal. idris reached attempt 10/10 on 2026-09-01 and
+    recovered on it. Alarming on a high attempt count would have paged for a healthy agent.
+  * The signal is ORDER: the last Telegram event being a FAILURE with no restart after it.
+    Recovery is proven by a later `polling restarted` line, never by elapsed time.
+
+Latching mirrors AlarmLatch (packages/backend/src/services/AlarmLatch.ts) deliberately, since
+this runs in Python and cannot import it:
+  - keyed subject:class, cleared ONLY on positive evidence, 7-day restatement that says so.
+
+Never reads message content -- only adapter state lines.
+"""
+import datetime
+import json
+import os
+import re
+import sys
+import urllib.request
+
+PROFILES = os.environ.get("HERMES_PROFILES", "/root/.hermes/profiles")
+NOTIFY = os.environ.get("AILAB_NOTIFY_URL", "http://127.0.0.1:17890/api/notifications/emit")
+STATE = os.environ.get("TELEGRAM_POLL_STATE", "/opt/ai-lab/.gybackend-data/telegram-polling-alarms.json")
+DOWN_MIN = float(os.environ.get("TELEGRAM_DOWN_MINUTES", "10"))
+HARD_MIN = float(os.environ.get("TELEGRAM_HARD_MINUTES", "60"))
+REANNOUNCE_S = float(os.environ.get("TELEGRAM_REANNOUNCE_DAYS", "7")) * 86400
+TAIL_BYTES = 400_000
+
+TS = r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
+RE_FAIL = re.compile(TS + r".*\[Telegram\] Telegram (?:network error \(attempt|polling reconnect failed)")
+RE_OK = re.compile(TS + r".*\[Telegram\] Telegram polling restarted after network error")
+RE_ANY = re.compile(r"\[Telegram\]")
+
+
+def parse(ts):
+    return datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+
+
+def inspect(agent):
+    """-> (state, detail). state in ok|down|unknown|n/a"""
+    path = os.path.join(PROFILES, agent, "logs", "agent.log")
+    if not os.path.exists(path):
+        return ("n/a", "no agent log")
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - TAIL_BYTES))
+            text = f.read().decode("utf-8", "replace")
+    except Exception as e:
+        # cannot-check is never reported as healthy, and never as failed either.
+        return ("unknown", "agent log unreadable (%s)" % e.__class__.__name__)
+    if not RE_ANY.search(text):
+        return ("n/a", "no Telegram adapter activity — this agent has no Telegram channel")
+
+    fails = RE_FAIL.findall(text)
+    oks = RE_OK.findall(text)
+    last_fail = parse(fails[-1]) if fails else None
+    last_ok = parse(oks[-1]) if oks else None
+
+    if last_fail is None:
+        return ("ok", "Telegram polling active; no network errors in the retained log")
+    if last_ok is not None and last_ok >= last_fail:
+        return ("ok", "recovered at %s (last error %s)" % (last_ok, last_fail))
+
+    mins = (datetime.datetime.now() - last_fail).total_seconds() / 60.0
+    if mins < DOWN_MIN:
+        # Below the confirmation window. Retries are bounded but they take minutes, and a
+        # sequence that is still in flight has not failed yet — "attempt N/10" is not a
+        # failure signal. Neither down nor recovered.
+        return ("retrying", "a network error at %s is %.1f minutes old and retries are still in "
+                            "flight (confirmation threshold %.0f min). Not reported as down: "
+                            "bounded retries routinely run for minutes and then succeed."
+                            % (last_fail, mins, DOWN_MIN))
+    return ("down", "Telegram polling has NOT restarted since a network error at %s (%.0f minutes "
+                    "ago). Retries are bounded, so this may be permanent: the agent is unreachable "
+                    "on Telegram until its gateway is restarted." % (last_fail, mins), mins)
+
+
+def load():
+    try:
+        with open(STATE) as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def save(m):
+    try:
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        tmp = STATE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(m, f, indent=2)
+        os.replace(tmp, STATE)
+    except Exception as e:
+        print("  could not persist state: %s" % e, file=sys.stderr)
+
+
+def emit(severity, message, detail):
+    body = json.dumps({"severity": severity, "source": "telegram-polling",
+                       "message": message, "detail": detail}).encode()
+    req = urllib.request.Request(NOTIFY, data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status == 200
+    except Exception as e:
+        print("  NOTIFY FAILED (%s) — %s: %s" % (e, severity, message), file=sys.stderr)
+        return False
+
+
+def main():
+    try:
+        agents = sorted(os.listdir(PROFILES))
+    except Exception as e:
+        # A failed enumeration must not look like an empty fleet, and must not clear anything.
+        print("  cannot list %s (%s) — no conclusions drawn this run" % (PROFILES, e), file=sys.stderr)
+        return 1
+
+    alarms = load()
+    now = datetime.datetime.now().timestamp()
+    dirty = False
+
+    def claim(key):
+        prev = alarms.get(key)
+        if prev and now - prev.get("lastNotified", 0) < REANNOUNCE_S:
+            return None
+        alarms[key] = {"firstSeen": prev.get("firstSeen", now) if prev else now, "lastNotified": now}
+        return "" if not prev else (
+            " Unchanged since %s — re-stated because it is still true, not because it is new."
+            % datetime.datetime.fromtimestamp(prev["firstSeen"]).strftime("%Y-%m-%d %H:%M"))
+
+    for agent in agents:
+        res = inspect(agent)
+        state, detail = res[0], res[1]
+        if state == "n/a":
+            continue
+        key_down, key_unk = "%s:pollingdown" % agent, "%s:unknown" % agent
+
+        if state == "down":
+            mins = res[2]
+            suffix = claim(key_down)
+            print("  %-16s DOWN  %s" % (agent, detail))
+            if suffix is not None:
+                dirty = True
+                emit("error" if mins > HARD_MIN else "warning",
+                     "Agent '%s' is unreachable on Telegram — polling has not restarted" % agent,
+                     detail + suffix)
+        elif state == "retrying":
+            # Its OWN branch on purpose. The else clears stored alarms, and a fresh failure is
+            # not a recovery — falling through would turn a false positive into a false all-clear.
+            print("  %-16s retry %s" % (agent, detail))
+        elif state == "unknown":
+            suffix = claim(key_unk)
+            print("  %-16s UNKNOWN  %s" % (agent, detail))
+            if suffix is not None:
+                dirty = True
+                emit("warning", "Agent '%s' Telegram polling state cannot be determined" % agent,
+                     detail + " Reported as unknown, not as healthy and not as failed." + suffix)
+        else:
+            print("  %-16s ok    %s" % (agent, detail))
+            for k in (key_down, key_unk):
+                if k in alarms:
+                    del alarms[k]
+                    dirty = True
+                    if k == key_down:
+                        emit("info", "Agent '%s' Telegram polling recovered" % agent, detail)
+
+    if dirty:
+        save(alarms)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
