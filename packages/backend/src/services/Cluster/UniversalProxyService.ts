@@ -138,6 +138,7 @@ export class UniversalProxyService {
     const { createAnthropicProxyRouter } = await import('./proxy/anthropic-proxy.js')
     // @ts-expect-error — native CivitAI downloader (runs curl inside CT 152, writes to local /ai-assets)
     const { createCivitaiRouter } = await import('./proxy/civitai.js')
+    const { createFilesRouter } = await import('./proxy/files.js')
     const { createFlowchartsRouter } = await import('./flowchartsHttp')
     const { createPagesRouter } = await import('./pagesHttp')
     const { createReportsRouter } = await import('./reportsHttp')
@@ -262,6 +263,9 @@ export class UniversalProxyService {
     }
     app.use('/api/proxy', createProxyRouter({ exec: this.sshExec }))
     app.use('/api/civitai', express.json({ limit: '10mb' }), createCivitaiRouter({}, { exec: this.sshExec }))
+    // Bulk Renamer (Files tab -> Bulk Renamer sub-tab). FileBrowser Quantum is a binary we
+    // cannot extend, so mass renaming is served here instead.
+    app.use('/api/files', express.json({ limit: '10mb' }), createFilesRouter({ dataDir: this.dataDir }))
     // RAG routes (/api/ai/rag/*, /api/ai/docrag/*) registered BEFORE the /api/ai router so the specific
     // codebase/document-RAG paths match first.
     const { registerRagRoutes } = await import('./proxy/rag.js')
