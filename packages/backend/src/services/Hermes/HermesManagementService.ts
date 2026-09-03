@@ -2265,15 +2265,24 @@ export class HermesManagementService {
     // the matching "registered 114 tool(s)" line was in the rotated file.
     //
     // The class is worth naming: the evidence existed and was accurate — it was simply OUTSIDE
-    // THE PROBE'S APERTURE. Same family as letting `tail -n 4000` decide a verdict by log
-    // volume. Left alone, UNKNOWN would have become the routine resting state of every agent on
-    // a rotation cycle, draining the meaning out of the one signal standing between us and the
-    // false-recovery bug. A warning that fires on healthy subjects stops being read.
+    // THE PROBE'S APERTURE. Left alone, UNKNOWN would have become the routine resting state of
+    // every agent on a rotation cycle, draining the meaning out of the one signal standing
+    // between us and the false-recovery bug. A warning that fires on healthy subjects stops
+    // being read.
     //
-    // Chronological order matters: .1 is older, so it is concatenated FIRST and the trailing
+    // THE APERTURE IS NOW REMOVED, NOT WIDENED — the second half of the same bug, caught by
+    // maintenance-claude on loom (2026-09-03). The earlier fix widened WHICH FILES were read but
+    // kept `tail -n 4000` deciding HOW FAR BACK, so a healthy agent whose last registration sat
+    // at line 16,187 of a 20,193-line log reported UNKNOWN: the window opened at line 16,194,
+    // SEVEN LINES too late. Any fixed line count only relocates the cliff.
+    //
+    // So: grep the files directly and bound the OUTPUT instead of the input. `tail -n 20` on the
+    // MATCHES is the right bound; ~8 MB of grep per check is free. -h is load-bearing (filename
+    // prefixes would break the parser below); -a keeps a stray NUL from truncating the scan.
+    // Chronological order matters: .1 is older, so it is listed FIRST and the trailing
     // `tail -n 20` still keeps the newest lines.
     const raw = await this.ssh(
-      `{ tail -n 4000 ${shq(log)}.1 2>/dev/null; tail -n 4000 ${shq(log)} 2>/dev/null; } | grep -aE 'registered [0-9]+ tool\\(s\\) from|reconnection attempts, giving up|parking until a reconnect' | tail -n 20 || true`,
+      `grep -ahE 'registered [0-9]+ tool\\(s\\) from|reconnection attempts, giving up|parking until a reconnect' ${shq(log)}.1 ${shq(log)} 2>/dev/null | tail -n 20 || true`,
     ).catch(() => '')
     let registeredTools: number | null = null
     let gaveUp = false
