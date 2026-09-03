@@ -35,6 +35,7 @@ export const FilesPanel: React.FC = () => {
         </div>
         <div className={styles.spacer} />
       </div>
+      <div className={styles.headRule} />
       <div className={styles.body}>
         <div style={{ position: 'absolute', inset: 0, visibility: sub === 'browser' ? 'visible' : 'hidden' }}>
           <iframe src="/files/" title="File Manager" className={styles.frame} />

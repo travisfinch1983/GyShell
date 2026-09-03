@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { readdirSync, statSync, existsSync, renameSync, readFileSync } from 'fs';
+import { readdirSync, statSync, existsSync, renameSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname, basename, extname, resolve, sep } from 'path';
 import { execFile } from 'child_process';
 import { fileURLToPath } from 'url';
@@ -41,6 +41,9 @@ function safePath(p, roots) {
   return ok ? abs : null;
 }
 
+// Weight/model files are never sidecars of one another, no matter how the names line up.
+const MODEL_EXTS = new Set(['.pt', '.pth', '.ckpt', '.safetensors', '.sft', '.onnx', '.bin', '.gguf', '.engine', '.trt']);
+
 const BAD_NAME = /[/\\\0]/;
 /** A filename must be a filename — not a path, not a traversal, not blank-ish. */
 function nameError(n) {
@@ -55,6 +58,43 @@ function nameError(n) {
 
 // ─── rule engine ────────────────────────────────────────────────────────────
 const TITLE = (s) => s.replace(/\w\S*/g, (w) => w[0].toUpperCase() + w.slice(1).toLowerCase());
+
+/**
+ * The variable reference served to the UI. Kept adjacent to tokens() ON PURPOSE: the
+ * documented list and the implemented list must change in the same edit, or the reference
+ * silently starts lying about what the engine supports.
+ */
+export const TOKEN_DOCS = [
+  { group: 'File', items: [
+    { t: 'name',   d: 'current filename without extension' },
+    { t: 'ext',    d: 'extension without the dot' },
+    { t: 'parent', d: 'name of the containing folder' },
+    { t: 'size',   d: 'size in bytes' },
+  ] },
+  { group: 'Counter', items: [
+    { t: 'i',      d: 'position in the selection, from 1' },
+    { t: 'i:3',    d: 'same, zero-padded to 3 (any width works)' },
+    { t: 'n',      d: 'total number of selected files' },
+  ] },
+  { group: 'Detector / model', needsMeta: true, items: [
+    { t: 'task',   d: 'bbox | segm | pose | obb | cls' },
+    { t: 'head',   d: 'raw head class, e.g. Segment26, v10Detect' },
+    { t: 'arch',   d: 'y8 y9 y10 y11+ y26 rtd  (v11 and v12 are indistinguishable)' },
+    { t: 'proto',  d: "'proto' if a mask-prototype branch exists (redundant with segm)" },
+    { t: 'nc',     d: 'number of classes, best effort' },
+    { t: 'imgsz',  d: 'training image size if recoverable' },
+    { t: 'top_tag',d: "a LoRA's most frequent caption tag" },
+  ] },
+  { group: 'Image', needsMeta: true, items: [
+    { t: 'w',      d: 'width in pixels' },
+    { t: 'h',      d: 'height in pixels' },
+    { t: 'dim',    d: 'WxH, e.g. 1024x1536' },
+    { t: 'mp',     d: 'megapixels, 1 decimal' },
+    { t: 'ar',     d: 'aspect ratio, e.g. 3-4 (snapped; "-" not ":" for SMB safety)' },
+    { t: 'orient', d: 'sq | land | port' },
+    { t: 'fmt',    d: 'REAL format from magic bytes — use with the extension rule to repair a wrong one' },
+  ] },
+]
 
 function tokens(ctx) {
   const m = ctx.meta || {};
@@ -112,6 +152,14 @@ function applyRules(ctx, rules) {
         }
         break;
       }
+      case 'trim': {
+        // Deliberately NOT clamped: trimming past the whole stem yields an empty name,
+        // which nameError() blocks and the preview shows as an error. Silently clamping
+        // would hide a wrong count until it had already renamed a batch.
+        const k = Math.max(0, Number(r.count ?? 0));
+        stem = r.from === 'start' ? stem.slice(k) : (k ? stem.slice(0, Math.max(0, stem.length - k)) : stem);
+        break;
+      }
       case 'prefix': stem = expand(r.text ?? '', c) + stem; break;
       case 'suffix': stem = stem + expand(r.text ?? '', c); break;
       case 'template': stem = expand(r.pattern ?? '{name}', c); break;
@@ -165,6 +213,14 @@ function planRenames(files, rules, opts = {}) {
     const ne = nameError(row.newName);
     if (ne) { row.error = ne; rows.push(row); return; }
 
+    // An empty STEM passes nameError (".pt" is a legal filename) but is never what the
+    // user meant: it makes the file hidden, and /list skips dotfiles, so the file would
+    // disappear from this very browser. Trimming past the whole name lands here.
+    if (row.newName.startsWith('.') || !basename(row.newName, extname(row.newName))) {
+      row.error = 'nothing left before the extension';
+      rows.push(row); return;
+    }
+
     row.to = join(row.dir, row.newName);
 
     // collision with an unrelated file already on disk
@@ -178,13 +234,32 @@ function planRenames(files, rules, opts = {}) {
       else claimed.set(key, row.oldName);
     }
 
-    // sidecars: same stem, any extension — previews, .json, .civit.info, .metadata.json
+    // sidecars: previews and metadata that belong to THIS file — .json, .jpeg, .civit.info,
+    // .metadata.json, plus gallery images named <stem>_1.jpeg.
+    //
+    // A bare `startsWith(stem + '_')` is WRONG and was caught in the UI preview:
+    // face_yolov8n.pt claimed face_yolov8n_v2.pt — a DIFFERENT MODEL — as its sidecar and
+    // would have renamed it. Two guards now:
+    //   1. the remainder after the stem must be a pure extension chain (".json",
+    //      ".civit.full.info") or a gallery index ("_1.jpeg"); "_v2.pt" is neither
+    //   2. never adopt another WEIGHTS file as a sidecar, whatever it is named
     if (opts.includeSidecars && row.changed && !row.error) {
       const oldStem = basename(f.abs, ext);
+      const newStem = basename(row.newName, extname(row.newName));
+      const selected = new Set(files.map((x) => x.abs));
       try {
         row.sidecars = readdirSync(row.dir)
-          .filter((n) => n !== row.oldName && (n === oldStem || n.startsWith(oldStem + '.') || n.startsWith(oldStem + '_')))
-          .map((n) => ({ from: join(row.dir, n), to: join(row.dir, basename(row.newName, extname(row.newName)) + n.slice(oldStem.length)) }));
+          .filter((n) => {
+            if (n === row.oldName || !n.startsWith(oldStem)) return false;
+            const rest = n.slice(oldStem.length);
+            const isExtChain = /^\.[^/]+$/.test(rest);
+            const isGallery = /^_\d+\.[A-Za-z0-9]+$/.test(rest);
+            if (!isExtChain && !isGallery) return false;
+            if (MODEL_EXTS.has(extname(n).toLowerCase())) return false;
+            // if the user selected it in its own right, its own row renames it
+            return !selected.has(join(row.dir, n));
+          })
+          .map((n) => ({ from: join(row.dir, n), to: join(row.dir, newStem + n.slice(oldStem.length)) }));
       } catch { row.sidecars = []; }
     }
     rows.push(row);
@@ -208,6 +283,48 @@ export function createFilesRouter({ dataDir } = {}) {
   const roots = () => allowedRoots(dataDir || process.cwd() + '/data');
 
   router.get('/roots', (req, res) => res.json({ roots: roots() }));
+
+  // The variable reference the UI renders. Served from TOKEN_DOCS, which lives beside
+  // tokens() in this file, so the docs cannot drift away from the engine unnoticed.
+  router.get('/variables', (req, res) => res.json({ groups: TOKEN_DOCS }));
+
+  // ── saved rule templates ────────────────────────────────────────────────
+  const tplPath = () => join(dataDir || process.cwd() + '/data', 'renamer-templates.json');
+  const loadTpls = () => {
+    try { const d = JSON.parse(readFileSync(tplPath(), 'utf8')); return Array.isArray(d.templates) ? d.templates : []; }
+    catch { return []; }
+  };
+  const saveTpls = (list) => {
+    const p = tplPath();
+    try { mkdirSync(dirname(p), { recursive: true }); } catch {}
+    // write-then-rename so a crash mid-write cannot leave a truncated template file
+    const tmp = p + '.tmp';
+    writeFileSync(tmp, JSON.stringify({ templates: list }, null, 2));
+    renameSync(tmp, p);
+  };
+
+  router.get('/templates', (req, res) => res.json({ templates: loadTpls() }));
+
+  router.put('/templates', (req, res) => {
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'name required' });
+    if (name.length > 60) return res.status(400).json({ error: 'name too long' });
+    const rules = req.body?.rules;
+    if (!Array.isArray(rules) || !rules.length) return res.status(400).json({ error: 'rules required' });
+    const list = loadTpls().filter((t) => t.name !== name);
+    list.push({ name, rules, note: String(req.body?.note || '').slice(0, 300), saved: Date.now() });
+    list.sort((a, b) => a.name.localeCompare(b.name));
+    saveTpls(list);
+    res.json({ ok: true, templates: list });
+  });
+
+  router.delete('/templates/:name', (req, res) => {
+    const list = loadTpls();
+    const next = list.filter((t) => t.name !== req.params.name);
+    if (next.length === list.length) return res.status(404).json({ error: 'no such template' });
+    saveTpls(next);
+    res.json({ ok: true, templates: next });
+  });
 
   router.get('/list', (req, res) => {
     const rs = roots();

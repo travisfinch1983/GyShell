@@ -26,6 +26,7 @@ export type Rule =
   | { type: 'strip'; enabled?: boolean; chars: string; collapse?: boolean }
   | { type: 'number'; enabled?: boolean; start?: number; pad?: number; sep?: string; position: 'prefix' | 'suffix' }
   | { type: 'extension'; enabled?: boolean; to: string }
+  | { type: 'trim'; enabled?: boolean; from: 'start' | 'end'; count: number }
 
 export interface PlanRow {
   from: string; dir: string; oldName: string; newName?: string; to?: string
@@ -53,6 +54,10 @@ export class BulkRenamerStore {
   result: { renamed: number; failed: number; msg?: string } | null = null
 
   filter = ''
+
+  templates: { name: string; rules: Rule[]; note?: string; saved?: number }[] = []
+  varGroups: { group: string; needsMeta?: boolean; items: { t: string; d: string }[] }[] = []
+  tplName = ''
 
   constructor() { makeAutoObservable(this) }
 
@@ -128,6 +133,7 @@ export class BulkRenamerStore {
       strip: { type: 'strip', chars: '()[]', collapse: true },
       number: { type: 'number', pad: 2, sep: '_', position: 'suffix' },
       extension: { type: 'extension', to: '' },
+      trim: { type: 'trim', from: 'start', count: 1 },
     }
     runInAction(() => { this.rules = [...this.rules, defaults[type]] })
     void this.plan()
@@ -160,6 +166,52 @@ export class BulkRenamerStore {
       runInAction(() => { this.rows = d.rows || [] })
     } catch (e: any) { runInAction(() => { this.error = String(e?.message || e) }) }
     finally { runInAction(() => { this.planning = false }) }
+  }
+
+  async loadVariables() {
+    try {
+      const r = await fetch('/api/files/variables')
+      const d = await r.json()
+      runInAction(() => { this.varGroups = d.groups || [] })
+    } catch { /* the reference panel simply stays empty */ }
+  }
+
+  async loadTemplates() {
+    try {
+      const r = await fetch('/api/files/templates')
+      const d = await r.json()
+      runInAction(() => { this.templates = d.templates || [] })
+    } catch { /* non-fatal */ }
+  }
+
+  async saveTemplate(name: string, note = '') {
+    if (!name.trim() || !this.rules.length) return
+    try {
+      const r = await fetch('/api/files/templates', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), rules: this.rules, note }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d?.error || 'save failed')
+      runInAction(() => { this.templates = d.templates || []; this.tplName = name.trim() })
+    } catch (e: any) { runInAction(() => { this.error = String(e?.message || e) }) }
+  }
+
+  /** Loading a template REPLACES the stack — merging two rule stacks silently would
+   *  produce an order nobody chose. */
+  loadTemplate(name: string) {
+    const t = this.templates.find((x) => x.name === name)
+    if (!t) return
+    runInAction(() => { this.rules = t.rules.map((r) => ({ ...r })); this.tplName = t.name })
+    void this.plan()
+  }
+
+  async deleteTemplate(name: string) {
+    try {
+      const r = await fetch('/api/files/templates/' + encodeURIComponent(name), { method: 'DELETE' })
+      const d = await r.json()
+      if (r.ok) runInAction(() => { this.templates = d.templates || []; if (this.tplName === name) this.tplName = '' })
+    } catch (e: any) { runInAction(() => { this.error = String(e?.message || e) }) }
   }
 
   async apply() {
