@@ -77,6 +77,113 @@ const SubsectionModal: React.FC<{ onClose: () => void }> = observer(({ onClose }
   )
 })
 
+// ── Add the selection to a detector-training dataset (dataset-forge) ──
+// The images are NOT copied: forge tiles them and records the SOURCE path, so the dataset
+// stays a view over the corpus rather than a second copy of it.
+const AddToDataset: React.FC<{ onClose: () => void }> = observer(({ onClose }) => {
+  const [sets, setSets] = useState<{ name: string; tiles: number }[]>([])
+  const [name, setName] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [msg, setMsg] = useState('')
+  const [job, setJob] = useState<any>(null)
+  const files = [...store.selected]
+
+  useEffect(() => {
+    fetch('/api/dataset/sets').then((r) => r.json())
+      .then((d) => { setSets(d.sets || []); if (d.sets?.[0] && !name) setName(d.sets[0].name) })
+      .catch((e) => setMsg(String(e.message)))
+  }, [])
+
+  // Poll the job: tiling + SAM on a few dozen images takes minutes, so this cannot be a
+  // request that simply waits.
+  useEffect(() => {
+    if (!job?.job || job.state === 'done' || job.state === 'error') return
+    const t = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/dataset/job/${job.job}`)
+        const d = await r.json()
+        setJob((j: any) => ({ ...j, ...d }))
+        if (d.state === 'done' || d.state === 'error') clearInterval(t)
+      } catch { /* keep polling; a blip is not a failure */ }
+    }, 2000)
+    return () => clearInterval(t)
+  }, [job?.job, job?.state])
+
+  const go = async () => {
+    const ds = name.trim()
+    if (!ds || !files.length) return
+    setMsg('')
+    try {
+      // cwd-relative selection -> imagegen-root-relative, which is what the API expects
+      const paths = files.map((f) => (store.cwd ? `${store.cwd}/${f}` : f))
+      const r = await fetch(`/api/dataset/${encodeURIComponent(ds)}/ingest`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths, unseeded: 'unlabelled' }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d?.error || 'ingest failed')
+      setJob({ ...d, state: 'queued', done: 0, total: paths.length })
+    } catch (e: any) { setMsg(String(e.message || e)) }
+  }
+
+  const done = job?.state === 'done'
+  return (
+    // NOT click-to-close (see the batch modal): a stray backdrop click ate typed input.
+    <div className={styles.modalBg}>
+      <div className={styles.pkBox} style={{ width: 'min(560px,94%)' }} onClick={(e) => e.stopPropagation()}>
+        <div className={styles.modalHead}>
+          <strong>Add {files.length} image{files.length === 1 ? '' : 's'} to a detector dataset</strong>
+          <button className={styles.btn} onClick={onClose}>{done ? 'Close' : 'Cancel'}</button>
+        </div>
+        {!job && (
+          <>
+            <div className={styles.pkFolders} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: 8 }}>
+              <select className={styles.input} value={creating ? '' : name} style={{ flex: 1 }}
+                onChange={(e) => { setCreating(false); setName(e.target.value) }} disabled={creating}>
+                {!sets.length && <option value="">no datasets yet</option>}
+                {sets.map((s) => <option key={s.name} value={s.name}>{s.name} · {s.tiles} tiles</option>)}
+              </select>
+              <label className={styles.dim} style={{ display: 'inline-flex', gap: 5, alignItems: 'center' }}>
+                <input type="checkbox" checked={creating} onChange={(e) => { setCreating(e.target.checked); setName('') }} />
+                new
+              </label>
+            </div>
+            {creating && (
+              <div style={{ padding: '0 8px 8px' }}>
+                <input className={styles.input} autoFocus placeholder="new dataset name (a-z 0-9 _ - .)"
+                  style={{ width: '100%' }} value={name} onChange={(e) => setName(e.target.value)} />
+              </div>
+            )}
+            <div className={styles.dim} style={{ padding: '0 10px 8px', lineHeight: 1.6 }}>
+              Images are tiled into 768×768 and seeded with the current detector. Tiles it finds
+              nothing in are held as <b>unlabelled</b> — never exported as background — so label
+              them by clicking in <b>Dataset Review</b>. Originals are not copied or modified.
+            </div>
+          </>
+        )}
+        {job && (
+          <div className={styles.dim} style={{ padding: '4px 10px 10px', lineHeight: 1.7 }}>
+            {job.state === 'error' ? <span className={styles.error}>{job.error}</span> : (
+              <>
+                <b>{job.state}</b> — {job.done ?? 0}/{job.total ?? 0} images
+                {job.skipped ? ` · ${job.skipped} skipped (already in the set)` : ''}
+                {done && <> · <b>{job.added ?? 0} tiles added</b></>}
+                {done && <div>Open <b>AI · Image Gen → Dataset Review</b> to label them.</div>}
+              </>
+            )}
+          </div>
+        )}
+        <div className={styles.pkFoot}>
+          {msg && <span className={styles.msg}>{msg}</span>}
+          <span className={styles.spacer} />
+          {!job && <button className={styles.btnPrimary} disabled={!name.trim() || !files.length}
+            onClick={() => void go()}>Add</button>}
+        </div>
+      </div>
+    </div>
+  )
+})
+
 // ── Add to training batch/set: pick (or create) the folder the selection is COPIED into ──
 // One modal, two kinds. Batches and sets differ only in what is listed and where a NEW one
 // is created: batches under _batches/, sets inside the folder being curated (the old
@@ -314,6 +421,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   const [capFiles, setCapFiles] = useState<string[] | undefined>(undefined)
   const [autoCap, setAutoCap] = useState(false)
   const [blanket, setBlanket] = useState(false)
+  const [dsAdd, setDsAdd] = useState(false)
   const [batchAdd, setBatchAdd] = useState(false)
   const [setAdd, setSetAdd] = useState(false)
   const [subMove, setSubMove] = useState(false)
@@ -473,6 +581,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           {store.inTrainingSet && <button className={styles.btnDanger} onClick={() => void doDelete()}>Delete</button>}
           <button className={styles.btn} title="Add or remove the same booru tags across the selected images" onClick={() => setBlanket(true)}>Blanket tags…</button>
           <button className={styles.btn} title="Strip .txt tag sidecars for the selected images" onClick={() => void doStrip([...store.selected])}>Strip tags</button>
+          <button className={styles.btn} title="Tile these images and add them to a detector-training dataset (dataset-forge). Originals are not copied." onClick={() => setDsAdd(true)}>Add to dataset…</button>
           <button className={styles.btn} title="Clear ratings + comments for the selected images" onClick={() => void doWipe([...store.selected])}>Wipe ratings</button>
           <span className={styles.msg}>{store.msg}</span>
         </div>
@@ -585,6 +694,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
       })()}
       {autoCap && <AutoCaptionModal files={capFiles} onClose={() => setAutoCap(false)} />}
 
+      {dsAdd && <AddToDataset onClose={() => setDsAdd(false)} />}
       {blanket && <BlanketTagModal files={[...store.selected]} onClose={() => setBlanket(false)} onDone={() => void store.browse(store.cwd)} />}
       {batchAdd && <AddToBatchModal kind="batch" files={[...store.selected]} onClose={() => setBatchAdd(false)} />}
       {subMove && <SubsectionModal onClose={() => setSubMove(false)} />}

@@ -119,6 +119,10 @@ export function createDatasetRouter() {
   // whole feature: a tile the DETECTOR missed has no seed, and calling it "negative" would
   // teach the new model that the target is background. A human click fixes exactly that.
   const SAMD = process.env.FORGE_SAMD || 'http://10.0.0.234:8791';
+  // Seed detector for new images. Held here rather than in the UI so a dataset is
+  // always seeded by the same model, whoever adds to it.
+  const DEFAULT_DETECTOR = process.env.FORGE_DETECTOR ||
+    '/imagegen/ultralytics/segm/Panty-detailer-3b-(segm)-(y8)-(segment).pt';
 
   router.post('/:name/segment', async (req, res) => {
     const dir = setDir(req.params.name);
@@ -160,6 +164,38 @@ export function createDatasetRouter() {
     t.status = polys.length ? 'manual' : 'negative';
     saveMan(dir, man);
     res.json({ ok: true, tile, polys: t.polys.length, status: t.status, statusCounts: tally(man.tiles || []) });
+  });
+
+  // ── ingest from the Training Images browser ────────────────────────────
+  // Paths arrive RELATIVE to the imagegen root (what the browser already deals in), so the
+  // same request is valid on either host: /ai-assets/imagegen here, /imagegen on ai-epyc.
+  router.post('/:name/ingest', async (req, res) => {
+    const name = req.params.name;
+    if (!NAME_OK.test(name)) return res.status(400).json({ error: 'bad dataset name' });
+    const paths = (req.body?.paths || []).filter((p) => typeof p === 'string' && !p.includes('..'));
+    if (!paths.length) return res.status(400).json({ error: 'no paths' });
+    try {
+      const r = await fetch(SAMD + '/ingest', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dataset: name, paths,
+          detector: req.body?.detector || DEFAULT_DETECTOR,
+          unseeded: req.body?.unseeded || 'unlabelled',
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+      res.status(r.status).json(await r.json());
+    } catch (e) {
+      res.status(502).json({ error: 'forge service unreachable at ' + SAMD + ' (' + e.message +
+        '). On ai-epyc: systemctl status forge-samd' });
+    }
+  });
+
+  router.get('/job/:id', async (req, res) => {
+    try {
+      const r = await fetch(SAMD + '/job/' + encodeURIComponent(req.params.id), { signal: AbortSignal.timeout(15000) });
+      res.status(r.status).json(await r.json());
+    } catch (e) { res.status(502).json({ error: String(e.message) }); }
   });
 
   return router;

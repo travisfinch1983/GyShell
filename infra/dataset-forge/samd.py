@@ -13,7 +13,7 @@ POST /segment  {"dataset":"panties","tile":"foo_t1.png",
   -> {"polys":[{"pts":[[x,y],...],"score":0.97}]}
 GET  /health
 """
-import json, os, sys, threading
+import json, os, sys, threading, uuid, time, importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import OrderedDict
 
@@ -28,6 +28,16 @@ CKPT = os.environ.get("FORGE_SAM", "/imagegen/sam/sam_vit_h_4b8939.pth")
 DEV  = int(os.environ.get("FORGE_DEVICE", "2"))
 PORT = int(os.environ.get("FORGE_PORT", "8791"))
 CACHE_N = 8
+
+# The tiling + seeding + polygon extraction is forge.py's, imported rather than reimplemented:
+# the UI's "Add images" and the CLI's `annotate` must not drift into producing different data.
+_spec = importlib.util.spec_from_file_location("forge", os.path.join(os.path.dirname(__file__), "forge.py"))
+forge = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(forge)
+
+IMAGEGEN = os.environ.get("FORGE_IMAGEGEN", "/imagegen")
+_jobs = {}                    # id -> {state, done, total, added, error, dataset}
+_jobs_lock = threading.Lock()
+_dets = {}                    # detector path -> loaded YOLO (loading one costs seconds)
 
 _lock = threading.Lock()
 _cache = OrderedDict()          # tile path -> the predictor's encoded image state
@@ -67,6 +77,57 @@ def _polys(mask, w, h, min_area=200, simplify=0.004):
     return out
 
 
+def _detector(path):
+    from ultralytics import YOLO
+    if path not in _dets:
+        _dets[path] = YOLO(path)
+    return _dets[path]
+
+
+def _ingest(job_id, ds, rels, detector, unseeded, conf):
+    """Tile + seed + merge, then write the manifest. Runs on a worker thread."""
+    d = os.path.join(ROOT, ds)
+    man_p = os.path.join(d, "manifest.json")
+    try:
+        os.makedirs(d, exist_ok=True)
+        man = json.load(open(man_p)) if os.path.exists(man_p) else {"terms": [], "items": [], "tiles": []}
+        have = {i["path"] for i in man.get("items", [])}
+        items, skipped = [], 0
+        for rel in rels:
+            # paths arrive RELATIVE to the imagegen root, so the same request works whichever
+            # host resolves it (/ai-assets/imagegen on CT152, /imagegen here)
+            ap = os.path.normpath(os.path.join(IMAGEGEN, rel.lstrip("/")))
+            if not ap.startswith(IMAGEGEN + os.sep) or not os.path.exists(ap):
+                skipped += 1; continue
+            if ap in have:
+                skipped += 1; continue
+            items.append({"path": ap})
+        with _jobs_lock:
+            _jobs[job_id].update(total=len(items), skipped=skipped, state="running")
+        if items:
+            det = _detector(detector)
+            with _lock:                              # share the GPU with /segment
+                out = forge.annotate_images(
+                    items, det, _pred,
+                    os.path.join(d, "tiles"), os.path.join(d, "overlays"),
+                    device=DEV, conf=conf, unseeded=unseeded,
+                    progress=lambda n, t: _jobs[job_id].update(done=n))
+            man["items"] = (man.get("items") or []) + items
+            man = forge.merge_tiles(man, out, append=True)
+            tmp = man_p + ".tmp"
+            json.dump(man, open(tmp, "w"), indent=1)
+            os.replace(tmp, man_p)                   # never leave a torn manifest
+            with _jobs_lock:
+                _jobs[job_id].update(added=len(out))
+        with _jobs_lock:
+            _jobs[job_id].update(state="done", done=_jobs[job_id]["total"])
+    except Exception as e:
+        with _jobs_lock:
+            _jobs[job_id].update(state="error", error="%s: %s" % (type(e).__name__, e))
+    finally:
+        _cache.clear()        # tiles changed; stale encoder features would segment the wrong image
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):  # keep the journal readable
         pass
@@ -82,9 +143,40 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/health"):
             return self._send(200, {"ok": True, "device": DEV, "cached": len(_cache)})
+        if self.path.startswith("/job/"):
+            jid = self.path.split("/job/", 1)[1].split("?")[0]
+            with _jobs_lock:
+                j = _jobs.get(jid)
+            return self._send(200 if j else 404, j or {"error": "no such job"})
         self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        if self.path.startswith("/ingest"):
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                req = json.loads(self.rfile.read(n) or b"{}")
+            except Exception as e:
+                return self._send(400, {"error": str(e)})
+            ds = str(req.get("dataset", ""))
+            if not ds or not ds.replace("_", "").replace("-", "").replace(".", "").isalnum():
+                return self._send(400, {"error": "bad dataset name"})
+            rels = req.get("paths") or []
+            if not rels:
+                return self._send(400, {"error": "no paths"})
+            if len(rels) > 2000:
+                return self._send(400, {"error": "too many paths in one request (max 2000)"})
+            det = req.get("detector") or os.environ.get("FORGE_DETECTOR", "")
+            if not det or not os.path.exists(det):
+                return self._send(400, {"error": "detector not found: %r" % det})
+            jid = uuid.uuid4().hex[:12]
+            with _jobs_lock:
+                _jobs[jid] = {"id": jid, "dataset": ds, "state": "queued", "done": 0,
+                              "total": len(rels), "added": 0, "skipped": 0,
+                              "started": int(time.time())}
+            threading.Thread(target=_ingest, daemon=True, args=(
+                jid, ds, rels, det, req.get("unseeded", "unlabelled"),
+                float(req.get("conf", 0.15)))).start()
+            return self._send(202, {"job": jid})
         if not self.path.startswith("/segment"):
             return self._send(404, {"error": "not found"})
         try:

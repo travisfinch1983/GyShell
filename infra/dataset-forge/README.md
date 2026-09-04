@@ -108,3 +108,18 @@ Saved masks are marked `manual` so `--append` will not overwrite them.
 The ViT encode is ~all of SAM's cost, so the encoder output is cached per tile: measured
 **1.99 s for the first click on a tile, 0.099 s for the next** — 20x, and the difference
 between usable and unusable.
+
+## Adding images from the UI
+
+**AI · Image Gen -> Training Images -> select -> "Add to dataset…"**. Pick an existing
+dataset or create one; the job runs on ai-epyc and the modal polls it to completion.
+
+The selection is sent as paths RELATIVE to the imagegen root, so the same request resolves
+on either host (`/ai-assets/imagegen` on CT152, `/imagegen` on ai-epyc) with no absolute
+paths crossing the wire. Images are NOT copied — forge tiles them and records the SOURCE
+path, so a dataset stays a view over the corpus.
+
+`samd` grew `/ingest` (returns a job id) and `/job/<id>`. It imports `annotate_images()` and
+`merge_tiles()` from `forge.py` rather than reimplementing them, so the UI and the CLI cannot
+drift into producing different datasets. New images default to `--unseeded unlabelled` from
+the UI: the whole reason to add images by hand is that the detector fails on them.
