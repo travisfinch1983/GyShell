@@ -74,7 +74,10 @@ export class DatasetReviewStore {
 
   setFilter(f: string) { runInAction(() => { this.filter = f; this.offset = 0; this.cursor = 0 }); void this.loadTiles() }
   move(d: number) {
-    runInAction(() => { this.cursor = Math.min(Math.max(0, this.cursor + d), Math.max(0, this.tiles.length - 1)) })
+    runInAction(() => {
+      this.cursor = Math.min(Math.max(0, this.cursor + d), Math.max(0, this.tiles.length - 1))
+      this.draftPolys = []; this.points = []      // a draft belongs to ONE tile
+    })
   }
 
   /** Decide one tile. Optimistic locally, authoritative server-side. */
@@ -103,6 +106,53 @@ export class DatasetReviewStore {
     if (!c) return
     await this.decide(c.tile, status)
     this.move(1)
+  }
+
+  // ── click-to-annotate ─────────────────────────────────────────────────
+  // A tile the detector missed has NO seed. Clicking the target sends the point to SAM and
+  // turns it into a polygon — the only way to add failing images without lying about them.
+  draftPolys: { pts: number[][]; score?: number }[] = []
+  points: { x: number; y: number; label: number }[] = []
+  segmenting = false
+
+  clearDraft() { runInAction(() => { this.draftPolys = []; this.points = [] }) }
+
+  /** x/y are normalised 0..1 within the tile. label 0 = "exclude this region". */
+  async addPoint(x: number, y: number, label = 1) {
+    const c = this.current
+    if (!c || this.segmenting) return
+    runInAction(() => { this.points.push({ x, y, label }); this.segmenting = true; this.error = '' })
+    try {
+      const r = await fetch(`/api/dataset/${encodeURIComponent(this.active)}/segment`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tile: c.tile, points: this.points }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d?.error || 'segment failed')
+      runInAction(() => { this.draftPolys = d.polys || [] })
+    } catch (e: any) {
+      runInAction(() => { this.error = String(e?.message || e); this.points.pop() })
+    } finally { runInAction(() => { this.segmenting = false }) }
+  }
+
+  /** Commit the draft to the manifest, replacing whatever the seed detector produced. */
+  async saveDraft() {
+    const c = this.current
+    if (!c || !this.draftPolys.length) return
+    try {
+      const r = await fetch(`/api/dataset/${encodeURIComponent(this.active)}/polys`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tile: c.tile, polys: this.draftPolys }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d?.error || 'save failed')
+      runInAction(() => {
+        c.status = d.status; c.polys = d.polys
+        this.counts = d.statusCounts || this.counts
+      })
+      this.clearDraft()
+      this.move(1)
+    } catch (e: any) { runInAction(() => { this.error = String(e?.message || e) }) }
   }
 
   /** Approve everything still undecided in the CURRENT page — not the whole set. */

@@ -93,7 +93,7 @@ export function createDatasetRouter() {
     createReadStream(p).pipe(res);
   });
 
-  const VALID = new Set(['auto', 'approved', 'rejected', 'negative']);
+  const VALID = new Set(['auto', 'approved', 'rejected', 'negative', 'unlabelled', 'manual']);
   router.post('/:name/status', (req, res) => {
     const dir = setDir(req.params.name);
     if (!dir || !existsSync(manPath(dir))) return res.status(404).json({ error: 'no such dataset' });
@@ -112,6 +112,54 @@ export function createDatasetRouter() {
     }
     saveMan(dir, man);
     res.json({ ok: true, updated: n, status: tally(man.tiles || []) });
+  });
+
+  // ── click-to-annotate ──────────────────────────────────────────────────
+  // SAM lives on ai-epyc because it needs the GPU; this proxies to it. The point of the
+  // whole feature: a tile the DETECTOR missed has no seed, and calling it "negative" would
+  // teach the new model that the target is background. A human click fixes exactly that.
+  const SAMD = process.env.FORGE_SAMD || 'http://10.0.0.234:8791';
+
+  router.post('/:name/segment', async (req, res) => {
+    const dir = setDir(req.params.name);
+    if (!dir || !existsSync(manPath(dir))) return res.status(404).json({ error: 'no such dataset' });
+    try {
+      const r = await fetch(SAMD + '/segment', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...req.body, dataset: req.params.name }),
+        signal: AbortSignal.timeout(60000),
+      });
+      res.status(r.status).json(await r.json());
+    } catch (e) {
+      // Say WHERE it failed — "fetch failed" alone sends people looking in the browser.
+      res.status(502).json({ error: 'SAM service unreachable at ' + SAMD + ' (' + e.message +
+        '). On ai-epyc: systemctl status forge-samd' });
+    }
+  });
+
+  /** Replace a tile's polygons with human-authored ones and mark it reviewed. */
+  router.post('/:name/polys', (req, res) => {
+    const dir = setDir(req.params.name);
+    if (!dir || !existsSync(manPath(dir))) return res.status(404).json({ error: 'no such dataset' });
+    const tile = String(req.body?.tile || '');
+    const polys = req.body?.polys;
+    if (!tile || !Array.isArray(polys)) return res.status(400).json({ error: 'tile and polys required' });
+    for (const p of polys) {
+      if (!Array.isArray(p?.pts) || p.pts.length < 3) return res.status(400).json({ error: 'a polygon needs >= 3 points' });
+      for (const [x, y] of p.pts) {
+        if (!(x >= -0.01 && x <= 1.01 && y >= -0.01 && y <= 1.01)) {
+          return res.status(400).json({ error: 'points must be normalised 0..1' });
+        }
+      }
+    }
+    const man = loadMan(dir);
+    const t = (man.tiles || []).find((x) => x.tile === tile);
+    if (!t) return res.status(404).json({ error: 'no such tile' });
+    t.polys = polys.map((p) => ({ pts: p.pts, sam_score: p.score ?? null, manual: true }));
+    // "manual" so a later `annotate --append` will not overwrite hand-drawn work
+    t.status = polys.length ? 'manual' : 'negative';
+    saveMan(dir, man);
+    res.json({ ok: true, tile, polys: t.polys.length, status: t.status, statusCounts: tally(man.tiles || []) });
   });
 
   return router;

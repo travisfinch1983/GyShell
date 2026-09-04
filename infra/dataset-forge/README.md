@@ -71,3 +71,40 @@ which is why forge can run on ai-epyc for the GPU while the UI reads from CT152)
 `A` approves, `R` rejects, arrows move, decisions POST immediately. Only tiles carrying a
 mask need a verdict; negatives are already valid backgrounds and export as empty labels, so
 the API refuses to "approve" one. `export` skips anything marked `rejected`.
+
+## Adding more images — especially ones the detector FAILS on
+
+    # explicit list of images, merged into the existing dataset
+    $P forge.py scan --corpus / --out /imagegen/_datasets/panties/manifest.json \
+        --paths-from misses.txt --append
+
+    # unseeded tiles are HELD, not called background
+    $P forge.py annotate --manifest /imagegen/_datasets/panties/manifest.json \
+        --detector <seed.pt> --device 3 --append --unseeded unlabelled \
+        --tiles /imagegen/_datasets/panties/tiles --overlays .../overlays
+
+**The trap this avoids.** Masks are seeded by the existing detector, so on an image it FAILS
+on there are no seeds. Under the default `--unseeded negative` those tiles would be exported
+as empty labels — asserting the target is background, which is precisely the mistake we are
+training to fix. `--unseeded unlabelled` holds them out of export until a human labels them.
+
+Note the pipeline cannot tell "the detector missed it" from "this tile genuinely has none" —
+in a 4-tile split of a full-body render the head-and-shoulders tile really is empty. Only a
+human can resolve that, which is what click-to-annotate is for.
+
+`--append` never overwrites `approved` / `rejected` / `manual`, and a re-run that finds
+nothing leaves an existing tile alone (otherwise a settled `negative` silently becomes
+`unlabelled` just because a later run used a different `--unseeded`).
+
+## Click-to-annotate (samd)
+
+`samd.py` is a small SAM point-prompt service, run by **`forge-samd.service` on ai-epyc**
+(`systemctl status forge-samd`), listening on :8791. The AI-Lab backend proxies to it from
+CT152, since SAM needs the GPU and the backend has none.
+
+In Dataset Review: **click the target** to get a polygon, shift+click to subtract, `S` saves.
+Saved masks are marked `manual` so `--append` will not overwrite them.
+
+The ViT encode is ~all of SAM's cost, so the encoder output is cached per tile: measured
+**1.99 s for the first click on a tile, 0.099 s for the next** — 20x, and the difference
+between usable and unusable.

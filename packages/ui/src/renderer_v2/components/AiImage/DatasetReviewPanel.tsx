@@ -1,6 +1,6 @@
 import React, { useEffect, useCallback } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Check, X, RefreshCw, Database, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Check, X, RefreshCw, Database, ChevronLeft, ChevronRight, MousePointerClick, Save, Undo2 } from 'lucide-react'
 import { datasetReviewStore as store, type TileRec } from '../../stores/DatasetReviewStore'
 import styles from './DatasetReview.module.scss'
 
@@ -23,6 +23,7 @@ export const DatasetReviewPanel: React.FC = observer(() => {
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
     if (e.key === 'a' || e.key === 'A') { void store.decideCurrent('approved'); e.preventDefault() }
     else if (e.key === 'r' || e.key === 'R') { void store.decideCurrent('rejected'); e.preventDefault() }
+    else if (e.key === 's' || e.key === 'S') { void store.saveDraft(); e.preventDefault() }
     else if (e.key === 'ArrowRight') { store.move(1); e.preventDefault() }
     else if (e.key === 'ArrowLeft') { store.move(-1); e.preventDefault() }
   }, [])
@@ -84,7 +85,30 @@ export const DatasetReviewPanel: React.FC = observer(() => {
                 <span className={styles.pos}>{store.cursor + 1} / {store.tiles.length}</span>
                 <button className={styles.iconBtn} onClick={() => store.move(1)}><ChevronRight size={13} /></button>
               </div>
-              <img className={styles.big} src={store.imgUrl(cur)} alt="" />
+              {/* Click the target to annotate. The overlay shows the seed mask; once you
+                  click, the draft polygon from SAM is drawn on top so you can judge it
+                  before saving. Shift+click subtracts a region. */}
+              <div className={styles.canvasWrap}>
+                <img className={styles.big} src={store.imgUrl(cur, store.points.length ? 'tiles' : 'overlays')} alt=""
+                  onClick={(e) => {
+                    const r = (e.target as HTMLImageElement).getBoundingClientRect()
+                    void store.addPoint((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height,
+                                        e.shiftKey ? 0 : 1)
+                  }} />
+                {!!store.draftPolys.length && (
+                  <svg className={styles.overlaySvg} viewBox="0 0 1 1" preserveAspectRatio="none">
+                    {store.draftPolys.map((p, i) => (
+                      <polygon key={i} points={p.pts.map(([x, y]) => `${x},${y}`).join(' ')}
+                        className={styles.draftPoly} />
+                    ))}
+                  </svg>
+                )}
+                {store.points.map((p, i) => (
+                  <span key={i} className={`${styles.dot} ${p.label ? '' : styles.dotNeg}`}
+                    style={{ left: `${p.x * 100}%`, top: `${p.y * 100}%` }} />
+                ))}
+                {store.segmenting && <span className={styles.segBadge}>SAM…</span>}
+              </div>
               <div className={styles.meta}>
                 <div className={styles.fname} title={cur.tile}>{cur.tile}</div>
                 <div>{cur.polys} polygon(s){cur.sam != null && <> · SAM {cur.sam.toFixed(2)}</>}</div>
@@ -98,7 +122,23 @@ export const DatasetReviewPanel: React.FC = observer(() => {
                   <X size={13} /> Reject <kbd>R</kbd>
                 </button>
               </div>
+              {(store.draftPolys.length > 0 || store.points.length > 0) && (
+                <div className={styles.actions}>
+                  <button className={`${styles.btn} ${styles.btnOk}`} disabled={!store.draftPolys.length}
+                    onClick={() => void store.saveDraft()}>
+                    <Save size={13} /> Save mask <kbd>S</kbd>
+                  </button>
+                  <button className={styles.btn} onClick={() => store.clearDraft()}>
+                    <Undo2 size={13} /> Clear
+                  </button>
+                </div>
+              )}
               <div className={styles.hint}>
+                <MousePointerClick size={11} /> <b>Click the target</b> to draw a mask with SAM —
+                that is how a tile the detector MISSED gets labelled. Shift+click removes a region.
+                Saving marks it <code>manual</code>, which <code>annotate --append</code> will not
+                overwrite.
+                <br />
                 <kbd>A</kbd> approve · <kbd>R</kbd> reject · <kbd>←</kbd><kbd>→</kbd> move.
                 Decisions save immediately. Only tiles WITH a mask need a verdict — negatives
                 are already valid backgrounds and export as empty label files.

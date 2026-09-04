@@ -62,6 +62,18 @@ def png_text(p):
 
 
 def cmd_scan(a):
+    if a.paths_from:
+        # Explicit list: the caller already knows these are wanted (e.g. "images the current
+        # detector fails on"), so the prompt filter would only get in the way.
+        items = []
+        for line in open(a.paths_from):
+            p = line.strip()
+            if not p or not os.path.exists(p):
+                continue
+            wh = png_size(p) or (0, 0)
+            items.append({"path": p, "w": wh[0], "h": wh[1]})
+        _finish(a, items)
+        return
     inc = re.compile("|".join(r"\b%s\b" % re.escape(t) for t in a.terms), re.I)
     exc = re.compile("|".join(r"\b%s\b" % re.escape(t) for t in a.exclude), re.I) if a.exclude else None
     items, seen_hash = [], set()
@@ -95,8 +107,22 @@ def cmd_scan(a):
                 break
         if a.limit and len(items) >= a.limit:
             break
-    json.dump({"terms": a.terms, "items": items}, open(a.out, "w"), indent=1)
-    print("scanned -> %d candidates written to %s" % (len(items), a.out))
+    _finish(a, items)
+
+
+def _finish(a, items):
+    if a.append and os.path.exists(a.out):
+        man = json.load(open(a.out))
+        have = {i["path"] for i in man.get("items", [])}
+        fresh = [i for i in items if i["path"] not in have]
+        man["items"] = (man.get("items") or []) + fresh
+        man["terms"] = sorted(set((man.get("terms") or []) + a.terms))
+        json.dump(man, open(a.out, "w"), indent=1)
+        print("scanned -> %d new candidates appended (%d already present); %d total"
+              % (len(fresh), len(items) - len(fresh), len(man["items"])))
+    else:
+        json.dump({"terms": a.terms, "items": items}, open(a.out, "w"), indent=1)
+        print("scanned -> %d candidates written to %s" % (len(items), a.out))
 
 
 # ── annotation ──────────────────────────────────────────────────────────────
@@ -191,8 +217,15 @@ def cmd_annotate(a):
             name = "%s_t%d.png" % (re.sub(r"[^A-Za-z0-9_.-]", "_", stem), ti)
             tile.save(os.path.join(a.tiles, name))
             for q in polys: q.pop("_box", None)
+            # An image only reaches here because its PROMPT names the target, so a tile with
+            # no seed is ambiguous: either the target is not in THIS tile (a head-and-
+            # shoulders crop of a full body legitimately has none), or the detector missed
+            # it. Calling that "negative" would teach the new model that the target is
+            # background — the precise failure we are training to fix. `--unseeded` decides:
+            #   negative  (default) trust the seed detector, keep it as a background
+            #   unlabelled          hold it out of export until a human annotates or clears it
             rec = {"tile": name, "src": it["path"], "y": y, "polys": polys,
-                   "status": "auto" if polys else "negative"}
+                   "status": "auto" if polys else a.unseeded}
             out.append(rec)
             if polys:                                    # overlay so a human can reject it
                 ov = arr.copy()
@@ -204,17 +237,40 @@ def cmd_annotate(a):
                 Image.fromarray(ov).save(os.path.join(a.overlays, name))
         if (idx + 1) % 25 == 0:
             print("  %d/%d source images" % (idx + 1, len(man["items"])), flush=True)
-    man["tiles"] = out
+    if a.append:
+        prior = {t["tile"]: t for t in man.get("tiles", [])}
+        for r in out:
+            old_rec = prior.get(r["tile"])
+            if old_rec is not None:
+                # never clobber a human verdict with a fresh machine guess
+                if old_rec["status"] in ("approved", "rejected", "manual"):
+                    continue
+                # A re-run that found NOTHING has nothing new to say about a tile we already
+                # have. Overwriting here is how a settled `negative` silently became
+                # `unlabelled` merely because a later run used --unseeded unlabelled.
+                if not r["polys"]:
+                    continue
+            prior[r["tile"]] = r
+        man["tiles"] = list(prior.values())
+    else:
+        man["tiles"] = out
     json.dump(man, open(a.manifest, "w"), indent=1)
     pos = sum(1 for r in out if r["polys"])
-    print("annotated: %d tiles, %d with a mask, %d negatives" % (len(out), pos, len(out) - pos))
+    print("annotated: %d tiles, %d with a mask, %d without%s"
+          % (len(out), pos, len(out) - pos, "  (merged into existing manifest)" if a.append else ""))
 
 
 # ── export ──────────────────────────────────────────────────────────────────
 def cmd_export(a):
     import shutil
     man = json.load(open(a.manifest))
-    tiles = [t for t in man.get("tiles", []) if t["status"] != "rejected"]
+    # `unlabelled` = "we do not know what is in here". Exporting it as an empty label would
+    # assert it is background, which is a lie the model would learn.
+    SKIP = {"rejected", "unlabelled"}
+    tiles = [t for t in man.get("tiles", []) if t["status"] not in SKIP]
+    held = sum(1 for t in man.get("tiles", []) if t["status"] == "unlabelled")
+    if held:
+        print("  holding back %d unlabelled tile(s) — annotate or clear them first" % held)
     if not tiles:
         sys.exit("no tiles — run annotate first")
     # split by SOURCE image so near-identical tiles cannot straddle train/val
@@ -265,9 +321,11 @@ def main():
 
     s = sp.add_parser("scan");      s.set_defaults(fn=cmd_scan)
     s.add_argument("--corpus", required=True); s.add_argument("--out", required=True)
-    s.add_argument("--terms", nargs="+", required=True); s.add_argument("--exclude", nargs="*", default=[])
+    s.add_argument("--terms", nargs="+", default=[]); s.add_argument("--exclude", nargs="*", default=[])
     s.add_argument("--min-width", type=int, default=0); s.add_argument("--min-height", type=int, default=0)
     s.add_argument("--limit", type=int, default=0)
+    s.add_argument("--append", action="store_true", help="add to an existing manifest instead of replacing it")
+    s.add_argument("--paths-from", help="file of image paths, one per line — bypasses the corpus walk")
 
     a_ = sp.add_parser("annotate"); a_.set_defaults(fn=cmd_annotate)
     a_.add_argument("--manifest", required=True); a_.add_argument("--detector", required=True)
@@ -275,6 +333,9 @@ def main():
     a_.add_argument("--tiles", required=True); a_.add_argument("--overlays", required=True)
     a_.add_argument("--width", type=int, default=768); a_.add_argument("--imgsz", type=int, default=640)
     a_.add_argument("--conf", type=float, default=0.15); a_.add_argument("--device", type=int, default=4)
+    a_.add_argument("--append", action="store_true", help="merge into an existing manifest instead of replacing it")
+    a_.add_argument("--unseeded", choices=["negative","unlabelled"], default="negative",
+                    help="status for a tile with no seed detection")
     a_.add_argument("--min-area", type=float, default=400); a_.add_argument("--simplify", type=float, default=0.004)
 
     e = sp.add_parser("export");    e.set_defaults(fn=cmd_export)

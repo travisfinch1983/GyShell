@@ -34,3 +34,10 @@ kbd { font-family: ui-monospace, monospace; font-size: 10px; padding: 1px 5px; b
 .empty { padding: 26px; text-align: center; color: var(--fg-faint); font-size: 12px; grid-column: 1/-1; }
 .spin { animation: dr-spin .9s linear infinite; }
 @keyframes dr-spin { to { transform: rotate(360deg); } }
+.canvasWrap { position: relative; line-height: 0; }
+.canvasWrap .big { cursor: crosshair; }
+.overlaySvg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.draftPoly { fill: color-mix(in srgb, var(--accent) 30%, transparent); stroke: var(--accent); stroke-width: 0.004; }
+.dot { position: absolute; width: 11px; height: 11px; margin: -6px 0 0 -6px; border-radius: 50%; background: var(--accent); border: 2px solid #fff; pointer-events: none; box-shadow: 0 0 3px rgba(0,0,0,.6); }
+.dotNeg { background: var(--danger); }
+.segBadge { position: absolute; top: 7px; left: 7px; font-size: 10px; padding: 2px 7px; border-radius: 5px; background: rgba(0,0,0,.7); color: #fff; }
