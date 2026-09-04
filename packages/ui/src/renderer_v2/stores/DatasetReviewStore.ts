@@ -158,7 +158,23 @@ export class DatasetReviewStore {
         this.counts = d.statusCounts || this.counts
       })
       this.clearDraft()
-      this.move(1)
+    } catch (e: any) { runInAction(() => { this.error = String(e?.message || e) }) }
+  }
+
+  /** Clear a verdict and put the tile back in the queue — an accidental keypress must be
+   *  recoverable without hand-editing JSON on disk. */
+  async resetCurrent() {
+    const c = this.current
+    if (!c) return
+    const back: TileRec['status'] = c.polys > 0 ? 'auto' : 'unlabelled'
+    try {
+      const r = await fetch(`/api/dataset/${encodeURIComponent(this.active)}/status`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tiles: [c.tile], status: back }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d?.error || 'reset failed')
+      runInAction(() => { c.status = back; this.counts = d.status || this.counts })
     } catch (e: any) { runInAction(() => { this.error = String(e?.message || e) }) }
   }
 

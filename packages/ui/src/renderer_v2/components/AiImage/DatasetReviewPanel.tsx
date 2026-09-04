@@ -5,16 +5,18 @@ import { datasetReviewStore as store, type TileRec } from '../../stores/DatasetR
 import styles from './DatasetReview.module.scss'
 
 const Thumb: React.FC<{ t: TileRec; i: number }> = observer(({ t, i }) => (
-  <button
+  <div
+    role="button" tabIndex={0}
     className={`${styles.cell} ${i === store.cursor ? styles.cellCursor : ''} ${styles['s_' + t.status] || ''}`}
     onClick={() => { store.cursor = i }}
+    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { store.cursor = i; e.preventDefault() } }}
     title={`${t.tile}\n${t.polys} polygon(s)${t.sam != null ? ` · SAM ${t.sam.toFixed(2)}` : ''}`}>
     <img className={styles.thumb} src={store.imgUrl(t)} loading="lazy" alt="" />
     <span className={styles.cellTag}>{
       t.status === 'auto' ? '?' : t.status === 'approved' ? '✓'
       : t.status === 'manual' ? '✎' : t.status === 'unlabelled' ? '·' : '✕'
     }</span>
-  </button>
+  </div>
 ))
 
 export const DatasetReviewPanel: React.FC = observer(() => {
@@ -24,6 +26,10 @@ export const DatasetReviewPanel: React.FC = observer(() => {
   const onKey = useCallback((e: KeyboardEvent) => {
     const tag = (e.target as HTMLElement)?.tagName
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+    // A MODIFIED key belongs to the browser, not to us. Without this, Ctrl+Shift+R — hard
+    // refresh — matched the bare 'r' shortcut and silently REJECTED whatever tile was open,
+    // every time the user tried to reload the page.
+    if (e.ctrlKey || e.metaKey || e.altKey) return
     if (e.key === 'a' || e.key === 'A') { void store.decideCurrent('approved'); e.preventDefault() }
     else if (e.key === 'r' || e.key === 'R') { void store.decideCurrent('rejected'); e.preventDefault() }
     else if (e.key === 's' || e.key === 'S') { void store.saveDraft(); e.preventDefault() }
@@ -125,6 +131,12 @@ export const DatasetReviewPanel: React.FC = observer(() => {
                 <button className={`${styles.btn} ${styles.btnBad}`} onClick={() => void store.decideCurrent('rejected')}>
                   <X size={13} /> Reject <kbd>R</kbd>
                 </button>
+                {cur.status !== 'auto' && (
+                  <button className={styles.btn} title="Clear this verdict and put the tile back in the review queue"
+                    onClick={() => void store.resetCurrent()}>
+                    <Undo2 size={13} /> Undo
+                  </button>
+                )}
               </div>
               {(store.draftPolys.length > 0 || store.points.length > 0) && (
                 <div className={styles.actions}>
@@ -138,10 +150,10 @@ export const DatasetReviewPanel: React.FC = observer(() => {
                 </div>
               )}
               <div className={styles.hint}>
-                <MousePointerClick size={11} /> <b>Click the target</b> to draw a mask with SAM —
-                that is how a tile the detector MISSED gets labelled. Shift+click removes a region.
-                Saving marks it <code>manual</code>, which <code>annotate --append</code> will not
-                overwrite.
+                <MousePointerClick size={11} /> <b>Click the target</b> to draw a mask with SAM,
+                then <b>Save mask</b>. That is the whole action — a saved mask counts as reviewed
+                (<code>manual</code>) and exports; you do <b>not</b> also need Approve. Approve is
+                only for accepting a seed mask unchanged. Shift+click removes a region.
                 <br />
                 <kbd>A</kbd> approve · <kbd>R</kbd> reject · <kbd>←</kbd><kbd>→</kbd> move.
                 Decisions save immediately. Only tiles WITH a mask need a verdict — negatives
