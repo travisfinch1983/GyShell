@@ -61,5 +61,13 @@ Verified end to end on 25 source images: 85 tiles / 41 masked / 44 negatives, ex
 trained by ultralytics with **0 corrupt, 38 backgrounds recognised, 0 duplicate labels**.
 The 3-epoch smoke run's metrics are meaningless and were only a format check.
 
-Not yet built: a review UI. Today, rejecting a bad auto-annotation means editing `status` in
-the manifest by hand.
+## Reviewing
+
+**AI-Lab -> AI · Image Gen -> Dataset Review.** Put the dataset under
+`/imagegen/_datasets/<name>/{manifest.json,tiles,overlays}` (that path is
+`/ai-assets/imagegen/_datasets/<name>` from the AI-Lab backend — same files, no transfer,
+which is why forge can run on ai-epyc for the GPU while the UI reads from CT152).
+
+`A` approves, `R` rejects, arrows move, decisions POST immediately. Only tiles carrying a
+mask need a verdict; negatives are already valid backgrounds and export as empty labels, so
+the API refuses to "approve" one. `export` skips anything marked `rejected`.

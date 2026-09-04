@@ -12,6 +12,7 @@ import { LlmLaunchPanel } from '../AiLlm/LlmLaunchPanel'
 import { QuantizationPanel } from '../AiLlm/QuantizationPanel'
 import { ServiceLaunchPanel } from './ServiceLaunchPanel'
 import { TrainingImagesPanel } from '../AiImage/TrainingImagesPanel'
+import { DatasetReviewPanel } from '../AiImage/DatasetReviewPanel'
 import { TtsTestPanel } from '../AiTts/TtsTestPanel'
 import { VoiceManagerPanel } from '../AiTts/VoiceManagerPanel'
 import { ttsLaunchStore, imageLaunchStore, trainingLaunchStore } from '../../stores/ServiceLaunchStore'
@@ -56,6 +57,7 @@ export const AiImagePanel: React.FC = observer(() => (
     { id: 'launch', label: 'Imagegen Launch', render: () => <ServiceLaunchPanel store={imageLaunchStore} emptyLabel="image-generation" /> },
     { id: 'training', label: 'Training Launch', render: () => <ServiceLaunchPanel store={trainingLaunchStore} emptyLabel="training" /> },
     { id: 'training-images', label: 'Training Images', render: () => <TrainingImagesPanel /> },
+    { id: 'dataset-review', label: 'Dataset Review', render: () => <DatasetReviewPanel /> },
     { id: 'providers', label: 'Provider Install', render: () => <ProviderInstall categories={['image', 'training']} /> },
   ]} />
 ))

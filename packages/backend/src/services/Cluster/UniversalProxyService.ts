@@ -139,6 +139,7 @@ export class UniversalProxyService {
     // @ts-expect-error — native CivitAI downloader (runs curl inside CT 152, writes to local /ai-assets)
     const { createCivitaiRouter } = await import('./proxy/civitai.js')
     const { createFilesRouter } = await import('./proxy/files.js')
+    const { createDatasetRouter } = await import('./proxy/dataset.js')
     const { createFlowchartsRouter } = await import('./flowchartsHttp')
     const { createPagesRouter } = await import('./pagesHttp')
     const { createReportsRouter } = await import('./reportsHttp')
@@ -266,6 +267,9 @@ export class UniversalProxyService {
     // Bulk Renamer (Files tab -> Bulk Renamer sub-tab). FileBrowser Quantum is a binary we
     // cannot extend, so mass renaming is served here instead.
     app.use('/api/files', express.json({ limit: '10mb' }), createFilesRouter({ dataDir: this.dataDir }))
+    // Dataset Review (AI · Image Gen -> Dataset Review): serves dataset-forge output from
+    // shared storage for accept/reject before export.
+    app.use('/api/dataset', express.json({ limit: '2mb' }), createDatasetRouter())
     // RAG routes (/api/ai/rag/*, /api/ai/docrag/*) registered BEFORE the /api/ai router so the specific
     // codebase/document-RAG paths match first.
     const { registerRagRoutes } = await import('./proxy/rag.js')
