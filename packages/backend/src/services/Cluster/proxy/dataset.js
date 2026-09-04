@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { readdirSync, existsSync, readFileSync, writeFileSync, statSync, renameSync, createReadStream } from 'fs';
+import sharp from 'sharp';
+import { readdirSync, existsSync, readFileSync, writeFileSync, statSync, renameSync, createReadStream, mkdirSync, unlinkSync } from 'fs';
 import { join, basename, extname } from 'path';
 
 /**
@@ -29,6 +30,36 @@ function saveMan(dir, man) {
 }
 
 const tally = (tiles) => tiles.reduce((a, t) => ((a[t.status] = (a[t.status] || 0) + 1), a), {});
+
+
+/**
+ * Redraw <overlays>/<tile> from the tile plus its polygons.
+ *
+ * Without this the manifest holds the corrected mask while the overlay PNG still shows the
+ * SEED mask — so a hand-corrected tile looks unchanged when you come back to it, which is
+ * exactly what it looked like: "saved, but nothing happened".
+ */
+async function redrawOverlay(dir, tile, polys) {
+  const src = join(dir, 'tiles', tile);
+  if (!existsSync(src)) return false;
+  const { width = 768, height = 768 } = await sharp(src).metadata();
+  if (!polys.length) {
+    // no polygons left -> no overlay; a stale one would keep showing a mask that is gone
+    const p = join(dir, 'overlays', tile);
+    if (existsSync(p)) { try { unlinkSync(p); } catch { /* best effort */ } }
+    return true;
+  }
+  const shapes = polys.map((p) => {
+    const pts = p.pts.map(([x, y]) => `${(x * width).toFixed(1)},${(y * height).toFixed(1)}`).join(' ');
+    return `<polygon points="${pts}" fill="#00ff00" fill-opacity="0.25" stroke="#00ff00" stroke-width="3"/>`;
+  }).join('');
+  const svg = Buffer.from(`<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">${shapes}</svg>`);
+  mkdirSync(join(dir, 'overlays'), { recursive: true });
+  const tmp = join(dir, 'overlays', tile + '.tmp.png');
+  await sharp(src).composite([{ input: svg }]).png().toFile(tmp);
+  renameSync(tmp, join(dir, 'overlays', tile));
+  return true;
+}
 
 export function createDatasetRouter() {
   const router = Router();
@@ -72,7 +103,7 @@ export function createDatasetRouter() {
       total, offset, limit, status: tally(man.tiles || []),
       tiles: tiles.slice(offset, offset + limit).map((t) => ({
         tile: t.tile, status: t.status, polys: t.polys?.length || 0,
-        sam: t.polys?.[0]?.sam_score ?? null, src: t.src, y: t.y,
+        sam: t.polys?.[0]?.sam_score ?? null, src: t.src, y: t.y, rev: t.rev ?? 0,
       })),
     });
   });
@@ -162,8 +193,13 @@ export function createDatasetRouter() {
     t.polys = polys.map((p) => ({ pts: p.pts, sam_score: p.score ?? null, manual: true }));
     // "manual" so a later `annotate --append` will not overwrite hand-drawn work
     t.status = polys.length ? 'manual' : 'negative';
+    // rev busts the browser cache — the overlay is served with max-age=3600, so without a
+    // changing URL the corrected mask would stay invisible even once redrawn
+    t.rev = Date.now();
     saveMan(dir, man);
-    res.json({ ok: true, tile, polys: t.polys.length, status: t.status, statusCounts: tally(man.tiles || []) });
+    redrawOverlay(dir, tile, t.polys).catch(() => {});
+    res.json({ ok: true, tile, polys: t.polys.length, status: t.status, rev: t.rev,
+               statusCounts: tally(man.tiles || []) });
   });
 
   // ── ingest from the Training Images browser ────────────────────────────

@@ -9,8 +9,12 @@ import { makeAutoObservable, runInAction } from 'mobx'
  * than one that is slightly chattier.
  */
 export interface TileRec {
-  tile: string; status: 'auto' | 'approved' | 'rejected' | 'negative'
-  polys: number; sam: number | null; src: string; y: number
+  tile: string
+  // 'manual'    = a hand-corrected mask (click-to-annotate); decided and POSITIVE
+  // 'unlabelled'= the seed detector found nothing on an expected-positive image;
+  //               held out of export rather than asserted to be background
+  status: 'auto' | 'approved' | 'rejected' | 'negative' | 'manual' | 'unlabelled'
+  polys: number; sam: number | null; src: string; y: number; rev?: number
 }
 export interface SetRec {
   name: string; tiles: number; sources: number; polygons: number
@@ -37,7 +41,10 @@ export class DatasetReviewStore {
   get reviewed() { return (this.counts.approved || 0) + (this.counts.rejected || 0) }
   get pending() { return this.counts.auto || 0 }
   imgUrl(t: TileRec, kind: 'overlays' | 'tiles' = 'overlays') {
-    return `/api/dataset/${encodeURIComponent(this.active)}/image/${kind}/${encodeURIComponent(t.tile)}`
+    // ?v=rev busts the browser cache after a mask is redrawn; without it the corrected
+    // overlay stays invisible behind the max-age=3600 copy.
+    const v = t.rev ? `?v=${t.rev}` : ''
+    return `/api/dataset/${encodeURIComponent(this.active)}/image/${kind}/${encodeURIComponent(t.tile)}${v}`
   }
 
   async loadSets() {
@@ -147,7 +154,7 @@ export class DatasetReviewStore {
       const d = await r.json()
       if (!r.ok) throw new Error(d?.error || 'save failed')
       runInAction(() => {
-        c.status = d.status; c.polys = d.polys
+        c.status = d.status; c.polys = d.polys; c.rev = d.rev
         this.counts = d.statusCounts || this.counts
       })
       this.clearDraft()

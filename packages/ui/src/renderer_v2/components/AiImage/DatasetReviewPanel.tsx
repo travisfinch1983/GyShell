@@ -10,7 +10,10 @@ const Thumb: React.FC<{ t: TileRec; i: number }> = observer(({ t, i }) => (
     onClick={() => { store.cursor = i }}
     title={`${t.tile}\n${t.polys} polygon(s)${t.sam != null ? ` · SAM ${t.sam.toFixed(2)}` : ''}`}>
     <img className={styles.thumb} src={store.imgUrl(t)} loading="lazy" alt="" />
-    <span className={styles.cellTag}>{t.status === 'auto' ? '?' : t.status === 'approved' ? '✓' : '✕'}</span>
+    <span className={styles.cellTag}>{
+      t.status === 'auto' ? '?' : t.status === 'approved' ? '✓'
+      : t.status === 'manual' ? '✎' : t.status === 'unlabelled' ? '·' : '✕'
+    }</span>
   </button>
 ))
 
@@ -113,6 +116,7 @@ export const DatasetReviewPanel: React.FC = observer(() => {
                 <div className={styles.fname} title={cur.tile}>{cur.tile}</div>
                 <div>{cur.polys} polygon(s){cur.sam != null && <> · SAM {cur.sam.toFixed(2)}</>}</div>
                 <div className={styles.dim} title={cur.src}>from {cur.src.split('/').pop()} @ y={cur.y}</div>
+                <div>status: <b>{cur.status}</b>{cur.status === 'manual' && ' — hand-corrected mask saved'}</div>
               </div>
               <div className={styles.actions}>
                 <button className={`${styles.btn} ${styles.btnOk}`} onClick={() => void store.decideCurrent('approved')}>
