@@ -42,7 +42,7 @@ const OUT_INFO: Record<OutKind, { label: string; ext: string; blurb: string }> =
  * the browser's cwd. The backend already accepts any path under the imagegen root, so this
  * is purely about not assuming the training-images store owns the location.
  */
-export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[]; path?: string; label?: string }> = ({ onClose, files, path, label }) => {
+export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[]; path?: string; label?: string; allOfFolder?: boolean }> = ({ onClose, files, path, label, allOfFolder }) => {
   const [taggers, setTaggers] = useState<any[]>([])
   const [outKind, setOutKind] = useState<OutKind>('tags')
   const [model, setModel] = useState('')
@@ -151,7 +151,15 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
       let jobs: Array<{ sub: string; names?: string[] }>
       if (path) {
         // An explicit path is a single flat directory — no sections, no dir-qualified keys.
-        jobs = [{ sub: '', names: files?.length ? files : undefined }]
+        const CHUNK = 200
+        if (!files?.length || allOfFolder) {
+          jobs = [{ sub: '' }]                       // let the tagger walk the directory
+        } else {
+          jobs = []
+          for (let i = 0; i < files.length; i += CHUNK) {
+            jobs.push({ sub: '', names: files.slice(i, i + CHUNK) })
+          }
+        }
       } else if (files?.length) {
         jobs = store.splitKeys(files)
       } else if (store.sections.length) {

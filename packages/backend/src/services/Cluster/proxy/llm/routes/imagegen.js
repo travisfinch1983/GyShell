@@ -768,9 +768,11 @@ export function createImagegenRouter(config) {
     if (SSH_KEY) sshArgs.push('-i', SSH_KEY);
     sshArgs.push(TAGGER_SSH, cmd);
     const child = spawn('ssh', sshArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let ebuf = '', tail = '';
+    let ebuf = '', tail = '', raw = '';
     child.stderr.on('data', (d) => {
-      ebuf += d.toString();
+      const chunk = d.toString();
+      raw = (raw + chunk).slice(-4000);      // keep the tail for diagnosis, bounded
+      ebuf += chunk;
       let i;
       while ((i = ebuf.indexOf('\n')) >= 0) {
         const line = ebuf.slice(0, i).trim(); ebuf = ebuf.slice(i + 1);
@@ -793,8 +795,16 @@ export function createImagegenRouter(config) {
         taskReport({ id: taskId, state: 'done', done: j.done, total: j.total,
                      detail: `wrote ${j.wrote}, skipped ${j.skipped}, errors ${j.errors}` + (j.provider ? ` · ran on ${j.provider}` : '') });
       } else {
-        j.state = 'error'; j.error = `tagger exited ${code}`;
-        taskReport({ id: taskId, state: 'failed', detail: j.error });
+        // Say WHAT failed. ssh exits 255 for its own failures, and with the raw stderr
+        // dropped the notification read "tagger exited 255" with no cause recoverable
+        // anywhere — the tagger may never have run at all.
+        const why = raw.trim().split('\n').filter((l) => !l.startsWith('{')).slice(-4).join(' | ');
+        j.state = 'error';
+        j.error = `tagger exited ${code}` + (code === 255 ? ' (ssh transport failure — the tagger may not have run)' : '');
+        j.stderr = why || '(no stderr captured)';
+        console.error('[auto-caption] job %s exited %s; cmd %d bytes; stderr: %s',
+                      jobId, code, cmd.length, j.stderr);
+        taskReport({ id: taskId, state: 'failed', detail: `${j.error} — ${j.stderr}`.slice(0, 300) });
       }
       setTimeout(() => captionJobs.delete(jobId), 120000);
     });

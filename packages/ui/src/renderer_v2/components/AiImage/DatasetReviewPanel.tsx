@@ -116,6 +116,7 @@ export const DatasetReviewPanel: React.FC = observer(() => {
           onClose={() => setCapOpen(false)}
           path={`_datasets/${store.active}/tiles`}
           files={store.tiles.map((t) => t.tile)}
+          allOfFolder={store.filter === '' && store.tiles.length === store.total}
           label={`${store.tiles.length} tile${store.tiles.length === 1 ? '' : 's'} in ${store.active}`}
         />
       )}
