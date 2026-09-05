@@ -117,7 +117,12 @@ export function createDatasetRouter() {
     if (basename(file) !== file || !['.png', '.jpg', '.webp'].includes(extname(file).toLowerCase())) {
       return res.status(400).end();                       // no traversal, no arbitrary reads
     }
-    const p = join(dir, kind, file);
+    let p = join(dir, kind, file);
+    // Only tiles WITH a mask get an overlay written, so negatives and unlabelled tiles have
+    // none — and the grid asked for the overlay unconditionally, producing a broken-image
+    // icon for 203 of 277 tiles. Fall back to the raw tile: the caller wants to SEE the
+    // image, and "no overlay" is a legitimate state, not an error.
+    if (kind === 'overlays' && !existsSync(p)) p = join(dir, 'tiles', file);
     if (!existsSync(p)) return res.status(404).end();
     res.setHeader('Content-Type', 'image/' + extname(file).slice(1).replace('jpg', 'jpeg'));
     res.setHeader('Cache-Control', 'private, max-age=3600');
@@ -232,6 +237,49 @@ export function createDatasetRouter() {
       const r = await fetch(SAMD + '/job/' + encodeURIComponent(req.params.id), { signal: AbortSignal.timeout(15000) });
       res.status(r.status).json(await r.json());
     } catch (e) { res.status(502).json({ error: String(e.message) }); }
+  });
+
+  /**
+   * Remove tiles from a dataset — for source images that are warped or otherwise unfit to
+   * train on. Deletes the tile and overlay files as well as the manifest records, and drops
+   * a source from `items` once none of its tiles remain, so a later `annotate --append`
+   * does not silently re-add it.
+   */
+  router.post('/:name/remove', (req, res) => {
+    const dir = setDir(req.params.name);
+    if (!dir || !existsSync(manPath(dir))) return res.status(404).json({ error: 'no such dataset' });
+    const names = new Set((req.body?.tiles || []).filter((t) => typeof t === 'string' && basename(t) === t));
+    if (!names.size) return res.status(400).json({ error: 'no tiles given' });
+    const man = loadMan(dir);
+    const all = man.tiles || [];
+
+    // bySource: one bad render produces 4 bad tiles; removing them one at a time is busywork
+    let doomed = all.filter((t) => names.has(t.tile));
+    if (req.body?.bySource) {
+      const srcs = new Set(doomed.map((t) => t.src));
+      doomed = all.filter((t) => srcs.has(t.src));
+    }
+    const doomedNames = new Set(doomed.map((t) => t.tile));
+    man.tiles = all.filter((t) => !doomedNames.has(t.tile));
+
+    for (const t of doomed) {
+      for (const sub of ['tiles', 'overlays']) {
+        const f = join(dir, sub, t.tile);
+        if (existsSync(f)) { try { unlinkSync(f); } catch { /* best effort; the record is gone regardless */ } }
+      }
+    }
+    // Drop ONLY the sources whose tiles we just removed, and only once none remain.
+    // Filtering `items` by "has any tile" instead purged 32 sources that were merely
+    // PENDING — added to the dataset but not yet annotated — silently discarding queued
+    // work that had nothing to do with the removal.
+    const doomedSrcs = new Set(doomed.map((t) => t.src));
+    const remaining = new Set(man.tiles.map((t) => t.src));
+    const before = (man.items || []).length;
+    man.items = (man.items || []).filter((i) => !(doomedSrcs.has(i.path) && !remaining.has(i.path)));
+    saveMan(dir, man);
+    res.json({ ok: true, removedTiles: doomed.length,
+               removedSources: before - man.items.length,
+               statusCounts: tally(man.tiles) });
   });
 
   return router;

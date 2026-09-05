@@ -29,7 +29,11 @@ export class DatasetReviewStore {
   offset = 0
   limit = 120
   counts: Record<string, number> = {}
-  filter: string = 'auto'
+  // 'auto'       = a seed mask to verify
+  // 'unlabelled' = no mask at all; needs one drawn. BOTH need a human, so the default
+  //                queue is both — filtering to 'auto' alone hid 160 freshly added
+  //                tiles and made an ingest look like it had added nothing.
+  filter: string = 'auto,unlabelled'
   loading = false
   error = ''
   cursor = 0
@@ -66,8 +70,6 @@ export class DatasetReviewStore {
     try {
       const q = new URLSearchParams({ offset: String(this.offset), limit: String(this.limit) })
       if (this.filter) q.set('status', this.filter)
-      // only tiles that actually carry a mask are reviewable; negatives need no decision
-      if (this.filter === 'auto') q.set('masked', 'true')
       const r = await fetch(`/api/dataset/${encodeURIComponent(this.active)}/tiles?${q}`)
       const d = await r.json()
       if (!r.ok) throw new Error(d?.error || 'load failed')
@@ -175,6 +177,22 @@ export class DatasetReviewStore {
       const d = await r.json()
       if (!r.ok) throw new Error(d?.error || 'reset failed')
       runInAction(() => { c.status = back; this.counts = d.status || this.counts })
+    } catch (e: any) { runInAction(() => { this.error = String(e?.message || e) }) }
+  }
+
+  /** Drop a tile — or its whole source image — from the dataset. */
+  async removeCurrent(bySource: boolean) {
+    const c = this.current
+    if (!c) return
+    try {
+      const r = await fetch(`/api/dataset/${encodeURIComponent(this.active)}/remove`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tiles: [c.tile], bySource }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d?.error || 'remove failed')
+      runInAction(() => { this.counts = d.statusCounts || this.counts })
+      await this.loadTiles()
     } catch (e: any) { runInAction(() => { this.error = String(e?.message || e) }) }
   }
 

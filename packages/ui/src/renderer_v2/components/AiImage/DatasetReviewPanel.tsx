@@ -1,7 +1,8 @@
 import React, { useEffect, useCallback } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Check, X, RefreshCw, Database, ChevronLeft, ChevronRight, MousePointerClick, Save, Undo2 } from 'lucide-react'
+import { Check, X, RefreshCw, Database, ChevronLeft, ChevronRight, MousePointerClick, Save, Undo2, Trash2 } from 'lucide-react'
 import { datasetReviewStore as store, type TileRec } from '../../stores/DatasetReviewStore'
+import { confirmStore } from '../../stores/confirmStore'
 import styles from './DatasetReview.module.scss'
 
 const Thumb: React.FC<{ t: TileRec; i: number }> = observer(({ t, i }) => (
@@ -53,7 +54,9 @@ export const DatasetReviewPanel: React.FC = observer(() => {
           {store.sets.map((s) => <option key={s.name} value={s.name}>{s.name} · {s.tiles} tiles</option>)}
         </select>
         <select className={styles.input} value={store.filter} onChange={(e) => store.setFilter(e.target.value)}>
-          <option value="auto">needs review</option>
+          <option value="auto,unlabelled">needs review (all)</option>
+          <option value="auto">seed masks to verify</option>
+          <option value="unlabelled">no mask yet — draw one</option>
           <option value="approved">approved</option>
           <option value="rejected">rejected</option>
           <option value="negative">negatives</option>
@@ -131,7 +134,7 @@ export const DatasetReviewPanel: React.FC = observer(() => {
                 <button className={`${styles.btn} ${styles.btnBad}`} onClick={() => void store.decideCurrent('rejected')}>
                   <X size={13} /> Reject <kbd>R</kbd>
                 </button>
-                {cur.status !== 'auto' && (
+                {cur.status !== 'auto' && cur.status !== 'unlabelled' && (
                   <button className={styles.btn} title="Clear this verdict and put the tile back in the review queue"
                     onClick={() => void store.resetCurrent()}>
                     <Undo2 size={13} /> Undo
@@ -149,6 +152,25 @@ export const DatasetReviewPanel: React.FC = observer(() => {
                   </button>
                 </div>
               )}
+              <div className={styles.actions}>
+                <button className={styles.btn} title="Drop just this tile from the dataset"
+                  onClick={() => void (async () => {
+                    if (await confirmStore.confirm({ title: 'Remove tile',
+                      message: `Remove ${cur.tile} from the dataset? The source image on disk is not touched.`,
+                      confirmText: 'Remove', danger: true })) void store.removeCurrent(false)
+                  })()}>
+                  <Trash2 size={13} /> Remove tile
+                </button>
+                <button className={`${styles.btn} ${styles.btnBad}`}
+                  title="Drop every tile cut from this source image — for a warped or otherwise unusable render"
+                  onClick={() => void (async () => {
+                    if (await confirmStore.confirm({ title: 'Remove image',
+                      message: `Remove EVERY tile cut from ${cur.src.split('/').pop()}? The source image on disk is not touched.`,
+                      confirmText: 'Remove image', danger: true })) void store.removeCurrent(true)
+                  })()}>
+                  <Trash2 size={13} /> Remove image
+                </button>
+              </div>
               <div className={styles.hint}>
                 <MousePointerClick size={11} /> <b>Click the target</b> to draw a mask with SAM,
                 then <b>Save mask</b>. That is the whole action — a saved mask counts as reviewed
