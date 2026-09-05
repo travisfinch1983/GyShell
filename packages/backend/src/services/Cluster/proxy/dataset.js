@@ -166,8 +166,17 @@ export function createDatasetRouter() {
   const SAMD = process.env.FORGE_SAMD || 'http://10.0.0.234:8791';
   // Seed detector for new images. Held here rather than in the UI so a dataset is
   // always seeded by the same model, whoever adds to it.
+  // Seed detector for newly added images. Swapped to our own v4 (92% vs the stock model's
+  // 66% on held-out images) so the seeds need less correcting AND the tiles it CANNOT mask
+  // land as `unlabelled` — a direct readout of where the current model is still blind.
+  //
+  // 🛑 A SEED IS A LABOUR-SAVING DEVICE, NOT GROUND TRUTH. Seeding with the model that will
+  // be trained on the result is self-training: approve a slightly-wrong mask and the error
+  // is baked in and amplified next round. The review step is the only thing preventing that
+  // drift, so seeds from our own model deserve MORE scrutiny than the stock model's, not
+  // less. Override per-request or with FORGE_DETECTOR.
   const DEFAULT_DETECTOR = process.env.FORGE_DETECTOR ||
-    '/imagegen/ultralytics/segm/Panty-detailer-3b-(segm)-(y8)-(segment).pt';
+    '/imagegen/ultralytics/segm/Panties-v4-Travis-(segm)-(y11)-(Segment).pt';
 
   router.post('/:name/segment', async (req, res) => {
     const dir = setDir(req.params.name);

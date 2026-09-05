@@ -123,3 +123,34 @@ path, so a dataset stays a view over the corpus.
 `merge_tiles()` from `forge.py` rather than reimplementing them, so the UI and the CLI cannot
 drift into producing different datasets. New images default to `--unseeded unlabelled` from
 the UI: the whole reason to add images by hand is that the detector fails on them.
+
+## Iterating: seed with the new model, TRAIN from stock weights
+
+Two different decisions, with different answers.
+
+**Seeding** — point `annotate` / the UI at the newest model. v4 seeds at 92% where the
+stock detector managed 66%, so there is less to correct, and every tile it CANNOT mask
+arrives as `unlabelled` — a direct readout of where the model is still blind. That list is
+the shopping list for the next round of images.
+
+  🛑 But a seed is a LABOUR-SAVING DEVICE, NOT GROUND TRUTH. Seeding with the model that
+  will be trained on the result is self-training: approve a slightly-wrong mask and the
+  error is baked in and amplified next round. Seeds from our own model deserve MORE
+  scrutiny than the stock model's, not less — the review step is the only thing preventing
+  the drift.
+
+**Training** — keep starting from the stock `yolo11s-seg.pt`, NOT from the previous model:
+
+  * the run is 9 minutes on 411 tiles, so fine-tuning saves nothing worth having
+  * fine-tuning compounds whatever bias the previous model had; starting from generic
+    weights lets the accumulated HUMAN labels speak for themselves
+  * `v5 = yolo11s-seg + dataset@N` is reproducible. `v5 = v4 + more data` makes every
+    future model depend on the exact history of every previous run, and a mistake three
+    rounds back can never be undone without redoing all of them
+  * repeated fine-tuning on a growing set drifts toward the most recent additions
+
+The dataset is the artefact worth accumulating. The models are disposable rebuilds of it.
+
+**Existing verdicts are safe.** `--append` never overwrites `approved` / `rejected` /
+`manual`, and a re-run that finds nothing leaves a tile alone — so re-seeding can only
+add masks to tiles nobody has judged yet.
