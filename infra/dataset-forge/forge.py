@@ -293,12 +293,16 @@ def cmd_export(a):
         split = "val" if t["src"] in val else "train"
         shutil.copy2(os.path.join(a.tiles, t["tile"]), os.path.join(a.out, split, "images", t["tile"]))
         lab = os.path.join(a.out, split, "labels", os.path.splitext(t["tile"])[0] + ".txt")
+        # A tile marked `negative` exports an EMPTY label whatever polygons it still carries.
+        # Otherwise a seed mask the reviewer REJECTED as "not the target" would be written
+        # out as ground truth — teaching the model precisely the mistake it was rejected for.
+        polys = [] if t["status"] == "negative" else t["polys"]
         with open(lab, "w") as f:                        # empty file = a real negative, not a skip
-            for p in t["polys"]:
+            for p in polys:
                 flat = " ".join("%.6f %.6f" % (x, y) for x, y in p["pts"])
                 f.write("0 %s\n" % flat)
         counts[split][0] += 1
-        counts[split][1] += 1 if t["polys"] else 0
+        counts[split][1] += 1 if polys else 0
     yaml = ("path: %s\ntrain: train/images\nval: val/images\n\nnames:\n  0: %s\n"
             % (os.path.abspath(a.out), a.cls))
     open(os.path.join(a.out, "data.yaml"), "w").write(yaml)

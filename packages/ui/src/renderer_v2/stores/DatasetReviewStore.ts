@@ -94,7 +94,7 @@ export class DatasetReviewStore {
   }
 
   /** Decide one tile. Optimistic locally, authoritative server-side. */
-  async decide(tile: string, status: 'approved' | 'rejected') {
+  async decide(tile: string, status: 'approved' | 'rejected' | 'negative') {
     if (this.busy.has(tile)) return
     runInAction(() => { this.busy.add(tile) })
     const rec = this.tiles.find((t) => t.tile === tile)
@@ -107,14 +107,17 @@ export class DatasetReviewStore {
       })
       const d = await r.json()
       if (!r.ok) throw new Error(d?.error || 'update failed')
-      runInAction(() => { this.counts = d.status || this.counts })
+      runInAction(() => {
+        this.counts = d.status || this.counts
+        if (status === 'negative' && rec) { rec.polys = 0; rec.rev = Date.now() }
+      })
     } catch (e: any) {
       if (rec && was) runInAction(() => { rec.status = was })   // put it back, don't lie
       runInAction(() => { this.error = String(e?.message || e) })
     } finally { runInAction(() => { this.busy.delete(tile) }) }
   }
 
-  async decideCurrent(status: 'approved' | 'rejected') {
+  async decideCurrent(status: 'approved' | 'rejected' | 'negative') {
     const c = this.current
     if (!c) return
     await this.decide(c.tile, status)

@@ -1,6 +1,6 @@
 import React, { useEffect, useCallback } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Check, X, RefreshCw, Database, ChevronLeft, ChevronRight, MousePointerClick, Save, Undo2, Trash2 } from 'lucide-react'
+import { Check, X, RefreshCw, Database, ChevronLeft, ChevronRight, MousePointerClick, Save, Undo2, Trash2, Ban } from 'lucide-react'
 import { datasetReviewStore as store, type TileRec } from '../../stores/DatasetReviewStore'
 import { confirmStore } from '../../stores/confirmStore'
 import styles from './DatasetReview.module.scss'
@@ -33,6 +33,7 @@ export const DatasetReviewPanel: React.FC = observer(() => {
     if (e.ctrlKey || e.metaKey || e.altKey) return
     if (e.key === 'a' || e.key === 'A') { void store.decideCurrent('approved'); e.preventDefault() }
     else if (e.key === 'r' || e.key === 'R') { void store.decideCurrent('rejected'); e.preventDefault() }
+    else if (e.key === 'n' || e.key === 'N') { void store.decideCurrent('negative'); e.preventDefault() }
     else if (e.key === 's' || e.key === 'S') { void store.saveDraft(); e.preventDefault() }
     else if (e.key === 'ArrowRight') { store.move(1); e.preventDefault() }
     else if (e.key === 'ArrowLeft') { store.move(-1); e.preventDefault() }
@@ -131,8 +132,12 @@ export const DatasetReviewPanel: React.FC = observer(() => {
                 <button className={`${styles.btn} ${styles.btnOk}`} onClick={() => void store.decideCurrent('approved')}>
                   <Check size={13} /> Approve <kbd>A</kbd>
                 </button>
-                <button className={`${styles.btn} ${styles.btnBad}`} onClick={() => void store.decideCurrent('rejected')}>
-                  <X size={13} /> Reject <kbd>R</kbd>
+                <button className={styles.btn} title="No target in this tile — keep it as a training background (empty label). This is what suppresses false positives; do NOT reject these."
+                  onClick={() => void store.decideCurrent('negative')}>
+                  <Ban size={13} /> Background <kbd>N</kbd>
+                </button>
+                <button className={`${styles.btn} ${styles.btnBad}`} title="Discard this tile entirely — it is not usable either way" onClick={() => void store.decideCurrent('rejected')}>
+                  <X size={13} /> Discard <kbd>R</kbd>
                 </button>
                 {cur.status !== 'auto' && cur.status !== 'unlabelled' && (
                   <button className={styles.btn} title="Clear this verdict and put the tile back in the review queue"
@@ -177,7 +182,12 @@ export const DatasetReviewPanel: React.FC = observer(() => {
                 (<code>manual</code>) and exports; you do <b>not</b> also need Approve. Approve is
                 only for accepting a seed mask unchanged. Shift+click removes a region.
                 <br />
-                <kbd>A</kbd> approve · <kbd>R</kbd> reject · <kbd>←</kbd><kbd>→</kbd> move.
+                <b>No target in this tile?</b> Press <kbd>N</kbd> — it becomes a training
+                background (empty label), which is what teaches the model where the target is
+                NOT. Do <b>not</b> Discard those; discarding throws the signal away.
+                <br />
+                <kbd>A</kbd> approve · <kbd>N</kbd> background · <kbd>R</kbd> discard ·
+                <kbd>S</kbd> save mask · <kbd>←</kbd><kbd>→</kbd> move.
                 Decisions save immediately. Only tiles WITH a mask need a verdict — negatives
                 are already valid backgrounds and export as empty label files.
               </div>

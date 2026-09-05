@@ -141,9 +141,18 @@ export function createDatasetRouter() {
     let n = 0;
     for (const t of man.tiles || []) {
       if (!names.has(t.tile)) continue;
-      // A tile with no polygons is a negative by construction; approving it would claim a
-      // mask that does not exist, and rejecting it would throw away a valid background.
-      if (!(t.polys?.length) && status !== 'negative') continue;
+      // A tile with no polygons cannot be APPROVED (that would claim a mask which does not
+      // exist), but it can always be marked negative or put back in the queue.
+      if (!(t.polys?.length) && (status === 'approved' || status === 'manual')) continue;
+      // Marking a tile as background must DROP any mask it carries, and lose the overlay
+      // that drew it. Leaving them behind means the grid keeps showing an outline the
+      // reviewer just said was wrong, and export had been writing it out as ground truth.
+      if (status === 'negative' && t.polys?.length) {
+        t.polys = [];
+        t.rev = Date.now();
+        const ov = join(dir, 'overlays', t.tile);
+        if (existsSync(ov)) { try { unlinkSync(ov); } catch { /* best effort */ } }
+      }
       t.status = status; n++;
     }
     saveMan(dir, man);
