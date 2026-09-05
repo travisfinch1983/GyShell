@@ -92,7 +92,11 @@ def _ingest(job_id, ds, rels, detector, unseeded, conf):
         os.makedirs(d, exist_ok=True)
         man = json.load(open(man_p)) if os.path.exists(man_p) else {"terms": [], "items": [], "tiles": []}
         have = {i["path"] for i in man.get("items", [])}
-        items, skipped = [], 0
+        holdout = set()
+        hp = os.path.join(d, "holdout.txt")
+        if os.path.exists(hp):
+            holdout = {l.strip() for l in open(hp) if l.strip()}
+        items, skipped, held = [], 0, 0
         for rel in rels:
             # paths arrive RELATIVE to the imagegen root, so the same request works whichever
             # host resolves it (/ai-assets/imagegen on CT152, /imagegen here)
@@ -101,9 +105,11 @@ def _ingest(job_id, ds, rels, detector, unseeded, conf):
                 skipped += 1; continue
             if ap in have:
                 skipped += 1; continue
+            if ap in holdout:
+                held += 1; continue        # frozen benchmark — never trainable
             items.append({"path": ap})
         with _jobs_lock:
-            _jobs[job_id].update(total=len(items), skipped=skipped, state="running")
+            _jobs[job_id].update(total=len(items), skipped=skipped, heldout=held, state="running")
         if items:
             det = _detector(detector)
             with _lock:                              # share the GPU with /segment

@@ -154,3 +154,38 @@ The dataset is the artefact worth accumulating. The models are disposable rebuil
 **Existing verdicts are safe.** `--append` never overwrites `approved` / `rejected` /
 `manual`, and a re-run that finds nothing leaves a tile alone — so re-seeding can only
 add masks to tiles nobody has judged yet.
+
+## The frozen benchmark, and why selection bias is the trap
+
+Using the current model to pick which images to add is good for finding blind spots and
+BAD for measuring progress. Three contamination channels, only two of which "train from
+stock weights" closes:
+
+  1. WEIGHT inheritance — closed by training from stock yolo11s-seg.pt each round.
+  2. LABEL contamination — closed by DRAWING masks rather than approving the model's own
+     seeds. Only as closed as the review is real: a slightly-off mask looks fine at
+     thumbnail size.
+  3. SELECTION bias — NOT closed by either. If images are added only where the current
+     model fails, the dataset grows enriched in hard cases and depleted of easy ones,
+     drifting from the distribution actually generated, and the model can get worse at the
+     common cases it stopped seeing.
+
+Selection bias also destroys the ability to COMPARE versions: a pool re-drawn each round
+from "what the current model misses" gets harder every round, so v5 can beat v4 and score
+lower. A benchmark selected by the model under test measures the selector.
+
+So: `holdout.txt` — 80 images sampled ONCE at random from the labelled-positive corpus,
+never trained on. `samd`'s /ingest refuses any path in it (the job reports `heldout: N`),
+so the set cannot be quietly absorbed into training, and compare.py REFUSES TO RUN if any
+held-out image has reached the dataset rather than silently reporting a score measured on
+training data.
+
+Mitigation for (3) while still targeting gaps: add a random sample alongside the targeted
+images each round, so the easy cases keep their share.
+
+**Baseline on the frozen set (2026-09-05), conf 0.25, 4 tiles, imgsz 640:**
+
+    stock Panty-detailer-3b   40/80   50%
+    Panties-v4 (ours)         75/80   94%      +35 found, 0 lost
+
+That is the number every later version is measured against.
