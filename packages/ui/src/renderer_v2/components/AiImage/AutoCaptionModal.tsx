@@ -36,7 +36,13 @@ const OUT_INFO: Record<OutKind, { label: string; ext: string; blurb: string }> =
   },
 }
 
-export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[] }> = ({ onClose, files }) => {
+/**
+ * `path` lets a caller outside the Training Images browser reuse this dialog — the Dataset
+ * Review tab captions dataset TILES, which live at _datasets/<name>/tiles rather than under
+ * the browser's cwd. The backend already accepts any path under the imagegen root, so this
+ * is purely about not assuming the training-images store owns the location.
+ */
+export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[]; path?: string; label?: string }> = ({ onClose, files, path, label }) => {
   const [taggers, setTaggers] = useState<any[]>([])
   const [outKind, setOutKind] = useState<OutKind>('tags')
   const [model, setModel] = useState('')
@@ -143,7 +149,10 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[] 
       // on a SECTIONED batch covers every subsection plus any loose root images — without
       // this, subsection images 404'd ('not found: green-12.png') or were silently skipped.
       let jobs: Array<{ sub: string; names?: string[] }>
-      if (files?.length) {
+      if (path) {
+        // An explicit path is a single flat directory — no sections, no dir-qualified keys.
+        jobs = [{ sub: '', names: files?.length ? files : undefined }]
+      } else if (files?.length) {
         jobs = store.splitKeys(files)
       } else if (store.sections.length) {
         jobs = store.sections.map((s) => ({ sub: s.folder }))
@@ -153,7 +162,7 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[] 
       }
       let lastJob = ''
       for (const j of jobs) {
-        const jbody: Record<string, unknown> = { ...body, path: store.dirPath(j.sub) }
+        const jbody: Record<string, unknown> = { ...body, path: path ?? store.dirPath(j.sub) }
         if (j.names) jbody.files = j.names
         else delete jbody.files
         const { jobId } = await store.autoCaption(jbody)
@@ -171,7 +180,7 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[] 
     <div className={styles.modalBg}>{/* deliberately NOT click-to-close: a stray backdrop click was eating typed input */}
       <div className={styles.pkBox} style={{ width: 'min(560px,94%)' }} onClick={(e) => e.stopPropagation()}>
         <div className={styles.modalHead}>
-          <strong>Auto-caption — {files?.length ? `${files.length} selected image${files.length > 1 ? 's' : ''}` : (store.cwd.split('/').pop() || 'training_images')}</strong>
+          <strong>Auto-caption — {label ?? (files?.length ? `${files.length} selected image${files.length > 1 ? 's' : ''}` : (store.cwd.split('/').pop() || 'training_images'))}</strong>
           <button className={styles.btn} onClick={onClose}>Close</button>
         </div>
 

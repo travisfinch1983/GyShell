@@ -1,8 +1,9 @@
-import React, { useEffect, useCallback } from 'react'
+import React, { useEffect, useCallback, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Check, X, RefreshCw, Database, ChevronLeft, ChevronRight, MousePointerClick, Save, Undo2, Trash2, Ban } from 'lucide-react'
+import { Check, X, RefreshCw, Database, ChevronLeft, ChevronRight, MousePointerClick, Save, Undo2, Trash2, Ban, Tags } from 'lucide-react'
 import { datasetReviewStore as store, type TileRec } from '../../stores/DatasetReviewStore'
 import { confirmStore } from '../../stores/confirmStore'
+import { AutoCaptionModal } from './AutoCaptionModal'
 import styles from './DatasetReview.module.scss'
 
 const Thumb: React.FC<{ t: TileRec; i: number }> = observer(({ t, i }) => (
@@ -22,6 +23,7 @@ const Thumb: React.FC<{ t: TileRec; i: number }> = observer(({ t, i }) => (
 
 export const DatasetReviewPanel: React.FC = observer(() => {
   useEffect(() => { void store.loadSets() }, [])
+  const [capOpen, setCapOpen] = useState(false)
 
   // Keyboard is the point: a mouse round-trip per tile makes 700 reviews unbearable.
   const onKey = useCallback((e: KeyboardEvent) => {
@@ -78,8 +80,19 @@ export const DatasetReviewPanel: React.FC = observer(() => {
         <button className={styles.btn} disabled={!store.tiles.some((t) => t.status === 'auto')}
           title="Approve every seed mask currently shown"
           onClick={() => void store.approveVisible()}>Approve all shown</button>
+        <button className={styles.btn} disabled={!store.active || !store.tiles.length}
+          title="Run the same auto-captioner used by Training Images over the tiles shown here. Captions do NOT affect training — YOLO reads masks, not text — they are for seeing what a tile CONTAINS so you can judge coverage."
+          onClick={() => setCapOpen(true)}><Tags size={12} /> Caption tiles…</button>
       </div>
 
+      {capOpen && (
+        <AutoCaptionModal
+          onClose={() => setCapOpen(false)}
+          path={`_datasets/${store.active}/tiles`}
+          files={store.tiles.map((t) => t.tile)}
+          label={`${store.tiles.length} tile${store.tiles.length === 1 ? '' : 's'} in ${store.active}`}
+        />
+      )}
       {store.error && <div className={styles.errorBar}>{store.error}</div>}
 
       <div className={styles.body}>
