@@ -45,9 +45,13 @@ export class DatasetReviewStore {
   get reviewed() { return (this.counts.approved || 0) + (this.counts.rejected || 0) }
   get pending() { return this.counts.auto || 0 }
   imgUrl(t: TileRec, kind: 'overlays' | 'tiles' = 'overlays') {
-    // ?v=rev busts the browser cache after a mask is redrawn; without it the corrected
-    // overlay stays invisible behind the max-age=3600 copy.
-    const v = t.rev ? `?v=${t.rev}` : ''
+    // ?v= ALWAYS, not only when a mask was redrawn. Two reasons:
+    //  - after a redraw it busts the max-age=3600 copy of the old overlay
+    //  - and it changes the URL for tiles that 404'd BEFORE overlays fell back to the raw
+    //    tile. Those 404s were heuristically cached by the browser, so an unchanged URL
+    //    kept serving a cached failure and the thumbnails stayed broken even once the
+    //    server had started returning 200.
+    const v = `?v=${t.rev ?? 0}`
     return `/api/dataset/${encodeURIComponent(this.active)}/image/${kind}/${encodeURIComponent(t.tile)}${v}`
   }
 

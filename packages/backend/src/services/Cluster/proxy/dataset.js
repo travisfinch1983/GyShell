@@ -123,7 +123,7 @@ export function createDatasetRouter() {
     // icon for 203 of 277 tiles. Fall back to the raw tile: the caller wants to SEE the
     // image, and "no overlay" is a legitimate state, not an error.
     if (kind === 'overlays' && !existsSync(p)) p = join(dir, 'tiles', file);
-    if (!existsSync(p)) return res.status(404).end();
+    if (!existsSync(p)) { res.setHeader('Cache-Control', 'no-store'); return res.status(404).end(); }
     res.setHeader('Content-Type', 'image/' + extname(file).slice(1).replace('jpg', 'jpeg'));
     res.setHeader('Cache-Control', 'private, max-age=3600');
     createReadStream(p).pipe(res);
