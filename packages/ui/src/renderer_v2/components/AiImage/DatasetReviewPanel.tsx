@@ -1,6 +1,6 @@
-import React, { useEffect, useCallback, useState } from 'react'
+import React, { useEffect, useCallback, useState, useRef } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Check, X, RefreshCw, Database, ChevronLeft, ChevronRight, MousePointerClick, Save, Undo2, Trash2, Ban, Tags } from 'lucide-react'
+import { Check, X, RefreshCw, Database, ChevronLeft, ChevronRight, MousePointerClick, Save, Undo2, Trash2, Ban, Tags, Maximize2, Minimize2, ZoomIn, ZoomOut } from 'lucide-react'
 import { datasetReviewStore as store, type TileRec } from '../../stores/DatasetReviewStore'
 import { confirmStore } from '../../stores/confirmStore'
 import { AutoCaptionModal } from './AutoCaptionModal'
@@ -24,6 +24,29 @@ const Thumb: React.FC<{ t: TileRec; i: number }> = observer(({ t, i }) => (
 export const DatasetReviewPanel: React.FC = observer(() => {
   useEffect(() => { void store.loadSets() }, [])
   const [capOpen, setCapOpen] = useState(false)
+  // Side pane width is draggable and remembered: a 380px preview of a 768px tile renders at
+  // under half scale, which makes clicking a small mask a guess.
+  const [sideW, setSideW] = useState(() => Number(localStorage.getItem('dsReviewSideW')) || 380)
+  const [focus, setFocus] = useState(false)     // full-width editing view
+  const [zoom, setZoom] = useState(1)           // multiplies the rendered image width
+  const dragRef = useRef<{ x: number; w: number } | null>(null)
+
+  const onDragStart = (e: React.MouseEvent) => {
+    dragRef.current = { x: e.clientX, w: sideW }
+    const move = (ev: MouseEvent) => {
+      if (!dragRef.current) return
+      // dragging LEFT widens the right-hand pane
+      const w = Math.min(1400, Math.max(280, dragRef.current.w + (dragRef.current.x - ev.clientX)))
+      setSideW(w)
+    }
+    const up = () => {
+      dragRef.current = null
+      window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
+      setSideW((w) => { localStorage.setItem('dsReviewSideW', String(w)); return w })
+    }
+    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+    e.preventDefault()
+  }
 
   // Keyboard is the point: a mouse round-trip per tile makes 700 reviews unbearable.
   const onKey = useCallback((e: KeyboardEvent) => {
@@ -35,6 +58,9 @@ export const DatasetReviewPanel: React.FC = observer(() => {
     if (e.ctrlKey || e.metaKey || e.altKey) return
     if (e.key === 'a' || e.key === 'A') { void store.decideCurrent('approved'); e.preventDefault() }
     else if (e.key === 'r' || e.key === 'R') { void store.decideCurrent('rejected'); e.preventDefault() }
+    else if (e.key === 'f' || e.key === 'F') { setFocus((v) => !v); e.preventDefault() }
+    else if (e.key === '+' || e.key === '=') { setZoom((z) => Math.min(6, z * 1.25)); e.preventDefault() }
+    else if (e.key === '-' || e.key === '_') { setZoom((z) => Math.max(1, z / 1.25)); e.preventDefault() }
     else if (e.key === 'n' || e.key === 'N') { void store.decideCurrent('negative'); e.preventDefault() }
     else if (e.key === 's' || e.key === 'S') { void store.saveDraft(); e.preventDefault() }
     else if (e.key === 'ArrowRight') { store.move(1); e.preventDefault() }
@@ -95,8 +121,9 @@ export const DatasetReviewPanel: React.FC = observer(() => {
       )}
       {store.error && <div className={styles.errorBar}>{store.error}</div>}
 
-      <div className={styles.body}>
-        <div className={styles.grid}>
+      <div className={styles.body}
+        style={{ gridTemplateColumns: focus ? '1fr' : `1fr 6px ${sideW}px` }}>
+        <div className={styles.grid} style={focus ? { display: 'none' } : undefined}>
           {store.tiles.map((t, i) => <Thumb key={t.tile} t={t} i={i} />)}
           {!store.loading && !store.tiles.length && (
             <div className={styles.empty}>
@@ -105,6 +132,8 @@ export const DatasetReviewPanel: React.FC = observer(() => {
           )}
         </div>
 
+        <div className={styles.dragBar} onMouseDown={onDragStart} title="Drag to resize"
+          style={focus ? { display: 'none' } : undefined} />
         <div className={styles.side}>
           {cur ? (
             <>
@@ -112,11 +141,17 @@ export const DatasetReviewPanel: React.FC = observer(() => {
                 <button className={styles.iconBtn} onClick={() => store.move(-1)}><ChevronLeft size={13} /></button>
                 <span className={styles.pos}>{store.cursor + 1} / {store.tiles.length}</span>
                 <button className={styles.iconBtn} onClick={() => store.move(1)}><ChevronRight size={13} /></button>
+                <span className={styles.spacer} />
+                <button className={styles.iconBtn} title="Zoom out (-)" onClick={() => setZoom((z) => Math.max(1, z / 1.25))}><ZoomOut size={13} /></button>
+                <span className={styles.pos}>{Math.round(zoom * 100)}%</span>
+                <button className={styles.iconBtn} title="Zoom in (+)" onClick={() => setZoom((z) => Math.min(6, z * 1.25))}><ZoomIn size={13} /></button>
+                <button className={styles.iconBtn} title={focus ? 'Back to the grid (F)' : 'Expand to full width (F)'}
+                  onClick={() => setFocus((v) => !v)}>{focus ? <Minimize2 size={13} /> : <Maximize2 size={13} />}</button>
               </div>
               {/* Click the target to annotate. The overlay shows the seed mask; once you
                   click, the draft polygon from SAM is drawn on top so you can judge it
                   before saving. Shift+click subtracts a region. */}
-              <div className={styles.canvasWrap}>
+              <div className={styles.canvasWrap} style={{ width: `${zoom * 100}%` }}>
                 <img className={styles.big} src={store.imgUrl(cur, store.points.length ? 'tiles' : 'overlays')} alt=""
                   onClick={(e) => {
                     const r = (e.target as HTMLImageElement).getBoundingClientRect()
