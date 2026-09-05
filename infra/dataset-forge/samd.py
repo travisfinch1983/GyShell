@@ -64,11 +64,11 @@ def _set_image(path):
         _cache.popitem(last=False)
 
 
-def _polys(mask, w, h, min_area=200, simplify=0.004):
+def _polys(mask, w, h, min_area=200, simplify=0.004, max_polys=4):
     mm = (mask * 255).astype("uint8")
     cnts, _ = cv2.findContours(mm, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     out = []
-    for c in sorted(cnts, key=cv2.contourArea, reverse=True)[:4]:
+    for c in sorted(cnts, key=cv2.contourArea, reverse=True)[:max(1, int(max_polys))]:
         if cv2.contourArea(c) < min_area:
             continue
         c = cv2.approxPolyDP(c, simplify * cv2.arcLength(c, True), True).reshape(-1, 2)
@@ -212,7 +212,7 @@ class H(BaseHTTPRequestHandler):
                     kw["box"] = np.array([box[0] * W, box[1] * H, box[2] * W, box[3] * H])
                 masks, scores, _ = _pred.predict(**kw)
                 k = int(np.argmax(scores))
-                polys = _polys(masks[k], W, H)
+                polys = _polys(masks[k], W, H, max_polys=int(req.get("max_polys", 4)))
             return self._send(200, {"polys": [{"pts": p, "score": round(float(scores[k]), 4)}
                                               for p in polys]})
         except Exception as e:

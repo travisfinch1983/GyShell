@@ -49,3 +49,8 @@ kbd { font-family: ui-monospace, monospace; font-size: 10px; padding: 1px 5px; b
 /* The editing pane scrolls when the image is zoomed past its width — clicks still land
    correctly because the handler normalises against the IMAGE's own bounding rect. */
 .side { overflow: auto; }
+/* Regions accept clicks so a stray one can be deleted; the rest of the overlay stays
+   transparent to pointer events so clicking elsewhere still adds a SAM point. */
+.overlaySvg polygon { pointer-events: auto; cursor: not-allowed; }
+.keptPoly { fill: color-mix(in srgb, var(--success) 30%, transparent); stroke: var(--success); }
+.chkLine { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; color: var(--fg-muted); }

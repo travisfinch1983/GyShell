@@ -1,6 +1,6 @@
 import React, { useEffect, useCallback, useState, useRef } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Check, X, RefreshCw, Database, ChevronLeft, ChevronRight, MousePointerClick, Save, Undo2, Trash2, Ban, Tags, Maximize2, Minimize2, ZoomIn, ZoomOut } from 'lucide-react'
+import { Check, X, RefreshCw, Database, ChevronLeft, ChevronRight, MousePointerClick, Save, Undo2, Trash2, Ban, Tags, Maximize2, Minimize2, ZoomIn, ZoomOut, Plus } from 'lucide-react'
 import { datasetReviewStore as store, type TileRec } from '../../stores/DatasetReviewStore'
 import { confirmStore } from '../../stores/confirmStore'
 import { AutoCaptionModal } from './AutoCaptionModal'
@@ -158,11 +158,16 @@ export const DatasetReviewPanel: React.FC = observer(() => {
                     void store.addPoint((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height,
                                         e.shiftKey ? 0 : 1)
                   }} />
-                {!!store.draftPolys.length && (
+                {!!store.allDraft.length && (
+                  // pointer-events sit on the polygons only: clicking a REGION deletes it,
+                  // clicking anywhere else falls through to the image and adds a SAM point
                   <svg className={styles.overlaySvg} viewBox="0 0 1 1" preserveAspectRatio="none">
-                    {store.draftPolys.map((p, i) => (
+                    {store.allDraft.map((p, i) => (
                       <polygon key={i} points={p.pts.map(([x, y]) => `${x},${y}`).join(' ')}
-                        className={styles.draftPoly} />
+                        className={`${styles.draftPoly} ${i < store.keptPolys.length ? styles.keptPoly : ''}`}
+                        onClick={(e) => { e.stopPropagation(); store.removePoly(i) }}>
+                        <title>click to remove this region</title>
+                      </polygon>
                     ))}
                   </svg>
                 )}
@@ -196,16 +201,29 @@ export const DatasetReviewPanel: React.FC = observer(() => {
                   </button>
                 )}
               </div>
-              {(store.draftPolys.length > 0 || store.points.length > 0) && (
-                <div className={styles.actions}>
-                  <button className={`${styles.btn} ${styles.btnOk}`} disabled={!store.draftPolys.length}
-                    onClick={() => void store.saveDraft()}>
-                    <Save size={13} /> Save mask <kbd>S</kbd>
-                  </button>
-                  <button className={styles.btn} onClick={() => store.clearDraft()}>
-                    <Undo2 size={13} /> Clear
-                  </button>
-                </div>
+              {(store.allDraft.length > 0 || store.points.length > 0) && (
+                <>
+                  <div className={styles.actions}>
+                    <button className={`${styles.btn} ${styles.btnOk}`} disabled={!store.allDraft.length}
+                      onClick={() => void store.saveDraft()}>
+                      <Save size={13} /> Save mask <kbd>S</kbd>
+                    </button>
+                    <button className={styles.btn} disabled={!store.draftPolys.length}
+                      title="Lock in these regions and start a fresh click set — the next click ADDS instead of replacing"
+                      onClick={() => store.keepAndContinue()}>
+                      <Plus size={13} /> Add region
+                    </button>
+                  </div>
+                  <div className={styles.actions}>
+                    <button className={styles.btn} disabled={!store.points.length}
+                      title="Remove the last click and re-run SAM" onClick={() => void store.undoPoint()}>
+                      <Undo2 size={13} /> Undo click
+                    </button>
+                    <button className={styles.btn} onClick={() => store.clearDraft()}>
+                      <X size={13} /> Clear all
+                    </button>
+                  </div>
+                </>
               )}
               <div className={styles.actions}>
                 <button className={styles.btn} title="Drop just this tile from the dataset"
@@ -227,10 +245,16 @@ export const DatasetReviewPanel: React.FC = observer(() => {
                 </button>
               </div>
               <div className={styles.hint}>
-                <MousePointerClick size={11} /> <b>Click the target</b> to draw a mask with SAM,
-                then <b>Save mask</b>. That is the whole action — a saved mask counts as reviewed
-                (<code>manual</code>) and exports; you do <b>not</b> also need Approve. Approve is
-                only for accepting a seed mask unchanged. Shift+click removes a region.
+                <label className={styles.chkLine}>
+                  <input type="checkbox" checked={store.singleRegion}
+                    onChange={(e) => { store.singleRegion = e.target.checked }} />
+                  single region per click (uncheck to allow up to 4)
+                </label>
+                <MousePointerClick size={11} /> <b>Click the target</b>, then <b>Save mask</b> —
+                that is the whole action; a saved mask counts as reviewed and you do <b>not</b>
+                also need Approve. <b>Click any green region to delete it.</b> Shift+click
+                subtracts, <b>Undo click</b> steps back one, and <b>Add region</b> locks in what
+                you have so the next click adds instead of replacing.
                 <br />
                 <b>No target in this tile?</b> Press <kbd>N</kbd> — it becomes a training
                 background (empty label), which is what teaches the model where the target is

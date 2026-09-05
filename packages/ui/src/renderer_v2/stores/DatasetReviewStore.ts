@@ -140,35 +140,76 @@ export class DatasetReviewStore {
   draftPolys: { pts: number[][]; score?: number }[] = []
   points: { x: number; y: number; label: number }[] = []
   segmenting = false
+  /** Ask SAM for only the largest region per click. One click often returns several
+   *  disconnected blobs, some nowhere near the cursor, and taking all of them was the main
+   *  way a good edit turned into "clear it and start over". */
+  singleRegion = true
+  /** Polygons kept from EARLIER clicks. Without this every click re-ran SAM from scratch and
+   *  replaced the whole draft, so a second click could not ADD a region — and a stray one
+   *  could not be dropped without losing the good ones too. */
+  keptPolys: { pts: number[][]; score?: number }[] = []
 
-  clearDraft() { runInAction(() => { this.draftPolys = []; this.points = [] }) }
+  get allDraft() { return [...this.keptPolys, ...this.draftPolys] }
+
+  clearDraft() { runInAction(() => { this.draftPolys = []; this.points = []; this.keptPolys = [] }) }
+
+  /** Drop one polygon from the draft — the stray region, not the whole edit. */
+  removePoly(i: number) {
+    runInAction(() => {
+      if (i < this.keptPolys.length) { this.keptPolys.splice(i, 1); return }
+      this.draftPolys.splice(i - this.keptPolys.length, 1)
+    })
+  }
+
+  /** Commit the current SAM result and start a fresh click set, so the next click ADDS. */
+  keepAndContinue() {
+    runInAction(() => {
+      this.keptPolys = [...this.keptPolys, ...this.draftPolys]
+      this.draftPolys = []; this.points = []
+    })
+  }
+
+  /** Remove the last click and re-run — finer than clearing everything. */
+  async undoPoint() {
+    if (!this.points.length) return
+    runInAction(() => { this.points.pop() })
+    if (!this.points.length) { runInAction(() => { this.draftPolys = [] }); return }
+    await this.resegment()
+  }
+
+  private async resegment() {
+    const c = this.current
+    if (!c) return
+    runInAction(() => { this.segmenting = true })
+    try {
+      const r = await fetch(`/api/dataset/${encodeURIComponent(this.active)}/segment`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tile: c.tile, points: this.points, max_polys: this.singleRegion ? 1 : 4 }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d?.error || 'segment failed')
+      runInAction(() => { this.draftPolys = d.polys || [] })
+    } catch (e: any) { runInAction(() => { this.error = String(e?.message || e) }) }
+    finally { runInAction(() => { this.segmenting = false }) }
+  }
 
   /** x/y are normalised 0..1 within the tile. label 0 = "exclude this region". */
   async addPoint(x: number, y: number, label = 1) {
     const c = this.current
     if (!c || this.segmenting) return
-    runInAction(() => { this.points.push({ x, y, label }); this.segmenting = true; this.error = '' })
-    try {
-      const r = await fetch(`/api/dataset/${encodeURIComponent(this.active)}/segment`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tile: c.tile, points: this.points }),
-      })
-      const d = await r.json()
-      if (!r.ok) throw new Error(d?.error || 'segment failed')
-      runInAction(() => { this.draftPolys = d.polys || [] })
-    } catch (e: any) {
-      runInAction(() => { this.error = String(e?.message || e); this.points.pop() })
-    } finally { runInAction(() => { this.segmenting = false }) }
+    runInAction(() => { this.points.push({ x, y, label }); this.error = '' })
+    await this.resegment()
   }
 
   /** Commit the draft to the manifest, replacing whatever the seed detector produced. */
   async saveDraft() {
     const c = this.current
-    if (!c || !this.draftPolys.length) return
+    const polys = this.allDraft
+    if (!c || !polys.length) return
     try {
       const r = await fetch(`/api/dataset/${encodeURIComponent(this.active)}/polys`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tile: c.tile, polys: this.draftPolys }),
+        body: JSON.stringify({ tile: c.tile, polys }),
       })
       const d = await r.json()
       if (!r.ok) throw new Error(d?.error || 'save failed')
