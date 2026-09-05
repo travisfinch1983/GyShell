@@ -195,7 +195,8 @@ def annotate_images(items, det, pred, tiles_dir, overlays_dir, *, width=768, img
                             "_box": [float(v) for v in cv2.boundingRect(c)]}
                     if not any(_iou(cand["_box"], q["_box"]) > 0.85 for q in polys):
                         polys.append(cand)
-            name = "%s_t%d.png" % (re.sub(r"[^A-Za-z0-9_.-]", "_", stem), ti)
+            sig = hashlib.sha1(it["path"].encode()).hexdigest()[:8]
+            name = "%s-%s_t%d.png" % (re.sub(r"[^A-Za-z0-9_.-]", "_", stem), sig, ti)
             tile.save(os.path.join(tiles_dir, name))
             for q in polys: q.pop("_box", None)
             out.append({"tile": name, "src": it["path"], "y": y, "polys": polys,
