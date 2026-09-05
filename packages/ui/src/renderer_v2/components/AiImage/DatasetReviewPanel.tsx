@@ -69,13 +69,15 @@ export const DatasetReviewPanel: React.FC = observer(() => {
         <span className={styles.spacer} />
         {set && (
           <span className={styles.counts}>
-            <b>{store.pending}</b> to review · <span className={styles.ok}>{store.counts.approved || 0} ✓</span>
+            <b>{store.pending}</b> to review · <span className={styles.ok}>{(store.counts.approved || 0) + (store.counts.manual || 0)} ✓</span>
+            {' · '}{store.counts.negative || 0} bg
             {' · '}<span className={styles.bad}>{store.counts.rejected || 0} ✕</span>
-            {' · '}{store.counts.negative || 0} neg
           </span>
         )}
+        <span className={styles.counts}>showing <b>{store.tiles.length}</b> of {store.total}</span>
         <button className={styles.btn} disabled={!store.tiles.some((t) => t.status === 'auto')}
-          onClick={() => void store.approveVisible()}>Approve page</button>
+          title="Approve every seed mask currently shown"
+          onClick={() => void store.approveVisible()}>Approve all shown</button>
       </div>
 
       {store.error && <div className={styles.errorBar}>{store.error}</div>}

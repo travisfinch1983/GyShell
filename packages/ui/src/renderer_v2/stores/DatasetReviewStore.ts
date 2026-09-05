@@ -27,7 +27,7 @@ export class DatasetReviewStore {
   tiles: TileRec[] = []
   total = 0
   offset = 0
-  limit = 120
+  limit = 500   // page size while fetching; the grid always shows ALL of them
   counts: Record<string, number> = {}
   // 'auto'       = a seed mask to verify
   // 'unlabelled' = no mask at all; needs one drawn. BOTH need a human, so the default
@@ -43,7 +43,7 @@ export class DatasetReviewStore {
 
   get current(): TileRec | undefined { return this.tiles[this.cursor] }
   get reviewed() { return (this.counts.approved || 0) + (this.counts.rejected || 0) }
-  get pending() { return this.counts.auto || 0 }
+  get pending() { return (this.counts.auto || 0) + (this.counts.unlabelled || 0) }
   imgUrl(t: TileRec, kind: 'overlays' | 'tiles' = 'overlays') {
     // ?v= ALWAYS, not only when a mask was redrawn. Two reasons:
     //  - after a redraw it busts the max-age=3600 copy of the old overlay
@@ -72,13 +72,23 @@ export class DatasetReviewStore {
     if (!this.active) return
     runInAction(() => { this.loading = true; this.error = '' })
     try {
-      const q = new URLSearchParams({ offset: String(this.offset), limit: String(this.limit) })
-      if (this.filter) q.set('status', this.filter)
-      const r = await fetch(`/api/dataset/${encodeURIComponent(this.active)}/tiles?${q}`)
-      const d = await r.json()
-      if (!r.ok) throw new Error(d?.error || 'load failed')
+      const all: TileRec[] = []
+      let off = 0, total = 0, counts: Record<string, number> = {}
+      for (let guard = 0; guard < 200; guard++) {          // 200 * 500 = 100k tiles, then stop
+        const q = new URLSearchParams({ offset: String(off), limit: '500' })
+        if (this.filter) q.set('status', this.filter)
+        const r = await fetch(`/api/dataset/${encodeURIComponent(this.active)}/tiles?${q}`)
+        const d = await r.json()
+        if (!r.ok) throw new Error(d?.error || 'load failed')
+        total = d.total || 0
+        counts = d.status || counts
+        const page: TileRec[] = d.tiles || []
+        all.push(...page)
+        off += page.length
+        if (!page.length || all.length >= total) break
+      }
       runInAction(() => {
-        this.tiles = d.tiles || []; this.total = d.total || 0; this.counts = d.status || {}
+        this.tiles = all; this.total = total; this.counts = counts
         if (this.cursor >= this.tiles.length) this.cursor = Math.max(0, this.tiles.length - 1)
       })
     } catch (e: any) { runInAction(() => { this.error = String(e?.message || e) }) }
