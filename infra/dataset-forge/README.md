@@ -189,3 +189,40 @@ images each round, so the easy cases keep their share.
     Panties-v4 (ours)         75/80   94%      +35 found, 0 lost
 
 That is the number every later version is measured against.
+
+## Two frozen benchmarks — and why one was not enough
+
+The first holdout was built by scanning `outputs/comfyui` for prompt-matched PNGs, which
+STRUCTURALLY EXCLUDED photos: 80/80 generated, 0 photos, while the training set was 265
+photos to 134 renders. So "96% on the frozen set" described the MINORITY style and said
+nothing about the majority — and a per-style breakdown returned a single row, because the
+benchmark could only see one style.
+
+    holdout.txt          80 generated renders   (prompt-verified positives)
+    holdout_photos.txt   80 real photographs    (TAGGER-verified: wd-eva02 says panties /
+                                                 underwear; 147 of 173 sampled qualified,
+                                                 sampled across ~40 folders so it is not one
+                                                 photographer's set)
+
+Photos carry no prompt, so folder names were not trusted — candidates were staged, tagged,
+selected by tag, and the staging copies deleted rather than littering .txt through the photo
+library.
+
+Score them SEPARATELY; never average them:
+
+    HOLDOUT=/imagegen/_datasets/panties/holdout.txt        $P compare.py <weights>
+    HOLDOUT=/imagegen/_datasets/panties/holdout_photos.txt $P compare.py <weights>
+
+samd's /ingest now refuses every `holdout*.txt`, not just the first — a second frozen set the
+ingest did not know about could be absorbed into training silently, which is the exact
+failure the frozen set exists to prevent. Verified: an ingest of a photo-holdout path returns
+`heldout: 1, added: 0`.
+
+## Should styles get separate detectors?
+
+Not on the evidence so far, and the question is not yet answerable — it needs the per-style
+numbers above. Against splitting: it divides the LABELS, which are the bottleneck (1184 tiles
+over three styles is ~400 each, back to the weaker v4 size, while training costs 22 minutes);
+the mixed model shows no sign of suffering from mixing; and three detectors need a style
+classifier at inference, a new component and a new failure mode. If one style does lag, the
+first move is more data for it — split only if that fails to close the gap.

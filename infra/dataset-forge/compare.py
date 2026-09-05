@@ -18,7 +18,10 @@ DEV = int(os.environ.get("DEV", "4"))
 CONF = float(os.environ.get("CONF", "0.25"))
 YS = (0, 256, 512, 768)
 
-HOLD = "/imagegen/_datasets/panties/holdout.txt"
+# Which frozen set to score against. holdout.txt is generated renders; holdout_photos.txt is
+# tagger-verified real photos. They MUST be reported separately — the first benchmark was
+# 80/80 generated, so "96%" described the minority style and said nothing about the majority.
+HOLD = os.environ.get("HOLDOUT", "/imagegen/_datasets/panties/holdout.txt")
 pool = [l.strip() for l in open(HOLD) if l.strip()]
 man = json.load(open("/imagegen/_datasets/panties/manifest.json"))
 used = {i["path"] for i in man["items"]}

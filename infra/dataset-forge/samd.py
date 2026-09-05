@@ -93,9 +93,9 @@ def _ingest(job_id, ds, rels, detector, unseeded, conf):
         man = json.load(open(man_p)) if os.path.exists(man_p) else {"terms": [], "items": [], "tiles": []}
         have = {i["path"] for i in man.get("items", [])}
         holdout = set()
-        hp = os.path.join(d, "holdout.txt")
-        if os.path.exists(hp):
-            holdout = {l.strip() for l in open(hp) if l.strip()}
+        import glob as _glob
+        for hp in sorted(_glob.glob(os.path.join(d, "holdout*.txt"))):
+            holdout |= {l.strip() for l in open(hp) if l.strip()}
         items, skipped, held = [], 0, 0
         for rel in rels:
             # paths arrive RELATIVE to the imagegen root, so the same request works whichever
