@@ -410,7 +410,7 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
             <div className={styles.acSection}>Format example</div>
             <input
               className={styles.input} style={{ width: '100%' }} disabled={running}
-              placeholder='optional - e.g. Front view, standing pose, red satin briefs high-cut with the bulge visible through the fabric, indoor room.'
+              placeholder='optional - e.g. Front view, standing pose, black lace bra and black satin briefs high-cut with the bulge visible through the fabric, indoor room.'
               value={example} onChange={(e) => setExample(e.target.value)}
             />
             <div className={styles.acHint}>
@@ -418,7 +418,9 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
               control here — a model copies an example far more reliably than it follows a rule.
               <b> Do not include the trigger word</b>: it is prepended separately, so an example
               containing it teaches the model to write it twice. Leave blank and no example is
-              sent.
+              sent. Its LENGTH and DETAIL are copied too — a measured effect, not a guess: a
+              short one-garment example pulled captions to 18 words and quietly dropped the
+              second garment, so name two garments here if your images have two.
             </div>
           </>
         )}
