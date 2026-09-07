@@ -47,11 +47,19 @@ UNIVERSAL_DISCIPLINE = (
     "20-30 words (hard cap ~40). Vocabulary consistency across the whole set matters MORE than "
     "per-image precision: when unsure between a plain word already used in the set and a unique "
     "word for one image, use the plain word, and never reword for variety. Keep it clinical and "
-    "literal, never suggestive or evaluative. Do not judge or re-name the core subject the "
-    "trigger word already names, and never open with a phrase that describes the picture rather "
-    "than its contents (e.g. 'The image', 'The subject', 'A photo of'). Output the single "
-    "sentence only \u2014 no preamble, no reasoning."
+    "literal, never suggestive or evaluative. Never describe hair, face, body build (muscular, "
+    "slim, toned), nudity level (nude, topless, bare), or any trait that identifies the person "
+    "\u2014 these are not control axes and describing them overfits the LoRA to the training "
+    "subjects; describe only the garment and its placement, the view, the pose, and the setting. "
+    "Do not judge or re-name the core subject the trigger word already names, and never open "
+    "with a phrase that describes the picture rather than its contents (e.g. 'The image', 'The "
+    "subject', 'A photo of')."
 )
+
+# Split OUT of the discipline so it can be the LAST thing the model reads. A few-shot exemplar
+# wants recency to work, and the composed subject fields sit between the two -- so the output
+# rule has to be appended after them rather than living at the tail of the discipline string.
+OUTPUT_RULE = "Output the single sentence only \u2014 no preamble, no reasoning."
 
 # The old garment-specific skeleton, kept as an OPT-IN preset (--preset garment). It is a fine
 # instruction for a fabric set and a bad one for everything else; it stopped being the default
@@ -107,6 +115,13 @@ def compose_instruction(a):
         parts.append("Do not mention or estimate size; it is labelled separately.")
     if a.emphasize.strip():
         parts.append("Priority for this set: %s" % sentence(a.emphasize))
+    # Few-shot exemplar LAST but one. A model imitates a concrete example far better than it
+    # obeys a rule, so this is the strongest lever available and it is placed where recency
+    # helps it. 🛑 The example must NOT carry the trigger prefix: the trigger is prepended
+    # separately, and an exemplar showing it would teach the model to write it twice.
+    if a.example.strip():
+        parts.append('Follow the EXACT format of this example: "%s"' % a.example.strip())
+    parts.append(OUTPUT_RULE)
     return "\n\n".join(parts)
 
 
@@ -303,6 +318,7 @@ def main():
     ap.add_argument("--size-mode", default="omit", choices=["omit", "state"])
     ap.add_argument("--size-word", default="")     # only meaningful with --size-mode state
     ap.add_argument("--emphasize", default="")     # extra things to make sure are described
+    ap.add_argument("--example", default="")       # one literal caption showing the exact format
     ap.add_argument("--preset", default="")        # optional subject skeleton, e.g. "garment"
     ap.add_argument("--avoid", default="")         # phrase to keep out of the body (default: trigger)
     ap.add_argument("--max-side", type=int, default=768)

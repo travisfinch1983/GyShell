@@ -76,6 +76,12 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
   const setNaming = (v: string) => { setNamingRaw(v); setPer('aig-cap-naming:', v) }
   const [emphasize, setEmphasizeRaw] = useState(() => per('aig-cap-emph:'))
   const setEmphasize = (v: string) => { setEmphasizeRaw(v); setPer('aig-cap-emph:', v) }
+  // Left BLANK by default on purpose. An exemplar is imitated — that is the point — so a
+  // seeded one would push its own garment and setting into sets it was never written for,
+  // and the per-folder store falls back to the last value used ANYWHERE. The validated
+  // wording lives in the placeholder instead: visible, copyable, not silently applied.
+  const [example, setExampleRaw] = useState(() => per('aig-cap-example:'))
+  const setExample = (v: string) => { setExampleRaw(v); setPer('aig-cap-example:', v) }
   const [sizeWord, setSizeWordRaw] = useState(() => per('aig-cap-sizeword:'))
   const setSizeWord = (v: string) => { setSizeWordRaw(v); setPer('aig-cap-sizeword:', v) }
   // Default omit, and the reason is shown in the UI rather than assumed: measured on these
@@ -160,6 +166,7 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
     if (isVlm && context.trim()) body.context = context.trim()
     if (isVlm && naming.trim()) body.naming = naming.trim()
     if (isVlm && emphasize.trim()) body.emphasize = emphasize.trim()
+    if (isVlm && example.trim()) body.example = example.trim()
     if (isVlm) {
       body.size_mode = sizeMode
       if (sizeMode === 'state' && sizeWord.trim()) body.size_word = sizeWord.trim()
@@ -398,6 +405,20 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
               Cut, colour and fabric — not size. With size kept out of the sentence above, this
               box is the remaining way one could get back in, so avoid words like large,
               prominent or full here.
+            </div>
+
+            <div className={styles.acSection}>Format example</div>
+            <input
+              className={styles.input} style={{ width: '100%' }} disabled={running}
+              placeholder='optional - e.g. Front view, standing pose, red satin briefs high-cut with the bulge visible through the fabric, indoor room.'
+              value={example} onChange={(e) => setExample(e.target.value)}
+            />
+            <div className={styles.acHint}>
+              One literal caption showing the exact shape you want. Measured as the strongest
+              control here — a model copies an example far more reliably than it follows a rule.
+              <b> Do not include the trigger word</b>: it is prepended separately, so an example
+              containing it teaches the model to write it twice. Leave blank and no example is
+              sent.
             </div>
           </>
         )}

@@ -758,6 +758,11 @@ export function createImagegenRouter(config) {
           + ` --size-mode ${b.size_mode === 'state' ? 'state' : 'omit'}`
           + (b.size_mode === 'state' && b.size_word ? ` --size-word ${q(String(b.size_word))}` : '')
           + (b.emphasize ? ` --emphasize ${q(String(b.emphasize))}` : '')
+          // A literal format exemplar. Measured as the strongest lever available: a model
+          // imitates a concrete example far better than it obeys a rule. 🛑 It must carry no
+          // trigger prefix — the trigger is prepended separately, so an exemplar showing one
+          // teaches the model to write it twice.
+          + (b.example ? ` --example ${q(String(b.example))}` : '')
           + (b.preset ? ` --preset ${q(String(b.preset))}` : '')
           + (b.avoid ? ` --avoid ${q(String(b.avoid))}` : '')
           + (b.max_side ? ` --max-side ${parseInt(b.max_side, 10)}` : '')
