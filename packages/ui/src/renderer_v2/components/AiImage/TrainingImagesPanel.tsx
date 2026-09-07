@@ -384,14 +384,17 @@ const Tile: React.FC<{ im: IgImage; i: number; onOpen: () => void }> = observer(
   const label = im.w && im.h ? `${im.w}×${im.h}` : im.name
   return (
     <div className={`${styles.tile} ${sel ? styles.tileSel : ''}`}
-      onMouseDown={(e) => { if (e.button !== 0) return; longRef.current = false; down.current = { x: e.clientX, y: e.clientY }; timer.current = setTimeout(() => { longRef.current = true; if (!store.selectionMode) store.enterSelection(); if (!store.selected.has(im.name)) store.toggleOne(i); store.lastIndex = i }, 400) }}
+      onMouseDown={(e) => { if (e.button !== 0) return; longRef.current = false; down.current = { x: e.clientX, y: e.clientY }; timer.current = setTimeout(() => { longRef.current = true; if (!store.selectionMode) store.enterSelection(); if (!store.selected.has(imKey(im))) store.toggleOne(i); store.lastIndex = i }, 400) }}
       onMouseMove={(e) => { if (timer.current && (Math.abs(e.clientX - down.current.x) > 6 || Math.abs(e.clientY - down.current.y) > 6)) { clearTimeout(timer.current); timer.current = null } }}
       onMouseLeave={() => { if (timer.current) { clearTimeout(timer.current); timer.current = null } }}
-      onMouseUp={(e) => {
+      onMouseUp={() => {
         if (timer.current) { clearTimeout(timer.current); timer.current = null }
         if (longRef.current) { longRef.current = false; return }
-        if (store.selectionMode) { if (e.shiftKey && store.lastIndex != null) store.selectRange(store.lastIndex, i); else { store.toggleOne(i); store.lastIndex = i } }
-        else onOpen()
+        // ALWAYS open. Selection used to hijack this click whenever selectionMode was on,
+        // which made the crop editor unreachable for as long as anything was ticked --
+        // viewing an image and choosing images to act on are not modes of each other.
+        // Ticking lives on the .pick circle below (shift+click there for a range).
+        onOpen()
       }}>
       {/* mousedown/mouseup must not reach the tile: mouseup precedes click, and the
           tile's mouseup opens the editor — which made circle-clicks look broken (they
@@ -399,7 +402,18 @@ const Tile: React.FC<{ im: IgImage; i: number; onOpen: () => void }> = observer(
       <span className={styles.pick}
         onMouseDown={(e) => e.stopPropagation()}
         onMouseUp={(e) => e.stopPropagation()}
-        onClick={(e) => { e.stopPropagation(); if (!store.selectionMode) store.enterSelection(); store.toggleOne(i); store.lastIndex = i }} />
+        title="Select — shift-click to select a range"
+        onClick={(e) => {
+          e.stopPropagation()
+          if (!store.selectionMode) store.enterSelection()
+          // Range-select moved here with the rest of selection. lastIndex can be stale after
+          // a filter change (it indexes visibleImages), so bound it rather than trusting it.
+          if (e.shiftKey && store.lastIndex != null && store.lastIndex < store.visibleImages.length) {
+            store.selectRange(store.lastIndex, i)
+          } else {
+            store.toggleOne(i); store.lastIndex = i
+          }
+        }} />
       {im.cropped && <span className={`${styles.bdg} ${styles.bdgCrop}`} title="Cropped">✓</span>}
       {im.has_alt && <span className={styles.bdg} title="Upscaled — swap available in editor">⤴</span>}
       {im.has_caption && <span className={styles.bdg} title="Has tags (.txt)">✎</span>}

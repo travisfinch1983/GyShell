@@ -32,6 +32,9 @@
 .tileName { position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 6px; font-size: 10px; background: linear-gradient(transparent, rgba(0,0,0,0.75)); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pick { position: absolute; top: 5px; left: 5px; width: 18px; height: 18px; border-radius: 50%; border: 2px solid #fff; background: rgba(0,0,0,0.35); z-index: 2; opacity: 0; transition: opacity .1s; }
 .tile:hover .pick, .tileSel .pick { opacity: 1; }
+/* Ticking is now the ONLY way to select (tile click opens the editor), so the circle
+   has to be easy to hit. This extends the target to ~32px without changing how it looks. */
+.pick::before { content: ''; position: absolute; inset: -7px; border-radius: 50%; }
 .tileSel .pick { background: var(--accent); }
 .bdg { position: absolute; top: 4px; right: 4px; font-size: 10px; padding: 1px 5px; border-radius: 8px; background: rgba(0,0,0,0.6); color: #fff; z-index: 2; }
 .bdg + .bdg { top: 22px; }
