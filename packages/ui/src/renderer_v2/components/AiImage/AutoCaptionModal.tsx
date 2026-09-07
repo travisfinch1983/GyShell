@@ -67,6 +67,22 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
   // what it is looking at; the trigger phrase stays OUT of the prose.
   const [context, setContextRaw] = useState(() => { try { return localStorage.getItem('aig-cap-context:' + store.cwd) ?? localStorage.getItem('aig-cap-context:*') ?? '' } catch { return '' } })
   const setContext = (v: string) => { setContextRaw(v); try { localStorage.setItem('aig-cap-context:' + store.cwd, v); localStorage.setItem('aig-cap-context:*', v) } catch {} }
+  // Subject fields. The captioner's permanent half is now caption DISCIPLINE (consistency,
+  // only what is visible, describe what varies); everything subject-specific is composed from
+  // these. Persisted per folder like context, since they describe a SET, not a session.
+  const per = (k: string) => { try { return localStorage.getItem(k + store.cwd) ?? localStorage.getItem(k + '*') ?? '' } catch { return '' } }
+  const setPer = (k: string, v: string) => { try { localStorage.setItem(k + store.cwd, v); localStorage.setItem(k + '*', v) } catch {} }
+  const [naming, setNamingRaw] = useState(() => per('aig-cap-naming:'))
+  const setNaming = (v: string) => { setNamingRaw(v); setPer('aig-cap-naming:', v) }
+  const [emphasize, setEmphasizeRaw] = useState(() => per('aig-cap-emph:'))
+  const setEmphasize = (v: string) => { setEmphasizeRaw(v); setPer('aig-cap-emph:', v) }
+  const [sizeWord, setSizeWordRaw] = useState(() => per('aig-cap-sizeword:'))
+  const setSizeWord = (v: string) => { setSizeWordRaw(v); setPer('aig-cap-sizeword:', v) }
+  // Default OMIT, deliberately: measured on Travis's sets, the VLM called the "huge" set
+  // "large" 21 times and "huge" once. Size is stamped deterministically with blanket tags
+  // instead, so asking the model for it only introduces a word that has to be corrected later.
+  const [sizeMode, setSizeModeRaw] = useState<'omit' | 'state'>(() => (per('aig-cap-sizemode:') === 'state' ? 'state' : 'omit'))
+  const setSizeMode = (v: 'omit' | 'state') => { setSizeModeRaw(v); setPer('aig-cap-sizemode:', v) }
   const [status, setStatus] = useState(''); const [running, setRunning] = useState(false)
   // Custom NL engine: which proxy model does the captioning. The list is fetched lazily
   // (only when the vlm engine is chosen); on failure the picker degrades to a free-text
@@ -141,6 +157,12 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
     // `avoid` defaults to the trigger backend-side, so the phrase is stated
     // once (by the prepend) instead of twice.
     if (isVlm && context.trim()) body.context = context.trim()
+    if (isVlm && naming.trim()) body.naming = naming.trim()
+    if (isVlm && emphasize.trim()) body.emphasize = emphasize.trim()
+    if (isVlm) {
+      body.size_mode = sizeMode
+      if (sizeMode === 'state' && sizeWord.trim()) body.size_word = sizeWord.trim()
+    }
     if (isVlm && vlmModel.trim()) body.vlm_model = vlmModel.trim()
     setRunning(true); setStatus('Starting…')
     try {
@@ -323,8 +345,54 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
             <div className={styles.acHint}>
               Tells the model what it is looking at so it uses the right vocabulary. The
               trigger below is kept OUT of the sentence itself - it is prepended, so saying
-              it twice is redundant.
+              it twice is redundant. The caption discipline (one factual sentence, consistent
+              wording, describe what VARIES, no preamble) is always applied - these fields say
+              what the SUBJECT is, not how to write.
             </div>
+
+            <div className={styles.acSection}>Consistent naming</div>
+            <input
+              className={styles.input} style={{ width: '100%' }} disabled={running}
+              placeholder={'optional - e.g. Always call the genital area "the bulge", never "protrusion", "contour" or "shape".'}
+              value={naming} onChange={(e) => setNaming(e.target.value)}
+            />
+            <div className={styles.acHint}>
+              Sent verbatim. A model that drifts between synonyms for the same thing is what
+              makes a concept hard to learn, so dictate the exact word.
+            </div>
+
+            <div className={styles.acSection}>Size</div>
+            <div className={styles.acSeg}>
+              {([['omit', "Don't caption size", 'recommended'],
+                 ['state', 'Always say…', 'one fixed word']] as const).map(([v, label, ext]) => (
+                <button
+                  key={v} disabled={running}
+                  className={`${styles.acSegBtn} ${sizeMode === v ? styles.acSegOn : ''}`}
+                  onClick={() => setSizeMode(v)}
+                >
+                  {label}<span className={styles.acSegExt}>{ext}</span>
+                </button>
+              ))}
+            </div>
+            {sizeMode === 'state' && (
+              <input
+                className={styles.input} style={{ width: '100%', marginTop: 6 }} disabled={running}
+                placeholder="the exact word to use, e.g. cute"
+                value={sizeWord} onChange={(e) => setSizeWord(e.target.value)}
+              />
+            )}
+            <div className={styles.acHint}>
+              The model is unreliable at size: on the "huge" set it wrote "large" 21 times and
+              "huge" once. Leave it out here and stamp the size across the set afterwards with
+              Blanket tags, which is deterministic.
+            </div>
+
+            <div className={styles.acSection}>Emphasize</div>
+            <input
+              className={styles.input} style={{ width: '100%' }} disabled={running}
+              placeholder="optional - things to make sure are described, e.g. the fabric, the waistband, the camera view"
+              value={emphasize} onChange={(e) => setEmphasize(e.target.value)}
+            />
           </>
         )}
 

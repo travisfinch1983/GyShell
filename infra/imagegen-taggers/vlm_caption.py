@@ -33,18 +33,69 @@ import urllib.request
 
 IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 
-DEFAULT_INSTRUCTION = (
-    "You write one-sentence training captions for a LoRA. Lead with the garment's material and "
-    "how light behaves on it - its sheen or gloss, any specular highlights, whether it reads "
-    "matte or satin, sheer or opaque, and how the fabric folds, gathers or stretches over the "
-    "body. Then give its cut and construction: waistband, trim, seams, straps, string sides, "
-    "coverage. Then the camera view (front, rear, three-quarter or side) and the pose. End with "
-    "the setting in a few words at most. Be specific and factual about what is actually visible, "
-    "never guess or invent a colour, and use the same ordinary vocabulary for the garment in "
-    "every caption. Reply with the caption itself and nothing else: one flowing sentence, no "
-    "preamble, no reasoning, no lists, and do not open with 'The subject', 'The image', 'This "
-    "image' or 'A photo of'."
+# ── The permanent half. Always sent, for every set, whatever the subject is. ────────────
+# This is about HOW to caption, not WHAT the subject is: consistency of vocabulary, only what
+# is visible, describe what VARIES across the set (that is what the model learns to control),
+# and no preamble. Subject-specific direction arrives through the composed fields below.
+UNIVERSAL_DISCIPLINE = (
+    "You write training captions for a LoRA image dataset: one flowing, factual sentence per "
+    "image. Describe only what is clearly visible - never guess or invent a colour, material, "
+    "or detail. Use plain, consistent vocabulary: call the same thing by the same word in every "
+    "caption, and do not reword for variety. Describe the elements that VARY across the set - "
+    "the camera view (front, rear, three-quarter or side), the pose, the clothing, the visible "
+    "body and character details, and the setting in a few words - because those are what the "
+    "model learns to control. Do not judge or re-name the core subject the trigger word already "
+    "names, and do not state a size or any trait you are told is fixed for this set unless given "
+    "the exact word to use; never substitute your own. Reply with the caption only: no preamble, "
+    "no reasoning, no lists, and never open with 'The image', 'The subject', 'This image' or "
+    "'A photo of'."
 )
+
+# The old garment-specific skeleton, kept as an OPT-IN preset (--preset garment). It is a fine
+# instruction for a fabric set and a bad one for everything else; it stopped being the default
+# because it could not be turned off from the UI.
+GARMENT_PRESET = (
+    "Lead with the garment's material and how light behaves on it - its sheen or gloss, any "
+    "specular highlights, whether it reads matte or satin, sheer or opaque, and how the fabric "
+    "folds, gathers or stretches over the body. Then give its cut and construction: waistband, "
+    "trim, seams, straps, string sides, coverage."
+)
+
+PRESETS = {"garment": GARMENT_PRESET}
+
+
+def compose_instruction(a):
+    """UNIVERSAL_DISCIPLINE + the subject fields, in the order a reader would want them.
+
+    An explicit --instruction still replaces the discipline outright: it is the escape hatch
+    for a set that needs something this composition cannot express.
+    """
+    if a.instruction.strip():
+        base = a.instruction.strip()
+    else:
+        base = UNIVERSAL_DISCIPLINE
+        preset = PRESETS.get((a.preset or "").strip().lower())
+        if preset:
+            base += " " + preset
+    parts = [base]
+    if a.context.strip():
+        parts.append("This image set is: %s." % a.context.strip())
+    if a.naming.strip():
+        # Verbatim: the whole point is that the caller dictates the exact word, because the
+        # model drifting between synonyms is what makes a token unlearnable.
+        parts.append(a.naming.strip())
+    mode = (a.size_mode or "omit").strip().lower()
+    if mode == "state" and a.size_word.strip():
+        parts.append("Every image here is %s; if you refer to size, say '%s' and nothing else."
+                     % (a.size_word.strip(), a.size_word.strip()))
+    elif mode == "omit":
+        # Measured: on the "huge" set the model said "large" 21x and "huge" 1x. It cannot be
+        # trusted with size, so size is stamped deterministically elsewhere and kept out here.
+        parts.append("Do not mention or estimate size; it is labelled separately.")
+    if a.emphasize.strip():
+        parts.append("Describe these in particular: %s." % a.emphasize.strip())
+    return "\n\n".join(parts)
+
 
 # Lead-ins a caption should not start with - same intent as the BLIP engine's filler strip.
 LEAD_INS = (
@@ -235,6 +286,11 @@ def main():
     ap.add_argument("--model", default="Qwen3.5-9B-INT8-MM-Thinking-Non_preserved-256k")
     ap.add_argument("--instruction", default="")
     ap.add_argument("--context", default="")       # domain hint: what this SET is
+    ap.add_argument("--naming", default="")        # verbatim vocabulary rule, e.g. always call X "the bulge"
+    ap.add_argument("--size-mode", default="omit", choices=["omit", "state"])
+    ap.add_argument("--size-word", default="")     # only meaningful with --size-mode state
+    ap.add_argument("--emphasize", default="")     # extra things to make sure are described
+    ap.add_argument("--preset", default="")        # optional subject skeleton, e.g. "garment"
     ap.add_argument("--avoid", default="")         # phrase to keep out of the body (default: trigger)
     ap.add_argument("--max-side", type=int, default=768)
     # Raised from 220: at 220 the model was being cut off mid-sentence on the longer, more
@@ -250,13 +306,9 @@ def main():
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
 
-    instruction = a.instruction.strip() or DEFAULT_INSTRUCTION
-    if a.context.strip():
-        # Context goes IN so the model knows what it is looking at; the trigger phrase is kept
-        # OUT of the output so it is not said twice (it is prepended separately).
-        instruction = (
-            "Context for this image set: %s\n\n%s" % (a.context.strip(), instruction)
-        )
+    # Context used to be PREPENDED to a garment-shaped default, which meant the skeleton could
+    # not be replaced from the UI however the box was filled in. Now the shape is composed.
+    instruction = compose_instruction(a)
     avoid = (a.avoid or a.trigger or "").strip().rstrip(",")
     if avoid:
         instruction += (

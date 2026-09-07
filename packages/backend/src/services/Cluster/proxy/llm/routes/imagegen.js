@@ -749,6 +749,16 @@ export function createImagegenRouter(config) {
           + `--api ${q(VLM_API)} --model ${q(String(b.vlm_model || VLM_MODEL))}`
           + (b.instruction ? ` --instruction ${q(String(b.instruction))}` : '')
           + (b.context ? ` --context ${q(String(b.context))}` : '')
+          // Subject fields. The captioner composes these onto a permanent discipline prompt
+          // rather than a garment-shaped default that the UI could never replace.
+          + (b.naming ? ` --naming ${q(String(b.naming))}` : '')
+          // Size is STAMPED deterministically per set (blanket tags / find & replace), not
+          // asked of the model: on the "huge" set it said "large" 21x and "huge" once. So the
+          // default is to keep size out of the caption entirely.
+          + ` --size-mode ${b.size_mode === 'state' ? 'state' : 'omit'}`
+          + (b.size_mode === 'state' && b.size_word ? ` --size-word ${q(String(b.size_word))}` : '')
+          + (b.emphasize ? ` --emphasize ${q(String(b.emphasize))}` : '')
+          + (b.preset ? ` --preset ${q(String(b.preset))}` : '')
           + (b.avoid ? ` --avoid ${q(String(b.avoid))}` : '')
           + (b.max_side ? ` --max-side ${parseInt(b.max_side, 10)}` : '')
           + (b.trigger ? ` --trigger ${q(b.trigger)}` : '')
