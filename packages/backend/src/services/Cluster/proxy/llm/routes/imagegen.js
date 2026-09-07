@@ -328,6 +328,19 @@ export function createImagegenRouter(config) {
     if (images.length && (isTS || images.length <= DIMS_CAP)) {
       const dims = await mapLimit(images, 16, (im) => dimsOf(path.join(dir, im.name)));
       images.forEach((im, k) => { im.w = dims[k].w; im.h = dims[k].h; });
+      // Caption sidecars are NOT a training-set mechanic — every captioner writes
+      // <image>.txt / <image>.caption next to the image in whatever folder it sits in. These
+      // used to live in the isTS branch below, so any folder not literally named training_set*
+      // (rule34's slug-named sets, samples, satin) reported has_caption=false for every image
+      // while the .txt files were right there. Costs the same 2xN existsSync a training set
+      // already paid, and is bounded by the same DIMS_CAP as the dimension reads.
+      images.forEach((im) => {
+        im.has_caption = existsSync(captionPath(path.join(dir, im.name)));                          // .txt tags
+        im.has_nl_caption = existsSync(path.join(dir, im.name).replace(/\.[^/.]+$/, '') + '.caption'); // BLIP/NL
+      });
+      // cropped / has_alt STAY here: both are training-set mechanics. `cropped` compares against
+      // the pristine baseline copy, and has_alt reads the .preup upscale dir — neither exists
+      // outside a set, so asking for them elsewhere would be a wasted stat per image.
       if (isTS) {
         const od = await mapLimit(images, 16, (im) => {
           const b = baselinePath(path.join(dir, im.name));
@@ -337,8 +350,6 @@ export function createImagegenRouter(config) {
           const o = od[k];
           im.cropped = !!(o && (o.w !== im.w || o.h !== im.h));
           im.has_alt = existsSync(path.join(dir, '.preup', im.name));   // an upscale swap is available
-          im.has_caption = existsSync(captionPath(path.join(dir, im.name)));   // .txt tag sidecar
-          im.has_nl_caption = existsSync(path.join(dir, im.name).replace(/\.[^/.]+$/, '') + '.caption');   // BLIP/NL
         });
       }
     }
