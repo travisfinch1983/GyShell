@@ -38,18 +38,19 @@ IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 # is visible, describe what VARIES across the set (that is what the model learns to control),
 # and no preamble. Subject-specific direction arrives through the composed fields below.
 UNIVERSAL_DISCIPLINE = (
-    "You write training captions for a LoRA image dataset: one flowing, factual sentence per "
-    "image. Describe only what is clearly visible \u2014 never guess or invent a colour, material, "
-    "size, or detail. Vocabulary consistency across the whole set matters MORE than per-image "
-    "precision \u2014 when unsure between a plain word already used in the set and a unique word for "
-    "one image, use the plain word, and never reword for variety. Keep it clinical and literal, "
-    "never suggestive or evaluative. Describe the elements that VARY across the set \u2014 the "
-    "camera view (front, rear, three-quarter or side), the pose, the clothing (its cut, colour "
-    "and fabric), the visible body and character details, and the setting in a few words \u2014 "
-    "because those are what the model learns to control. Do not judge or re-name the core "
-    "subject the trigger word already names. Reply with the caption only: no preamble, no "
-    "reasoning, no lists, and never open with a phrase that describes the picture rather than "
-    "its contents (e.g. 'The image', 'The subject', 'A photo of')."
+    "You write training captions for a LoRA image dataset: exactly ONE flowing, factual "
+    "sentence per image \u2014 never a list, numbered items, bullet points, or multiple sentences. "
+    "Describe only what is clearly visible; never guess or invent a colour, material, size, or "
+    "detail. Write the varying elements as a single sentence of comma-separated clauses in this "
+    "fixed order: camera view (front, rear, three-quarter or side), pose, then the clothing (its "
+    "cut, colour and fabric), and a few words of setting \u2014 no sub-lists, aiming for roughly "
+    "20-30 words (hard cap ~40). Vocabulary consistency across the whole set matters MORE than "
+    "per-image precision: when unsure between a plain word already used in the set and a unique "
+    "word for one image, use the plain word, and never reword for variety. Keep it clinical and "
+    "literal, never suggestive or evaluative. Do not judge or re-name the core subject the "
+    "trigger word already names, and never open with a phrase that describes the picture rather "
+    "than its contents (e.g. 'The image', 'The subject', 'A photo of'). Output the single "
+    "sentence only \u2014 no preamble, no reasoning."
 )
 
 # The old garment-specific skeleton, kept as an OPT-IN preset (--preset garment). It is a fine
