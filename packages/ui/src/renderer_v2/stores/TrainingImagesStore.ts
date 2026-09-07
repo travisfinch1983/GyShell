@@ -350,7 +350,7 @@ export class TrainingImagesStore {
     return { moved, subsection, reused }
   }
 
-  async tagsBatchKeys(body: { add?: string[]; remove?: string[]; position?: 'start' | 'after_trigger' | 'end' }, keys: string[]): Promise<{ changed: number; unchanged: number; cleared: number; errors: string[] }> {
+  async tagsBatchKeys(body: { add?: string[]; remove?: string[]; position?: 'start' | 'after_trigger' | 'end'; exts?: Array<'txt' | 'caption'> }, keys: string[]): Promise<{ changed: number; unchanged: number; cleared: number; errors: string[] }> {
     const out = { changed: 0, unchanged: 0, cleared: 0, errors: [] as string[] }
     for (const g of this.splitKeys(keys)) {
       const r = await this.tagsBatch({ ...body, files: g.names }, g.sub)
@@ -427,7 +427,7 @@ export class TrainingImagesStore {
   /** Blanket add/remove the same tags across a whole folder (or a selection) in ONE call.
    *  `position` defaults to 'start' because kohya reads the leading token as the trigger word,
    *  so a blanket trigger has to prepend. Per-image POST /tags would be 650+ round-trips. */
-  async tagsBatch(body: { add?: string[]; remove?: string[]; files?: string[]; position?: 'start' | 'after_trigger' | 'end' }, sub = ''): Promise<any> {
+  async tagsBatch(body: { add?: string[]; remove?: string[]; files?: string[]; position?: 'start' | 'after_trigger' | 'end'; exts?: Array<'txt' | 'caption'> }, sub = ''): Promise<any> {
     return ig('/tags-batch', { method: 'POST', body: { path: this.dirPath(sub), ...body } })
   }
 

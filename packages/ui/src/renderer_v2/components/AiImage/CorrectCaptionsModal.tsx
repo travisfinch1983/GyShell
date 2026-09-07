@@ -15,10 +15,11 @@ interface CorrectStatus {
  *  instruction ("every image here is a CUTE bulge; fix any that say large or huge") and a text
  *  model, and it rewrites the sidecars a model at a time.
  *
- *  A dry run is a JOB, not a synchronous call (one LLM round-trip per file), so Preview launches
- *  it and streams proposals back into the modal as they land — the same job the global progress
- *  card shows. Apply runs the identical job with dry_run off and hands progress to that card.
- *  Vision mode is intentionally absent (text-first); the layout leaves room for it later. */
+ *  Dry-run and apply are both JOBS (one LLM round-trip per file): Preview streams the proposed
+ *  rewrites into the modal before anything is written; Apply streams the same list as it writes.
+ *  An error here means the model DECLINED to return a usable correction and the caption was kept
+ *  as-is rather than blanked — the one unrecoverable outcome — so errors are shown loudly, not as
+ *  a footnote. Vision mode is intentionally absent (text-first); the layout leaves room for it. */
 export const CorrectCaptionsModal: React.FC<{ files: string[]; onClose: () => void; onDone: () => void }> =
   ({ files, onClose, onDone }) => {
     const [instruction, setInstruction] = useState('')
@@ -58,42 +59,42 @@ export const CorrectCaptionsModal: React.FC<{ files: string[]; onClose: () => vo
       return b
     }
 
+    // Preview and Apply are the same job with dry_run flipped; both stream status so declined
+    // captions surface either way. Apply refreshes the folder on completion.
     const launch = async (dry: boolean) => {
       if (!instruction.trim()) { setMsg('Enter a correction instruction.'); return }
       if (!model) { setMsg('Pick a model.'); return }
       if (!exts.length) { setMsg('Pick at least one of .caption / .txt.'); return }
       setBusy(true); setStatus(null); stopPoll()
-      setMsg(dry ? 'Previewing…' : 'Starting…')
+      setMsg(dry ? 'Previewing…' : 'Correcting…')
       try {
         const { jobId } = await store.correctCaptions(buildBody(dry))
         const label = `Correct captions${dry ? ' (preview)' : ''} · ${(model.split('/').pop() || model)}`
         store.trackCaptionJob(jobId, label)   // same progress card as any caption run
-        if (dry) {
-          // Stream proposals into the modal so the rewrite can be reviewed before it's applied.
-          pollRef.current = setInterval(async () => {
-            try {
-              const s: CorrectStatus = await store.autoCaptionStatus(jobId)
-              setStatus(s)
-              if (s.state !== 'running') {
-                stopPoll(); setBusy(false)
-                setMsg(s.state === 'error'
-                  ? `Preview failed: ${s.error || s.lastError || 'unknown'}`
-                  : `Preview ready — ${s.samples?.length || 0} shown of ${s.total} file${s.total === 1 ? '' : 's'}.`)
+        pollRef.current = setInterval(async () => {
+          try {
+            const s: CorrectStatus = await store.autoCaptionStatus(jobId)
+            setStatus(s)
+            if (s.state !== 'running') {
+              stopPoll(); setBusy(false)
+              if (s.state === 'error') {
+                setMsg(`${dry ? 'Preview' : 'Correction'} failed: ${s.error || s.lastError || 'unknown'}`)
+              } else if (dry) {
+                setMsg(`Preview ready — ${s.wrote ?? s.samples?.length ?? 0} proposed of ${s.total} file${s.total === 1 ? '' : 's'}${s.errors ? `, ${s.errors} declined` : ''}.`)
+              } else {
+                setMsg(`Done — ${s.wrote ?? 0} corrected, ${s.skipped ?? 0} unchanged${s.errors ? `, ${s.errors} declined` : ''}.`)
+                onDone()
               }
-            } catch { /* transient — keep polling */ }
-          }, 1200)
-        } else {
-          stopPoll(); setBusy(false)
-          setMsg(`Correcting ${scoped ? `${files.length} file${files.length === 1 ? '' : 's'}` : 'this folder'} — progress in the panel.`)
-          onDone()
-          onClose()
-        }
+            }
+          } catch { /* transient — keep polling */ }
+        }, 1200)
       } catch (e: any) {
         stopPoll(); setBusy(false); setMsg('Failed: ' + (e?.message || e))
       }
     }
 
     const proposals = status?.samples || []
+    const errCount = status?.errors ?? 0
 
     return (
       <div className={styles.modalBg}>{/* not click-to-close: a stray backdrop click eats typed input */}
@@ -147,12 +148,20 @@ export const CorrectCaptionsModal: React.FC<{ files: string[]; onClose: () => vo
           {status && (
             <>
               <div className={styles.acSection}>
-                Proposed changes
+                {status.dry_run ? 'Proposed changes' : 'Changes'}
                 <span className={styles.acHint} style={{ margin: 0, marginLeft: 8 }}>
-                  {status.done}/{status.total}{status.state === 'running' ? ' …' : ''}
-                  {status.errors ? ` · ${status.errors} error${status.errors === 1 ? '' : 's'}` : ''}
+                  {status.done}/{status.total} scanned{status.state === 'running' ? ' …' : ''}
+                  {status.wrote != null ? ` · ${status.wrote} ${status.dry_run ? 'proposed' : 'written'}` : ''}
                 </span>
               </div>
+
+              {errCount > 0 && (
+                <div style={{ margin: '2px 0 8px', padding: '7px 10px', borderRadius: 6, background: 'var(--danger-bg, rgba(248,81,73,0.13))', color: 'var(--danger, #f85149)', fontSize: 12, lineHeight: 1.45 }}>
+                  ⚠ {errCount} caption{errCount === 1 ? '' : 's'} left unchanged — the model didn’t return a usable correction, so {errCount === 1 ? 'it was' : 'they were'} kept as-is (never blanked).
+                  {status.lastError ? <> Last: <span style={{ opacity: 0.85 }}>{status.lastError}</span></> : null}
+                </div>
+              )}
+
               {proposals.length > 0 ? (
                 <div style={{ maxHeight: 240, overflowY: 'auto', fontSize: 12, lineHeight: 1.4 }}>
                   {proposals.map((p, i) => (
@@ -162,10 +171,10 @@ export const CorrectCaptionsModal: React.FC<{ files: string[]; onClose: () => vo
                       <div style={{ color: 'var(--ok, #3fb950)' }}>{p.after || <em style={{ opacity: 0.6 }}>(emptied)</em>}</div>
                     </div>
                   ))}
-                  {status.state === 'running' && <div className={styles.acHint}>proposals stream in as the model works…</div>}
+                  {status.state === 'running' && <div className={styles.acHint}>streams in as the model works — capped at 10 shown…</div>}
                 </div>
               ) : (
-                <div className={styles.acHint}>{status.state === 'running' ? 'working…' : 'No changes proposed — the captions already match the instruction.'}</div>
+                <div className={styles.acHint}>{status.state === 'running' ? 'working…' : (errCount > 0 ? 'No changes written.' : 'No changes — the captions already match the instruction.')}</div>
               )}
             </>
           )}

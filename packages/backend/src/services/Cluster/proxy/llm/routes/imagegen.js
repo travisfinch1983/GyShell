@@ -1438,7 +1438,10 @@ export function createImagegenRouter(config) {
     const txt = captionPath(file);
     let tags = [];
     try { if (existsSync(txt)) tags = readFileSync(txt, 'utf8').split(',').map((t) => t.trim()).filter(Boolean); } catch { /* ignore */ }
-    const norm = (t) => String(t).trim();
+    // A comma is the SEPARATOR here, so it can never be part of a tag: strip it from both
+    // ends. Without this, typing "large bulge," carried its own comma into the token and the
+    // rejoin wrote "large bulge,," — whether the user remembered the comma changed the result.
+    const norm = (t) => String(t).replace(/^[\s,]+|[\s,]+$/g, '');
     const remove = new Set((b.remove || []).map(norm));
     tags = tags.filter((t) => !remove.has(t));
     for (const t of (b.add || []).map(norm)) { if (t && !tags.includes(t)) tags.push(t); }
@@ -1450,7 +1453,8 @@ export function createImagegenRouter(config) {
   });
 
   // ---- tags-batch: add/remove the SAME tags across many images in one call ----
-  // POST { path:<folder rel>, files?:[names], add?:[], remove?:[], position?:'start'|'after_trigger'|'end' }
+  // POST { path:<folder rel>, files?:[names], add?:[], remove?:[],
+  //        position?:'start'|'after_trigger'|'end', exts?:['txt','caption'] }
   // `files` omitted = every image in the folder. Per-image round-trips (POST /tags) were the
   // only way to do this, which is 650+ requests on a real set and no way to put a trigger word
   // FIRST -- and position matters: kohya reads the leading token as the trigger, so a blanket
@@ -1461,13 +1465,23 @@ export function createImagegenRouter(config) {
     try { dir = safeResolve(b.path); } catch { return res.status(400).json({ error: 'bad path' }); }
     if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'not a directory' });
 
-    const norm = (t) => String(t).trim();
+    // A comma is the SEPARATOR here, so it can never be part of a tag: strip it from both
+    // ends. Without this, typing "large bulge," carried its own comma into the token and the
+    // rejoin wrote "large bulge,," — whether the user remembered the comma changed the result.
+    const norm = (t) => String(t).replace(/^[\s,]+|[\s,]+$/g, '');
     const add = (Array.isArray(b.add) ? b.add : []).map(norm).filter(Boolean);
     const remove = new Set((Array.isArray(b.remove) ? b.remove : []).map(norm).filter(Boolean));
     if (!add.length && !remove.size) return res.status(400).json({ error: 'nothing to add or remove' });
     // 'start' prepends (in FRONT of the trigger), 'after_trigger' slots in at index 1 so the
     // leading token keeps being the trigger, 'end' appends. Default stays 'start'.
     const position = b.position === 'end' || b.position === 'after_trigger' ? b.position : 'start';
+    // WHICH sidecars to write. .caption is treated as the same comma-separated list as .txt:
+    // that is what makes 'after the trigger' mean anything in a natural-language caption, and
+    // the rejoin is what writes the comma AFTER an inserted term. Defaults to .txt alone, so a
+    // direct API caller keeps the behaviour this endpoint has always had.
+    const exts = Array.isArray(b.exts) && b.exts.length
+      ? b.exts.filter((e) => e === 'txt' || e === 'caption') : ['txt'];
+    if (!exts.length) return res.status(400).json({ error: "exts must include 'txt' and/or 'caption'" });
 
     let names;
     if (Array.isArray(b.files) && b.files.length) {
@@ -1479,10 +1493,15 @@ export function createImagegenRouter(config) {
 
     let changed = 0, unchanged = 0, cleared = 0; const errors = [];
     for (const nm of names) {
-      const txt = path.join(dir, nm).replace(/\.[^/.]+$/, '') + '.txt';
+     for (const ext of exts) {
+      const txt = path.join(dir, nm).replace(/\.[^/.]+$/, '') + '.' + ext;
       let tags = [];
       try { if (existsSync(txt)) tags = readFileSync(txt, 'utf8').split(',').map(norm).filter(Boolean); }
-      catch { errors.push(nm); continue; }
+      catch { errors.push(nm + '.' + ext); continue; }
+      // An absent .caption is nothing to blanket-tag: writing one would invent a
+      // natural-language caption out of a tag list. An absent .txt is still created, which is
+      // how a blanket trigger gets applied to a freshly-added folder.
+      if (ext === 'caption' && !tags.length) { unchanged++; continue; }
       const before = tags.join(', ');
       tags = tags.filter((t) => !remove.has(t));
       // Re-seat rather than skip: a tag already present but in the wrong place still needs to
@@ -1501,9 +1520,10 @@ export function createImagegenRouter(config) {
         if (!tags.length) { if (existsSync(txt)) { unlinkSync(txt); cleared++; } }
         else { writeFileSync(txt, after, 'utf8'); try { chmodSync(txt, 0o664); } catch { /* not owner */ } }
         changed++;
-      } catch { errors.push(nm); }
+      } catch { errors.push(nm + '.' + ext); }
+     }
     }
-    res.json({ ok: true, total: names.length, changed, unchanged, cleared, errors });
+    res.json({ ok: true, total: names.length, changed, unchanged, cleared, errors, exts });
   });
 
   // ---- Find & replace across caption sidecars.

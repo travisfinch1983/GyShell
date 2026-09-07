@@ -13,6 +13,10 @@ export const BlanketTagModal: React.FC<{ files: string[]; onClose: () => void; o
     const [add, setAdd] = useState('')
     const [remove, setRemove] = useState('')
     const [position, setPosition] = useState<'start' | 'after_trigger' | 'end'>('start')
+    // Both by default: Travis captions with a trigger in BOTH sidecars, so a blanket term
+    // that lands in only one of them is half-applied and looks like it silently failed.
+    const [doTxt, setDoTxt] = useState(true)
+    const [doCaption, setDoCaption] = useState(true)
     const [busy, setBusy] = useState(false)
     const [msg, setMsg] = useState('')
 
@@ -25,11 +29,13 @@ export const BlanketTagModal: React.FC<{ files: string[]; onClose: () => void; o
 
     const go = async () => {
       if (!addList.length && !remList.length) { setMsg('Nothing to add or remove.'); return }
+      const exts = [...(doTxt ? ['txt'] as const : []), ...(doCaption ? ['caption'] as const : [])]
+      if (!exts.length) { setMsg('Pick at least one sidecar type.'); return }
       setBusy(true); setMsg('Applying…')
       try {
         const r = scoped
-          ? await store.tagsBatchKeys({ add: addList, remove: remList, position }, files)
-          : await store.tagsBatch({ add: addList, remove: remList, position })
+          ? await store.tagsBatchKeys({ add: addList, remove: remList, position, exts }, files)
+          : await store.tagsBatch({ add: addList, remove: remList, position, exts })
         setMsg(`Done — ${r.changed} changed, ${r.unchanged} already matched`
           + `${r.cleared ? `, ${r.cleared} emptied` : ''}`
           + `${r.errors?.length ? `, ${r.errors.length} failed` : ''}.`)
@@ -74,9 +80,21 @@ export const BlanketTagModal: React.FC<{ files: string[]; onClose: () => void; o
               </button>
             ))}
           </div>
+          <div className={styles.acSection} style={{ marginTop: 8 }}>Write to</div>
+          <div className={styles.chkLine}>
+            <label className={styles.chkLine}>
+              <input type="checkbox" checked={doTxt} disabled={busy} onChange={(e) => setDoTxt(e.target.checked)} /> .txt (booru tags)
+            </label>
+            <label className={styles.chkLine} style={{ marginLeft: 14 }}>
+              <input type="checkbox" checked={doCaption} disabled={busy} onChange={(e) => setDoCaption(e.target.checked)} /> .caption (natural language)
+            </label>
+          </div>
           <div className={styles.acHint}>
             kohya treats the leading token as the trigger, so a trigger word belongs at the start.
             A tag that is already present gets moved to the chosen position rather than duplicated.
+            Both sidecars are treated as comma-separated lists, so the term lands with a comma
+            after it either way — typing one yourself makes no difference. A .caption that does
+            not exist yet is left alone rather than invented from a tag list.
           </div>
 
           <div className={styles.acSection}>Remove</div>
