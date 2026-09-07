@@ -89,8 +89,14 @@ export class TrainingImagesStore {
   get atNarrowedRoot(): boolean { return this.cwd === '' && !this.showAllRoots }
 
   async browse(p = ''): Promise<void> {
-    this.cwd = p || ''
-    this.exitSelection()
+    const next = p || ''
+    // A FOLDER CHANGE invalidates the selection outright -- different images. A REFRESH of
+    // the folder already open does not: `selected` is keyed by imKey(), not by index, so
+    // every key survives a reload. Clearing unconditionally meant any onChanged() from the
+    // crop editor wiped a curation pile mid-flight; the reconcile after the load below
+    // handles the only thing a refresh can actually invalidate (an image that went away).
+    if (next !== this.cwd) this.exitSelection()
+    this.cwd = next
     this.loading = true; this.error = ''
     try {
       const d = await ig(`/browse?path=${encodeURIComponent(this.cwd)}`)
@@ -139,6 +145,17 @@ export class TrainingImagesStore {
         }
         this.sections = sections
         this.sortImages()
+        // Reconcile a selection carried across a same-folder refresh: drop keys whose image
+        // is no longer here (deleted, moved out, hidden by a root narrowing). lastIndex is a
+        // position in visibleImages and cannot survive a reload -- a stale one would anchor a
+        // shift-range at the wrong image -- so it always resets.
+        if (this.selected.size) {
+          const live = new Set(this.images.map(imKey))
+          const kept = new Set([...this.selected].filter((k) => live.has(k)))
+          if (kept.size !== this.selected.size) this.selected = kept
+          this.lastIndex = null
+          if (!this.selected.size) this.selectionMode = false
+        }
         this.loading = false
       })
     } catch (e: any) {

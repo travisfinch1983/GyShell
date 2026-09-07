@@ -135,11 +135,15 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
   }
   const saveAll = async () => {
     try {
-      if (tags !== tagsOrig.current) { await store.setCaption(rel, tags, 'txt'); tagsOrig.current = tags }
-      if (nl !== nlOrig.current) { await store.setCaption(rel, nl, 'caption'); nlOrig.current = nl }
+      // Close and Next/Prev both route through here, so this runs on a pure LOOK as well as
+      // an edit. onChanged() re-browses, so firing it unconditionally made simply opening an
+      // image an act with consequences elsewhere in the UI. Only report a save that happened.
+      let changed = false
+      if (tags !== tagsOrig.current) { await store.setCaption(rel, tags, 'txt'); tagsOrig.current = tags; changed = true }
+      if (nl !== nlOrig.current) { await store.setCaption(rel, nl, 'caption'); nlOrig.current = nl; changed = true }
       const sc = imRec.score ? String(imRec.score) : ''; const cm = imRec.comment || ''
-      if (score !== sc || comment !== cm) await store.setRating(rel, score ? Number(score) : 0, comment)
-      setMsg('Saved.'); onChanged()
+      if (score !== sc || comment !== cm) { await store.setRating(rel, score ? Number(score) : 0, comment); changed = true }
+      if (changed) { setMsg('Saved.'); onChanged() }
     } catch (e: any) { setMsg('Save failed: ' + (e?.message || e)) }
   }
   // When a caption job finishes while this editor is open, pull the fresh sidecars into
