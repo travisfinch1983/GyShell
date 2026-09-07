@@ -46,6 +46,15 @@ def api(path, body=None, timeout=15):
         return json.loads(r.read() or b"{}")
 
 
+def running_tasks():
+    """In-flight work a restart would KILL. None = could not read (NOT 'nothing running')."""
+    try:
+        st = api("/api/notifications/tasks", timeout=8)
+    except Exception:
+        return None
+    return [t for t in (st.get("tasks") or []) if t.get("state") == "running"]
+
+
 def set_routing(suspended, reason):
     try:
         api("/api/notifications/routing", {"suspended": suspended, "reason": reason})
@@ -115,8 +124,33 @@ def main():
     ap.add_argument("--build", action="store_true", help="npm run build:web before restarting")
     ap.add_argument("--wait", type=int, default=180, help="seconds to wait for health (default 180)")
     ap.add_argument("--deadman", type=int, default=10, help="dead-man resume, minutes (default 10)")
+    ap.add_argument("--force", action="store_true",
+                    help="restart even though tasks are in flight (they WILL be killed)")
     a = ap.parse_args()
     why = a.reason.strip() or "backend restart"
+
+    # ── refuse to kill work in flight ────────────────────────────────────────────────
+    # Caption and upscale jobs live in the backend's memory and their workers are its
+    # children: a restart ends them, they do not resume, and nothing tells the person who
+    # started them. Checked BEFORE --build so a refusal costs seconds, not a bundle build.
+    if not a.force:
+        tasks = running_tasks()
+        if tasks is None:
+            print("  REFUSING: could not read the task registry, so I cannot tell whether")
+            print("            work is in flight. That is CANNOT-CHECK, not 'nothing running'.")
+            print("            Re-run with --force if you know it is safe.")
+            return 4
+        if tasks:
+            print("  REFUSING: %d task(s) in flight — a restart KILLS them." % len(tasks))
+            for t in tasks[:10]:
+                tot, dn = t.get("total") or 0, t.get("done") or 0
+                prog = ("%d/%d" % (dn, tot)) if tot else (("%s%%" % t.get("percent")) if t.get("percent") is not None else "running")
+                print("    - [%s] %s  %s" % (t.get("source", "?"), (t.get("label") or t.get("id", "?"))[:60], prog))
+            if len(tasks) > 10:
+                print("    ... and %d more" % (len(tasks) - 10))
+            print("            These do NOT resume: the jobs are in-memory and their workers are")
+            print("            children of the backend. Wait for them, or --force to kill them.")
+            return 4
 
     if a.build:
         print("  building web bundle...")
