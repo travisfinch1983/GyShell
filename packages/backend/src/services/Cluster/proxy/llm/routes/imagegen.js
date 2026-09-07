@@ -1378,6 +1378,91 @@ export function createImagegenRouter(config) {
     res.json({ ok: true, total: names.length, changed, unchanged, cleared, errors });
   });
 
+  // ---- Find & replace across caption sidecars.
+  // POST { path, files?, find, replace, exts?:['txt','caption'], whole_tag?, case_sensitive?, dry_run? }
+  // .txt is comma-tokenised; .caption is free prose. See the two modes below.
+  router.post('/caption-replace', express.json(), (req, res) => {
+    const b = req.body || {};
+    let dir;
+    try { dir = safeResolve(b.path); } catch { return res.status(400).json({ error: 'bad path' }); }
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'not a directory' });
+
+    const find = String(b.find == null ? '' : b.find);
+    const replace = String(b.replace == null ? '' : b.replace);
+    // An empty `find` would match at every position and rewrite every caption to noise.
+    if (!find) return res.status(400).json({ error: 'find is required' });
+    const exts = Array.isArray(b.exts) && b.exts.length
+      ? b.exts.filter((e) => e === 'txt' || e === 'caption')
+      : ['txt', 'caption'];
+    if (!exts.length) return res.status(400).json({ error: "exts must include 'txt' and/or 'caption'" });
+    const wholeTag = !!b.whole_tag;
+    const cs = !!b.case_sensitive;
+    const dryRun = !!b.dry_run;
+
+    let names;
+    if (Array.isArray(b.files) && b.files.length) {
+      names = b.files.map((n) => resolveImageName(dir, String(n || ''))).filter(Boolean);
+    } else {
+      try { names = readdirSync(dir).filter((f) => isImage(f) && !isCollageFile(f)); }
+      catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    }
+
+    const eq = (a, x) => (cs ? a === x : a.toLowerCase() === x.toLowerCase());
+    // Escaped: `find` is literal user text, not a pattern. Without this a stray ( or * is a
+    // syntax error at best and a wrong match at worst.
+    const rx = new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), cs ? 'g' : 'gi');
+
+    /** -> { text, hits } for one sidecar body. */
+    const applyTxt = (raw) => {
+      if (!wholeTag) {
+        const hits = (raw.match(rx) || []).length;
+        return { text: hits ? raw.replace(rx, replace) : raw, hits };
+      }
+      const toks = raw.split(',').map((t) => t.trim()).filter(Boolean);
+      let hits = 0;
+      const out = [];
+      for (const t of toks) {
+        if (!eq(t, find)) { out.push(t); continue; }
+        hits++;
+        if (replace) out.push(replace);      // empty replacement DROPS the token
+      }
+      // De-dup only when a replacement collapsed two tokens into the same one.
+      const seen = new Set();
+      const dedup = out.filter((t) => { const k = cs ? t : t.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+      return { text: dedup.join(', '), hits };
+    };
+
+    let filesScanned = 0, filesChanged = 0, occurrences = 0;
+    const samples = []; const errors = [];
+    for (const nm of names) {
+      for (const ext of exts) {
+        const p = ext === 'txt'
+          ? captionPath(path.join(dir, nm))
+          : path.join(dir, nm).replace(/\.[^/.]+$/, '') + '.caption';
+        if (!existsSync(p)) continue;
+        let raw;
+        try { raw = readFileSync(p, 'utf8'); } catch { errors.push(nm + '.' + ext); continue; }
+        filesScanned++;
+        // whole_tag is a TAG-LIST concept; .caption is prose with no token boundaries, so it
+        // is always a substring replace there whatever the flag says.
+        const { text, hits } = (ext === 'txt')
+          ? applyTxt(raw)
+          : (() => { const h = (raw.match(rx) || []).length; return { text: h ? raw.replace(rx, replace) : raw, hits: h }; })();
+        if (!hits || text === raw) continue;
+        occurrences += hits;
+        filesChanged++;
+        if (samples.length < 5) samples.push({ file: nm, ext, before: raw.slice(0, 200), after: text.slice(0, 200) });
+        if (dryRun) continue;
+        try {
+          if (!text.trim()) { unlinkSync(p); }        // an emptied sidecar is removed, not left blank
+          else { writeFileSync(p, text, 'utf8'); try { chmodSync(p, 0o664); } catch { /* not owner */ } }
+        } catch { errors.push(nm + '.' + ext); filesChanged--; occurrences -= hits; }
+      }
+    }
+    res.json({ ok: true, dry_run: dryRun, files_scanned: filesScanned, files_changed: filesChanged,
+               occurrences, samples, errors });
+  });
+
   // ---- Strip booru-tag (.txt) sidecars. POST { path:<folder rel>, files?:[names] }.
   // Removes ONLY .txt tag files — never images, never .caption (natural-language).
   // Folder-wide when `files` omitted; otherwise just the named images' .txt.

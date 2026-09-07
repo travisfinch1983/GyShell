@@ -31,6 +31,29 @@ export interface IgImage {
 }
 
 /** Selection key: the same filename can exist in two subsections, so bare names collide. */
+export interface FindReplaceBody {
+  find: string
+  replace: string
+  /** which sidecars to touch; default both */
+  exts?: Array<'txt' | 'caption'>
+  /** .txt only — match a whole comma token rather than a substring. Ignored for .caption,
+   *  which is prose and has no token boundaries. */
+  whole_tag?: boolean
+  case_sensitive?: boolean
+  dry_run?: boolean
+  files?: string[]
+}
+export interface FindReplaceSample { file: string; ext: string; before: string; after: string }
+export interface FindReplaceResult {
+  ok: boolean
+  dry_run: boolean
+  files_scanned: number
+  files_changed: number
+  occurrences: number
+  samples: FindReplaceSample[]
+  errors: string[]
+}
+
 export const imKey = (im: Pick<IgImage, 'name' | 'dir'>): string => (im.dir ? `${im.dir}/${im.name}` : im.name)
 
 export interface BatchSection {
@@ -391,6 +414,30 @@ export class TrainingImagesStore {
    *  so a blanket trigger has to prepend. Per-image POST /tags would be 650+ round-trips. */
   async tagsBatch(body: { add?: string[]; remove?: string[]; files?: string[]; position?: 'start' | 'after_trigger' | 'end' }, sub = ''): Promise<any> {
     return ig('/tags-batch', { method: 'POST', body: { path: this.dirPath(sub), ...body } })
+  }
+
+  /** Literal find & replace across .txt and/or .caption sidecars.
+   *  `dry_run` writes nothing and returns counts plus a few before/after pairs — a preview
+   *  reporting only "142 occurrences" is a number the user has to take on faith, and
+   *  substring mode is exactly where a match can land somewhere nobody intended. */
+  async findReplace(body: FindReplaceBody, sub = ''): Promise<FindReplaceResult> {
+    return ig('/caption-replace', { method: 'POST', body: { path: this.dirPath(sub), ...body } })
+  }
+
+  /** Same, for a selection that may span subsections. Counts sum; samples come from the
+   *  first subfolders that produced any, capped so a big selection cannot flood the modal. */
+  async findReplaceKeys(body: FindReplaceBody, keys: string[]): Promise<FindReplaceResult> {
+    const out: FindReplaceResult = { ok: true, dry_run: !!body.dry_run, files_scanned: 0,
+                                     files_changed: 0, occurrences: 0, samples: [], errors: [] }
+    for (const g of this.splitKeys(keys)) {
+      const r = await this.findReplace({ ...body, files: g.names }, g.sub)
+      out.files_scanned += r.files_scanned || 0
+      out.files_changed += r.files_changed || 0
+      out.occurrences += r.occurrences || 0
+      out.errors.push(...(r.errors || []))
+      for (const sm of r.samples || []) if (out.samples.length < 5) out.samples.push(sm)
+    }
+    return out
   }
   async taggers(): Promise<any> { return ig('/taggers') }
   async autoCaption(body: any): Promise<any> { return ig('/auto-caption', { method: 'POST', body }) }
