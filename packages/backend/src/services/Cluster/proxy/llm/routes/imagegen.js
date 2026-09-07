@@ -752,11 +752,9 @@ export function createImagegenRouter(config) {
           // Subject fields. The captioner composes these onto a permanent discipline prompt
           // rather than a garment-shaped default that the UI could never replace.
           + (b.naming ? ` --naming ${q(String(b.naming))}` : '')
-          // Size is STAMPED deterministically per set (blanket tags / find & replace), not
-          // asked of the model: on the "huge" set it said "large" 21x and "huge" once. So the
-          // default is to keep size out of the caption entirely.
-          + ` --size-mode ${b.size_mode === 'state' ? 'state' : 'omit'}`
-          + (b.size_mode === 'state' && b.size_word ? ` --size-word ${q(String(b.size_word))}` : '')
+          // No size parameter by design: "never state a size" is an unconditional rule in the
+          // captioner's discipline text, and a switch that could turn it off would contradict
+          // it. Size is carried by the set's token and stamped with find & replace instead.
           + (b.emphasize ? ` --emphasize ${q(String(b.emphasize))}` : '')
           + (b.preset ? ` --preset ${q(String(b.preset))}` : '')
           + (b.avoid ? ` --avoid ${q(String(b.avoid))}` : '')
