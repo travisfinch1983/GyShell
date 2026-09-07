@@ -165,6 +165,7 @@ def main():
         imgs = [n for n in imgs if n in _want]
     total = len(imgs)
     log({"event": "start", "total": total, "engine": "joytag" if is_joytag else "wd",
+         "pid": os.getpid(),
          "model": os.path.basename(a.model_dir), "provider": used, "size": size})
     done = wrote = skipped = errs = 0
     for nm in imgs:

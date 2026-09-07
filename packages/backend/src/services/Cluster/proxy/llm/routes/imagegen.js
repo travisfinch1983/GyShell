@@ -794,6 +794,9 @@ export function createImagegenRouter(config) {
     if (SSH_KEY) sshArgs.push('-i', SSH_KEY);
     sshArgs.push(TAGGER_SSH, cmd);
     const child = spawn('ssh', sshArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+    // Held so a cancel can reach them. `child` is the ssh here, NOT the worker: the worker
+    // runs on the GPU host and reports its own pid in the start event below.
+    { const j = captionJobs.get(jobId); if (j) j.child = child; }
     let ebuf = '', tail = '', raw = '';
     child.stderr.on('data', (d) => {
       const chunk = d.toString();
@@ -805,7 +808,8 @@ export function createImagegenRouter(config) {
         if (!line.startsWith('{')) continue;
         let ev; try { ev = JSON.parse(line); } catch { continue; }
         const j = captionJobs.get(jobId); if (!j) continue;
-        if (ev.event === 'start') { j.total = ev.total; j.engine = ev.engine; j.provider = ev.provider || ev.device; }
+        if (ev.event === 'start') { j.total = ev.total; j.engine = ev.engine; j.provider = ev.provider || ev.device;
+                                    if (ev.pid) j.remote_pid = ev.pid; }
         else if (ev.event === 'img') { j.done = ev.done; if (ev.status === 'error' && ev.error) j.lastError = `${ev.file}: ${ev.error}`; }
         else if (ev.event === 'done') { j.wrote = ev.wrote; j.skipped = ev.skipped; j.errors = ev.errors; }
         taskReport({ id: taskId, done: j.done, total: j.total,
@@ -824,6 +828,17 @@ export function createImagegenRouter(config) {
         // Say WHAT failed. ssh exits 255 for its own failures, and with the raw stderr
         // dropped the notification read "tagger exited 255" with no cause recoverable
         // anywhere — the tagger may never have run at all.
+        // A cancel kills the worker, so ssh reports a non-zero exit. Saying "tagger exited 255
+        // (ssh transport failure)" for a deliberate stop is the tool blaming itself for
+        // obeying — the user KNOWS why it stopped, and a false failure hides real ones.
+        if (j.cancelled) {
+          j.state = 'cancelled';
+          j.error = 'cancelled';
+          taskReport({ id: taskId, state: 'failed', done: j.done, total: j.total,
+                       detail: `cancelled after ${j.done}/${j.total || '?'}` });
+          setTimeout(() => captionJobs.delete(jobId), 120000);
+          return;
+        }
         const why = raw.trim().split('\n').filter((l) => !l.startsWith('{')).slice(-4).join(' | ');
         j.state = 'error';
         j.error = `tagger exited ${code}` + (code === 255 ? ' (ssh transport failure — the tagger may not have run)' : '');
@@ -949,6 +964,7 @@ export function createImagegenRouter(config) {
       let next = 0;
       const worker = async () => {
         while (next < work.length) {
+          if (job.cancelled) return;      // checked between images, so a cancel lands within one
           const u = work[next++];
           await one(u);
           job.done++;
@@ -958,6 +974,13 @@ export function createImagegenRouter(config) {
       };
       try {
         await Promise.all(Array.from({ length: Math.min(POOL, work.length) }, worker));
+        if (job.cancelled) {
+          job.state = 'cancelled';
+          taskReport({ id: taskId, state: 'failed', done: job.done, total: job.total,
+                       detail: `cancelled after ${job.done}/${job.total}` });
+          setTimeout(() => captionJobs.delete(jobId), 120000);
+          return;
+        }
         job.state = 'done';
         taskReport({ id: taskId, state: 'done', done: job.done, total: job.total,
                      detail: `${job.wrote} ${dryRun ? 'proposed (preview — nothing written)' : 'written'}, ${job.skipped} unchanged, ${job.errors} errors` });
@@ -967,6 +990,32 @@ export function createImagegenRouter(config) {
       }
       setTimeout(() => captionJobs.delete(jobId), 120000);
     })();
+  });
+
+  // ---- Cancel a running caption or correction job. POST { jobId }
+  router.post('/auto-caption-cancel', express.json(), (req, res) => {
+    const jobId = String((req.body && req.body.jobId) || '');
+    const j = captionJobs.get(jobId);
+    if (!j) return res.status(404).json({ error: 'no such job' });
+    if (j.state !== 'running') return res.json({ ok: true, already: j.state });
+    j.cancelled = true;
+
+    // 🛑 REMOTE FIRST. ssh without a PTY does not forward signals, so killing the local ssh
+    // leaves the worker captioning against a dead channel — an orphan holding the GPU that
+    // nothing on this host can see. Verified the hard way.
+    if (j.remote_pid) {
+      const args = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=10'];
+      if (SSH_KEY) args.push('-i', SSH_KEY);
+      // An explicit numeric pid the worker reported about ITSELF — never a pattern match,
+      // which on a shared host can kill somebody else's identical-looking command.
+      args.push(TAGGER_SSH, `kill -TERM ${parseInt(j.remote_pid, 10)} 2>/dev/null || true`);
+      try { spawn('ssh', args, { stdio: 'ignore' }); } catch { /* best effort */ }
+    }
+    // The correction jobs have no child — they poll this between images.
+    try { if (j.child) j.child.kill('SIGTERM'); } catch { /* already gone */ }
+
+    res.json({ ok: true, jobId, cancelled: true, done: j.done, total: j.total,
+               remote_pid: j.remote_pid || null });
   });
 
   router.get('/auto-caption-status', (req, res) => {

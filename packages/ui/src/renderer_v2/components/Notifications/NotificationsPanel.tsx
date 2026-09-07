@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Check, CheckCheck, Pause, Play } from 'lucide-react'
+import { Check, CheckCheck, Pause, Play, X } from 'lucide-react'
+import { confirmStore } from '../../stores/confirmStore'
 import {
   notificationsStore as store,
   type HealthState,
@@ -33,6 +34,24 @@ const TaskRow: React.FC<{ t: TaskEntry }> = ({ t }) => {
             : t.state === 'done' ? 'Complete'
               : t.total > 0 ? `${t.done}/${t.total} — ${pct}%` : 'running…'}
         </span>
+        {/* Only for sources with a real cancel route — a button that silently does nothing is
+            worse than no button. Confirmed because the click is one pixel from a long run. */}
+        {t.state === 'running' && store.cancellable(t.id) && (
+          <button
+            type="button" className={styles.taskCancel} title="Stop this job"
+            disabled={store.cancelling.has(t.id)}
+            onClick={() => void (async () => {
+              if (await confirmStore.confirm({
+                title: 'Stop this job',
+                message: `Stop "${t.label}"? It has finished ${t.done}${t.total ? ` of ${t.total}` : ''}. `
+                  + 'Work already written to disk is kept; the rest is not done.',
+                confirmText: 'Stop job', danger: true,
+              })) void store.cancelTask(t.id)
+            })()}
+          >
+            <X size={11} /> {store.cancelling.has(t.id) ? 'Stopping…' : 'Stop'}
+          </button>
+        )}
       </div>
       <div className={styles.taskTrack}>
         <div

@@ -357,6 +357,7 @@ def main():
         imgs = [n for n in imgs if n in _want]
     total = len(imgs)
     log({"event": "start", "total": total, "engine": "vlm", "device": "proxy",
+         "pid": os.getpid(),
          "provider": a.model, "model": a.model})
 
     done = wrote = skipped = errs = 0

@@ -243,6 +243,32 @@ class NotificationsStore {
     }
   }
 
+  /** Task ids are '<source>:<jobId>'. Only the sources that actually HAVE a cancel route are
+   *  offered one — a button that silently does nothing is worse than no button. */
+  static readonly CANCELLABLE = ['auto-caption', 'caption-correct']
+  cancellable(id: string): boolean {
+    return NotificationsStore.CANCELLABLE.includes(String(id).split(':')[0])
+  }
+
+  cancelling = new Set<string>()
+
+  /** Stop a running caption/correction job. The backend kills the REMOTE worker first —
+   *  killing the local ssh alone leaves it running on the GPU host. */
+  async cancelTask(id: string): Promise<void> {
+    const [source, ...rest] = String(id).split(':')
+    const jobId = rest.join(':')
+    if (!jobId || !NotificationsStore.CANCELLABLE.includes(source)) return
+    runInAction(() => { this.cancelling.add(id) })
+    try {
+      await cluster()!.request('POST', '/api/imagegen/auto-caption-cancel', { jobId })
+      await this.refresh()
+    } catch (e) {
+      runInAction(() => { this.error = e instanceof Error ? e.message : String(e) })
+    } finally {
+      runInAction(() => { this.cancelling.delete(id) })
+    }
+  }
+
   async ack(ids: string[] | 'all'): Promise<void> {
     try {
       await cluster()!.request('POST', '/api/notifications/ack', { ids })
