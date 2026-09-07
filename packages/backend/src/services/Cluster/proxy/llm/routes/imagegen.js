@@ -826,6 +826,134 @@ export function createImagegenRouter(config) {
     res.json({ jobId });
   });
 
+  // ---- Model-based caption correction.
+  // POST { path, files?, instruction, model, exts?:['caption'], dry_run?, max_files? } -> { jobId }
+  // Poll with /auto-caption-status (shared job map). Only sidecars that ALREADY exist are
+  // touched — there is nothing to correct otherwise.
+  router.post('/caption-correct', express.json(), (req, res) => {
+    const b = req.body || {};
+    let dir;
+    try { dir = safeResolve(b.path); } catch { return res.status(400).json({ error: 'bad path' }); }
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'not a directory' });
+
+    const instruction = String(b.instruction || '').trim();
+    const model = String(b.model || '').trim();
+    if (!instruction) return res.status(400).json({ error: 'instruction is required' });
+    if (!model) return res.status(400).json({ error: 'model is required' });
+    const exts = Array.isArray(b.exts) && b.exts.length
+      ? b.exts.filter((e) => e === 'txt' || e === 'caption') : ['caption'];
+    if (!exts.length) return res.status(400).json({ error: "exts must include 'txt' and/or 'caption'" });
+    const dryRun = !!b.dry_run;
+    const maxFiles = Math.max(0, parseInt(b.max_files, 10) || 0);
+
+    let names;
+    if (Array.isArray(b.files) && b.files.length) {
+      names = b.files.map((n) => resolveImageName(dir, String(n || ''))).filter(Boolean);
+    } else {
+      try { names = readdirSync(dir).filter((f) => isImage(f) && !isCollageFile(f)); }
+      catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    }
+
+    // Only sidecars that exist. Building this list UP FRONT makes `total` a real denominator
+    // rather than a guess that the progress bar has to walk back.
+    const units = [];
+    for (const nm of names) {
+      for (const ext of exts) {
+        const p = ext === 'txt'
+          ? captionPath(path.join(dir, nm))
+          : path.join(dir, nm).replace(/\.[^/.]+$/, '') + '.caption';
+        if (existsSync(p)) units.push({ nm, ext, p });
+      }
+    }
+    if (!units.length) return res.status(400).json({ error: 'no existing ' + exts.join('/') + ' sidecars to correct here' });
+    const work = maxFiles ? units.slice(0, maxFiles) : units;
+
+    const jobId = crypto.randomBytes(6).toString('hex');
+    const taskId = `caption-correct:${jobId}`;
+    const job = { state: 'running', total: work.length, done: 0, wrote: 0, skipped: 0, errors: 0,
+                  dry_run: dryRun, samples: [], model, provider: 'llm-proxy' };
+    captionJobs.set(jobId, job);
+    taskReport({ id: taskId, source: 'caption-correct', state: 'running', done: 0, total: work.length,
+                 label: `Correct captions · ${model} · ${(b.path || '').split('/').pop() || 'folder'}`
+                   + (dryRun ? ' (preview)' : '') });
+    res.json({ jobId });
+
+    const SYS = 'You correct image-training captions. Output ONLY the corrected caption and '
+      + 'nothing else: no preamble, no explanation, no quotes, no markdown. Change ONLY what the '
+      + "instruction requires and preserve everything else exactly, including the leading trigger "
+      + 'token and the existing comma-separated structure. If nothing needs changing, output the '
+      + 'caption unchanged.';
+
+    /** Strip a reasoning model's think block and any stray wrapper. */
+    const clean = (t) => String(t || '')
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
+      .replace(/^```[a-z]*\n?|```$/gim, '')
+      .trim()
+      .replace(/^["']|["']$/g, '')
+      .trim();
+
+    const one = async (u) => {
+      let raw;
+      try { raw = readFileSync(u.p, 'utf8'); } catch { job.errors++; return; }
+      const before = raw.trim();
+      if (!before) { job.skipped++; return; }
+      let out;
+      try {
+        const r = await fetch('http://127.0.0.1:17890/api/proxy/llm/v1/chat/completions', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model, temperature: 0, max_tokens: 1200, messages: [
+            { role: 'system', content: SYS },
+            { role: 'user', content: `Instruction: ${instruction}\nCaption: ${before}` },
+          ] }),
+          signal: AbortSignal.timeout(180000),
+        });
+        const d = await r.json();
+        if (!r.ok || !d?.choices?.[0]) throw new Error(d?.error?.message || `HTTP ${r.status}`);
+        out = clean(d.choices[0].message?.content);
+      } catch (e) {
+        job.errors++; job.lastError = `${u.nm}: ${String(e.message || e).slice(0, 160)}`; return;
+      }
+      // 🛑 NEVER write an empty correction. A model that refuses, returns only a think block, or
+      // answers with prose we stripped to nothing would otherwise DELETE the caption — the one
+      // outcome that loses work the user cannot get back.
+      if (!out) { job.errors++; job.lastError = `${u.nm}: model returned nothing usable`; return; }
+      if (out === before) { job.skipped++; return; }
+      if (job.samples.length < 10) job.samples.push({ file: u.nm, ext: u.ext, before: before.slice(0, 300), after: out.slice(0, 300) });
+      if (dryRun) { job.wrote++; return; }        // counted as "would write"
+      try {
+        writeFileSync(u.p, out, 'utf8');
+        try { chmodSync(u.p, 0o664); } catch { /* not owner */ }
+        job.wrote++;
+      } catch { job.errors++; job.lastError = `${u.nm}: write failed`; }
+    };
+
+    // Small pool: the proxy is shared with chat and agents, and 300 simultaneous completions
+    // would starve them. Sequentialish is fine — this is a background job with a progress bar.
+    (async () => {
+      const POOL = 3;
+      let next = 0;
+      const worker = async () => {
+        while (next < work.length) {
+          const u = work[next++];
+          await one(u);
+          job.done++;
+          taskReport({ id: taskId, done: job.done, total: job.total,
+                       detail: `${job.wrote} ${dryRun ? 'proposed' : 'written'}, ${job.skipped} unchanged, ${job.errors} errors` });
+        }
+      };
+      try {
+        await Promise.all(Array.from({ length: Math.min(POOL, work.length) }, worker));
+        job.state = 'done';
+        taskReport({ id: taskId, state: 'done', done: job.done, total: job.total,
+                     detail: `${job.wrote} ${dryRun ? 'proposed (preview — nothing written)' : 'written'}, ${job.skipped} unchanged, ${job.errors} errors` });
+      } catch (e) {
+        job.state = 'error'; job.error = String(e.message || e);
+        taskReport({ id: taskId, state: 'failed', detail: job.error.slice(0, 300) });
+      }
+      setTimeout(() => captionJobs.delete(jobId), 120000);
+    })();
+  });
+
   router.get('/auto-caption-status', (req, res) => {
     const j = captionJobs.get(req.query.jobId);
     if (!j) return res.status(404).json({ error: 'no such job' });

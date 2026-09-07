@@ -31,6 +31,21 @@ export interface IgImage {
 }
 
 /** Selection key: the same filename can exist in two subsections, so bare names collide. */
+export interface CorrectCaptionsBody {
+  /** what to fix, e.g. "every image here is a CUTE bulge; fix any that say large or huge" */
+  instruction: string
+  /** catalog id from llmCatalog() */
+  model: string
+  /** default ['caption'] — only sidecars that already exist are touched */
+  exts?: Array<'txt' | 'caption'>
+  files?: string[]
+  /** propose only; writes nothing. Still a real job, so progress and samples stream in. */
+  dry_run?: boolean
+  /** 0 / omitted = every sidecar in scope */
+  max_files?: number
+}
+export interface CatalogModel { id: string; displayName?: string; tag?: string; kind?: string }
+
 export interface FindReplaceBody {
   find: string
   replace: string
@@ -439,6 +454,22 @@ export class TrainingImagesStore {
     }
     return out
   }
+  /** Model-based caption correction. Returns a jobId tracked by the SAME machinery as
+   *  auto-caption — trackCaptionJob(jobId, label) and /auto-caption-status both work
+   *  unchanged, so a correction and a caption run can be in flight together. */
+  async correctCaptions(body: CorrectCaptionsBody, sub = ''): Promise<{ jobId: string }> {
+    return ig('/caption-correct', { method: 'POST', body: { path: this.dirPath(sub), ...body } })
+  }
+
+  /** TEXT models from the LLM proxy catalog — NOT the tagger list, which is a different
+   *  pipeline entirely (ONNX/BLIP/VLM on the GPU host). */
+  async llmCatalog(): Promise<CatalogModel[]> {
+    const r = await fetch('/api/proxy/llm/catalog')
+    if (!r.ok) throw new Error(`catalog: HTTP ${r.status}`)
+    const d = await r.json()
+    return (d?.data || []) as CatalogModel[]
+  }
+
   async taggers(): Promise<any> { return ig('/taggers') }
   async autoCaption(body: any): Promise<any> { return ig('/auto-caption', { method: 'POST', body }) }
   async autoCaptionStatus(jobId: string): Promise<any> { return ig(`/auto-caption-status?jobId=${jobId}`) }
