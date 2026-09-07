@@ -1322,7 +1322,7 @@ export function createImagegenRouter(config) {
   });
 
   // ---- tags-batch: add/remove the SAME tags across many images in one call ----
-  // POST { path:<folder rel>, files?:[names], add?:[], remove?:[], position?:'start'|'end' }
+  // POST { path:<folder rel>, files?:[names], add?:[], remove?:[], position?:'start'|'after_trigger'|'end' }
   // `files` omitted = every image in the folder. Per-image round-trips (POST /tags) were the
   // only way to do this, which is 650+ requests on a real set and no way to put a trigger word
   // FIRST -- and position matters: kohya reads the leading token as the trigger, so a blanket
@@ -1337,7 +1337,9 @@ export function createImagegenRouter(config) {
     const add = (Array.isArray(b.add) ? b.add : []).map(norm).filter(Boolean);
     const remove = new Set((Array.isArray(b.remove) ? b.remove : []).map(norm).filter(Boolean));
     if (!add.length && !remove.size) return res.status(400).json({ error: 'nothing to add or remove' });
-    const atStart = b.position !== 'end';   // default: prepend (trigger-word case)
+    // 'start' prepends (in FRONT of the trigger), 'after_trigger' slots in at index 1 so the
+    // leading token keeps being the trigger, 'end' appends. Default stays 'start'.
+    const position = b.position === 'end' || b.position === 'after_trigger' ? b.position : 'start';
 
     let names;
     if (Array.isArray(b.files) && b.files.length) {
@@ -1359,7 +1361,12 @@ export function createImagegenRouter(config) {
       // move when the caller asked for it at the start.
       const addSet = new Set(add);
       tags = tags.filter((t) => !addSet.has(t));
-      tags = atStart ? [...add, ...tags] : [...tags, ...add];
+      if (position === 'end') tags = [...tags, ...add];
+      // after_trigger degrades sensibly at both edges: an empty caption has no trigger to
+      // follow, so the tags simply become the caption; a trigger-only caption keeps the
+      // trigger leading and the additions land behind it.
+      else if (position === 'after_trigger') tags = tags.length ? [tags[0], ...add, ...tags.slice(1)] : [...add];
+      else tags = [...add, ...tags];
       const after = tags.join(', ');
       if (after === before) { unchanged++; continue; }
       try {

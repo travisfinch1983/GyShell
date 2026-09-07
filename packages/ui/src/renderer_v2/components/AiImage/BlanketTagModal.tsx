@@ -12,7 +12,7 @@ export const BlanketTagModal: React.FC<{ files: string[]; onClose: () => void; o
   ({ files, onClose, onDone }) => {
     const [add, setAdd] = useState('')
     const [remove, setRemove] = useState('')
-    const [position, setPosition] = useState<'start' | 'end'>('start')
+    const [position, setPosition] = useState<'start' | 'after_trigger' | 'end'>('start')
     const [busy, setBusy] = useState(false)
     const [msg, setMsg] = useState('')
 
@@ -58,14 +58,19 @@ export const BlanketTagModal: React.FC<{ files: string[]; onClose: () => void; o
             placeholder="evegladden, 1girl" value={add} onChange={(e) => setAdd(e.target.value)}
           />
           <div className={styles.acSeg} style={{ marginTop: 6 }}>
-            {(['start', 'end'] as const).map((p) => (
+            {/* kohya reads the LEADING token as the trigger, which is why these three differ in
+                a way that matters: 'start' goes in FRONT of the trigger and displaces it,
+                'after trigger' keeps the trigger leading and slots in behind it. */}
+            {(['start', 'after_trigger', 'end'] as const).map((p) => (
               <button
                 key={p} disabled={busy}
                 className={`${styles.acSegBtn} ${position === p ? styles.acSegOn : ''}`}
                 onClick={() => setPosition(p)}
               >
-                {p === 'start' ? 'At the start' : 'At the end'}
-                <span className={styles.acSegExt}>{p === 'start' ? 'trigger words go here' : 'appended'}</span>
+                {p === 'start' ? 'At the start' : p === 'after_trigger' ? 'After trigger' : 'At the end'}
+                <span className={styles.acSegExt}>
+                  {p === 'start' ? 'in front of the trigger' : p === 'after_trigger' ? 'keeps the trigger first' : 'appended'}
+                </span>
               </button>
             ))}
           </div>
@@ -88,7 +93,7 @@ export const BlanketTagModal: React.FC<{ files: string[]; onClose: () => void; o
             <>
               <div className={styles.acSection}>Preview</div>
               <div className={styles.acHint}>
-                {addList.length > 0 && <>add <strong>{addList.join(', ')}</strong> at the {position}. </>}
+                {addList.length > 0 && <>add <strong>{addList.join(', ')}</strong> {position === 'after_trigger' ? 'after the trigger word' : `at the ${position}`}. </>}
                 {remList.length > 0 && <>remove <strong>{remList.join(', ')}</strong>.</>}
               </div>
             </>
