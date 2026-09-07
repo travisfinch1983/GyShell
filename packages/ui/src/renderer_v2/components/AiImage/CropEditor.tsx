@@ -149,19 +149,19 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
   // When a caption job finishes while this editor is open, pull the fresh sidecars into
   // any box the user has NOT edited — otherwise a single-image caption looks like a no-op
   // until the image is reopened. Edited boxes are left alone: the user's text wins.
-  const capJobState = store.captionJob?.state
-  const capConsumed = useRef('')
+  // ANY tracked job finishing, not one specific job: with several captioners running, the
+  // one that covers the open image is often not the last one started.
+  const capTick = store.captionDoneTick
+  const capConsumed = useRef(0)
   useEffect(() => {
-    if (capJobState !== 'done') return
-    const jobId = store.captionJob?.jobId || ''
-    if (!jobId || capConsumed.current === jobId) return
-    capConsumed.current = jobId
+    if (!capTick || capConsumed.current === capTick) return
+    capConsumed.current = capTick
     void (async () => {
       try { const r = await store.getCaption(rel, 'txt'); if (tags === tagsOrig.current) { setTags(r.caption || ''); tagsOrig.current = r.caption || '' } } catch {}
       try { const r = await store.getCaption(rel, 'caption'); if (nl === nlOrig.current) { setNl(r.caption || ''); nlOrig.current = r.caption || '' } } catch {}
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [capJobState])
+  }, [capTick])
 
   const closeSave = () => { void saveAll().finally(onClose) }
   // Navigation saves like Close does — moving on must not discard caption/rating

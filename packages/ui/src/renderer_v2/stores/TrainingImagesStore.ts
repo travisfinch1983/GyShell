@@ -399,49 +399,78 @@ export class TrainingImagesStore {
   // ── live auto-caption job, tracked HERE so the modal can close the moment the job starts.
   // Progress used to live only inside the greyed-out popup: closing it to keep working meant
   // flying blind until the GPUs went quiet. The browser page renders this as a progress bar.
-  captionJob: { jobId: string; label: string; state: 'running' | 'done' | 'failed' | 'lost'
-                total: number; done: number; wrote: number; skipped: number; errors: number
-                provider?: string; error?: string } | null = null
-  private capTimer: ReturnType<typeof setInterval> | null = null
+  // EVERY tracked job, not just the newest. Travis captions several folders at once and
+  // watches the badges fill in across them; the old single-object + single-timer version
+  // abandoned each previous job the moment the next one started, so only the LAST job's
+  // completion refreshed the grid. (The jobs themselves were always fine, and the bell's
+  // Task Progress rows were always correct — imagegen.js reports each one independently.
+  // What was lost was purely the client-side "and now re-read the folder" step.)
+  captionJobs: Array<{ jobId: string; label: string; state: 'running' | 'done' | 'failed' | 'lost'
+                       total: number; done: number; wrote: number; skipped: number; errors: number
+                       provider?: string; error?: string }> = []
+  /** Bumped whenever ANY tracked job finishes, so consumers can react without knowing which. */
+  captionDoneTick = 0
+  private capTimers = new Map<string, ReturnType<typeof setInterval>>()
+
+  get captionRunning(): number { return this.captionJobs.filter((j) => j.state === 'running').length }
+
+  private clearCapTimer(jobId: string): void {
+    const t = this.capTimers.get(jobId)
+    if (t) { clearInterval(t); this.capTimers.delete(jobId) }
+  }
+
   trackCaptionJob(jobId: string, label: string): void {
-    if (this.capTimer) { clearInterval(this.capTimer); this.capTimer = null }
-    this.captionJob = { jobId, label, state: 'running', total: 0, done: 0, wrote: 0, skipped: 0, errors: 0 }
+    if (this.capTimers.has(jobId)) return          // already watching this one
+    this.captionJobs.push({ jobId, label, state: 'running', total: 0, done: 0, wrote: 0, skipped: 0, errors: 0 })
     let failures = 0
-    this.capTimer = setInterval(async () => {
+    this.capTimers.set(jobId, setInterval(async () => {
       let s: any
       try { s = await this.autoCaptionStatus(jobId); failures = 0 } catch {
-        // Same cap as the old modal poll: a dead status endpoint must not leave a
-        // "running" bar on screen forever — but it is reported as LOST, not done.
-        if (++failures >= 15 && this.capTimer) {
-          clearInterval(this.capTimer); this.capTimer = null
+        // A dead status endpoint must not leave a job "running" forever — but it is
+        // reported as LOST, not done: the work may well have finished server-side.
+        if (++failures >= 15) {
+          this.clearCapTimer(jobId)
           runInAction(() => {
-            if (this.captionJob?.jobId === jobId) {
-              this.captionJob.state = 'lost'
-              this.captionJob.error = 'status endpoint unreachable — the job may still finish server-side; refresh to see results'
+            const j = this.captionJobs.find((x) => x.jobId === jobId)
+            if (j) {
+              j.state = 'lost'
+              j.error = 'status endpoint unreachable — the job may still finish server-side; refresh to see results'
             }
           })
         }
         return
       }
       runInAction(() => {
-        if (this.captionJob?.jobId !== jobId) return
-        Object.assign(this.captionJob, {
+        const j = this.captionJobs.find((x) => x.jobId === jobId)
+        if (!j) { this.clearCapTimer(jobId); return }    // dismissed while in flight
+        Object.assign(j, {
           total: s.total || 0, done: s.done || 0, wrote: s.wrote || 0,
           skipped: s.skipped || 0, errors: s.errors || 0, provider: s.provider,
         })
-        if (s.state !== 'running' && this.capTimer) {
-          clearInterval(this.capTimer); this.capTimer = null
-          this.captionJob.state = s.state === 'done' ? 'done' : 'failed'
-          if (s.state !== 'done') this.captionJob.error = s.error || s.lastError || 'unknown'
-          void this.browse(this.cwd)   // sidecar badges refresh without a manual reload
+        if (s.state !== 'running') {
+          this.clearCapTimer(jobId)
+          j.state = s.state === 'done' ? 'done' : 'failed'
+          if (s.state !== 'done') j.error = s.error || s.lastError || 'unknown'
+          this.captionDoneTick++
+          // Refresh whatever folder is open NOW. Each job finishing repeats this, so with
+          // several running the badges land set by set instead of only for the last one.
+          void this.browse(this.cwd)
+          // Keep the list from growing across a long session; the bell keeps the history.
+          if (this.captionJobs.length > 20) this.captionJobs = this.captionJobs.slice(-20)
         }
       })
-    }, 2000)
+    }, 2000))
   }
-  /** Hide the bar. A still-running job keeps running server-side — this only stops watching. */
-  dismissCaptionJob(): void {
-    if (this.capTimer) { clearInterval(this.capTimer); this.capTimer = null }
-    this.captionJob = null
+
+  /** Stop WATCHING. Jobs keep running server-side and keep reporting to the bell. */
+  dismissCaptionJob(jobId?: string): void {
+    if (jobId) {
+      this.clearCapTimer(jobId)
+      this.captionJobs = this.captionJobs.filter((j) => j.jobId !== jobId)
+      return
+    }
+    for (const id of [...this.capTimers.keys()]) this.clearCapTimer(id)
+    this.captionJobs = []
   }
 }
 
