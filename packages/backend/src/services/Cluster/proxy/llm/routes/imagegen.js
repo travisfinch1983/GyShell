@@ -752,9 +752,11 @@ export function createImagegenRouter(config) {
           // Subject fields. The captioner composes these onto a permanent discipline prompt
           // rather than a garment-shaped default that the UI could never replace.
           + (b.naming ? ` --naming ${q(String(b.naming))}` : '')
-          // No size parameter by design: "never state a size" is an unconditional rule in the
-          // captioner's discipline text, and a switch that could turn it off would contradict
-          // it. Size is carried by the set's token and stamped with find & replace instead.
+          // Size is mode-driven; the captioner's universal text is size-NEUTRAL so the two
+          // cannot disagree. Default omit: the model is measurably unreliable at size, so for
+          // most sets it is stamped deterministically instead of asked for.
+          + ` --size-mode ${b.size_mode === 'state' ? 'state' : 'omit'}`
+          + (b.size_mode === 'state' && b.size_word ? ` --size-word ${q(String(b.size_word))}` : '')
           + (b.emphasize ? ` --emphasize ${q(String(b.emphasize))}` : '')
           + (b.preset ? ` --preset ${q(String(b.preset))}` : '')
           + (b.avoid ? ` --avoid ${q(String(b.avoid))}` : '')

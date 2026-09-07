@@ -40,18 +40,16 @@ IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 UNIVERSAL_DISCIPLINE = (
     "You write training captions for a LoRA image dataset: one flowing, factual sentence per "
     "image. Describe only what is clearly visible \u2014 never guess or invent a colour, material, "
-    "size, or detail. NEVER state a size or physical measurement in prose: size and any trait "
-    "flagged as fixed for the set are carried entirely by the set's token, so leave them out of "
-    "your sentence and never substitute your own word. Vocabulary consistency across the whole "
-    "set matters MORE than per-image precision \u2014 when unsure between a plain word already used "
-    "in the set and a unique word for one image, use the plain word, and never reword for "
-    "variety. Keep it clinical and literal, never suggestive or evaluative. Describe the "
-    "elements that VARY across the set \u2014 the camera view (front, rear, three-quarter or side), "
-    "the pose, the clothing (its cut, colour and fabric), the visible body and character "
-    "details, and the setting in a few words \u2014 because those are what the model learns to "
-    "control. Do not judge or re-name the core subject the trigger word already names. Reply "
-    "with the caption only: no preamble, no reasoning, no lists, and never open with 'The "
-    "image', 'The subject', 'This image' or 'A photo of'."
+    "size, or detail. Vocabulary consistency across the whole set matters MORE than per-image "
+    "precision \u2014 when unsure between a plain word already used in the set and a unique word for "
+    "one image, use the plain word, and never reword for variety. Keep it clinical and literal, "
+    "never suggestive or evaluative. Describe the elements that VARY across the set \u2014 the "
+    "camera view (front, rear, three-quarter or side), the pose, the clothing (its cut, colour "
+    "and fabric), the visible body and character details, and the setting in a few words \u2014 "
+    "because those are what the model learns to control. Do not judge or re-name the core "
+    "subject the trigger word already names. Reply with the caption only: no preamble, no "
+    "reasoning, no lists, and never open with a phrase that describes the picture rather than "
+    "its contents (e.g. 'The image', 'The subject', 'A photo of')."
 )
 
 # The old garment-specific skeleton, kept as an OPT-IN preset (--preset garment). It is a fine
@@ -94,10 +92,18 @@ def compose_instruction(a):
         # Verbatim: the whole point is that the caller dictates the exact word, because the
         # model drifting between synonyms is what makes a token unlearnable.
         parts.append(a.naming.strip())
-    # No size handling here on purpose. It lives in the discipline text as an unconditional
-    # rule, because a switchable "state the size" mode would CONTRADICT that text and leave the
-    # model choosing between two instructions. Measured: on the "huge" set it wrote "large" 21x
-    # and "huge" once, so size is carried by the set's token and stamped with find & replace.
+    # Size is MODE-driven, and the universal text above is deliberately size-NEUTRAL so the two
+    # cannot contradict each other: it forbids guessing a size (true in both modes) and says
+    # nothing about whether one may be stated. Default omit, because the model is measurably
+    # unreliable here — on the "huge" set it wrote "large" 21x and "huge" once — so for these
+    # sets size is carried by the token and stamped with find & replace. `state` exists for a
+    # LoRA that genuinely needs the word in the prose.
+    mode = (a.size_mode or "omit").strip().lower()
+    if mode == "state" and a.size_word.strip():
+        parts.append("Every image here is %s; if you refer to size, say '%s' and nothing else."
+                     % (a.size_word.strip(), a.size_word.strip()))
+    else:
+        parts.append("Do not mention or estimate size; it is labelled separately.")
     if a.emphasize.strip():
         parts.append("Priority for this set: %s" % sentence(a.emphasize))
     return "\n\n".join(parts)
@@ -293,6 +299,8 @@ def main():
     ap.add_argument("--instruction", default="")
     ap.add_argument("--context", default="")       # domain hint: what this SET is
     ap.add_argument("--naming", default="")        # verbatim vocabulary rule, e.g. always call X "the bulge"
+    ap.add_argument("--size-mode", default="omit", choices=["omit", "state"])
+    ap.add_argument("--size-word", default="")     # only meaningful with --size-mode state
     ap.add_argument("--emphasize", default="")     # extra things to make sure are described
     ap.add_argument("--preset", default="")        # optional subject skeleton, e.g. "garment"
     ap.add_argument("--avoid", default="")         # phrase to keep out of the body (default: trigger)
