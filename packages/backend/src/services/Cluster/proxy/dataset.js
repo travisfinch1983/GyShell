@@ -178,6 +178,40 @@ export function createDatasetRouter() {
   const DEFAULT_DETECTOR = process.env.FORGE_DETECTOR ||
     '/imagegen/ultralytics/segm/Panties-v4-Travis-(segm)-(y11)-(Segment).pt';
 
+  // ── detector training ──────────────────────────────────────────────────
+  // Thin proxy to samd's /train/* on ai-epyc, which owns the GPUs and the run files.
+  // REGISTERED BEFORE THE '/:name/...' ROUTES ON PURPOSE: '/train/stop' would otherwise be
+  // a candidate for any two-segment '/:name/<literal>' route added later, and the failure
+  // mode is a silent mis-route rather than a 404.
+  //
+  // Errors are passed through with their BODY intact, not collapsed to a status. samd's
+  // refusals carry the actionable part -- which card, how much was free, what is holding
+  // it -- and a UI that only sees "400" can only say "failed".
+  const fwd = async (res, path, init, timeoutMs = 30000) => {
+    try {
+      const r = await fetch(SAMD + path, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+      const body = await r.json().catch(() => ({ error: 'trainer returned a non-JSON response' }));
+      res.status(r.status).json(body);
+    } catch (e) {
+      res.status(502).json({ error: 'trainer service unreachable at ' + SAMD + ' (' + e.message +
+        '). On ai-epyc: systemctl status forge-samd' });
+    }
+  };
+  const post = (body) => ({ method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(body) });
+
+  router.get('/train/options', (_req, res) => fwd(res, '/train/options'));
+  router.get('/train/runs', (req, res) =>
+    fwd(res, '/train/runs' + (req.query.dataset ? '?dataset=' + encodeURIComponent(req.query.dataset) : '')));
+  router.get('/train/status', (req, res) =>
+    fwd(res, '/train/status?dataset=' + encodeURIComponent(req.query.dataset || '') +
+             '&run=' + encodeURIComponent(req.query.run || '')));
+  // Longer timeout: /train exports the dataset (a copy of every trainable tile) before it
+  // launches, so the response is not immediate on a 1200-tile set.
+  router.post('/train', (req, res) => fwd(res, '/train', post(req.body || {}), 180000));
+  router.post('/train/stop', (req, res) => fwd(res, '/train/stop', post(req.body || {}), 60000));
+  router.post('/train/install', (req, res) => fwd(res, '/train/install', post(req.body || {}), 60000));
+
   router.post('/:name/segment', async (req, res) => {
     const dir = setDir(req.params.name);
     if (!dir || !existsSync(manPath(dir))) return res.status(404).json({ error: 'no such dataset' });

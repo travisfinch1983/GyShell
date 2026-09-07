@@ -12,6 +12,9 @@ POST /segment  {"dataset":"panties","tile":"foo_t1.png",
                 "box":[x1,y1,x2,y2]}                        # optional, normalised
   -> {"polys":[{"pts":[[x,y],...],"score":0.97}]}
 GET  /health
+GET  /train/options | /train/runs | /train/status?dataset=&run=
+POST /train  {"dataset","run_name","base_model","gpu":"5060ti-3","epochs",...}
+POST /train/stop | /train/install
 """
 import json, os, sys, threading, uuid, time, importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,6 +36,12 @@ CACHE_N = 8
 # the UI's "Add images" and the CLI's `annotate` must not drift into producing different data.
 _spec = importlib.util.spec_from_file_location("forge", os.path.join(os.path.dirname(__file__), "forge.py"))
 forge = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(forge)
+
+# Detector training. Separate module because it is a different lifecycle: /segment is
+# interactive and holds the GPU lock for milliseconds, training runs detached for tens of
+# minutes on its own card and is tracked entirely through files on disk.
+_tspec = importlib.util.spec_from_file_location("trainer", os.path.join(os.path.dirname(__file__), "trainer.py"))
+trainer = importlib.util.module_from_spec(_tspec); _tspec.loader.exec_module(trainer)
 
 IMAGEGEN = os.environ.get("FORGE_IMAGEGEN", "/imagegen")
 _jobs = {}                    # id -> {state, done, total, added, error, dataset}
@@ -146,9 +155,27 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
+    def _query(self):
+        from urllib.parse import urlparse, parse_qs
+        return {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+
     def do_GET(self):
         if self.path.startswith("/health"):
             return self._send(200, {"ok": True, "device": DEV, "cached": len(_cache)})
+        if self.path.startswith("/train/options"):
+            # Everything the launcher needs to offer a choice, in one round trip: which
+            # datasets have labelled tiles, which weights may be fine-tuned, and which card
+            # has room. Separate calls would let the UI show a GPU roster from ten minutes ago.
+            return self._send(200, {"datasets": trainer.list_datasets(),
+                                    "base_models": trainer.list_base_models(),
+                                    "gpus": trainer.gpu_inventory()})
+        if self.path.startswith("/train/runs"):
+            q = self._query()
+            return self._send(200, {"runs": trainer.list_runs(q.get("dataset") or None)})
+        if self.path.startswith("/train/status"):
+            q = self._query()
+            st = trainer.status(q.get("dataset", ""), q.get("run", ""))
+            return self._send(200 if st else 404, st or {"error": "no such run"})
         if self.path.startswith("/job/"):
             jid = self.path.split("/job/", 1)[1].split("?")[0]
             with _jobs_lock:
@@ -156,7 +183,34 @@ class H(BaseHTTPRequestHandler):
             return self._send(200 if j else 404, j or {"error": "no such job"})
         self._send(404, {"error": "not found"})
 
+    def _body(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        return json.loads(self.rfile.read(n) or b"{}")
+
     def do_POST(self):
+        if self.path.startswith("/train/stop"):
+            try:
+                b = self._body()
+            except Exception as e:
+                return self._send(400, {"error": str(e)})
+            job, err = trainer.stop(b.get("dataset", ""), b.get("run", ""))
+            return self._send(200 if job else 400, job or err)
+        if self.path.startswith("/train/install"):
+            try:
+                b = self._body()
+            except Exception as e:
+                return self._send(400, {"error": str(e)})
+            ok, err = trainer.install(b.get("dataset", ""), b.get("run", ""), b.get("filename", ""))
+            return self._send(200 if ok else 400, ok or err)
+        if self.path.rstrip("/") == "/train":
+            try:
+                b = self._body()
+            except Exception as e:
+                return self._send(400, {"error": str(e)})
+            job, err = trainer.start(b)
+            # 400 carries the WHY (which card, how much free, what is holding it) so the UI
+            # can render an actionable refusal rather than "request failed".
+            return self._send(202 if job else 400, job or err)
         if self.path.startswith("/ingest"):
             try:
                 n = int(self.headers.get("Content-Length") or 0)

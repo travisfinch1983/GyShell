@@ -37,10 +37,23 @@ correctly-balanced negatives for free.
         --out ds-panties --cls panties
 
     # 5. train
-    CUDA_DEVICE_ORDER=PCI_BUS_ID $P -m ultralytics.cfg segment train \
+    CUDA_DEVICE_ORDER=PCI_BUS_ID $(dirname $P)/yolo segment train \
         model=yolo11s-seg.pt data=ds-panties/data.yaml epochs=100 imgsz=640 batch=8 device=4
 
 ## Notes that cost time to learn
+
+- **🛑 PIN THE GPU WITH `device=<index>`, NEVER WITH `CUDA_VISIBLE_DEVICES`.** ultralytics'
+  `select_device()` OVERWRITES `CUDA_VISIBLE_DEVICES` from its own `device=` argument before
+  torch initialises CUDA. So a wrapper that pins with `CUDA_VISIBLE_DEVICES=3` and passes
+  `device=0` is silently overridden and runs on PHYSICAL card 0 — whichever card was asked
+  for. It cost three failed runs: all three landed on the card holding vLLM (23 MiB free) and
+  died as `CUDA OutOfMemoryError in TaskAlignedAssigner`, an error that names neither the GPU
+  nor the real cause. **Tell: ultralytics' own banner line prints the device it chose —
+  `Ultralytics 8.4.33 ... CUDA:1 (NVIDIA GeForce RTX 5060 Ti)`. Read that, not your own
+  launch command.** Keep `CUDA_DEVICE_ORDER=PCI_BUS_ID` set: that is what makes ultralytics'
+  index mean the nvidia-smi index.
+- **The launcher is the `yolo` console script**, not `python -m ultralytics.cfg` — that module
+  is a package with no `__main__` in 8.4.33 and exits before touching the GPU.
 
 - **`--device` is in PCI_BUS_ID order** (the script exports it): 0-3 are the 5060 Tis, 4 is the
   4090. The 4090 is usually occupied by ComfyUI — SAM vit_h needs ~6 GB, so a 5060 Ti is

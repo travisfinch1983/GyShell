@@ -13,6 +13,7 @@ import { QuantizationPanel } from '../AiLlm/QuantizationPanel'
 import { ServiceLaunchPanel } from './ServiceLaunchPanel'
 import { TrainingImagesPanel } from '../AiImage/TrainingImagesPanel'
 import { DatasetReviewPanel } from '../AiImage/DatasetReviewPanel'
+import { DetectorTrainingPanel } from '../AiImage/DetectorTrainingPanel'
 import { TtsTestPanel } from '../AiTts/TtsTestPanel'
 import { VoiceManagerPanel } from '../AiTts/VoiceManagerPanel'
 import { ttsLaunchStore, imageLaunchStore, trainingLaunchStore } from '../../stores/ServiceLaunchStore'
@@ -58,6 +59,7 @@ export const AiImagePanel: React.FC = observer(() => (
     { id: 'training', label: 'Training Launch', render: () => <ServiceLaunchPanel store={trainingLaunchStore} emptyLabel="training" /> },
     { id: 'training-images', label: 'Training Images', render: () => <TrainingImagesPanel /> },
     { id: 'dataset-review', label: 'Dataset Review', render: () => <DatasetReviewPanel /> },
+    { id: 'detector-training', label: 'Detector Training', render: () => <DetectorTrainingPanel /> },
     { id: 'providers', label: 'Provider Install', render: () => <ProviderInstall categories={['image', 'training']} /> },
   ]} />
 ))
