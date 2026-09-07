@@ -8,6 +8,7 @@ import { CropEditor } from './CropEditor'
 import { AutoCaptionModal } from './AutoCaptionModal'
 import { BlanketTagModal } from './BlanketTagModal'
 import { FindReplaceModal } from './FindReplaceModal'
+import { CorrectCaptionsModal } from './CorrectCaptionsModal'
 import styles from './TrainingImages.module.scss'
 
 const SORT_KEYS: { v: any; label: string }[] = [
@@ -437,6 +438,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   const [autoCap, setAutoCap] = useState(false)
   const [blanket, setBlanket] = useState(false)
   const [findRep, setFindRep] = useState(false)
+  const [correct, setCorrect] = useState(false)
   const [dsAdd, setDsAdd] = useState(false)
   const [batchAdd, setBatchAdd] = useState(false)
   const [setAdd, setSetAdd] = useState(false)
@@ -575,6 +577,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           </button>
           <button className={styles.btn} title="Add or remove the same booru tags across this folder" onClick={() => setBlanket(true)}>🏷 Blanket tags…</button>
           <button className={styles.btn} title="Replace text across the .txt and .caption sidecars in this folder — preview before applying" onClick={() => setFindRep(true)}>🔎 Find &amp; replace…</button>
+          <button className={styles.btn} title="Have a text model correct the captions in this folder against an instruction — for what a literal find &amp; replace cannot catch. Preview before applying." onClick={() => setCorrect(true)}>✏️ Correct captions…</button>
           <button className={styles.btn} onClick={() => void doCollage()}>🖼 Generate collage</button>
           {store.hasCollage && <button className={styles.btn} onClick={() => setLb({ rel: `${store.cwd}/${store.collageFirst}`, name: 'collage', bust: Date.now() })}>View collage</button>}
           <button className={styles.btn} onClick={() => void doStrip()}>🧹 Strip tags</button>
@@ -598,6 +601,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           {store.inTrainingSet && <button className={styles.btnDanger} onClick={() => void doDelete()}>Delete</button>}
           <button className={styles.btn} title="Add or remove the same booru tags across the selected images" onClick={() => setBlanket(true)}>Blanket tags…</button>
           <button className={styles.btn} title="Replace text across the selected images' .txt and .caption sidecars — preview before applying" onClick={() => setFindRep(true)}>Find &amp; replace…</button>
+          <button className={styles.btn} title="Have a text model correct the selected captions against an instruction — preview before applying" onClick={() => setCorrect(true)}>Correct captions…</button>
           <button className={styles.btn} title="Strip .txt tag sidecars for the selected images" onClick={() => void doStrip([...store.selected])}>Strip tags</button>
           <button className={styles.btn} title="Tile these images and add them to a detector-training dataset (dataset-forge). Originals are not copied." onClick={() => setDsAdd(true)}>Add to dataset…</button>
           <button className={styles.btn} title="Clear ratings + comments for the selected images" onClick={() => void doWipe([...store.selected])}>Wipe ratings</button>
@@ -716,6 +720,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
       {blanket && <BlanketTagModal files={[...store.selected]} onClose={() => setBlanket(false)} onDone={() => void store.browse(store.cwd)} />}
       {/* files=[] means folder scope, which is exactly what an empty selection should mean. */}
       {findRep && <FindReplaceModal files={[...store.selected]} onClose={() => setFindRep(false)} onDone={() => void store.browse(store.cwd)} />}
+      {correct && <CorrectCaptionsModal files={[...store.selected]} onClose={() => setCorrect(false)} onDone={() => void store.browse(store.cwd)} />}
       {batchAdd && <AddToBatchModal kind="batch" files={[...store.selected]} onClose={() => setBatchAdd(false)} />}
       {subMove && <SubsectionModal onClose={() => setSubMove(false)} />}
       {setAdd && <AddToBatchModal kind="set" files={[...store.selected]} onClose={() => setSetAdd(false)} />}
