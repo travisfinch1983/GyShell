@@ -90,6 +90,7 @@ async function ensureConnected(): Promise<void> {
 client.on('status', (status) => {
   if (status === 'connected') {
     connected = true
+    lastContactAt = Date.now()
     backoffMs = 2000
     resolveConnectedWaiters()
   } else if (status === 'disconnected') {
@@ -108,6 +109,16 @@ client.on('status', (status) => {
 // moments the user actually returns.
 const LIVE_PROBE_TIMEOUT_MS = 5000
 let probing = false
+
+// When the gateway last PROVABLY answered — a completed RPC or a fresh connect. Not the same
+// as `connected`, which only says nothing has told us otherwise.
+let lastContactAt = Date.now()
+// Beyond this, a socket that still claims OPEN has not been shown to work recently, so an RPC
+// verifies before trusting it. Well under the 15 minutes Travis sat on the review pane.
+const STALE_CONTACT_MS = 25000
+// Foreground heartbeat interval. Only runs while the tab is VISIBLE: a hidden tab's timers are
+// throttled to ~1/min anyway, and it is about to get a visibilitychange probe when it returns.
+const FOREGROUND_PING_MS = 20000
 
 function forceReconnect(reason: string): void {
   // If a connect is already in flight, tearing it down and starting another just restarts the
@@ -137,8 +148,9 @@ async function verifyGatewayLive(): Promise<void> {
       if (!connected) { void connectOnce(); return }
       try {
         await client.request('gateway:ping', {}, LIVE_PROBE_TIMEOUT_MS)
+        lastContactAt = Date.now()
       } catch {
-        forceReconnect('did not answer after wake')
+        forceReconnect('did not answer')
       }
     } finally {
       probing = false
@@ -156,6 +168,17 @@ if (typeof document !== 'undefined') {
 if (typeof window !== 'undefined') {
   window.addEventListener('focus', () => { void verifyGatewayLive() })
   window.addEventListener('online', () => { void verifyGatewayLive() })
+  // 🛑 WAKE EVENTS ARE NOT ENOUGH. They only fire when the user LEAVES and COMES BACK, so a
+  // socket that dies while they sit on a page stays undetected for as long as they stay there
+  // — and the first thing they click appears to do nothing until they happen to switch tabs.
+  // That is exactly what happened: 15 minutes on the review pane, click Download, nothing, and
+  // the download only started on returning to the tab. So probe on a timer too, while visible.
+  setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) return
+    if (!connected || probing) return
+    if (Date.now() - lastContactAt < FOREGROUND_PING_MS) return
+    void verifyGatewayLive()
+  }, FOREGROUND_PING_MS)
 }
 
 // ─── RPC Helper ──────────────────────────────────────────────────────────────
@@ -164,9 +187,20 @@ async function rpc<T = unknown>(method: string, params: Record<string, unknown> 
   // Settle any in-flight liveness probe first, so an RPC issued the instant a tab regains focus
   // waits for the verdict rather than firing into a socket already known to be suspect.
   if (probePromise) { try { await probePromise } catch { /* probe never rejects meaningfully */ } }
+  // A half-open socket still reports OPEN and `connected` stays true, so ensureConnected()
+  // waves it through and the request disappears into a dead pipe until it times out. If the
+  // gateway has not provably answered recently, confirm it BEFORE sending — the alternative
+  // is retrying afterwards, which is unsafe here: half these calls are mutations (queue a
+  // download, cancel a job) and replaying one silently does it twice.
+  if (connected && Date.now() - lastContactAt > STALE_CONTACT_MS) {
+    try { await verifyGatewayLive() } catch { /* verdict is acted on inside */ }
+    await ensureConnected()
+  }
   await ensureConnected()
   try {
-    return await client.request<T>(method, params, timeoutMs)
+    const out = await client.request<T>(method, params, timeoutMs)
+    lastContactAt = Date.now()
+    return out
   } catch (e) {
     // Retry ONLY when the request provably never left the client: request() throws this before
     // touching the socket. Anything else (socket closed mid-flight, RPC timeout) may already have
@@ -180,7 +214,9 @@ async function rpc<T = unknown>(method: string, params: Record<string, unknown> 
     // already gone (that is precisely why this threw), so there is nothing to tear down.
     console.warn(`[gyshell-web] "${method}" found the socket closed before sending — awaiting reconnect, retrying once`)
     await ensureConnected()
-    return await client.request<T>(method, params, timeoutMs)
+    const out = await client.request<T>(method, params, timeoutMs)
+    lastContactAt = Date.now()
+    return out
   }
 }
 
