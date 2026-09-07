@@ -43,9 +43,26 @@ const OUT_INFO: Record<OutKind, { label: string; ext: string; blurb: string }> =
  * is purely about not assuming the training-images store owns the location.
  */
 export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[]; path?: string; label?: string; allOfFolder?: boolean }> = ({ onClose, files, path, label, allOfFolder }) => {
+  // Per-FOLDER with a fallback to the last value used anywhere. Defined up here because
+  // several state initialisers below now read it.
+  const per = (k: string) => { try { return localStorage.getItem(k + store.cwd) ?? localStorage.getItem(k + '*') ?? '' } catch { return '' } }
+  const setPer = (k: string, v: string) => { try { localStorage.setItem(k + store.cwd, v); localStorage.setItem(k + '*', v) } catch {} }
+
   const [taggers, setTaggers] = useState<any[]>([])
-  const [outKind, setOutKind] = useState<OutKind>('tags')
-  const [model, setModel] = useState('')
+  // Output type and engine persist too. Travis was re-picking "custom" and then the model on
+  // every run. Both survive the async loads below without extra care: the effect that defaults
+  // the tagger keeps the current one when it is valid for the chosen output, and the VLM list
+  // loader keeps the current model when it is still in the list — so a restored value is only
+  // replaced once it has genuinely become unavailable.
+  const [outKind, setOutKindRaw] = useState<OutKind>(() => {
+    const v = per('aig-cap-outkind:')
+    return (v === 'tags' || v === 'caption') ? (v as OutKind) : 'tags'
+  })
+  const setOutKind = (v: OutKind) => { setOutKindRaw(v); setPer('aig-cap-outkind:', v) }
+  const [model, setModelRaw] = useState(() => per('aig-cap-tagger:'))
+  // Only remember a REAL choice: the defaulting effect calls this with '' when a kind has no
+  // taggers, and persisting that would wipe the remembered one.
+  const setModel = (v: string) => { setModelRaw(v); if (v) setPer('aig-cap-tagger:', v) }
   const [device, setDevice] = useState('cuda')
   // GPU roster from /taggers (PCI order — the same numbering nvidia-smi and the dispatched
   // job see, because the backend pins CUDA_DEVICE_ORDER=PCI_BUS_ID). An empty roster means
@@ -70,8 +87,6 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
   // Subject fields. The captioner's permanent half is now caption DISCIPLINE (consistency,
   // only what is visible, describe what varies); everything subject-specific is composed from
   // these. Persisted per folder like context, since they describe a SET, not a session.
-  const per = (k: string) => { try { return localStorage.getItem(k + store.cwd) ?? localStorage.getItem(k + '*') ?? '' } catch { return '' } }
-  const setPer = (k: string, v: string) => { try { localStorage.setItem(k + store.cwd, v); localStorage.setItem(k + '*', v) } catch {} }
   const [naming, setNamingRaw] = useState(() => per('aig-cap-naming:'))
   const setNaming = (v: string) => { setNamingRaw(v); setPer('aig-cap-naming:', v) }
   const [emphasize, setEmphasizeRaw] = useState(() => per('aig-cap-emph:'))
@@ -95,7 +110,15 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
   // (only when the vlm engine is chosen); on failure the picker degrades to a free-text
   // field — an honest fallback beats a dead dropdown.
   const [vlmModels, setVlmModels] = useState<string[]>([])
-  const [vlmModel, setVlmModel] = useState('')
+  const [vlmModel, setVlmModelRaw] = useState(() => per('aig-cap-vlmmodel:'))
+  // Takes the updater form too — the list loader calls setVlmModel(prev => ...).
+  const setVlmModel: typeof setVlmModelRaw = (v) => {
+    setVlmModelRaw((prev) => {
+      const next = typeof v === 'function' ? (v as (p: string) => string)(prev) : v
+      if (next) setPer('aig-cap-vlmmodel:', next)
+      return next
+    })
+  }
   const [vlmListErr, setVlmListErr] = useState(false)
   // True when the vision filter had to be bypassed (proxy reported NO vision-capable
   // models — a regression upstream, not a lab with zero VLMs). The dropdown then shows
@@ -108,7 +131,10 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
         setTaggers(d.taggers || [])
         setGpus(Array.isArray(d.gpus) ? d.gpus : [])
         if (d.default_gpu_index !== undefined) setGpuIndex(String(d.default_gpu_index))
-        if (d.vlm_default_model) setVlmModel(String(d.vlm_default_model))
+        // Fill in the backend default ONLY when nothing is remembered. Applying it
+        // unconditionally overwrote the restored choice on every open — the second async
+        // load in this component that would have quietly undone the persistence.
+        if (d.vlm_default_model) setVlmModel((v) => v || String(d.vlm_default_model))
       })
       .catch(() => setStatus('No taggers available.'))
   }, [])
@@ -117,6 +143,11 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
   // the decision actually happens in — the output file is what a trainer consumes.
   const forKind = taggers.filter((t) => KIND_OF(t) === outKind)
   useEffect(() => {
+    // 🛑 Do NOT touch the model before the tagger list has loaded. On mount `taggers` is [],
+    // so this ran once with an empty forKind and cleared the model — wiping the remembered
+    // selection a moment before the list arrived to validate it, which would have made the
+    // persistence look like it simply did not work.
+    if (!taggers.length) return
     if (!forKind.length) { setModel(''); return }
     if (!forKind.some((t) => t.id === model)) setModel(forKind[0].id)
   }, [outKind, taggers])
