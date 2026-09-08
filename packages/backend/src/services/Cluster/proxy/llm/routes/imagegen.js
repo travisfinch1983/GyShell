@@ -156,6 +156,80 @@ const TS_GUARD = /(^|\/)training_set(_[^/]+)?\//;
 // a copy, and a batch is exactly as much a working area as a set is.
 const EDITABLE_GUARD = /(^|\/)(training_set|training_batch)(_[^/]+)?\//;
 
+// ---- WHERE DELETION IS ALLOWED -------------------------------------------------
+// BASE is the WHOLE /imagegen tree (widened 2026-07-28), which includes checkpoints/,
+// loras/, vae/, text-encoders/ and ~80 other model roots holding terabytes of weights.
+// A recursive delete rooted there is not a curation feature, it is a way to lose the
+// model library to one bad path. So deletion is allow-listed to the folders this
+// browser exists to curate. Everything else refuses BY NAME, so a refusal says what to
+// do rather than looking like a bug.
+const DELETABLE_ROOTS = new Set([
+  'training_images', '_batches', '_merged', '_incoming', '_datasets', '_transfer',
+  'training', 'outputs', 'overnight', 'photo-upscaled', '_quarantine', '_delete', 'temp',
+]);
+/**
+ * Throws unless `abs` is a path we are willing to delete from.
+ * Refuses BASE itself and every top-level root: the shallowest deletable thing is one
+ * level INSIDE an allow-listed root (training_images/foo), never the root itself.
+ */
+function assertDeletable(abs) {
+  const rel = path.relative(BASE, abs);
+  if (!rel || rel.startsWith('..')) throw new Error('refusing to delete the imagegen root');
+  const parts = rel.split(path.sep);
+  if (!DELETABLE_ROOTS.has(parts[0])) {
+    throw new Error(`deletion is not allowed under '${parts[0]}' — it holds models or is outside the curation area. `
+      + `Allowed roots: ${[...DELETABLE_ROOTS].sort().join(', ')}`);
+  }
+  if (parts.length < 2) {
+    throw new Error(`refusing to delete the top-level '${parts[0]}' folder itself — delete something inside it`);
+  }
+  return rel;
+}
+
+// A folder's preview image. Auto-picked unless the folder carries a .preview file
+// naming one (dot-prefixed, so browse/counts/merge never see it).
+const PREVIEW_MARKER = '.preview';
+/** The manually-pinned preview filename for a folder, or '' if none/stale. */
+function pinnedPreview(dir) {
+  try {
+    const name = readFileSync(path.join(dir, PREVIEW_MARKER), 'utf8').trim();
+    if (name && !name.includes('/') && !name.includes('..') && isImage(name)
+        && existsSync(path.join(dir, name))) return name;
+  } catch { /* no marker */ }
+  return '';
+}
+/**
+ * Pick a representative image for a folder tile: the pinned one, else the first image
+ * directly inside, else the first image one level down (a folder of subfolders is the
+ * common shape here and would otherwise show nothing). Returns a BASE-relative path
+ * for /thumb, or '' if the subtree has no image within reach.
+ * Deliberately shallow: browse already stats every child, and an unbounded descent
+ * would make listing a large tree quadratic.
+ */
+function folderPreview(dir) {
+  const pin = pinnedPreview(dir);
+  if (pin) return path.relative(BASE, path.join(dir, pin));
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return ''; }
+  const names = entries.filter((e) => !e.name.startsWith('.'));
+  const direct = names.filter((e) => e.isFile() && isImage(e.name) && !isCollageFile(e.name))
+                      .map((e) => e.name).sort();
+  if (direct.length) return path.relative(BASE, path.join(dir, direct[0]));
+  const subs = names.filter((e) => e.isDirectory()).map((e) => e.name).sort().slice(0, 6);
+  for (const sd of subs) {
+    const sp = path.join(dir, sd);
+    const pinSub = pinnedPreview(sp);
+    if (pinSub) return path.relative(BASE, path.join(sp, pinSub));
+    let kids;
+    try { kids = readdirSync(sp, { withFileTypes: true }); } catch { continue; }
+    const img = kids.filter((e) => e.isFile() && !e.name.startsWith('.')
+                                   && isImage(e.name) && !isCollageFile(e.name))
+                    .map((e) => e.name).sort()[0];
+    if (img) return path.relative(BASE, path.join(sp, img));
+  }
+  return '';
+}
+
 /**
  * Pristine baseline for a training-set working copy, used by reset + cropped-flag:
  *   1. <set>/.orig/<name>   (merged sets snapshot their as-merged state here)
@@ -304,6 +378,11 @@ export function createImagegenRouter(config) {
         } catch { /* ignore */ }
         folders.push({
           name, n_images: nImg, n_subfolders: nSub,
+          // A representative image so the folder renders as a square tile with a
+          // picture rather than a bar with a name: you can see what is inside
+          // without opening it. '' when the subtree has none within reach.
+          preview: folderPreview(path.join(dir, name)),
+          preview_pinned: !!pinnedPreview(path.join(dir, name)),
           is_training_set: isTrainingSetName(name), has_training_set: hasTS,
           is_training_batch: isTrainingBatchName(name),
           ...(isTrainingBatchName(path.basename(dir)) && isSubsectionName(name)
@@ -1281,9 +1360,10 @@ export function createImagegenRouter(config) {
     const files = req.body && req.body.files;
     let dir;
     try { dir = safeResolve(rel); } catch { return res.status(400).json({ error: 'bad path' }); }
-    if (!isTrainingSetName(path.basename(dir))) {
-      return res.status(400).json({ error: 'delete only allowed inside a training set' });
-    }
+    // Was training-sets-only, which meant a wrong image in a root tag folder could not
+    // be removed at all (Travis, 2026-09-08). Now anywhere in the curation area; the
+    // model roots still refuse, by name.
+    try { assertDeletable(dir); } catch (e) { return res.status(400).json({ error: String(e.message || e) }); }
     if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'no such folder' });
     if (!Array.isArray(files) || !files.length) return res.status(400).json({ error: 'no files' });
     let deleted = 0; const errors = []; const gone = [];
@@ -1400,6 +1480,67 @@ export function createImagegenRouter(config) {
   });
 
   // ---- delete a whole training set (the folder + all its contents) ----
+  // ---- Delete a FOLDER and everything under it. ---------------------------------
+  // TWO-PHASE ON PURPOSE. Without confirm:true this deletes NOTHING and reports what
+  // is inside; the caller has to send the count back. A recursive delete whose blast
+  // radius the caller never saw is how you lose a folder you meant to rename, and the
+  // UI cannot show a meaningful warning for a number it was never given.
+  router.post('/delete-folder', express.json(), (req, res) => {
+    const rel = (req.body && req.body.path || '').replace(/^\/+/, '');
+    const confirm = !!(req.body && req.body.confirm);
+    let dir;
+    try { dir = safeResolve(rel); } catch { return res.status(400).json({ error: 'bad path' }); }
+    try { assertDeletable(dir); } catch (e) { return res.status(400).json({ error: String(e.message || e) }); }
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'no such folder' });
+
+    // Count the whole subtree, not just the top level: "3 images" on a folder that also
+    // holds four training sets would understate what is about to go.
+    let nImages = 0, nOther = 0, nFolders = 0;
+    const walk = (d) => {
+      let ents;
+      try { ents = readdirSync(d, { withFileTypes: true }); } catch { return; }
+      for (const e of ents) {
+        if (e.isDirectory()) { nFolders++; walk(path.join(d, e.name)); }
+        else if (isImage(e.name)) nImages++;
+        else nOther++;
+      }
+    };
+    walk(dir);
+    if (!confirm) {
+      return res.json({ needs_confirm: true, path: rel, n_images: nImages,
+                        n_subfolders: nFolders, n_other_files: nOther });
+    }
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      res.json({ ok: true, deleted: rel, n_images: nImages, n_subfolders: nFolders, n_other_files: nOther });
+    } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+  });
+
+  // ---- Pin (or clear) which image represents a folder in the browser. ------------
+  // Stored as a dot-file INSIDE the folder it describes, so it travels with the folder
+  // on a move/rename and cannot go stale in a central index. file:'' clears the pin
+  // and returns the folder to auto-pick.
+  router.post('/folder-preview', express.json(), (req, res) => {
+    const rel = (req.body && req.body.path || '').replace(/^\/+/, '');
+    const file = (req.body && req.body.file) || '';
+    let dir;
+    try { dir = safeResolve(rel); } catch { return res.status(400).json({ error: 'bad path' }); }
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'no such folder' });
+    const marker = path.join(dir, PREVIEW_MARKER);
+    if (!file) {
+      try { if (existsSync(marker)) unlinkSync(marker); } catch { /* best effort */ }
+      return res.json({ ok: true, pinned: '', preview: folderPreview(dir) });
+    }
+    if (typeof file !== 'string' || file.includes('/') || file.includes('..') || !isImage(file)) {
+      return res.status(400).json({ error: 'file must be an image name inside this folder' });
+    }
+    if (!existsSync(path.join(dir, file))) return res.status(404).json({ error: `no such image: ${file}` });
+    try {
+      writeFileSync(marker, file, 'utf8');
+      res.json({ ok: true, pinned: file, preview: path.relative(BASE, path.join(dir, file)) });
+    } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+  });
+
   router.post('/delete-set', express.json(), (req, res) => {
     const rel = (req.body && req.body.path || '').replace(/^\/+/, '');
     let dir;

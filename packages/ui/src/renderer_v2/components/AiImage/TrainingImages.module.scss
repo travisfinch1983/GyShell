@@ -9,10 +9,30 @@
 .dim { font-size: 11px; color: var(--fg-faint); }
 .error { padding: 10px 12px; color: var(--danger,#f87171); font-size: 12px; }
 
-.folders { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
-.folder { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--control-bg); color: var(--fg); cursor: pointer; font-size: 12px; &:hover { border-color: var(--accent); } }
+// Folder tiles are SQUARE PICTURES, not name bars: each shows a representative image from
+// inside itself so you can see what a folder holds without opening it (Travis, 2026-09-08).
+// FIXED sizes on both axes for the same reason .grid below is fixed — see that comment; the
+// thumb is absolutely positioned, so intrinsic rows would collapse and stack the images.
+.folders { display: grid; grid-template-columns: repeat(auto-fill, 150px); grid-auto-rows: 186px; gap: 8px; padding: 10px 12px; align-content: start; justify-content: space-between; }
+.folder { position: relative; display: flex; flex-direction: column; width: 150px; height: 186px; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--control-bg); color: var(--fg); cursor: pointer; font-size: 12px; text-align: left;
+  &:hover { border-color: var(--accent); }
+  &:hover .folderActs { opacity: 1; }
+}
+.folderThumb { position: relative; display: block; width: 100%; height: 150px; flex: 0 0 150px; background: var(--panel-bg-2, #111); overflow: hidden;
+  img { width: 100%; height: 100%; object-fit: cover; display: block; }
+}
+.folderThumbEmpty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--fg-faint); }
+.folderOver { position: absolute; left: 4px; top: 4px; display: flex; gap: 3px; flex-wrap: wrap; max-width: calc(100% - 8px); }
+// Hidden until hover so the picture stays the point of the tile; the delete target is small
+// and deliberately not adjacent to the tile's own click area edge.
+.folderActs { position: absolute; right: 4px; top: 4px; display: flex; gap: 3px; opacity: 0; transition: opacity .12s; }
+.fact { display: inline-flex; align-items: center; justify-content: center; width: 21px; height: 21px; border-radius: 5px; background: rgba(0,0,0,.62); color: #eee; font-size: 11px; line-height: 1;
+  &:hover { background: rgba(0,0,0,.85); color: var(--accent); }
+}
+.factDel:hover { color: #f87171; }
+.folderFoot { display: flex; flex-direction: column; gap: 1px; padding: 5px 7px; min-width: 0; }
 .folderIc { color: var(--accent); display: inline-flex; }
-.folderName { font-weight: 600; }
+.folderName { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .folderMeta { font-size: 10.5px; color: var(--fg-faint); }
 .ren { cursor: pointer; color: var(--fg-faint); &:hover { color: var(--accent); } }
 .fbadge { font-size: 9.5px; text-transform: uppercase; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--fg-muted); }

@@ -84,7 +84,9 @@ export interface BatchSection {
   folder: string; concept: string; repeats: number; count: number
   hasCollage: boolean; collageFirst: string
 }
-export interface IgFolder { name: string; n_images: number; n_subfolders: number; is_training_set: boolean; has_training_set: boolean; is_training_batch?: boolean; is_batch_subsection?: boolean; repeats?: number; concept?: string }
+export interface IgFolder { name: string; n_images: number; n_subfolders: number; is_training_set: boolean; has_training_set: boolean; is_training_batch?: boolean; is_batch_subsection?: boolean; repeats?: number; concept?: string;
+  /** BASE-relative image representing this folder (auto-picked, or pinned via .preview). '' when the subtree has none. */
+  preview?: string; preview_pinned?: boolean }
 export interface IgCrumb { name: string; path: string }
 
 type SortKey = 'name' | 'created' | 'modified' | 'added' | 'size'
@@ -392,6 +394,20 @@ export class TrainingImagesStore {
 
   async deleteSelected(): Promise<any> {
     return this.deleteKeys([...this.selected])
+  }
+
+  /**
+   * Delete a folder and everything under it. Two-phase by design: called without
+   * `confirm` the server deletes NOTHING and returns the subtree counts, so the
+   * dialog can state the real blast radius instead of a vague warning.
+   */
+  async deleteFolder(rel: string, confirm = false): Promise<any> {
+    return ig('/delete-folder', { method: 'POST', body: { path: rel, confirm } })
+  }
+
+  /** Pin which image represents a folder in the browser; file:'' returns it to auto-pick. */
+  async setFolderPreview(rel: string, file: string): Promise<any> {
+    return ig('/folder-preview', { method: 'POST', body: { path: rel, file } })
   }
   async transfer(op: 'move' | 'copy', dest: string, files: string[], sub = ''): Promise<any> {
     return ig('/transfer', { method: 'POST', body: { op, src: this.dirPath(sub), dest, files } })

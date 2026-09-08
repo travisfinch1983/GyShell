@@ -456,11 +456,54 @@ export const TrainingImagesPanel: React.FC = observer(() => {
 
   const doDelete = async () => {
     const n = store.selected.size
-    if (!(await confirmStore.confirm({ title: 'Delete from training set', message: `Delete ${n} image${n > 1 ? 's' : ''} from this set? Originals are not affected.`, confirmText: 'Delete' }))) return
+    const inSet = store.inTrainingSet
+    if (!(await confirmStore.confirm({ title: inSet ? 'Delete from training set' : 'Delete images',
+      message: inSet
+        ? `Delete ${n} image${n > 1 ? 's' : ''} from this set? Originals are not affected.`
+        : `Permanently delete ${n} image${n > 1 ? 's' : ''} from this folder, along with their .txt and .caption sidecars? These ARE the originals — this cannot be undone.`,
+      confirmText: 'Delete' }))) return
     store.msg = `Deleting ${n}…`
     try { const r = await store.deleteSelected(); store.msg = `Deleted ${r.deleted}.`; void store.browse(store.cwd) }
     catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
   }
+  // Delete a folder and everything under it. The server counts the subtree first and
+  // deletes nothing until we send the count back, so the dialog can name the real blast
+  // radius — "delete this folder?" on something holding four training sets is how you
+  // lose work you meant to rename.
+  const doDeleteFolder = async (rel: string, name: string) => {
+    let info: any
+    try { info = await store.deleteFolder(rel, false) }
+    catch (e: any) { store.msg = 'Failed: ' + (e?.message || e); return }
+    if (info?.error) { store.msg = info.error; return }
+    const bits = [
+      info.n_images ? `${info.n_images} image${info.n_images > 1 ? 's' : ''}` : '',
+      info.n_subfolders ? `${info.n_subfolders} subfolder${info.n_subfolders > 1 ? 's' : ''}` : '',
+      info.n_other_files ? `${info.n_other_files} other file${info.n_other_files > 1 ? 's' : ''}` : '',
+    ].filter(Boolean)
+    const what = bits.length ? bits.join(', ') : 'nothing — it is empty'
+    if (!(await confirmStore.confirm({
+      title: `Delete folder "${name}"`,
+      message: `Permanently delete ${name} and everything inside it?\n\nIt contains: ${what}.\n\nThis cannot be undone.`,
+      confirmText: 'Delete folder',
+    }))) return
+    store.msg = `Deleting ${name}…`
+    try {
+      const r = await store.deleteFolder(rel, true)
+      if (r?.error) { store.msg = r.error; return }
+      store.msg = `Deleted ${name} (${r.n_images} image(s)).`
+      void store.browse(store.cwd)
+    } catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
+  }
+
+  // Pin one image as the tile picture for the folder we are looking at, so the parent
+  // listing shows a representative frame rather than whichever file sorts first.
+  const doPinPreview = async (name: string) => {
+    try {
+      const r = await store.setFolderPreview(store.cwd, name)
+      store.msg = r?.error ? r.error : `Folder preview set to ${name}.`
+    } catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
+  }
+
   const doStrip = async (files?: string[]) => {
     const scope = files?.length ? `${files.length} image(s)` : 'EVERY image in this set'
     if (!(await confirmStore.confirm({ title: 'Strip booru tags (.txt)', message: `Delete the .txt tag sidecars for ${scope}? Images and .caption files are untouched. Cannot be undone.`, confirmText: 'Strip' }))) return
@@ -600,8 +643,19 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           <button className={styles.btn} onClick={() => setPicker('copy')}>Copy…</button>
           <button className={styles.btn} title="Copy the selection + caption sidecars into a training batch assembled from many sets" onClick={() => setBatchAdd(true)}>Add to batch…</button>
           <button className={styles.btn} title="Rename the selection to <name>-1..N in display order — sidecars and ratings follow" onClick={() => void doRenameFiles()}>Rename…</button>
+          {/* Exactly one image selected: pin it as the picture the PARENT listing shows for
+              this folder. Auto-pick otherwise takes whichever file sorts first, which is
+              rarely the one that says what the folder is. */}
+          {store.selected.size === 1 && !!store.cwd && (
+            <button className={styles.btn}
+                    title={`Use this image as the folder tile picture for "${store.cwd.split('/').pop()}"`}
+                    onClick={() => void doPinPreview([...store.selected][0])}>Set folder preview</button>
+          )}
           {store.batchContext && <button className={styles.btn} title="Move the selection into a <repeats>_<concept> subsection of this batch (kohya's folder convention; AI Toolkit ignores the names)" onClick={() => setSubMove(true)}>Subsection…</button>}
-          {store.inTrainingSet && <button className={styles.btnDanger} onClick={() => void doDelete()}>Delete</button>}
+          {/* Was gated on inTrainingSet, so a wrong image in a root tag folder could not be
+              removed at all. The server enforces the real boundary (model roots refuse by
+              name), so the UI no longer second-guesses it. */}
+          <button className={styles.btnDanger} onClick={() => void doDelete()}>Delete</button>
           <button className={styles.btn} title="Add or remove the same booru tags across the selected images" onClick={() => setBlanket(true)}>Blanket tags…</button>
           <button className={styles.btn} title="Replace text across the selected images' .txt and .caption sidecars — preview before applying" onClick={() => setFindRep(true)}>Find &amp; replace…</button>
           <button className={styles.btn} title="Have a text model correct the selected captions against an instruction — preview before applying" onClick={() => setCorrect(true)}>Correct captions…</button>
@@ -627,12 +681,23 @@ export const TrainingImagesPanel: React.FC = observer(() => {
             const path = store.cwd ? `${store.cwd}/${f.name}` : f.name
             return (
               <button key={f.name} className={styles.folder} onClick={() => void store.browse(path)}>
-                <span className={styles.folderIc}>{f.is_training_set ? <Star size={15} /> : <FolderOpen size={15} />}</span>
-                <span className={styles.folderName}>{f.name}</span>
-                {f.is_training_set ? <span className={`${styles.fbadge} ${styles.fbadgeTs}`}>training_set</span> : f.has_training_set ? <span className={styles.fbadge}>has set</span> : null}
-                {(f.is_training_set || f.is_training_batch) && <span className={styles.ren} title="Rename suffix" onClick={(e) => { e.stopPropagation(); void doRename(path, f.name) }}>✎</span>}
-                {f.is_batch_subsection && <span className={styles.ren} title={`kohya repeats: ${f.repeats} — click to change`} onClick={(e) => { e.stopPropagation(); void doRepeats(path, f) }}>×{f.repeats}</span>}
-                <span className={styles.folderMeta}>{f.n_images} img{f.n_subfolders ? ` · ${f.n_subfolders} sub` : ''}</span>
+                <span className={styles.folderThumb}>
+                  {f.preview
+                    ? <img src={igThumb(f.preview)} alt="" loading="lazy" draggable={false} />
+                    : <span className={styles.folderThumbEmpty}>{f.is_training_set ? <Star size={26} /> : <FolderOpen size={26} />}</span>}
+                  <span className={styles.folderOver}>
+                    {f.is_training_set ? <span className={`${styles.fbadge} ${styles.fbadgeTs}`}>set</span> : f.has_training_set ? <span className={styles.fbadge}>has set</span> : null}
+                    {f.is_batch_subsection && <span className={styles.fbadge} title={`kohya repeats: ${f.repeats} — click to change`} onClick={(e) => { e.stopPropagation(); void doRepeats(path, f) }}>×{f.repeats}</span>}
+                  </span>
+                  <span className={styles.folderActs}>
+                    {(f.is_training_set || f.is_training_batch) && <span className={styles.fact} title="Rename suffix" onClick={(e) => { e.stopPropagation(); void doRename(path, f.name) }}>✎</span>}
+                    <span className={`${styles.fact} ${styles.factDel}`} title={`Delete "${f.name}" and everything inside it`} onClick={(e) => { e.stopPropagation(); void doDeleteFolder(path, f.name) }}>🗑</span>
+                  </span>
+                </span>
+                <span className={styles.folderFoot}>
+                  <span className={styles.folderName} title={f.name}>{f.name}</span>
+                  <span className={styles.folderMeta}>{f.n_images} img{f.n_subfolders ? ` · ${f.n_subfolders} sub` : ''}</span>
+                </span>
               </button>
             )
           })}
