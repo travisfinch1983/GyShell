@@ -108,6 +108,9 @@ export class TrainingImagesStore {
   // selection
   selectionMode = false
   selected = new Set<string>()
+  /** Folders picked for a move/copy. Kept separate from `selected`: a folder name and an
+   *  image name share a namespace on disk but are moved by different endpoints. */
+  selectedFolders = new Set<string>()
   lastIndex: number | null = null
   msg = ''
   /** The API root is ALL of /ai-assets/imagegen — deliberately, so agents can reach their own
@@ -253,12 +256,12 @@ export class TrainingImagesStore {
   }
 
   enterSelection() { this.selectionMode = true }
-  exitSelection() { this.selectionMode = false; this.lastIndex = null; this.selected.clear() }
+  exitSelection() { this.selectionMode = false; this.lastIndex = null; this.selected.clear(); this.selectedFolders = new Set() }
   toggleOne(i: number) {
     const name = imKey(this.visibleImages[i])
     if (this.selected.has(name)) this.selected.delete(name); else this.selected.add(name)
     this.selected = new Set(this.selected)
-    if (!this.selected.size) this.exitSelection()
+    if (!this.selected.size && !this.selectedFolders.size) this.exitSelection()
   }
   selectRange(a: number, b: number) {
     const [lo, hi] = a <= b ? [a, b] : [b, a]
@@ -267,7 +270,7 @@ export class TrainingImagesStore {
   }
   selectAll() { this.visibleImages.forEach((im) => this.selected.add(imKey(im))); this.selected = new Set(this.selected) }
   /** Empty the selection but STAY in selection mode (Clear/X is the exit). */
-  deselectAll() { this.selected = new Set(); this.lastIndex = null }
+  deselectAll() { this.selected = new Set(); this.selectedFolders = new Set(); this.lastIndex = null }
 
   // ── actions ──
   async sendToTrainingSet(suffix: string): Promise<any> {
@@ -401,6 +404,22 @@ export class TrainingImagesStore {
    * `confirm` the server deletes NOTHING and returns the subtree counts, so the
    * dialog can state the real blast radius instead of a vague warning.
    */
+  toggleFolder(name: string) {
+    if (this.selectedFolders.has(name)) this.selectedFolders.delete(name)
+    else this.selectedFolders.add(name)
+    this.selectedFolders = new Set(this.selectedFolders)
+    if (!this.selected.size && !this.selectedFolders.size) this.exitSelection()
+  }
+
+  /** Total picked things — images and folders. Drives the toolbar count. */
+  get pickedCount(): number { return this.selected.size + this.selectedFolders.size }
+
+  /** Move/copy whole folders. Separate endpoint: /transfer renames files into the
+   *  destination's <base>-N scheme, which would rewrite a folder's contents. */
+  async transferFolders(op: 'move' | 'copy', dest: string, names: string[]): Promise<any> {
+    return ig('/transfer-folders', { method: 'POST', body: { op, src: this.cwd, dest, folders: names } })
+  }
+
   async deleteFolder(rel: string, confirm = false): Promise<any> {
     return ig('/delete-folder', { method: 'POST', body: { path: rel, confirm } })
   }

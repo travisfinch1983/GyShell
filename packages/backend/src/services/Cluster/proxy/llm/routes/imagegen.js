@@ -15,7 +15,7 @@
 import express, { Router } from 'express';
 import {
   existsSync, readdirSync, statSync, mkdirSync, createReadStream, writeFileSync,
-  copyFileSync, chmodSync, unlinkSync, renameSync, readFileSync, rmSync,
+  copyFileSync, chmodSync, unlinkSync, renameSync, readFileSync, rmSync, cpSync,
 } from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -168,20 +168,21 @@ const DELETABLE_ROOTS = new Set([
   'training', 'outputs', 'overnight', 'photo-upscaled', '_quarantine', '_delete', 'temp',
 ]);
 /**
- * Throws unless `abs` is a path we are willing to delete from.
+ * Throws unless `abs` is a path we are willing to MODIFY DESTRUCTIVELY (delete, or move
+ * out of). Used by both, so its messages stay operation-neutral.
  * Refuses BASE itself and every top-level root: the shallowest deletable thing is one
  * level INSIDE an allow-listed root (training_images/foo), never the root itself.
  */
 function assertDeletable(abs) {
   const rel = path.relative(BASE, abs);
-  if (!rel || rel.startsWith('..')) throw new Error('refusing to delete the imagegen root');
+  if (!rel || rel.startsWith('..')) throw new Error('the imagegen root itself cannot be moved or deleted');
   const parts = rel.split(path.sep);
   if (!DELETABLE_ROOTS.has(parts[0])) {
-    throw new Error(`deletion is not allowed under '${parts[0]}' — it holds models or is outside the curation area. `
+    throw new Error(`'${parts[0]}' is outside the curation area — it holds models, so it is not moveable or deletable here. `
       + `Allowed roots: ${[...DELETABLE_ROOTS].sort().join(', ')}`);
   }
   if (parts.length < 2) {
-    throw new Error(`refusing to delete the top-level '${parts[0]}' folder itself — delete something inside it`);
+    throw new Error(`the top-level '${parts[0]}' folder itself cannot be moved or deleted — act on something inside it`);
   }
   return rel;
 }
@@ -1485,6 +1486,56 @@ export function createImagegenRouter(config) {
   // is inside; the caller has to send the count back. A recursive delete whose blast
   // radius the caller never saw is how you lose a folder you meant to rename, and the
   // UI cannot show a meaningful warning for a number it was never given.
+  // ---- Move/copy whole FOLDERS. -------------------------------------------------
+  // Separate from /transfer on purpose: that renames every incoming file into the
+  // destination's <base>-N scheme, which is right for loose images and wrong for a
+  // folder, where keeping the folder and its contents intact IS the operation.
+  router.post('/transfer-folders', express.json(), (req, res) => {
+    const { op, src: srcRel, dest: destRel, folders } = req.body || {};
+    if (op !== 'move' && op !== 'copy') return res.status(400).json({ error: 'op must be move|copy' });
+    let srcDir, destDir;
+    try { srcDir = safeResolve(srcRel); destDir = safeResolve(destRel); }
+    catch { return res.status(400).json({ error: 'bad path' }); }
+    if (!existsSync(srcDir) || !statSync(srcDir).isDirectory()) return res.status(404).json({ error: 'src not a directory' });
+    if (!Array.isArray(folders) || !folders.length) return res.status(400).json({ error: 'no folders' });
+    // The destination must be in the curation area too — this browser shows the whole
+    // /imagegen tree, and relocating a model directory here would break the paths
+    // ComfyUI resolves by name.
+    const destParts = path.relative(BASE, destDir).split(path.sep).filter(Boolean);
+    if (!destParts.length || !DELETABLE_ROOTS.has(destParts[0])) {
+      return res.status(400).json({ error: `destination must be inside one of: ${[...DELETABLE_ROOTS].sort().join(', ')}` });
+    }
+    try { mkdirSync(destDir, { recursive: true }); chmodSync(destDir, 0o777); } catch { /* ignore */ }
+
+    let done = 0; const errors = []; const moved = [];
+    for (const name of folders) {
+      if (typeof name !== 'string' || !name || name.includes('/') || name.includes('..') || name.startsWith('.')) {
+        errors.push({ name, why: 'bad name' }); continue;
+      }
+      const from = path.join(srcDir, name);
+      // assertDeletable also enforces depth >= 2, so a top-level root can never be moved.
+      try { assertDeletable(from); } catch (e) { errors.push({ name, why: String(e.message || e) }); continue; }
+      if (!existsSync(from) || !statSync(from).isDirectory()) { errors.push({ name, why: 'not a folder' }); continue; }
+      const to = path.join(destDir, name);
+      // 🛑 Moving a folder INTO ITSELF (or into its own descendant) is the one way this
+      // loses data outright — rename() would either fail or bury the tree inside itself.
+      if (to === from || destDir === from || destDir.startsWith(from + path.sep)) {
+        errors.push({ name, why: 'cannot move a folder into itself' }); continue;
+      }
+      if (existsSync(to)) { errors.push({ name, why: 'a folder of that name already exists there' }); continue; }
+      try {
+        if (op === 'move') {
+          try { renameSync(from, to); }
+          catch { cpSync(from, to, { recursive: true }); rmSync(from, { recursive: true, force: true }); }  // cross-device
+        } else {
+          cpSync(from, to, { recursive: true });
+        }
+        moved.push(name); done++;
+      } catch (e) { errors.push({ name, why: String(e.message || e) }); }
+    }
+    res.json({ ok: true, op, done, moved, errors, dest: path.relative(BASE, destDir) });
+  });
+
   router.post('/delete-folder', express.json(), (req, res) => {
     const rel = (req.body && req.body.path || '').replace(/^\/+/, '');
     const confirm = !!(req.body && req.body.confirm);

@@ -297,7 +297,7 @@ const Lightbox: React.FC<{ rel: string; name: string; bust?: number; onClose: ()
 }
 
 // ── destination picker (move/copy) ──
-const Picker: React.FC<{ op: 'move' | 'copy'; files: string[]; onClose: () => void; onDone: () => void }> = ({ op, files, onClose, onDone }) => {
+const Picker: React.FC<{ op: 'move' | 'copy'; files: string[]; folders?: string[]; onClose: () => void; onDone: () => void }> = ({ op, files, folders = [], onClose, onDone }) => {
   // Open where the user already IS — starting at the imagegen root meant re-walking the
   // whole tree on every move/copy. The crumbs still navigate anywhere from here.
   const [pcwd, setPcwd] = useState(store.cwd)
@@ -310,15 +310,34 @@ const Picker: React.FC<{ op: 'move' | 'copy'; files: string[]; onClose: () => vo
     let dest = pcwd || ''
     const s = sub.trim().replace(/^\/+|\/+$/g, '')
     if (s) { if (s.includes('..')) { setMsg('bad folder name'); return } dest = dest ? `${dest}/${s}` : s }
-    if (dest === store.cwd) { setMsg("that's the source folder"); return }
-    setMsg(`${verb}ing ${files.length}…`)
-    try { const r = await store.transferKeys(op, dest, files); setMsg(`${verb}d ${r.done} → ${r.dest}`); setTimeout(() => { onClose(); onDone() }, 700) }
+    if (dest === store.cwd && !s) { setMsg("that's the source folder"); return }
+    setMsg(`${verb}ing ${files.length + folders.length}…`)
+    try {
+      let done = 0; let where = dest; const problems: string[] = []
+      // Folders first: if a folder move fails (name collision, into-itself) the images
+      // have not been scattered yet and the whole thing can be retried as one.
+      if (folders.length) {
+        const rf = await store.transferFolders(op, dest, folders)
+        done += rf.done || 0; where = rf.dest || where
+        for (const e of rf.errors || []) problems.push(`${e.name}: ${e.why}`)
+      }
+      if (files.length) {
+        const r = await store.transferKeys(op, dest, files)
+        done += r.done || 0; where = r.dest || where
+      }
+      setMsg(problems.length
+        ? `${verb}d ${done} → ${where}. Skipped: ${problems.join('; ')}`
+        : `${verb}d ${done} → ${where}`)
+      // Leave a failure on screen to be read; only auto-close on a clean run.
+      if (!problems.length) setTimeout(() => { onClose(); onDone() }, 700)
+      else onDone()
+    }
     catch (e: any) { setMsg('Failed: ' + (e?.message || e)) }
   }
   return (
     <div className={styles.modalBg}>{/* deliberately NOT click-to-close: a stray backdrop click was eating typed input */}
       <div className={styles.pkBox} onClick={(e) => e.stopPropagation()}>
-        <div className={styles.modalHead}><strong>{verb} {files.length} image{files.length > 1 ? 's' : ''} to…</strong><button className={styles.btn} onClick={onClose}>Cancel</button></div>
+        <div className={styles.modalHead}><strong>{verb} {[files.length && `${files.length} image${files.length > 1 ? 's' : ''}`, folders.length && `${folders.length} folder${folders.length > 1 ? 's' : ''}`].filter(Boolean).join(' + ')} to…</strong><button className={styles.btn} onClick={onClose}>Cancel</button></div>
         <div className={styles.crumbs}>
           <a onClick={() => setPcwd('')}>training_images</a>
           {(data?.crumbs || []).map((c: any) => <span key={c.path}> / <a onClick={() => setPcwd(c.path)}>{c.name}</a></span>)}
@@ -333,8 +352,14 @@ const Picker: React.FC<{ op: 'move' | 'copy'; files: string[]; onClose: () => vo
         <div className={styles.pkFoot}>
           <input className={styles.input} placeholder="new subfolder (optional)…" value={sub} onChange={(e) => setSub(e.target.value)} />
           <span className={styles.spacer} />
-          <span className={styles.dim}>→ {pcwd || 'training_images'}</span>
-          <button className={styles.btnPrimary} disabled={(pcwd || '') === (store.cwd || '')} onClick={() => void go()}>{verb} here</button>
+          {/* The destination is pcwd PLUS any new subfolder — showing only pcwd made a
+              typed folder name look like it had been ignored. */}
+          <span className={styles.dim}>→ {[pcwd || 'training_images', sub.trim().replace(/^\/+|\/+$/g, '')].filter(Boolean).join('/')}</span>
+          {/* Was disabled whenever the picker sat on the SOURCE folder, which also blocked
+              creating a NEW SUBFOLDER inside it — you had to navigate out and back in to
+              make one. A new subfolder is a different destination, so only the bare
+              same-folder case is a no-op. */}
+          <button className={styles.btnPrimary} disabled={!sub.trim() && (pcwd || '') === (store.cwd || '')} onClick={() => void go()}>{verb} here</button>
         </div>
         {msg && <div className={styles.dim}>{msg}</div>}
       </div>
@@ -455,15 +480,52 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   const openImage = (im: IgImage) => setCrop({ rel: im.rel, name: im.name })
 
   const doDelete = async () => {
+    // Folders are selectable now, so a Delete that only ever removed images would
+    // silently ignore half the selection — the exact shape of bug this panel keeps
+    // producing. Count the folder subtrees first (the server reports without deleting)
+    // so ONE dialog can state the whole blast radius.
+    const folderNames = [...store.selectedFolders]
+    let folderImgs = 0, folderSubs = 0
+    for (const fn of folderNames) {
+      const rel = store.cwd ? `${store.cwd}/${fn}` : fn
+      try {
+        const info = await store.deleteFolder(rel, false)
+        if (info?.error) { store.msg = `${fn}: ${info.error}`; return }
+        folderImgs += info.n_images || 0; folderSubs += info.n_subfolders || 0
+      } catch (e: any) { store.msg = 'Failed: ' + (e?.message || e); return }
+    }
     const n = store.selected.size
+    if (!n && !folderNames.length) return
     const inSet = store.inTrainingSet
-    if (!(await confirmStore.confirm({ title: inSet ? 'Delete from training set' : 'Delete images',
-      message: inSet
-        ? `Delete ${n} image${n > 1 ? 's' : ''} from this set? Originals are not affected.`
-        : `Permanently delete ${n} image${n > 1 ? 's' : ''} from this folder, along with their .txt and .caption sidecars? These ARE the originals — this cannot be undone.`,
+    const parts: string[] = []
+    if (n) {
+      parts.push(inSet
+        ? `${n} image${n > 1 ? 's' : ''} from this set (originals are not affected)`
+        : `${n} image${n > 1 ? 's' : ''} and their .txt/.caption sidecars — these ARE the originals`)
+    }
+    if (folderNames.length) {
+      parts.push(`${folderNames.length} folder${folderNames.length > 1 ? 's' : ''} `
+        + `(${folderNames.join(', ')}) and everything inside them — ${folderImgs} image${folderImgs === 1 ? '' : 's'}`
+        + `${folderSubs ? `, ${folderSubs} subfolder${folderSubs > 1 ? 's' : ''}` : ''}`)
+    }
+    if (!(await confirmStore.confirm({
+      title: folderNames.length ? 'Delete selection' : (inSet ? 'Delete from training set' : 'Delete images'),
+      message: `Permanently delete:\n\n• ${parts.join('\n• ')}\n\nThis cannot be undone.`,
       confirmText: 'Delete' }))) return
-    store.msg = `Deleting ${n}…`
-    try { const r = await store.deleteSelected(); store.msg = `Deleted ${r.deleted}.`; void store.browse(store.cwd) }
+    store.msg = `Deleting ${n + folderNames.length}…`
+    try {
+      let imgs = 0
+      if (n) imgs = (await store.deleteSelected()).deleted || 0
+      let folds = 0
+      for (const fn of folderNames) {
+        const rel = store.cwd ? `${store.cwd}/${fn}` : fn
+        const r = await store.deleteFolder(rel, true)
+        if (r?.error) { store.msg = `${fn}: ${r.error}`; break }
+        folds++
+      }
+      store.msg = `Deleted ${imgs} image(s)${folds ? ` and ${folds} folder(s)` : ''}.`
+      void store.browse(store.cwd)
+    }
     catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
   }
   // Delete a folder and everything under it. The server counts the subtree first and
@@ -634,9 +696,9 @@ export const TrainingImagesPanel: React.FC = observer(() => {
       {store.selectionMode && (
         <div className={styles.selbar}>
           <button className={styles.iconBtn} title="Clear" onClick={() => store.exitSelection()}><X size={14} /></button>
-          <span>{store.selected.size} selected</span>
+          <span>{[store.selected.size && `${store.selected.size} image${store.selected.size > 1 ? 's' : ''}`, store.selectedFolders.size && `${store.selectedFolders.size} folder${store.selectedFolders.size > 1 ? 's' : ''}`].filter(Boolean).join(' + ') || '0'} selected</span>
           <button className={styles.btn} onClick={() => store.selectAll()}>Select all ({store.visibleImages.length})</button>
-          <button className={styles.btn} disabled={!store.selected.size} onClick={() => store.deselectAll()}>Deselect all</button>
+          <button className={styles.btn} disabled={!store.pickedCount} onClick={() => store.deselectAll()}>Deselect all</button>
           <span className={styles.spacer} />
           <button className={styles.btnPrimary} title="Copy the selection + caption sidecars into an existing training set, or create a new one beside this folder — works from inside a set too, for cherry-picking an already-curated selection" onClick={() => setSetAdd(true)}>Add to Training Set</button>
           <button className={styles.btn} onClick={() => setPicker('move')}>Move…</button>
@@ -675,37 +737,40 @@ export const TrainingImagesPanel: React.FC = observer(() => {
         </div>
       )}
 
-      {store.folders.length > 0 && (
-        <div className={styles.folders}>
-          {store.folders.map((f) => {
-            const path = store.cwd ? `${store.cwd}/${f.name}` : f.name
-            return (
-              <button key={f.name} className={styles.folder} onClick={() => void store.browse(path)}>
-                <span className={styles.folderThumb}>
-                  {f.preview
-                    ? <img src={igThumb(f.preview)} alt="" loading="lazy" draggable={false} />
-                    : <span className={styles.folderThumbEmpty}>{f.is_training_set ? <Star size={26} /> : <FolderOpen size={26} />}</span>}
-                  <span className={styles.folderOver}>
-                    {f.is_training_set ? <span className={`${styles.fbadge} ${styles.fbadgeTs}`}>set</span> : f.has_training_set ? <span className={styles.fbadge}>has set</span> : null}
-                    {f.is_batch_subsection && <span className={styles.fbadge} title={`kohya repeats: ${f.repeats} — click to change`} onClick={(e) => { e.stopPropagation(); void doRepeats(path, f) }}>×{f.repeats}</span>}
-                  </span>
-                  <span className={styles.folderActs}>
-                    {(f.is_training_set || f.is_training_batch) && <span className={styles.fact} title="Rename suffix" onClick={(e) => { e.stopPropagation(); void doRename(path, f.name) }}>✎</span>}
-                    <span className={`${styles.fact} ${styles.factDel}`} title={`Delete "${f.name}" and everything inside it`} onClick={(e) => { e.stopPropagation(); void doDeleteFolder(path, f.name) }}>🗑</span>
-                  </span>
-                </span>
-                <span className={styles.folderFoot}>
-                  <span className={styles.folderName} title={f.name}>{f.name}</span>
-                  <span className={styles.folderMeta}>{f.n_images} img{f.n_subfolders ? ` · ${f.n_subfolders} sub` : ''}</span>
-                </span>
-              </button>
-            )
-          })}
-        </div>
-      )}
-
+      {/* ONE scrolling workspace. Folders used to sit in their own non-scrolling block
+          above the grid, so a folder-heavy directory pushed the images off-screen with no
+          way to scroll to them (Travis, 2026-09-08). They are now leading cells in the
+          SAME grid: same 150px cell, one scrollbar, folders first. */}
       <div className={styles.grid}>
-        {store.images.length === 0 && !store.loading && <div className={styles.dim}>No images here.</div>}
+        {store.folders.map((f) => {
+          const fpath = store.cwd ? `${store.cwd}/${f.name}` : f.name
+          const fsel = store.selectedFolders.has(f.name)
+          return (
+            <div key={`fold-${f.name}`}
+                 className={`${styles.tile} ${styles.folder} ${fsel ? styles.tileSel : ''}`}
+                 title={f.name}
+                 onClick={() => { if (store.selectionMode) store.toggleFolder(f.name); else void store.browse(fpath) }}>
+              {f.preview
+                ? <img src={igThumb(f.preview)} alt="" loading="lazy" draggable={false} />
+                : <span className={styles.folderThumbEmpty}>{f.is_training_set ? <Star size={30} /> : <FolderOpen size={30} />}</span>}
+              <span className={styles.pick} title="Select this folder"
+                    onClick={(e) => { e.stopPropagation(); store.enterSelection(); store.toggleFolder(f.name) }} />
+              <span className={styles.folderActs}>
+                {(f.is_training_set || f.is_training_batch) && <span className={styles.fact} title="Rename suffix" onClick={(e) => { e.stopPropagation(); void doRename(fpath, f.name) }}>✎</span>}
+                <span className={`${styles.fact} ${styles.factDel}`} title={`Delete "${f.name}" and everything inside it`} onClick={(e) => { e.stopPropagation(); void doDeleteFolder(fpath, f.name) }}>🗑</span>
+              </span>
+              <span className={styles.folderFoot}>
+                <span className={styles.folderName}>{f.name}</span>
+                <span className={styles.folderMeta}>
+                  {f.n_images} img{f.n_subfolders ? ` · ${f.n_subfolders} sub` : ''}
+                  {f.is_training_set ? ' · set' : f.has_training_set ? ' · has set' : ''}
+                  {f.is_batch_subsection ? ` · ×${f.repeats}` : ''}
+                </span>
+              </span>
+            </div>
+          )
+        })}
+        {store.images.length === 0 && store.folders.length === 0 && !store.loading && <div className={styles.dim}>Nothing here.</div>}
         {store.sections.length === 0
           ? store.visibleImages.map((im, i) => <Tile key={im.rel} im={im} i={i} onOpen={() => openImage(im)} />)
           : (() => {
@@ -792,7 +857,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
       {batchAdd && <AddToBatchModal kind="batch" files={[...store.selected]} onClose={() => setBatchAdd(false)} />}
       {subMove && <SubsectionModal onClose={() => setSubMove(false)} />}
       {setAdd && <AddToBatchModal kind="set" files={[...store.selected]} onClose={() => setSetAdd(false)} />}
-      {picker && <Picker op={picker} files={[...store.selected]} onClose={() => setPicker(null)} onDone={() => void store.browse(store.cwd)} />}
+      {picker && <Picker op={picker} files={[...store.selected]} folders={[...store.selectedFolders]} onClose={() => setPicker(null)} onDone={() => void store.browse(store.cwd)} />}
       {merge && <MergeModal onClose={() => setMerge(false)} />}
     </div>
   )
