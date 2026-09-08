@@ -1543,7 +1543,7 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
                f"{_AITK_PY} run.py {shlex.quote(cfg_path)}") + _notify_suffix(rdir, notify)
         meta = {"run_id": run_id, "trainer": "aitoolkit", "state": "launching",
                 "output_name": output_name, "base_model": base_model, "trigger": trig,
-                "batch_folder": _scope(batch_folder), "images": len(imgs), "steps": n_steps,
+                "batch_folder": _scope(batch_folder), "images": len(imgs) + len(sub_imgs), "steps": n_steps,
                 "steps_source": "argument" if steps > 0 else "derived from images x repeats x epochs",
                 "subsections": subs, "gpu_index": gpu_index, "config": cfg_path, "log": log,
                 # RECORD THE COMMAND. kohya's meta always did; aitoolkit's did not, so run.json
@@ -1678,7 +1678,7 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
     meta = {
         "run_id": run_id, "trainer": "kohya", "state": "dry_run" if dry_run else "running",
         "output_name": output_name, "base_model": base_model, "trigger": trig,
-        "batch_folder": _scope(batch_folder), "images": len(imgs), "repeats": repeats,
+        "batch_folder": _scope(batch_folder), "images": len(imgs) + len(sub_imgs), "repeats": repeats,
         "gpu_index": gpu_index, "resolution": resolution, "epochs": max_epochs,
         "network_dim": network_dim, "network_alpha": network_alpha,
         "output_dir": outdir, "log": log, "command": cmd,
@@ -1735,7 +1735,7 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
     meta["state"] = "running"
     _write_run(run_id, meta)
     return _j({"run_id": run_id, "state": "running", "pid": int(pid), "gpu_index": gpu_index,
-               "images": len(imgs), "base_model": base_model, "output_name": output_name,
+               "images": len(imgs) + len(sub_imgs), "base_model": base_model, "output_name": output_name,
                "poll_with": f"train_lora_status('{run_id}')",
                    "will_notify": notify or None,
                "note": f"{len(imgs)} images x{repeats} repeats over {max_epochs} epochs on GPU{gpu_index}"})
