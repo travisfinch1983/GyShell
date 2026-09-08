@@ -404,6 +404,12 @@ export class TrainingImagesStore {
    * `confirm` the server deletes NOTHING and returns the subtree counts, so the
    * dialog can state the real blast radius instead of a vague warning.
    */
+  /** Rename an ordinary folder. Sets/batches go through renameSet, which rebuilds the
+   *  name from the kind prefix so a rename cannot turn one kind into the other. */
+  async renameFolder(rel: string, name: string): Promise<any> {
+    return ig('/rename-folder', { method: 'POST', body: { path: rel, name } })
+  }
+
   toggleFolder(name: string) {
     if (this.selectedFolders.has(name)) this.selectedFolders.delete(name)
     else this.selectedFolders.add(name)

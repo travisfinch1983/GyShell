@@ -1921,6 +1921,43 @@ export function createImagegenRouter(config) {
   // ---- Rename a training set's suffix (or add one to a legacy 'training_set').
   // POST { path:<set folder rel>, suffix } -> renames to training_set[_suffix]
   // in the same parent. Keeps merged sets under _merged/.
+  // ---- Rename an ORDINARY folder. ------------------------------------------------
+  // Training sets/batches keep using /rename-set, which rebuilds the name from the kind
+  // prefix so a rename can never turn a set into a batch. This route is for everything
+  // else, where the name is just a name.
+  router.post('/rename-folder', express.json(), (req, res) => {
+    const rel = (req.body && req.body.path || '').replace(/^\/+/, '');
+    const raw = String((req.body && req.body.name) || '').trim();
+    let dir;
+    try { dir = safeResolve(rel); } catch { return res.status(400).json({ error: 'bad path' }); }
+    try { assertDeletable(dir); } catch (e) { return res.status(400).json({ error: String(e.message || e) }); }
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'no such folder' });
+    const cur = path.basename(dir);
+    if (isTrainingSetName(cur) || isTrainingBatchName(cur)) {
+      return res.status(400).json({ error: 'training sets and batches rename by suffix — use the set rename' });
+    }
+    if (!raw || raw.includes('/') || raw.includes('..') || raw.startsWith('.')) {
+      return res.status(400).json({ error: 'name cannot be empty, contain / or .., or start with a dot' });
+    }
+    // Leading UNDERSCORE is allowed and common here (_merged, _batches, _incoming); only a
+    // leading DOT is refused, since dot-folders are hidden from browse and every count.
+    if (!/^[A-Za-z0-9_][A-Za-z0-9._ -]*$/.test(raw)) {
+      return res.status(400).json({ error: 'name must start with a letter, digit or underscore, and may use letters, digits, spaces, dot, dash and underscore' });
+    }
+    // Renaming INTO the set/batch convention would silently change what the folder is
+    // to every other route that tests the name.
+    if (isTrainingSetName(raw) || isTrainingBatchName(raw)) {
+      return res.status(400).json({ error: `"${raw}" is the training set/batch naming convention — pick another name` });
+    }
+    const dest = path.join(path.dirname(dir), raw);
+    if (dest === dir) return res.json({ ok: true, path: path.relative(BASE, dir), unchanged: true });
+    if (existsSync(dest)) return res.status(409).json({ error: 'a folder with that name already exists here' });
+    try {
+      renameSync(dir, dest);
+      res.json({ ok: true, path: path.relative(BASE, dest) });
+    } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+  });
+
   router.post('/rename-set', express.json(), (req, res) => {
     const rel = (req.body && req.body.path || '').replace(/^\/+/, '');
     const suffix = (req.body && req.body.suffix || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');

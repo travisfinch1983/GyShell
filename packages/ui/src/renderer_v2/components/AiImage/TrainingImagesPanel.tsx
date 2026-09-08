@@ -528,6 +528,23 @@ export const TrainingImagesPanel: React.FC = observer(() => {
     }
     catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
   }
+  // Rename any folder. Sets and batches keep the suffix flow (the server rebuilds the
+  // name from the kind prefix, so a rename cannot turn a set into a batch); everything
+  // else renames freely.
+  const doRenameAnyFolder = async (rel: string, name: string) => {
+    if (name.startsWith('training_set') || name.startsWith('training_batch')) return doRename(rel, name)
+    const next = await promptStore.prompt({ title: 'Rename folder', placeholder: 'folder name', defaultValue: name, confirmText: 'Rename' })
+    if (next === null) return
+    const want = next.trim()
+    if (!want || want === name) return
+    try {
+      const r = await store.renameFolder(rel, want)
+      if (r?.error) { store.msg = r.error; return }
+      store.msg = `Renamed to ${want}.`
+      void store.browse(store.cwd)
+    } catch (e: any) { store.msg = 'Rename failed: ' + (e?.message || e) }
+  }
+
   // Delete a folder and everything under it. The server counts the subtree first and
   // deletes nothing until we send the count back, so the dialog can name the real blast
   // radius — "delete this folder?" on something holding four training sets is how you
@@ -760,7 +777,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
                   the rename/delete actions take the same corner. */}
               <span className={styles.folderKind} title="Folder"><FolderOpen size={13} /></span>
               <span className={styles.folderActs}>
-                {(f.is_training_set || f.is_training_batch) && <span className={styles.fact} title="Rename suffix" onClick={(e) => { e.stopPropagation(); void doRename(fpath, f.name) }}>✎</span>}
+                <span className={styles.fact} title={f.is_training_set || f.is_training_batch ? 'Rename suffix' : `Rename "${f.name}"`} onClick={(e) => { e.stopPropagation(); void doRenameAnyFolder(fpath, f.name) }}>✎</span>
                 <span className={`${styles.fact} ${styles.factDel}`} title={`Delete "${f.name}" and everything inside it`} onClick={(e) => { e.stopPropagation(); void doDeleteFolder(fpath, f.name) }}>🗑</span>
               </span>
               <span className={styles.folderFoot}>
