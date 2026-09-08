@@ -755,6 +755,10 @@ export const TrainingImagesPanel: React.FC = observer(() => {
                 : <span className={styles.folderThumbEmpty}>{f.is_training_set ? <Star size={30} /> : <FolderOpen size={30} />}</span>}
               <span className={styles.pick} title="Select this folder"
                     onClick={(e) => { e.stopPropagation(); store.enterSelection(); store.toggleFolder(f.name) }} />
+              {/* Persistent corner badge. With preview pictures on, a folder tile and an
+                  image tile otherwise look identical at a glance. It hides on hover, where
+                  the rename/delete actions take the same corner. */}
+              <span className={styles.folderKind} title="Folder"><FolderOpen size={13} /></span>
               <span className={styles.folderActs}>
                 {(f.is_training_set || f.is_training_batch) && <span className={styles.fact} title="Rename suffix" onClick={(e) => { e.stopPropagation(); void doRename(fpath, f.name) }}>✎</span>}
                 <span className={`${styles.fact} ${styles.factDel}`} title={`Delete "${f.name}" and everything inside it`} onClick={(e) => { e.stopPropagation(); void doDeleteFolder(fpath, f.name) }}>🗑</span>
