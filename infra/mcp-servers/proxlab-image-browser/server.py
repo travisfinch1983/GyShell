@@ -938,6 +938,24 @@ _KOHYA_DIR = "/opt/kohya-ss"
 _KOHYA_PY = "/opt/conda/envs/kohya-ss/bin/python"
 _KOHYA_ACCEL = "/opt/conda/envs/kohya-ss/bin/accelerate"
 _AITK_DIR = "/opt/ai-toolkit"
+# Fires on the TRAINING HOST when the trainer exits, whatever the outcome.
+_NOTIFY_PY = "/opt/conda/bin/python3"
+_NOTIFY_SCRIPT = "/opt/lora-notify/notify_run.py"
+_AGENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def _notify_suffix(rundir, notify):
+    """Shell to append so the run announces its own end. Empty when nobody asked.
+
+    `RC=$?` is the FIRST thing after the trainer so it captures the trainer's status;
+    anything in between (even an echo) would overwrite it. `|| true` because a notifier
+    that fails must never turn a finished run into a failed one.
+    """
+    if not notify:
+        return ""
+    return ("; RC=$?; %s %s --run-dir %s --rc $RC --to %s >/dev/null 2>&1 || true"
+            % (shlex.quote(_NOTIFY_PY), shlex.quote(_NOTIFY_SCRIPT),
+               shlex.quote(rundir), shlex.quote(notify)))
 _AITK_PY = "/opt/conda/envs/ai-toolkit/bin/python"
 _CKPT_ROOT = "/imagegen/checkpoints"
 _LORA_OUT = "/imagegen/loras"
@@ -1266,6 +1284,8 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
                scheduler: str = "cosine", train_batch_size: int = 2, max_epochs: int = 10,
                save_every_n_epochs: int = 2, gpu_index: int = -1,
                mixed_precision: str = "bf16", attention: str = "sdpa",
+               allow_low_vram: bool = False,
+               notify: str = "",
                dry_run: bool = False) -> str:
     """Launch a LoRA training run from a training_batch. Returns a run_id immediately.
 
@@ -1295,10 +1315,26 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
             what each card is busy with, then pick one that suits what you are training.
         gpu_index: raw nvidia-smi index, if you already know it. Prefer `gpu`; the index means
             nothing about the card and CUDA's default ordering disagrees with nvidia-smi's here.
+        allow_low_vram: launch even though the named card is short on free VRAM right
+            now. Covers "that memory will be released before the model loads". It can
+            NOT bypass a card being physically too small (a 16 GiB card for Krea 2).
+        notify: fleet agent to message when the run ENDS, e.g. notify='loom'. The message
+            carries the exit code, the artifacts written and the tail of the log, and it
+            WAKES an idle agent — which is the point: nothing else tells one that a
+            detached 30-minute job finished, and there is no wait/sleep tool.
         dry_run: build everything and return the exact command WITHOUT launching.
     """
+    notify = str(notify or "").strip()
+    if notify and not _AGENT_RE.match(notify):
+        return _j({"error": "bad notify agent id %r" % notify,
+                   "hint": "a fleet agent name, e.g. 'loom' — letters, digits, . _ - only"})
     if trainer not in ("kohya", "aitoolkit"):
         return _j({"error": f"unknown trainer {trainer!r} — use 'kohya' or 'aitoolkit'"})
+
+    # WHICH sidecar this run actually reads. kohya's sd-scripts takes .txt (booru convention);
+    # ai-toolkit is handed caption_ext="caption" below and reads .caption. Checking the wrong
+    # one either blocks a correctly-prepared set or passes an unlabelled one.
+    cap_ext = ".caption" if trainer == "aitoolkit" else ".txt"
 
     # ── validate the dataset BEFORE doing anything expensive ──
     try:
@@ -1321,14 +1357,18 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
     if not imgs and not sub_imgs:
         return _j({"error": f"batch is EMPTY: {batch_folder}"})
     unlabeled = [f for f in imgs
-                 if not os.path.exists(os.path.join(batch_abs, os.path.splitext(f)[0] + ".txt"))]
+                 if not os.path.exists(os.path.join(batch_abs, os.path.splitext(f)[0] + cap_ext))]
     unlabeled += [f"{d}/{f}" for d, f in sub_imgs
-                  if not os.path.exists(os.path.join(batch_abs, d, os.path.splitext(f)[0] + ".txt"))]
+                  if not os.path.exists(os.path.join(batch_abs, d, os.path.splitext(f)[0] + cap_ext))]
     if unlabeled:
-        return _j({"error": "REFUSING to train: images without a .txt sidecar would train "
-                            "UNLABELED and quietly degrade the LoRA",
+        return _j({"error": "REFUSING to train: images without a %s sidecar would train "
+                            "UNLABELED and quietly degrade the LoRA" % cap_ext,
+                   "trainer": trainer, "sidecar_required": cap_ext,
                    "unlabeled": unlabeled[:20], "count": len(unlabeled),
-                   "fix": "caption them (run_tagger) or remove_from_training_batch them"})
+                   "fix": ("caption them (run_tagger writes .txt; the VLM/BLIP engines write "
+                           ".caption) or remove_from_training_batch them"),
+                   "note": ("%s reads %s — a set prepared with the OTHER sidecar is not usable "
+                            "by this trainer" % (trainer, cap_ext))})
 
     # ── the trigger must be a token the model will ACTUALLY see ──
     # kohya names the concept dir <repeats>_<trigger>, and that name becomes the
@@ -1338,7 +1378,7 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
     def _leading_tokens(folder, files):
         lead, seen = {}, 0
         for f in files:
-            p = os.path.join(folder, os.path.splitext(f)[0] + ".txt")
+            p = os.path.join(folder, os.path.splitext(f)[0] + cap_ext)
             try:
                 txt = open(p, encoding="utf-8", errors="replace").read().strip()
             except OSError:
@@ -1360,7 +1400,7 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
     if trig:
         # Accept it only if it genuinely appears in the captions.
         present = sum(1 for f in imgs
-                      if trig in open(os.path.join(batch_abs, os.path.splitext(f)[0] + ".txt"),
+                      if trig in open(os.path.join(batch_abs, os.path.splitext(f)[0] + cap_ext),
                                       encoding="utf-8", errors="replace").read())
         if present < 0.9 * len(imgs):
             return _j({"error": "REFUSING to train: the trigger is not in the captions, so the "
@@ -1406,6 +1446,12 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
         if _err:
             return _j(_err)
         gpu_index = _idx
+    # Requirements are per-trainer, and they are screened HERE rather than left to the trainer:
+    # the OOM arrives after model load and latent caching, i.e. twenty minutes into a run that
+    # was already doomed at launch. Krea 2 measured 23.3 GiB in use at qfloat8; SDXL LoRA at
+    # 1024 needs roughly 10-12 GiB.
+    _MIN_FREE_MIB = 20000 if trainer == "aitoolkit" else 10000
+
     if gpu_index < 0:
         if not dry_run:
             return _j({
@@ -1422,25 +1468,44 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
                              "Krea 2 via aitoolkit needs ~23 GiB, so only the 4090 qualifies. "
                              "Call gpu_status() any time for this same view."),
             })
-        # A dry run needs no GPU; report the roomiest card so the config is inspectable.
+        # A dry run builds and inspects a config; it needs no GPU at all, so it never refuses for
+        # VRAM. Report the roomiest card so the config is inspectable.
         best, best_free = 0, -1
         for r in _inv:
             if r["free_mib"] > best_free:
                 best, best_free = r["index"], r["free_mib"]
-        # Krea 2 measured 23.3 GiB in use at qfloat8; a 16GB card cannot hold it, and the OOM
-        # arrives long after launch (post model load and latent caching), so screen it here.
-        _MIN_FREE_MIB = 20000 if trainer == "aitoolkit" else 10000
         gpu_index = best
-        # A dry run builds and inspects a config; it needs no GPU at all. Refusing one because
-        # the cards are busy makes the tool useless exactly when you want to check your work
-        # before queueing it.
-        if best_free < _MIN_FREE_MIB and not dry_run:
-            return _j({"error": f"no GPU has enough free VRAM (best: GPU{best} with {best_free} MiB)",
-                       "needed_mib": _MIN_FREE_MIB,
-                       "note": ("Krea 2 at qfloat8 needs ~23 GiB and only the 4090 qualifies here; "
-                                "the 5060 Tis are 16 GiB cards"
-                                if trainer == "aitoolkit"
-                                else "SDXL LoRA at 1024 needs roughly 10-12 GiB free")})
+    elif not dry_run:
+        # 🛑 A NAMED CARD IS CHECKED TOO. This branch did not exist: the VRAM screen lived only in
+        # the "no gpu chosen" path above, so naming a card skipped every check and launched into
+        # whatever happened to be on it. gpu_status() meanwhile PROMISED this re-check in its own
+        # note. A guarantee in a docstring is a claim, not a mechanism — this is the mechanism.
+        _row = next((r for r in _inv if r["index"] == gpu_index), None)
+        if _row is None:
+            return _j({"error": f"GPU{gpu_index} was not found on {_TRAIN_HOST}",
+                       "note": ("CANNOT-READ or a stale index — not a verdict about the card. "
+                                "Check the training host before retrying."),
+                       "gpus": [{"alias": r["alias"], "index": r["index"]} for r in _inv]})
+        # TOTAL capacity first. A 16 GiB card can never hold Krea 2 however much frees up later,
+        # so it is a different answer from "busy right now" and must NOT be overridable.
+        if trainer == "aitoolkit" and _row["total_mib"] < 20000:
+            return _j({"error": f"{_row['alias']} is a {_row['total_mib']} MiB card and Krea 2 needs ~23 GiB",
+                       "cannot_override": True,
+                       "why": ("that is the card's physical size, not a transient load, so "
+                               "allow_low_vram does not apply"),
+                       "use_instead": [r["alias"] for r in _inv if r["total_mib"] >= 20000] or None,
+                       "note": "only the 4090 qualifies for trainer='aitoolkit' on this host"})
+        if _row["free_mib"] < _MIN_FREE_MIB and not allow_low_vram:
+            return _j({"error": f"{_row['alias']} has {_row['free_mib']} MiB free; this run needs ~{_MIN_FREE_MIB}",
+                       "gpu": _row["alias"], "free_mib": _row["free_mib"],
+                       "total_mib": _row["total_mib"], "needed_mib": _MIN_FREE_MIB,
+                       "busy_with": [{"name": p["name"], "used_mib": p["used_mib"], "pid": p["pid"]}
+                                     for p in _row["processes"]],
+                       "fix": ("free the card (the processes above hold it), pick another with "
+                               "gpu_status(), or pass allow_low_vram=true if you know the memory "
+                               "is released before the model loads"),
+                       "note": ("refused at launch deliberately: this OOMs after model load and "
+                                "latent caching, roughly 20 minutes in")})
 
     run_id = f"{output_name}-{_time.strftime('%Y%m%d-%H%M%S')}"
     rdir = os.path.join(_RUNS_ROOT, run_id)
@@ -1465,7 +1530,7 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
         # what the caller asked for. HF_TOKEN because krea/Krea-2-Raw is a gated repo.
         cmd = (f"cd {_AITK_DIR} && CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={gpu_index} "
                f'HF_TOKEN="$(cat /root/.cache/huggingface/token 2>/dev/null)" '
-               f"{_AITK_PY} run.py {shlex.quote(cfg_path)}")
+               f"{_AITK_PY} run.py {shlex.quote(cfg_path)}") + _notify_suffix(rdir, notify)
         meta = {"run_id": run_id, "trainer": "aitoolkit", "state": "launching",
                 "output_name": output_name, "base_model": base_model, "trigger": trig,
                 "batch_folder": _scope(batch_folder), "images": len(imgs), "steps": n_steps,
@@ -1506,6 +1571,7 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
                    "gpu_index": gpu_index, "steps": n_steps, "trigger": trig,
                    "subsections": subs, "output_name": output_name, "config": cfg_path,
                    "poll_with": f"train_lora_status('{run_id}')",
+                   "will_notify": notify or None,
                    "note": (f"{len(imgs)} images across {len(subs)} dataset block(s) for {n_steps} "
                             f"steps on GPU{gpu_index} (PCI order). Panel row: "
                             f"lora:aitoolkit:{output_name}")})
@@ -1588,7 +1654,7 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
         f"--save_every_n_epochs={save_every_n_epochs} --save_model_as=safetensors "
         f"--mixed_precision={mixed_precision} --cache_latents --{attn} --gradient_checkpointing "
         f"--seed=42 --logging_dir='{os.path.join(rdir, 'logs')}'"
-    )
+    ) + _notify_suffix(rdir, notify)
     meta = {
         "run_id": run_id, "trainer": "kohya", "state": "dry_run" if dry_run else "running",
         "output_name": output_name, "base_model": base_model, "trigger": trig,
@@ -1651,6 +1717,7 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
     return _j({"run_id": run_id, "state": "running", "pid": int(pid), "gpu_index": gpu_index,
                "images": len(imgs), "base_model": base_model, "output_name": output_name,
                "poll_with": f"train_lora_status('{run_id}')",
+                   "will_notify": notify or None,
                "note": f"{len(imgs)} images x{repeats} repeats over {max_epochs} epochs on GPU{gpu_index}"})
 
 
