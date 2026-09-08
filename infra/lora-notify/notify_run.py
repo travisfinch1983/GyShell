@@ -21,6 +21,7 @@ import sys
 import urllib.request
 
 FLEETD = os.environ.get("FLEETD_URL", "http://10.0.0.219:17900/send")
+TRAINED_ROOT = os.environ.get("LORA_TRAINED_ROOT", "/imagegen/loras/trained")
 SENDER = os.environ.get("FLEET_NOTIFY_SENDER", "ai-lab-notifications")
 
 
@@ -79,13 +80,55 @@ def main():
     steps = meta.get("steps") or meta.get("epochs")
 
     # Artifacts are reported as OBSERVATION, never as the verdict — the exit code decides that.
-    ckpts = []
+    #
+    # 🛑 THE TRAINERS DO NOT SAVE INTO THE RUN DIR. The run dir holds config.yaml and run.json
+    # and nothing else; the model lands under the trained root. Looking only in the run dir
+    # reported "artifacts: none written" for a run that had just written a 114 MB LoRA and four
+    # checkpoints — a SUCCESS rendered as a failure, which is the exact thing this notifier
+    # exists to prevent. Two layouts, because the trainers disagree:
+    #   ai-toolkit  <trained>/<name>/<name>.safetensors  + <name>_000005000.safetensors ...
+    #   kohya       <trained>/<name>.safetensors         + <name>-000002.safetensors ...
+    final, ckpts = None, []
+    seen = set()
+    name = str(meta.get("output_name") or "").strip()
+    cands = []
+    if name:
+        nested = os.path.join(TRAINED_ROOT, name)
+        try:
+            cands += [(nested, f) for f in os.listdir(nested)]
+        except OSError:
+            pass
+        try:
+            cands += [(TRAINED_ROOT, f) for f in os.listdir(TRAINED_ROOT)
+                      if f.startswith(name) and os.path.isfile(os.path.join(TRAINED_ROOT, f))]
+        except OSError:
+            pass
+    # The run dir too: the detector-training runs DO write weights/ there.
     for sub in ("", "weights"):
         d = os.path.join(a.run_dir, sub) if sub else a.run_dir
         try:
-            ckpts += [f for f in os.listdir(d) if f.endswith(".safetensors") or f.endswith(".pt")]
+            cands += [(d, f) for f in os.listdir(d)]
         except OSError:
             pass
+    for d, f in cands:
+        if not (f.endswith(".safetensors") or f.endswith(".pt")):
+            continue
+        if f == "optimizer.pt":
+            continue                       # trainer state, not a model — saying "3 artifacts"
+                                           # when one of them is the optimizer overstates it
+        p = os.path.realpath(os.path.join(d, f))
+        if p in seen:
+            continue                       # the same file can match both layouts
+        seen.add(p)
+        try:
+            sz = os.path.getsize(p)
+        except OSError:
+            continue
+        stem = os.path.splitext(f)[0]
+        if name and stem == name:
+            final = (f, sz)                # exactly <name> = the finished model
+        else:
+            ckpts.append(f)
 
     log = meta.get("log") or os.path.join(a.run_dir, "train.log")
     lines = tail(log)
@@ -100,7 +143,7 @@ def main():
         # is a failure whatever else is on disk; otherwise artifacts mean it produced something.
         bad = any(k in "\n".join(lines).lower()
                   for k in ("traceback", "cuda error", "out of memory", "runtimeerror"))
-        ok = bool(ckpts) and not bad
+        ok = bool(final) and not bad     # a checkpoint is not a finished model
         head = ("🟢 LoRA training ENDED — looks SUCCESSFUL (inferred)" if ok
                 else "🔴 LoRA training ENDED — looks FAILED (inferred)")
     else:
@@ -111,8 +154,12 @@ def main():
         "run: %s   trainer: %s%s%s" % (run, trainer,
                                        ("   gpu: %s" % gpu) if gpu is not None else "",
                                        ("   steps/epochs: %s" % steps) if steps else ""),
-        "artifacts: %s" % (", ".join(sorted(ckpts)[:8]) + ("  (+%d more)" % (len(ckpts) - 8) if len(ckpts) > 8 else "")
-                           if ckpts else "none written"),
+        ("model: %s (%.1f MB)" % (final[0], final[1] / 1048576.0)) if final
+        else ("model: NOT written" + (" — checkpoints exist, so it stopped before the final save"
+                                      if ckpts else "")),
+        "checkpoints: %s" % ("%d (%s)" % (len(ckpts), ", ".join(sorted(ckpts)[:4])
+                                          + (" …" if len(ckpts) > 4 else ""))
+                             if ckpts else "none"),
     ]
     if prog:
         body.append("last progress: %s" % prog)

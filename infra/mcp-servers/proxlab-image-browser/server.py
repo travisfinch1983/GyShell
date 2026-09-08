@@ -1551,6 +1551,11 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
                 # not exist returns empty, which reads exactly like "the notifier is missing".
                 # It cost me a wrong diagnosis I told someone else with confidence.
                 "command": cmd,
+                # ...and output_dir, for the same reason. Absent, train_lora_status globbed
+                # "" + "/" + name + "*.safetensors" = "/<name>*.safetensors" — the FILESYSTEM
+                # ROOT — matched nothing, and reported a finished 109 MB LoRA as
+                # "stopped_without_output". ai-toolkit nests one level deeper than kohya.
+                "output_dir": _AITK_TRAINED, "output_nested": True,
                 "network_dim": network_dim, "network_alpha": network_alpha,
                 "started": _time.strftime("%Y-%m-%d %H:%M:%S")}
         if dry_run:
@@ -1873,9 +1878,26 @@ def train_lora_status(run_id: str) -> str:
     epoch = _re.findall(r"epoch\s+(\d+)\s*/\s*(\d+)", tail, _re.I)
     # No head -N here: a truncated list under a plain "checkpoints" key is a subset presented as
     # the whole, and a caller counting it silently gets the wrong number.
-    rc, ck, _ = _ssh(f"ls -t '{meta.get('output_dir','')}/{meta.get('output_name','')}'*.safetensors 2>/dev/null")
-    if not alive and meta.get("state") == "running":
-        meta["state"] = "finished" if ck.strip() else "stopped_without_output"
+    # Both layouts, because the trainers disagree about where the model goes:
+    #   kohya      <trained>/<name>.safetensors        + <name>-000002.safetensors ...
+    #   ai-toolkit <trained>/<name>/<name>.safetensors + <name>_000005000.safetensors ...
+    # An empty output_dir must NOT fall through to "/" — that is how a successful run got
+    # reported as producing nothing. optimizer.pt is trainer state, not a model.
+    _od = meta.get("output_dir") or _AITK_TRAINED
+    _on = meta.get("output_name") or ""
+    ck = ""
+    if _on:
+        rc, ck, _ = _ssh(f"ls -t '{_od}/{_on}'*.safetensors '{_od}/{_on}/'*.safetensors 2>/dev/null")
+    ck_all = [c.strip() for c in ck.splitlines() if c.strip()]
+    # The FINAL model is exactly <name>.safetensors; everything else is an intermediate save.
+    final = next((c for c in ck_all if os.path.basename(c) == f"{_on}.safetensors"), None)
+    ck_list = [c for c in ck_all if c != final]
+    if not alive and meta.get("state") in ("running", "stopped_without_output", "finished_or_died"):
+        # Re-evaluated, not just latched-once: the old code only ever corrected state=="running",
+        # so a verdict written by the broken glob stayed wrong in run.json forever.
+        meta["state"] = ("finished" if final
+                         else "stopped_with_checkpoints_only" if ck_list
+                         else "stopped_without_output")
         _write_run(run_id, meta)
     return _j({
         "run_id": run_id, "state": meta.get("state"), "alive": alive,
@@ -1886,9 +1908,10 @@ def train_lora_status(run_id: str) -> str:
                      "recent_loss": loss[-1] if loss else None},
         "log_idle_seconds": mtime_age,
         "log_stalled": (mtime_age is not None and mtime_age > 600 and alive),
-        "checkpoints": [c for c in ck.splitlines() if c.strip()],
-        "checkpoint_count": len([c for c in ck.splitlines() if c.strip()]),
-        "latest_checkpoint": next((c for c in ck.splitlines() if c.strip()), None),
+        "final_model": final,
+        "checkpoints": ck_list,
+        "checkpoint_count": len(ck_list),
+        "latest_checkpoint": next(iter(ck_list), None),
         "log_tail": tail[-1200:],
     })
 
