@@ -111,7 +111,18 @@ export function startLoraRunsWatch(tasks: TaskProgress): void {
   }
   let warnedUnreadable = false
 
+  /**
+   * Output names the RUNS pass is already reporting this cycle. An ai-toolkit run launched by
+   * train_lora exists in BOTH trees — a run dir under lora_runs AND its own output dir under
+   * loras/trained — so both scanners saw it and emitted a row each, under different ids
+   * (`lora:<run-dir>` and `lora:aitoolkit:<name>`). One training job, two progress bars,
+   * running:2, and every count built on that was wrong. The aitoolkit pass now yields to the
+   * runs pass, which knows more: it has run.json, so it has the pid, the gpu and the trainer.
+   */
+  const ownedByRunsPass = new Set<string>()
+
   const pass = (): void => {
+    ownedByRunsPass.clear()
     let ids: string[]
     try {
       ids = readdirSync(RUNS_ROOT).filter((d) => {
@@ -175,6 +186,8 @@ export function startLoraRunsWatch(tasks: TaskProgress): void {
         settled.add(rid)
       } else {
         tasks.report({ origin: 'poller', id: taskId, source: `lora-${trainer}`, label, state: 'running', done, total, detail })
+        // Claim it so the ai-toolkit tree pass does not raise a second row for the same run.
+        if (meta.output_name) ownedByRunsPass.add(String(meta.output_name))
       }
     }
   }
@@ -204,6 +217,10 @@ export function startLoraRunsWatch(tasks: TaskProgress): void {
     for (const dir of dirs) {
       const settleKey = `atk:${dir}`
       if (settled.has(settleKey)) continue
+      // Already reported from its run dir this cycle — that row is strictly better informed.
+      // This pass exists for ai-toolkit runs started OUTSIDE train_lora, which have no run.json;
+      // it is not a second opinion on the ones that do.
+      if (ownedByRunsPass.has(dir)) continue
       const base = path.join(TRAINED_ROOT, dir)
       let cfg = ''
       try { cfg = readFileSync(path.join(base, 'config.yaml'), 'utf8') } catch { continue }
@@ -211,6 +228,7 @@ export function startLoraRunsWatch(tasks: TaskProgress): void {
       const total = Number((/^\s*steps:\s*(\d+)\s*$/m.exec(cfg) || [])[1] || 0)
       const name = ((/^\s*name:\s*(\S+)/m.exec(cfg) || [])[1] || dir)
       if (!total) { settled.add(settleKey); continue }   // not a meterable run config
+      if (ownedByRunsPass.has(name)) continue   // dir and config name can differ; check both
 
       let step = 0
       let lastMtime = 0

@@ -1281,7 +1281,7 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
                steps: int = 0,
                gpu: str = "",
                learning_rate: str = "1e-4", optimizer: str = "AdamW8bit",
-               scheduler: str = "cosine", train_batch_size: int = 2, max_epochs: int = 10,
+               scheduler: str = "cosine", train_batch_size: int = 0, max_epochs: int = 10,
                save_every_n_epochs: int = 2, gpu_index: int = -1,
                mixed_precision: str = "bf16", attention: str = "sdpa",
                allow_low_vram: bool = False,
@@ -1309,6 +1309,8 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
             krea/Krea-2-Raw, reads captions from .caption, emits ONE dataset block per
             <repeats>_<concept> subsection with num_repeats taken from the folder prefix,
             and needs ~23 GiB so only the 4090 qualifies.
+        train_batch_size: 0 = auto — 1 for aitoolkit (Krea 2 fits a 24GB card at batch 1
+            with ~1.2 GiB spare; batch 2 OOMs in the backward pass), 2 for kohya.
         repeats: dataset repeats per epoch (kohya's N_ prefix).
         gpu: WHICH GPU, by friendly alias — gpu="4090" or gpu="5060ti-2". REQUIRED for a real
             run: the tool will not choose for you. Call gpu_status() first to see free VRAM and
@@ -1335,6 +1337,14 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
     # ai-toolkit is handed caption_ext="caption" below and reads .caption. Checking the wrong
     # one either blocks a correctly-prepared set or passes an unlabelled one.
     cap_ext = ".caption" if trainer == "aitoolkit" else ".txt"
+
+    # 0 = auto. Krea 2 fits on the 24GB 4090 at 23.3/24.5 GiB with batch 1 — 1.2 GiB of
+    # headroom — so batch 2 OOMs in the BACKWARD PASS, after the model loads and the latents
+    # cache, ~12 minutes in. The old default of 2 is right for kohya/SDXL and wrong for the
+    # only trainer+card combination Krea 2 can use, and it cost Travis a run: Loom took the
+    # default and it died at step 109 of 5975.
+    if not train_batch_size or int(train_batch_size) < 1:
+        train_batch_size = 1 if trainer == "aitoolkit" else 2
 
     # ── validate the dataset BEFORE doing anything expensive ──
     try:
@@ -1728,17 +1738,66 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
 
 @mcp.tool()
 def sleep_for(seconds: int = 60) -> str:
-    """Pause for a while. For polling something on your own schedule when nothing wakes you.
+    """Pause, BLOCKING, for up to 15 minutes. For a short wait you want to sit through.
 
-    Capped at 300s per call — that is the ceiling remote-shell uses for its own timeout and the
-    only evidence available about what an agent client here tolerates. Call it again for longer.
+    Capped at 900s deliberately. Hermes' agent.gateway_timeout is 1800s and it warns at 900,
+    so a blocking call much beyond this is racing the gateway: the sleep would be killed
+    mid-way and look like a failure rather than a wait.
 
-    Prefer train_lora_wait() when you are waiting on a TRAINING RUN: it returns the moment the
-    run ends instead of sleeping past it, and tells you how it ended.
+    🛑 For anything longer, use wake_me_in() instead. It returns IMMEDIATELY and messages you
+    later, so a two-hour wait costs no held connection and no gateway slot. A blocking sleep
+    long enough to be useful on a multi-hour job is long enough to be killed by the gateway.
+
+    Waiting on a TRAINING RUN specifically? train_lora_wait() returns the moment it ends.
     """
-    n = max(1, min(300, int(seconds)))
+    n = max(1, min(900, int(seconds)))
     _time.sleep(n)
-    return _j({"slept_seconds": n})
+    return _j({"slept_seconds": n,
+               "note": ("use wake_me_in() for longer waits — this one blocks and the gateway "
+                        "kills anything near 1800s")})
+
+
+@mcp.tool()
+def wake_me_in(agent: str, minutes: int = 30, note: str = "") -> str:
+    """Schedule a wake-up. Returns IMMEDIATELY; a fleet message arrives after `minutes`.
+
+    This is how to watch something for hours. Nothing is held open: no blocked call, no gateway
+    slot, no risk of a timeout killing the wait. The message wakes an idle agent — the same
+    mechanism train_lora(notify=...) uses.
+
+    Use it to poll on a long cadence: wake_me_in('loom', 30, 'check the LoRA run') and then end
+    your turn. Re-arm it each time you wake and you have a 30-minute heartbeat over a job of any
+    length.
+
+    agent:   who to wake — your own fleet id, e.g. 'loom'.
+    minutes: 1 to 720 (12 hours).
+    note:    what future-you should do; it is quoted back in the message.
+    """
+    who = str(agent or "").strip()
+    if not _AGENT_RE.match(who):
+        return _j({"error": "bad agent id %r" % who, "hint": "your fleet id, e.g. 'loom'"})
+    mins = max(1, min(720, int(minutes)))
+    body = "\u23f0 Scheduled wake-up (%d min ago you asked for this)." % mins
+    if str(note or "").strip():
+        body += "\n\n%s" % str(note).strip()
+    body += ("\n\nRe-arm with wake_me_in() if you want another check; nothing repeats on its own.")
+    payload = _json.dumps({"sender": "ai-lab-notifications", "to": [who], "body": body, "kind": "dm"})
+    # Detached so it outlives this call — the whole point is that nothing is held open. `at` is
+    # not installed everywhere and a daemon would be a service to keep alive; a slept subshell
+    # is the smallest thing that survives on its own.
+    inner = ("sleep %d; curl -s -m 20 -X POST http://10.0.0.219:17900/send "
+             "-H 'Content-Type: application/json' -d %s > /dev/null 2>&1"
+             % (mins * 60, shlex.quote(payload)))
+    try:
+        subprocess.Popen(["setsid", "nohup", "bash", "-c", inner],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         stdin=subprocess.DEVNULL, start_new_session=True)
+    except Exception as e:
+        return _j({"error": "could not schedule: %s" % e})
+    return _j({"scheduled": True, "agent": who, "minutes": mins,
+               "note": note or None,
+               "how": "a fleet message will wake you; this call did NOT block",
+               "caution": "one-shot — re-arm when you wake if you want another"})
 
 
 @mcp.tool()
