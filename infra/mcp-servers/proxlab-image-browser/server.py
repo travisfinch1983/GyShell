@@ -1536,6 +1536,11 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
                 "batch_folder": _scope(batch_folder), "images": len(imgs), "steps": n_steps,
                 "steps_source": "argument" if steps > 0 else "derived from images x repeats x epochs",
                 "subsections": subs, "gpu_index": gpu_index, "config": cfg_path, "log": log,
+                # RECORD THE COMMAND. kohya's meta always did; aitoolkit's did not, so run.json
+                # was an incomplete record of what was launched — and reading a field that does
+                # not exist returns empty, which reads exactly like "the notifier is missing".
+                # It cost me a wrong diagnosis I told someone else with confidence.
+                "command": cmd,
                 "network_dim": network_dim, "network_alpha": network_alpha,
                 "started": _time.strftime("%Y-%m-%d %H:%M:%S")}
         if dry_run:
@@ -1719,6 +1724,60 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
                "poll_with": f"train_lora_status('{run_id}')",
                    "will_notify": notify or None,
                "note": f"{len(imgs)} images x{repeats} repeats over {max_epochs} epochs on GPU{gpu_index}"})
+
+
+@mcp.tool()
+def sleep_for(seconds: int = 60) -> str:
+    """Pause for a while. For polling something on your own schedule when nothing wakes you.
+
+    Capped at 300s per call — that is the ceiling remote-shell uses for its own timeout and the
+    only evidence available about what an agent client here tolerates. Call it again for longer.
+
+    Prefer train_lora_wait() when you are waiting on a TRAINING RUN: it returns the moment the
+    run ends instead of sleeping past it, and tells you how it ended.
+    """
+    n = max(1, min(300, int(seconds)))
+    _time.sleep(n)
+    return _j({"slept_seconds": n})
+
+
+@mcp.tool()
+def train_lora_wait(run_id: str, timeout_seconds: int = 240, poll_seconds: int = 10) -> str:
+    """Block until a training run ENDS, then return its final status.
+
+    Returns as soon as the run is no longer running — a crash 40 seconds in is reported at 40
+    seconds, not at the end of the wait. On timeout it says so plainly and the run is still
+    going; call again.
+
+    This is a PULL. It does not replace notify= on train_lora, which PUSHES a message when the
+    run ends and wakes you even if you are doing something else. Use notify for the outcome and
+    this when you want to sit on it.
+    """
+    timeout = max(5, min(300, int(timeout_seconds)))
+    poll = max(2, min(60, int(poll_seconds)))
+    started = _time.time()
+    last = None
+    while True:
+        try:
+            last = _json.loads(train_lora_status.fn(run_id) if hasattr(train_lora_status, "fn")
+                               else train_lora_status(run_id))
+        except Exception as e:
+            return _j({"error": "could not read status: %s" % e, "run_id": run_id})
+        if last.get("error"):
+            return _j(last)
+        state = last.get("state")
+        if state and state != "running":
+            last["waited_seconds"] = int(_time.time() - started)
+            last["ended"] = True
+            return _j(last)
+        if _time.time() - started + poll > timeout:
+            return _j({"run_id": run_id, "ended": False, "state": state or "running",
+                       "waited_seconds": int(_time.time() - started),
+                       "done": last.get("done"), "total": last.get("total"),
+                       "epochs_done": last.get("epochs_done"), "metrics": last.get("metrics"),
+                       "note": "still running when the wait expired — call again, or rely on "
+                               "notify= if it was set at launch"})
+        _time.sleep(poll)
 
 
 @mcp.tool()
