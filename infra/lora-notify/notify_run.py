@@ -50,10 +50,16 @@ def main():
     ap.add_argument("--to", required=True, help="fleet agent id")
     a = ap.parse_args()
 
+    # --rc unknown: an EXTERNAL watcher attached to a run it did not spawn, so it cannot read
+    # the exit status — Linux gives a non-parent no way to. The verdict is then INFERRED from
+    # artifacts and the log tail, and the message says so rather than quietly presenting a
+    # guess with the same confidence as a real exit code.
+    inferred = False
     try:
         rc = int(a.rc)
     except (TypeError, ValueError):
-        rc = -1
+        inferred = True
+        rc = 0
 
     meta = {}
     try:
@@ -89,8 +95,17 @@ def main():
         # The last few non-progress lines are where a traceback or CUDA error actually lands.
         err = " | ".join(l.strip()[:160] for l in lines[-6:] if l.strip() and "it/s" not in l)[:600]
 
-    ok = rc == 0
-    head = ("✅ LoRA training FINISHED" if ok else "❌ LoRA training FAILED (exit %d)" % rc)
+    if inferred:
+        # No exit status available, so read the evidence: a traceback or CUDA error in the tail
+        # is a failure whatever else is on disk; otherwise artifacts mean it produced something.
+        bad = any(k in "\n".join(lines).lower()
+                  for k in ("traceback", "cuda error", "out of memory", "runtimeerror"))
+        ok = bool(ckpts) and not bad
+        head = ("🟢 LoRA training ENDED — looks SUCCESSFUL (inferred)" if ok
+                else "🔴 LoRA training ENDED — looks FAILED (inferred)")
+    else:
+        ok = rc == 0
+        head = ("✅ LoRA training FINISHED" if ok else "❌ LoRA training FAILED (exit %d)" % rc)
     body = [
         "%s — %s" % (head, name),
         "run: %s   trainer: %s%s%s" % (run, trainer,
@@ -104,7 +119,11 @@ def main():
     if err:
         body.append("tail: %s" % err)
     body.append("dir: %s" % a.run_dir)
-    if not ok:
+    if inferred:
+        body.append("NOTE: this run was watched from OUTSIDE, so there is no exit code — the "
+                    "verdict above is inferred from artifacts and the log tail and could be "
+                    "wrong. Confirm with train_lora_status before trusting it.")
+    elif not ok:
         body.append("NOTE: exit code is the verdict here, not the artifacts — checkpoints can "
                     "exist for a run that then crashed.")
 
