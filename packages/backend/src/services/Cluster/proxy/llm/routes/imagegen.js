@@ -137,6 +137,8 @@ const isTrainingSetName = (n) => n === 'training_set' || n.startsWith('training_
 // A training BATCH is the assembly the trainer actually eats: images COPIED (never moved)
 // out of many curated sets into one folder. Same naming convention as sets, batch spelling.
 const isTrainingBatchName = (n) => n === 'training_batch' || n.startsWith('training_batch_');
+// The square size every training image is cropped to here.
+const CROP_TARGET = 1024;
 // A batch SUBSECTION is kohya's <repeats>_<concept> convention (20_blue) directly inside a
 // training batch: kohya reads the prefix as per-epoch repeats; AI Toolkit ignores the names.
 const isSubsectionName = (n) => /^\d+_.+/.test(n);
@@ -150,6 +152,9 @@ const batchRootOf = (dir) => {
 };
 // A path is INSIDE a training set when one of its segments is a training-set folder.
 const TS_GUARD = /(^|\/)training_set(_[^/]+)?\//;
+// Crop and reset are allowed in a training BATCH too: both are ordinary in-place edits on
+// a copy, and a batch is exactly as much a working area as a set is.
+const EDITABLE_GUARD = /(^|\/)(training_set|training_batch)(_[^/]+)?\//;
 
 /**
  * Pristine baseline for a training-set working copy, used by reset + cropped-flag:
@@ -337,11 +342,16 @@ export function createImagegenRouter(config) {
       images.forEach((im) => {
         im.has_caption = existsSync(captionPath(path.join(dir, im.name)));                          // .txt tags
         im.has_nl_caption = existsSync(path.join(dir, im.name).replace(/\.[^/.]+$/, '') + '.caption'); // BLIP/NL
+        // Already the training size. The ✓ badge used to mean "differs from its baseline", so an
+        // image that ARRIVED square at 1024 — never cropped because it never needed to be — read
+        // as outstanding forever, which is backwards for a badge whose job is finding what is
+        // left to do.
+        im.at_target = im.w === CROP_TARGET && im.h === CROP_TARGET;
       });
       // cropped / has_alt STAY here: both are training-set mechanics. `cropped` compares against
       // the pristine baseline copy, and has_alt reads the .preup upscale dir — neither exists
       // outside a set, so asking for them elsewhere would be a wasted stat per image.
-      if (isTS) {
+      if (isTS || isTrainingBatchName(path.basename(dir))) {
         const od = await mapLimit(images, 16, (im) => {
           const b = baselinePath(path.join(dir, im.name));
           return b ? dimsOf(b) : Promise.resolve(null);
@@ -556,8 +566,8 @@ export function createImagegenRouter(config) {
     const b = req.body || {};
     let file;
     try { file = safeResolve(b.path); } catch { return res.status(400).json({ error: 'bad path' }); }
-    if (!TS_GUARD.test((b.path || '').replace(/^\/+/, ''))) {
-      return res.status(400).json({ error: 'crop only allowed inside a training set' });
+    if (!EDITABLE_GUARD.test((b.path || '').replace(/^\/+/, ''))) {
+      return res.status(400).json({ error: 'crop only allowed inside a training set or training batch' });
     }
     if (!existsSync(file) || !statSync(file).isFile()) return res.status(404).json({ error: 'no such file' });
     const tw = Math.round(+b.target_w), th = Math.round(+b.target_h);
@@ -577,6 +587,19 @@ export function createImagegenRouter(config) {
       else if (ext === '.webp') pipe = pipe.webp({ quality: 95 });
       else pipe = pipe.jpeg({ quality: 95 });
       const buf = await pipe.toBuffer();
+      // 🛑 SNAPSHOT BEFORE OVERWRITING. A set gets its .orig from send-to-set; a batch has no
+      // baseline at all, so without this the first crop in a batch is irreversible and
+      // reset-crop has nothing to restore. Taken only once — a second crop must not overwrite
+      // the pristine copy with an already-cropped one.
+      if (!baselinePath(file)) {
+        try {
+          const od = path.join(path.dirname(file), '.orig');
+          mkdirSync(od, { recursive: true });
+          copyFileSync(file, path.join(od, path.basename(file)));
+        } catch (e) {
+          return res.status(500).json({ error: `could not snapshot the original, refusing to crop: ${String(e.message || e)}` });
+        }
+      }
       writeFileSync(file, buf);
       try { chmodSync(file, 0o664); } catch { /* ignore */ }
       res.json({ ok: true, w: tw, h: th, src: { left, top, width, height } });
@@ -590,8 +613,8 @@ export function createImagegenRouter(config) {
     const rel = (req.body && req.body.path || '').replace(/^\/+/, '');
     let file;
     try { file = safeResolve(rel); } catch { return res.status(400).json({ error: 'bad path' }); }
-    if (!TS_GUARD.test(rel)) {
-      return res.status(400).json({ error: 'not a training set file' });
+    if (!EDITABLE_GUARD.test(rel)) {
+      return res.status(400).json({ error: 'not a training set or training batch file' });
     }
     const base = baselinePath(file);
     if (!base) return res.status(404).json({ error: 'no pristine baseline found' });

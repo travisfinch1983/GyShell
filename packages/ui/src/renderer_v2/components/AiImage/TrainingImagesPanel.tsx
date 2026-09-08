@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Layers, FolderOpen, Star, X, ChevronUp, ChevronDown } from 'lucide-react'
-import { trainingImagesStore as store, igThumb, igImage, imKey, type IgImage } from '../../stores/TrainingImagesStore'
+import { trainingImagesStore as store, igThumb, igImage, imKey, cropDone, type IgImage } from '../../stores/TrainingImagesStore'
 import { confirmStore } from '../../stores/confirmStore'
 import { promptStore } from '../../stores/promptStore'
 import { CropEditor } from './CropEditor'
@@ -416,7 +416,10 @@ const Tile: React.FC<{ im: IgImage; i: number; onOpen: () => void }> = observer(
             store.toggleOne(i); store.lastIndex = i
           }
         }} />
-      {im.cropped && <span className={`${styles.bdg} ${styles.bdgCrop}`} title="Cropped">✓</span>}
+      {cropDone(im) && (
+        <span className={`${styles.bdg} ${styles.bdgCrop}`}
+              title={im.cropped ? 'Cropped here' : `Already ${im.w}×${im.h} — no crop needed`}>✓</span>
+      )}
       {im.has_alt && <span className={styles.bdg} title="Upscaled — swap available in editor">⤴</span>}
       {im.has_caption && <span className={styles.bdg} title="Has tags (.txt)">✎</span>}
       {im.has_nl_caption && <span className={styles.bdg} title="Has caption (.caption)">❝</span>}
@@ -526,8 +529,8 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           <label className={styles.sortLbl}>Show
             <select className={styles.input} value={store.cropFilter} onChange={(e) => store.setCropFilter(e.target.value as any)}>
               <option value="all">All ({store.images.length})</option>
-              <option value="uncropped">Needs crop ({store.images.filter((im) => !im.cropped).length})</option>
-              <option value="cropped">Cropped ({store.images.filter((im) => im.cropped).length})</option>
+              <option value="uncropped">Needs crop ({store.images.filter((im) => !cropDone(im)).length})</option>
+              <option value="cropped">At 1024 / cropped ({store.images.filter((im) => cropDone(im)).length})</option>
             </select>
           </label>
         )}

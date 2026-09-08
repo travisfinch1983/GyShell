@@ -22,9 +22,18 @@ async function ig(path: string, opts?: { method?: string; body?: any }): Promise
   return data
 }
 
+/** Nothing left to do on this image's size: either it was cropped here, or it already ARRIVED
+ *  at the training size. The badge and the "needs crop" filter both mean THIS, not "was
+ *  cropped" — an image that was born 1024 square never needed cropping and should not sit in
+ *  the outstanding list forever. */
+export const cropDone = (im: Pick<IgImage, 'cropped' | 'at_target'>): boolean =>
+  !!(im.cropped || im.at_target)
+
 export interface IgImage {
   name: string; rel: string; mtime: number; ctime: number; birthtime: number; size: number
   w: number; h: number; cropped: boolean; has_alt: boolean; has_caption: boolean; has_nl_caption: boolean
+  /** already exactly 1024x1024 — needs no crop, whether or not it was ever cropped here */
+  at_target?: boolean
   score: number | null; comment: string
   /** Subsection folder this image lives in ('' = the browsed folder itself). */
   dir?: string
@@ -166,7 +175,7 @@ export class TrainingImagesStore {
         const mapIm = (pre: string, sub: string) => (im: any): IgImage => ({
           name: im.name, rel: pre + im.name, mtime: im.mtime || 0, ctime: im.ctime || 0,
           birthtime: im.birthtime || 0, size: im.size || 0, w: im.w || 0, h: im.h || 0,
-          cropped: !!im.cropped, has_alt: !!im.has_alt, has_caption: !!im.has_caption,
+          cropped: !!im.cropped, at_target: !!im.at_target, has_alt: !!im.has_alt, has_caption: !!im.has_caption,
           has_nl_caption: !!im.has_nl_caption, score: im.score != null ? im.score : null,
           comment: im.comment || '', dir: sub,
         })
@@ -238,7 +247,7 @@ export class TrainingImagesStore {
    *  (toggleOne/selectRange) are positions in THIS list, never in the raw one. */
   get visibleImages(): IgImage[] {
     if (this.cropFilter === 'all') return this.images
-    return this.images.filter((im) => (this.cropFilter === 'cropped' ? im.cropped : !im.cropped))
+    return this.images.filter((im) => (this.cropFilter === 'cropped' ? cropDone(im) : !cropDone(im)))
   }
 
   enterSelection() { this.selectionMode = true }
