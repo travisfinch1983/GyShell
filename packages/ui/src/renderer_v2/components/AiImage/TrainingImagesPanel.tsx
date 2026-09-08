@@ -385,7 +385,7 @@ const Tile: React.FC<{ im: IgImage; i: number; onOpen: () => void }> = observer(
   const timer = useRef<any>(null); const longRef = useRef(false); const down = useRef({ x: 0, y: 0 })
   const label = im.w && im.h ? `${im.w}×${im.h}` : im.name
   return (
-    <div className={`${styles.tile} ${sel ? styles.tileSel : ''}`}
+    <div className={`${styles.tile} ${cropDone(im) ? styles.tileDone : ''} ${sel ? styles.tileSel : ''}`}
       onMouseDown={(e) => { if (e.button !== 0) return; longRef.current = false; down.current = { x: e.clientX, y: e.clientY }; timer.current = setTimeout(() => { longRef.current = true; if (!store.selectionMode) store.enterSelection(); if (!store.selected.has(imKey(im))) store.toggleOne(i); store.lastIndex = i }, 400) }}
       onMouseMove={(e) => { if (timer.current && (Math.abs(e.clientX - down.current.x) > 6 || Math.abs(e.clientY - down.current.y) > 6)) { clearTimeout(timer.current); timer.current = null } }}
       onMouseLeave={() => { if (timer.current) { clearTimeout(timer.current); timer.current = null } }}
