@@ -944,6 +944,20 @@ _NOTIFY_SCRIPT = "/opt/lora-notify/notify_run.py"
 _AGENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
+def _host_boot_id():
+    """The training host's current boot id, or '' if unavailable.
+
+    Recorded at launch so a stored PID can be disqualified after a reboot: PIDs are not
+    scoped to a boot, so a number from a previous boot is not stale, it is MEANINGLESS —
+    and if it has been reused, kill -0 says ALIVE for an unrelated process.
+    """
+    try:
+        rc, out, _ = _ssh("cat /proc/sys/kernel/random/boot_id 2>/dev/null", timeout=20)
+        return out.strip()
+    except Exception:
+        return ""
+
+
 def _notify_suffix(rundir, notify):
     """Shell to append so the run announces its own end. Empty when nobody asked.
 
@@ -1556,6 +1570,7 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
                 # ROOT — matched nothing, and reported a finished 109 MB LoRA as
                 # "stopped_without_output". ai-toolkit nests one level deeper than kohya.
                 "output_dir": _AITK_TRAINED, "output_nested": True,
+                "boot_id": _host_boot_id(),
                 "network_dim": network_dim, "network_alpha": network_alpha,
                 "started": _time.strftime("%Y-%m-%d %H:%M:%S")}
         if dry_run:
@@ -1681,7 +1696,7 @@ def train_lora(batch_folder: str, output_name: str, base_model: str = "",
         "batch_folder": _scope(batch_folder), "images": len(imgs) + len(sub_imgs), "repeats": repeats,
         "gpu_index": gpu_index, "resolution": resolution, "epochs": max_epochs,
         "network_dim": network_dim, "network_alpha": network_alpha,
-        "output_dir": outdir, "log": log, "command": cmd,
+        "output_dir": outdir, "log": log, "command": cmd, "boot_id": _host_boot_id(),
         "started": _time.strftime("%Y-%m-%d %H:%M:%S"), "pid": None,
     }
     if dry_run:
@@ -1858,10 +1873,40 @@ def train_lora_status(run_id: str) -> str:
         meta = _read_run(run_id)
     except Exception as e:
         return _j({"error": f"no such run: {run_id} ({e.__class__.__name__})"})
-    alive = False
+    # 🛑 A BARE `kill -0 <pid>` DOES NOT MEAN THIS RUN IS ALIVE. PIDs are recycled and are
+    # not scoped to a boot, so the number alone can report a long-dead run as training while
+    # an unrelated process holds it. Two independent checks, in order of authority:
+    #   1. boot_id — if the host rebooted since launch the pid is from a previous PID space
+    #      and means nothing, whatever kill -0 says. Unambiguous, so it decides outright.
+    #   2. cmdline — does the live process actually mention THIS run?
+    # A cmdline mismatch is reported, NEVER acted on: the recorded pid may be a wrapper whose
+    # command line doesn't carry the run id, and calling a genuinely live run dead is the more
+    # dangerous error — it invites launching a second trainer onto a GPU already in use.
+    alive, pid_verified, pid_note = False, None, ""
     if meta.get("pid"):
-        rc, out, _ = _ssh(f"kill -0 {meta['pid']} 2>/dev/null && echo ALIVE", timeout=25)
-        alive = "ALIVE" in out
+        pid = meta["pid"]
+        rc, out, _ = _ssh(
+            "cat /proc/sys/kernel/random/boot_id 2>/dev/null; echo '--8<--'; "
+            f"if kill -0 {pid} 2>/dev/null; then echo ALIVE; "
+            f"tr '\\0' ' ' < /proc/{pid}/cmdline 2>/dev/null; fi",
+            timeout=25)
+        head, _, tail = out.partition("--8<--")
+        cur_boot, rec_boot = head.strip(), str(meta.get("boot_id") or "").strip()
+        if rec_boot and cur_boot and rec_boot != cur_boot:
+            alive = False
+            pid_note = ("host rebooted since this run was launched, so the recorded pid belongs to a "
+                        "previous boot's PID space and cannot be checked — treated as not running")
+        else:
+            alive = "ALIVE" in tail
+            if alive:
+                cmdline = tail.replace("ALIVE", "", 1).strip()
+                pid_verified = bool(cmdline) and (run_id in cmdline or str(meta.get("output_name") or "") in cmdline)
+                if not pid_verified:
+                    pid_note = ("pid is live but its command line does not mention this run — it may be a "
+                                "wrapper, or the PID may have been reused by something else. Still reported "
+                                "as alive: calling a live run dead risks a second trainer on the same GPU.")
+            elif not rec_boot:
+                pid_note = "no boot_id recorded at launch (pre-2026-09-08 run) — pid checks here are best-effort"
     log = meta.get("log", "")
     tail, mtime_age = "", None
     try:
@@ -1901,6 +1946,8 @@ def train_lora_status(run_id: str) -> str:
         _write_run(run_id, meta)
     return _j({
         "run_id": run_id, "state": meta.get("state"), "alive": alive,
+        "pid": meta.get("pid"), "pid_verified": pid_verified,
+        **({"pid_note": pid_note} if pid_note else {}),
         "output_name": meta.get("output_name"), "gpu_index": meta.get("gpu_index"),
         "started": meta.get("started"),
         "progress": {"last_step": steps[-1] if steps else None,
