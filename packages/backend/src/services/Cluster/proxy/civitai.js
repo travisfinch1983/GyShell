@@ -680,12 +680,14 @@ function spawnCurl(url, targetPath, token) {
   // and avoids curl -C - resume issues with CDNs that drop Range headers
   // through redirect chains (e.g. CivitAI → B2/Cloudflare).
   const partPath = targetPath + '.part';
-  // --fail is load-bearing: without it curl treats an HTTP 401/404 as success, writes the error
-  // body to the .part file and exits 0, so the `&& mv` below renames a few KB of HTML into place
-  // as if it were the model. The size check then rejects it and the reconciler requeues, which is
-  // how an auth failure surfaced as "download keeps dying immediately" instead of "unauthorised".
-  // --retry still covers transient 5xx/429; --fail makes 4xx abort loudly, which is what we want.
-  const args = ['-L', '--fail', '-o', partPath, '--retry', '3', '--retry-delay', '5'];
+  // --fail-with-body, not --fail. Both make a 4xx abort (without either, curl writes the error
+  // body to .part and exits 0, so `&& mv` renames a few KB of JSON into place as if it were the
+  // model). But plain --fail DISCARDS the body, and CivitAI puts the actual reason in it:
+  //   {"error":"Unauthorized","message":"The creator of this asset has disabled downloads..."}
+  // Throwing that away is what turned a precise, actionable refusal into "download keeps dying
+  // immediately" five retries later. Keep the body; the reconciler reads it and reports it.
+  // --retry still covers transient 5xx/429.
+  const args = ['-L', '--fail-with-body', '-o', partPath, '--retry', '3', '--retry-delay', '5'];
   if (token) args.push('-H', `Authorization: Bearer ${token}`);
   args.push(url);
 
@@ -720,7 +722,47 @@ function spawnCurl(url, targetPath, token) {
   console.log(`[civitai-dl] SPAWN: PID ${realPid} (scope ${scopeName}) → ${targetPath.split('/').pop()} (log: ${logPath})`);
   // The scope name matters as much as the pid: realPid is the outer bash, and curl is its
   // child inside this transient cgroup. Signalling the pid alone leaves curl running.
-  return { pid: realPid, scope: scopeName };
+  return { pid: realPid, scope: scopeName, log: logPath };
+}
+
+/**
+ * Why did this download die? Reads what curl actually left behind.
+ *
+ * Two sources, in order of usefulness:
+ *   1. the .part file — with --fail-with-body this holds the SERVER's JSON on a 4xx, e.g.
+ *      {"error":"Unauthorized","message":"The creator of this asset has disabled downloads"}
+ *   2. the curl log — "curl: (22) The requested URL returned error: 401"
+ *
+ * Returns { permanent, http, message } or null when nothing conclusive is on disk.
+ * `permanent` marks failures that retrying cannot fix: the answer is "no", not "not yet".
+ */
+function diagnoseDownloadFailure(dl) {
+  let http = 0, message = '';
+  // The body: only ever a few hundred bytes for an error. A real model part is huge, so a
+  // size cap keeps us from reading a partial safetensors as if it were an error document.
+  try {
+    const p = (dl.targetFile || '') + '.part';
+    if (p && existsSync(p) && statSync(p).size > 0 && statSync(p).size < 8192) {
+      const raw = readFileSync(p, 'utf8').trim();
+      if (raw.startsWith('{')) {
+        const j = JSON.parse(raw);
+        message = j.message || j.error || '';
+      } else if (raw) {
+        message = raw.slice(0, 200);
+      }
+    }
+  } catch { /* not JSON, or unreadable — fall through to the log */ }
+  try {
+    if (dl.logFile && existsSync(dl.logFile)) {
+      const log = readFileSync(dl.logFile, 'utf8');
+      const m = /The requested URL returned error:\s*(\d{3})/.exec(log);
+      if (m) http = parseInt(m[1], 10);
+    }
+  } catch { /* no log */ }
+  if (!http && !message) return null;
+  // 401/403/404/410 are verdicts, not hiccups. 5xx and 429 are worth retrying.
+  const permanent = [401, 402, 403, 404, 410].includes(http) || /disabled downloads|early access|purchase|unauthorized/i.test(message);
+  return { permanent, http, message };
 }
 
 function countActiveDownloads() {
@@ -759,6 +801,7 @@ function processPendingDownloads() {
     if (sp) {
       dl.pid = sp.pid;
       dl.scope = sp.scope;
+      dl.logFile = sp.log;
       dl.status = 'downloading';
       dl.startedAt = new Date().toISOString();
       slots--;
@@ -1978,12 +2021,33 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
         } else if (dl.dlUrl) {
           // Auto-requeue with retry limit — stop after 5 consecutive failures
           // to prevent infinite spawn-die loops (e.g. 401 auth errors).
+          // A permanent refusal must not be retried: five spawn/die cycles turn a clear
+          // "the creator disabled downloads on this file" into a generic timeout-shaped
+          // error, and the real reason was on disk the whole time.
+          const why = diagnoseDownloadFailure(dl);
+          if (why && why.permanent) {
+            killDownloadProcs(dl);
+            dl.status = 'failed';
+            dl.pid = null;
+            dl.scope = null;
+            dl.progress = 0;
+            dl.error = why.message
+              ? `CivitAI refused this file${why.http ? ` (HTTP ${why.http})` : ''}: ${why.message}`
+              : `CivitAI refused this file (HTTP ${why.http}) — not retryable`;
+            try { const p = dl.targetFile + '.part'; if (existsSync(p) && statSync(p).size < 8192) unlinkSync(p); } catch {}
+            console.log(`[civitai-dl] REFUSED: ${dl.fileName} — ${dl.error}`);
+            changed = true;
+            continue;
+          }
           dl._retries = (dl._retries || 0) + 1;
           if (dl._retries >= 5) {
             dl.status = 'failed';
             dl.pid = null;
             dl.progress = currentSize;
-            dl.error = `Failed after ${dl._retries} retries — download keeps dying immediately`;
+            const last = diagnoseDownloadFailure(dl);
+            dl.error = last && (last.message || last.http)
+              ? `Failed after ${dl._retries} retries — last error${last.http ? ` HTTP ${last.http}` : ''}: ${last.message || 'no message'}`
+              : `Failed after ${dl._retries} retries — download keeps dying immediately`;
             console.log(`[civitai-dl] GIVE UP: ${dl.fileName} — ${dl._retries} retries exhausted`);
           } else {
             // "PID dead" is judged from the WRAPPER pid, and curl is its child: the wrapper can
@@ -2140,6 +2204,7 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
     if (sp) {
       dl.pid = sp.pid;
       dl.scope = sp.scope;
+      dl.logFile = sp.log;
       dl.status = 'downloading';
       dl.startedAt = new Date().toISOString();
       dl._deadChecks = 0;
