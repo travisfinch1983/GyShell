@@ -1816,8 +1816,18 @@ export function createImagegenRouter(config) {
 
     const find = String(b.find == null ? '' : b.find);
     const replace = String(b.replace == null ? '' : b.replace);
-    // An empty `find` would match at every position and rewrite every caption to noise.
-    if (!find) return res.status(400).json({ error: 'find is required' });
+    // TRIGGER MODE targets the LEADING token only — the trigger word every caption starts
+    // with ("futanari_bulge, Rear view..."). Ordinary replace can't express that: whole_tag
+    // matches a token in ANY position and only applies to .txt, and .caption is a plain
+    // substring replace, so a trigger that also occurs mid-sentence would be rewritten too.
+    // It is also the only mode that can change a trigger you don't know: with find empty it
+    // replaces whatever leads the file. A LoRA's trigger IS whatever the captions say, so
+    // being able to rewrite it exactly is the difference between a working trigger and one
+    // the model never saw.
+    const triggerMode = String(b.mode || '') === 'trigger';
+    // An empty `find` would match at every position and rewrite every caption to noise —
+    // except in trigger mode, where empty means "whatever token is currently first".
+    if (!find && !triggerMode) return res.status(400).json({ error: 'find is required' });
     const exts = Array.isArray(b.exts) && b.exts.length
       ? b.exts.filter((e) => e === 'txt' || e === 'caption')
       : ['txt', 'caption'];
@@ -1859,6 +1869,29 @@ export function createImagegenRouter(config) {
       return { text: dedup.join(', '), hits };
     };
 
+    /**
+     * Replace ONLY the leading token. The remainder is preserved byte-for-byte — the tail is
+     * sliced from the original including its comma, never re-joined from parsed tokens, so a
+     * trigger rename cannot quietly renormalise spacing or drop a duplicate elsewhere in the
+     * caption the way the whole_tag path deliberately does.
+     */
+    const applyTrigger = (raw) => {
+      const idx = raw.indexOf(',');
+      const head = idx === -1 ? raw : raw.slice(0, idx);
+      const tail = idx === -1 ? '' : raw.slice(idx);      // keeps the comma + original spacing
+      const cur = head.trim();
+      if (!cur) return { text: raw, hits: 0 };
+      if (find) {
+        if (!eq(cur, find)) return { text: raw, hits: 0 };
+      } else if (idx === -1) {
+        // No comma and no `find` to confirm intent: this is a one-line caption, not a
+        // trigger + body. Replacing here would overwrite the ENTIRE caption, so refuse.
+        return { text: raw, hits: 0 };
+      }
+      if (!replace) return { text: tail.replace(/^,\s*/, ''), hits: 1 };   // drop the trigger
+      return { text: replace + tail, hits: 1 };
+    };
+
     let filesScanned = 0, filesChanged = 0, occurrences = 0;
     const samples = []; const errors = [];
     for (const nm of names) {
@@ -1872,9 +1905,13 @@ export function createImagegenRouter(config) {
         filesScanned++;
         // whole_tag is a TAG-LIST concept; .caption is prose with no token boundaries, so it
         // is always a substring replace there whatever the flag says.
-        const { text, hits } = (ext === 'txt')
-          ? applyTxt(raw)
-          : (() => { const h = (raw.match(rx) || []).length; return { text: h ? raw.replace(rx, replace) : raw, hits: h }; })();
+        // The trigger leads BOTH sidecar kinds, so trigger mode applies identically to each —
+        // unlike whole_tag, which is a tag-list concept and is meaningless in prose.
+        const { text, hits } = triggerMode
+          ? applyTrigger(raw)
+          : (ext === 'txt')
+            ? applyTxt(raw)
+            : (() => { const h = (raw.match(rx) || []).length; return { text: h ? raw.replace(rx, replace) : raw, hits: h }; })();
         if (!hits || text === raw) continue;
         occurrences += hits;
         filesChanged++;
@@ -1886,7 +1923,8 @@ export function createImagegenRouter(config) {
         } catch { errors.push(nm + '.' + ext); filesChanged--; occurrences -= hits; }
       }
     }
-    res.json({ ok: true, dry_run: dryRun, files_scanned: filesScanned, files_changed: filesChanged,
+    res.json({ ok: true, dry_run: dryRun, mode: triggerMode ? 'trigger' : 'text',
+               files_scanned: filesScanned, files_changed: filesChanged,
                occurrences, samples, errors });
   });
 

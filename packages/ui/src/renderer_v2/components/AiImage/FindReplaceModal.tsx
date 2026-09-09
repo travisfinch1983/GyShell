@@ -22,6 +22,7 @@ export const FindReplaceModal: React.FC<{ files: string[]; onClose: () => void; 
     const [replace, setReplace] = useState('')
     const [exts, setExts] = useState<Ext[]>(['txt', 'caption'])
     const [wholeTag, setWholeTag] = useState(false)
+    const [triggerMode, setTriggerMode] = useState(false)
     const [caseSensitive, setCaseSensitive] = useState(false)
     const [busy, setBusy] = useState(false)
     const [msg, setMsg] = useState('')
@@ -40,12 +41,16 @@ export const FindReplaceModal: React.FC<{ files: string[]; onClose: () => void; 
       replace,
       exts,
       whole_tag: wholeTag,
+      ...(triggerMode ? { mode: 'trigger' as const } : {}),
       case_sensitive: caseSensitive,
       dry_run: dry,
     })
 
     const run = async (dry: boolean) => {
-      if (!find) { setMsg('Enter a term to find.'); return }
+      if (!find && !triggerMode) { setMsg('Enter a term to find.'); return }
+      if (triggerMode && !replace && !find) {
+        setMsg('In trigger mode, enter the new trigger (or a Find value to delete a specific one).'); return
+      }
       if (!exts.length) { setMsg('Pick at least one of .txt / .caption.'); return }
       // Editing the form invalidates a prior preview — never let a stale preview sit next to
       // changed criteria, so re-preview after any edit (the fields reset it via onChange below).
@@ -88,14 +93,14 @@ export const FindReplaceModal: React.FC<{ files: string[]; onClose: () => void; 
           <div className={styles.acSection}>Find</div>
           <input
             className={styles.input} style={{ width: '100%' }} disabled={busy}
-            placeholder="large bulge" value={find}
+            placeholder={triggerMode ? "current trigger — leave EMPTY to match whatever is there" : "large bulge"} value={find}
             onChange={(e) => edit(setFind)(e.target.value)}
           />
 
           <div className={styles.acSection}>Replace with</div>
           <input
             className={styles.input} style={{ width: '100%' }} disabled={busy}
-            placeholder="cute bulge  (leave empty to delete the term)" value={replace}
+            placeholder={triggerMode ? "new trigger word (empty removes the trigger entirely)" : "cute bulge  (leave empty to delete the term)"} value={replace}
             onChange={(e) => edit(setReplace)(e.target.value)}
           />
 
@@ -111,8 +116,13 @@ export const FindReplaceModal: React.FC<{ files: string[]; onClose: () => void; 
             </label>
             <span className={styles.spacer} />
             <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }} title="Match only exact comma-separated .txt tokens (never inside .caption prose)">
-              <input type="checkbox" disabled={busy || !exts.includes('txt')} checked={wholeTag} onChange={(e) => edit(setWholeTag)(e.target.checked)} />
+              <input type="checkbox" disabled={busy || !exts.includes('txt') || triggerMode} checked={wholeTag} onChange={(e) => edit(setWholeTag)(e.target.checked)} />
               <span>Whole tag only</span>
+            </label>
+            <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}
+                   title="Rewrite ONLY the leading token of each sidecar — the trigger word. Leave Find empty to replace whatever trigger is there now.">
+              <input type="checkbox" disabled={busy} checked={triggerMode} onChange={(e) => { edit(setTriggerMode)(e.target.checked); if (e.target.checked) setWholeTag(false) }} />
+              <span>Trigger word only</span>
             </label>
             <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
               <input type="checkbox" disabled={busy} checked={caseSensitive} onChange={(e) => edit(setCaseSensitive)(e.target.checked)} />

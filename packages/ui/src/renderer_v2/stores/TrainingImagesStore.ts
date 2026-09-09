@@ -63,6 +63,9 @@ export interface FindReplaceBody {
   /** .txt only — match a whole comma token rather than a substring. Ignored for .caption,
    *  which is prose and has no token boundaries. */
   whole_tag?: boolean
+  /** 'trigger' rewrites ONLY the leading token of each sidecar — the trigger word. With an
+   *  empty `find` it replaces whatever currently leads the file. */
+  mode?: 'trigger'
   case_sensitive?: boolean
   dry_run?: boolean
   files?: string[]
