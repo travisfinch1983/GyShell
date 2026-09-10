@@ -175,6 +175,42 @@ def emit(severity: str, source: str, message: str, detail: str = "") -> None:
         print(f"(notification not sent: {e})", file=sys.stderr)
 
 
+LATCH = os.environ.get("AILAB_MODEL_BINDING_LATCH",
+                       "/opt/ai-lab/.gybackend-data/model-binding-audit-latch.json")
+
+
+def load_latch() -> set:
+    """Subjects already reported on a previous run.
+
+    Fails OPEN: an unreadable or malformed state file yields an EMPTY set so the run re-emits
+    rather than staying silent. A latch that swallows an alarm because its own bookkeeping
+    broke is strictly worse than a duplicate notification.
+    """
+    try:
+        with open(LATCH) as f:
+            return set(json.load(f).get("alarmed", []))
+    except FileNotFoundError:
+        return set()
+    except Exception as e:
+        print(f"(latch unreadable, treating as empty so nothing is suppressed: {e})", file=sys.stderr)
+        return set()
+
+
+def save_latch(subjects: set) -> None:
+    """Persist the currently-alarming subjects, atomically and best-effort.
+
+    On failure the next run simply re-emits -- degrading to the old noisy behaviour, which is
+    the safe direction to fail in.
+    """
+    try:
+        tmp = f"{LATCH}.tmp"
+        with open(tmp, "w") as f:
+            json.dump({"alarmed": sorted(subjects)}, f)
+        os.replace(tmp, LATCH)
+    except Exception as e:
+        print(f"(latch not saved, next run will re-report: {e})", file=sys.stderr)
+
+
 def main():
     try:
         exact, bare = served()
@@ -255,31 +291,45 @@ def main():
     # --emit raises the result into the notifications panel. Only a FAILURE is reported: a clean
     # sweep is the normal state and an event for it would be noise, which is how a panel earns
     # being ignored. Reporting never affects the exit code or the audit itself.
-    if "--emit" in sys.argv and errors and not dead:
-        emit("warning", "model-bindings",
-             "Model-binding audit could not check some bindings",
-             f"[host {os.uname().nodename}] {errors} binding(s) unreadable (config parse failure or missing pyyaml — the latter skips the whole Hermes section). The audit proves nothing about them; a clean report over unchecked bindings is the failure this audit exists to catch.")
-    if "--emit" in sys.argv and dead:
-        paused = suspended_served()
-        # A binding naming a deliberately suspended model is expected, not a silent no-op.
-        worst = [r for r in rows if r["status"] == "DEAD" and r["value"] not in paused]
-        for m in sorted({r["value"] for r in rows if r["status"] == "DEAD"} & paused):
-            print(f"suspended, not reported: {m}")
-        if not worst:
-            return 1 if dead else 0
-        by_model: dict = {}
-        for r in worst:
-            by_model.setdefault(r["value"], []).append(f"{r['source']} {r['path']}")
-        # ONE EVENT PER MODEL, never an aggregate. An aggregate has to interpolate a count,
-        # and the count changes as bindings are fixed -- so the model still unserved on the
-        # next run produces a different message than it did on the last one and reads as new.
-        # The model is also the right subject rather than the binding: fixing the model fixes
-        # every binding that names it, so N bindings on one model is one problem, not N.
-        for model, bindings in sorted(by_model.items()):
-            emit("warning", "model-bindings",
-                 f"Model binding names a model that is not being served: {model}",
-                 f"{len(bindings)} binding{'' if len(bindings) == 1 else 's'} name it and are "
-                 f"failing silently: {'; '.join(sorted(bindings))}"[:600])
+    #
+    # LATCHED. This timer runs every 30 minutes, so an unfixed binding used to re-emit the same
+    # warning ~48 times a day and train the reader to ignore it. A standing misconfiguration must
+    # announce itself ONCE and then stay quiet until it CHANGES -- the same rule checkModelBindings()
+    # already applies via unservedAlarmed. Subjects that stop alarming are dropped from the latch,
+    # so a genuine RECURRENCE alarms again instead of being suppressed forever by the first one.
+    # The latch is only touched under --emit: a manual audit must never mutate alarm state.
+    if "--emit" in sys.argv:
+        alarms = []                       # (subject, message, detail)
+        if errors and not dead:
+            alarms.append(("errors",
+                           "Model-binding audit could not check some bindings",
+                           f"[host {os.uname().nodename}] {errors} binding(s) unreadable (config parse failure or missing pyyaml \u2014 the latter skips the whole Hermes section). The audit proves nothing about them; a clean report over unchecked bindings is the failure this audit exists to catch."))
+        if dead:
+            paused = suspended_served()
+            # A binding naming a deliberately suspended model is expected, not a silent no-op.
+            worst = [r for r in rows if r["status"] == "DEAD" and r["value"] not in paused]
+            for m in sorted({r["value"] for r in rows if r["status"] == "DEAD"} & paused):
+                print(f"suspended, not reported: {m}")
+            by_model: dict = {}
+            for r in worst:
+                by_model.setdefault(r["value"], []).append(f"{r['source']} {r['path']}")
+            # ONE EVENT PER MODEL, never an aggregate. An aggregate has to interpolate a count,
+            # and the count changes as bindings are fixed -- so the model still unserved on the
+            # next run produces a different message than it did on the last one and reads as new.
+            # The model is also the right subject rather than the binding: fixing the model fixes
+            # every binding that names it, so N bindings on one model is one problem, not N.
+            for model, bindings in sorted(by_model.items()):
+                alarms.append((f"model:{model}",
+                               f"Model binding names a model that is not being served: {model}",
+                               (f"{len(bindings)} binding{'' if len(bindings) == 1 else 's'} name it and are "
+                                f"failing silently: {'; '.join(sorted(bindings))}")[:600]))
+        latched = load_latch()
+        for subject, message, detail in alarms:
+            if subject in latched:
+                print(f"already reported on an earlier run, not re-emitting: {subject}")
+                continue
+            emit("warning", "model-bindings", message, detail)
+        save_latch({a[0] for a in alarms})
     # Errors fail the run: exit 0 with unchecked bindings would let a cron
     # wrapper (or a human reading $?) take "clean" from a run that proved nothing.
     return 1 if (dead or errors) else 0
