@@ -1490,6 +1490,137 @@ export function createImagegenRouter(config) {
   // Separate from /transfer on purpose: that renames every incoming file into the
   // destination's <base>-N scheme, which is right for loose images and wrong for a
   // folder, where keeping the folder and its contents intact IS the operation.
+  // ---- POSE LIBRARY -------------------------------------------------------------
+  // The ComfyUI Krea2 Pose Gallery reads /imagegen/pose_library (symlinked into its
+  // custom-node dir), which is inside BASE — so the existing /thumb and /image routes
+  // already serve pose thumbnails with no extra code, and everything here only has to
+  // manage the JSON and the image files.
+  //
+  // `name` is treated as a STABLE ID: it is what the node's dropdown lists and what a
+  // saved workflow stores in Gallery mode, so renaming one would silently break those
+  // workflows. Editing prompt/category/view is free; name is set once, at creation.
+  const POSE_DIR = path.join(BASE, 'pose_library');
+  const POSE_FILE = path.join(POSE_DIR, 'poses.json');
+  const POSE_IMAGES = path.join(POSE_DIR, 'pose_images');
+  const POSE_W = 224, POSE_H = 284;   // every shipped thumbnail is exactly this
+
+  function loadPoses() {
+    return JSON.parse(readFileSync(POSE_FILE, 'utf8'));
+  }
+  /** Write atomically, and keep ONE backup of the last good state. A half-written
+   *  poses.json breaks the node for every workflow at once, so the rename is the
+   *  commit point and the .bak is the way back. */
+  function savePoses(list) {
+    try { copyFileSync(POSE_FILE, POSE_FILE + '.bak'); } catch { /* first write */ }
+    const tmp = POSE_FILE + '.tmp';
+    writeFileSync(tmp, JSON.stringify(list, null, 2), 'utf8');
+    renameSync(tmp, POSE_FILE);
+    try { chmodSync(POSE_FILE, 0o664); } catch { /* not owner */ }
+  }
+
+  router.get('/poses', (_req, res) => {
+    try {
+      const poses = loadPoses();
+      res.json({
+        ok: true,
+        count: poses.length,
+        categories: [...new Set(poses.map((p) => p.category).filter(Boolean))].sort(),
+        views: [...new Set(poses.map((p) => p.view).filter(Boolean))].sort(),
+        // rel is what /thumb and /image want, so the UI never builds a path itself
+        poses: poses.map((p) => ({ ...p, rel: `pose_library/pose_images/${p.image}` })),
+      });
+    } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+  });
+
+  router.post('/poses/update', express.json(), (req, res) => {
+    const b = req.body || {};
+    const id = String(b.id || '');
+    if (!id) return res.status(400).json({ error: 'id required' });
+    let poses;
+    try { poses = loadPoses(); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    const pose = poses.find((p) => p.id === id);
+    if (!pose) return res.status(404).json({ error: `no such pose: ${id}` });
+    // name and image are deliberately NOT editable: name is the workflow-facing id, and
+    // image is managed by add/delete so the JSON can never name a file that is not there.
+    for (const field of ['prompt', 'category', 'view']) {
+      if (typeof b[field] === 'string') pose[field] = b[field].trim();
+    }
+    if (!pose.prompt) return res.status(400).json({ error: 'prompt cannot be empty — it is what the node emits' });
+    try { savePoses(poses); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    res.json({ ok: true, pose: { ...pose, rel: `pose_library/pose_images/${pose.image}` } });
+  });
+
+  router.post('/poses/add', express.json({ limit: '25mb' }), async (req, res) => {
+    const b = req.body || {};
+    const prompt = String(b.prompt || '').trim();
+    if (!prompt) return res.status(400).json({ error: 'prompt required' });
+    let poses;
+    try { poses = loadPoses(); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+
+    // Next free numeric slot, not length+1: deleting pose 60 and adding one must not
+    // reuse an id that an old workflow might still name.
+    const used = new Set(poses.map((p) => parseInt(String(p.id).replace(/\D/g, ''), 10)).filter(Number.isFinite));
+    let n = 1; while (used.has(n)) n += 1;
+    const num = String(n).padStart(3, '0');
+    const id = `pose_${num}`;
+    const view = String(b.view || '').trim();
+    const category = String(b.category || '').trim();
+    const title = (word) => word.replace(/\b\w/g, (c) => c.toUpperCase());
+    const name = String(b.name || '').trim()
+      || [num, title(view || 'custom'), title(category || 'pose')].join(' | ');
+    if (poses.some((p) => p.name === name)) {
+      return res.status(409).json({ error: `a pose named "${name}" already exists — names are ids here` });
+    }
+
+    // Source: an image already in the imagegen tree (the normal case — Travis browses
+    // his own references), or raw base64 for anything else.
+    let buf;
+    try {
+      if (b.source_path) {
+        const src = safeResolve(String(b.source_path));
+        if (!existsSync(src) || !statSync(src).isFile()) return res.status(404).json({ error: 'source_path not found' });
+        buf = readFileSync(src);
+      } else if (b.image_b64) {
+        buf = Buffer.from(String(b.image_b64).replace(/^data:[^,]+,/, ''), 'base64');
+      } else {
+        return res.status(400).json({ error: 'source_path or image_b64 required' });
+      }
+    } catch (e) { return res.status(400).json({ error: String(e.message || e) }); }
+
+    const file = `${id}.webp`;
+    try {
+      // Normalised to the exact size every shipped thumbnail uses, so the canvas gallery
+      // lays out uniformly instead of one tile being a different shape.
+      const out = await sharp(buf).rotate()
+        .resize(POSE_W, POSE_H, { fit: 'cover', position: 'attention' })
+        .webp({ quality: 82 }).toBuffer();
+      mkdirSync(POSE_IMAGES, { recursive: true });
+      writeFileSync(path.join(POSE_IMAGES, file), out);
+      try { chmodSync(path.join(POSE_IMAGES, file), 0o664); } catch { /* not owner */ }
+    } catch (e) { return res.status(400).json({ error: 'could not read that image: ' + String(e.message || e) }); }
+
+    const pose = { id, index: n, category, view, name, prompt, image: file };
+    poses.push(pose);
+    poses.sort((a, c) => (a.index || 0) - (c.index || 0));
+    try { savePoses(poses); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    res.json({ ok: true, pose: { ...pose, rel: `pose_library/pose_images/${file}` }, restart_required: true });
+  });
+
+  router.post('/poses/delete', express.json(), (req, res) => {
+    const id = String((req.body || {}).id || '');
+    if (!id) return res.status(400).json({ error: 'id required' });
+    let poses;
+    try { poses = loadPoses(); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    const pose = poses.find((p) => p.id === id);
+    if (!pose) return res.status(404).json({ error: `no such pose: ${id}` });
+    const rest = poses.filter((p) => p.id !== id);
+    try { savePoses(rest); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    // Image removed only AFTER the JSON commit: if the write failed the pose still
+    // exists and must still have its picture.
+    try { unlinkSync(path.join(POSE_IMAGES, pose.image)); } catch { /* already gone */ }
+    res.json({ ok: true, deleted: id, remaining: rest.length, restart_required: true });
+  });
+
   router.post('/transfer-folders', express.json(), (req, res) => {
     const { op, src: srcRel, dest: destRel, folders } = req.body || {};
     if (op !== 'move' && op !== 'copy') return res.status(400).json({ error: 'op must be move|copy' });

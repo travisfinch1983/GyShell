@@ -1,0 +1,67 @@
+.wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px;
+  border-bottom: 1px solid var(--border); }
+.spacer { flex: 1; }
+.dim { color: var(--fg-faint); font-size: 11.5px; }
+.err { margin: 8px 12px; padding: 8px 10px; border-radius: 6px; font-size: 12px;
+  color: #f87171; border: 1px solid #f8717155; background: #f8717111; }
+.msg { padding: 6px 12px; font-size: 11.5px; color: var(--fg-muted); }
+
+.dirtyBar, .noteBar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  margin: 8px 12px; padding: 8px 10px; border-radius: 6px; font-size: 12px; }
+.dirtyBar { color: var(--accent); border: 1px solid var(--accent); background: rgba(78,161,255,0.08); }
+.noteBar { color: var(--fg-muted); border: 1px solid var(--border); background: var(--control-bg); }
+
+.input { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--control-bg); color: var(--fg); font-size: 12px; }
+.inputSm { flex: 1; min-width: 0; padding: 3px 6px; border: 1px solid var(--border);
+  border-radius: 5px; background: var(--control-bg); color: var(--fg); font-size: 10.5px; }
+
+.btn, .btnPrimary, .btnSm, .btnPrimarySm, .btnDangerSm {
+  display: inline-flex; align-items: center; gap: 5px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--control-bg); color: var(--fg);
+  &:hover { border-color: var(--accent); }
+  &:disabled { opacity: .55; cursor: default; }
+}
+.btn, .btnPrimary { padding: 5px 10px; font-size: 12px; }
+.btnSm, .btnPrimarySm, .btnDangerSm { padding: 3px 7px; font-size: 10.5px; }
+.btnPrimary, .btnPrimarySm { border-color: var(--accent); color: var(--accent); }
+.btnDangerSm:hover { border-color: #f87171; color: #f87171; }
+
+// FIXED cell width, auto rows. Cards carry text of varying length, so unlike the image
+// grids in this tab the row height is intentionally intrinsic — but the COLUMN width is
+// fixed so the layout cannot reflow while typing in a card.
+.grid { flex: 1; min-height: 0; overflow: auto; display: grid;
+  grid-template-columns: repeat(auto-fill, 250px); gap: 10px; padding: 12px;
+  align-content: start; justify-content: space-between; }
+
+.card { display: flex; gap: 8px; padding: 8px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--control-bg); min-width: 0; }
+// A card with unsaved edits is outlined, so an abandoned edit is visible at a glance
+// rather than discovered when the list reloads and the change is gone.
+.cardDirty { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(78,161,255,0.35); }
+
+.thumb { width: 74px; height: 94px; object-fit: cover; border-radius: 5px; flex: 0 0 74px;
+  background: var(--panel-bg-2, #111); cursor: zoom-in; }
+.cardBody { display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1; }
+.cardName { font-size: 10.5px; font-weight: 600; color: var(--fg-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prompt { width: 100%; resize: vertical; padding: 4px 6px; font-size: 11px; line-height: 1.35;
+  border: 1px solid var(--border); border-radius: 5px; background: var(--panel-bg-2, #111);
+  color: var(--fg); font-family: inherit; }
+.row { display: flex; gap: 5px; }
+.cardFoot { display: flex; align-items: center; gap: 5px; }
+
+.modalBg { position: fixed; inset: 0; background: rgba(0,0,0,0.66); z-index: 60;
+  display: flex; align-items: center; justify-content: center; padding: 24px; }
+.modalBox { width: min(560px, 100%); max-height: 90vh; overflow: auto; padding: 14px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg, #1a1a1a); }
+.modalHead { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 10px; }
+.modalFoot { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+.section { margin: 10px 0 4px; font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--fg-faint); }
+.hint { margin-top: 4px; font-size: 10.5px; color: var(--fg-faint); line-height: 1.45; }
+.req { color: var(--accent); text-transform: none; letter-spacing: 0; }
+.full { max-width: 90vw; max-height: 90vh; border-radius: 8px; }
