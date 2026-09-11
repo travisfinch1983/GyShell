@@ -210,23 +210,35 @@ def strip_leading_phrase(cap, phrase):
     return out or cap   # never return an empty caption
 
 
-def complete_sentences(cap):
+def complete_sentences(cap, truncated=True):
     """Trim a reply that ran out of tokens back to its last COMPLETE sentence.
 
     A caption cut off mid-thought ("...with a window and furniture", "The sides") is a bad
     training signal that looks exactly like a good one, so it must not survive into a sidecar.
     If the text already ends on sentence punctuation this is a no-op.
+
+    🛑 `truncated` MATTERS AND MUST BE PASSED HONESTLY. This used to return "" for ANY caption
+    with no terminal punctuation, on the assumption that such a caption was cut short. That is
+    true of prose; it is false of a TERSE caption, which legitimately ends without a full stop:
+    "low angle, rear view, bent over, legs apart" is complete and correct and was being thrown
+    away. The effect was a silent SELECTION BIAS, not a visible error — terse pose captions were
+    discarded and retried while verbose narrative ones survived purely because a model writing a
+    full sentence ends it with a period. The folder filled with exactly the captions the
+    instruction forbade, and the ones that obeyed it never reached disk.
+    So: only salvage-trim when the reply was ACTUALLY cut off. Otherwise take it as written.
     """
     cap = cap.strip()
     if not cap or cap[-1] in ".!?":
         return cap
+    if not truncated:
+        return cap          # complete reply that simply is not a sentence — keep it verbatim
     cut = max(cap.rfind(". "), cap.rfind("! "), cap.rfind("? "))
     if cut > 0:
         return cap[:cut + 1].strip()
-    return ""   # nothing complete — validate() will reject on min-chars
+    return ""   # genuinely truncated with nothing complete — validate() rejects on min-chars
 
 
-def clean(cap, avoid_phrase):
+def clean(cap, avoid_phrase, truncated=False):
     # Some builds emit an inline reasoning block even with thinking disabled.
     cap = re.sub(r"<think>.*?</think>", " ", cap, flags=re.S | re.I)
     cap = re.sub(r"^.*?</think>", " ", cap, flags=re.S | re.I)   # unclosed opener
@@ -242,7 +254,7 @@ def clean(cap, avoid_phrase):
         cap = cap[len(hit):].lstrip()
     if avoid_phrase:
         cap = strip_leading_phrase(cap, avoid_phrase)
-    cap = complete_sentences(cap)
+    cap = complete_sentences(cap, truncated)
     cap = cap.strip()
     if cap:
         cap = cap[0].upper() + cap[1:] if cap[0].islower() else cap
@@ -264,6 +276,8 @@ def validate(cap, min_chars):
 
 
 def call_model(api, model, b64, instruction, max_tokens, timeout, retries):
+    """Returns (content, truncated). `truncated` is the caller's only honest way to tell
+    whether a caption lacking a full stop was CUT SHORT or simply written tersely."""
     body = {
         "model": model,
         "max_tokens": max_tokens,
@@ -297,10 +311,20 @@ def call_model(api, model, b64, instruction, max_tokens, timeout, retries):
             m = ch["message"]
             content = (m.get("content") or "").strip()
             reasoning = m.get("reasoning_content") or m.get("reasoning") or ""
-            if content and (ch.get("finish_reason") != "length" or len(content) >= 60):
-                # A length-cut reply with real content is usable — complete_sentences()
-                # trims it back to the last full sentence downstream.
-                return content
+            truncated = ch.get("finish_reason") == "length"
+            # 🛑 A TRUNCATED REPLY IS NOT A CAPTION. This used to accept any length-cut content
+            # of 60+ chars, which is trivially met by a verbose FIRST DRAFT cut mid-sentence —
+            # measured as captions like "...red fabric thigh-high stockings and black high-heeled
+            # shoes, again", where ", again" IS the cut. The instruction had been obeyed on the
+            # retry; what leaked through was the unrefined draft from the attempt before it.
+            # So while escalations remain, a truncation is a reason to RETRY, not to accept.
+            # Only once the budget is exhausted do we fall back to salvaging what came back.
+            if content and not truncated:
+                return content, False
+            if content and truncated and budget >= 4096:
+                # Ceiling reached: a trimmed partial beats nothing, and complete_sentences()
+                # cuts it back to the last whole sentence downstream.
+                return content, True
             if reasoning or ch.get("finish_reason") == "length":
                 # Reasoning models burn the budget THINKING and the caption never arrives:
                 # measured on (DS) deepseek-v4-flash-vision-exp — 98 of 100 completion tokens
@@ -314,7 +338,7 @@ def call_model(api, model, b64, instruction, max_tokens, timeout, retries):
                     "content=%r) — retried at max_tokens=%d"
                     % (ch.get("finish_reason"), len(reasoning), content[:40], budget))
                 continue
-            return content   # empty with no reasoning: surface to validate(), not a budget issue
+            return content, False   # empty with no reasoning: surface to validate()
         except Exception as e:  # transient proxy/model hiccups are common; a caption is worth a retry
             last = e
             if attempt < retries + 2:
@@ -340,7 +364,13 @@ def main():
     ap.add_argument("--max-side", type=int, default=768)
     # Raised from 220: at 220 the model was being cut off mid-sentence on the longer, more
     # detailed captions the material-first instruction produces.
-    ap.add_argument("--max-new-tokens", type=int, default=340)
+    # 340 was sized for a one-sentence caption from a NON-reasoning model. Measured against
+    # (OR) deepseek/deepseek-v4-flash-vision-exp on 2026-09-11: at 340 the model spent the whole
+    # budget in reasoning_content and returned EMPTY content for 7 of 8 images (the eighth: "low").
+    # Completion tokens for a successful pose caption ranged 100-1503 on the same 8 images, so the
+    # first attempt needs room for a model that thinks. A generous ceiling costs nothing on a
+    # non-reasoning model, which stops at EOS regardless.
+    ap.add_argument("--max-new-tokens", type=int, default=1600)
     ap.add_argument("--min-chars", type=int, default=40)
     ap.add_argument("--timeout", type=int, default=180)
     ap.add_argument("--retries", type=int, default=2)
@@ -389,9 +419,9 @@ def main():
             # written sidecar.
             cap, last_err = None, None
             for attempt in range(a.retries + 1):
-                raw = call_model(a.api, a.model, b64, instruction,
-                                 a.max_new_tokens, a.timeout, 1)
-                candidate = clean(raw, avoid)
+                raw, was_cut = call_model(a.api, a.model, b64, instruction,
+                                          a.max_new_tokens, a.timeout, 1)
+                candidate = clean(raw, avoid, was_cut)
                 try:
                     validate(candidate, a.min_chars)
                     cap = candidate
