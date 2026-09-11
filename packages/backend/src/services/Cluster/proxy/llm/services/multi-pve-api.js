@@ -106,6 +106,48 @@ export class MultiPveApi {
   }
 
   /** Which client owns this vmid? Uses the same precedence as the merged guest list. */
+  /**
+   * EVERY guest with this vmid, across all endpoints — the un-resolved truth.
+   *
+   * vmids are unique within a Proxmox cluster but NOT across two separate ones, and this
+   * deployment polls two (`cluster` = px-epyc/px-gpu, and `px-nas`). getGuests() must pick
+   * one per id so consumers keyed on vmid get a single answer; this is how a caller asks
+   * whether that pick was a CHOICE rather than a fact.
+   */
+  guestsForVmid(vmid) {
+    const out = [];
+    for (const c of this.clients) {
+      for (const g of c.getGuests() || []) {
+        if (String(g.vmid) === String(vmid)) out.push({ ...g, endpoint: c.endpointName });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Every vmid that exists on more than one endpoint, with all its candidates.
+   *
+   * Exists because the collision warning was written to a LOG — 1,516 times in 30 days,
+   * unread, with the remedy spelled out in the line itself. A condition worth warning about
+   * needs a consumer, so it is surfaced in the DATA where a caller can act on it.
+   */
+  getCollisions() {
+    const byId = new Map();
+    for (const c of this.clients) {
+      for (const g of c.getGuests() || []) {
+        const key = String(g.vmid);
+        if (!byId.has(key)) byId.set(key, []);
+        byId.get(key).push({ endpoint: c.endpointName, node: g.node, name: g.name,
+                             status: g.status, type: g.type });
+      }
+    }
+    const out = [];
+    for (const [vmid, candidates] of byId) {
+      if (candidates.length > 1) out.push({ vmid: Number(vmid), candidates });
+    }
+    return out.sort((a, b) => a.vmid - b.vmid);
+  }
+
   clientForVmid(vmid) {
     const g = this.getGuests().find(x => String(x.vmid) === String(vmid));
     return g ? this.clientForNode(g.node) : this.primary;
@@ -167,6 +209,11 @@ export class MultiPveApi {
         + `using ${winner.endpoint}/${winner.node}, hiding ${loser.endpoint}/${loser.node}. `
         + `Consumers key on vmid, so resolve this duplicate.`);
 
+      // Stamp the survivor. A consumer reading the merged list otherwise has no way to know
+      // this entry won a coin toss against another real guest — and the tiebreak is
+      // running-beats-stopped, so it can FLIP when an unrelated guest changes power state.
+      winner.vmid_collision = true;
+      winner.shadowed = { endpoint: loser.endpoint, node: loser.node, name: loser.name, status: loser.status };
       byId.set(g.vmid, winner);
     }
     return Array.from(byId.values());

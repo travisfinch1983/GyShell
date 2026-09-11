@@ -112,11 +112,22 @@ export function createClusterRouter({ pveApi, gpuMonitor, hookscriptDeploy, sshE
 
   /** GET /guests — All guests with node/cluster metadata (cached, refreshed on timer) */
   router.get('/guests', (req, res) => {
+    // `collisions` is reported alongside the list rather than left in a log line. The
+    // merged list can only ever show ONE guest per vmid, so without this a caller has no
+    // way to learn that five px-epyc guests are missing from it entirely — the list looks
+    // complete, which is precisely why the condition went unnoticed for weeks.
+    const collisions = pveApi.getCollisions ? pveApi.getCollisions() : [];
     res.json({
       guests: pveApi.getGuests(),
       nodes: pveApi.cachedNodes,
       cluster: pveApi.cachedCluster,
       lastRefresh: pveApi.lastRefresh,
+      collisions,
+      ...(collisions.length ? {
+        collisions_note: `${collisions.length} vmid(s) exist on more than one endpoint; `
+          + 'each is represented here by one guest and the other is hidden. '
+          + 'Power actions on these require ?node=<node>.',
+      } : {}),
     });
   });
 
@@ -420,8 +431,37 @@ export function createClusterRouter({ pveApi, gpuMonitor, hookscriptDeploy, sshE
         return res.status(400).json({ error: `Invalid action: ${action}` });
       }
 
-      const guest = pveApi.getGuests().find(g => g.vmid === vmid);
-      if (!guest) return res.status(404).json({ error: 'Guest not found' });
+      // 🛑 A VMID DOES NOT IDENTIFY A GUEST HERE. Two SEPARATE Proxmox endpoints are
+      // polled, and vmids are only unique within one cluster — six ids currently exist on
+      // both. getGuests() resolves each to a single winner with running-beats-stopped, so
+      // a vmid-only power action lands on whichever guest happens to be running: today
+      // POST /guests/113/stop stops px-epyc/docker, and if Home Assistant is started the
+      // SAME request stops px-nas/ha instead. The destination changes because an unrelated
+      // guest changed power state, which is not something a caller can be expected to know.
+      //
+      // So: refuse an ambiguous vmid, and name both candidates. `?node=` disambiguates —
+      // which also makes the shadowed guest reachable at all, since it is otherwise absent
+      // from every list this API returns.
+      const wantNode = String(req.query.node || '').trim();
+      const candidates = pveApi.guestsForVmid ? pveApi.guestsForVmid(vmid) : [];
+      if (candidates.length > 1 && !wantNode) {
+        return res.status(409).json({
+          error: `VMID ${vmid} exists on more than one endpoint — refusing to guess which to ${action}`,
+          candidates: candidates.map(c => ({ endpoint: c.endpoint, node: c.node, name: c.name, status: c.status })),
+          hint: `retry with ?node=<node> to name the one you mean, e.g. ?node=${candidates[0].node}`,
+        });
+      }
+
+      const guest = wantNode
+        ? candidates.find(g => g.node === wantNode)
+        : pveApi.getGuests().find(g => g.vmid === vmid);
+      if (!guest) {
+        return res.status(404).json({
+          error: wantNode ? `No guest ${vmid} on node ${wantNode}` : 'Guest not found',
+          ...(wantNode && candidates.length
+            ? { available: candidates.map(c => c.node) } : {}),
+        });
+      }
 
       const result = await pveApi.guestAction(guest.node, guest.type, vmid, action);
 
