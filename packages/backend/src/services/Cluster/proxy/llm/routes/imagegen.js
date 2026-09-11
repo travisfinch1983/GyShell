@@ -1503,6 +1503,15 @@ export function createImagegenRouter(config) {
   const POSE_FILE = path.join(POSE_DIR, 'poses.json');
   const POSE_IMAGES = path.join(POSE_DIR, 'pose_images');
   const POSE_W = 224, POSE_H = 284;   // every shipped thumbnail is exactly this
+  // 🛑 CONTAIN, NOT COVER. A pose reference is only useful if the whole body is in frame,
+  // and source references here range from 0.34 to 2.11 aspect ratio against a 0.79 tile.
+  // `cover` fills the tile by CROPPING, so a tall standing shot lost its head and feet and
+  // a wide crawling shot lost its sides — the pose was cut out of the very thumbnail whose
+  // job is to show it. `contain` letterboxes instead: every pose stays whole, and the tiles
+  // stay a uniform size, which the canvas gallery's fixed grid needs.
+  // Transparent background rather than a colour, so the bars take the node's own backdrop
+  // instead of stamping a grey block that looks like part of the image.
+  const POSE_FIT = { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } };
 
   function loadPoses() {
     return JSON.parse(readFileSync(POSE_FILE, 'utf8'));
@@ -1592,14 +1601,15 @@ export function createImagegenRouter(config) {
       // Normalised to the exact size every shipped thumbnail uses, so the canvas gallery
       // lays out uniformly instead of one tile being a different shape.
       const out = await sharp(buf).rotate()
-        .resize(POSE_W, POSE_H, { fit: 'cover', position: 'attention' })
+        .resize(POSE_W, POSE_H, POSE_FIT)
         .webp({ quality: 82 }).toBuffer();
       mkdirSync(POSE_IMAGES, { recursive: true });
       writeFileSync(path.join(POSE_IMAGES, file), out);
       try { chmodSync(path.join(POSE_IMAGES, file), 0o664); } catch { /* not owner */ }
     } catch (e) { return res.status(400).json({ error: 'could not read that image: ' + String(e.message || e) }); }
 
-    const pose = { id, index: n, category, view, name, prompt, image: file };
+    const pose = { id, index: n, category, view, name, prompt, image: file,
+                   ...(b.source_path ? { source: String(b.source_path) } : {}) };
     poses.push(pose);
     poses.sort((a, c) => (a.index || 0) - (c.index || 0));
     try { savePoses(poses); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
@@ -1656,14 +1666,17 @@ export function createImagegenRouter(config) {
       const out = `${id}.webp`;
       try {
         const buf = await sharp(readFileSync(src)).rotate()
-          .resize(POSE_W, POSE_H, { fit: 'cover', position: 'attention' })
+          .resize(POSE_W, POSE_H, POSE_FIT)
           .webp({ quality: 82 }).toBuffer();
         mkdirSync(POSE_IMAGES, { recursive: true });
         writeFileSync(path.join(POSE_IMAGES, out), buf);
         try { chmodSync(path.join(POSE_IMAGES, out), 0o664); } catch { /* not owner */ }
       } catch (e) { skipped.push({ file: nm, why: 'image failed: ' + String(e.message || e) }); continue; }
 
-      const pose = { id, index: n, category, view, name, prompt, image: out };
+      // Record the source. Without it an import is irreversible: the stored file is the
+      // only copy and any resize mistake (as `cover` was) can never be undone in place.
+      const pose = { id, index: n, category, view, name, prompt, image: out,
+                     source: path.relative(BASE, src) };
       poses.push(pose);
       used.add(n); names.add(name);
       added.push({ file: nm, id, name, prompt });
