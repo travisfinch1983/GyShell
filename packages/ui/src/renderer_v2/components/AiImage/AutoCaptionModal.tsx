@@ -87,6 +87,12 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
   // Subject fields. The captioner's permanent half is now caption DISCIPLINE (consistency,
   // only what is visible, describe what varies); everything subject-specific is composed from
   // these. Persisted per folder like context, since they describe a SET, not a session.
+  // FULL PROMPT OVERRIDE. The fields below describe a SUBJECT within the built-in LoRA caption
+  // discipline; they cannot change the JOB. Captioning a folder for something other than LoRA
+  // training — posing references, shot lists, accessibility alt text — needs the discipline
+  // itself replaced, which is what this does. Empty = the LoRA path, unchanged.
+  const [instruction, setInstructionRaw] = useState(() => per('aig-cap-instruction:'))
+  const setInstruction = (v: string) => { setInstructionRaw(v); setPer('aig-cap-instruction:', v) }
   const [naming, setNamingRaw] = useState(() => per('aig-cap-naming:'))
   const setNaming = (v: string) => { setNamingRaw(v); setPer('aig-cap-naming:', v) }
   const [emphasize, setEmphasizeRaw] = useState(() => per('aig-cap-emph:'))
@@ -194,6 +200,7 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
 
     // `avoid` defaults to the trigger backend-side, so the phrase is stated
     // once (by the prepend) instead of twice.
+    if (isVlm && instruction.trim()) body.instruction = instruction.trim()
     if (isVlm && context.trim()) body.context = context.trim()
     if (isVlm && naming.trim()) body.naming = naming.trim()
     if (isVlm && emphasize.trim()) body.emphasize = emphasize.trim()
@@ -372,6 +379,26 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
                 </div>
               </>
             )}
+            <div className={styles.acSection}>Custom instruction — replaces the LoRA prompt</div>
+            <textarea
+              className={styles.input}
+              style={{ width: '100%', minHeight: 72, resize: 'vertical' }}
+              placeholder={'leave EMPTY for normal LoRA training captions.\n\nFill this in to caption for something else entirely, e.g. "Describe the SUBJECT\'S POSE for use as a ComfyUI posing reference: body position, limb placement, weight distribution, head and gaze direction, and camera angle. Ignore clothing, styling and setting."'}
+              value={instruction}
+              disabled={running}
+              onChange={(e) => setInstruction(e.target.value)}
+            />
+            <div className={styles.acHint}>
+              {instruction.trim()
+                ? <><strong>Override active.</strong> Your text is the whole prompt. The LoRA caption
+                  discipline, the one-sentence rule and the size-suppression line are all dropped —
+                  only &ldquo;output the caption only, no preamble&rdquo; is kept. The fields below still
+                  apply if filled, so clear any that do not suit this job.</>
+                : <>Empty, so the built-in LoRA caption discipline is used and the fields below
+                  describe the subject within it. Fill this in when the folder is not for LoRA
+                  training — the fields below cannot change the job, only the subject.</>}
+            </div>
+
             <div className={styles.acSection}>Set context</div>
             <textarea
               className={styles.input}

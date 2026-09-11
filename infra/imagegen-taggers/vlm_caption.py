@@ -64,7 +64,12 @@ UNIVERSAL_DISCIPLINE = (
 # Split OUT of the discipline so it can be the LAST thing the model reads. A few-shot exemplar
 # wants recency to work, and the composed subject fields sit between the two -- so the output
 # rule has to be appended after them rather than living at the tail of the discipline string.
+# Split in two. "No preamble, no reasoning" is right for ANY captioning job — nobody wants
+# "Sure! Here's a caption:" in a sidecar. The SINGLE-SENTENCE constraint is LoRA-specific and
+# actively wrong for other uses: a posing reference wants structure, not one packed sentence.
+# Forcing both unconditionally is why a custom --instruction still produced LoRA-shaped output.
 OUTPUT_RULE = "Output the single sentence only \u2014 no preamble, no reasoning."
+OUTPUT_RULE_FREE = "Output the caption only \u2014 no preamble, no reasoning."
 
 # The old garment-specific skeleton, kept as an OPT-IN preset (--preset garment). It is a fine
 # instruction for a fabric set and a bad one for everything else; it stopped being the default
@@ -85,7 +90,11 @@ def compose_instruction(a):
     An explicit --instruction still replaces the discipline outright: it is the escape hatch
     for a set that needs something this composition cannot express.
     """
-    if a.instruction.strip():
+    # An explicit --instruction means the caller owns the prompt. The LoRA-shaped tails below
+    # (size suppression, single-sentence) are then NOT appended: leaving them on is what made
+    # "caption these as posing references" still come back as one-sentence training captions.
+    free = bool(a.instruction.strip())
+    if free:
         base = a.instruction.strip()
     else:
         base = UNIVERSAL_DISCIPLINE
@@ -116,7 +125,9 @@ def compose_instruction(a):
     if mode == "state" and a.size_word.strip():
         parts.append("Every image here is %s; if you refer to size, say '%s' and nothing else."
                      % (a.size_word.strip(), a.size_word.strip()))
-    else:
+    elif not free:
+        # Only suppress size for the LoRA path. Under a custom instruction the caller may well
+        # WANT size described, and an unconditional "do not mention size" quietly overrides them.
         parts.append("Do not mention or estimate size; it is labelled separately.")
     if a.emphasize.strip():
         parts.append("Priority for this set: %s" % sentence(a.emphasize))
@@ -126,7 +137,7 @@ def compose_instruction(a):
     # separately, and an exemplar showing it would teach the model to write it twice.
     if a.example.strip():
         parts.append('Follow the EXACT format of this example: "%s"' % a.example.strip())
-    parts.append(OUTPUT_RULE)
+    parts.append(OUTPUT_RULE_FREE if free else OUTPUT_RULE)
     return "\n\n".join(parts)
 
 
