@@ -305,8 +305,26 @@ function loadGpuAssignments() {
  * @param {object|null} gpuAssignments - contents of data/gpu-assignments.json
  * @param {object|null} old - existing entry (for preserving userOverrides + createdAt)
  */
+/**
+ * Inventory id for a guest.
+ *
+ * `pve-<vmid>` was the primary key, and a vmid is NOT unique across two separate Proxmox
+ * endpoints — so five px-epyc guests had no inventory record at all, and pve-113 described
+ * px-epyc/docker while px-nas/ha had none. Worse, the survivor is chosen by running-beats-
+ * stopped, so the SAME id could later be rewritten to describe a DIFFERENT container.
+ *
+ * Only an AMBIGUOUS vmid takes the qualified form. That is deliberate: the guests whose
+ * number is unique keep the id they already have, so their inventory entries and their RAG
+ * vectors survive untouched, and only the genuinely-colliding numbers migrate. The scan
+ * already deletes pve-scan entries whose id is no longer produced, so the stale pve-100..113
+ * records and their vectors are cleaned up on the next pass with no bespoke migration.
+ */
+function guestEntryId(g) {
+  return g.vmid_ambiguous ? `pve-${g.endpoint}-${g.vmid}` : `pve-${g.vmid}`;
+}
+
 function buildEntryFromGuest(g, config, gpuAssignments, old) {
-  const id = `pve-${g.vmid}`;
+  const id = guestEntryId(g);
   const entry = {
     id,
     type: g.type === 'qemu' ? 'vm' : 'lxc',
@@ -356,7 +374,7 @@ async function performScan() {
 
     // Process guests
     for (const g of guests) {
-      const id = `pve-${g.vmid}`;
+      const id = guestEntryId(g);
       seenIds.add(id);
       const config = pveApiRef.getGuestConfigCached(g.vmid) || {};
       const entry = buildEntryFromGuest(g, config, gpuAssignments, existing.get(id));
@@ -607,7 +625,7 @@ export function createInventoryRouter(pveApi) {
 
     if (old.source === 'pve-scan') {
       if (!pveApiRef) return res.status(500).json({ error: 'pveApi not available' });
-      const guest = pveApiRef.getGuests().find(g => `pve-${g.vmid}` === old.id);
+      const guest = pveApiRef.getGuests().find(g => guestEntryId(g) === old.id);
       if (!guest) return res.status(410).json({ error: 'Guest no longer present in PVE — it may have been deleted. Use the full scan to reconcile.' });
       const config = pveApiRef.getGuestConfigCached(guest.vmid) || {};
       entry = buildEntryFromGuest(guest, config, loadGpuAssignments(), old);

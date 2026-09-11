@@ -176,9 +176,21 @@ export class MultiPveApi {
   getGuests() {
     const merged = [];
     for (const c of this.clients) {
-      for (const g of c.getGuests() || []) merged.push({ ...g, endpoint: c.endpointName });
+      // `gid` is the COMPOSITE identity: a vmid alone does not identify a guest across two
+      // separate Proxmox endpoints, and treating it as one is what hid five px-epyc guests.
+      for (const g of c.getGuests() || []) {
+        merged.push({ ...g, endpoint: c.endpointName, gid: `${c.endpointName}:${g.vmid}` });
+      }
     }
-    return this.resolveCollisions(merged).sort((a, b) => a.vmid - b.vmid);
+    const kept = this.resolveCollisions(merged);
+    // Flag every guest whose NUMBER is shared, on both sides — not just a survivor. A caller
+    // keying on vmid needs to know the number is not an identity here, whichever one it holds.
+    const counts = new Map();
+    for (const g of kept) counts.set(g.vmid, (counts.get(g.vmid) || 0) + 1);
+    for (const g of kept) if (counts.get(g.vmid) > 1) g.vmid_ambiguous = true;
+    // Sorted by (vmid, endpoint) so a consumer still doing .find(g => g.vmid === x) gets a
+    // STABLE answer rather than one that depends on client iteration order.
+    return kept.sort((a, b) => (a.vmid - b.vmid) || String(a.endpoint).localeCompare(String(b.endpoint)));
   }
 
   /**
@@ -191,32 +203,39 @@ export class MultiPveApi {
    * matches what an operator means. Every collision is logged once so the duplicate
    * gets cleaned up rather than silently tolerated forever.
    */
+  /**
+   * Collapse only genuine DUPLICATES — not distinct guests that share a number.
+   *
+   * The original policy deduped on vmid alone with running-beats-stopped. That is right for
+   * the case it was written for: a stale STOPPED copy of the SAME guest left behind on
+   * px-micronode after a move, where both records describe one container. It is wrong across
+   * two SEPARATE Proxmox endpoints, where vmids are only unique within a cluster — there it
+   * threw away five real px-epyc guests (sunshine, radarr, paperless-ngx, redis, coder)
+   * because px-nas happened to use the same numbers.
+   *
+   * The discriminator is the NAME. Same vmid AND same name is one guest seen twice; same
+   * vmid with a DIFFERENT name is two guests that merely collided on a number, and both are
+   * kept. That preserves the original intent exactly while removing the harm.
+   */
   resolveCollisions(guests) {
-    const byId = new Map();
+    const byIdentity = new Map();
     for (const g of guests) {
-      const prev = byId.get(g.vmid);
-      if (!prev) { byId.set(g.vmid, g); continue; }
+      const key = `${g.vmid}::${String(g.name || '').toLowerCase()}`;
+      const prev = byIdentity.get(key);
+      if (!prev) { byIdentity.set(key, g); continue; }
 
-      const prevRunning = prev.status === 'running';
-      const nextRunning = g.status === 'running';
-      const winner = (!prevRunning && nextRunning) ? g : prev;
+      // Same number AND same name: one guest, two records. Prefer the running one — a
+      // stopped leftover on the node it moved off is the stale copy.
+      const winner = (prev.status !== 'running' && g.status === 'running') ? g : prev;
       const loser = winner === g ? prev : g;
-
-      this._warnOnce(`vmid:${g.vmid}`,
-        `[multi-pve] VMID ${g.vmid} exists on BOTH `
-        + `${prev.endpoint}/${prev.node} (${prev.name}, ${prev.status}) and `
-        + `${g.endpoint}/${g.node} (${g.name}, ${g.status}) — `
-        + `using ${winner.endpoint}/${winner.node}, hiding ${loser.endpoint}/${loser.node}. `
-        + `Consumers key on vmid, so resolve this duplicate.`);
-
-      // Stamp the survivor. A consumer reading the merged list otherwise has no way to know
-      // this entry won a coin toss against another real guest — and the tiebreak is
-      // running-beats-stopped, so it can FLIP when an unrelated guest changes power state.
-      winner.vmid_collision = true;
-      winner.shadowed = { endpoint: loser.endpoint, node: loser.node, name: loser.name, status: loser.status };
-      byId.set(g.vmid, winner);
+      this._warnOnce(`dup:${key}`,
+        `[multi-pve] guest ${g.vmid}/${g.name} appears on both `
+        + `${prev.endpoint}/${prev.node} (${prev.status}) and ${g.endpoint}/${g.node} (${g.status}) `
+        + `— same name, treating as ONE guest and using ${winner.endpoint}/${winner.node}.`);
+      winner.duplicate_of = { endpoint: loser.endpoint, node: loser.node, status: loser.status };
+      byIdentity.set(key, winner);
     }
-    return Array.from(byId.values());
+    return Array.from(byIdentity.values());
   }
 
   getGuestConfigCached(vmid) {
