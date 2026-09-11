@@ -1606,6 +1606,77 @@ export function createImagegenRouter(config) {
     res.json({ ok: true, pose: { ...pose, rel: `pose_library/pose_images/${file}` }, restart_required: true });
   });
 
+  // ---- Add a SELECTION of browsed images as poses, captions becoming the prompts. ----
+  // The pose-only captioner already produces exactly the text a pose entry wants
+  // ("low angle, rear view, bent over, legs apart"), so a captioned reference folder is
+  // a pose library that has not been imported yet. This is that import.
+  router.post('/poses/add-from-images', express.json(), async (req, res) => {
+    const b = req.body || {};
+    let dir;
+    try { dir = safeResolve(b.path); } catch { return res.status(400).json({ error: 'bad path' }); }
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'no such folder' });
+    const files = Array.isArray(b.files) ? b.files : [];
+    if (!files.length) return res.status(400).json({ error: 'no files' });
+    const ext = b.caption_ext === 'txt' ? 'txt' : 'caption';
+    const category = String(b.category || '').trim();
+    const view = String(b.view || '').trim();
+    const dryRun = !!b.dry_run;
+
+    let poses;
+    try { poses = loadPoses(); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    const used = new Set(poses.map((p) => parseInt(String(p.id).replace(/\D/g, ''), 10)).filter(Number.isFinite));
+    const names = new Set(poses.map((p) => p.name));
+    const title = (w) => w.replace(/\b\w/g, (c) => c.toUpperCase());
+
+    const added = []; const skipped = [];
+    for (const raw of files) {
+      const nm = resolveImageName(dir, String(raw || ''));
+      if (!nm) { skipped.push({ file: String(raw), why: 'not an image in this folder' }); continue; }
+      const src = path.join(dir, nm);
+      const capPath = src.replace(/\.[^/.]+$/, '') + '.' + ext;
+      let prompt = '';
+      try { prompt = readFileSync(capPath, 'utf8').trim(); } catch { /* no sidecar */ }
+      // A pose with no prompt is useless — the node would emit an empty string — so an
+      // uncaptioned image is REPORTED rather than imported as a blank entry that looks
+      // fine in the grid and silently contributes nothing.
+      if (!prompt) { skipped.push({ file: nm, why: `no .${ext} caption` }); continue; }
+
+      let n = 1; while (used.has(n)) n += 1;
+      const num = String(n).padStart(3, '0');
+      const name = [num, title(view || 'custom'), title(category || 'pose')].join(' | ');
+      if (names.has(name)) { skipped.push({ file: nm, why: `name "${name}" already exists` }); continue; }
+
+      if (dryRun) {
+        added.push({ file: nm, id: `pose_${num}`, name, prompt });
+        used.add(n); names.add(name);
+        continue;
+      }
+
+      const id = `pose_${num}`;
+      const out = `${id}.webp`;
+      try {
+        const buf = await sharp(readFileSync(src)).rotate()
+          .resize(POSE_W, POSE_H, { fit: 'cover', position: 'attention' })
+          .webp({ quality: 82 }).toBuffer();
+        mkdirSync(POSE_IMAGES, { recursive: true });
+        writeFileSync(path.join(POSE_IMAGES, out), buf);
+        try { chmodSync(path.join(POSE_IMAGES, out), 0o664); } catch { /* not owner */ }
+      } catch (e) { skipped.push({ file: nm, why: 'image failed: ' + String(e.message || e) }); continue; }
+
+      const pose = { id, index: n, category, view, name, prompt, image: out };
+      poses.push(pose);
+      used.add(n); names.add(name);
+      added.push({ file: nm, id, name, prompt });
+    }
+
+    if (!dryRun && added.length) {
+      poses.sort((a, c) => (a.index || 0) - (c.index || 0));
+      try { savePoses(poses); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    }
+    res.json({ ok: true, dry_run: dryRun, added: added.length, skipped: skipped.length,
+               added_poses: added, skipped_files: skipped, restart_required: !dryRun && added.length > 0 });
+  });
+
   router.post('/poses/delete', express.json(), (req, res) => {
     const id = String((req.body || {}).id || '');
     if (!id) return res.status(400).json({ error: 'id required' });

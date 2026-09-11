@@ -8,6 +8,7 @@ import { CropEditor } from './CropEditor'
 import { AutoCaptionModal } from './AutoCaptionModal'
 import { BlanketTagModal } from './BlanketTagModal'
 import { FindReplaceModal } from './FindReplaceModal'
+import { AddToPoseLibraryModal } from './AddToPoseLibraryModal'
 import { CorrectCaptionsModal } from './CorrectCaptionsModal'
 import styles from './TrainingImages.module.scss'
 
@@ -466,6 +467,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   const [autoCap, setAutoCap] = useState(false)
   const [blanket, setBlanket] = useState(false)
   const [findRep, setFindRep] = useState(false)
+  const [poseAdd, setPoseAdd] = useState(false)
   const [correct, setCorrect] = useState(false)
   const [dsAdd, setDsAdd] = useState(false)
   const [batchAdd, setBatchAdd] = useState(false)
@@ -721,6 +723,9 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           <button className={styles.btn} onClick={() => setPicker('move')}>Move…</button>
           <button className={styles.btn} onClick={() => setPicker('copy')}>Copy…</button>
           <button className={styles.btn} title="Copy the selection + caption sidecars into a training batch assembled from many sets" onClick={() => setBatchAdd(true)}>Add to batch…</button>
+          <button className={styles.btn}
+                  title="Add the selected images to the ComfyUI pose library, using each image's caption as the pose prompt"
+                  onClick={() => setPoseAdd(true)}>Add to poses…</button>
           <button className={styles.btn} title="Rename the selection to <name>-1..N in display order — sidecars and ratings follow" onClick={() => void doRenameFiles()}>Rename…</button>
           {/* Exactly one image selected: pin it as the picture the PARENT listing shows for
               this folder. Auto-pick otherwise takes whichever file sorts first, which is
@@ -874,6 +879,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
       {blanket && <BlanketTagModal files={[...store.selected]} onClose={() => setBlanket(false)} onDone={() => void store.browse(store.cwd)} />}
       {/* files=[] means folder scope, which is exactly what an empty selection should mean. */}
       {findRep && <FindReplaceModal files={[...store.selected]} onClose={() => setFindRep(false)} onDone={() => void store.browse(store.cwd)} />}
+      {poseAdd && <AddToPoseLibraryModal files={[...store.selected]} onClose={() => setPoseAdd(false)} onDone={() => { /* library changed; nothing in THIS panel to refresh */ }} />}
       {correct && <CorrectCaptionsModal files={[...store.selected]} onClose={() => setCorrect(false)} onDone={() => void store.browse(store.cwd)} />}
       {batchAdd && <AddToBatchModal kind="batch" files={[...store.selected]} onClose={() => setBatchAdd(false)} />}
       {subMove && <SubsectionModal onClose={() => setSubMove(false)} />}
