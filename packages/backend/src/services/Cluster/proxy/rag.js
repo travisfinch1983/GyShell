@@ -22,8 +22,17 @@ import { tmpdir } from 'node:os'
 // Also strips unpaired surrogates ALREADY present in a malformed source file, which fail the
 // same way with no truncation involved, and coerces null/undefined instead of throwing on .length.
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
-const embedSafeText = (text, max = 5000) =>
-  String(text ?? '').slice(0, max).replace(LONE_SURROGATE, '');
+// Sanitise WITHOUT truncating — for the stored point payload, which is never sliced and so
+// can only carry a lone surrogate that was already in the source file. Qdrant's JSON parser
+// REJECTS those ("lone leading surrogate in hex escape"), while weaviate and chromadb accept
+// them — so an unsanitised payload makes qdrant silently drop a batch the others keep, and the
+// backends diverge by exactly that much. Observed 8 times on 2026-09-16, qdrant-only.
+// Deliberately NOT capped: the payload is the text we serve back, and truncating it here to the
+// embedding limit would silently shorten stored content.
+const stripLoneSurrogates = (text) => String(text ?? '').replace(LONE_SURROGATE, '');
+
+// Truncate FIRST, then strip — truncation is what creates the dangling half.
+const embedSafeText = (text, max = 5000) => stripLoneSurrogates(String(text ?? '').slice(0, max));
 
 // Document extractors are optional — lazy + graceful so codebase-RAG never breaks if they're absent.
 let pdfParse, mammoth, XLSX
@@ -726,7 +735,7 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
           for (const chunk of chunks) {
             batchChunks.push({
               id: `${colName}::${chunk.filePath}::${chunk.chunkIndex || 0}`,
-              text: chunk.text,
+              text: stripLoneSurrogates(chunk.text),
               metadata: { file_path: chunk.filePath, language: chunk.language, repo_url: url, collection: colName },
             });
           }
@@ -772,7 +781,11 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
           const points = embedBatch.map((c, idx) => ({
             id: c.id,
             vector: embeddings[idx],
-            metadata: { text: c.text, ...c.metadata },
+            // Sanitise AT THE SERIALISATION BOUNDARY as well as at chunk construction.
+            // c.text is already clean on this path, but qdrant's JSON parser is what
+            // actually rejects a lone surrogate, so the invariant belongs where the
+            // stringify happens — not only in every producer that feeds it.
+            metadata: { text: stripLoneSurrogates(c.text), ...c.metadata },
           }));
 
           const upsertResp = await fetch(`http://127.0.0.1:${selfPort}/api/proxy/vector/all/collections/${colName}/upsert`, {
@@ -1249,7 +1262,7 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
             const points = batch.map((c, idx) => ({
               id: `${colName}::${c.file_name}::${c.page_number != null ? 'p' + c.page_number : 'c'}::${c.chunk_index}`,
               vector: embeddings[idx],
-              metadata: { text: c.text, file_name: c.file_name, file_type: c.file_type, page_number: c.page_number || null, chunk_index: c.chunk_index, collection: colName },
+              metadata: { text: stripLoneSurrogates(c.text), file_name: c.file_name, file_type: c.file_type, page_number: c.page_number || null, chunk_index: c.chunk_index, collection: colName },
             }));
 
             await fetch(`http://127.0.0.1:${port}/api/proxy/vector/all/collections/${colName}/upsert`, {
