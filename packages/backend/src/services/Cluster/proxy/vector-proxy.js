@@ -19,6 +19,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import * as fsForState from 'fs';
 import { loadJsonState } from './lib/notify.js';
+import { safeStringify } from './lib/text-safety.js';
 import { createHash } from 'crypto';
 
 const CONFIG_FILE = join(process.env.AILAB_PROXY_DATA_DIR || join(process.cwd(), 'data'), 'vector-db-config.json');
@@ -397,7 +398,7 @@ export function createVectorProxyRouter() {
           const qResp = await fetch(`${url}/collections/${qUpCol}/points?wait=true`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+            body: safeStringify({
               points: points.map((p) => ({
                 id: typeof p.id === 'number' ? p.id : stableHash(String(p.id)),
                 vector: p.vector,
@@ -419,13 +420,13 @@ export function createVectorProxyRouter() {
           return await fetch(`${url}/v2/vectordb/entities/upsert`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+            body: safeStringify({
               collectionName: collection,
               data: points.map(p => ({
                 vector: p.vector,
                 text: p.metadata?.text || '',
                 _original_id: String(p.id || ''),
-                _metadata_json: JSON.stringify(p.metadata || {}),
+                _metadata_json: safeStringify(p.metadata || {}),
               })),
             }),
             signal: AbortSignal.timeout(30000),
@@ -445,14 +446,14 @@ export function createVectorProxyRouter() {
           const wvResp = await fetch(`${url}/v1/batch/objects`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+            body: safeStringify({
               objects: points.map(p => ({
                 id: deterministicUUID(String(p.id || '')),
                 class: wvClass,
                 vector: p.vector,
                 properties: {
                   text: p.metadata?.text || '',
-                  metadata: JSON.stringify(p.metadata || {}),
+                  metadata: safeStringify(p.metadata || {}),
                   doc_id: String(p.id || ''),
                 },
               })),
@@ -478,7 +479,7 @@ export function createVectorProxyRouter() {
           return await fetch(`${url}/api/v2/tenants/default_tenant/databases/default_database/collections/${col.id}/upsert`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+            body: safeStringify({
               ids: points.map((p, i) => String(p.id || `doc-${i}`)),
               embeddings: points.map(p => p.vector),
               metadatas: points.map(p => p.metadata || {}),
