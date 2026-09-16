@@ -11,6 +11,20 @@ import { extname, join, resolve as pathResolve, dirname, basename } from 'node:p
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
+// ─── Embed input safety ──────────────────────────────────────────────────────
+// JS string slicing works on UTF-16 CODE UNITS, so truncating at a fixed length can cut a
+// surrogate pair in half and leave a LONE surrogate behind. That string serialises into JSON
+// fine and passes the embed API's type validation, then dies inside the tokenizer with
+// "TextEncodeInput must be Union[TextInputSequence, Tuple[InputSequence, InputSequence]]".
+// It is deterministic per chunk, so every retry fails identically — and because the vector
+// delete happens BEFORE the re-index, the collection is left EMPTY rather than stale.
+// Reproduced exactly (2026-09-16): 4999 chars + one emoji, sliced to 5000, is a guaranteed 400.
+// Also strips unpaired surrogates ALREADY present in a malformed source file, which fail the
+// same way with no truncation involved, and coerces null/undefined instead of throwing on .length.
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+const embedSafeText = (text, max = 5000) =>
+  String(text ?? '').slice(0, max).replace(LONE_SURROGATE, '');
+
 // Document extractors are optional — lazy + graceful so codebase-RAG never breaks if they're absent.
 let pdfParse, mammoth, XLSX
 try { pdfParse = (await import('pdf-parse')).default } catch { pdfParse = async () => { throw new Error('pdf-parse not installed') } }
@@ -728,7 +742,7 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
         const embedBatch = batchChunks.slice(j, j + EMBED_BATCH);
         try {
           // Truncate any chunks that might exceed token limit (safety net)
-          const truncatedTexts = embedBatch.map(c => c.text.length > 5000 ? c.text.slice(0, 5000) : c.text);
+          const truncatedTexts = embedBatch.map(c => embedSafeText(c.text));
           const embedResp = await fetch(`http://127.0.0.1:${selfPort}/api/proxy/embed/v1/embeddings`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1209,7 +1223,7 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
         for (let j = 0; j < fileChunks.length; j += EMBED_BATCH) {
           const batch = fileChunks.slice(j, j + EMBED_BATCH);
           try {
-            const truncated = batch.map(c => c.text.length > 5000 ? c.text.slice(0, 5000) : c.text);
+            const truncated = batch.map(c => embedSafeText(c.text));
             const embedResp = await fetch(`http://127.0.0.1:${port}/api/proxy/embed/v1/embeddings`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
