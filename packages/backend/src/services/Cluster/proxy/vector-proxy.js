@@ -370,10 +370,10 @@ export function createVectorProxyRouter() {
             .then(r => ({ db: db.name, ok: r.ok || r.status === 404 }));
         }
         default:
-          return { db: db.name, ok: false, error: `Unsupported type: ${db.type}` };
+          return { db: db.name, ok: false, count: 0, error: `Unsupported type: ${db.type}` };
       }
     } catch (e) {
-      return { db: db.name, ok: false, error: e.message };
+      return { db: db.name, ok: false, count: 0, error: e.message };
     }
   }
 
@@ -410,7 +410,9 @@ export function createVectorProxyRouter() {
             const errBody = await qResp.text().catch(() => '');
             console.warn(`[vector-all] Qdrant upsert error ${qResp.status}: ${errBody.slice(0, 200)}`);
           }
-          return { db: db.name, ok: qResp.ok, count: points.length };
+          // count = points actually STORED. Returning points.length on a rejected batch is how a
+          // failed upsert became an optimistic number all the way up to the run total.
+          return { db: db.name, ok: qResp.ok, count: qResp.ok ? points.length : 0 };
         }
 
         case 'milvus': {
@@ -427,7 +429,7 @@ export function createVectorProxyRouter() {
               })),
             }),
             signal: AbortSignal.timeout(30000),
-          }).then(r => ({ db: db.name, ok: r.ok, count: points.length }));
+          }).then(r => ({ db: db.name, ok: r.ok, count: r.ok ? points.length : 0 }));
         }
 
         case 'weaviate': {
@@ -457,7 +459,7 @@ export function createVectorProxyRouter() {
             }),
             signal: AbortSignal.timeout(30000),
           });
-          if (!wvResp.ok) return { db: db.name, ok: false, error: `HTTP ${wvResp.status}` };
+          if (!wvResp.ok) return { db: db.name, ok: false, count: 0, error: `HTTP ${wvResp.status}` };
           const wvResults = await wvResp.json();
           const wvFailed = (Array.isArray(wvResults) ? wvResults : []).filter(r => r.result?.status === 'FAILED');
           if (wvFailed.length) {
@@ -472,7 +474,7 @@ export function createVectorProxyRouter() {
           const listResp = await fetch(`${url}/api/v2/tenants/default_tenant/databases/default_database/collections`, { signal: AbortSignal.timeout(10000) });
           const cols = await listResp.json();
           const col = (Array.isArray(cols) ? cols : []).find(c => c.name === collection);
-          if (!col) return { db: db.name, ok: false, error: 'Collection not found' };
+          if (!col) return { db: db.name, ok: false, count: 0, error: 'Collection not found' };
           return await fetch(`${url}/api/v2/tenants/default_tenant/databases/default_database/collections/${col.id}/upsert`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -483,7 +485,7 @@ export function createVectorProxyRouter() {
               documents: points.map(p => p.metadata?.text || ''),
             }),
             signal: AbortSignal.timeout(30000),
-          }).then(r => ({ db: db.name, ok: r.ok, count: points.length }));
+          }).then(r => ({ db: db.name, ok: r.ok, count: r.ok ? points.length : 0 }));
         }
 
         default:
@@ -540,7 +542,13 @@ export function createVectorProxyRouter() {
 
     const dbs = getEligibleDbs();
     const results = await Promise.all(dbs.map(db => upsertInDb(db, collection, upsertPoints)));
-    res.json({ collection, count: upsertPoints.length, results });
+    // `count` stays SENT, for compatibility. `stored` is the conservative truth: the MINIMUM
+    // across backends that answered — one number over stores that genuinely diverge is a lie by
+    // construction, so if one is shown it must be the one that cannot be optimistic.
+    const answered = results.filter(r => typeof r.count === 'number');
+    const stored = answered.length ? Math.min(...answered.map(r => r.count)) : 0;
+    const failed = results.filter(r => !r.ok).map(r => r.db);
+    res.json({ collection, count: upsertPoints.length, stored, failed, results });
   });
 
   // GET /api/proxy/vector/all/collections — List collections from all eligible DBs

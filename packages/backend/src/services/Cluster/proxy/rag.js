@@ -794,8 +794,31 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
             body: JSON.stringify({ points }),
             signal: AbortSignal.timeout(60000),
           });
-          await upsertResp.text().catch(() => {}); // Consume response body to free memory
-          upsertedCount += embedBatch.length;
+          // Count what LANDED, not what was sent. The proxy returns per-backend { ok, count }
+          // plus a conservative `stored` (the MINIMUM across backends that answered). Discarding
+          // this body is how a batch rejected by TWO of three backends still counted as fully
+          // indexed — and upsertedCount is the number that becomes chunks_created, the run's
+          // headline total, and the checkpoint. The body is a few per-backend summaries, not the
+          // points, so reading it costs nothing the old comment was protecting against.
+          //
+          // A 4xx here is DETERMINISTIC: it fails identically on every retry, which is exactly the
+          // pathology that burned three automatic retries and left a collection empty on
+          // 2026-09-16. Record it and move on — never retry it.
+          let stored = embedBatch.length;
+          try {
+            const body = JSON.parse(await upsertResp.text());
+            if (typeof body?.stored === 'number') stored = body.stored;
+            const failedDbs = Array.isArray(body?.failed) ? body.failed : [];
+            if (failedDbs.length) {
+              const deterministic = upsertResp.status >= 400 && upsertResp.status < 500;
+              console.warn(`[rag] upsert PARTIAL: ${stored}/${embedBatch.length} stored, rejected by `
+                + `${failedDbs.join(', ')}${deterministic ? ' — 4xx, deterministic, not retried' : ''}`);
+            }
+          } catch {
+            // Unreadable body: fall back to the optimistic count rather than losing the batch from
+            // the tally entirely. Over-counting here is the lesser error than under-counting.
+          }
+          upsertedCount += stored;
 
         } catch (e) {
           if (e.message.includes('Embedding model')) throw e;
