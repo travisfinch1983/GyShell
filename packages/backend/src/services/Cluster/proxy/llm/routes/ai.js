@@ -1060,6 +1060,25 @@ export function createAiRouter(config, gpuMonitor, pveApi, sshService, hookscrip
         fi
       done
 
+      # A directory is a VARIANT directory when it directly contains a format-named child.
+      # Depth alone cannot tell: /models/Beholder/GGUF/Q8_0 has no variant level, and
+      # reading "GGUF" as the variant made the model disappear from the index entirely.
+      is_format_name() {
+        case "$1" in
+          GGUF|EXL2|EXL3|AWQ|GPTQ|MLX|ONNX|TensorRT|FP8|FP16|BF16|FP16-Safetensors|BF16-Safetensors|Safetensors|MMPROJ)
+            return 0 ;;
+          *) return 1 ;;
+        esac
+      }
+      has_format_child() {
+        local d="$1" c
+        for c in "$d"/*/; do
+          [ -d "$c" ] || continue
+          is_format_name "$(basename "$c")" && return 0
+        done
+        return 1
+      }
+
       # Helper: check if a directory contains real model files (not just empty scaffold)
       has_model_files() {
         local d="$1"
@@ -1069,9 +1088,28 @@ export function createAiRouter(config, gpuMonitor, pveApi, sshService, hookscrip
         \\) 2>/dev/null | head -1 | grep -q .
       }
 
-      find ${findPath} -mindepth ${familyFilter ? '1' : '2'} -maxdepth ${familyFilter ? '1' : '2'} -type d 2>/dev/null | sort | while read variant_dir; do
-        family=$(basename "$(dirname "$variant_dir")")
-        variant=$(basename "$variant_dir")
+      find ${findPath} -mindepth ${familyFilter ? '0' : '1'} -maxdepth 2 -type d 2>/dev/null | sort | while read variant_dir; do
+        # Only directories that actually hold formats are variants. This is what lets a
+        # family with no variant level (family/GGUF/quant) be indexed alongside the usual
+        # family/variant/GGUF/quant, without either being counted twice.
+        # A directory that is ITSELF format-named is a format dir, never a variant dir.
+        # Without this, /models/OCR-2/GGUF qualified because it holds a "BF16" quant and
+        # BF16 is also a format name — so the family indexed twice, once per layout.
+        is_format_name "$(basename "$variant_dir")" && continue
+        # ...or holds weights directly: the FALLBACK branch further down indexes
+        # family/variant layouts with no format subdirectory at all (e.g.
+        # Qwen3.8/27B-INT8-W8A16-MTP). Requiring a format child alone would have silently
+        # dropped every one of those.
+        has_format_child "$variant_dir" || has_model_files "$variant_dir" || continue
+        parent_dir=$(dirname "$variant_dir")
+        if [ "$parent_dir" = "/models" ]; then
+          # No variant level — the family directory holds the formats itself.
+          family=$(basename "$variant_dir")
+          variant="default"
+        else
+          family=$(basename "$parent_dir")
+          variant=$(basename "$variant_dir")
+        fi
         formats=""
         for fmt_dir in "$variant_dir"/*/; do
           [ -d "$fmt_dir" ] || continue
@@ -5392,26 +5430,31 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
 
       // Upload scripts to LXC via pct exec using base64 encoding
       // This avoids all shell quoting issues with heredocs through multiple shell layers
+      let stageParts = [];
       const dirs = new Set();
       for (const s of scripts) {
         const dir = s.remotePath.substring(0, s.remotePath.lastIndexOf('/'));
         dirs.add(dir);
       }
-      const mkdirCmd = `pct exec ${vmid} -- bash -c 'mkdir -p ${[...dirs].join(' ')}'`;
-      await sshService.exec(pveHostIp, mkdirCmd, { timeout: 15000 });
-
-      // Clear any previous state file so the install starts fresh
-      const clearStateCmd = `pct exec ${vmid} -- rm -f /tmp/proxlab-install/.state-${providerId}`;
-      await sshService.exec(pveHostIp, clearStateCmd, { timeout: 5000 }).catch(() => {});
-
-      // Upload each script via base64
+      // Staging is built into ONE script and run in ONE pct exec. `pct exec` costs ~0.8s
+      // per INVOCATION and is insensitive to payload size (measured: a 20 KB write takes the
+      // same 0.81s as `true`), so nine separate calls — mkdir, clear-state, one per install
+      // script, run.sh — were ~15s of pure overhead before the terminal could open. The UI
+      // waits on this response, which is why the install terminal took ~17s to appear.
+      // Deferred until run.sh has been built, a few lines below.
+      stageParts = [
+        'set -u',
+        `mkdir -p ${[...dirs].join(' ')}`,
+        `rm -f /tmp/proxlab-install/.state-${providerId}`,
+      ];
       for (const script of scripts) {
         const b64 = Buffer.from(script.content).toString('base64');
-        const uploadCmd = `pct exec ${vmid} -- bash -c 'echo ${b64} | base64 -d > ${script.remotePath} && chmod +x ${script.remotePath}'`;
-        const result = await sshService.exec(pveHostIp, uploadCmd, { timeout: 30000 });
-        if (result.code !== 0) {
-          return res.status(500).json({ error: `Failed to upload ${script.name}: ${result.stderr}` });
-        }
+        // Name the file in the failure marker so an error still says WHICH script broke,
+        // which the per-file loop used to give us for free.
+        stageParts.push(
+          `echo ${b64} | base64 -d > ${script.remotePath} || { echo "PROXLAB_STAGE_FAIL:${script.name}"; exit 1; }`,
+          `chmod +x ${script.remotePath}`,
+        );
       }
 
       // Load shared folder config for mount parent path
@@ -5455,10 +5498,26 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
       ].filter(Boolean).join('\n');
 
       const runB64 = Buffer.from(runScript).toString('base64');
-      const runUpload = `pct exec ${vmid} -- bash -c 'echo ${runB64} | base64 -d > /tmp/proxlab-install/run.sh && chmod +x /tmp/proxlab-install/run.sh'`;
-      const runResult = await sshService.exec(pveHostIp, runUpload, { timeout: 15000 });
-      if (runResult.code !== 0) {
-        return res.status(500).json({ error: `Failed to upload run.sh: ${runResult.stderr}` });
+      stageParts.push(
+        `echo ${runB64} | base64 -d > /tmp/proxlab-install/run.sh || { echo "PROXLAB_STAGE_FAIL:run.sh"; exit 1; }`,
+        'chmod +x /tmp/proxlab-install/run.sh',
+        'echo PROXLAB_STAGE_OK',
+      );
+
+      // THE single round-trip. The whole staging script is itself base64'd so none of the
+      // payloads' own quoting can collide with the pct exec / bash -c layers.
+      const stageB64 = Buffer.from(stageParts.join('\n')).toString('base64');
+      const stageCmd = `pct exec ${vmid} -- bash -c 'echo ${stageB64} | base64 -d | bash'`;
+      const stageResult = await sshService.exec(pveHostIp, stageCmd, { timeout: 120000 });
+      const stageOut = `${stageResult.stdout || ''}${stageResult.stderr || ''}`;
+      const failed = /PROXLAB_STAGE_FAIL:(\S+)/.exec(stageOut);
+      if (failed) {
+        return res.status(500).json({ error: `Failed to upload ${failed[1]}: ${stageResult.stderr || stageOut}` });
+      }
+      if (stageResult.code !== 0 || !stageOut.includes('PROXLAB_STAGE_OK')) {
+        // Never report success on a missing confirmation — a staged-but-empty /tmp would
+        // surface later as a confusing orchestrator failure instead of an upload failure.
+        return res.status(500).json({ error: `Install staging failed: ${stageResult.stderr || stageOut || `exit ${stageResult.code}`}` });
       }
 
       // Command for pct exec — clean, no quoting needed
@@ -6358,9 +6417,36 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
   }
 
   /** POST /hf/tree — Browse HuggingFace repo file tree */
+  /**
+   * Reduce anything that identifies a HuggingFace repo down to `owner/name`.
+   *
+   * Pasting the page URL is the natural thing to do, and nothing normalised it: the repo
+   * string was interpolated straight into `https://huggingface.co/${repo}/resolve/...`,
+   * producing https://huggingface.co/https://huggingface.co/owner/name/resolve/... and a
+   * bare `curl: (22) ... error: 404` with no indication of which URL failed.
+   * Reported 2026-09-16 on artsyww/KREA2REALVAE.
+   *
+   * Normalising HERE rather than at the URL-building site is deliberate. `repo` also feeds
+   * the small-file auto-include, the README backfill, the queue rows and the history — all
+   * of which 404'd independently in that same report. Fixing one interpolation would have
+   * left the others broken, which is how one invariant becomes four separate bugs.
+   */
+  function normalizeHfRepo(input) {
+    let s = String(input ?? '').trim();
+    if (!s) return s;
+    s = s.split(/[?#]/)[0];                                   // drop query/fragment
+    s = s.replace(/^https?:\/\/(?:www\.)?huggingface\.co\//i, '');  // full page URL
+    s = s.replace(/^\/+/, '');                                 // leading slashes
+    s = s.replace(/\/(?:tree|blob|resolve)\/[^/]+.*$/i, '');    // /tree/main, /blob/main/file
+    s = s.replace(/\.git$/i, '');                              // clone URL suffix
+    s = s.replace(/\/+$/, '');                                 // trailing slash
+    return s;
+  }
+
   router.post('/hf/tree', async (req, res) => {
     try {
-      const { repo, revision = 'main', token } = req.body;
+      const { repo: repoRaw, revision = 'main', token } = req.body;
+      const repo = normalizeHfRepo(repoRaw);
       if (!repo) return res.status(400).json({ error: 'repo is required' });
 
       // Use saved token if none provided in request
@@ -7026,12 +7112,13 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
   router.post('/hf/download', async (req, res) => {
     try {
       const {
-        repo, revision = 'main', files, node, token,
+        repo: repoRaw, revision = 'main', files, node, token,
         // Legacy fields
         family, variant, targetBase,
         // Smart routing fields
         category, destType, subfolder, preserveStructure,
       } = req.body;
+      const repo = normalizeHfRepo(repoRaw);
 
       // Resolve destination: smart routing takes precedence over legacy
       let base;
