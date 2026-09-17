@@ -5,6 +5,10 @@ import { makeAutoObservable, runInAction } from 'mobx'
 const BASE = '/api/imagegen'
 export const igThumb = (rel: string, v?: number) => `${BASE}/thumb?path=${encodeURIComponent(rel)}${v ? `&v=${v}` : ''}`
 export const igImage = (rel: string, bust?: number) => `${BASE}/image?path=${encodeURIComponent(rel)}${bust ? `&t=${bust}` : ''}`
+/** Range-streamed so the <video> element can actually seek. */
+export const igVideo = (rel: string) => `${BASE}/video?path=${encodeURIComponent(rel)}`
+/** ffmpeg poster frame, cached server-side beside the clip in a dot-dir. */
+export const igVthumb = (rel: string, v?: number) => `${BASE}/vthumb?path=${encodeURIComponent(rel)}${v ? `&v=${v}` : ''}`
 
 async function ig(path: string, opts?: { method?: string; body?: any }): Promise<any> {
   const r = await fetch(BASE + path, {
@@ -37,6 +41,9 @@ export interface IgImage {
   score: number | null; comment: string
   /** Subsection folder this image lives in ('' = the browsed folder itself). */
   dir?: string
+  /** A video rather than a still. Listed in the same grid because it lives in the same
+   *  folder and the point is to pull frames OUT of it into that folder. */
+  is_video?: boolean
 }
 
 /** Selection key: the same filename can exist in two subsections, so bare names collide. */
@@ -408,6 +415,11 @@ export class TrainingImagesStore {
   /** Move selected images into a <repeats>_<concept> subsection of the current batch. */
   async subsection(files: string[], name: string, repeats: number, sub = ''): Promise<any> {
     return ig('/subsection', { method: 'POST', body: { path: this.dirPath(sub), files, name, repeats } })
+  }
+
+  /** Save a frame grabbed from a <video> into <folder>/screenshots/. */
+  async saveScreenshot(rel: string, dataUrl: string, time: number): Promise<any> {
+    return ig('/screenshot', { method: 'POST', body: { path: rel, data: dataUrl, time } })
   }
 
   async setSubsectionRepeats(rel: string, repeats: number): Promise<any> {

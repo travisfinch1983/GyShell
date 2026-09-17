@@ -81,6 +81,19 @@ function isImage(name) {
   return IMG_EXT.has(path.extname(name).toLowerCase());
 }
 
+// Videos arrive here the same way images do — the Immich tag sync copies whatever carries a
+// watched tag, and 7,999 of them were already on disk and INVISIBLE in the browser because
+// every listing path was gated on isImage(). They are listed alongside images rather than in
+// a separate pane: they live in the same folders and the point is to pull frames OUT of them
+// into those folders.
+const VID_EXT = new Set(['.mp4', '.webm', '.mov', '.mkv', '.m4v', '.avi']);
+const VID_MIME = { '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+                   '.mkv': 'video/x-matroska', '.m4v': 'video/x-m4v', '.avi': 'video/x-msvideo' };
+
+function isVideo(name) {
+  return VID_EXT.has(path.extname(name).toLowerCase());
+}
+
 /**
  * Recursively walk a tag-folder subtree. Records into `removals` any image in a
  * folder that ALSO exists (by filename = asset id) in a descendant tag folder —
@@ -389,6 +402,14 @@ export function createImagegenRouter(config) {
           ...(isTrainingBatchName(path.basename(dir)) && isSubsectionName(name)
             ? { is_batch_subsection: true, ...subsectionParts(name) } : {}),
         });
+      } else if (isVideo(name)) {
+        images.push({
+          name, size: st.size,
+          mtime: Math.round(st.mtimeMs),
+          ctime: Math.round(st.ctimeMs),
+          birthtime: Math.round(st.birthtimeMs || st.ctimeMs),
+          is_video: true,
+        });
       } else if (isImage(name) && !isCollageFile(name)) {
         // mtime = content modified; birthtime = created; ctime = inode change
         // (best proxy for "added to this folder/training set" — updates on the
@@ -411,7 +432,10 @@ export function createImagegenRouter(config) {
     // baseline (== they've been cropped/resized since send/merge).
     const isTS = isTrainingSetName(path.basename(dir));
     if (images.length && (isTS || images.length <= DIMS_CAP)) {
-      const dims = await mapLimit(images, 16, (im) => dimsOf(path.join(dir, im.name)));
+      // Videos are skipped: dimsOf() is sharp, which throws on a media container. Their
+      // dimensions come from ffprobe in /vthumb, and the grid does not need them to lay out.
+      const dims = await mapLimit(images, 16,
+        (im) => (im.is_video ? Promise.resolve({ w: 0, h: 0 }) : dimsOf(path.join(dir, im.name))));
       images.forEach((im, k) => { im.w = dims[k].w; im.h = dims[k].h; });
       // Caption sidecars are NOT a training-set mechanic — every captioner writes
       // <image>.txt / <image>.caption next to the image in whatever folder it sits in. These
@@ -492,6 +516,109 @@ export function createImagegenRouter(config) {
   });
 
   // ---- full image ----
+  /** GET /video?path= — byte-range streaming. Range support is NOT optional: without it the
+   *  browser cannot seek, and a <video> element given a non-range response will often refuse
+   *  to scrub at all, which makes frame-grabbing useless. */
+  router.get('/video', (req, res) => {
+    let file;
+    try { file = safeResolve(req.query.path); } catch { return res.status(400).end(); }
+    if (!existsSync(file) || !statSync(file).isFile() || !isVideo(path.basename(file))) {
+      return res.status(404).end();
+    }
+    const st = statSync(file);
+    const type = VID_MIME[path.extname(file).toLowerCase()] || 'application/octet-stream';
+    const range = req.headers.range;
+    if (!range) {
+      res.writeHead(200, { 'Content-Type': type, 'Content-Length': st.size, 'Accept-Ranges': 'bytes' });
+      return createReadStream(file).pipe(res);
+    }
+    const m = /bytes=(\d*)-(\d*)/.exec(range) || [];
+    const start = m[1] ? parseInt(m[1], 10) : 0;
+    const end = m[2] ? parseInt(m[2], 10) : st.size - 1;
+    if (!(start >= 0 && end < st.size && start <= end)) {
+      return res.writeHead(416, { 'Content-Range': `bytes */${st.size}` }).end();
+    }
+    res.writeHead(206, {
+      'Content-Range': `bytes ${start}-${end}/${st.size}`,
+      'Accept-Ranges': 'bytes',
+      'Content-Length': end - start + 1,
+      'Content-Type': type,
+    });
+    createReadStream(file, { start, end }).pipe(res);
+  });
+
+  /** GET /vthumb?path= — poster frame, cached in a dot-dir beside the video so browse (which
+   *  skips dotfiles) never lists it. Re-extracted when the video is newer than the cache. */
+  router.get('/vthumb', (req, res) => {
+    let file;
+    try { file = safeResolve(req.query.path); } catch { return res.status(400).end(); }
+    if (!existsSync(file) || !isVideo(path.basename(file))) return res.status(404).end();
+    const dir = path.dirname(file);
+    const cacheDir = path.join(dir, '.vthumb');
+    const cache = path.join(cacheDir, path.basename(file) + '.jpg');
+    // 🛑 STREAM IT, DO NOT sendFile(). express/send defaults to dotfiles:'ignore' and 404s any
+    // path containing a dot-SEGMENT — and the cache deliberately lives in `.vthumb/` so browse
+    // (which skips dotfiles) never lists it. sendFile threw ENOENT-shaped 404s with an HTML body
+    // for a file that was demonstrably on disk.
+    const serve = () => { res.type('image/jpeg'); createReadStream(cache).pipe(res); };
+    const fresh = existsSync(cache) && statSync(cache).mtimeMs >= statSync(file).mtimeMs;
+    if (fresh) return serve();
+    try { mkdirSync(cacheDir, { recursive: true }); } catch { /* ignore */ }
+    // -ss BEFORE -i seeks by keyframe, which is fast and good enough for a poster. 1s in,
+    // because frame 0 of a lot of clips is black.
+    // -update 1 tells the image2 muxer this is a single still, not a numbered sequence;
+    // without it ffmpeg writes the file but warns, which makes a real failure harder to spot.
+    execFile('ffmpeg', ['-y', '-ss', '1', '-i', file, '-frames:v', '1', '-update', '1',
+                        '-vf', 'scale=320:-2', '-q:v', '4', cache],
+      { timeout: 20000 }, (err) => {
+        if (!existsSync(cache)) {
+          console.warn(`[imagegen] vthumb failed for ${path.basename(file)}: ${err && err.message}`);
+          return res.status(404).end();
+        }
+        serve();
+      });
+  });
+
+  /** POST /screenshot — save a frame grabbed client-side from the <video> element.
+   *
+   *  The frame is captured in the BROWSER (canvas.toDataURL) rather than re-extracted here
+   *  with ffmpeg at a timestamp: what gets saved is then exactly the frame that was on screen
+   *  when the button was pressed. Seeking to "the same" timestamp server-side lands on a
+   *  different frame often enough to be maddening when you are picking a specific moment.
+   */
+  router.post('/screenshot', express.json({ limit: '32mb' }), (req, res) => {
+    const b = req.body || {};
+    let video;
+    try { video = safeResolve(b.path); } catch { return res.status(400).json({ error: 'bad path' }); }
+    if (!existsSync(video) || !isVideo(path.basename(video))) {
+      return res.status(404).json({ error: 'not a video' });
+    }
+    const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(String(b.data || ''));
+    if (!m) return res.status(400).json({ error: 'data must be a PNG data URL' });
+    const buf = Buffer.from(m[1], 'base64');
+    if (!buf.length) return res.status(400).json({ error: 'empty image' });
+    const dir = path.join(path.dirname(video), 'screenshots');
+    try { mkdirSync(dir, { recursive: true }); chmodSync(dir, 0o777); } catch { /* ignore */ }
+    // <video stem>-N.png: the source clip stays readable from the filename, which matters when
+    // a folder ends up holding grabs from several videos.
+    const stem = path.basename(video).replace(/\.[^.]+$/, '');
+    let n = 0;
+    try {
+      for (const f of readdirSync(dir)) {
+        const mm = new RegExp('^' + stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '-(\\d+)\\.png$').exec(f);
+        if (mm) n = Math.max(n, parseInt(mm[1], 10));
+      }
+    } catch { /* new folder */ }
+    const name = `${stem}-${n + 1}.png`;
+    const out = path.join(dir, name);
+    try {
+      writeFileSync(out, buf);
+      try { chmodSync(out, 0o664); } catch { /* best effort */ }
+    } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    console.log(`[imagegen] screenshot ${name} (${(buf.length / 1024).toFixed(0)} KB) from ${path.basename(video)} @ ${b.time ?? '?'}s`);
+    res.json({ ok: true, name, dir: path.relative(BASE, dir), rel: path.relative(BASE, out) });
+  });
+
   router.get('/image', async (req, res) => {
     let file;
     try { file = safeResolve(req.query.path); } catch { return res.status(400).end(); }

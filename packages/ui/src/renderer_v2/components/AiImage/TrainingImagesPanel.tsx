@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Layers, FolderOpen, Star, X, ChevronUp, ChevronDown } from 'lucide-react'
-import { trainingImagesStore as store, igThumb, igImage, imKey, cropDone, type IgImage } from '../../stores/TrainingImagesStore'
+import { trainingImagesStore as store, igThumb, igImage, igVideo, igVthumb, imKey, cropDone, type IgImage } from '../../stores/TrainingImagesStore'
 import { confirmStore } from '../../stores/confirmStore'
 import { promptStore } from '../../stores/promptStore'
 import { CropEditor } from './CropEditor'
@@ -420,6 +420,79 @@ const AddToBatchModal: React.FC<{ kind: 'batch' | 'set'; files: string[]; onClos
 }
 
 // ── Lightbox (zoom + pan) ──
+// ── Video player + frame grabber ─────────────────────────────────────────────────────
+// The frame is captured HERE, in the browser, from the <video> element itself — not
+// re-extracted server-side at a timestamp. What lands on disk is then exactly the frame that
+// was on screen when the button was pressed; seeking to "the same" time server-side picks a
+// neighbouring frame often enough to be maddening when you are after one specific moment.
+// Same-origin (/api/imagegen/video) so the canvas is not tainted and toDataURL works.
+const VideoModal: React.FC<{ rel: string; name: string; onClose: () => void }> = ({ rel, name, onClose }) => {
+  const vref = useRef<HTMLVideoElement | null>(null)
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [shots, setShots] = useState(0)
+
+  const snap = async () => {
+    const v = vref.current
+    if (!v || !v.videoWidth) { setMsg('Video not ready yet.'); return }
+    setBusy(true)
+    try {
+      const c = document.createElement('canvas')
+      c.width = v.videoWidth; c.height = v.videoHeight
+      const ctx = c.getContext('2d')
+      if (!ctx) throw new Error('no 2d context')
+      ctx.drawImage(v, 0, 0, c.width, c.height)
+      const r = await store.saveScreenshot(rel, c.toDataURL('image/png'), v.currentTime)
+      setShots((n) => n + 1)
+      setMsg(`Saved ${r.name} → ${r.dir}  (${c.width}×${c.height})`)
+      // The screenshots folder is new the first time; refresh so it shows up in the browser.
+      if (shots === 0) void store.browse(store.cwd)
+    } catch (e: any) { setMsg('Failed: ' + (e?.message || e)) }
+    finally { setBusy(false) }
+  }
+
+  // Space would otherwise scroll the page behind the modal; here it is play/pause.
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') { onClose(); return }
+    const v = vref.current
+    if (!v) return
+    if (e.key === ' ') { e.preventDefault(); v.paused ? void v.play() : v.pause() }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - (e.shiftKey ? 1 : 1 / 30)) }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); v.currentTime = v.currentTime + (e.shiftKey ? 1 : 1 / 30) }
+    else if (e.key.toLowerCase() === 's') { e.preventDefault(); void snap() }
+  }
+
+  return (
+    <div className={styles.modalBg} onClick={onClose} onKeyDown={onKey} tabIndex={-1} ref={(el) => el?.focus()}>
+      <div className={styles.pkBox} style={{ width: 'min(1100px,96%)' }} onClick={(e) => e.stopPropagation()}>
+        <div className={styles.modalHead}>
+          <strong>{name}</strong>
+          <button className={styles.btn} onClick={onClose}>Close</button>
+        </div>
+        <video
+          ref={vref} src={igVideo(rel)} controls autoPlay={false} preload="metadata"
+          style={{ width: '100%', maxHeight: '68vh', background: '#000', borderRadius: 6 }}
+        />
+        <div className={styles.acl} style={{ justifyContent: 'flex-start', gap: 10, marginTop: 8 }}>
+          <button className={styles.btnPrimary} disabled={busy} onClick={() => void snap()}>
+            📸 Snap frame
+          </button>
+          <span className={styles.dim}>
+            saves a full-resolution PNG into <code>screenshots/</code> beside this clip
+          </span>
+          <span className={styles.spacer} />
+          {shots > 0 && <span className={styles.dim}>{shots} grabbed</span>}
+        </div>
+        <div className={styles.acHint}>
+          <strong>S</strong> snap · <strong>Space</strong> play/pause · <strong>←/→</strong> step one frame
+          (hold <strong>Shift</strong> for a second). Pause first for the cleanest grab.
+        </div>
+        {msg && <div className={styles.acHint}>{msg}</div>}
+      </div>
+    </div>
+  )
+}
+
 const Lightbox: React.FC<{ rel: string; name: string; bust?: number; onClose: () => void }> = ({ rel, name, bust, onClose }) => {
   const [z, setZ] = useState(1); const [t, setT] = useState({ x: 0, y: 0 })
   const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
@@ -598,7 +671,9 @@ const Tile: React.FC<{ im: IgImage; i: number; onOpen: () => void }> = observer(
       {im.has_caption && <span className={styles.bdg} title="Has tags (.txt)">✎</span>}
       {im.has_nl_caption && <span className={styles.bdg} title="Has caption (.caption)">❝</span>}
       {!!im.score && <span className={`${styles.bdg} ${styles.bdgScore}`} title={`Rating ${im.score}/10${im.comment ? ' — ' + im.comment : ''}`}>★{im.score}</span>}
-      <img loading="lazy" src={igThumb(im.rel, im.mtime)} alt="" draggable={false} />
+      {im.is_video && <span className={styles.bdg} title="Video — open to play and grab frames">▶</span>}
+      {/* Videos use the ffmpeg poster endpoint; /thumb is sharp and cannot read a container. */}
+      <img loading="lazy" src={im.is_video ? igVthumb(im.rel, im.mtime) : igThumb(im.rel, im.mtime)} alt="" draggable={false} />
       <span className={styles.tileName} title={im.name}>{label}</span>
     </div>
   )
@@ -606,6 +681,7 @@ const Tile: React.FC<{ im: IgImage; i: number; onOpen: () => void }> = observer(
 
 export const TrainingImagesPanel: React.FC = observer(() => {
   const [lb, setLb] = useState<{ rel: string; name: string; bust?: number } | null>(null)
+  const [vid, setVid] = useState<{ rel: string; name: string } | null>(null)
   const [picker, setPicker] = useState<'move' | 'copy' | null>(null)
   const [merge, setMerge] = useState(false)
   const [crop, setCrop] = useState<{ rel: string; name: string } | null>(null)
@@ -628,7 +704,9 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   // box, the .caption box and the rating together. It used to open only inside a training_set,
   // which meant tags could not be read or edited anywhere else, even though the tagger writes
   // sidecars into any folder. Collages still open in the lightbox.
-  const openImage = (im: IgImage) => setCrop({ rel: im.rel, name: im.name })
+  // A video has nothing to crop — it opens the player, which is also where frames are grabbed.
+  const openImage = (im: IgImage) =>
+    (im.is_video ? setVid({ rel: im.rel, name: im.name }) : setCrop({ rel: im.rel, name: im.name }))
 
   const doDelete = async () => {
     // Folders are selectable now, so a Delete that only ever removed images would
@@ -1040,6 +1118,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
             })()}
       </div>
 
+      {vid && <VideoModal rel={vid.rel} name={vid.name} onClose={() => setVid(null)} />}
       {lb && <Lightbox rel={lb.rel} name={lb.name} bust={lb.bust} onClose={() => setLb(null)} />}
       {crop && (() => {
         // key=rel: every image gets a freshly mounted editor — box, tags, rating and
