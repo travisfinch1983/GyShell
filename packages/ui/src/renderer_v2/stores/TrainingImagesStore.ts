@@ -197,6 +197,12 @@ export class TrainingImagesStore {
           cropped: !!im.cropped, at_target: !!im.at_target, has_alt: !!im.has_alt, has_caption: !!im.has_caption,
           has_nl_caption: !!im.has_nl_caption, score: im.score != null ? im.score : null,
           comment: im.comment || '', dir: sub,
+          // ⚠ This mapper REBUILDS the entry field by field, so anything the backend adds
+          // and is not copied here is silently dropped. is_video was missing: the API returned
+          // it correctly on all 235 videos in aniaspoison, the grid and the open-router both
+          // read it, and every one still rendered as a still and opened the crop editor,
+          // because it never survived this function. Add new fields HERE too.
+          is_video: !!im.is_video,
         })
         // Loose files at the imagegen root are strays, not training data — hide them with the
         // folders rather than leaving one orphan image to imply this is a real image directory.
