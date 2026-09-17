@@ -6,7 +6,7 @@ import { makeAutoObservable, runInAction } from 'mobx'
  * CivitAI under /api/civitai/*. Downloads execute on ProxLab/the ZFS host for now (native
  * downloader port is a finalization item); this is the UI + queue management over those endpoints.
  */
-export type DLSubTab = 'queue' | 'hf' | 'civitai'
+export type DLSubTab = 'queue' | 'hf' | 'civitai' | 'library';
 
 export interface DLItem {
   id: string
@@ -20,6 +20,10 @@ export interface DLItem {
   modelName?: string
   modelType?: string
   targetDir?: string
+  // Both are written by the backend (civitai.js) but were never declared here, so the UI
+  // could not sort on them.
+  startedAt?: string | null
+  completedAt?: string | null
 }
 export interface HFFile {
   path: string
@@ -733,7 +737,24 @@ export class ModelDownloadsStore {
       runInAction(() => { this.civVersionStatus = {} })
     }
   }
-  async reviewLoad(input?: string): Promise<void> {
+  /**
+   * Load a model into the Review browser.
+   *
+   * `queueItemId` records the ORIGIN of this load and defaults to null, i.e. "not from the
+   * review queue". That default is the important part: civQueueItemId used to survive a
+   * load, so pasting a URL after viewing a queue item left it pointing at that unrelated
+   * item, and reviewDownload() then deleted the queue entry as though it had been
+   * downloaded. Reported 2026-09-15 — manual URL downloads silently ate queue items.
+   *
+   * It is cleared BEFORE the fetch rather than set after it, so a load that fails cannot
+   * leave the previous item's id behind either. The failure mode is then "download removes
+   * nothing", which is recoverable; the old one destroyed queue entries.
+   *
+   * showQueueItem() passes the real id for queue entries whose modelData was not cached
+   * (the slow-connection path) — those previously left this null, so downloading them did
+   * NOT clear them from the queue.
+   */
+  async reviewLoad(input?: string, queueItemId?: string | null): Promise<void> {
     const parsed = this.parseModelId(input ?? this.civUrl)
     if (!parsed) {
       runInAction(() => { this.civModelError = 'Paste a valid CivitAI model URL' })
@@ -741,6 +762,7 @@ export class ModelDownloadsStore {
     }
     this.civModelLoading = true
     this.civModelError = null
+    runInAction(() => { this.civQueueItemId = queueItemId ?? null })
     try {
       const api = (window as any).gyshell?.civitai
       const model = await api.model(parsed.modelId)
@@ -855,7 +877,9 @@ export class ModelDownloadsStore {
     const model = item.modelData
     if (!model) {
       this.civUrl = item.pageUrl || `https://civitai.com/models/${item.modelId}`
-      void this.reviewLoad()
+      // Carry the queue origin across the re-fetch, otherwise downloading this item
+      // leaves it sitting in the queue.
+      void this.reviewLoad(undefined, item.id)
       return
     }
     runInAction(() => {
@@ -881,12 +905,39 @@ export class ModelDownloadsStore {
     this.showQueueItem(next)
   }
   async removeFromQueue(id: string): Promise<void> {
-    await this.cluster().request('DELETE', `/api/civitai/queue/${encodeURIComponent(id)}`).catch(() => undefined)
-    if (this.civQueueItemId === id) runInAction(() => { this.civQueueItemId = null })
+    await this.removeManyFromQueue([id])
+  }
+  /**
+   * Delete one or more queue entries, then reload and re-navigate exactly ONCE.
+   * Looping removeFromQueue() per id would refetch the queue and re-point the browser on
+   * every iteration, re-running showQueueItem() (which resets in-progress review edits)
+   * repeatedly and making the view jump around mid-cleanup.
+   */
+  async removeManyFromQueue(ids: string[]): Promise<void> {
+    const doomed = [...new Set(ids.filter(Boolean))]
+    if (!doomed.length) return
+    // What the user is LOOKING AT, by identity. The removed item is not necessarily the
+    // one on screen: a download started on item A finishes while the user has navigated
+    // to item B. Re-selecting by INDEX after the list shrinks lands on whatever slid into
+    // that slot, which is how removing item #1 left the browser sitting on item #2.
+    const viewingId = this.civQueueItemId
+    for (const id of doomed) {
+      await this.cluster().request('DELETE', `/api/civitai/queue/${encodeURIComponent(id)}`).catch(() => undefined)
+    }
+    if (viewingId && doomed.includes(viewingId)) runInAction(() => { this.civQueueItemId = null })
     await this.loadCivQueue()
-    // advance to the item now occupying this slot (or the new last), else clear the browser
-    if (this.civQueue.length) this.showQueueItem(Math.min(this.civQueueIndex, this.civQueue.length - 1))
-    else runInAction(() => { this.civModel = null })
+    if (!this.civQueue.length) { runInAction(() => { this.civModel = null }); return }
+    const survivedIdx = viewingId && !doomed.includes(viewingId)
+      ? this.civQueue.findIndex((q: any) => q.id === viewingId)
+      : -1
+    if (survivedIdx >= 0) {
+      // Still queued and still on screen: only re-point the index. Deliberately NOT
+      // showQueueItem() — that calls resetReviewVersionState() and would discard the
+      // folder/filename the user is part-way through typing on the item they are viewing.
+      runInAction(() => { this.civQueueIndex = survivedIdx })
+    } else {
+      this.showQueueItem(Math.min(this.civQueueIndex, this.civQueue.length - 1))
+    }
   }
   private optsFor(vid: number | null): Map<string, { noRename?: boolean; suffix?: string }> {
     if (vid == null) return new Map()
@@ -1040,42 +1091,79 @@ export class ModelDownloadsStore {
       ? this.selectedVersionIds
       : (this.civCurrentVersion ? [this.civCurrentVersion.id] : [])
     if (!ids.length) return
+
+    // ── Snapshot EVERYTHING the batch needs before the first await ───────────────────
+    // The review queue is navigable while a download is in flight, and showQueueItem()
+    // swaps civModel and calls resetReviewVersionState(). This method used to read
+    // civQueueItemId, civVersions, civVerFolder, civVerFilename, civVerFiles and
+    // civFileOpts *during* the POST loop, so both of those reads saw whatever item the
+    // user had moved to rather than the one the button was pressed for:
+    //   * the request bodies for versions 2..N were built from the WRONG item's folder
+    //     and filename overrides — silent, since nothing errors; and
+    //   * fromQueueId resolved to the item on screen when the last POST landed, so the
+    //     wrong queue entry was deleted.
+    // Reported 2026-09-15: Download pressed on queue item #2, navigated to item #1 while
+    // it ran; item #1 was removed UNDOWNLOADED and item #2 stayed queued.
+    // Binding the press to an immutable snapshot is the whole fix — nothing below this
+    // point may read live review state.
+    const fromQueueId = this.civQueueItemId
+    // Identity + coverage for sibling cleanup below, also frozen at press time.
+    const modelIdStr = String(m.id)
+    const downloadedVersionIds = new Set(ids.map(String))
+    const totalVersions = this.civVersions.length
+    const allVersionsTaken = totalVersions > 0 && ids.length >= totalVersions
+    const requests = ids.map((vid) => {
+      const ver = this.civVersions.find((x: any) => x.id === vid)
+      const body: any = {
+        modelId: String(m.id),
+        versionId: String(vid),
+        pageUrl: `https://civitai.com/models/${m.id}?modelVersionId=${vid}`,
+      }
+      const folder = this.civVerFolder.get(vid)
+      const fname = this.civVerFilename.get(vid)
+      if (folder !== undefined) body.pathOverride = folder
+      if (fname) body.fileNameOverride = fname
+      // Send the tick state. Until now the body carried only modelId/versionId, so the
+      // checkboxes were decorative and the backend downloaded EVERY file in the version.
+      // Omitted when nothing is explicitly deselected, so "download the lot" still works.
+      const picked = this.civVerFiles.get(vid)
+      const total = (ver?.files ?? []).length
+      if (picked && picked.size && picked.size < total) body.fileIds = [...picked]
+      const opts = this.fileOptsPayload(vid)
+      if (opts) body.fileOpts = opts
+      return { label: String(ver?.name ?? vid), body }
+    })
+
     this.busy = true
     this.civModelError = null
     try {
       const failures: string[] = []
-      for (const vid of ids) {
-        const ver = this.civVersions.find((x: any) => x.id === vid)
-        const body: any = {
-          modelId: String(m.id),
-          versionId: String(vid),
-          pageUrl: `https://civitai.com/models/${m.id}?modelVersionId=${vid}`,
-        }
-        const folder = this.civVerFolder.get(vid)
-        const fname = this.civVerFilename.get(vid)
-        if (folder !== undefined) body.pathOverride = folder
-        if (fname) body.fileNameOverride = fname
-        // Send the tick state. Until now the body carried only modelId/versionId, so the
-        // checkboxes were decorative and the backend downloaded EVERY file in the version.
-        // Omitted when nothing is explicitly deselected, so "download the lot" still works.
-        const picked = this.civVerFiles.get(vid)
-        const total = (this.civVersions.find((x: any) => x.id === vid)?.files ?? []).length
-        if (picked && picked.size && picked.size < total) body.fileIds = [...picked]
-        const opts = this.fileOptsPayload(vid)
-        if (opts) body.fileOpts = opts
+      for (const req of requests) {
         try {
-          await this.cluster().request('POST', '/api/civitai/download', body)
+          await this.cluster().request('POST', '/api/civitai/download', req.body)
         } catch (e) {
           // One bad version must not abandon the rest of the batch.
-          failures.push(`${ver?.name ?? vid}: ${e instanceof Error ? e.message : String(e)}`)
+          failures.push(`${req.label}: ${e instanceof Error ? e.message : String(e)}`)
         }
       }
-      if (failures.length) throw new Error(`${failures.length}/${ids.length} failed — ${failures.join(' · ')}`)
-      // if this came from the review queue, clear it out + advance to the next queued item
-      const fromQueueId = this.civQueueItemId
+      if (failures.length) throw new Error(`${failures.length}/${requests.length} failed — ${failures.join(' · ')}`)
+      // if this came from the review queue, clear out the item the button was pressed
+      // for — captured above, NOT whatever is on screen now.
       await Promise.all([this.loadDownloads(), this.loadHistories()])
       if (fromQueueId) {
-        await this.removeFromQueue(fromQueueId)
+        // Other queue rows for the SAME model whose version we just downloaded are now
+        // redundant. POST /queue/add pushes unconditionally with no dedupe, so a model
+        // reviewed from five different version pages leaves five rows behind.
+        //   row names a version we downloaded      -> remove, it is satisfied
+        //   row names a version we did NOT take    -> KEEP, still outstanding
+        //   row names no version at all            -> remove ONLY if we took every version
+        // civQueue is deliberately read live here: it is the queue LIST, not the per-item
+        // review state the snapshot above guards, and its current contents are what we want.
+        const siblings = this.civQueue
+          .filter((q: any) => String(q.modelId) === modelIdStr && q.id !== fromQueueId)
+          .filter((q: any) => (q.versionId ? downloadedVersionIds.has(String(q.versionId)) : allVersionsTaken))
+          .map((q: any) => q.id as string)
+        await this.removeManyFromQueue([fromQueueId, ...siblings])
       } else {
         runInAction(() => { this.subTab = 'queue' })
       }

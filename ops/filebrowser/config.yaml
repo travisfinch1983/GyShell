@@ -4,9 +4,15 @@ server:
   database: "/opt/filebrowser/index.db"
   cacheDir: "/opt/filebrowser/cache"
   cacheDirCleanup: true
+  # Embedded in an AI-Lab iframe: github.com refuses to be framed, so the
+  # "update available" button and the sidebar's default version/GitHub links
+  # dead-end the frame. Version checks happen by hand, not from inside the UI.
+  disableUpdateCheck: true
   sources:
     - path: "/nas"
       name: "NAS"
+frontend:
+  disableDefaultLinks: true
 auth:
   methods:
     noauth: true

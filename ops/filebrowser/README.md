@@ -7,7 +7,8 @@ called — last ProxLab tie removed).
 ## Deployed to CT152
 - Binary: `/opt/filebrowser/filebrowser` (v1.4.0-stable, linux-amd64 — not in repo).
 - Config: `/opt/filebrowser/config.yaml` (this dir's `config.yaml`) — port 8082, `baseURL: /files`,
-  single source `/nas` (all pools), **auth disabled** (`auth.methods.noauth: true`) — single-user behind
+  single source `/nas` (all pools), `server.disableUpdateCheck` + `frontend.disableDefaultLinks` (every
+  GitHub link dead-ends the iframe — github.com refuses framing; check for new releases by hand), **auth disabled** (`auth.methods.noauth: true`) — single-user behind
   Tailscale/Cloudflare. It builds a SQLite search index of `/nas` on first start (can take a while on huge pools).
 - systemd: `filebrowser.service`.
 

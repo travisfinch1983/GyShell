@@ -264,6 +264,11 @@ export class UniversalProxyService {
     }
     app.use('/api/proxy', createProxyRouter({ exec: this.sshExec }))
     app.use('/api/civitai', express.json({ limit: '10mb' }), createCivitaiRouter({}, { exec: this.sshExec }))
+    // Browse / reorganise / bulk-rename the models already on disk. Separate from the
+    // CivitAI router (which is about fetching them), but shares its move+history code so
+    // reorganising here keeps the downloader's history pointing at the files.
+    const { createModelLibraryRouter } = await import('./proxy/model-library.js')
+    app.use('/api/model-library', createModelLibraryRouter({}, { exec: this.sshExec }))
     // Bulk Renamer (Files tab -> Bulk Renamer sub-tab). FileBrowser Quantum is a binary we
     // cannot extend, so mass renaming is served here instead.
     app.use('/api/files', express.json({ limit: '10mb' }), createFilesRouter({ dataDir: this.dataDir }))
@@ -315,6 +320,9 @@ export class UniversalProxyService {
     // @ts-expect-error — JS router: Dynacat (Home dashboard) config editor — read/validate/save the YAML
     const { createDynacatRouter } = await import('./proxy/dynacat.js')
     app.use('/api/dynacat', createDynacatRouter())
+    // @ts-expect-error — JS router: reverse proxy to the native Transmute file-converter service (:3313)
+    const { createTransmuteRouter } = await import('./proxy/transmute.js')
+    app.use('/api/transmute', createTransmuteRouter())
     // @ts-expect-error — JS router: runtime addon registry + reverse-proxy (drop-in addons, no rebuild)
     const { createAddonsRouter, createAddonsProxyRouter, attachAddonsUpgrade } = await import('./proxy/addons.js')
     app.use('/api/addons', createAddonsRouter())          // GET list of registered addons (runtime)

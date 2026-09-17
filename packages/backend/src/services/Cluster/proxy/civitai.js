@@ -9,7 +9,7 @@
  */
 
 import { Router } from 'express';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync, renameSync, unlinkSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync, renameSync, unlinkSync, copyFileSync, rmdirSync } from 'fs';
 import { join, basename } from 'path';
 import { spawn } from 'child_process';
 import { execSync } from 'child_process';
@@ -400,7 +400,7 @@ function detectComponentsInContext(versions) {
 
 // ─── Shared Helpers ─────────────────────────────────────────────────────────
 
-function getBasePath() {
+export function getBasePath() {
   try {
     const fmCfg = JSON.parse(readFileSync(join(DATA_DIR, 'file-manager.json'), 'utf8'));
     return fmCfg.tabs?.['image-gen']?.basePath || '/ai-assets/imagegen';
@@ -412,7 +412,7 @@ function getBasePath() {
 // Each entry: { modelId, modelName, modelType, versionId, versionName, baseModel,
 //               creator, downloadedAt, source ('proxlab'|'synced'), pageUrl }
 
-function loadHistory() {
+export function loadHistory() {
   return readJsonSafe(HISTORY_PATH, { items: [], lastSync: null }, 'download history');
 }
 
@@ -462,12 +462,15 @@ function addToHistory(model, version, source = 'proxlab', extra = {}) {
   } else if (extra.targetDir && filesArray) {
     const basePath = getBasePath();
     const override = extra.fileNameOverride;
+    // Sanitised the same way the downloader sanitises it, or this fallback records a name
+    // that was never written — check-existing then reports the model missing.
+    const _sep = (loadConfig().separator) || '-';
     locatedFiles = filesArray.map(f => {
       let onDiskName = f.name;
       if (override) {
         const _dot = f.name.lastIndexOf('.');
         const ext = _dot > 0 ? f.name.substring(_dot) : '';
-        onDiskName = override + ext;
+        onDiskName = sanitizeNameOverride(override, _sep) + ext;
       }
       return {
         name: onDiskName,
@@ -522,6 +525,163 @@ function addToHistory(model, version, source = 'proxlab', extra = {}) {
     downloadedVersions: version?.id ? [String(version.id)] : [],
   });
   saveHistory(h);
+}
+
+/**
+ * Move a model file and every sidecar that belongs to it (previews, .json, metadata)
+ * from one path to another.
+ *
+ * This is the per-move body of POST /rename lifted to module scope: the downloader needs
+ * exactly the same behaviour, and a second copy of it would drift the moment either side
+ * learned about a new sidecar suffix. Never throws - returns what happened.
+ */
+function moveModelFamily(fromPath, toPath) {
+  const moved = []; const deleted = []; const errors = [];
+  const fromDir = fromPath.substring(0, fromPath.lastIndexOf('/'));
+  const fromBase = fromPath.split('/').pop().replace(/\.[^.]+$/, '');
+  const toDir = toPath.substring(0, toPath.lastIndexOf('/'));
+  const toBase = toPath.split('/').pop().replace(/\.[^.]+$/, '');
+
+  mkdirSync(toDir, { recursive: true });
+
+  // Same rule the renamer uses: the model file plus anything sharing its base name, and
+  // NOT another model that merely starts with the same prefix.
+  let relatedFiles = [];
+  try {
+    relatedFiles = readdirSync(fromDir).filter((name) =>
+      name === fromBase || name.startsWith(fromBase + '.') || name.startsWith(fromBase + '_'));
+  } catch {}
+
+  for (const relFile of relatedFiles) {
+    const relFrom = `${fromDir}/${relFile}`;
+    // 🛑 These used to be DELETED here, on the assumption that a re-download would
+    // regenerate them. That only holds for POST /rename with downloadMeta; the library
+    // manager's drag-and-drop does no download, so a plain move destroyed the CivitAI
+    // metadata — including the trigger words the inspector reads. Move them like any other
+    // sidecar instead; /rename's downloadMeta overwrites them afterwards either way.
+    const relTo = `${toDir}/${toBase}${relFile.substring(fromBase.length)}`;
+    if (relFrom === relTo) { moved.push({ from: relFrom, to: relTo }); continue; }
+    try {
+      renameSync(relFrom, relTo);
+      moved.push({ from: relFrom, to: relTo });
+    } catch {
+      // rename() fails across filesystems; copy+unlink is the portable fallback.
+      try {
+        copyFileSync(relFrom, relTo);
+        unlinkSync(relFrom);
+        moved.push({ from: relFrom, to: relTo });
+      } catch (err2) {
+        errors.push({ from: relFrom, to: relTo, error: err2.message });
+      }
+    }
+  }
+  return { moved, deleted, errors };
+}
+
+/**
+ * Apply a batch of model moves and re-point history at the new locations.
+ *
+ * Exported because the model-library manager performs the same operation: every move or
+ * rename it makes must leave history tracking the file, and a second implementation of that
+ * would drift from this one. POST /rename is now a thin wrapper over it.
+ *
+ * @param moves  [{ from, to }] absolute paths
+ * @param opts   { modelId, versionId, pathOverride, fixPerms }  fixPerms is injected so this
+ *               stays free of the router's ssh closure.
+ */
+export function applyModelMoves(moves, opts = {}) {
+  const { modelId = null, versionId = null, pathOverride = null, fixPerms = null } = opts;
+  const basePath = getBasePath();
+  const moved = []; const deleted = []; const errors = [];
+
+  for (const m of moves || []) {
+    const r = moveModelFamily(m.from, m.to);
+    moved.push(...r.moved);
+    deleted.push(...r.deleted);
+    errors.push(...r.errors);
+  }
+
+  if (fixPerms) {
+    for (const dir of new Set(moved.map((m) => m.to.substring(0, m.to.lastIndexOf('/'))))) {
+      try { fixPerms(dir); } catch {}
+    }
+  }
+
+  // Drop source directories the move emptied, so the tree does not fill with husks.
+  for (const dir of new Set((moves || []).map((m) => m.from.substring(0, m.from.lastIndexOf('/'))))) {
+    try {
+      if (readdirSync(dir).length === 0) rmdirSync(dir);
+    } catch {}
+  }
+
+  if (modelId && moved.length) {
+    const h = loadHistory();
+    const entry = versionId
+      ? h.items.find((i) => String(i.modelId) === String(modelId) && String(i.versionId) === String(versionId))
+      : h.items.find((i) => String(i.modelId) === String(modelId));
+    if (entry) {
+      const newDir = moved[0].to.substring(0, moved[0].to.lastIndexOf('/'));
+      const newBaseName = moved[0].to.split('/').pop().replace(/\.[^.]+$/, '');
+      entry.targetDir = newDir;
+      entry.currentDir = newDir;
+      if (pathOverride) entry.pathOverride = pathOverride;
+      entry.fileNameOverride = newBaseName;
+      // Only the ON-DISK locations move. `entry.files` is upstream CivitAI metadata (real
+      // sizeKB + hashes) and is NOT affected by a rename — overwriting it with stubs, as
+      // this used to, destroyed the sizes and hashes every other feature reads.
+      // MODEL files only, matching addToHistory's semantics — it builds locatedFiles from
+      // the downloaded model files, not from previews and sidecars. Recording all twelve
+      // moved files here made one LoRA look like twelve entries to everything that counts
+      // or iterates locatedFiles.
+      const movedModels = moved.filter((m) => /\.(safetensors|ckpt|gguf|pt|bin|pth|onnx)$/i.test(m.to));
+      entry.locatedFiles = (movedModels.length ? movedModels : moved).map((m) => ({
+        name: m.to.split('/').pop(),
+        currentPath: m.to,
+        indexPath: m.to.replace(basePath, ''),
+      }));
+      const idx = h.items.indexOf(entry);
+      if (idx > 0) { h.items.splice(idx, 1); h.items.unshift(entry); }
+      saveHistory(h);
+    }
+  }
+  return { moved, deleted, errors };
+}
+
+/**
+ * Find a copy of THIS EXACT version+file already on disk under a different name or folder,
+ * so a re-download with a new name can MOVE it instead of fetching the same bytes again.
+ *
+ * Identity is (modelId, versionId) out of history, and the candidate paths come from
+ * `locatedFiles` - the paths the downloader already DECIDED and recorded. Re-deriving them
+ * here would be a third independent derivation of the same path, which is precisely how
+ * history and disk drifted apart before.
+ *
+ * Returns null unless EXACTLY ONE candidate matches by size: a version routinely ships
+ * several files of near-identical size (fp8 / bf16 / GGUF quants), and moving the wrong one
+ * would be worse than the duplicate this is trying to avoid.
+ */
+function findExistingVersionCopy(modelId, versionId, file, targetFile) {
+  const expected = (file?.sizeKB || 0) * 1024;
+  if (!expected) return null;
+  const h = loadHistory();
+  const entry = h.items.find((i) =>
+    String(i.modelId) === String(modelId) && String(i.versionId) === String(versionId));
+  if (!entry) return null;
+
+  const seen = new Set();
+  const candidates = [];
+  for (const lf of (entry.locatedFiles || [])) {
+    const p = lf?.currentPath;
+    if (!p || p === targetFile || seen.has(p)) continue;
+    seen.add(p);
+    let st;
+    try { st = statSync(p); } catch { continue; }
+    if (!st.isFile()) continue;
+    // 1% tolerance: the same file, not merely a similar one.
+    if (Math.abs(st.size - expected) > expected * 0.01) continue;
+    candidates.push(p);
+  }
+  return candidates.length === 1 ? candidates[0] : null;
 }
 
 /**
@@ -584,6 +744,31 @@ function applyCaseMode(str, caseMode) {
   return str.replace(/\b\w/g, c => c.toUpperCase());
 }
 
+/**
+ * Clean a USER-TYPED filename override the same way applyTemplate() cleans a variable's
+ * value: whitespace and slashes become the configured separator, and characters the
+ * filesystem will not take are dropped.
+ *
+ * Without this the typed name was the ONE name-producing path that skipped sanitising, so a
+ * library configured with '_' quietly collected filenames containing spaces — and the live
+ * preview correctly showed them, which is how it was spotted.
+ *
+ * Case is deliberately NOT transformed. applyTemplate applies caseMode to values it
+ * substitutes, but this string was typed deliberately and re-casing it would be overreach.
+ */
+function sanitizeNameOverride(raw, separator = '-') {
+  let s = String(raw == null ? '' : raw).trim();
+  if (!s) return s;
+  // A '/' would silently create phantom subdirectories — same reason applyTemplate folds it.
+  s = s.replace(/\s+/g, separator).replace(/\//g, separator);
+  s = s.replace(/[:"|?*\\<>]/g, '');
+  if (separator !== ' ') {
+    const esc = separator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    s = s.replace(new RegExp(`${esc}{2,}`, 'g'), separator);
+  }
+  return s;
+}
+
 function applyTemplate(template, vars, separator = '-', caseMode = 'standard') {
   let result = template;
 
@@ -626,6 +811,46 @@ function applyTemplate(template, vars, separator = '-', caseMode = 'standard') {
 
   return result;
 }
+
+/**
+ * Build a filename from a TEMPLATE and a HISTORY ROW.
+ *
+ * The library manager renames files that are already on disk, offline — there is no live
+ * CivitAI response to hand to resolveVars(). This adapts a history row into the same shapes
+ * resolveVars expects and then runs the downloader's own applyTemplate, so a name produced
+ * here is byte-identical to one the downloader would produce. Deriving names separately is
+ * exactly how the live preview and the actual download drifted apart before.
+ *
+ * Returns the base name WITHOUT extension; the caller re-attaches the real one.
+ */
+export function resolveTemplateName(template, histEntry, separator = '-', caseMode = 'standard') {
+  const cfg = loadConfig();
+  const file = (histEntry.files || [])[0]
+    || { name: `${histEntry.fileNameOverride || 'model'}.safetensors`, metadata: {} };
+  const model = {
+    id: histEntry.modelId,
+    name: histEntry.modelName || '',
+    type: histEntry.modelType || '',
+    creator: { username: histEntry.creator || '' },
+    tags: histEntry.primaryTag ? [histEntry.primaryTag] : [],
+  };
+  const version = {
+    id: histEntry.versionId,
+    name: histEntry.versionName || '',
+    baseModel: histEntry.baseModel || '',
+    createdAt: histEntry.downloadedAt || '',
+    files: histEntry.files || [],
+  };
+  const vars = resolveVars(model, version, file, cfg);
+  const resolved = applyTemplate(template, vars, separator, caseMode);
+  const lastSlash = resolved.lastIndexOf('/');
+  let name = lastSlash >= 0 ? resolved.substring(lastSlash + 1) : resolved;
+  // The template may carry $EXTENSION; the caller owns the real extension.
+  name = name.replace(/\$EXTENSION/g, '').replace(/\.[^.]+$/, '').replace(/\.$/, '');
+  return name;
+}
+
+export { loadConfig as loadCivitaiConfig };
 
 /**
  * Resolve the CivitAI API token. Module scope so BOTH the route handlers and spawnCurl can use it.
@@ -832,7 +1057,7 @@ async function downloadFileSync(url, targetPath, token) {
 /**
  * Fix permissions via SSH to the ZFS host.
  */
-function fixPermissions(targetDir, _sshService) {
+export function fixPermissions(targetDir, _sshService) {
   // AI-Lab runs inside CT 152 with /ai-assets rbind-mounted locally — chmod directly, no SSH.
   try {
     if (targetDir && targetDir.startsWith('/ai-assets/')) {
@@ -977,6 +1202,12 @@ function deriveAutoSuffixes(group) {
  */
 function resolveVersionFileNames(files, baseNameFor, fnOverride, fileOpts, selectedKeys, opts) {
   const { autoDisambiguate = true, outAuto = null, outCollisions = null } = opts || {};
+  // Separator for the typed filename override. Callers pass cfg.separator. Per-TYPE
+  // separator overrides (cfg.typeTemplates[type].separator) are not threaded here because
+  // the type is only known inside baseNameFor(); every type currently shares the global
+  // value, and a divergence would cost a cosmetic inconsistency in the typed name, not a
+  // wrong path.
+  const _overrideSep = (opts && opts.separator) || '-';
   const keyOf = (f) => String(f.id != null ? f.id : f.name);
   const splitExt = (n) => {
     const d = n.lastIndexOf('.');
@@ -993,7 +1224,9 @@ function resolveVersionFileNames(files, baseNameFor, fnOverride, fileOpts, selec
       name = baseNameFor(f);
       if (fnOverride) {
         const [, e] = splitExt(name);
-        name = fnOverride + e;
+        // Same treatment the template gives every other name — see sanitizeNameOverride().
+        const _clean = sanitizeNameOverride(fnOverride, _overrideSep);
+        if (_clean) name = _clean + e;
       }
     }
     if (o.suffix) {
@@ -1222,6 +1455,7 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       if (!baseFileName) baseFileName = r.fileName;
       return r.fileName;
     }, effectiveFnOverride, fileOpts, selectedKeys, {
+      separator: cfg.separator || '-',
       autoDisambiguate: autoDisambiguate !== false,
       outAuto: _autoSuffixes,
       outCollisions: _collisions,
@@ -1334,8 +1568,9 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
           _dirs.set(_keyOf(f), r.targetDir);
           return r.fileName;
         };
-        const _namesAll = resolveVersionFileNames(v.files, _mk, fnOverride, null, null);
-        const _namesBare = resolveVersionFileNames(v.files, _mk, fnOverride, null, new Set());
+        const _sepOpt = { separator: cfg.separator || '-' };
+        const _namesAll = resolveVersionFileNames(v.files, _mk, fnOverride, null, null, _sepOpt);
+        const _namesBare = resolveVersionFileNames(v.files, _mk, fnOverride, null, new Set(), _sepOpt);
 
         for (const file of v.files) {
           try {
@@ -1483,7 +1718,8 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
         return r.fileName;
       }, fileNameOverride, fileOpts, (Array.isArray(fileIds) && fileIds.length)
         ? new Set(fileIds.map(String))
-        : null, { autoDisambiguate: req.body.autoDisambiguate !== false, outCollisions: _dlCollisions });
+        : null, { autoDisambiguate: req.body.autoDisambiguate !== false, outCollisions: _dlCollisions,
+                  separator: cfg.separator || '-' });
 
       // With auto-disambiguation off the user owns every part of the name, so two selected
       // files CAN now resolve to the same path. Writing both is precisely what corrupted
@@ -1537,6 +1773,29 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
             } else {
               queued.push({ type: 'model', fileName, targetDir, skipped: true });
               continue;
+            }
+          }
+
+          // Same version already on disk under a different name or folder? MOVE it.
+          // The check above only asks whether the NEW path exists, so renaming a model
+          // always missed and re-fetched the identical bytes - one LoRA ended up as three
+          // 57 MB copies. History is keyed on modelId+versionId, so the new row then
+          // overwrote the old one and the leftover copy became untracked.
+          if (conflictMode !== 'overwrite') {
+            const _existing = findExistingVersionCopy(modelId, version.id, file, targetFile);
+            if (_existing) {
+              const _mv = moveModelFamily(_existing, targetFile);
+              if (!_mv.errors.length && existsSync(targetFile)) {
+                fixPermissions(targetDir, sshService);
+                console.log(`[civitai] Relocated instead of re-downloading: ${_existing} -> ${targetFile}`);
+                // Same shape the downloader pushes, so addToHistory records the new
+                // location and the old path stops being referenced.
+                queued.push({ type: 'model', fileName, targetDir, relocated: true, from: _existing });
+                continue;
+              }
+              if (_mv.errors.length) {
+                console.error('[civitai] Relocate failed, downloading instead:', _mv.errors);
+              }
             }
           }
 
@@ -1603,7 +1862,10 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       }
       let metaBaseName = metaLastSlash >= 0 ? metaPath.substring(metaLastSlash + 1) : 'model';
       metaBaseName = metaBaseName.replace(/\$EXTENSION/g, '').replace(/\.[^.]+$/, '').replace(/\.$/, '');
-      if (fileNameOverride) metaBaseName = fileNameOverride;
+      // Sanitised exactly like the model filename. Missing this made the sidecars stop
+      // sharing the model's base name the moment the model name was cleaned, and
+      // moveModelFamily() matches on that base name — the previews would be left behind.
+      if (fileNameOverride) metaBaseName = sanitizeNameOverride(fileNameOverride, metaSep);
       const metaDir = `${basePath}/${metaTypeFolder}/${metaFolder}`;
 
       const modelType = model.type || 'Unknown';
@@ -1816,9 +2078,21 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
   /** DELETE /queue/:id — Remove item from queue */
   router.delete('/queue/:id', (req, res) => {
     const q = loadQueue();
+    const gone = q.items.find(i => i.id === req.params.id);
+    if (!gone) {
+      // Used to answer ok:true for an id that was not present, so a double-delete or a
+      // stale id from the UI was indistinguishable from a real removal.
+      console.warn(`[civitai] REMOVE queue MISS: id=${req.params.id} not present (${q.items.length} in queue)`);
+      return res.status(404).json({ error: 'Queue item not found' });
+    }
     q.items = q.items.filter(i => i.id !== req.params.id);
     saveQueue(q);
-    res.json({ ok: true });
+    // Name what went. Removals were silent, so when a UI bug deleted the wrong review rows
+    // on 2026-09-15 nothing on the server recorded WHAT had gone — and with no backup of
+    // civitai-queue.json those entries were simply unrecoverable.
+    console.log(`[civitai] REMOVED queue item: ${gone.modelData?.name || gone.modelId} (id=${gone.id}, modelId=${gone.modelId}, versionId=${gone.versionId ?? '-'}) — ${q.items.length} left`);
+    res.json({ ok: true, queueLength: q.items.length,
+      removed: { id: gone.id, modelId: gone.modelId, versionId: gone.versionId ?? null, name: gone.modelData?.name ?? null } });
   });
 
   /** PUT /queue/:id — Update queue item (e.g., set userDefined) */
@@ -1835,8 +2109,16 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
 
   /** POST /queue/clear — Clear entire queue */
   router.post('/queue/clear', (req, res) => {
+    const q = loadQueue();
+    const n = q.items.length;
+    // Every row by name, not just a count: this is the one call that can destroy the whole
+    // review queue, and a bare total tells you nothing about what to put back.
+    for (const i of q.items) {
+      console.log(`[civitai] REMOVED queue item (clear): ${i.modelData?.name || i.modelId} (id=${i.id}, modelId=${i.modelId}, versionId=${i.versionId ?? '-'})`);
+    }
     saveQueue({ items: [] });
-    res.json({ ok: true });
+    console.warn(`[civitai] REVIEW QUEUE CLEARED — ${n} item(s) removed`);
+    res.json({ ok: true, removed: n });
   });
 
   // ─── Renamer queue (persistent, same pattern as review queue) ────────
@@ -1883,14 +2165,26 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
 
   router.delete('/renamer/:id', (req, res) => {
     const r = loadRenamer();
+    const gone = r.items.find(i => i.id === req.params.id);
+    if (!gone) {
+      console.warn(`[civitai] REMOVE renamer MISS: id=${req.params.id} not present (${r.items.length} queued)`);
+      return res.status(404).json({ error: 'Renamer item not found' });
+    }
     r.items = r.items.filter(i => i.id !== req.params.id);
     saveRenamer(r);
-    res.json({ ok: true });
+    console.log(`[civitai] REMOVED renamer item: ${gone.fileName || gone.name || gone.id} (id=${gone.id}) — ${r.items.length} left`);
+    res.json({ ok: true, queueLength: r.items.length });
   });
 
   router.post('/renamer/clear', (req, res) => {
+    const r = loadRenamer();
+    const n = r.items.length;
+    for (const i of r.items) {
+      console.log(`[civitai] REMOVED renamer item (clear): ${i.fileName || i.name || i.id} (id=${i.id})`);
+    }
     saveRenamer({ items: [] });
-    res.json({ ok: true });
+    console.warn(`[civitai] RENAMER QUEUE CLEARED — ${n} item(s) removed`);
+    res.json({ ok: true, removed: n });
   });
 
   // ─── CSV Import ───────────────────────────────────────────────────────
@@ -2158,9 +2452,11 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
   /** POST /downloads/clear — Clear completed and failed downloads */
   router.post('/downloads/clear', (req, res) => {
     const manifest = loadDownloads();
+    const before = manifest.downloads.length;
     manifest.downloads = manifest.downloads.filter(d => d.status === 'downloading' || d.status === 'pending');
     saveDownloads(manifest);
-    res.json({ ok: true });
+    console.log(`[civitai-dl] Cleared ${before - manifest.downloads.length} finished/failed row(s) — ${manifest.downloads.length} still active`);
+    res.json({ ok: true, removed: before - manifest.downloads.length });
   });
 
   /** POST /downloads/:id/stop — Stop a download and leave it stopped until forced. */
@@ -2282,8 +2578,14 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
 
   /** POST /history/clear — Clear all history */
   router.post('/history/clear', (req, res) => {
+    const h = loadHistory();
+    const n = (h.items || []).length;
+    // Loudest of the lot on purpose. This is the index the downloader uses to locate an
+    // existing copy of a version (findExistingVersionCopy) and to keep re-downloads from
+    // duplicating files; wiping it silently makes every later model look like a new one.
+    console.warn(`[civitai] DOWNLOAD HISTORY CLEARED — ${n} entr${n === 1 ? 'y' : 'ies'} destroyed; relocation and de-duplication lose their index`);
     saveHistory({ items: [], lastSync: null });
-    res.json({ ok: true });
+    res.json({ ok: true, removed: n });
   });
 
   /** POST /history/send-to-queue — Send history items to processing queue */
@@ -2312,7 +2614,17 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
         const histEntry = h.items.find(i => String(i.modelId) === String(mid));
         const histVid = histEntry?.versionId || null;
         const histOverride = histEntry ? lookupHistoryOverride(mid, histVid) : null;
-        const effectivePath = (histOverride?.pathOverride && String(histOverride.versionId) === String(histVid))
+        // A remembered override whose directory is GONE is a leftover from a config
+        // change, not a preference. Adding baseModelMap "Krea 2" -> "Krea-2" left 117
+        // history rows pointing at a retired /Krea_2; re-downloading from history
+        // recreated that folder and filed the new copy into it. Fall back to the
+        // template when the folder the override names no longer exists.
+        const _histDir = histEntry?.currentDir || histEntry?.targetDir || null;
+        const _histDirAlive = !!(_histDir && existsSync(_histDir));
+        if (_histDir && !_histDirAlive) {
+          console.log(`[civitai] Ignoring stale path override for model ${mid}: ${_histDir} no longer exists`);
+        }
+        const effectivePath = (histOverride?.pathOverride && String(histOverride.versionId) === String(histVid) && _histDirAlive)
           ? histOverride.pathOverride : null;
         const effectiveFn = (histOverride?.fileNameOverride && String(histOverride.versionId) === String(histVid))
           ? histOverride.fileNameOverride : null;
@@ -2419,10 +2731,35 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
     try {
       const raw = readFileSync(join(DATA_DIR, 'fm-index.json'), 'utf8');
       fmIndex = JSON.parse(raw);
-    } catch { return res.status(500).json({ error: 'Could not load fm-index' }); }
+    } catch { fmIndex = {}; }
 
-    const treeIndex = fmIndex.treeIndex || {};
     const basePath = getBasePath();
+    let treeIndex = fmIndex.treeIndex || {};
+    // NOTHING IN THIS CODEBASE WRITES fm-index.json. The route read it, found nothing and
+    // answered 500 every time, so /history/locate has never actually run. Walk the library
+    // instead when the index is absent — a stale index is also worse than useless here,
+    // since locate exists precisely to repair paths after files have moved.
+    if (!Object.keys(treeIndex).length) {
+      treeIndex = {};
+      const stack = [basePath];
+      while (stack.length) {
+        const dir = stack.pop();
+        let ents = [];
+        try { ents = readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+        const files = [];
+        for (const e of ents) {
+          const full = `${dir}/${e.name}`;
+          if (e.isDirectory()) {
+            if (e.name.startsWith('_sweep-quarantine-')) continue; // quarantined = not live
+            stack.push(full);
+          } else if (e.isFile()) {
+            files.push({ name: e.name, path: full });
+          }
+        }
+        if (files.length) treeIndex[dir] = { files };
+      }
+      console.log(`[civitai] locate: built tree index live (${Object.keys(treeIndex).length} dirs)`);
+    }
 
     // Build filename → path[] lookup from tree index (collect ALL matches, filter later)
     const fileMap = new Map(); // filename (lowercase) → [full path, ...]
@@ -2472,7 +2809,13 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
 
         const namesToTry = [];
         if (item.locatedFiles?.[i]?.name) namesToTry.push(item.locatedFiles[i].name);
-        if (item.fileNameOverride) namesToTry.push(item.fileNameOverride + ext);
+        if (item.fileNameOverride) {
+          // Both spellings: files written BEFORE the override was sanitised still carry
+          // the raw spaces, so dropping the raw form would orphan every one of them.
+          namesToTry.push(item.fileNameOverride + ext);
+          const _s = sanitizeNameOverride(item.fileNameOverride, (loadConfig().separator) || '-') + ext;
+          if (_s !== item.fileNameOverride + ext) namesToTry.push(_s);
+        }
         namesToTry.push(f.name);
 
         let found = null;
@@ -2515,100 +2858,16 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
 
   /** POST /rename — Move/rename files from current location to template-resolved location */
   router.post('/rename', async (req, res) => {
-    const { modelId, versionId, pathOverride, userDefined, moves, downloadMeta } = req.body;
-    // moves: [{ from: '/ai-assets/imagegen/...', to: '/ai-assets/imagegen/...' }]
+    const { modelId, versionId, pathOverride, moves, downloadMeta } = req.body;
     if (!moves?.length) return res.status(400).json({ error: 'No moves specified' });
-
-    const basePath = getBasePath();
-    const moved = [];
-    const errors = [];
-    const deleted = [];
-
-    for (const m of moves) {
-      const fromDir = m.from.substring(0, m.from.lastIndexOf('/'));
-      const fromBase = m.from.split('/').pop().replace(/\.[^.]+$/, ''); // base name without ext
-      const toDir = m.to.substring(0, m.to.lastIndexOf('/'));
-      const toBase = m.to.split('/').pop().replace(/\.[^.]+$/, '');
-
-      mkdirSync(toDir, { recursive: true });
-
-      // Scan source directory for all related files (same base name + any extension/suffix)
-      let relatedFiles = [];
-      try {
-        const dirContents = readdirSync(fromDir);
-        relatedFiles = dirContents.filter(name => {
-          // Match: baseName.ext, baseName_1.ext, baseName.preview.ext, etc.
-          // But NOT other models that just happen to start with the same prefix
-          return name === fromBase || name.startsWith(fromBase + '.') || name.startsWith(fromBase + '_');
-        });
-      } catch {}
-
-      for (const relFile of relatedFiles) {
-        const relFrom = `${fromDir}/${relFile}`;
-
-        // Skip old civitai metadata files — delete them instead
-        if (relFile.endsWith('.civit.info') || relFile.endsWith('.civit.full.info')) {
-          try {
-            const { unlinkSync } = await import('fs');
-            unlinkSync(relFrom);
-            deleted.push(relFile);
-          } catch {}
-          continue;
-        }
-
-        // Build the new filename: replace old base name with new base name
-        let newRelFile;
-        if (relFile === `${fromBase}${relFile.substring(fromBase.length)}`) {
-          // Replace the base name portion, keep the rest (suffix + extension)
-          newRelFile = toBase + relFile.substring(fromBase.length);
-        } else {
-          newRelFile = relFile;
-        }
-
-        const relTo = `${toDir}/${newRelFile}`;
-
-        // Same path — no-op but still count as "moved" so history gets updated
-        if (relFrom === relTo) {
-          moved.push({ from: relFrom, to: relTo });
-          continue;
-        }
-
-        try {
-          const { renameSync } = await import('fs');
-          renameSync(relFrom, relTo);
-          moved.push({ from: relFrom, to: relTo });
-        } catch (err) {
-          try {
-            const { copyFileSync, unlinkSync } = await import('fs');
-            copyFileSync(relFrom, relTo);
-            unlinkSync(relFrom);
-            moved.push({ from: relFrom, to: relTo });
-          } catch (err2) {
-            errors.push({ from: relFrom, to: relTo, error: err2.message });
-          }
-        }
-      }
-    }
-
-    // Fix permissions on new locations
-    const newDirs = [...new Set(moved.map(m => m.to.substring(0, m.to.lastIndexOf('/'))))];
-    for (const dir of newDirs) {
-      fixPermissions(dir, sshService);
-    }
-
-    // Clean up empty source directories
-    const srcDirs = [...new Set(moves.map(m => m.from.substring(0, m.from.lastIndexOf('/'))))];
-    for (const srcDir of srcDirs) {
-      try {
-        const remaining = readdirSync(srcDir);
-        if (remaining.length === 0) {
-          const { rmdirSync } = await import('fs');
-          rmdirSync(srcDir);
-        }
-      } catch {}
-    }
-
-    // If Apply (downloadMeta=true), download fresh metadata to the new location
+  
+    // Shared with the model-library manager — see applyModelMoves(). It performs the moves,
+    // fixes permissions, prunes emptied directories and re-points history in one place.
+    const { moved, deleted, errors } = applyModelMoves(moves, {
+      modelId, versionId, pathOverride, fixPerms: (dir) => fixPermissions(dir, sshService),
+    });
+  
+    // Apply (downloadMeta) refreshes the CivitAI sidecars at the new name/location.
     if (downloadMeta && modelId && moved.length > 0) {
       const newDir = moved[0].to.substring(0, moved[0].to.lastIndexOf('/'));
       const newBaseName = moved[0].to.split('/').pop().replace(/\.[^.]+$/, '');
@@ -2624,54 +2883,15 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
             : model.modelVersions?.[0];
           writeFileSync(`${newDir}/${newBaseName}.civit.full.info`, JSON.stringify(model, null, 2));
           if (version) writeFileSync(`${newDir}/${newBaseName}.civit.info`, JSON.stringify(version, null, 2));
-          // SDNext-compatible sidecar (same content, expected filename)
           writeFileSync(`${newDir}/${newBaseName}.json`, JSON.stringify(model, null, 2));
           fixPermissions(newDir, sshService);
         }
       } catch (err) { console.error('[civitai] Metadata download after rename failed:', err.message); }
     }
-
-    // Update history entry with new location
-    if (modelId && moved.length > 0) {
-      const h = loadHistory();
-      // Find the specific version entry, or fall back to any entry for this model
-      const entry = versionId
-        ? h.items.find(i => String(i.modelId) === String(modelId) && String(i.versionId) === String(versionId))
-        : h.items.find(i => String(i.modelId) === String(modelId));
-      if (entry) {
-        const newDir = moved[0].to.substring(0, moved[0].to.lastIndexOf('/'));
-        const newBaseName = moved[0].to.split('/').pop().replace(/\.[^.]+$/, '');
-        entry.targetDir = newDir;
-        entry.currentDir = newDir;
-        entry.downloadedAt = new Date().toISOString();
-        if (pathOverride) entry.pathOverride = pathOverride;
-        entry.fileNameOverride = newBaseName;
-        entry.locatedFiles = moved.map(m => ({
-          name: m.to.split('/').pop(),
-          currentPath: m.to,
-          indexPath: m.to.replace(basePath, ''),
-        }));
-        entry.files = moved.filter(m => {
-          const name = m.to.split('/').pop();
-          return name.endsWith('.safetensors') || name.endsWith('.ckpt') || name.endsWith('.pt');
-        }).map(m => ({
-          name: m.to.split('/').pop(),
-          sizeKB: 0,
-          type: 'Model',
-          hashes: {},
-        }));
-        // Move to top of history list
-        const idx = h.items.indexOf(entry);
-        if (idx > 0) { h.items.splice(idx, 1); h.items.unshift(entry); }
-        saveHistory(h);
-      }
-    }
-
-    if (errors.length) {
-      console.error(`[civitai] Rename errors:`, JSON.stringify(errors));
-    }
+  
+    if (errors.length) console.error('[civitai] Rename errors:', JSON.stringify(errors));
     console.log(`[civitai] Rename: ${moved.length} moved, ${errors.length} errors`);
-    res.json({ ok: true, moved: moved.length, errors });
+    res.json({ ok: true, moved: moved.length, deleted: deleted.length, errors });
   });
 
   /** GET /queue/count — Quick count for sidebar badge */

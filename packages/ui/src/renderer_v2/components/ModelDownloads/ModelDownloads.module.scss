@@ -13,6 +13,11 @@
 @keyframes dl-spin { to { transform: rotate(360deg); } }
 
 .body { flex: 1; overflow: auto; padding: 16px; }
+/* The Library view is a full-bleed three-pane layout that positions itself with
+   `position: absolute; inset: 0`. Without a positioned ancestor here it anchored to
+   .container instead and covered the header — taking the sub-tab buttons with it, so there
+   was no way back out of the tab short of reloading. */
+.bodyFlush { position: relative; padding: 0; overflow: hidden; }
 .errorBar { margin: 8px 0; padding: 8px 11px; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: 6px; color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); font-size: 12px; }
 .empty { padding: 24px; text-align: center; color: var(--fg-faint); font-size: 12px; }
 

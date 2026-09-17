@@ -101,3 +101,45 @@
 .hintInline { font-size: 10px; color: var(--fg-faint); }
 .spin { animation: fm-spin 0.9s linear infinite; }
 @keyframes fm-spin { to { transform: rotate(360deg); } }
+
+/* ── Convert sub-tab (Transmute) ── */
+.cvWrap { position: absolute; inset: 0; overflow: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+.cvDrop { display: flex; align-items: center; gap: 10px; padding: 18px 16px; border: 1.5px dashed var(--border); border-radius: 8px;
+          color: var(--fg-dim, #aaa); font-size: 12.5px; cursor: pointer; transition: border-color .15s, background .15s; }
+.cvDrop:hover, .cvDropActive { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.cvUploading { display: inline-flex; align-items: center; gap: 5px; color: var(--accent); }
+.cvSection { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
+.cvSectionHead { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; padding: 2px 0 6px; }
+.cvRow { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); font-size: 12.5px; flex-wrap: wrap; }
+.cvName { flex: 1 1 200px; min-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cvArrow { display: inline-flex; align-items: center; gap: 4px; color: var(--fg-dim, #aaa); font-size: 11.5px; }
+.cvStatus { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; min-width: 86px; }
+.cvOk { color: var(--success, #4caf7d); }
+.cvFail { color: var(--danger, #e05555); }
+.cvRun { color: var(--accent); }
+.cvMuted { color: var(--fg-muted, #888); font-size: 11.5px; }
+.cvActions { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.cvBtn { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; padding: 3px 9px; border: 1px solid var(--border);
+         border-radius: 6px; background: var(--control-bg); color: var(--fg); cursor: pointer; text-decoration: none; }
+.cvBtn:hover { border-color: var(--accent); }
+.cvIconBtn { display: inline-flex; padding: 3px 5px; border: 1px solid transparent; border-radius: 6px; background: none; color: var(--fg-muted, #888); cursor: pointer; }
+.cvIconBtn:hover { color: var(--danger, #e05555); }
+.cvPrimary { font-size: 12px; padding: 4px 14px; border: 1px solid var(--accent); border-radius: 6px;
+             background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--fg); cursor: pointer; }
+.cvErr { flex-basis: 100%; color: var(--danger, #e05555); font-size: 11.5px; padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cvNotice { padding: 14px; border: 1px solid var(--border); border-radius: 8px; font-size: 12.5px; color: var(--fg-dim, #aaa); }
+.cvSpin { animation: cv-spin 1s linear infinite; }
+@keyframes cv-spin { to { transform: rotate(360deg); } }
+
+/* Convert sub-tab: filterable format combo */
+.cvCombo { position: relative; display: flex; width: 110px; flex: 0 0 auto; }
+.cvCombo .input { width: 100%; min-width: 0; flex: 1; }
+.cvComboList { position: absolute; top: calc(100% + 2px); left: 0; min-width: 100%; max-height: 180px; overflow-y: auto; z-index: 30;
+  background: var(--control-bg); border: 1px solid var(--border); border-radius: 5px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35); }
+.cvComboOpt { padding: 4px 10px; font-size: 12px; cursor: pointer; color: var(--fg); }
+.cvComboOpt:hover, .cvComboHi { background: rgba(128, 128, 128, 0.18); }
+.cvComboCur { color: var(--accent); }
+
+/* File Browser sub-tab: remount escape hatch */
+.resetBtn { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--control-bg); color: var(--fg-muted); cursor: pointer; }
+.resetBtn:hover { border-color: var(--accent); color: var(--fg); }

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { Download, RefreshCw, Search, Square, Play, X, Loader2, Save, Pause, Clock, Check, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
 import { modelDownloadsStore as store, type DLItem, type HFFile } from '../../stores/ModelDownloadsStore'
+import { ModelLibraryView } from './ModelLibraryView'
 import styles from './ModelDownloads.module.scss'
 
 function gb(b?: number): string {
@@ -104,7 +105,14 @@ const QueueItem: React.FC<{ source: 'hf' | 'civ'; item: DLItem }> = observer(({ 
 
 const QueueColumn: React.FC<{ source: 'hf' | 'civ'; title: string; items: DLItem[]; onSchedule: () => void }> = observer(({ source, title, items, onSchedule }) => {
   const active = items.filter((i) => i.status !== 'complete')
-  const done = items.filter((i) => i.status === 'complete')
+  // Completed downloads are history, so newest first. `items` arrives in the order the
+  // downloader pushed them, which is right for `active` (a queue — next to run on top) but
+  // buried the download you just finished at the bottom of the completed list.
+  const doneTs = (i: DLItem) => Date.parse(i.completedAt || i.startedAt || '') || 0
+  const done = items
+    .filter((i) => i.status === 'complete')
+    .slice()
+    .sort((a, b) => doneTs(b) - doneTs(a))
   const sched = store.schedOf(source)
   const running = store.schedAllowed(source)
   return (
@@ -861,7 +869,7 @@ export const ModelDownloadsPanel: React.FC = observer(() => {
         <Download size={16} className={styles.headerIcon} />
         <span className={styles.title}>Model Downloads</span>
         <div className={styles.tabs}>
-          {([['queue', 'Queue'], ['hf', 'HF Downloader'], ['civitai', 'CivitAI']] as const).map(([id, label]) => (
+          {([['queue', 'Queue'], ['hf', 'HF Downloader'], ['civitai', 'CivitAI'], ['library', 'Library']] as const).map(([id, label]) => (
             <button key={id} className={`${styles.tab} ${store.subTab === id ? styles.tabActive : ''}`} onClick={() => store.setSubTab(id)}>
               {label}
               {id === 'queue' && store.hfDownloads.concat(store.civDownloads).some((d) => d.status === 'downloading') && <span className={styles.dot} />}
@@ -872,7 +880,7 @@ export const ModelDownloadsPanel: React.FC = observer(() => {
         <button className={styles.refreshBtn} title="Refresh" onClick={() => void store.loadDownloads()}><RefreshCw size={14} /></button>
       </div>
 
-      <div className={styles.body}>
+      <div className={`${styles.body} ${store.subTab === 'library' ? styles.bodyFlush : ''}`}>
         {store.subTab === 'queue' && (
           <div className={styles.queueCols}>
             <QueueColumn source="hf" title="HuggingFace" items={store.hfDownloads} onSchedule={() => setSchedSource('hf')} />
@@ -881,6 +889,7 @@ export const ModelDownloadsPanel: React.FC = observer(() => {
         )}
         {store.subTab === 'hf' && <HFView />}
         {store.subTab === 'civitai' && <CivitaiView />}
+        {store.subTab === 'library' && <ModelLibraryView />}
       </div>
       {schedSource && <SchedulerModal source={schedSource} onClose={() => setSchedSource(null)} />}
     </div>
