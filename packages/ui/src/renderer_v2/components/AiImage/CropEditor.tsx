@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { trainingImagesStore as store, igImage } from '../../stores/TrainingImagesStore'
+import { trainingImagesStore as store, igImage, imKey } from '../../stores/TrainingImagesStore'
 import { confirmStore } from '../../stores/confirmStore'
 import styles from './TrainingImages.module.scss'
 
@@ -168,11 +168,18 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
   // edits typed on this image. The parent remounts the editor (key=rel) so every
   // image opens with clean state.
   const goNav = (dir: 1 | -1) => { void saveAll().finally(() => onNav?.(dir)) }
+  // No confirmation, by request: this culls images that cropping cannot save, and a dialog on
+  // every one defeats the point. 🛑 It is a HARD delete — the image plus its .txt/.caption/
+  // .orig/.preup sidecars and its rating, with no trash — the same thing the browser's Delete
+  // has always done.
   const deleteThis = async () => {
-    if (!(await confirmStore.confirm({ title: 'Delete image', message: `Delete ${name} from this training set? Its caption sidecars go with it; originals outside the set are not affected. Cannot be undone.`, confirmText: 'Delete' }))) return
     setBusy(true); setMsg('Deleting…')
     try {
-      await store.deleteFiles([name])
+      // The section-qualified KEY, not the bare name. With batch subsections inlined into one
+      // grid the same filename exists in several subsections, and a bare name posts against the
+      // batch ROOT — deleting nothing, or a same-named file in the wrong place. imRec is looked
+      // up by rel, so its dir is the one this image actually lives in.
+      await store.deleteKeys([imRec && imRec.name ? imKey(imRec) : name])
       onChanged()
       // Keep paging: next image, else previous, else nothing left — close.
       if (navPos && onNav && navPos.i < navPos.n - 1) onNav(1)
@@ -205,7 +212,11 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
           <button className={styles.btn} disabled={busy} onClick={() => void upscale()} title="Re-upscale via SeedVR2">⤴ Upscale</button>
           <button className={styles.btn} disabled={busy} onClick={() => void swap()} title="Toggle upscaled ↔ pre-upscale">⇄ Swap</button>
           <button className={styles.btn} disabled={busy} onClick={() => void reset()}>Reset</button>
-          {store.inTrainingSet && <button className={styles.btnDanger} disabled={busy} title="Delete this image + its sidecars from the set (originals untouched)" onClick={() => void deleteThis()}>🗑 Delete</button>}
+          {/* Not gated on inTrainingSet any more: culling happens in plain tag folders and in
+              batches too, and the server already refuses what must not be deleted. */}
+          <button className={styles.btnDanger} disabled={busy}
+                  title="Delete this image and its caption sidecars, then go straight to the next one. No confirmation, and it cannot be undone."
+                  onClick={() => void deleteThis()}>🗑 Delete</button>
           <button className={styles.btnPrimary} disabled={busy} onClick={() => void apply()}>Apply crop</button>
           <button className={styles.btn} onClick={closeSave}>Close</button>
         </div>
