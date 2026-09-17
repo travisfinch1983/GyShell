@@ -70,6 +70,9 @@ export const upscalerApi = {
   gpusSave: (enabled: string[]) => postForm('/api/gpus/save', { enabled }), // 'agent_name:cuda_index'
   syncSource: (tagId: string, action: 'add' | 'remove') => postForm('/api/sync/source', { tag_id: tagId, action }),
   syncReset: (tagId: string) => postForm('/api/sync/reset', { tag_id: tagId }),
+  /** Per-source: take EVERY asset carrying the tag, not just training-ready ones. */
+  syncAllImages: (tagId: string, on: boolean) =>
+    postForm('/api/sync/all-images', { tag_id: tagId, on: on ? '1' : '0' }),
   syncRun: () => postForm('/api/sync/run'),
   syncToggle: () => postForm('/api/sync/toggle'),
 }

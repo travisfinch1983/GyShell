@@ -750,6 +750,20 @@ async def sync_source(tag_id: str = Form(...), action: str = Form("add")):
     return {"ok": True}
 
 
+@app.post("/api/sync/all-images")
+async def sync_all_images(tag_id: str = Form(...), on: str = Form("1")):
+    """Per-source: take EVERY asset carrying the tag, not just training-ready ones.
+
+    Default OFF preserves the curated behaviour (`tag AND upscaled`, parent minus watched
+    children). ON is for a tag added to pull a whole set, where nothing has been upscaled
+    yet and the default returns a handful.
+    """
+    val = str(on).lower() not in ("0", "false", "off", "")
+    sync.set_source_all_images(tag_id, val)
+    log.info(f"sync: all_images={'ON' if val else 'OFF'} for {tag_id[:8]}")
+    return {"ok": True, "all_images": val}
+
+
 @app.post("/api/sync/reset")
 async def sync_reset(tag_id: str = Form(...)):
     eff = [tag_id]

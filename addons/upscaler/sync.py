@@ -21,6 +21,7 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3   # for the guarded ALTER in init()
 import tempfile
 import time
 from pathlib import Path
@@ -96,6 +97,17 @@ _DL_CONCURRENCY = 6
 def init():
     with db.conn() as c:
         c.executescript(_SCHEMA)
+        # CREATE TABLE IF NOT EXISTS does NOT add a column to a table that already
+        # exists, so the flag has to be migrated in explicitly. Guarded rather than
+        # queried first: on a fresh DB the column is absent, on an existing one it is
+        # present after the first run, and "duplicate column" is the only error either
+        # case can raise.
+        try:
+            c.execute("ALTER TABLE sync_sources ADD COLUMN all_images INTEGER NOT NULL DEFAULT 0")
+            log.info("sync: migrated sync_sources — added all_images")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
 
 
 # ---- settings ----
@@ -117,6 +129,20 @@ def add_source(tag_id: str, tag_value: str):
     with db.conn() as c:
         c.execute("INSERT OR REPLACE INTO sync_sources (tag_id, tag_value, added_at) "
                   "VALUES (?,?,?)", (tag_id, tag_value, time.time()))
+
+def set_source_all_images(tag_id: str, on: bool) -> bool:
+    """Per-source override: take EVERY asset carrying the tag.
+
+    Normally a pass searches `tag AND (upscaled OR upscale-res)` and then subtracts a
+    parent's watched children, so a folder holds only images that are training-ready AND
+    exactly-tagged. That is right for the curated `satin` tree; it is wrong for a tag added
+    to grab a whole set, where almost nothing has been through the upscaler yet and the
+    result is a handful of images out of hundreds.
+    """
+    with db.conn() as c:
+        c.execute("UPDATE sync_sources SET all_images=? WHERE tag_id=?", (1 if on else 0, tag_id))
+    return on
+
 
 def remove_source(tag_id: str):
     with db.conn() as c:
@@ -307,8 +333,9 @@ class SyncWorker:
         # build full effective-tag worklist
         worklist = []
         for s in sources:
+            allimg = bool(s.get("all_images"))
             for eff in self.effective_tags(s["tag_id"]):
-                worklist.append((s["tag_value"], eff))
+                worklist.append((s["tag_value"], eff, allimg))
         self.progress.update(running=True, source="", tag="", tags_done=0,
                              tags_total=len(worklist), delivered=0, skipped=0,
                              errors=0, dl_done=0, dl_total=0, phase="scan",
@@ -319,20 +346,20 @@ class SyncWorker:
             # is HIERARCHICAL (a parent returns all descendants' assets), so we
             # keep each tag's raw result to subtract children in phase 2.
             tag_assets = {}
-            for i, (src_val, eff) in enumerate(worklist, 1):
+            for i, (src_val, eff, allimg) in enumerate(worklist, 1):
                 if self._stop:
                     break
                 tg = self._tag_index.get(eff)
                 self.progress["source"] = src_val
                 self.progress["tag"] = (tg.get("value") if tg else eff) or eff
                 self.progress["tags_done"] = i
-                tag_assets[eff] = await self._assets_with(eff, ready_ids)
+                tag_assets[eff] = await self._assets_with(eff, ready_ids, allimg)
             # Phase 2 — copy: each folder gets only its EXACT-tagged images, i.e.
             # search(X) minus the union of its direct children's results. This
             # stops a parent folder from accumulating its children's images.
             self.progress["phase"] = "copy"
             self.progress["tags_done"] = 0
-            for src_val, eff in worklist:
+            for src_val, eff, allimg in worklist:
                 if self._stop:
                     break
                 tag = self._tag_index.get(eff)
@@ -343,13 +370,19 @@ class SyncWorker:
                 self.progress["dl_total"] = 0
                 if not tag:
                     continue
-                child_ids = set()
-                for c in self._children_of(eff):
-                    for a in tag_assets.get(c, []):
-                        if a.get("id"):
-                            child_ids.add(a["id"])
-                exact = [a for a in tag_assets.get(eff, [])
-                         if a.get("id") and a["id"] not in child_ids]
+                # all_images also switches OFF the parent-minus-children subtraction: the
+                # point of the flag is "everything carrying this tag", and an image that is
+                # ALSO under a watched child is still carrying this tag.
+                if allimg:
+                    exact = [a for a in tag_assets.get(eff, []) if a.get("id")]
+                else:
+                    child_ids = set()
+                    for c in self._children_of(eff):
+                        for a in tag_assets.get(c, []):
+                            if a.get("id"):
+                                child_ids.add(a["id"])
+                    exact = [a for a in tag_assets.get(eff, [])
+                             if a.get("id") and a["id"] not in child_ids]
                 try:
                     await self._sync_tag(eff, tag, exact, dest_root)
                 except Exception as e:
@@ -523,15 +556,27 @@ class SyncWorker:
                     mark_synced(eff, aid, fn)
                 self.progress["delivered"] += len(got)
 
-    async def _assets_with(self, tag_id: str, ready_ids: list) -> list[dict]:
+    async def _assets_with(self, tag_id: str, ready_ids: list,
+                           all_images: bool = False) -> list[dict]:
         """Union of assets matching (tag AND ready) for each ready tag — i.e.
-        anything carrying the tag plus EITHER 'upscaled' or 'upscale-res'."""
+        anything carrying the tag plus EITHER 'upscaled' or 'upscale-res'.
+
+        🛑 THE `ready` AND IS THE REASON A NEW TAG DOWNLOADS ALMOST NOTHING. Immich is asked
+        for `tag AND upscaled`, so a tag whose images have never been through the upscaler
+        returns a handful — the few that happen to carry it — and it looks like the sync is
+        de-duplicating against other folders. It is not; there is no cross-tag dedup anywhere
+        in this module. Diagnosed 2026-09-17: `satin` had 14,443 (accumulated since June as
+        images were upscaled) while six tags added that afternoon had 0, 0, 5, 10, 11 and 82.
+        With all_images the tag is searched ALONE, which is what "every image for this tag"
+        actually means.
+        """
         seen, out = set(), []
-        for rid in ready_ids:
+        for rid in (["*"] if all_images else ready_ids):
             page = 1
             while True:
                 res = await self.immich.search_metadata(
-                    tag_ids=[tag_id, rid], page=page, size=250,
+                    tag_ids=([tag_id] if all_images else [tag_id, rid]),
+                    page=page, size=250,
                     with_exif=False, with_stacked=True)
                 for it in res.get("items") or []:
                     aid = it.get("id")

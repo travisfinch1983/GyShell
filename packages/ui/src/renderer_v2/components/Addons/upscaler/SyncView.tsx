@@ -125,6 +125,24 @@ export const SyncView: React.FC = () => {
               <code className={styles.mono} style={{ fontWeight: 600 }}>{t.src.tag_value}</code>
               <span className={styles.faint}>{t.n_tags} tag(s) · {t.total_synced} downloaded</span>
               <span className={styles.spacer} />
+              {/* A pass normally searches `tag AND (upscaled OR upscale-res)` and then
+                  subtracts a parent's watched children — right for a curated tree, wrong for
+                  a tag added to pull a whole set, where almost nothing has been upscaled yet
+                  and you get a handful out of hundreds. This takes everything. */}
+              <label
+                className={styles.faint}
+                style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: busy ? 'default' : 'pointer' }}
+                title={'ON: download EVERY image carrying this tag, whether or not it is upscaled and whether or not it also sits under a sub-tag.\nOFF (default): only training-ready images, and a parent excludes its watched children.'}
+              >
+                <input
+                  type="checkbox"
+                  disabled={busy}
+                  checked={Boolean(t.src.all_images)}
+                  onChange={(e) => void act(() => upscalerApi.syncAllImages(t.src.tag_id, e.target.checked),
+                                            e.target.checked ? 'All images ON' : 'All images OFF')}
+                />
+                all images
+              </label>
               <button
                 className={styles.btn}
                 disabled={busy}
