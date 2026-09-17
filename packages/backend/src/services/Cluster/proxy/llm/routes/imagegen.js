@@ -870,6 +870,22 @@ export function createImagegenRouter(config) {
           + (b.avoid ? ` --avoid ${q(String(b.avoid))}` : '')
           + (b.max_side ? ` --max-side ${parseInt(b.max_side, 10)}` : '')
           + (b.trigger ? ` --trigger ${q(b.trigger)}` : '')
+          // Runtime reasoning control. enable_thinking is a QWEN chat-template kwarg, silently
+          // ignored by DeepSeek — which then reasons at full length until the reply either
+          // blows the timeout or comes back as reasoning prose the validator rejects, leaving
+          // the sidecar BLANK. 'off' sends {"thinking":{"type":"disabled"}}, which is the field
+          // that actually turns it off; a level alone only sets HOW MUCH, not whether.
+          // Whitelisted, not passed through: it reaches a remote shell, and an unrecognised
+          // value is rejected by some providers anyway.
+          + (['off', 'none', 'low', 'high', 'max'].includes(String(b.reasoning || ''))
+              ? ` --reasoning ${q(String(b.reasoning))}` : '')
+          // Per-image HTTP timeout. A reasoning model on a large image can exceed the 180s
+          // default, and the failure looks identical to a bad caption: an empty sidecar.
+          + (b.timeout ? ` --timeout ${Math.max(30, Math.min(1800, parseInt(b.timeout, 10) || 180))}` : '')
+          // 1 = sequential (unchanged). API models are stateless so concurrency is nearly free;
+          // a LOCAL model serving one stream can be slower under parallel load, which is why
+          // this is the caller's choice and not a heuristic. Capped again on the remote side.
+          + (b.concurrency ? ` --concurrency ${Math.max(1, Math.min(16, parseInt(b.concurrency, 10) || 1))}` : '')
           + (b.overwrite ? ' --overwrite' : '') + ' --json';
     } else if (engine === 'blip') {
       cmd = `${CUDA_ORDER} ${BLIP_PY} ${BLIP_SCRIPT} --folder ${q(remoteFolder)}${filesArg} --model-dir ${q(BLIP_MODEL_DIR)} `
@@ -1258,6 +1274,84 @@ export function createImagegenRouter(config) {
   });
 
   // ---- Change a subsection's kohya repeats: rename <N>_<concept> → <M>_<concept>. ----
+  // ---- Per-subsection caption variables -------------------------------------------------
+  // One dot-file at the BATCH ROOT holds both the field DEFINITIONS (batch-wide) and the
+  // per-subsection VALUES. Batch-level rather than one file per subsection because adding a
+  // field is a batch-wide act — "give every subsection a Colour box" — and two subsections
+  // disagreeing about which fields exist is not a state worth being able to represent.
+  // Dot-prefixed so browse/counts/merge never see it, same as .preview.
+  const CAPTION_VARS = '.caption-vars.json';
+  const VAR_KEY_RE = /^[A-Z][A-Z0-9_]{0,31}$/;   // referenced as {$KEY} in the captioner
+
+  /** Resolve `rel` and require it to BE a training batch. Returns the dir or throws. */
+  function batchDirOf(rel) {
+    const dir = safeResolve(rel || '');
+    if (!isTrainingBatchName(path.basename(dir))) {
+      const e = new Error('not a training batch'); e.status = 400; throw e;
+    }
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) {
+      const e = new Error('no such batch'); e.status = 404; throw e;
+    }
+    return dir;
+  }
+
+  function readCaptionVars(dir) {
+    try {
+      const d = JSON.parse(readFileSync(path.join(dir, CAPTION_VARS), 'utf8'));
+      const fields = Array.isArray(d.fields) ? d.fields.filter(
+        (f) => f && VAR_KEY_RE.test(String(f.key))).map((f) => ({ key: String(f.key), label: String(f.label || f.key) })) : [];
+      const values = (d.values && typeof d.values === 'object') ? d.values : {};
+      return { fields, values };
+    } catch { return { fields: [], values: {} }; }
+  }
+
+  router.get('/caption-vars', (req, res) => {
+    let dir;
+    try { dir = batchDirOf(req.query.path); }
+    // A non-batch folder is NOT an error here: the browser asks on every navigation and an
+    // empty answer is the honest one for a folder that cannot hold subsections.
+    catch (e) { return e.status === 404 ? res.status(404).json({ error: e.message })
+                                        : res.json({ fields: [], values: {}, applicable: false }); }
+    res.json({ ...readCaptionVars(dir), applicable: true });
+  });
+
+  router.post('/caption-vars', express.json(), (req, res) => {
+    let dir;
+    try { dir = batchDirOf(req.body && req.body.path); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+    const b = req.body || {};
+    if (!Array.isArray(b.fields)) return res.status(400).json({ error: 'fields must be an array' });
+    const seen = new Set();
+    const fields = [];
+    for (const f of b.fields) {
+      const key = String((f && f.key) || '').toUpperCase();
+      // Rejected rather than coerced: a silently-renamed key breaks every {$KEY} that
+      // referenced it, and the caption that results still looks plausible.
+      if (!VAR_KEY_RE.test(key)) return res.status(400).json({ error: `bad variable name "${key}" — A-Z, 0-9 and _ only, starting with a letter` });
+      if (seen.has(key)) return res.status(400).json({ error: `duplicate variable "${key}"` });
+      seen.add(key);
+      fields.push({ key, label: String((f && f.label) || key).slice(0, 64) });
+    }
+    // Values are keyed by SUBSECTION FOLDER NAME. Anything that is not a real subsection of
+    // this batch is dropped, so a renamed or deleted subsection cannot leave a value behind
+    // that silently applies to a later folder of the same name.
+    const real = new Set(readdirSync(dir).filter(
+      (n) => subsectionParts(n) && statSync(path.join(dir, n)).isDirectory()));
+    const values = {};
+    for (const [sub, vals] of Object.entries(b.values || {})) {
+      if (!real.has(sub) || !vals || typeof vals !== 'object') continue;
+      const keep = {};
+      for (const k of seen) if (typeof vals[k] === 'string' && vals[k].trim()) keep[k] = String(vals[k]).slice(0, 500);
+      if (Object.keys(keep).length) values[sub] = keep;
+    }
+    try {
+      writeFileSync(path.join(dir, CAPTION_VARS), JSON.stringify({ fields, values }, null, 2));
+      try { chmodSync(path.join(dir, CAPTION_VARS), 0o664); } catch { /* best effort */ }
+    } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    console.log(`[imagegen] caption-vars saved for ${path.relative(BASE, dir)}: ${fields.length} field(s), ${Object.keys(values).length} subsection(s) populated`);
+    res.json({ ok: true, fields, values });
+  });
+
   router.post('/subsection-repeats', express.json(), (req, res) => {
     const rel = (req.body && req.body.path) || '';
     const repeats = parseInt(req.body && req.body.repeats, 10);

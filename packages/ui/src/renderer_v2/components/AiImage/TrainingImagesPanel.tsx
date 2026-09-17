@@ -17,6 +17,47 @@ const SORT_KEYS: { v: any; label: string }[] = [
   { v: 'added', label: 'Date added' }, { v: 'size', label: 'Size' },
 ]
 
+// ── Per-subsection caption variables ─────────────────────────────────────────────────
+// One row of boxes per subsection, one box per batch-wide field. The captioner references
+// them as {$KEY} and resolves them PER SUBSECTION at run time, so a whole batch captions in
+// one pass instead of editing the naming box and re-running for every colour.
+// Saved on BLUR, not per keystroke: this writes a file on the NAS and a save per character
+// would be a write storm for no benefit.
+const SubVars: React.FC<{ sub: string }> = observer(({ sub }) => {
+  const fields = store.captionVars.fields
+  const [draft, setDraft] = useState<Record<string, string>>({})
+  // The store is the source of truth; `draft` only holds keystrokes for the box being typed
+  // in. Seeding from the store on every render would fight the user mid-word.
+  const valueOf = (k: string) => (k in draft ? draft[k] : (store.captionVars.values[sub]?.[k] ?? ''))
+  if (!fields.length) return null
+  const commit = async () => {
+    if (!Object.keys(draft).length) return
+    const next = {
+      fields,
+      values: { ...store.captionVars.values, [sub]: { ...(store.captionVars.values[sub] || {}), ...draft } },
+    }
+    setDraft({})
+    try { await store.saveCaptionVars(next) } catch (e: any) { store.msg = `Variable save failed: ${e?.message || e}` }
+  }
+  return (
+    <div className={styles.secDivider} style={{ paddingTop: 0, opacity: 0.95 }}>
+      {fields.map((f) => (
+        <label key={f.key} className={styles.aclChk} title={`Referenced in the captioner as {$${f.key}}`}>
+          <span className={styles.dim}>{f.label}</span>
+          <input
+            className={styles.input} style={{ width: 210 }}
+            placeholder={`{$${f.key}}`}
+            value={valueOf(f.key)}
+            onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.value }))}
+            onBlur={() => void commit()}
+            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+          />
+        </label>
+      ))}
+    </div>
+  )
+})
+
 // ── Subsection picker: EXISTING subsections listed first so a typo can't mint 20_bleu
 // beside 20_blue (Travis, 2026-09-02); a new concept takes a name + repeats. ──
 const SubsectionModal: React.FC<{ onClose: () => void }> = observer(({ onClose }) => {
@@ -616,6 +657,31 @@ export const TrainingImagesPanel: React.FC = observer(() => {
     try { await store.setSubsectionRepeats(folderPath, repeats); void store.browse(store.cwd) }
     catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
   }
+  /** Add a caption variable to EVERY subsection of this batch, then fill it in per subsection.
+   *  Batch-wide by design: "give every subsection a Colour box" is the actual intent, and
+   *  subsections disagreeing about which fields exist is not a state worth representing. */
+  const addCaptionVar = async () => {
+    const label = await promptStore.prompt({
+      title: 'New caption variable',
+      placeholder: 'what it is, e.g. Colour or Pattern',
+      confirmText: 'Add',
+    })
+    if (label === null || !label.trim()) return
+    // KEY is derived from the label so the reference is predictable, then shown back — the
+    // captioner matches on the KEY, and silently renaming it later would break every {$KEY}
+    // already written into a prompt.
+    const key = label.trim().toUpperCase().replace(/[^A-Z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 32)
+    if (!/^[A-Z]/.test(key)) { store.msg = 'A variable name must start with a letter.'; return }
+    if (store.captionVars.fields.some((f) => f.key === key)) { store.msg = `{$${key}} already exists.`; return }
+    try {
+      await store.saveCaptionVars({
+        fields: [...store.captionVars.fields, { key, label: label.trim() }],
+        values: store.captionVars.values,
+      })
+      store.msg = `Added {$${key}} — fill it in per subsection, then reference {$${key}} in the captioner.`
+    } catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
+  }
+
   const doRenameFiles = async () => {
     const base = await promptStore.prompt({ title: `Rename ${store.selected.size} images`, placeholder: 'base name, e.g. white → white-1..N (lowercased)', confirmText: 'Rename' })
     if (base === null || !base.trim()) return
@@ -702,6 +768,17 @@ export const TrainingImagesPanel: React.FC = observer(() => {
             }}>
             {store.selectionMode && store.selected.size ? `🏷 Auto-caption (${store.selected.size})…` : '🏷 Auto-caption…'}
           </button>
+          {/* 🛑 NOT in the selection bar. Adding a variable is a property of the BATCH, not of
+              whatever happens to be selected — putting it there meant the only way to create
+              the first variable was to select images first, and with zero fields the
+              per-subsection boxes render nothing, so there was no other way in at all. */}
+          {store.batchContext && (
+            <button
+              className={styles.btn}
+              title="Add a caption variable to EVERY subsection of this batch. Fill it in per subsection, then reference it in the captioner as {$KEY} — it resolves to that subsection's value during a bulk run."
+              onClick={() => void addCaptionVar()}
+            >{'{$}'} Variable{store.captionVars.fields.length ? ` (${store.captionVars.fields.length})` : ''}…</button>
+          )}
           <button className={styles.btn} title="Add or remove the same booru tags across this folder" onClick={() => setBlanket(true)}>🏷 Blanket tags…</button>
           <button className={styles.btn} title="Replace text across the .txt and .caption sidecars in this folder — preview before applying" onClick={() => setFindRep(true)}>🔎 Find &amp; replace…</button>
           <button className={styles.btn} title="Have a text model correct the captions in this folder against an instruction — for what a literal find &amp; replace cannot catch. Preview before applying." onClick={() => setCorrect(true)}>✏️ Correct captions…</button>
@@ -820,6 +897,29 @@ export const TrainingImagesPanel: React.FC = observer(() => {
                               onClick={() => void doRepeats(`${store.cwd}/${meta.folder}`, meta)}>×{meta.repeats}</span>
                         <span className={styles.dim}>{items.length} shown / {meta.count}</span>
                         <span className={styles.spacer} />
+                        {/* Per-subsection actions. Everything here acts on THIS subsection only
+                            and leaves selections in other subsections untouched — the point is
+                            to work one concept at a time without losing the rest. */}
+                        {(() => {
+                          const subImgs = store.imagesInSub(meta.folder)
+                          const selHere = subImgs.filter((im) => store.selected.has(imKey(im))).length
+                          return (
+                            <>
+                              <button className={styles.btn}
+                                      title={`Select all ${subImgs.length} image(s) in "${meta.concept}" — other subsections keep their selection`}
+                                      onClick={() => store.selectSubsection(meta.folder)}>Select all</button>
+                              <button className={styles.btn} disabled={!selHere}
+                                      title={selHere ? `Deselect the ${selHere} selected in "${meta.concept}" only` : 'Nothing selected in this subsection'}
+                                      onClick={() => store.deselectSubsection(meta.folder)}>Deselect{selHere ? ` (${selHere})` : ''}</button>
+                              <button className={styles.btn}
+                                      title={`Auto-caption every image in "${meta.concept}" (${subImgs.length}). Ignores the view filter — existing captions are still skipped unless you tick overwrite.`}
+                                      onClick={() => {
+                                        setCapFiles(subImgs.map((im) => imKey(im)))
+                                        setAutoCap(true)
+                                      }}>🏷 Caption</button>
+                            </>
+                          )
+                        })()}
                         <button className={styles.btn} title="Generate a collage of THIS subsection (agents view it with view_image)"
                                 onClick={() => void doSectionCollage(meta.folder)}>🧩 Collage</button>
                         {meta.hasCollage && (
@@ -837,6 +937,8 @@ export const TrainingImagesPanel: React.FC = observer(() => {
                     )}
                   </div>,
                 )
+                // Variables belong to a SUBSECTION, so the unsectioned group never gets them.
+                if (meta) out.push(<SubVars key={`vars-${sub}`} sub={meta.folder} />)
                 for (const { im, i } of items) out.push(<Tile key={im.rel} im={im} i={i} onOpen={() => openImage(im)} />)
               }
               renderGroup('')

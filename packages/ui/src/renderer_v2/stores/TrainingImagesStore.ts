@@ -104,6 +104,10 @@ export class TrainingImagesStore {
   inTrainingSet = false
   /** Subsections of the browsed training batch (their images are inlined into `images`). */
   sections: BatchSection[] = []
+  /** Per-subsection caption variables for the browsed batch. `fields` is batch-wide (adding
+   *  one gives EVERY subsection the box); `values` is keyed by subsection folder name.
+   *  Referenced from the captioner as {$KEY}, resolved per subsection at run time. */
+  captionVars: { fields: Array<{ key: string; label: string }>; values: Record<string, Record<string, string>> } = { fields: [], values: {} }
   hasCollage = false
   collageFirst = ''
   sortKey: SortKey = (localStorage.getItem('aig-sort-key') as SortKey) || 'name'
@@ -199,6 +203,7 @@ export class TrainingImagesStore {
           this.images.push(...(sd.images || []).map(mapIm(spre, f.name)))
         }
         this.sections = sections
+        void this.loadCaptionVars()
         this.sortImages()
         // Reconcile a selection carried across a same-folder refresh: drop keys whose image
         // is no longer here (deleted, moved out, hidden by a root narrowing). lastIndex is a
@@ -272,6 +277,26 @@ export class TrainingImagesStore {
     this.selected = new Set(this.selected); this.lastIndex = b
   }
   selectAll() { this.visibleImages.forEach((im) => this.selected.add(imKey(im))); this.selected = new Set(this.selected) }
+
+  /** Images belonging to ONE subsection, UNFILTERED. Deliberately not visibleImages: "this
+   *  subsection" means the folder, not whatever the crop/caption filter happens to be showing,
+   *  and a filtered subset silently captioning fewer images than the button implies is exactly
+   *  the kind of quiet wrong that is hard to notice afterwards. */
+  imagesInSub(sub: string): IgImage[] { return this.images.filter((im) => (im.dir || '') === sub) }
+
+  /** Select every image in one subsection, leaving selections in OTHER subsections alone. */
+  selectSubsection(sub: string) {
+    this.selectionMode = true
+    this.imagesInSub(sub).forEach((im) => this.selected.add(imKey(im)))
+    this.selected = new Set(this.selected)
+  }
+
+  /** Drop just this subsection's images from the selection; anything picked elsewhere stays. */
+  deselectSubsection(sub: string) {
+    for (const im of this.imagesInSub(sub)) this.selected.delete(imKey(im))
+    this.selected = new Set(this.selected)
+    if (!this.selected.size && !this.selectedFolders.size) this.exitSelection()
+  }
   /** Empty the selection but STAY in selection mode (Clear/X is the exit). */
   deselectAll() { this.selected = new Set(); this.selectedFolders = new Set(); this.lastIndex = null }
 
@@ -387,6 +412,36 @@ export class TrainingImagesStore {
 
   async setSubsectionRepeats(rel: string, repeats: number): Promise<any> {
     return ig('/subsection-repeats', { method: 'POST', body: { path: rel, repeats } })
+  }
+
+  /** Load the browsed batch's caption variables. Silent on failure: this runs on every
+   *  navigation and a folder that is not a batch legitimately has none. */
+  async loadCaptionVars(): Promise<void> {
+    const root = this.batchContext?.root
+    if (!root) { runInAction(() => { this.captionVars = { fields: [], values: {} } }); return }
+    try {
+      const d = await ig(`/caption-vars?path=${encodeURIComponent(root)}`)
+      runInAction(() => { this.captionVars = { fields: d.fields || [], values: d.values || {} } })
+    } catch {
+      runInAction(() => { this.captionVars = { fields: [], values: {} } })
+    }
+  }
+
+  /** Persist them. Writes the WHOLE document — fields and values are one consistent unit,
+   *  and a partial save is how a value outlives the field that gave it meaning. */
+  async saveCaptionVars(next: { fields: Array<{ key: string; label: string }>; values: Record<string, Record<string, string>> }): Promise<void> {
+    const root = this.batchContext?.root
+    if (!root) return
+    const d = await ig('/caption-vars', { method: 'POST', body: { path: root, ...next } })
+    runInAction(() => { this.captionVars = { fields: d.fields || [], values: d.values || {} } })
+  }
+
+  /** Values for ONE subsection, with the batch's fields applied so a missing value reads as
+   *  '' rather than undefined. */
+  varsFor(sub: string): Record<string, string> {
+    const out: Record<string, string> = {}
+    for (const f of this.captionVars.fields) out[f.key] = this.captionVars.values[sub]?.[f.key] ?? ''
+    return out
   }
 
   /** Batch rename to <base>-1..N. Order = display order; sidecars + ratings travel. */

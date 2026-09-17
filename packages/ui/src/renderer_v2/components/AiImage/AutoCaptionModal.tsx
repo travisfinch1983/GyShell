@@ -42,11 +42,45 @@ const OUT_INFO: Record<OutKind, { label: string; ext: string; blurb: string }> =
  * the browser's cwd. The backend already accepts any path under the imagegen root, so this
  * is purely about not assuming the training-images store owns the location.
  */
+// {$KEY} references, resolved PER SUBSECTION at run time from the batch's caption variables.
+const VAR_RE = /\{\$([A-Z][A-Z0-9_]{0,31})\}/g
+
+/** Expand {$KEY} against `vars`, following references inside values (nesting is supported:
+ *  {$NAME} may itself contain {$COLOUR}).
+ *
+ *  Bounded at 10 passes because a value that references itself — directly or round a cycle —
+ *  would otherwise spin forever. On giving up, the unresolved {$KEY} is LEFT IN THE TEXT on
+ *  purpose: a caption containing a literal "{$COLOUR}" is obviously broken and gets noticed,
+ *  whereas one that silently dropped the word reads like a normal caption and ships. */
+export const expandVars = (text: string, vars: Record<string, string>): string => {
+  if (!text || !text.includes('{$')) return text
+  let out = text
+  for (let pass = 0; pass < 10 && out.includes('{$'); pass++) {
+    const before = out
+    out = out.replace(VAR_RE, (m, k) => (vars[k] ? vars[k] : m))
+    if (out === before) break    // nothing left that we can resolve
+  }
+  return out
+}
+
 export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[]; path?: string; label?: string; allOfFolder?: boolean }> = ({ onClose, files, path, label, allOfFolder }) => {
   // Per-FOLDER with a fallback to the last value used anywhere. Defined up here because
   // several state initialisers below now read it.
-  const per = (k: string) => { try { return localStorage.getItem(k + store.cwd) ?? localStorage.getItem(k + '*') ?? '' } catch { return '' } }
-  const setPer = (k: string, v: string) => { try { localStorage.setItem(k + store.cwd, v); localStorage.setItem(k + '*', v) } catch {} }
+  // 🛑 SETTINGS BELONG TO THE SET, NOT THE FOLDER YOU HAPPEN TO BE STANDING IN.
+  // This keyed on store.cwd — the DEEPEST folder — so every kohya subsection of one batch had
+  // its OWN saved values, and any subsection not yet configured fell through to the '*' entry,
+  // which is the last value used ANYWHERE. Opening the dialog on a different image of the same
+  // set therefore showed a configuration left over from an unrelated run (Travis, 2026-09-17).
+  // Scoping to the BATCH ROOT makes every subsection of a set share one configuration, which is
+  // how it is actually used: one config per set, with only the per-subsection naming varying.
+  // '*' is kept as the seed for a set that has never been configured — that part was wanted.
+  // Batch root FIRST, even when an explicit path was given: the new per-subsection Caption
+  // button passes a path, and preferring it here would hand every subsection its own settings
+  // again — the exact fragmentation this scope was changed to fix. An explicit path still wins
+  // OUTSIDE a batch, which is the Dataset Review case it exists for.
+  const scope = store.batchContext?.root || path || store.cwd || ''
+  const per = (k: string) => { try { return localStorage.getItem(k + scope) ?? localStorage.getItem(k + '*') ?? '' } catch { return '' } }
+  const setPer = (k: string, v: string) => { try { localStorage.setItem(k + scope, v); localStorage.setItem(k + '*', v) } catch {} }
 
   const [taggers, setTaggers] = useState<any[]>([])
   // Output type and engine persist too. Travis was re-picking "custom" and then the model on
@@ -59,10 +93,16 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
     return (v === 'tags' || v === 'caption') ? (v as OutKind) : 'tags'
   })
   const setOutKind = (v: OutKind) => { setOutKindRaw(v); setPer('aig-cap-outkind:', v) }
-  const [model, setModelRaw] = useState(() => per('aig-cap-tagger:'))
+  // 🛑 ONE KEY PER OUTPUT KIND. A single 'aig-cap-tagger:' key was shared by both kinds, so
+  // switching to booru overwrote the natural-language choice and vice versa: the defaulting
+  // effect below sees a remembered model that is not valid for the current kind, falls back to
+  // forKind[0] — which for NL is BLIP — and then PERSISTS that fallback over the real choice.
+  // That is why "custom model" had to be re-picked on every visit (Travis, 2026-09-17).
+  const kindKey = (k: OutKind) => `aig-cap-tagger:${k}:`
+  const [model, setModelRaw] = useState(() => per(kindKey(outKind)))
   // Only remember a REAL choice: the defaulting effect calls this with '' when a kind has no
   // taggers, and persisting that would wipe the remembered one.
-  const setModel = (v: string) => { setModelRaw(v); if (v) setPer('aig-cap-tagger:', v) }
+  const setModel = (v: string) => { setModelRaw(v); if (v) setPer(kindKey(outKind), v) }
   const [device, setDevice] = useState('cuda')
   // GPU roster from /taggers (PCI order — the same numbering nvidia-smi and the dispatched
   // job see, because the backend pins CUDA_DEVICE_ORDER=PCI_BUS_ID). An empty roster means
@@ -91,6 +131,25 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
   // discipline; they cannot change the JOB. Captioning a folder for something other than LoRA
   // training — posing references, shot lists, accessibility alt text — needs the discipline
   // itself replaced, which is what this does. Empty = the LoRA path, unchanged.
+  // ── Engine behaviour. All persisted per set, like everything else here. ──────────────
+  // Runtime reasoning level. enable_thinking is a QWEN chat-template kwarg and is silently
+  // ignored by DeepSeek, which then reasons at full length until it either blows the timeout
+  // or returns reasoning prose the validator rejects — either way the sidecar comes back
+  // BLANK. This is the lever those families honour. '' = send nothing.
+  // Default OFF, deliberately: captioning wants a description, not deliberation, and reasoning
+  // is what was producing the blank sidecars. '' means "send nothing, use the provider default".
+  const [reasoning, setReasoningRaw] = useState(() => per('aig-cap-reasoning:') || 'off')
+  const setReasoning = (v: string) => { setReasoningRaw(v); setPer('aig-cap-reasoning:', v) }
+  const [timeoutS, setTimeoutSRaw] = useState(() => per('aig-cap-timeout:') || '180')
+  const setTimeoutS = (v: string) => { setTimeoutSRaw(v); setPer('aig-cap-timeout:', v) }
+  // Sequential stays a real choice: API models are stateless and parallelise nearly free, but a
+  // LOCAL model serving one stream can be SLOWER under parallel load, so this is not a setting
+  // we can infer on the caller's behalf.
+  const [concurrent, setConcurrentRaw] = useState(() => per('aig-cap-concurrent:') === '1')
+  const setConcurrent = (v: boolean) => { setConcurrentRaw(v); setPer('aig-cap-concurrent:', v ? '1' : '0') }
+  const [concurrency, setConcurrencyRaw] = useState(() => per('aig-cap-concurrency:') || '4')
+  const setConcurrency = (v: string) => { setConcurrencyRaw(v); setPer('aig-cap-concurrency:', v) }
+
   const [instruction, setInstructionRaw] = useState(() => per('aig-cap-instruction:'))
   const setInstruction = (v: string) => { setInstructionRaw(v); setPer('aig-cap-instruction:', v) }
   const [naming, setNamingRaw] = useState(() => per('aig-cap-naming:'))
@@ -155,7 +214,11 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
     // persistence look like it simply did not work.
     if (!taggers.length) return
     if (!forKind.length) { setModel(''); return }
-    if (!forKind.some((t) => t.id === model)) setModel(forKind[0].id)
+    if (forKind.some((t) => t.id === model)) return
+    // Restore THIS kind's remembered model before falling back to the head of the list —
+    // otherwise switching kinds always lands on the first entry (BLIP) regardless of history.
+    const remembered = per(kindKey(outKind))
+    setModel(forKind.some((t) => t.id === remembered) ? remembered : forKind[0].id)
   }, [outKind, taggers])
 
   const cur = taggers.find((t) => t.id === model)
@@ -210,6 +273,13 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
       if (sizeMode === 'state' && sizeWord.trim()) body.size_word = sizeWord.trim()
     }
     if (isVlm && vlmModel.trim()) body.vlm_model = vlmModel.trim()
+    if (isVlm) {
+      if (reasoning) body.reasoning = reasoning
+      const t = parseInt(timeoutS, 10); if (t) body.timeout = t
+      // Sequential is 1, not "absent": the remote default is 1 either way, but sending it
+      // makes the mode explicit in the job log, which is what you read when a run was slow.
+      body.concurrency = concurrent ? Math.max(1, Math.min(16, parseInt(concurrency, 10) || 4)) : 1
+    }
     setRunning(true); setStatus('Starting…')
     try {
       // ONE JOB PER FOLDER: the tagger walks a single directory, so a selection spanning
@@ -239,6 +309,16 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
       let lastJob = ''
       for (const j of jobs) {
         const jbody: Record<string, unknown> = { ...body, path: path ?? store.dirPath(j.sub) }
+        // 🛑 PER-SUBSECTION SUBSTITUTION. This is what lets ONE run caption a whole batch:
+        // each job carries its own subsection's values, so "{$COLOUR} {$PATTERN} print satin
+        // string bikini panties" becomes the right phrase per folder instead of the naming box
+        // being edited and the captioner re-run for every colour.
+        const jvars = j.sub ? store.varsFor(j.sub) : {}
+        if (isVlm && Object.keys(jvars).length) {
+          for (const f of ['instruction', 'context', 'naming', 'emphasize', 'example'] as const) {
+            if (typeof jbody[f] === 'string') jbody[f] = expandVars(jbody[f] as string, jvars)
+          }
+        }
         if (j.names) jbody.files = j.names
         else delete jbody.files
         const { jobId } = await store.autoCaption(jbody)
@@ -422,9 +502,70 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
               placeholder={'optional - e.g. Always call the genital area "the bulge", never "protrusion", "contour" or "shape".'}
               value={naming} onChange={(e) => setNaming(e.target.value)}
             />
+            {store.captionVars.fields.length > 0 && (
+              <div className={styles.acHint}>
+                <strong>Variables for this batch:</strong>{' '}
+                {store.captionVars.fields.map((f) => `{$${f.key}}`).join('  ')}
+                {' — '}usable in any field above. Each resolves to THAT subsection's value when
+                the run fans out, so one run captions every subsection correctly.
+              </div>
+            )}
             <div className={styles.acHint}>
-              Sent verbatim. A model that drifts between synonyms for the same thing is what
-              makes a concept hard to learn, so dictate the exact word.
+              Sent as a HARD RULE, not a hint: the exact words you type here are required in
+              every caption, with synonyms and re-orderings forbidden. A model that drifts
+              between synonyms for the same thing is what makes a concept unlearnable.
+            </div>
+
+            <div className={styles.acSection}>Reasoning</div>
+            <div className={styles.acSeg}>
+              {([['off', 'Off', 'recommended'],
+                 ['none', 'None', ''],
+                 ['low', 'Low', ''],
+                 ['high', 'High', ''],
+                 ['max', 'Max', ''],
+                 ['', 'Model default', '']] as const).map(([v, label, ext]) => (
+                <button
+                  key={v || 'default'} disabled={running}
+                  className={`${styles.acSegBtn} ${reasoning === v ? styles.acSegOn : ''}`}
+                  onClick={() => setReasoning(v)}
+                >{label}{ext ? <span className={styles.acSegExt}>{ext}</span> : null}</button>
+              ))}
+            </div>
+            <div className={styles.acHint}>
+              A reasoning model spends its budget deliberating instead of captioning, and the
+              reply then either exceeds the timeout or arrives as reasoning prose the validator
+              rejects — both land as a BLANK caption. Off sends the disable flag these models
+              honour. Raise it only if captions are thin on a set that needs judgement.
+            </div>
+
+            <div className={styles.acSection}>Timeout &amp; throughput</div>
+            <label className={styles.acl}>Per-image timeout (s)
+              <input
+                className={styles.input} style={{ width: 90 }} disabled={running}
+                type="number" min={30} max={1800}
+                value={timeoutS} onChange={(e) => setTimeoutS(e.target.value)}
+              />
+            </label>
+            <label className={styles.aclChk}>
+              <input
+                type="checkbox" disabled={running} checked={concurrent}
+                onChange={(e) => setConcurrent(e.target.checked)}
+              /> caption several images at once
+            </label>
+            {concurrent && (
+              <label className={styles.acl}>Images in flight
+                <input
+                  className={styles.input} style={{ width: 70 }} disabled={running}
+                  type="number" min={1} max={16}
+                  value={concurrency} onChange={(e) => setConcurrency(e.target.value)}
+                />
+              </label>
+            )}
+            <div className={styles.acHint}>
+              API models are stateless, so several at once is close to free and much faster on a
+              large set. Leave it OFF for a LOCAL model — one serving a single stream can be
+              slower under parallel load, not faster. If individual images time out, raise the
+              timeout rather than lowering this.
             </div>
 
             <div className={styles.acSection}>Size</div>
