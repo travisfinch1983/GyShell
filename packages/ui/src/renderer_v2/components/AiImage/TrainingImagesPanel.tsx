@@ -426,6 +426,39 @@ const AddToBatchModal: React.FC<{ kind: 'batch' | 'set'; files: string[]; onClos
 // was on screen when the button was pressed; seeking to "the same" time server-side picks a
 // neighbouring frame often enough to be maddening when you are after one specific moment.
 // Same-origin (/api/imagegen/video) so the canvas is not tainted and toDataURL works.
+/** Progress of the background poster pre-warm.
+ *
+ *  Renders NOTHING unless a sweep is in flight — this is a status line, not a permanent widget,
+ *  and on a warm tree there is nothing to say. Polls slowly: the sweep runs for ~30 minutes on
+ *  a cold tree and a second of latency on the number costs nobody anything.
+ */
+const PosterSweepBadge: React.FC = () => {
+  const [s, setS] = useState<any>(null)
+  useEffect(() => {
+    let alive = true
+    const tick = async () => {
+      try {
+        const r = await fetch('/api/imagegen/poster-sweep')
+        const d = await r.json()
+        if (alive) setS(d)
+      } catch { /* the badge is never worth surfacing an error for */ }
+    }
+    void tick()
+    const t = setInterval(tick, 5000)
+    return () => { alive = false; clearInterval(t) }
+  }, [])
+  if (!s || s.state !== 'running') return null
+  const pct = s.total ? Math.floor((s.done / s.total) * 100) : 0
+  return (
+    <span className={styles.msg} title={`Generating video poster frames in the background so folders open instantly.\nNow: ${s.current || ''}`}>
+      {`🎞 posters ${s.done}/${s.total} (${pct}%)`}
+      {s.failed ? ` · ${s.failed} failed` : ''}
+      <button className={styles.btn} style={{ marginLeft: 6 }} title="Stop the background sweep until the next restart"
+        onClick={() => { void fetch('/api/imagegen/poster-sweep', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }) }) }}>stop</button>
+    </span>
+  )
+}
+
 const VideoModal: React.FC<{ rel: string; name: string; onClose: () => void }> = ({ rel, name, onClose }) => {
   const vref = useRef<HTMLVideoElement | null>(null)
   const [msg, setMsg] = useState('')
@@ -705,8 +738,14 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   // which meant tags could not be read or edited anywhere else, even though the tagger writes
   // sidecars into any folder. Collages still open in the lightbox.
   // A video has nothing to crop — it opens the player, which is also where frames are grabbed.
-  const openImage = (im: IgImage) =>
-    (im.is_video ? setVid({ rel: im.rel, name: im.name }) : setCrop({ rel: im.rel, name: im.name }))
+  // The ONE router for "open this item". The grid click and the editor's arrow-paging both
+  // come through here. Paging used to re-derive the decision inline and call setCrop()
+  // unconditionally, so stepping off an image walked the next VIDEO into the still-frame
+  // crop editor — 235 of the 670 files in aniaspoison are video, so it fired immediately.
+  const openImage = (im: IgImage) => {
+    if (im.is_video) { setCrop(null); setVid({ rel: im.rel, name: im.name }) }
+    else { setVid(null); setCrop({ rel: im.rel, name: im.name }) }
+  }
 
   const doDelete = async () => {
     // Folders are selectable now, so a Delete that only ever removed images would
@@ -947,6 +986,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           {store.hasCollage && <button className={styles.btn} onClick={() => setLb({ rel: `${store.cwd}/${store.collageFirst}`, name: 'collage', bust: Date.now() })}>View collage</button>}
           <button className={styles.btn} onClick={() => void doStrip()}>🧹 Strip tags</button>
           <span className={styles.msg}>{store.msg}</span>
+          <PosterSweepBadge />
         </div>
       )}
 
@@ -1137,7 +1177,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
             const l = store.visibleImages
             const at = l.findIndex((x) => x.rel === crop.rel)
             const next = at >= 0 ? l[at + dir] : (dir > 0 ? l[cropIdxRef.current] : l[cropIdxRef.current - 1])
-            if (next) setCrop({ rel: next.rel, name: next.name })
+            if (next) openImage(next)
             else if (at < 0) setCrop(null)   // list emptied under us — nothing left to page to
           }}
           onCaption={() => {

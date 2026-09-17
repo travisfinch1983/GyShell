@@ -94,6 +94,136 @@ function isVideo(name) {
   return VID_EXT.has(path.extname(name).toLowerCase());
 }
 
+/** Where a video's cached poster lives.
+ *
+ *  ONE definition, shared by /vthumb and the background sweep. If these two ever derived the
+ *  path separately the sweep would cheerfully fill a cache the request path never reads, and
+ *  the only symptom would be that pre-warming silently did nothing.
+ */
+function posterPathFor(file) {
+  return path.join(path.dirname(file), '.vthumb', path.basename(file) + '.jpg');
+}
+
+/** A poster counts as usable only if it is no older than the clip it came from. */
+function posterFresh(file, cache) {
+  try { return existsSync(cache) && statSync(cache).mtimeMs >= statSync(file).mtimeMs; }
+  catch { return false; }
+}
+
+/** Generate one poster frame.
+ *
+ *  -ss BEFORE -i seeks by keyframe, which is fast and good enough for a poster. 1s in, because
+ *  frame 0 of a lot of clips is black. -update 1 tells the image2 muxer this is a single still
+ *  and not a numbered sequence; without it ffmpeg writes the file but warns, which makes a real
+ *  failure harder to spot.
+ *
+ *  `polite` runs it behind everything else on the box. The sweep sets it; /vthumb does NOT,
+ *  because somebody is waiting on that one.
+ */
+function makePoster(file, opts, cb) {
+  const cache = posterPathFor(file);
+  try { mkdirSync(path.dirname(cache), { recursive: true }); } catch { /* ignore */ }
+  const polite = !!(opts && opts.polite);
+  // `seek` seconds in, because frame 0 of a lot of clips is black. But -ss past the end of a
+  // SHORT clip makes ffmpeg encode nothing at all ("Output file is empty"), which is why every
+  // sub-second LoRA preview loop under diffusion-models/ failed. So try 1s, then frame 0.
+  const attempt = (seek, then) => {
+    const args = (seek ? ['-y', '-ss', String(seek)] : ['-y'])
+      .concat(['-i', file, '-frames:v', '1', '-update', '1',
+               '-vf', `scale=${THUMB_PX}:-2`, '-q:v', '4', cache]);
+    const bin = polite ? 'nice' : 'ffmpeg';
+    const argv = polite ? ['-n', '19', 'ffmpeg'].concat(args) : args;
+    // The file on disk is the verdict, in BOTH directions. ffmpeg exits non-zero for mere
+    // warnings, and -- the case that crashed this route -- exits ZERO while writing nothing
+    // when -ss lands past the end of a short clip. Never report success without the file.
+    execFile(bin, argv, { timeout: 20000 }, (err) => then(
+      existsSync(cache) ? null : (err || new Error('ffmpeg produced no output'))));
+  };
+  attempt(1, (err) => {
+    if (!err) return cb(null, cache);
+    attempt(0, (err2) => cb(err2 || null, cache));
+  });
+}
+
+// ---- background poster pre-warm -------------------------------------------------------
+// Walks the whole imagegen tree and generates every missing poster, so browsing a video
+// folder is never the thing that pays for it. Idempotent and resumable: the posters ARE the
+// state, so an interrupted sweep just finds less to do next time.
+const SWEEP_CONCURRENCY = Number(process.env.IMAGEGEN_POSTER_CONCURRENCY || 2);
+const posterSweep = {
+  state: 'idle', scanned: 0, total: 0, done: 0, made: 0, failed: 0,
+  startedAt: null, finishedAt: null, current: null, lastError: null,
+};
+let sweepStop = false;
+// A clip ffmpeg genuinely cannot read would otherwise be retried on every pass, forever.
+// Process-lifetime only, so a restart gives each one a fresh chance.
+const sweepFailed = new Set();
+
+function walkVideos(dir, out) {
+  let ents;
+  try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const e of ents) {
+    if (e.name.startsWith('.')) continue;   // skips .vthumb itself, and every other dot-dir
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) walkVideos(p, out);
+    else if (e.isFile() && isVideo(e.name)) out.push(p);
+  }
+  return out;
+}
+
+function runPosterSweep() {
+  if (posterSweep.state === 'running') return posterSweep;
+  sweepStop = false;
+  Object.assign(posterSweep, {
+    state: 'running', scanned: 0, total: 0, done: 0, made: 0, failed: 0,
+    startedAt: Date.now(), finishedAt: null, current: null, lastError: null,
+  });
+
+  // Walk up front so `total` is a real denominator instead of a running guess. The tree is
+  // local ZFS (~1600 dirs, measured 0.15s), so this is not the expensive part -- ffmpeg is.
+  const all = walkVideos(BASE, []);
+  posterSweep.scanned = all.length;
+  const todo = all.filter((f) => !sweepFailed.has(f) && !posterFresh(f, posterPathFor(f)));
+  posterSweep.total = todo.length;
+
+  if (!todo.length) {
+    Object.assign(posterSweep, { state: 'done', finishedAt: Date.now() });
+    return posterSweep;
+  }
+  console.log(`[imagegen] poster sweep: ${todo.length} of ${all.length} videos need a poster`);
+
+  let idx = 0;
+  const worker = () => new Promise((resolve) => {
+    const next = () => {
+      if (sweepStop || idx >= todo.length) return resolve();
+      const file = todo[idx++];
+      posterSweep.current = path.relative(BASE, file);
+      makePoster(file, { polite: true }, (err) => {
+        posterSweep.done += 1;
+        if (err) {
+          posterSweep.failed += 1;
+          sweepFailed.add(file);
+          posterSweep.lastError = `${path.basename(file)}: ${err.message}`;
+        } else {
+          posterSweep.made += 1;
+        }
+        // setImmediate, not recursion: a 12k-item queue must not starve the event loop.
+        setImmediate(next);
+      });
+    };
+    next();
+  });
+
+  Promise.all(Array.from({ length: SWEEP_CONCURRENCY }, worker)).then(() => {
+    Object.assign(posterSweep, {
+      state: sweepStop ? 'stopped' : 'done', finishedAt: Date.now(), current: null,
+    });
+    console.log(`[imagegen] poster sweep ${posterSweep.state}: ${posterSweep.made} made, `
+      + `${posterSweep.failed} failed, of ${posterSweep.scanned} videos`);
+  });
+  return posterSweep;
+}
+
 /**
  * Recursively walk a tag-folder subtree. Records into `removals` any image in a
  * folder that ALSO exists (by filename = asset id) in a descendant tag folder —
@@ -553,30 +683,46 @@ export function createImagegenRouter(config) {
     let file;
     try { file = safeResolve(req.query.path); } catch { return res.status(400).end(); }
     if (!existsSync(file) || !isVideo(path.basename(file))) return res.status(404).end();
-    const dir = path.dirname(file);
-    const cacheDir = path.join(dir, '.vthumb');
-    const cache = path.join(cacheDir, path.basename(file) + '.jpg');
+    const cache = posterPathFor(file);
     // 🛑 STREAM IT, DO NOT sendFile(). express/send defaults to dotfiles:'ignore' and 404s any
     // path containing a dot-SEGMENT — and the cache deliberately lives in `.vthumb/` so browse
     // (which skips dotfiles) never lists it. sendFile threw ENOENT-shaped 404s with an HTML body
     // for a file that was demonstrably on disk.
-    const serve = () => { res.type('image/jpeg'); createReadStream(cache).pipe(res); };
-    const fresh = existsSync(cache) && statSync(cache).mtimeMs >= statSync(file).mtimeMs;
-    if (fresh) return serve();
-    try { mkdirSync(cacheDir, { recursive: true }); } catch { /* ignore */ }
-    // -ss BEFORE -i seeks by keyframe, which is fast and good enough for a poster. 1s in,
-    // because frame 0 of a lot of clips is black.
-    // -update 1 tells the image2 muxer this is a single still, not a numbered sequence;
-    // without it ffmpeg writes the file but warns, which makes a real failure harder to spot.
-    execFile('ffmpeg', ['-y', '-ss', '1', '-i', file, '-frames:v', '1', '-update', '1',
-                        '-vf', 'scale=320:-2', '-q:v', '4', cache],
-      { timeout: 20000 }, (err) => {
-        if (!existsSync(cache)) {
-          console.warn(`[imagegen] vthumb failed for ${path.basename(file)}: ${err && err.message}`);
-          return res.status(404).end();
-        }
-        serve();
+    // An unhandled 'error' on a ReadStream terminates the PROCESS, not the request -- a single
+    // missing poster took the whole backend down. Always handle it.
+    const serve = () => {
+      const s = createReadStream(cache);
+      s.on('error', (e) => {
+        console.warn(`[imagegen] vthumb read failed for ${path.basename(file)}: ${e.message}`);
+        if (!res.headersSent) res.status(404).end(); else res.destroy();
       });
+      res.type('image/jpeg');
+      s.pipe(res);
+    };
+    if (posterFresh(file, cache)) return serve();
+    // Not polite: this one is blocking a render. The background sweep is the polite caller.
+    makePoster(file, { polite: false }, (err) => {
+      if (err) {
+        console.warn(`[imagegen] vthumb failed for ${path.basename(file)}: ${err.message}`);
+        return res.status(404).end();
+      }
+      serve();
+    });
+  });
+
+  /** GET /poster-sweep — progress of the background pre-warm. */
+  router.get('/poster-sweep', (req, res) => {
+    res.json({ ...posterSweep, concurrency: SWEEP_CONCURRENCY, pending: sweepFailed.size });
+  });
+
+  /** POST /poster-sweep {action:'start'|'stop'} — kick one off by hand, or call it off. */
+  router.post('/poster-sweep', express.json(), (req, res) => {
+    const action = String((req.body || {}).action || 'start');
+    if (action === 'stop') {
+      sweepStop = true;
+      return res.json({ ok: true, ...posterSweep, state: 'stopping' });
+    }
+    return res.json({ ok: true, ...runPosterSweep() });
   });
 
   /** POST /screenshot — save a frame grabbed client-side from the <video> element.
@@ -2615,6 +2761,19 @@ export function createImagegenRouter(config) {
       folders_affected: Object.keys(folders).length, top_folders: top, errors,
     });
   });
+
+  // Pre-warm posters in the background so the first visit to a video folder is not the thing
+  // that pays for them. Delayed 60s so it never competes with backend startup, and repeated on
+  // a long timer to pick up clips the Immich tag sync has pulled in since. Both timers are
+  // unref()'d: a pre-warm must never be the reason this process stays alive.
+  if (process.env.IMAGEGEN_POSTER_SWEEP !== '0') {
+    setTimeout(() => { try { runPosterSweep(); } catch (e) { console.warn('[imagegen] poster sweep failed to start:', e.message); } }, 60_000).unref();
+    setInterval(() => {
+      if (posterSweep.state !== 'running') {
+        try { runPosterSweep(); } catch (e) { console.warn('[imagegen] poster sweep failed to start:', e.message); }
+      }
+    }, 6 * 3600 * 1000).unref();
+  }
 
   return router;
 }
