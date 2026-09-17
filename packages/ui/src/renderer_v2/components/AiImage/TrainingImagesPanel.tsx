@@ -1140,6 +1140,25 @@ export const TrainingImagesPanel: React.FC = observer(() => {
                       <>
                         <span className={styles.secName}>unsectioned</span>
                         <span className={styles.dim}>{items.length} — kohya IGNORES images outside a subsection; AI Toolkit reads them</span>
+                        <span className={styles.spacer} />
+                        {/* The unsectioned group gets the same two actions as a subsection: the
+                            whole point of this group is to empty it INTO a subsection, and doing
+                            that by hand meant clicking every loose image. Keyed on '' because
+                            imagesInSub() groups by (im.dir || ''), so '' IS this group. */}
+                        {(() => {
+                          const rootImgs = store.imagesInSub('')
+                          const selHere = rootImgs.filter((im) => store.selected.has(imKey(im))).length
+                          return (
+                            <>
+                              <button className={styles.btn} disabled={!rootImgs.length}
+                                      title={`Select all ${rootImgs.length} unsectioned image(s) — subsections keep their selection, so you can send these straight to a subsection`}
+                                      onClick={() => store.selectSubsection('')}>Select all</button>
+                              <button className={styles.btn} disabled={!selHere}
+                                      title={selHere ? `Deselect the ${selHere} selected unsectioned image(s) only` : 'Nothing selected here'}
+                                      onClick={() => store.deselectSubsection('')}>Deselect{selHere ? ` (${selHere})` : ''}</button>
+                            </>
+                          )
+                        })()}
                       </>
                     )}
                     {/* Inside the header, wrapping onto its own line via .secVars. Subsections

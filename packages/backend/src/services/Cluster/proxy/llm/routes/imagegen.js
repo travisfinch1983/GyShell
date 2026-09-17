@@ -2813,16 +2813,18 @@ export function createImagegenRouter(config) {
   });
 
   // Pre-warm posters in the background so the first visit to a video folder is not the thing
-  // that pays for them. Delayed 60s so it never competes with backend startup, and repeated on
-  // a long timer to pick up clips the Immich tag sync has pulled in since. Both timers are
-  // unref()'d: a pre-warm must never be the reason this process stays alive.
+  // that pays for them. Delayed 60s so it never competes with backend startup, then HOURLY to
+  // pick up clips the Immich tag sync has pulled in since. A pass with nothing to do is just a
+  // tree walk plus a stat per video (local ZFS, ~0.15s for the directories), so the only real
+  // cost is on a pass that genuinely has posters to make. Both timers are unref()'d: a pre-warm
+  // must never be the reason this process stays alive.
   if (process.env.IMAGEGEN_POSTER_SWEEP !== '0') {
     setTimeout(() => { try { runPosterSweep(); } catch (e) { console.warn('[imagegen] poster sweep failed to start:', e.message); } }, 60_000).unref();
     setInterval(() => {
       if (posterSweep.state !== 'running') {
         try { runPosterSweep(); } catch (e) { console.warn('[imagegen] poster sweep failed to start:', e.message); }
       }
-    }, 6 * 3600 * 1000).unref();
+    }, 3600 * 1000).unref();
   }
 
   return router;
