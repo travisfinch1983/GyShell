@@ -40,12 +40,12 @@ const SubVars: React.FC<{ sub: string }> = observer(({ sub }) => {
     try { await store.saveCaptionVars(next) } catch (e: any) { store.msg = `Variable save failed: ${e?.message || e}` }
   }
   return (
-    <div className={styles.secDivider} style={{ paddingTop: 0, opacity: 0.95 }}>
+    <div className={styles.secVars}>
       {fields.map((f) => (
-        <label key={f.key} className={styles.aclChk} title={`Referenced in the captioner as {$${f.key}}`}>
+        <label key={f.key} title={`Referenced in the captioner as {$${f.key}}`}>
           <span className={styles.dim}>{f.label}</span>
           <input
-            className={styles.input} style={{ width: 210 }}
+            className={styles.input} style={{ width: 180 }}
             placeholder={`{$${f.key}}`}
             value={valueOf(f.key)}
             onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.value }))}
@@ -935,10 +935,12 @@ export const TrainingImagesPanel: React.FC = observer(() => {
                         <span className={styles.dim}>{items.length} — kohya IGNORES images outside a subsection; AI Toolkit reads them</span>
                       </>
                     )}
+                    {/* Inside the divider, not after it: a sibling would take its own
+                        150px grid row (see .secDivider in the SCSS). Subsections only —
+                        the unsectioned group has no variables. */}
+                    {meta && <SubVars sub={meta.folder} />}
                   </div>,
                 )
-                // Variables belong to a SUBSECTION, so the unsectioned group never gets them.
-                if (meta) out.push(<SubVars key={`vars-${sub}`} sub={meta.folder} />)
                 for (const { im, i } of items) out.push(<Tile key={im.rel} im={im} i={i} onOpen={() => openImage(im)} />)
               }
               renderGroup('')
