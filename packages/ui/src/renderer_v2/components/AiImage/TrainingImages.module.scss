@@ -53,7 +53,16 @@
 // 59px row) → thumbnails piled onto each other. aspect-ratio and padding-top:100% both lost the
 // same way. Explicit 150px rows make row height unconditional; overflow:auto then really scrolls.
 // (ProxLab avoided this class of bug by never using intrinsic grid rows — fixed/flex-wrap cells.)
-.grid { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, 150px); grid-auto-rows: 150px; gap: 8px; padding: 12px; align-content: start; justify-content: space-between; }
+/* SPLIT: the scroller is no longer the grid. Section headers used to be grid items spanning
+   every column, which meant each one occupied a full 150px auto-row — the header sat at the
+   top of that row hugging the PREVIOUS section's thumbnails, with ~130px of dead space before
+   the images it actually labels, and the divider line landed at the bottom of the row. The
+   grouping read backwards. Now each section is header + its OWN grid, so the header is
+   content-height and butts directly against the tiles it governs.
+   grid-auto-rows stays FIXED at 150px on the inner grids — the original reason holds: intrinsic
+   row heights broke overflow scrolling. Only the SCROLLING moved out. */
+.gridScroll { flex: 1; min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, 150px); grid-auto-rows: 150px; gap: 8px; align-content: start; justify-content: space-between; }
 .tile { position: relative; min-width: 0; border: 2px solid transparent; border-radius: 8px; overflow: hidden; background: var(--panel-bg-2, #111); cursor: pointer; user-select: none;
   img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; } }
 /* Already at the training size. Declared BEFORE .tileSel so selection still wins when both
@@ -179,9 +188,17 @@
    lines sit together at the top of that row instead of being centred with gaps above AND
    below. (grid-auto-rows itself is deliberately fixed — see the .grid comment: intrinsic
    rows broke overflow scrolling.) */
-.secDivider { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: flex-start; align-content: start;
-              gap: 6px 10px; padding: 6px 2px 2px;
-              border-bottom: 1px solid var(--border); font-size: 12.5px; min-height: 30px; }
+/* A BLOCK between two grids now, not a grid item. border-TOP, because the line's job is to
+   separate this section from the one ABOVE; a bottom border put it between the header and its
+   own thumbnails, which is the wrong side. 2px and near-full-strength muted: at 1px
+   var(--border) it was invisible enough to miss entirely. Generous margin-top (the gap BEFORE
+   the line) and tight padding-bottom (almost none AFTER the header) is what makes each header
+   read as belonging to the images below it. */
+.secDivider { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+              margin: 22px 0 0; padding: 9px 2px 5px;
+              border-top: 2px solid color-mix(in srgb, var(--fg-muted) 80%, transparent);
+              font-size: 12.5px; }
+.secDivider:first-child { margin-top: 0; }
 /* The variables line inside that same row. flex-basis 100% forces the wrap; no border of its
    own, because the divider already draws one and two lines would read as two sections. */
 .secVars { flex: 0 0 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }

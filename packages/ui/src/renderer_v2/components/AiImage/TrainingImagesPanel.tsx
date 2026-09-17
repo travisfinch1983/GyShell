@@ -840,7 +840,9 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           above the grid, so a folder-heavy directory pushed the images off-screen with no
           way to scroll to them (Travis, 2026-09-08). They are now leading cells in the
           SAME grid: same 150px cell, one scrollbar, folders first. */}
-      <div className={styles.grid}>
+      <div className={styles.gridScroll}>
+        {/* Folders, plus every image when this folder has no subsections, in one grid. */}
+        <div className={styles.grid}>
         {store.folders.map((f) => {
           const fpath = store.cwd ? `${store.cwd}/${f.name}` : f.name
           const fsel = store.selectedFolders.has(f.name)
@@ -873,12 +875,15 @@ export const TrainingImagesPanel: React.FC = observer(() => {
             </div>
           )
         })}
-        {store.images.length === 0 && store.folders.length === 0 && !store.loading && <div className={styles.dim}>Nothing here.</div>}
         {store.sections.length === 0
-          ? store.visibleImages.map((im, i) => <Tile key={im.rel} im={im} i={i} onOpen={() => openImage(im)} />)
-          : (() => {
-              // One flat element list inside ONE css grid: dividers span the full row
-              // (grid-column 1/-1) so tile indices stay global for selection.
+          && store.visibleImages.map((im, i) => <Tile key={im.rel} im={im} i={i} onOpen={() => openImage(im)} />)}
+        </div>
+        {store.images.length === 0 && store.folders.length === 0 && !store.loading && <div className={styles.dim}>Nothing here.</div>}
+        {store.sections.length > 0
+          && (() => {
+              // One BLOCK per section: header + that section's own grid. The tile index `i`
+              // still comes from the flat visibleImages list, so shift-range selection spans
+              // subsections exactly as before — only the layout is grouped.
               const bySub = new Map<string, Array<{ im: IgImage; i: number }>>()
               store.visibleImages.forEach((im, i) => {
                 const g = bySub.get(im.dir || '') || []
@@ -889,7 +894,8 @@ export const TrainingImagesPanel: React.FC = observer(() => {
                 const items = bySub.get(sub) || []
                 if (!meta && !items.length) return
                 out.push(
-                  <div key={`div-${sub || 'root'}`} className={styles.secDivider}>
+                  <React.Fragment key={`sec-${sub || 'root'}`}>
+                  <div className={styles.secDivider}>
                     {meta ? (
                       <>
                         <span className={styles.secName}>{meta.concept}</span>
@@ -935,13 +941,15 @@ export const TrainingImagesPanel: React.FC = observer(() => {
                         <span className={styles.dim}>{items.length} — kohya IGNORES images outside a subsection; AI Toolkit reads them</span>
                       </>
                     )}
-                    {/* Inside the divider, not after it: a sibling would take its own
-                        150px grid row (see .secDivider in the SCSS). Subsections only —
-                        the unsectioned group has no variables. */}
+                    {/* Inside the header, wrapping onto its own line via .secVars. Subsections
+                        only — the unsectioned group has no variables to carry. */}
                     {meta && <SubVars sub={meta.folder} />}
-                  </div>,
+                  </div>
+                  <div className={styles.grid}>
+                    {items.map(({ im, i }) => <Tile key={im.rel} im={im} i={i} onOpen={() => openImage(im)} />)}
+                  </div>
+                  </React.Fragment>,
                 )
-                for (const { im, i } of items) out.push(<Tile key={im.rel} im={im} i={i} onOpen={() => openImage(im)} />)
               }
               renderGroup('')
               for (const s of store.sections) renderGroup(s.folder, s)
