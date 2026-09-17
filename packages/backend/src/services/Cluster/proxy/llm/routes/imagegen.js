@@ -15,7 +15,7 @@
 import express, { Router } from 'express';
 import {
   existsSync, readdirSync, statSync, mkdirSync, createReadStream, writeFileSync,
-  copyFileSync, chmodSync, unlinkSync, renameSync, readFileSync, rmSync, cpSync,
+  copyFileSync, chmodSync, unlinkSync, renameSync, readFileSync, rmSync, cpSync, utimesSync,
 } from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -104,10 +104,20 @@ function posterPathFor(file) {
   return path.join(path.dirname(file), '.vthumb', path.basename(file) + '.jpg');
 }
 
-/** A poster counts as usable only if it is no older than the clip it came from. */
+/** A poster is usable only if it was made from THIS EXACT version of the clip.
+ *
+ *  makePoster stamps the poster's mtime to match its source, so freshness is EQUALITY, not
+ *  ">= the source". The old `>=` test asked "was this poster made after the file" -- which is
+ *  true for any OLDER file later dropped at the same path, and mv/cp -p/rsync -t all preserve
+ *  mtime. Replacing a clip with an older one therefore served the previous video's frame.
+ *  1s of tolerance because filesystem timestamp precision is not guaranteed to survive a
+ *  round-trip through utimesSync.
+ */
 function posterFresh(file, cache) {
-  try { return existsSync(cache) && statSync(cache).mtimeMs >= statSync(file).mtimeMs; }
-  catch { return false; }
+  try {
+    if (!existsSync(cache)) return false;
+    return Math.abs(statSync(cache).mtimeMs - statSync(file).mtimeMs) < 1000;
+  } catch { return false; }
 }
 
 /** Generate one poster frame.
@@ -136,8 +146,19 @@ function makePoster(file, opts, cb) {
     // The file on disk is the verdict, in BOTH directions. ffmpeg exits non-zero for mere
     // warnings, and -- the case that crashed this route -- exits ZERO while writing nothing
     // when -ss lands past the end of a short clip. Never report success without the file.
-    execFile(bin, argv, { timeout: 20000 }, (err) => then(
-      existsSync(cache) ? null : (err || new Error('ffmpeg produced no output'))));
+    execFile(bin, argv, { timeout: 20000 }, (err) => {
+      if (!existsSync(cache)) return then(err || new Error('ffmpeg produced no output'));
+      // Stamp the poster with its source's mtime — this IS the cache key that posterFresh
+      // compares, so a poster that cannot be stamped must not be left looking valid.
+      try {
+        const st = statSync(file);
+        utimesSync(cache, st.atime, st.mtime);
+      } catch (e) {
+        try { unlinkSync(cache); } catch { /* ignore */ }
+        return then(new Error(`could not stamp poster mtime: ${e.message}`));
+      }
+      then(null);
+    });
   };
   attempt(1, (err) => {
     if (!err) return cb(null, cache);
@@ -151,7 +172,7 @@ function makePoster(file, opts, cb) {
 // state, so an interrupted sweep just finds less to do next time.
 const SWEEP_CONCURRENCY = Number(process.env.IMAGEGEN_POSTER_CONCURRENCY || 2);
 const posterSweep = {
-  state: 'idle', scanned: 0, total: 0, done: 0, made: 0, failed: 0,
+  state: 'idle', scanned: 0, total: 0, done: 0, made: 0, failed: 0, pruned: 0,
   startedAt: null, finishedAt: null, current: null, lastError: null,
 };
 let sweepStop = false;
@@ -159,35 +180,63 @@ let sweepStop = false;
 // Process-lifetime only, so a restart gives each one a fresh chance.
 const sweepFailed = new Set();
 
-function walkVideos(dir, out) {
+function walkVideos(dir, out, stats) {
   let ents;
   try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return out; }
   for (const e of ents) {
     if (e.name.startsWith('.')) continue;   // skips .vthumb itself, and every other dot-dir
     const p = path.join(dir, e.name);
-    if (e.isDirectory()) walkVideos(p, out);
+    if (e.isDirectory()) walkVideos(p, out, stats);
     else if (e.isFile() && isVideo(e.name)) out.push(p);
   }
+  if (stats) pruneOrphanPosters(dir, ents, stats);
   return out;
+}
+
+/** Delete posters whose video is gone.
+ *
+ *  A poster lives beside its clip in `<dir>/.vthumb/<name>.jpg`, so moving or deleting the video
+ *  strands it. Moving aniaspoison's 235 clips into a videos/ subfolder stranded 235 in one go,
+ *  and the tree had accumulated 1,329 before anything pruned.
+ *
+ *  🛑 This DELETES. `ents` is the parent listing the caller already read successfully, so absence
+ *  is proven from a read that WORKED — if that read had failed the caller returns before getting
+ *  here, and an unreadable directory is never mistaken for an empty one. Only `.jpg` files
+ *  directly inside `.vthumb/` are ever touched, and they are a regenerable cache.
+ */
+function pruneOrphanPosters(dir, ents, stats) {
+  const cacheDir = path.join(dir, '.vthumb');
+  if (!existsSync(cacheDir)) return;
+  let cached;
+  try { cached = readdirSync(cacheDir); } catch { return; }
+  const present = new Set(ents.filter((e) => e.isFile()).map((e) => e.name));
+  for (const c of cached) {
+    if (!c.endsWith('.jpg')) continue;
+    if (present.has(c.slice(0, -4))) continue;
+    try { unlinkSync(path.join(cacheDir, c)); stats.pruned += 1; }
+    catch { /* a poster we cannot remove is harmless — it just stays */ }
+  }
 }
 
 function runPosterSweep() {
   if (posterSweep.state === 'running') return posterSweep;
   sweepStop = false;
   Object.assign(posterSweep, {
-    state: 'running', scanned: 0, total: 0, done: 0, made: 0, failed: 0,
+    state: 'running', scanned: 0, total: 0, done: 0, made: 0, failed: 0, pruned: 0,
     startedAt: Date.now(), finishedAt: null, current: null, lastError: null,
   });
 
   // Walk up front so `total` is a real denominator instead of a running guess. The tree is
   // local ZFS (~1600 dirs, measured 0.15s), so this is not the expensive part -- ffmpeg is.
-  const all = walkVideos(BASE, []);
+  const all = walkVideos(BASE, [], posterSweep);
   posterSweep.scanned = all.length;
   const todo = all.filter((f) => !sweepFailed.has(f) && !posterFresh(f, posterPathFor(f)));
   posterSweep.total = todo.length;
 
   if (!todo.length) {
+    // Still a real pass: the walk above pruned orphans even with nothing to generate.
     Object.assign(posterSweep, { state: 'done', finishedAt: Date.now() });
+    if (posterSweep.pruned) console.log(`[imagegen] poster sweep: ${posterSweep.pruned} orphans pruned, nothing to generate`);
     return posterSweep;
   }
   console.log(`[imagegen] poster sweep: ${todo.length} of ${all.length} videos need a poster`);
@@ -219,7 +268,8 @@ function runPosterSweep() {
       state: sweepStop ? 'stopped' : 'done', finishedAt: Date.now(), current: null,
     });
     console.log(`[imagegen] poster sweep ${posterSweep.state}: ${posterSweep.made} made, `
-      + `${posterSweep.failed} failed, of ${posterSweep.scanned} videos`);
+      + `${posterSweep.failed} failed, ${posterSweep.pruned} orphans pruned, `
+      + `of ${posterSweep.scanned} videos`);
   });
   return posterSweep;
 }
