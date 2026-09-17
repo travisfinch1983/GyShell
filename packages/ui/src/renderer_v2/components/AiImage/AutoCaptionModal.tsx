@@ -118,12 +118,16 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
   // a different set: it carries over and gets prepended to every caption).
   const [overwrite, setOverwriteRaw] = useState(() => { try { return localStorage.getItem('aig-cap-overwrite') === '1' } catch { return false } })
   const setOverwrite = (v: boolean) => { setOverwriteRaw(v); try { localStorage.setItem('aig-cap-overwrite', v ? '1' : '0') } catch {} }
-  const [trigger, setTriggerRaw] = useState(() => { try { return localStorage.getItem('aig-cap-trigger:' + store.cwd) ?? localStorage.getItem('aig-cap-trigger:*') ?? '' } catch { return '' } })
-  const setTrigger = (v: string) => { setTriggerRaw(v); try { localStorage.setItem('aig-cap-trigger:' + store.cwd, v); localStorage.setItem('aig-cap-trigger:*', v) } catch {} }
+  // 🛑 per()/setPer(), NOT inline store.cwd. These two kept their own hand-rolled localStorage
+  // calls when the scope fix landed, so they went on fragmenting per SUBSECTION while every
+  // other field had moved to the batch root — the reported bug, still live in two fields.
+  // A shared helper only helps the callers that actually use it.
+  const [trigger, setTriggerRaw] = useState(() => per('aig-cap-trigger:'))
+  const setTrigger = (v: string) => { setTriggerRaw(v); setPer('aig-cap-trigger:', v) }
   // vlm only: what this SET is. Goes into the instruction so the model knows
   // what it is looking at; the trigger phrase stays OUT of the prose.
-  const [context, setContextRaw] = useState(() => { try { return localStorage.getItem('aig-cap-context:' + store.cwd) ?? localStorage.getItem('aig-cap-context:*') ?? '' } catch { return '' } })
-  const setContext = (v: string) => { setContextRaw(v); try { localStorage.setItem('aig-cap-context:' + store.cwd, v); localStorage.setItem('aig-cap-context:*', v) } catch {} }
+  const [context, setContextRaw] = useState(() => per('aig-cap-context:'))
+  const setContext = (v: string) => { setContextRaw(v); setPer('aig-cap-context:', v) }
   // Subject fields. The captioner's permanent half is now caption DISCIPLINE (consistency,
   // only what is visible, describe what varies); everything subject-specific is composed from
   // these. Persisted per folder like context, since they describe a SET, not a session.

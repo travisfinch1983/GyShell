@@ -17,6 +17,113 @@ const SORT_KEYS: { v: any; label: string }[] = [
   { v: 'added', label: 'Date added' }, { v: 'size', label: 'Size' },
 ]
 
+// ── Caption-variable manager: add / rename / delete, batch-wide ──────────────────────
+// A dialog rather than a prompt chain because renaming a KEY is consequential — it is the
+// token every {$KEY} in the captioner refers to — and the user should see the old name, the
+// new name and the blast radius at once, not one blind box at a time.
+const VariablesModal: React.FC<{ onClose: () => void }> = observer(({ onClose }) => {
+  type Row = { key: string; label: string; origKey: string }
+  const [rows, setRows] = useState<Row[]>(
+    () => store.captionVars.fields.map((f) => ({ key: f.key, label: f.label, origKey: f.key })))
+  const [addLabel, setAddLabel] = useState('')
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
+  const keyify = (s: string) =>
+    s.trim().toUpperCase().replace(/[^A-Z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 32)
+  const subsWith = (k: string) =>
+    Object.values(store.captionVars.values).filter((v) => (v?.[k] ?? '') !== '').length
+
+  const save = async (next: Row[]) => {
+    for (const r of next) {
+      if (!/^[A-Z][A-Z0-9_]{0,31}$/.test(r.key)) { setMsg(`"${r.key}" is not a valid name — A-Z, 0-9 and _, starting with a letter.`); return }
+    }
+    if (new Set(next.map((r) => r.key)).size !== next.length) { setMsg('Two variables cannot share a name.'); return }
+    // Values are stored under the KEY, so a rename has to carry them across or the values are
+    // silently orphaned — they would vanish from the UI while still sitting in the file.
+    const values: Record<string, Record<string, string>> = {}
+    for (const [sub, vals] of Object.entries(store.captionVars.values)) {
+      const moved: Record<string, string> = {}
+      for (const r of next) {
+        const v = vals?.[r.origKey]
+        if (typeof v === 'string' && v !== '') moved[r.key] = v
+      }
+      if (Object.keys(moved).length) values[sub] = moved
+    }
+    setBusy(true); setMsg('Saving…')
+    try {
+      await store.saveCaptionVars({ fields: next.map((r) => ({ key: r.key, label: r.label })), values })
+      const renamed = next.filter((r) => r.key !== r.origKey)
+      store.msg = renamed.length
+        ? `Saved. Renamed ${renamed.map((r) => `{$${r.origKey}} → {$${r.key}}`).join(', ')} — update any captioner field that still references the old name.`
+        : 'Caption variables saved.'
+      onClose()
+    } catch (e: any) { setBusy(false); setMsg('Failed: ' + (e?.message || e)) }
+  }
+
+  const del = async (r: Row) => {
+    const n = subsWith(r.origKey)
+    const ok = await confirmStore.confirm({
+      title: `Delete {$${r.key}}?`,
+      message: n
+        ? `${n} subsection${n > 1 ? 's have' : ' has'} a value for this variable; those values are deleted too. Any captioner field still containing {$${r.key}} will show it literally instead of substituting.`
+        : `No subsection has a value for it yet. Any captioner field containing {$${r.key}} will show it literally instead of substituting.`,
+      confirmText: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
+    void save(rows.filter((x) => x.origKey !== r.origKey))
+  }
+
+  return (
+    <div className={styles.modalBg}>
+      <div className={styles.pkBox} style={{ width: 'min(620px,94%)' }} onClick={(e) => e.stopPropagation()}>
+        <div className={styles.modalHead}>
+          <strong>Caption variables — {store.batchContext?.root.split('/').pop()}</strong>
+          <button className={styles.btn} onClick={onClose}>Cancel</button>
+        </div>
+        <div className={styles.acHint}>
+          Batch-wide: every subsection gets a box for each variable. Reference them in the
+          captioner as {'{$NAME}'} and each resolves to THAT subsection's value during a run.
+        </div>
+        {rows.length === 0 && <div className={styles.dim} style={{ padding: '6px 2px' }}>No variables yet.</div>}
+        {rows.map((r, i) => (
+          <div key={r.origKey} className={styles.acl} style={{ justifyContent: 'flex-start', gap: 8 }}>
+            <input className={styles.input} style={{ width: 170 }} disabled={busy}
+                   value={r.label} placeholder="Label"
+                   onChange={(e) => setRows((rs) => rs.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} />
+            <span className={styles.dim}>{'{$'}</span>
+            <input className={styles.input} style={{ width: 150 }} disabled={busy}
+                   value={r.key} placeholder="KEY"
+                   onChange={(e) => setRows((rs) => rs.map((x, j) => j === i ? { ...x, key: keyify(e.target.value) } : x))} />
+            <span className={styles.dim}>{'}'}</span>
+            <span className={styles.dim} style={{ minWidth: 92 }}>
+              {subsWith(r.origKey)} filled in
+            </span>
+            <button className={styles.btn} disabled={busy} title="Delete this variable everywhere"
+                    onClick={() => void del(r)}>Delete</button>
+          </div>
+        ))}
+        <div className={styles.acSection}>Add</div>
+        <div className={styles.acl} style={{ justifyContent: 'flex-start', gap: 8 }}>
+          <input className={styles.input} style={{ width: 220 }} disabled={busy}
+                 placeholder="what it is, e.g. Colour" value={addLabel}
+                 onChange={(e) => setAddLabel(e.target.value)}
+                 onKeyDown={(e) => { if (e.key === 'Enter' && addLabel.trim()) { setRows((rs) => [...rs, { key: keyify(addLabel), label: addLabel.trim(), origKey: keyify(addLabel) }]); setAddLabel('') } }} />
+          <span className={styles.dim}>{addLabel.trim() ? `→ {$${keyify(addLabel)}}` : ''}</span>
+          <button className={styles.btn} disabled={busy || !addLabel.trim() || !/^[A-Z]/.test(keyify(addLabel))}
+                  onClick={() => { setRows((rs) => [...rs, { key: keyify(addLabel), label: addLabel.trim(), origKey: keyify(addLabel) }]); setAddLabel('') }}>
+            Add
+          </button>
+        </div>
+        {msg && <div className={styles.acHint}>{msg}</div>}
+        <div className={styles.pkFoot}>
+          <button className={styles.btnPrimary} disabled={busy} onClick={() => void save(rows)}>Save</button>
+        </div>
+      </div>
+    </div>
+  )
+})
+
 // ── Per-subsection caption variables ─────────────────────────────────────────────────
 // One row of boxes per subsection, one box per batch-wide field. The captioner references
 // them as {$KEY} and resolves them PER SUBSECTION at run time, so a whole batch captions in
@@ -505,6 +612,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   const cropIdxRef = useRef(0)
   // undefined = whole folder; a list = caption only these (selection, or one from the editor)
   const [capFiles, setCapFiles] = useState<string[] | undefined>(undefined)
+  const [varsModal, setVarsModal] = useState(false)
   const [autoCap, setAutoCap] = useState(false)
   const [blanket, setBlanket] = useState(false)
   const [findRep, setFindRep] = useState(false)
@@ -657,31 +765,6 @@ export const TrainingImagesPanel: React.FC = observer(() => {
     try { await store.setSubsectionRepeats(folderPath, repeats); void store.browse(store.cwd) }
     catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
   }
-  /** Add a caption variable to EVERY subsection of this batch, then fill it in per subsection.
-   *  Batch-wide by design: "give every subsection a Colour box" is the actual intent, and
-   *  subsections disagreeing about which fields exist is not a state worth representing. */
-  const addCaptionVar = async () => {
-    const label = await promptStore.prompt({
-      title: 'New caption variable',
-      placeholder: 'what it is, e.g. Colour or Pattern',
-      confirmText: 'Add',
-    })
-    if (label === null || !label.trim()) return
-    // KEY is derived from the label so the reference is predictable, then shown back — the
-    // captioner matches on the KEY, and silently renaming it later would break every {$KEY}
-    // already written into a prompt.
-    const key = label.trim().toUpperCase().replace(/[^A-Z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 32)
-    if (!/^[A-Z]/.test(key)) { store.msg = 'A variable name must start with a letter.'; return }
-    if (store.captionVars.fields.some((f) => f.key === key)) { store.msg = `{$${key}} already exists.`; return }
-    try {
-      await store.saveCaptionVars({
-        fields: [...store.captionVars.fields, { key, label: label.trim() }],
-        values: store.captionVars.values,
-      })
-      store.msg = `Added {$${key}} — fill it in per subsection, then reference {$${key}} in the captioner.`
-    } catch (e: any) { store.msg = 'Failed: ' + (e?.message || e) }
-  }
-
   const doRenameFiles = async () => {
     const base = await promptStore.prompt({ title: `Rename ${store.selected.size} images`, placeholder: 'base name, e.g. white → white-1..N (lowercased)', confirmText: 'Rename' })
     if (base === null || !base.trim()) return
@@ -776,8 +859,8 @@ export const TrainingImagesPanel: React.FC = observer(() => {
             <button
               className={styles.btn}
               title="Add a caption variable to EVERY subsection of this batch. Fill it in per subsection, then reference it in the captioner as {$KEY} — it resolves to that subsection's value during a bulk run."
-              onClick={() => void addCaptionVar()}
-            >{'{$}'} Variable{store.captionVars.fields.length ? ` (${store.captionVars.fields.length})` : ''}…</button>
+              onClick={() => setVarsModal(true)}
+            >{'{$}'} Variables{store.captionVars.fields.length ? ` (${store.captionVars.fields.length})` : ''}…</button>
           )}
           <button className={styles.btn} title="Add or remove the same booru tags across this folder" onClick={() => setBlanket(true)}>🏷 Blanket tags…</button>
           <button className={styles.btn} title="Replace text across the .txt and .caption sidecars in this folder — preview before applying" onClick={() => setFindRep(true)}>🔎 Find &amp; replace…</button>
@@ -986,6 +1069,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           }} />
       })()}
       {autoCap && <AutoCaptionModal files={capFiles} onClose={() => setAutoCap(false)} />}
+      {varsModal && <VariablesModal onClose={() => setVarsModal(false)} />}
 
       {dsAdd && <AddToDataset onClose={() => setDsAdd(false)} />}
       {blanket && <BlanketTagModal files={[...store.selected]} onClose={() => setBlanket(false)} onDone={() => void store.browse(store.cwd)} />}
