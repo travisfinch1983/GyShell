@@ -696,9 +696,16 @@ export class NotificationsService {
       `[${evt.severity.toUpperCase()}] ${evt.message}`,
       evt.detail ? `\n${evt.detail}` : '',
       `\n\nsource: ${evt.source}   raised: ${evt.ts}   event id: ${evt.id}`,
+      // Occurrence context first: a reader who can see "3rd occurrence" behaves correctly
+      // without needing the rule below explained to them.
+      (evt.occurrences ?? 1) > 1
+        ? `\n\nThis is occurrence ${evt.occurrences} of an OPEN condition (first raised ${evt.ts}).`
+        : '',
       `\n\nThis is an automated notification, not a person asking. Triage it: fix it, defer it to`,
       ` Travis on Telegram if you need his input, or journal-and-ack it if it is real but not`,
-      ` actionable. Ack it either way so it stops badging.`,
+      ` actionable. Ack it either way so it stops badging — BUT if the condition is STILL FAILING,`,
+      ` ack ONCE and leave it. Further occurrences coalesce into the open row; re-acking re-arms`,
+      ` the row and guarantees a fresh badge on the next one.`,
       // This identity can send but not receive: fleetd dispatches inbound by agent kind, and
       // the kind this emitter is registered under has no adapter. Saying so costs two lines
       // and saves the reader discovering it by having a reply vanish.
