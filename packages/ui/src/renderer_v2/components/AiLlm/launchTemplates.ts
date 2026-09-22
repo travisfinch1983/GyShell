@@ -684,11 +684,25 @@ export const LAUNCH_TEMPLATES = {
   // smaller max-num-seqs).
   LAUNCH_TEMPLATES['1cat-vllm'] = {
     ...LAUNCH_TEMPLATES['vllm'],
-    // 1.3.0 env. The 1.0.0 env (1cat-vllm-sm70) is still installed and is the one-line
-    // rollback, but it must not be the default: it cannot load the 27B MTP checkpoint at
-    // all, and it disables the hybrid KV manager whenever a transfer config is present,
-    // which hard-fails every GDN model AND makes the Optane connector unreachable.
-    command: '/opt/conda/envs/1cat-vllm-sm70-130/bin/vllm serve',
+    // 1.5.0 env (default since 2026-09-15). Rollback is the 1.3.0 env, one path segment away and
+    // still installed. The 1.0.0 env (1cat-vllm-sm70) also remains but must never be the default:
+    // it cannot load the 27B MTP checkpoint at all, and it disables the hybrid KV manager whenever
+    // a transfer config is present, which hard-fails every GDN model AND makes the Optane
+    // connector unreachable. 1.5.0 and 1.3.0 have an IDENTICAL serve-flag surface (diffed from
+    // `vllm serve --help=all` on both envs), so switching versions cannot break a saved template.
+    //
+    // 1.5.0 IS ONLY AN UPGRADE WITH fp8 KV. Measured on the V100 TP4 rig against the
+    // 27B-INT8-W8A16-MTP checkpoint with real-conversation prompts (2026-09-14): 1.5.0 on the
+    // default fp16 KV is SLOWER than 1.3.0, while 1.5.0 + fp8_e5m2 is a clear win — 93.1 tok/s
+    // decode at 32K with DFlash2, against 76.6 for 1.3.0+MTP. The gain is version-specific rather
+    // than "fp8 is faster": the same flag applied to 1.3.0 REGRESSES it, 76.6 -> 63.0. 1.5.0's
+    // DFlash2 grouped verifier gate requires kv_cache_dtype == 'fp8_e5m2' and merely logs
+    // "rejected" when it is not, so the feature disappears silently rather than failing.
+    //
+    // That is why kvCacheDtype defaults to fp8_e5m2 below. A SAVED launch template stores its own
+    // kvCacheDtype and overrides that default, so any template written before this change carries
+    // '' and will now run 1.5.0 in its slower configuration with nothing in the log to say so.
+    command: '/opt/conda/envs/1cat-vllm-sm70-150/bin/vllm serve',
     args: {
       ...LAUNCH_TEMPLATES['vllm'].args,
       dtype:        { ...LAUNCH_TEMPLATES['vllm'].args.dtype, default: 'half' },
