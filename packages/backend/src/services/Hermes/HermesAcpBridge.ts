@@ -9,7 +9,7 @@ import { dirname } from 'path'
  * /claude/plans/ailab-hermes-integration.md):
  *
  *   - Each agent session is a long-lived child process:
- *       ssh <CT158> <pyvenv> /opt/acp-bridge/acp-bridge.py --profile <agentId>
+ *       ssh <hermes-host> <pyvenv> /opt/acp-bridge/acp-bridge.py --profile <agentId>
  *     which drives `hermes -p <agentId> acp` and streams NORMALIZED ndjson events.
  *   - Sessions live in THIS service's Map — their lifecycle is owned by the backend,
  *     NEVER by a UI socket. UIs and UIHistory are all mere
@@ -22,11 +22,11 @@ import { dirname } from 'path'
  */
 
 export interface HermesAcpConfig {
-  host: string // CT158, e.g. 10.0.0.236
-  sshKeyPath: string // AI-Lab's key authorized on CT158
+  host: string // the Hermes host (HERMES_HOST, default 127.0.0.1 — Hermes runs on the AI-Lab CT)
+  sshKeyPath: string // AI-Lab's key authorized on the Hermes host
   user?: string // default root
   bridgePath?: string // default /opt/acp-bridge/acp-bridge.py
-  profilesDir?: string // default /root/.hermes/profiles (<agentId>/state.db lives here on CT158)
+  profilesDir?: string // default /root/.hermes/profiles (<agentId>/state.db lives here on the Hermes host)
   pythonBin?: string // default the hermes venv python (has the `acp` lib)
   readyTimeoutMs?: number // default 30000
   historyCap?: number // max events buffered per session (ring); default 5000
@@ -431,7 +431,7 @@ export class HermesAcpBridge extends EventEmitter {
     session.proc.stdin.write(JSON.stringify({ type: 'set_model', model_id: modelId }) + '\n')
   }
 
-  /** Run the NATIVE Hermes tail-rewind helper on CT158 (drives SessionDB.rewind_to_message /
+  /** Run the NATIVE Hermes tail-rewind helper on the Hermes host (drives SessionDB.rewind_to_message /
    *  get_messages — no source patching). Resolves the parsed JSON result (last stdout line). */
   private runRewindHelper(agentId: string, sessionId: string, action: 'peek' | 'rewind'): Promise<Record<string, unknown>> {
     const py = this.cfg.pythonBin ?? '/usr/local/lib/hermes-agent/venv/bin/python'
@@ -473,7 +473,7 @@ export class HermesAcpBridge extends EventEmitter {
     clearTimeout(killTimer)
   }
 
-  /** Deterministically kill the REMOTE acp-bridge (+ its hermes child) driving a session on CT158
+  /** Deterministically kill the REMOTE acp-bridge (+ its hermes child) driving a session on the Hermes host
    *  and verify it's gone. Killing the local ssh does NOT reliably kill the remote, and a surviving
    *  process re-persists stale rows over our rewind (the clobber bug). Rejects if it can't confirm. */
   private remoteKillSession(sessionId: string): Promise<void> {

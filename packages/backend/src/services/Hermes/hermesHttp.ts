@@ -460,7 +460,7 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
 
   // Page-aware vision: the `view_screen` MCP tool POSTs here. We ask the active chat frontend
   // to capture its screen (a capture_request on the conversation stream), write the returned
-  // image into the agent's workspace on CT158, and return the local path for `vision_analyze`.
+  // image into the agent's workspace on the Hermes host, and return the local path for `vision_analyze`.
   router.post('/api/hermes/capture-screen', json, async (_req: Req, res: Res) => {
     try {
       const r = await hermes.captureScreen()

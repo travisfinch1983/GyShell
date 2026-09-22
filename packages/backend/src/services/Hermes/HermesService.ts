@@ -4,8 +4,8 @@ import { HermesAcpBridge, type AcpEvent, type AcpHistory } from './HermesAcpBrid
 import type { HermesAgentSpec } from '@gyshell/shared'
 
 export interface HermesServiceConfig {
-  host: string // CT158
-  sshKeyPath: string // AI-Lab key authorized on CT158
+  host: string // the Hermes host (HERMES_HOST, default 127.0.0.1)
+  sshKeyPath: string // AI-Lab key authorized on the Hermes host
   /** JSON file where applied specs are persisted (for read-back / edit). */
   specsFile?: string
   /** JSON file where Provider Services entries (keyed non-model providers) are persisted. */
@@ -286,7 +286,7 @@ export class HermesService {
 
   /** On-demand screen capture for the page-aware `view_screen` MCP tool. Emits a
    *  `capture_request` to the most-recent conversation's stream, waits for the frontend to
-   *  POST the image, writes it to the agent's workspace on CT158, and returns the LOCAL path
+   *  POST the image, writes it to the agent's workspace on the Hermes host, and returns the LOCAL path
    *  its `vision_analyze` tool can read (an internal URL would be SSRF-blocked; a file is not). */
   async captureScreen(opts: { timeoutMs?: number } = {}): Promise<{ path: string }> {
     const target = this.bridge.mostRecentSession()
