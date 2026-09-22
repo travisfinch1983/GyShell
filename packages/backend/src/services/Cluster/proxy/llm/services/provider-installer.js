@@ -18,13 +18,28 @@ import { fileURLToPath } from 'url';
 import { getProvider } from './providers.js';
 import { getClusterGpus } from './gpu-specs.js';
 
-const dataDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'data');
+// 🛑 MUST honour AILAB_PROXY_DATA_DIR (set by UniversalProxyService before the routers are
+// dynamically imported). Without it this resolved to .../proxy/data, a directory that has
+// never existed, so loadGpuAssignments() returned {} on EVERY call — every agent reported
+// GPU vendor 'unknown' and archs 'none', and provider installs fell back to a Vulkan build
+// that has no release asset. DATA_DIR eighteen lines below already did this correctly.
+const dataDir = process.env.AILAB_PROXY_DATA_DIR
+  || join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'data');
 const gpuAssignFile = join(dataDir, 'gpu-assignments.json');
 
+let _warnedNoAssignFile = false;
 function loadGpuAssignments() {
   try {
     if (existsSync(gpuAssignFile)) return JSON.parse(readFileSync(gpuAssignFile, 'utf-8'));
-  } catch {}
+    // An empty object here is indistinguishable from "no GPUs assigned", which is exactly
+    // how a wrong path hid for so long: installs just quietly decided there was no GPU.
+    if (!_warnedNoAssignFile) {
+      _warnedNoAssignFile = true;
+      console.warn(`[provider-installer] gpu-assignments.json NOT FOUND at ${gpuAssignFile} — every agent will report GPU vendor 'unknown'`);
+    }
+  } catch (e) {
+    console.warn(`[provider-installer] gpu-assignments.json unreadable (${gpuAssignFile}): ${e.message}`);
+  }
   return {};
 }
 
