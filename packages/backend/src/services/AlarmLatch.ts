@@ -110,6 +110,17 @@ export class AlarmLatch {
     return removed
   }
 
+  /** Subjects currently latched for a condition class. Lets a caller sweep for recovery
+   *  without keeping a second, divergent in-memory copy of the same set. */
+  subjects(cls: string): string[] {
+    const out: string[] = []
+    for (const k of Object.keys(this.map)) {
+      const i = k.lastIndexOf(':')
+      if (i > 0 && k.slice(i + 1) === cls) out.push(k.slice(0, i))
+    }
+    return out
+  }
+
   /** Persist if anything changed. Cheap no-op otherwise. */
   save(): void {
     if (!this.dirty) return

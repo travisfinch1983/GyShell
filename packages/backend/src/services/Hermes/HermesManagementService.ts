@@ -15,7 +15,7 @@ const execFileAsync = promisify(execFile)
 
 /**
  * HermesManagementService (AI-Lab × Hermes, control plane) — applies a HermesAgentSpec
- * to the Hermes install on CT158 by driving the `hermes` CLIs over SSH. Each agent is a
+ * to the Hermes install on the Hermes host by driving the `hermes` CLIs over SSH. Each agent is a
  * Hermes PROFILE (`hermes -p <agentId>`); its model always points at the `ailab` provider
  * (the AI-Lab universal proxy) so every agent routes through one endpoint with metrics.
  *
@@ -29,8 +29,11 @@ const execFileAsync = promisify(execFile)
  */
 
 export interface HermesManagementConfig {
-  host: string // e.g. 10.0.0.236 (CT158)
-  sshKeyPath: string // AI-Lab's key authorized on CT158 (AILAB_SSH_KEY / dataDir/ssh/id_ed25519)
+  // HERMES_HOST, default 127.0.0.1 — Hermes runs ON the AI-Lab container, not a separate one.
+  // (Was documented as "e.g. 10.0.0.236 (CT158)": an EXAMPLE naming a container that does not
+  // exist, which cost maintenance-claude 20 minutes chasing an unreachable host 2026-09-22.)
+  host: string
+  sshKeyPath: string // AILAB_SSH_KEY, else dataDir/ssh/id_ed25519
   user?: string // default root
   hermesBin?: string // default /usr/local/bin/hermes
   profileHomeBase?: string // default /root/.hermes/profiles
@@ -551,7 +554,29 @@ export class HermesManagementService {
    * them. A signature changes whenever ANY role changes, so fixing one role re-alarms
    * the others, and a role that stays broken goes quiet the moment a second one breaks.
    */
-  private unservedAlarmed = new Set<string>()
+  /**
+   * PERSISTED across restarts. This was an in-memory Set, so every `ai-lab.service` restart
+   * re-announced every still-true misconfiguration: maintenance-claude measured three restarts
+   * in one rebuild window each re-alarming the deliberately-downed 27B exactly 92s later
+   * (MODEL_BINDING_CONFIRMATIONS x the 30s interval). Nothing had changed in the world, only in
+   * the watcher. The sibling audit script, which latches to disk, stayed correctly silent
+   * throughout. AlarmLatch fails open and clears on positive evidence, so neither property is
+   * lost by persisting.
+   */
+  /** Roles currently latched as unserved. Read from the latch so a restart sees the real set. */
+  private unservedLatchSubjects(): string[] {
+    return this.unservedLatch().subjects('unserved')
+  }
+  private unservedLatchInst: AlarmLatch | null = null
+  private unservedLatch(): AlarmLatch {
+    if (!this.unservedLatchInst) {
+      this.unservedLatchInst = new AlarmLatch(
+        process.env.HERMES_UNSERVED_ALARMS_FILE
+          || '/opt/ai-lab/.gybackend-data/model-binding-unserved-latch.json',
+      )
+    }
+    return this.unservedLatchInst
+  }
   /** Suspend suppressions already logged, so an unchanged suspend is stated once, not per pass. */
   private suspendedLogged = new Set<string>()
   /** Consecutive passes a role has looked unserved. One bad catalogue read must not alarm. */
@@ -616,7 +641,7 @@ export class HermesManagementService {
     }
     for (const [key, model] of nowUnserved) {
       // Fire on CHANGE only; a standing misconfiguration must not re-alarm every pass.
-      if (this.unservedAlarmed.has(key)) continue
+      if (this.unservedLatch().has(key, 'unserved')) continue
       // 🛑 CONFIRMATIONS. A single pass is not evidence: the catalogue is assembled from several
       // external sources, so one source failing mid-refresh makes every role bound to it look
       // unserved while the set stays large enough to pass the size guard. Proven live on
@@ -628,19 +653,30 @@ export class HermesManagementService {
           + `(${streak}/${MODEL_BINDING_CONFIRMATIONS}) — not alarming yet`)
         continue
       }
-      this.unservedAlarmed.add(key)
+      const restated = this.unservedLatch().claim(key, 'unserved')
+      if (restated === null) continue   // inside the re-announce window; already said
       this.cfg.notify?.({
         severity: 'error',
         source: 'model-bindings',
         message: `Support-model role '${key}' names a model the proxy does not serve — that role is a silent no-op`,
-        detail: `'${model}' is not among the served models on ${MODEL_BINDING_CONFIRMATIONS} `
+        // The catalogue is CHAT-ONLY: maintenance-claude briefly mistook healthy embedding
+        // and reranker services for the missing 9B because they are not listed here.
+        detail: `'${model}' is not among the served CHAT models on ${MODEL_BINDING_CONFIRMATIONS} `
           + `consecutive checks, so this is not a transient catalogue read. The role is `
-          + `configured and runs, but does nothing.`,
+          + `configured and runs, but does nothing. (Non-chat services such as embeddings and `
+          + `rerankers never appear in this catalogue and are not evidence either way.)`
+          + restated,
       })
     }
     // Forget roles that are no longer broken, so a genuine RECURRENCE alarms again rather
     // than being suppressed forever by the first occurrence.
-    for (const key of [...this.unservedAlarmed]) if (!nowUnserved.has(key)) this.unservedAlarmed.delete(key)
+    // Positive evidence of health: the role is no longer in the unserved set. clear() is the
+    // only sanctioned way to drop a latch, and pruning by roster is deliberately NOT used here
+    // — a role vanishing from a failed read must not be mistaken for a role that recovered.
+    for (const key of this.unservedLatchSubjects()) {
+      if (!nowUnserved.has(key)) this.unservedLatch().clear(key, ['unserved'])
+    }
+    this.unservedLatch().save()
     // Drop log markers for roles no longer suspended, so a FUTURE suspend is announced again
     // rather than silently inheriting the first one's "already logged".
     for (const sig of [...this.suspendedLogged]) {
@@ -1531,7 +1567,7 @@ export class HermesManagementService {
   }
 
   /** Write an on-demand screenshot (base64 from the browser; data URL or bare) into the agent's
-   *  workspace on CT158, where its `vision_analyze` tool can read the local file — an internal
+   *  workspace on the Hermes host, where its `vision_analyze` tool can read the local file — an internal
    *  URL would be SSRF-blocked, a local path is not. Returns the absolute path the agent reads. */
   async writeAgentScreenshot(agentId: string, image: string): Promise<string> {
     const b64 = image.includes(',') ? image.slice(image.indexOf(',') + 1) : image
@@ -2008,7 +2044,7 @@ export class HermesManagementService {
    * Why a direct config.yaml write and not a CLI: `hermes config set` stores a list-of-dicts as
    * a literal STRING (verified — `fallback list` then ignores it), and `hermes fallback add` is
    * an interactive picker with no flags. So we merge the single `fallback_providers` key via the
-   * remote system python (PyYAML present on CT158), preserving every other config key. This is a
+   * remote system python (PyYAML present on the Hermes host), preserving every other config key. This is a
    * native user-config write — exactly what the CLI does internally — not a Hermes-source patch.
    */
   /** Parse a profile's live config.yaml into JSON via the remote system python (PyYAML present
@@ -2124,7 +2160,7 @@ export class HermesManagementService {
   }
 
   /** AI-Lab's OWN resolved LAN IP (self-identity resolver + Settings override). This is the address
-   *  the fleet on OTHER hosts (CT158) must use to reach AI-Lab; loopback is WRONG cross-host. */
+   *  the fleet on OTHER hosts must use to reach AI-Lab; loopback is WRONG cross-host. */
   private selfIp(): string {
     return clusterSettingsService.getSelfIdentity().ip
   }
