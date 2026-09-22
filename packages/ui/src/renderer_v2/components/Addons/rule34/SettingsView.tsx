@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import { rule34Api } from './rule34Api'
+import { confirmStore } from '../../../stores/confirmStore'
 import styles from './Rule34.module.scss'
 
 // api_key / user_id are managed per-key in the pool below, not here.
@@ -69,7 +70,7 @@ export const SettingsView: React.FC = () => {
     await rule34Api.toggleKey(k.id, !k.enabled); await load()
   }
   const removeKey = async (k: ApiKey) => {
-    if (!confirm(`Remove key ${k.label || k.key_preview}?`)) return
+    if (!(await confirmStore.confirm({ title: 'Remove API key', message: `Remove key ${k.label || k.key_preview}? This cannot be undone.`, confirmText: 'Remove' }))) return
     await rule34Api.removeKey(k.id); await load()
   }
 

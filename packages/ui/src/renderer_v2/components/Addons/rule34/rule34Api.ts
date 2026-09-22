@@ -26,6 +26,12 @@ async function postForm(path: string, fields?: Record<string, string | string[] 
   return r.json()
 }
 
+async function postJson(path: string, obj: any): Promise<any> {
+  const r = await fetch(`${BASE}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obj) })
+  if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`)
+  return r.json()
+}
+
 // Media URLs
 export const thumbUrl = (postId: number) => `${BASE}/media/thumb/${postId}`
 export const fullUrl = (postId: number) => `${BASE}/media/full/${postId}`
@@ -57,4 +63,10 @@ export const rule34Api = {
   workerResume: () => postForm('/api/worker/pause', { action: 'resume' }),
   scrapeAll: () => postForm('/api/worker/scrape-all'),
   retryFailed: () => postForm('/api/retry-failed'),
+
+  // ── training sets ──
+  trainingSets: () => getJson<any>('/api/training-sets'),
+  createTrainingSet: (name: string) => postForm('/api/training-sets/create', { name }),
+  addToTrainingSet: (set: string, postIds: number[]) => postJson('/api/training-sets/add', { set, post_ids: postIds }),
+  trainingSetMembers: (set: string) => getJson<any>(`/api/training-sets/members?set=${encodeURIComponent(set)}`),
 }

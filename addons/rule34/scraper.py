@@ -130,6 +130,7 @@ class Rule34Client:
         # get a genuinely separate source IP.
         self._clients: dict[str, httpx.AsyncClient] = {}
         self._last_request_time: float = 0
+        self.last_api_error: dict | None = None
 
     def _client_for(self, proxy: str = "") -> httpx.AsyncClient:
         c = self._clients.get(proxy)
@@ -194,10 +195,12 @@ class Rule34Client:
                     return []
                 data = resp.json()
                 if isinstance(data, list):
+                    self.last_api_error = None
                     return data
                 # API sometimes returns a string error message
                 if isinstance(data, str):
                     logger.warning(f"API returned string for '{tags}' page {page}: {data[:100]}")
+                    self.last_api_error = {"error": data[:160], "at": time.time()}
                 return []
             except httpx.HTTPStatusError as e:
                 logger.error(f"API error searching '{tags}' page {page}: {e.response.status_code}")
@@ -209,7 +212,7 @@ class Rule34Client:
         logger.error(f"Exhausted retries for '{tags}' page {page} due to 429s")
         return []
 
-    async def fetch_all_posts(self, tags: str, since_id: int = 0) -> list[dict]:
+    async def fetch_all_posts(self, tags: str, since_id: int = 0, on_progress=None) -> list[dict]:
         """Fetch all posts for a tag query using ID-based pagination.
 
         Uses id:<MIN_ID to walk backwards through results instead of pid,
@@ -227,6 +230,11 @@ class Rule34Client:
             new_posts = [p for p in posts if p.get("id", 0) > since_id]
             all_posts.extend(new_posts)
             page_num += 1
+            if on_progress:
+                try:
+                    on_progress(len(all_posts))
+                except Exception:
+                    pass
 
             if len(new_posts) < len(posts):
                 # We've reached posts at or below since_id — done
@@ -246,6 +254,34 @@ class Rule34Client:
                 logger.info(f"Pagination progress for '{tags}': {len(all_posts)} posts fetched so far (page {page_num})")
 
         return all_posts
+
+    async def iter_post_pages(self, tags: str, since_id: int = 0, on_progress=None):
+        """Async-generator variant of fetch_all_posts: yields each page of NEW posts
+        (id > since_id), newest-first via id:<MIN_ID pagination, so the caller can
+        upsert+link incrementally instead of buffering the whole result set."""
+        current_tags = tags
+        total = 0
+        while True:
+            posts = await self.search_posts(current_tags, page=0, limit=1000)
+            if not posts:
+                break
+            new_posts = [p for p in posts if p.get("id", 0) > since_id]
+            if new_posts:
+                total += len(new_posts)
+                if on_progress:
+                    try:
+                        on_progress(total)
+                    except Exception:
+                        pass
+                yield new_posts
+            if len(new_posts) < len(posts):
+                break
+            if len(posts) < 1000:
+                break
+            min_id = min(p.get("id", 0) for p in posts)
+            if min_id <= since_id + 1:
+                break
+            current_tags = f"{tags} id:<{min_id}"
 
     async def fetch_tag_type(self, name: str) -> int | None:
         """Fetch one tag's type from the rule34 tag API (XML). Type codes:

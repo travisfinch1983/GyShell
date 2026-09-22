@@ -1,14 +1,48 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { rule34Api, thumbUrl, fullUrl } from './rule34Api'
+import { confirmStore } from '../../../stores/confirmStore'
 import styles from './Rule34.module.scss'
 
 type SidebarSort = 'count' | 'alpha'
 
+type BrowseTab = { id: string; tags: string; page: number }
+const TABS_KEY = 'rule34.browseTabs.v1'
+const ACTIVE_KEY = 'rule34.activeTab.v1'
+const MAX_TABS = 50
+const loadStoredTabs = (): BrowseTab[] => {
+  try {
+    const raw = localStorage.getItem(TABS_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed) && parsed.length) {
+        const clean = parsed
+          .filter((t: any) => t && typeof t.id === 'string' && typeof t.tags === 'string')
+          .map((t: any) => ({ id: t.id, tags: t.tags, page: Number(t.page) || 1 }))
+        if (clean.length) return clean.slice(0, MAX_TABS)
+      }
+    }
+  } catch { /* ignore */ }
+  return [{ id: 't0', tags: '', page: 1 }]
+}
+
 export const BrowserView: React.FC = () => {
   const [d, setD] = useState<any>(null)
   const [search, setSearch] = useState('')
-  const [activeTags, setActiveTags] = useState('')
-  const [page, setPage] = useState(1)
+  // Internal browse tabs — each keeps its own tag filter + page, so opening a
+  // tag from the lightbox in a NEW tab preserves the current browse. Shares all
+  // other state (selection, training set, "In set" highlight) live across tabs.
+  const [tabs, setTabs] = useState<BrowseTab[]>(loadStoredTabs)
+  const [activeTabId, setActiveTabId] = useState<string>(() => {
+    try { return localStorage.getItem(ACTIVE_KEY) || 't0' } catch { return 't0' }
+  })
+  const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0]
+  const activeTags = activeTab.tags
+  const page = activeTab.page
+  const patchActiveTab = (patch: Partial<{ tags: string; page: number }>) =>
+    setTabs((ts) => ts.map((t) => (t.id === activeTabId ? { ...t, ...patch } : t)))
+  const setActiveTags = (v: string) => patchActiveTab({ tags: v })
+  const setPage = (v: number) => patchActiveTab({ page: v })
+  const [jumpVal, setJumpVal] = useState('')
   const [sort, setSort] = useState('newest')
   const [rating, setRating] = useState('')
   const [lightbox, setLightbox] = useState<any>(null)
@@ -24,9 +58,17 @@ export const BrowserView: React.FC = () => {
 
   // Watched tags (download list) — maps tag_query → watched_tag id
   const [watchedMap, setWatchedMap] = useState<Map<string, number>>(new Map())
+  const [trainingSets, setTrainingSets] = useState<any[]>([])
+  const [selectedSet, setSelectedSet] = useState('')
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [tsBusy, setTsBusy] = useState(false)
+  const [tsMsg, setTsMsg] = useState('')
+  const [newSetName, setNewSetName] = useState('')
+  const [setMemberIds, setSetMemberIds] = useState<Set<number>>(new Set())
 
   // Lightbox zoom/pan
   const [zoom, setZoom] = useState(1)
+  const [actualSize, setActualSize] = useState(false)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
   const dragStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 })
@@ -56,6 +98,27 @@ export const BrowserView: React.FC = () => {
   }, [activeTags, page, sort, rating])
 
   useEffect(() => { void load() }, [load])
+
+  // Reflect the active tab's filter in the search box when switching tabs.
+  useEffect(() => {
+    const t = tabs.find((x) => x.id === activeTabId)
+    setSearch(t ? t.tags : '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTabId])
+
+  // A restored active-tab id may no longer exist — point it at the first tab.
+  useEffect(() => {
+    if (tabs.length && !tabs.some((t) => t.id === activeTabId)) setActiveTabId(tabs[0].id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Persist tabs across refreshes / browser sessions until manually closed.
+  useEffect(() => {
+    try {
+      localStorage.setItem(TABS_KEY, JSON.stringify(tabs))
+      localStorage.setItem(ACTIVE_KEY, activeTabId)
+    } catch { /* ignore */ }
+  }, [tabs, activeTabId])
 
   const activeSet = useMemo(() => new Set(activeTags.split(' ').filter(Boolean)), [activeTags])
 
@@ -121,16 +184,6 @@ export const BrowserView: React.FC = () => {
     await loadWatched()
   }
 
-  const addTag = (name: string) => {
-    const tags = activeTags ? activeTags.split(' ') : []
-    if (!tags.includes(name)) tags.push(name)
-    const next = tags.join(' ')
-    setSearch(next)
-    setActiveTags(next)
-    setPage(1)
-    setLightbox(null)
-  }
-
   const removeChip = (name: string) => {
     const next = activeTags.split(' ').filter((t) => t !== name).join(' ')
     setSearch(next)
@@ -138,10 +191,46 @@ export const BrowserView: React.FC = () => {
     setPage(1)
   }
 
+  const goToPage = (n: number) => {
+    const tp = d?.total_pages ?? 1
+    setPage(Math.min(Math.max(1, n), tp))
+  }
+  const doJump = () => {
+    const n = parseInt(jumpVal, 10)
+    if (!Number.isNaN(n)) goToPage(n)
+    setJumpVal('')
+  }
+
+  const tabLabel = (t: { tags: string }) => (t.tags.trim() ? t.tags : 'All posts')
+  const openTagInNewTab = (name: string) => {
+    if (tabs.length >= MAX_TABS) { setTsMsg(`Max ${MAX_TABS} browse tabs — close one first.`); return }
+    const id = `t-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 6)}`
+    setTabs((ts) => [...ts, { id, tags: name, page: 1 }])
+    setActiveTabId(id)
+    setLightbox(null)
+  }
+  const newBlankTab = () => {
+    if (tabs.length >= MAX_TABS) { setTsMsg(`Max ${MAX_TABS} browse tabs.`); return }
+    const id = `t-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 6)}`
+    setTabs((ts) => [...ts, { id, tags: '', page: 1 }])
+    setActiveTabId(id)
+  }
+  const closeTab = (id: string) => {
+    if (tabs.length <= 1) return
+    const idx = tabs.findIndex((t) => t.id === id)
+    const next = tabs.filter((t) => t.id !== id)
+    setTabs(next)
+    if (id === activeTabId) setActiveTabId(next[Math.max(0, idx - 1)].id)
+  }
+
   const openLightbox = async (id: number) => {
     setZoom(1)
     setPan({ x: 0, y: 0 })
-    setLightbox(await rule34Api.post(id))
+    const post = await rule34Api.post(id)
+    const w = post?.width || 0, h = post?.height || 0
+    const ratio = w && h ? Math.max(w / h, h / w) : 1
+    setActualSize(ratio > 5) // extreme stitched strips open at native size, scrollable
+    setLightbox(post)
   }
 
   const closeLightbox = () => {
@@ -150,11 +239,96 @@ export const BrowserView: React.FC = () => {
     setPan({ x: 0, y: 0 })
   }
 
+  const zoomBy = (dir: 1 | -1) =>
+    setZoom((z) => {
+      const next = Math.max(0.25, Math.min(40, z + dir * 0.25 * z))
+      if (next <= 1) setPan({ x: 0, y: 0 })
+      return next
+    })
+
+  // Prev/next within the current page; rolls over to the adjacent page's edge
+  // image at a boundary (and moves the grid with it).
+  const navLightbox = async (dir: 1 | -1) => {
+    if (!d || !lightbox) return
+    const posts = (d.posts as any[]) || []
+    const idx = posts.findIndex((p) => p.id === lightbox.id)
+    if (idx < 0) return
+    const ni = idx + dir
+    if (ni >= 0 && ni < posts.length) { await openLightbox(posts[ni].id); return }
+    const targetPage = page + dir
+    if (targetPage < 1 || targetPage > (d.total_pages || 1)) return
+    const data = await rule34Api.browser({ tags: activeTags || undefined, page: targetPage, per_page: 40, sort, rating: rating || undefined })
+    if (data?.posts?.length) {
+      setPage(targetPage)
+      const target = dir === 1 ? data.posts[0] : data.posts[data.posts.length - 1]
+      await openLightbox(target.id)
+    }
+  }
+
+  useEffect(() => {
+    if (!lightbox) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return // let browser shortcuts (Back, page-zoom) through
+      if (e.key === 'ArrowRight') { e.preventDefault(); void navLightbox(1) }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); void navLightbox(-1) }
+      else if (e.key === 'Escape') closeLightbox()
+      else if (!actualSize && (e.key === '+' || e.key === '=')) zoomBy(1)
+      else if (!actualSize && e.key === '-') zoomBy(-1)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lightbox, d, page, activeTags, sort, rating, actualSize])
+
+  const loadSets = useCallback(async () => {
+    try { const r = await rule34Api.trainingSets(); setTrainingSets(r?.sets ?? []) } catch { /* ignore */ }
+  }, [])
+  useEffect(() => { void loadSets() }, [loadSets])
+  const loadMembers = useCallback(async (set: string) => {
+    if (!set) { setSetMemberIds(new Set()); return }
+    try { const r = await rule34Api.trainingSetMembers(set); setSetMemberIds(new Set<number>(r?.post_ids ?? [])) }
+    catch { setSetMemberIds(new Set()) }
+  }, [])
+  useEffect(() => { void loadMembers(selectedSet) }, [selectedSet, loadMembers])
+  const toggleSelect = (id: number) =>
+    setSelectedIds((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n })
+  const handleCreateSet = async () => {
+    const name = newSetName.trim()
+    if (!name) return
+    const r = await rule34Api.createTrainingSet(name)
+    if (r?.ok) { setNewSetName(''); await loadSets(); setSelectedSet(r.name); setTsMsg(`Created ${r.name}`) }
+    else setTsMsg(r?.error || 'Create failed')
+  }
+  const addToSet = async (ids: number[]) => {
+    if (!selectedSet) { setTsMsg('Select a training set first.'); return }
+    if (!ids.length) return
+    // Fail SAFE: gate unless the set is positively known to be a rule34 set.
+    // If the set is missing from the loaded list or an older response lacks the
+    // rule34 flag, still confirm — the failure this guards is silent and
+    // unrecoverable (images land in someone else's training corpus).
+    const setObj = trainingSets.find((s: any) => s.name === selectedSet)
+    if (!setObj?.rule34) {
+      const ok = await confirmStore.confirm({
+        title: 'Not a rule34 set',
+        message: `"${selectedSet}" wasn't created by the rule34 browser — it may be another training collection. Add ${ids.length} image${ids.length === 1 ? '' : 's'} to it anyway?`,
+        confirmText: 'Add anyway',
+      })
+      if (!ok) return
+    }
+    setTsBusy(true)
+    try {
+      const r = await rule34Api.addToTrainingSet(selectedSet, ids)
+      if (r?.ok) { setTsMsg(`Added ${r.added} to ${selectedSet}${r.skipped ? ` (${r.skipped} skipped)` : ''}`); setSelectedIds(new Set()); await loadSets(); await loadMembers(selectedSet) }
+      else setTsMsg(r?.error || 'Add failed')
+    } catch (e: any) { setTsMsg(String(e?.message || e)) }
+    finally { setTsBusy(false) }
+  }
+
   const handleWheel = (e: React.WheelEvent) => {
     e.stopPropagation()
     const delta = e.deltaY < 0 ? 0.15 : -0.15
     setZoom((z) => {
-      const next = Math.max(0.25, Math.min(12, z + delta * z))
+      const next = Math.max(0.25, Math.min(40, z + delta * z))
       if (next <= 1) setPan({ x: 0, y: 0 })
       return next
     })
@@ -239,6 +413,18 @@ export const BrowserView: React.FC = () => {
 
       {/* ── Main content ── */}
       <div className={styles.browserMain}>
+        <div className={styles.browseTabs}>
+          {tabs.map((t) => (
+            <div key={t.id} className={`${styles.browseTab} ${t.id === activeTabId ? styles.browseTabActive : ''}`}
+              onClick={() => setActiveTabId(t.id)} title={tabLabel(t)}>
+              <span className={styles.browseTabLabel}>{tabLabel(t)}</span>
+              {tabs.length > 1 && (
+                <span className={styles.browseTabClose} onClick={(e) => { e.stopPropagation(); closeTab(t.id) }}>×</span>
+              )}
+            </div>
+          ))}
+          <button type="button" className={styles.browseTabAdd} onClick={newBlankTab} title="New browse tab">+</button>
+        </div>
         <form className={styles.searchBar} onSubmit={doSearch}>
           <div className={styles.searchWrap}>
             <input
@@ -281,6 +467,33 @@ export const BrowserView: React.FC = () => {
           </div>
         )}
 
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '6px 0', flexWrap: 'wrap' }}>
+          <span className={styles.dim}>Training set:</span>
+          <select className={styles.select} value={selectedSet} onChange={(e) => setSelectedSet(e.target.value)}>
+            <option value="">— select a set —</option>
+            {trainingSets.map((s: any) => (
+              <option key={s.name} value={s.name}>{s.name} ({s.count})</option>
+            ))}
+          </select>
+          <input
+            className={styles.select}
+            value={newSetName}
+            onChange={(e) => setNewSetName(e.target.value)}
+            placeholder="new set name\u2026"
+            style={{ width: 140 }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleCreateSet() } }}
+          />
+          <button type="button" className={styles.btn} disabled={!newSetName.trim()} onClick={handleCreateSet}>Create</button>
+          {selectedSet && <span className={styles.ok} style={{ fontWeight: 600 }}>→ {selectedSet}</span>}
+          <span style={{ flex: 1 }} />
+          <span className={styles.dim}>{selectedIds.size} selected</span>
+          <button type="button" className={styles.btnPrimary} disabled={!selectedSet || selectedIds.size === 0 || tsBusy} onClick={() => addToSet([...selectedIds])}>
+            {tsBusy ? 'Adding…' : `Add ${selectedIds.size} to set`}
+          </button>
+          <button type="button" className={styles.btn} disabled={selectedIds.size === 0} onClick={() => setSelectedIds(new Set())}>Clear</button>
+          {tsMsg && <span className={styles.dim}>{tsMsg}</span>}
+        </div>
+
         {!d ? (
           <span className={styles.dim}>Loading…</span>
         ) : (
@@ -288,21 +501,53 @@ export const BrowserView: React.FC = () => {
             <span className={styles.dim}>{d.total.toLocaleString()} posts</span>
             <div className={styles.grid}>
               {d.posts.map((p: any) => (
-                <div key={p.id} className={styles.gridItem} onClick={() => openLightbox(p.id)}>
+                <div key={p.id} className={styles.gridItem} onClick={() => openLightbox(p.id)}
+                  style={{
+                    ...(selectedIds.has(p.id) ? { outline: '3px solid var(--primary, #3b82f6)', outlineOffset: -3 } : {}),
+                  }}>
                   <img src={thumbUrl(p.id)} alt={`#${p.id}`} loading="lazy" />
                   <div className={styles.gridOverlay}>
                     <span>{p.score}</span>
                     {isVideo(p.file_ext) && <span className={styles.videoBadge}>VID</span>}
                   </div>
+                  {setMemberIds.has(p.id) && (
+                    <>
+                      <div style={{ position: 'absolute', inset: 0, border: '3px solid #22c55e', borderRadius: 'inherit', boxSizing: 'border-box', pointerEvents: 'none', zIndex: 3 }} />
+                      <span title={`Already in ${selectedSet}`} style={{ position: 'absolute', top: 4, right: 4, zIndex: 4, background: '#22c55e', color: '#fff', borderRadius: 4, fontSize: 10, fontWeight: 700, padding: '1px 4px' }}>In set</span>
+                    </>
+                  )}
+                  <input type="checkbox" checked={selectedIds.has(p.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => { e.stopPropagation(); toggleSelect(p.id) }}
+                    title="Select for training set"
+                    style={{ position: 'absolute', top: 4, left: 4, width: 18, height: 18, cursor: 'pointer', zIndex: 2 }} />
                 </div>
               ))}
             </div>
 
             {d.total_pages > 1 && (
               <div className={styles.pagination}>
-                <button className={styles.btn} disabled={page <= 1} onClick={() => setPage(page - 1)}>Prev</button>
+                <button className={styles.btn} disabled={page <= 1} onClick={() => goToPage(1)}>« First</button>
+                <button className={styles.btn} disabled={page <= 1} onClick={() => goToPage(page - 1)}>Prev</button>
+                {(() => {
+                  const tp = d.total_pages
+                  const start = Math.max(1, page - 5)
+                  const end = Math.min(tp, page + 5)
+                  const nums: number[] = []
+                  for (let i = start; i <= end; i++) nums.push(i)
+                  return nums.map((n) => (
+                    <button key={n} className={styles.btn} onClick={() => goToPage(n)}
+                      style={n === page ? { fontWeight: 700, background: 'var(--primary, #3b82f6)', color: '#fff', borderColor: 'var(--primary, #3b82f6)' } : undefined}>{n}</button>
+                  ))
+                })()}
+                <button className={styles.btn} disabled={page >= d.total_pages} onClick={() => goToPage(page + 1)}>Next</button>
+                <button className={styles.btn} disabled={page >= d.total_pages} onClick={() => goToPage(d.total_pages)}>Last »</button>
                 <span className={styles.dim}>{page} / {d.total_pages}</span>
-                <button className={styles.btn} disabled={page >= d.total_pages} onClick={() => setPage(page + 1)}>Next</button>
+                <input className={styles.jumpInput} type="number" min={1} max={d.total_pages}
+                  placeholder="Go to…" value={jumpVal}
+                  onChange={(e) => setJumpVal(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') doJump() }} />
+                <button className={styles.btn} onClick={doJump}>Go</button>
               </div>
             )}
           </>
@@ -314,15 +559,22 @@ export const BrowserView: React.FC = () => {
         <div className={styles.lightboxOverlay} onClick={closeLightbox}>
           <div className={styles.lightboxFull} onClick={(e) => e.stopPropagation()}>
             <button className={styles.lightboxClose} onClick={closeLightbox}>×</button>
+            <button className={styles.lightboxNav} style={{ left: 12 }} onClick={() => void navLightbox(-1)} title="Previous image (←)">‹</button>
+            <button className={styles.lightboxNav} style={{ right: 12 }} onClick={() => void navLightbox(1)} title="Next image (→)">›</button>
             <div
               ref={mediaRef}
               className={styles.lightboxMediaFull}
-              onWheel={handleWheel}
-              onMouseDown={handleMouseDown}
-              onMouseMove={handleMouseMove}
-              onMouseUp={handleMouseUp}
-              onMouseLeave={handleMouseUp}
-              style={{ cursor: zoom > 1 ? (dragging ? 'grabbing' : 'grab') : 'default' }}
+              onWheel={actualSize ? undefined : handleWheel}
+              onMouseDown={actualSize ? undefined : handleMouseDown}
+              onMouseMove={actualSize ? undefined : handleMouseMove}
+              onMouseUp={actualSize ? undefined : handleMouseUp}
+              onMouseLeave={actualSize ? undefined : handleMouseUp}
+              style={{
+                cursor: actualSize ? 'auto' : (zoom > 1 ? (dragging ? 'grabbing' : 'grab') : 'default'),
+                overflow: actualSize ? 'auto' : 'hidden',
+                display: actualSize ? 'block' : 'flex',
+                textAlign: actualSize ? 'center' : undefined,
+              }}
             >
               {isVideo(lightbox.file_ext) ? (
                 <video
@@ -336,7 +588,12 @@ export const BrowserView: React.FC = () => {
                   src={lightbox.downloaded === 1 ? fullUrl(lightbox.id) : (lightbox.sample_url || lightbox.file_url)}
                   alt={`#${lightbox.id}`}
                   draggable={false}
-                  style={{
+                  style={actualSize ? {
+                    maxWidth: 'none',
+                    maxHeight: 'none',
+                    display: 'inline-block',
+                    verticalAlign: 'top',
+                  } : {
                     transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
                     transformOrigin: 'center center',
                     transition: dragging ? 'none' : 'transform 0.1s ease-out',
@@ -347,18 +604,33 @@ export const BrowserView: React.FC = () => {
                 />
               )}
             </div>
-            {zoom !== 1 && (
-              <div className={styles.zoomIndicator}>
-                {Math.round(zoom * 100)}%
-                <button className={styles.btn} onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }} style={{ marginLeft: 6, padding: '2px 6px' }}>Reset</button>
-              </div>
-            )}
+            <div className={styles.zoomIndicator}>
+              <button className={styles.btn} onClick={() => setActualSize((a) => !a)} style={{ padding: '2px 8px' }} title="Toggle actual size / fit">
+                {actualSize ? 'Fit' : '1:1'}
+              </button>
+              {!actualSize && (
+                <>
+                  <button className={styles.btn} onClick={() => zoomBy(-1)} style={{ padding: '2px 8px' }}>−</button>
+                  <span style={{ minWidth: 42, textAlign: 'center' }}>{Math.round(zoom * 100)}%</span>
+                  <button className={styles.btn} onClick={() => zoomBy(1)} style={{ padding: '2px 8px' }}>+</button>
+                  {zoom !== 1 && (
+                    <button className={styles.btn} onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }} style={{ padding: '2px 6px' }}>Reset</button>
+                  )}
+                </>
+              )}
+            </div>
             <div className={styles.lightboxInfoBar}>
               <div className={styles.lightboxMeta}>
                 <span>ID: {lightbox.id}</span>
                 <span>Score: {lightbox.score}</span>
                 <span>Rating: {lightbox.rating}</span>
                 {lightbox.width && lightbox.height && <span>{lightbox.width}×{lightbox.height}</span>}
+                {lightbox.downloaded === 1 && (
+                  <button type="button" className={styles.btnPrimary} disabled={!selectedSet || tsBusy}
+                    onClick={() => addToSet([lightbox.id])} style={{ marginLeft: 'auto' }}>
+                    {selectedSet ? `+ Add to ${selectedSet}` : 'Select a set first'}
+                  </button>
+                )}
               </div>
               <div className={styles.lightboxTags}>
                 {(() => {
@@ -380,7 +652,7 @@ export const BrowserView: React.FC = () => {
                       <div key={g.key} className={styles.tagGroup}>
                         <span className={styles.tagGroupLabel}>{g.label}</span>
                         {items.map((t) => (
-                          <span key={t.name} className={`${styles.tagChip} ${g.cls}`} onClick={() => addTag(t.name)}>{t.name}</span>
+                          <span key={t.name} className={`${styles.tagChip} ${g.cls}`} onClick={() => openTagInNewTab(t.name)} title="Open in a new browse tab">{t.name}</span>
                         ))}
                       </div>
                     )

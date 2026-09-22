@@ -11,12 +11,14 @@ from db import (
     upsert_post,
     upsert_tags_for_post,
     get_pending_downloads,
+    get_pending_downloads_for_tag,
     mark_downloaded,
     mark_download_failed,
     requeue_download,
     update_watched_tag_progress,
     link_posts_to_watched_tag,
     refresh_watched_agg,
+    backfill_watched_tag_links,
     get_untyped_tags,
     set_tag_type_by_name,
 )
@@ -43,6 +45,11 @@ class Worker:
         self._type_priority: list[str] = []   # tag names to type ASAP (viewed posts)
         self._type_count: int = 0
         self._current_activity: str = "idle"
+        self._scrape_progress: str = ""
+        self._tag_scrape: dict = {}   # tag_id -> {found, at, error}
+        self._priority_tag_id: int | None = None      # Sync-Now download priority
+        self._priority_tag_query: str | None = None
+        self._current_download_tag: str | None = None # tag whose images are downloading now
         self._scrape_count: int = 0
         self._download_count: int = 0
         self._requeue_count: int = 0    # transient failures auto-requeued
@@ -57,6 +64,11 @@ class Worker:
             "downloads_completed": self._download_count,
             "downloads_requeued": self._requeue_count,
             "tags_typed": self._type_count,
+            "scrape_progress": self._scrape_progress,
+            "tag_status": self._tag_scrape,
+            "api_error": self.client.last_api_error,
+            "priority_tag_id": self._priority_tag_id,
+            "current_download_tag": self._current_download_tag,
         }
 
     async def start(self):
@@ -64,6 +76,7 @@ class Worker:
         self._scrape_task = asyncio.create_task(self._scrape_loop())
         self._download_task = asyncio.create_task(self._download_loop())
         self._agg_task = asyncio.create_task(self._agg_refresh_loop())
+        asyncio.create_task(self._startup_backfill())
         self._type_task = asyncio.create_task(self._type_loop())
         logger.info("Worker started")
 
@@ -108,31 +121,46 @@ class Worker:
         """Run a scrape for a specific tag immediately."""
         self._current_activity = f"scraping: {tag_query}"
         self._scraping = True
+        self._scrape_progress = ""
         logger.info(f"Scraping tag: {tag_query} (since_id={since_id})")
+        max_id = since_id
+        total_linked = 0
         try:
-            posts = await self.client.fetch_all_posts(tag_query, since_id=since_id)
-            max_id = since_id
-            all_post_ids: list[int] = []
-            for raw in posts:
-                post = parse_post(raw)
-                if post["id"] is None:
-                    continue
-                inserted = await upsert_post(post)
-                if inserted:
-                    await upsert_tags_for_post(post["id"], post["tags"])
-                all_post_ids.append(post["id"])
-                if post["id"] > max_id:
-                    max_id = post["id"]
-            # Link ALL posts (new + already-existing) to this watched tag for progress tracking
-            await link_posts_to_watched_tag(tag_id, all_post_ids)
+            async for page in self.client.iter_post_pages(
+                tag_query, since_id=since_id,
+                on_progress=lambda n: setattr(self, "_scrape_progress", f"{tag_query}: {n:,} scanned"),
+            ):
+                page_ids: list[int] = []
+                for raw in page:
+                    post = parse_post(raw)
+                    if post["id"] is None:
+                        continue
+                    inserted = await upsert_post(post)
+                    if inserted:
+                        await upsert_tags_for_post(post["id"], post["tags"])
+                    page_ids.append(post["id"])
+                    if post["id"] > max_id:
+                        max_id = post["id"]
+                # Link this page incrementally: junction (live counts + download
+                # prioritization) populates progressively and survives interruptions.
+                await link_posts_to_watched_tag(tag_id, page_ids)
+                total_linked += len(page_ids)
+            # Advance last_post_id only on FULL completion (backward pagination: a
+            # mid-scrape advance would skip the un-fetched older pages on resume).
             await update_watched_tag_progress(tag_id, max_id)
             self._scrape_count += 1
-            logger.info(f"Scrape complete for '{tag_query}': {len(all_post_ids)} posts linked ({len(posts)} from API)")
+            logger.info(f"Scrape complete for '{tag_query}': {total_linked} posts linked")
+            _err = None
+            if total_linked == 0 and self.client.last_api_error:
+                _err = self.client.last_api_error.get("error")
+            self._tag_scrape[tag_id] = {"found": total_linked, "at": time.time(), "error": _err}
         except Exception as e:
             logger.error(f"Scrape error for '{tag_query}': {e}")
+            self._tag_scrape[tag_id] = {"found": total_linked, "at": time.time(), "error": str(e)}
         finally:
             self._scraping = False
             self._current_activity = "idle"
+            self._scrape_progress = ""
 
     async def _scrape_loop(self):
         """Periodically scrape all enabled watched tags."""
@@ -164,7 +192,17 @@ class Worker:
                     await asyncio.sleep(5)
                     continue
 
-                pending = await get_pending_downloads(limit=50)
+                # Sticky priority: while a tag is prioritised, download its images first;
+                # when it has none pending right now, fall back to the global queue for this
+                # batch but KEEP the priority (its scrape may still be linking more posts).
+                pending = []
+                if self._priority_tag_id is not None:
+                    pending = await get_pending_downloads_for_tag(self._priority_tag_id, limit=50)
+                if pending:
+                    self._current_download_tag = self._priority_tag_query
+                else:
+                    pending = await get_pending_downloads(limit=50)
+                    self._current_download_tag = None
                 if not pending:
                     await asyncio.sleep(10)
                     continue
@@ -179,7 +217,7 @@ class Worker:
                             return
                         await self._download_post(post, max_retries)
 
-                self._current_activity = f"downloading ({len(pending)} pending)"
+                self._current_activity = f"downloading {self._current_download_tag or 'queue'} ({len(pending)} pending)"
                 await asyncio.gather(*[download_one(p) for p in pending])
                 self._current_activity = "idle"
 
@@ -188,6 +226,16 @@ class Worker:
             except Exception as e:
                 logger.error(f"Download loop error: {e}")
                 await asyncio.sleep(30)
+
+    async def _startup_backfill(self):
+        """One-shot on boot: backfill watched-tag->post links so dashboard live
+        counts reflect posts downloaded before incremental linking existed."""
+        try:
+            n = await backfill_watched_tag_links()
+            logger.info(f"Watched-tag link backfill linked {n} posts")
+            await refresh_watched_agg()
+        except Exception as e:
+            logger.error(f"Backfill error: {e}")
 
     async def _agg_refresh_loop(self):
         """Keep the watched-tag live-count cache warm so the dashboard/browser

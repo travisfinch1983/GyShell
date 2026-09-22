@@ -1,6 +1,7 @@
 """SQLite schema, migrations, and query helpers for Rule34 scraper addon."""
 
 import aiosqlite
+import asyncio
 import os
 import time
 from datetime import datetime, timezone
@@ -8,6 +9,14 @@ from datetime import datetime, timezone
 # Cache of per-watched-tag live download counts, refreshed by a background loop
 # so request handlers never pay the heavy junction-table aggregation.
 _WT_AGG: dict = {"data": {}, "ts": 0.0}
+
+# Per-filter total-count cache for browse pagination — page turns reuse the
+# total instead of recomputing a COUNT(*) over the tag-filtered set each time.
+_BROWSE_COUNT: dict = {}
+_BROWSE_COUNT_TTL = 120.0
+# Ordered matching-id list per tag-filtered query, so page turns slice an
+# in-memory list instead of re-running the tag-match each time.
+_BROWSE_IDS: dict = {}
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "state.db")
 
@@ -105,11 +114,27 @@ DEFAULT_SETTINGS = {
 }
 
 
+def retry_on_locked(fn):
+    """Retry a write coroutine when SQLite reports 'database is locked' (WAL write
+    contention between the scrape / download / tag-type loops). busy_timeout handles
+    short waits; this covers the rare case a write is starved past it."""
+    async def _wrapper(*args, **kwargs):
+        for attempt in range(6):
+            try:
+                return await fn(*args, **kwargs)
+            except Exception as e:
+                if "locked" in str(e).lower() and attempt < 5:
+                    await asyncio.sleep(0.25 * (attempt + 1))
+                    continue
+                raise
+    return _wrapper
+
+
 async def get_db() -> aiosqlite.Connection:
     db = await aiosqlite.connect(DB_PATH)
     db.row_factory = aiosqlite.Row
     await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute("PRAGMA busy_timeout=30000")
+    await db.execute("PRAGMA busy_timeout=45000")
     await db.execute("PRAGMA foreign_keys=ON")
     return db
 
@@ -186,6 +211,7 @@ async def get_all_settings() -> dict:
         await db.close()
 
 
+@retry_on_locked
 async def update_settings(updates: dict):
     db = await get_db()
     try:
@@ -243,6 +269,7 @@ async def get_enabled_api_keys() -> list[dict]:
         await db.close()
 
 
+@retry_on_locked
 async def add_api_key(api_key: str, user_id: str, label: str = "", proxy: str = "") -> int:
     db = await get_db()
     try:
@@ -258,6 +285,7 @@ async def add_api_key(api_key: str, user_id: str, label: str = "", proxy: str = 
         await db.close()
 
 
+@retry_on_locked
 async def remove_api_key(key_id: int):
     db = await get_db()
     try:
@@ -267,6 +295,7 @@ async def remove_api_key(key_id: int):
         await db.close()
 
 
+@retry_on_locked
 async def set_api_key_enabled(key_id: int, enabled: bool):
     db = await get_db()
     try:
@@ -278,6 +307,7 @@ async def set_api_key_enabled(key_id: int, enabled: bool):
         await db.close()
 
 
+@retry_on_locked
 async def upsert_post(post: dict) -> bool:
     """Insert or ignore a post. Returns True if newly inserted."""
     db = await get_db()
@@ -311,6 +341,7 @@ async def upsert_post(post: dict) -> bool:
         await db.close()
 
 
+@retry_on_locked
 async def upsert_tags_for_post(post_id: int, tag_string: str):
     """Parse space-separated tags, upsert into tags table, link via post_tags."""
     tag_names = [t.strip() for t in tag_string.split() if t.strip()]
@@ -341,17 +372,75 @@ async def upsert_tags_for_post(post_id: int, tag_string: str):
         await db.close()
 
 
+@retry_on_locked
 async def link_posts_to_watched_tag(watched_tag_id: int, post_ids: list[int]):
     """Record which posts belong to a watched tag (for live progress tracking)."""
     if not post_ids:
         return
     db = await get_db()
     try:
-        await db.executemany(
-            "INSERT OR IGNORE INTO watched_tag_posts (watched_tag_id, post_id) VALUES (?, ?)",
-            [(watched_tag_id, pid) for pid in post_ids],
+        for i in range(0, len(post_ids), 2000):
+            chunk = post_ids[i:i + 2000]
+            await db.executemany(
+                "INSERT OR IGNORE INTO watched_tag_posts (watched_tag_id, post_id) VALUES (?, ?)",
+                [(watched_tag_id, pid) for pid in chunk],
+            )
+            await db.commit()
+    finally:
+        await db.close()
+
+
+@retry_on_locked
+async def mark_for_redownload(post_id: int):
+    """Reset a post to pending so the download loop re-fetches it (used when its
+    local file is found missing/empty at view time)."""
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE posts SET downloaded = 0, next_retry_at = 0 WHERE id = ? AND downloaded = 1",
+            (post_id,),
         )
         await db.commit()
+    finally:
+        await db.close()
+
+
+@retry_on_locked
+async def backfill_watched_tag_links() -> int:
+    """Link posts already in the DB to every watched tag they match (AND
+    semantics), filling historical gaps where posts were downloaded before
+    incremental linking existed. Idempotent (INSERT OR IGNORE). Returns the
+    number of (tag,post) links examined."""
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT id, tag_query FROM watched_tags")
+        watched = [(r["id"], r["tag_query"]) for r in await cur.fetchall()]
+        linked = 0
+        for wid, query in watched:
+            names = [t.strip() for t in (query or "").split() if t.strip()]
+            if not names:
+                continue
+            ph = ",".join("?" * len(names))
+            cur = await db.execute(f"SELECT id FROM tags WHERE name IN ({ph})", names)
+            tag_ids = [r["id"] for r in await cur.fetchall()]
+            if len(tag_ids) != len(names):
+                continue  # some tag unknown locally -> no local post matches all
+            tph = ",".join("?" * len(tag_ids))
+            cur = await db.execute(
+                f"SELECT pt.post_id FROM post_tags pt WHERE pt.tag_id IN ({tph}) "
+                f"GROUP BY pt.post_id HAVING COUNT(DISTINCT pt.tag_id) = ?",
+                tag_ids + [len(tag_ids)],
+            )
+            post_ids = [r["post_id"] for r in await cur.fetchall()]
+            for i in range(0, len(post_ids), 2000):
+                chunk = post_ids[i:i + 2000]
+                await db.executemany(
+                    "INSERT OR IGNORE INTO watched_tag_posts (watched_tag_id, post_id) VALUES (?, ?)",
+                    [(wid, pid) for pid in chunk],
+                )
+                await db.commit()
+            linked += len(post_ids)
+        return linked
     finally:
         await db.close()
 
@@ -372,6 +461,27 @@ async def get_pending_downloads(limit: int = 50) -> list[dict]:
         await db.close()
 
 
+async def get_pending_downloads_for_tag(watched_tag_id: int, limit: int = 50) -> list[dict]:
+    """Pending downloads restricted to one watched tag (via the junction), newest first.
+    Powers Sync-Now download prioritization."""
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT p.* FROM posts p "
+            "JOIN watched_tag_posts wtp ON wtp.post_id = p.id "
+            "WHERE wtp.watched_tag_id = ? AND p.downloaded = 0 "
+            "AND (p.next_retry_at IS NULL "
+            "OR p.next_retry_at <= CAST(strftime('%s','now') AS INTEGER)) "
+            "ORDER BY p.id DESC LIMIT ?",
+            (watched_tag_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        await db.close()
+
+
+@retry_on_locked
 async def mark_downloaded(post_id: int, local_path: str):
     db = await get_db()
     try:
@@ -384,6 +494,7 @@ async def mark_downloaded(post_id: int, local_path: str):
         await db.close()
 
 
+@retry_on_locked
 async def mark_download_failed(post_id: int, error: str):
     db = await get_db()
     try:
@@ -396,6 +507,7 @@ async def mark_download_failed(post_id: int, error: str):
         await db.close()
 
 
+@retry_on_locked
 async def requeue_download(post_id: int, error: str, attempts: int, next_retry_at: int):
     """Put a transiently-failed post back in the queue (downloaded=0) with a
     backoff timestamp, the incremented attempt count, and the recorded reason.
@@ -412,6 +524,7 @@ async def requeue_download(post_id: int, error: str, attempts: int, next_retry_a
         await db.close()
 
 
+@retry_on_locked
 async def retry_failed_downloads():
     """Manual retry: requeue ALL terminally-failed posts with a clean slate."""
     db = await get_db()
@@ -480,6 +593,7 @@ async def get_watched_tag_names() -> list[str]:
         await db.close()
 
 
+@retry_on_locked
 async def add_watched_tag(query: str) -> int:
     db = await get_db()
     try:
@@ -493,6 +607,7 @@ async def add_watched_tag(query: str) -> int:
         await db.close()
 
 
+@retry_on_locked
 async def remove_watched_tag(tag_id: int):
     db = await get_db()
     try:
@@ -503,6 +618,7 @@ async def remove_watched_tag(tag_id: int):
         await db.close()
 
 
+@retry_on_locked
 async def toggle_watched_tag(tag_id: int, enabled: bool):
     db = await get_db()
     try:
@@ -515,6 +631,7 @@ async def toggle_watched_tag(tag_id: int, enabled: bool):
         await db.close()
 
 
+@retry_on_locked
 async def update_watched_tag_progress(tag_id: int, last_post_id: int):
     """Update scrape metadata (last_scraped_at, last_post_id). Live counts come from junction table."""
     db = await get_db()
@@ -564,6 +681,7 @@ async def get_untyped_tags(limit: int = 50) -> list[dict]:
         await db.close()
 
 
+@retry_on_locked
 async def set_tag_type(tag_id: int, tag_type: int):
     """Record a tag's fetched type (marks it typed so it isn't re-fetched)."""
     db = await get_db()
@@ -577,6 +695,7 @@ async def set_tag_type(tag_id: int, tag_type: int):
         await db.close()
 
 
+@retry_on_locked
 async def set_tag_type_by_name(name: str, tag_type: int):
     db = await get_db()
     try:
@@ -646,11 +765,24 @@ async def browse_posts(
 
         if tags:
             tag_list = [t.strip() for t in tags.split() if t.strip()]
-            for tag in tag_list:
-                conditions.append(
-                    "p.id IN (SELECT pt.post_id FROM post_tags pt JOIN tags t ON t.id = pt.tag_id WHERE t.name = ?)"
-                )
-                params.append(tag)
+            # Resolve names to ids once (indexed), then match with ONE
+            # aggregated subquery instead of a correlated subquery per tag —
+            # far cheaper on the large post_tags table. AND semantics: a post
+            # must carry every requested tag.
+            ph = ",".join("?" * len(tag_list))
+            cur = await db.execute(
+                f"SELECT id FROM tags WHERE name IN ({ph})", tag_list
+            )
+            tag_ids = [r["id"] for r in await cur.fetchall()]
+            if len(tag_ids) != len(tag_list):
+                return [], 0  # an unknown tag can't match anything locally
+            tph = ",".join("?" * len(tag_ids))
+            conditions.append(
+                f"p.id IN (SELECT pt.post_id FROM post_tags pt "
+                f"WHERE pt.tag_id IN ({tph}) GROUP BY pt.post_id "
+                f"HAVING COUNT(DISTINCT pt.tag_id) = {len(tag_ids)})"
+            )
+            params.extend(tag_ids)
 
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
@@ -660,15 +792,49 @@ async def browse_posts(
             "recent_download": "p.scraped_at DESC",
         }.get(sort, "p.id DESC")
 
-        count_sql = f"SELECT COUNT(*) as c FROM posts p {where}"
-        cursor = await db.execute(count_sql, params)
-        total = (await cursor.fetchone())["c"]
-
         offset = (page - 1) * per_page
-        query_sql = f"SELECT p.* FROM posts p {where} ORDER BY {order} LIMIT ? OFFSET ?"
-        cursor = await db.execute(query_sql, params + [per_page, offset])
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows], total
+        _now = time.monotonic()
+
+        if tags and tags.strip():
+            # Tag-filtered: cache the full ordered id list once, then page turns
+            # are pure slicing + a 40-row fetch (the tag-match subquery runs only
+            # on a cache miss, not on every page).
+            ck = (tags, rating or "", bool(downloaded_only), sort)
+            c = _BROWSE_IDS.get(ck)
+            if c and _now - c[1] < _BROWSE_COUNT_TTL:
+                ids = c[0]
+            else:
+                cur = await db.execute(
+                    f"SELECT p.id FROM posts p {where} ORDER BY {order}", params
+                )
+                ids = [r[0] for r in await cur.fetchall()]
+                _BROWSE_IDS[ck] = (ids, _now)
+            total = len(ids)
+            page_ids = ids[offset:offset + per_page]
+            if not page_ids:
+                return [], total
+            iph = ",".join("?" * len(page_ids))
+            cur = await db.execute(
+                f"SELECT p.* FROM posts p WHERE p.id IN ({iph})", page_ids
+            )
+            by_id = {r["id"]: dict(r) for r in await cur.fetchall()}
+            return [by_id[i] for i in page_ids if i in by_id], total
+
+        # Unfiltered (or rating/downloaded only): index-friendly LIMIT/OFFSET,
+        # with a cached total so page turns skip the COUNT(*).
+        ck = (rating or "", bool(downloaded_only))
+        c = _BROWSE_COUNT.get(ck)
+        if c and _now - c[1] < _BROWSE_COUNT_TTL:
+            total = c[0]
+        else:
+            cur = await db.execute(f"SELECT COUNT(*) as c FROM posts p {where}", params)
+            total = (await cur.fetchone())["c"]
+            _BROWSE_COUNT[ck] = (total, _now)
+        cur = await db.execute(
+            f"SELECT p.* FROM posts p {where} ORDER BY {order} LIMIT ? OFFSET ?",
+            params + [per_page, offset],
+        )
+        return [dict(r) for r in await cur.fetchall()], total
     finally:
         await db.close()
 

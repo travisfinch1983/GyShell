@@ -2,12 +2,24 @@
 
 import asyncio
 import os
+import re
+import shutil
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Query
-from fastapi.responses import JSONResponse, FileResponse, Response
+from fastapi.responses import JSONResponse, FileResponse, Response, StreamingResponse
 import httpx
+
+TRAINING_IMAGES_ROOT = os.environ.get("TRAINING_IMAGES_ROOT", "/imagegen/training_images")
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")
+
+
+def _slug_setname(name: str) -> str:
+    s = re.sub(r"[^A-Za-z0-9._ -]+", "", (name or "").strip())
+    s = re.sub(r"\s+", "_", s).strip("._-")
+    return s[:80]
+
 
 from db import (
     init_db,
@@ -21,6 +33,7 @@ from db import (
     toggle_watched_tag,
     browse_posts,
     get_post,
+    mark_for_redownload,
     search_tags,
     retry_failed_downloads,
     get_setting,
@@ -211,10 +224,125 @@ async def api_scrape_tag_now(request: Request):
     tag = next((t for t in watched if t["id"] == int(tag_id)), None)
     if not tag:
         return JSONResponse({"ok": False, "error": "tag not found"}, status_code=404)
+    # Sync Now also makes the download loop prioritise this tag's images.
+    worker._priority_tag_id = tag["id"]
+    worker._priority_tag_query = tag["tag_query"]
+    worker._current_download_tag = tag["tag_query"]
     asyncio.create_task(
         worker.scrape_tag_now(tag["tag_query"], tag["id"], tag["last_post_id"])
     )
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/watched-tags/backfill")
+async def api_watched_backfill():
+    from db import backfill_watched_tag_links, refresh_watched_agg
+    n = await backfill_watched_tag_links()
+    await refresh_watched_agg()
+    return {"ok": True, "linked": n}
+
+
+@app.get("/api/training-sets")
+async def api_list_training_sets():
+    """List training image sets (top-level folders under the imagegen training_images root)."""
+    sets = []
+    try:
+        for entry in sorted(os.listdir(TRAINING_IMAGES_ROOT)):
+            p = os.path.join(TRAINING_IMAGES_ROOT, entry)
+            if not os.path.isdir(p) or entry.startswith((".", "_")):
+                continue
+            try:
+                files = os.listdir(p)
+                count = sum(1 for f in files if f.lower().endswith(IMAGE_EXTS))
+                is_r34 = os.path.exists(os.path.join(p, ".rule34-set")) or any(f.startswith("r34_") for f in files)
+            except Exception:
+                count = 0
+                is_r34 = False
+            sets.append({"name": entry, "count": count, "rule34": is_r34})
+    except FileNotFoundError:
+        pass
+    return JSONResponse({"sets": sets})
+
+
+@app.get("/api/training-sets/members")
+async def api_training_set_members(set: str = Query(default="")):
+    """Return the rule34 post ids already copied into a training set (from r34_<id>.<ext> filenames)."""
+    name = _slug_setname(set)
+    ids = []
+    if name:
+        d = os.path.join(TRAINING_IMAGES_ROOT, name)
+        try:
+            for f in os.listdir(d):
+                m = re.match(r"^r34_(\d+)\.", f)
+                if m:
+                    ids.append(int(m.group(1)))
+        except FileNotFoundError:
+            pass
+    return JSONResponse({"set": name, "post_ids": ids})
+
+
+@app.post("/api/training-sets/create")
+async def api_create_training_set(request: Request):
+    form = await request.form()
+    name = _slug_setname(form.get("name", ""))
+    if not name:
+        return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    path = os.path.join(TRAINING_IMAGES_ROOT, name)
+    try:
+        os.makedirs(path, exist_ok=True)
+        try:
+            os.chmod(path, 0o777)
+        except Exception:
+            pass
+        try:
+            open(os.path.join(path, ".rule34-set"), "a").close()
+        except Exception:
+            pass
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True, "name": name})
+
+
+@app.post("/api/training-sets/add")
+async def api_add_to_training_set(request: Request):
+    """Copy downloaded rule34 images (by post id) into a training set folder."""
+    body = await request.json()
+    set_name = _slug_setname(str(body.get("set", "")))
+    post_ids = body.get("post_ids") or []
+    if not set_name or not isinstance(post_ids, list) or not post_ids:
+        return JSONResponse({"ok": False, "error": "set and post_ids required"}, status_code=400)
+    dest_dir = os.path.join(TRAINING_IMAGES_ROOT, set_name)
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        try:
+            os.chmod(dest_dir, 0o777)
+        except Exception:
+            pass
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    storage_path = await get_setting("storage_path") or "/mnt/shared/rule34"
+    added = skipped = 0
+    errors = []
+    for pid in post_ids:
+        try:
+            post = await get_post(int(pid))
+            if not post or post.get("downloaded") != 1 or not post.get("local_path"):
+                skipped += 1
+                continue
+            src = os.path.join(storage_path, post["local_path"])
+            if not os.path.isfile(src):
+                skipped += 1
+                continue
+            ext = os.path.splitext(src)[1] or ".jpg"
+            dest = os.path.join(dest_dir, f"r34_{int(pid)}{ext}")
+            if os.path.exists(dest):
+                skipped += 1
+                continue
+            shutil.copy2(src, dest)
+            added += 1
+        except Exception as e:
+            errors.append(f"{pid}: {e}")
+    return JSONResponse({"ok": True, "set": set_name, "added": added, "skipped": skipped, "errors": errors[:10]})
 
 
 @app.post("/api/settings")
@@ -319,10 +447,39 @@ async def media_full(post_id: int):
     post = await get_post(post_id)
     if not post:
         return Response(status_code=404)
-    if post.get("downloaded") != 1 or not post.get("local_path"):
-        return Response(status_code=404)
     storage_path = await get_setting("storage_path") or "/mnt/shared/rule34"
-    full_path = os.path.join(storage_path, post["local_path"])
-    if not os.path.isfile(full_path):
+    local_path = post.get("local_path")
+    if post.get("downloaded") == 1 and local_path:
+        full_path = os.path.join(storage_path, local_path)
+        if os.path.isfile(full_path) and os.path.getsize(full_path) > 0:
+            return FileResponse(full_path)
+        # Marked downloaded but the file is gone/empty — re-queue it and fall
+        # through to serving the original from rule34 so the viewer isn't broken.
+        try:
+            await mark_for_redownload(post_id)
+        except Exception:
+            pass
+    # Proxy the original from rule34 (same as /media/thumb), streamed so large
+    # images/videos don't buffer fully in memory.
+    remote = post.get("file_url") or post.get("sample_url")
+    if not remote:
         return Response(status_code=404)
-    return FileResponse(full_path)
+    client = httpx.AsyncClient(follow_redirects=True, timeout=60)
+    try:
+        req = client.build_request("GET", remote)
+        resp = await client.send(req, stream=True)
+        resp.raise_for_status()
+    except Exception:
+        await client.aclose()
+        return Response(status_code=502)
+    media_type = resp.headers.get("content-type", "image/jpeg")
+
+    async def _body():
+        try:
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
+    return StreamingResponse(_body(), media_type=media_type)

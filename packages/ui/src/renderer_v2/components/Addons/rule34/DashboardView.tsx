@@ -39,7 +39,12 @@ export const DashboardView: React.FC = () => {
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: worker.paused ? 'var(--warning, #f59e0b)' : 'var(--success, #22c55e)' }} />
           {worker.paused ? 'Paused' : 'Running'}
         </span>
-        <span className={styles.dim}>{worker.activity}</span>
+        <span className={styles.dim} style={worker.api_error ? { color: 'var(--danger, #ef4444)' } : undefined}>
+          {worker.api_error
+            ? `\u26a0 API error: ${worker.api_error.error}`
+            : (worker.scrape_progress || worker.activity || 'idle')}
+          {` \u00b7 ${(stats.pending ?? 0).toLocaleString()} queued`}
+        </span>
         <span className={styles.spacer} />
         <button className={worker.paused ? styles.btnPrimary : styles.btnDanger} disabled={busy} onClick={() => act(worker.paused ? rule34Api.workerResume : rule34Api.workerPause)}>
           {worker.paused ? 'Start' : 'Stop'}
@@ -88,12 +93,28 @@ export const DashboardView: React.FC = () => {
             <thead><tr><th>Query</th><th>Found</th><th>Downloaded</th><th>Last Scraped</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody>
               {tags.map((t: any) => (
-                <tr key={t.id} style={{ opacity: t.enabled ? 1 : 0.5 }}>
-                  <td className={styles.mono}>{t.tag_query}</td>
+                <tr key={t.id} style={{ opacity: t.enabled ? 1 : 0.5, background: worker.current_download_tag === t.tag_query ? 'rgba(59,130,246,0.14)' : undefined }}>
+                  <td className={styles.mono}>
+                    {t.tag_query}
+                    {worker.current_download_tag === t.tag_query && (
+                      <span style={{ color: 'var(--primary, #3b82f6)', marginLeft: 6, fontWeight: 600 }}>⬇ downloading</span>
+                    )}
+                  </td>
                   <td>{(t.live_total ?? 0).toLocaleString()}</td>
                   <td>{(t.live_downloaded ?? 0).toLocaleString()}</td>
                   <td className={styles.dim}>{t.last_scraped_at ? new Date(t.last_scraped_at).toLocaleString() : '—'}</td>
-                  <td>{t.enabled ? <span className={styles.ok}>active</span> : <span className={styles.dim}>suspended</span>}</td>
+                  <td>
+                    {t.enabled ? <span className={styles.ok}>active</span> : <span className={styles.dim}>suspended</span>}
+                    {worker.tag_status?.[t.id] && (
+                      worker.tag_status[t.id].error
+                        ? <div style={{ color: 'var(--danger, #ef4444)', fontSize: 11 }} title={worker.tag_status[t.id].error}>\u26a0 {String(worker.tag_status[t.id].error).slice(0, 40)}</div>
+                        : <div className={styles.dim} style={{ fontSize: 11 }}>
+                            {(worker.tag_status[t.id].found ?? 0) > 0
+                              ? `${(worker.tag_status[t.id].found).toLocaleString()} new last scan`
+                              : 'up to date'}
+                          </div>
+                    )}
+                  </td>
                   <td>
                     <div className={styles.headRow}>
                       <button className={styles.btn} disabled={busy} onClick={() => act(() => rule34Api.toggleTag(String(t.id), !t.enabled))}>
