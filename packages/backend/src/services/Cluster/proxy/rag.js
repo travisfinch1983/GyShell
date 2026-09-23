@@ -399,9 +399,39 @@ async function runRagUpdate(collection) {
     method: 'DELETE',
     signal: AbortSignal.timeout(60000),
   });
-  await delResp.text().catch(() => {});
+  // 🛑 THE STATUS ALONE IS A LIE. vector-proxy's /all handler ALWAYS returns 200 with a
+  // per-backend `results` array, whatever failed inside it — so `delResp.ok` can never be
+  // false and the guard below was UNREACHABLE. Discarding the body threw away the only
+  // record of a failed drop. Measured consequence (2026-09-23): chromadb's drop times out
+  // at 10s on large collections, reports ok:false, was ignored, and fresh chunks were
+  // upserted on top — codebase_ai_lab reached 35,699 points against 5,630 real chunks (84%
+  // orphans), and search was returning the ConversationBus tree, deleted 2026-09-01, as
+  // live code. Same defect family as reportsRag's callTool: a transport success wrapping a
+  // payload failure, with the payload unread.
+  const delBody = await delResp.json().catch(() => null);
+  const delFailed = Array.isArray(delBody?.results)
+    ? delBody.results.filter((r) => !r?.ok)
+    : [];
   if (!delResp.ok && delResp.status !== 404) {
     throw new Error(`vector delete returned ${delResp.status} — refusing to re-index over stale chunks`);
+  }
+  // 🛑 DELIBERATELY DO NOT THROW HERE, and the reason is not obvious.
+  // The drop is PER-BACKEND. Throwing would abort before re-indexing, which leaves every
+  // backend that DID drop cleanly empty and unrebuilt — strictly worse than the bug, since
+  // today qdrant/weaviate at least end up correct. So: re-index anyway (the healthy
+  // backends come back right) and make the partial failure LOUD instead. The stale backend
+  // is no worse off than it already was, and it is now visible rather than silent.
+  if (delFailed.length) {
+    const who = delFailed.map((r) => r.db).join(', ');
+    console.error(`[rag-update] '${colName}': vector delete INCOMPLETE on ${who} — `
+      + `re-indexing anyway so the healthy backends are correct; ${who} will accumulate stale chunks.`);
+    void emitNotification('warning', 'codebase-rag',
+      `A codebase-RAG drop FAILED on ${who} — that backend now holds stale chunks`,
+      `Collection '${colName}': the pre-index drop did not complete on ${who} `
+      + `(${delFailed.map((r) => `${r.db}: ${r.error || 'ok=false'}`).join('; ')}). `
+      + `The re-index proceeded, so the backends that dropped cleanly are correct — but ${who} `
+      + `is now carrying chunks from files that may no longer exist, and SEARCH CAN RETURN THEM `
+      + `as if they were live code. Fix the cause and re-run the refresh to rebuild ${who} cleanly.`);
   }
 
   console.log(`[rag-update] Refreshing '${colName}' from ${entry.repo_url}${branch ? ` (${branch})` : ''}`);

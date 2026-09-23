@@ -367,7 +367,10 @@ export function createVectorProxyRouter() {
             .then(r => ({ db: db.name, ok: r.ok }));
         case 'chromadb': {
           // ChromaDB v2 API: DELETE by collection name (not UUID)
-          return await fetch(`${url}/api/v2/tenants/default_tenant/databases/default_database/collections/${name}`, { method: 'DELETE', signal: AbortSignal.timeout(10000) })
+          // 10s was NOT enough to drop a large collection — chromadb reached 35,699 points on
+          // codebase_ai_lab because the drop aborted, reported ok:false, and the caller ignored
+          // it (see rag.js). Dropping is O(collection size) here; budget accordingly.
+          return await fetch(`${url}/api/v2/tenants/default_tenant/databases/default_database/collections/${name}`, { method: 'DELETE', signal: AbortSignal.timeout(120000) })
             .then(r => ({ db: db.name, ok: r.ok || r.status === 404 }));
         }
         default:
@@ -511,7 +514,12 @@ export function createVectorProxyRouter() {
   router.delete('/all/collections/:name', async (req, res) => {
     const dbs = getEligibleDbs();
     const results = await Promise.all(dbs.map(db => dropCollectionInDb(db, req.params.name)));
-    res.json({ collection: req.params.name, results });
+    // 207 when ANY backend failed. This handler used to return 200 unconditionally, so a
+    // caller checking only the status could not tell a full drop from a partial one — and
+    // rag.js was doing exactly that. Callers must still read `results`; the status is now
+    // merely honest rather than sufficient.
+    const anyFailed = results.some((r) => !r?.ok);
+    res.status(anyFailed ? 207 : 200).json({ collection: req.params.name, results });
   });
 
   // POST /api/proxy/vector/all/collections/:name/upsert — Upsert vectors to all eligible DBs
