@@ -2315,10 +2315,22 @@ export class HermesManagementService {
     // So: grep the files directly and bound the OUTPUT instead of the input. `tail -n 20` on the
     // MATCHES is the right bound; ~8 MB of grep per check is free. -h is load-bearing (filename
     // prefixes would break the parser below); -a keeps a stray NUL from truncating the scan.
-    // Chronological order matters: .1 is older, so it is listed FIRST and the trailing
-    // `tail -n 20` still keeps the newest lines.
+    // FOURTH RECURRENCE, and the last aperture: TWO FILES IS A TIME WINDOW IN DISGUISE. It holds
+    // only while an agent re-registers MORE OFTEN than its log rotates -- and Hermes agents are
+    // normally dormant, so ageing out is the RESTING STATE every one of them drifts into, not an
+    // edge case. idris (09-17), cinder (09-18) and mari (09-22, rotated 21:27, alarm 7 minutes
+    // later) each went UNKNOWN the moment their registration reached agent.log.2. Every previous
+    // fix widened an aperture and the cliff simply moved; so read ALL rotations and let
+    // logrotate's retention be the bound, rather than any number chosen here.
+    //
+    // Chronological order matters: higher rotation numbers are OLDER, so `ls -1v | tac` yields
+    // .3 .2 .1 and the live log is passed last; the trailing `tail -n 20` still keeps the newest
+    // matches. `ls -1v | tac`, NOT `sort -t. -k2 -rn` -- the path contains '.hermes', so a
+    // dot-field sort keys on the wrong field entirely once an agent reaches 10 rotations.
+    // `</dev/null` is load-bearing: given no file arguments at all, grep reads stdin and the probe
+    // hangs rather than failing (verified: `sleep 8 | timeout 4 grep x` exits 124).
     const raw = await this.ssh(
-      `grep -ahE 'registered [0-9]+ tool\\(s\\) from|reconnection attempts, giving up|parking until a reconnect' ${shq(log)}.1 ${shq(log)} 2>/dev/null | tail -n 20 || true`,
+      `rot=$(ls -1v ${shq(log)}.[0-9]* 2>/dev/null | tac | tr '\\n' ' '); grep -ahE 'registered [0-9]+ tool\\(s\\) from|reconnection attempts, giving up|parking until a reconnect' $rot ${shq(log)} </dev/null 2>/dev/null | tail -n 20 || true`,
     ).catch(() => '')
     let registeredTools: number | null = null
     let gaveUp = false
