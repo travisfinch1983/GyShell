@@ -370,7 +370,18 @@ export function createVectorProxyRouter() {
           // 10s was NOT enough to drop a large collection — chromadb reached 35,699 points on
           // codebase_ai_lab because the drop aborted, reported ok:false, and the caller ignored
           // it (see rag.js). Dropping is O(collection size) here; budget accordingly.
-          return await fetch(`${url}/api/v2/tenants/default_tenant/databases/default_database/collections/${name}`, { method: 'DELETE', signal: AbortSignal.timeout(120000) })
+          //
+          // 120s was ALSO not enough, and 120 was my number. Measured on the 2026-09-24 nightly:
+          // the drops that SUCCEEDED clustered at 51-58s, pressed right against the caller's
+          // then-60s ceiling, which is exactly why the six largest collections failed and the
+          // rest survived. They were not qualitatively different, only over the line. Implied
+          // rate ~250 points/sec puts codebase_ai_lab (35,699) near 140s and
+          // codebase_hermes_agent (102,362) near 400s, both past 120s.
+          // So pick a budget that only ever binds in the pathological case: a drop that normally
+          // takes 2-58s loses nothing to a 10-minute ceiling, whereas a ceiling set near the
+          // typical case silently reinstates the orphan bug for the biggest collections, which is
+          // exactly where it does the most damage.
+          return await fetch(`${url}/api/v2/tenants/default_tenant/databases/default_database/collections/${name}`, { method: 'DELETE', signal: AbortSignal.timeout(600000) })
             .then(r => ({ db: db.name, ok: r.ok || r.status === 404 }));
         }
         default:

@@ -393,11 +393,23 @@ async function runRagUpdate(collection) {
     return;
   }
 
-  // Drop the old vectors (all backends). A failed delete aborts the refresh
-  // rather than layering new chunks over stale ones.
+  // Drop the old vectors (all backends), then re-index over a clean collection.
+  //
+  // 🛑 THIS BUDGET MUST EXCEED THE PROXY'S OWN INNER BUDGET, and it did not.
+  // vector-proxy drops each backend in parallel and gives chromadb 120s (dropping is O(size)
+  // there). This caller gave the whole request 60s. On 2026-09-24 01:06:23 the nightly refresh
+  // hit codebase_ai_lab, chromadb's 35,699-point drop ran past 60s, THIS timeout fired at
+  // 01:07:23, and the TimeoutError propagated out of the refresh — so the drop actually
+  // SUCCEEDED server-side while the caller aborted and never re-indexed. Net result: the
+  // orphans were correctly removed and the collection was left EMPTY in chromadb.
+  // A caller timeout shorter than the work it is waiting on manufactures exactly that
+  // half-applied state, and it looks like a failure in the log while having partly worked.
+  // 660s = the 600s inner budget plus margin. The outer budget must ALWAYS exceed the inner
+  // one; when it did not (60s outer vs 120s inner) the caller killed a drop that was still
+  // legitimately running, which is how a half-applied state gets manufactured.
   const delResp = await fetch(`http://127.0.0.1:${selfPort}/api/proxy/vector/all/collections/${colName}`, {
     method: 'DELETE',
-    signal: AbortSignal.timeout(60000),
+    signal: AbortSignal.timeout(660000),
   });
   // 🛑 THE STATUS ALONE IS A LIE. vector-proxy's /all handler ALWAYS returns 200 with a
   // per-backend `results` array, whatever failed inside it — so `delResp.ok` can never be
