@@ -338,6 +338,85 @@ function ragStatus() {
  *  initial index) — fine for a nightly job. A mid-run failure leaves the
  *  checkpoint runRagIndexing wrote, so /api/ai/rag/resume can finish it.
  */
+/**
+ * Days of divergence before a drifting collection is worth a notification. A feature branch that
+ * is a day ahead of default is normal; two months is the ai-lab incident. 7 is a judgement call,
+ * not a measurement -- it is low enough to have caught SillyTavern (10 days) and ai-lab (69).
+ */
+const BRANCH_DRIFT_WARN_DAYS = Number(process.env.AILAB_RAG_BRANCH_DRIFT_DAYS || 7);
+
+/**
+ * Warn when a collection is faithfully indexing a branch the repo has moved on from.
+ *
+ * WHY THIS EXISTS (2026-09-24): codebase_ai_lab indexes branch "default", which resolves to main,
+ * which had not moved since 2026-07-17 while all work happened on claude1/chat-rework -- 424
+ * commits and 69 days ahead. Every agent searching that codebase read July code. Nothing in the
+ * system reported it, because nothing was broken: the index was a CORRECT index of exactly what
+ * it was configured to index. maintenance-claude and I both spent hours on a phantom "RAG is
+ * serving deleted files" bug that was only ever this. A silent, correct-looking wrong answer is
+ * the defect class this whole project exists for, so it gets a signal.
+ *
+ * 🛑 ASK THE HOST WHAT "default" RESOLVES TO -- never assume main/master. Of 23 collections, 22
+ * use branch:"default", and SillyTavern's default branch is `release`. A heuristic that guesses
+ * main/master gets that one wrong, which is the same assumption error this check is about.
+ *
+ * Diagnostic only: never throws, never blocks the refresh. A refresh that works must not be taken
+ * down by the thing watching it.
+ */
+async function checkBranchDrift(colName, repoUrl, requestedBranch) {
+  const m = /^https?:\/\/([^/]+)\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(String(repoUrl || ''));
+  if (!m) {
+    void emitDebug('rag-branch-drift', `'${colName}': repo_url ${repoUrl} is not owner/repo shaped - drift not checked`);
+    return;
+  }
+  const [, host, owner, repo] = m;
+  const api = `http://${host}/api/v1/repos/${owner}/${repo}`;
+  try {
+    const infoResp = await fetch(api, { signal: AbortSignal.timeout(15000) });
+    if (!infoResp.ok) {
+      // Non-gitea hosts (github et al) land here. Not a fault, and not a gap worth closing:
+      // as of 2026-09-24 all 9 are third-party UPSTREAM repos (esphome, ProxMenux, LightX2V...)
+      // where we do not develop, so indexing their default branch is correct by design. Drift
+      // risk lives on the repos we commit to, which are exactly the 14 gitea-hosted ones.
+      void emitDebug('rag-branch-drift', `'${colName}': ${host} has no gitea API (HTTP ${infoResp.status}) - drift not checked`);
+      return;
+    }
+    const info = await infoResp.json();
+    // The resolved name, NOT the literal "default" the manifest stores.
+    const indexed = requestedBranch || info.default_branch;
+    const brResp = await fetch(`${api}/branches`, { signal: AbortSignal.timeout(20000) });
+    if (!brResp.ok) {
+      void emitDebug('rag-branch-drift', `'${colName}': branches API returned ${brResp.status} - drift not checked`);
+      return;
+    }
+    const branches = await brResp.json();
+    if (!Array.isArray(branches) || branches.length === 0) {
+      void emitDebug('rag-branch-drift', `'${colName}': branches API returned nothing usable - drift not checked`);
+      return;
+    }
+    const at = (b) => Date.parse(b?.commit?.timestamp || '') || 0;
+    const mine = branches.find((b) => b.name === indexed);
+    if (!mine) {
+      console.warn(`[rag-branch-drift] '${colName}': indexed branch '${indexed}' is NOT in the repo's branch list`);
+      return;
+    }
+    const newest = branches.reduce((a, b) => (at(b) > at(a) ? b : a), branches[0]);
+    if (newest.name === indexed) return;                       // indexing the newest - nothing to say
+    const days = Math.floor((at(newest) - at(mine)) / 86400000);
+    if (days < BRANCH_DRIFT_WARN_DAYS) return;
+    const how = requestedBranch ? `pinned to '${indexed}'` : `on "default" (= '${indexed}')`;
+    console.warn(`[rag-branch-drift] '${colName}': ${how}, which is ${days}d behind '${newest.name}'`);
+    void emitNotification('warning', 'codebase-rag',
+      `Codebase-RAG '${colName}' is indexing a branch that is ${days} days stale`,
+      `The collection is ${how}, last commit ${new Date(at(mine)).toISOString().slice(0, 10)}. `
+      + `The repo's newest branch '${newest.name}' is ${days} days ahead (${new Date(at(newest)).toISOString().slice(0, 10)}). `
+      + `The index is CORRECT for what it was told to index -- nothing is broken -- but every agent searching `
+      + `'${colName}' is reading code that old. Either repoint the collection at '${newest.name}' or merge that branch.`);
+  } catch (e) {
+    console.warn(`[rag-branch-drift] '${colName}': drift check failed (${e?.message || e}) - refresh continues`);
+  }
+}
+
 async function runRagUpdate(collection) {
   const colName = sanitizeCollectionName(collection);
   // Manifest lookup — the collection's repo_url/branch live on the MCP server's manifest.
@@ -392,6 +471,9 @@ async function runRagUpdate(collection) {
       + `Fix the repo access (or remove the collection's repo_url) to resume refreshes.`);
     return;
   }
+
+  // Diagnostic, not a gate: a correct index of a stale branch is invisible otherwise.
+  await checkBranchDrift(colName, entry.repo_url, branch);
 
   // Drop the old vectors (all backends), then re-index over a clean collection.
   //
