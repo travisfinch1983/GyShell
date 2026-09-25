@@ -485,12 +485,46 @@ export function createVectorProxyRouter() {
         }
 
         case 'chromadb': {
-          // ChromaDB needs collection ID — use upsert instead of add to handle duplicates
-          const listResp = await fetch(`${url}/api/v2/tenants/default_tenant/databases/default_database/collections`, { signal: AbortSignal.timeout(10000) });
-          const cols = await listResp.json();
-          const col = (Array.isArray(cols) ? cols : []).find(c => c.name === collection);
-          if (!col) return { db: db.name, ok: false, count: 0, error: 'Collection not found' };
-          return await fetch(`${url}/api/v2/tenants/default_tenant/databases/default_database/collections/${col.id}/upsert`, {
+          // ChromaDB needs a collection ID, so resolve one with get_or_create.
+          //
+          // 🛑 THIS PATH COULD PREVIOUSLY CREATE NOTHING. It did list-then-find and returned
+          // 'Collection not found' when the collection was absent, so an absent collection could
+          // never come back. That was INVISIBLE for as long as the drop was broken: the drop
+          // always failed, the collection always survived, every lookup hit, and the orphans
+          // simply accumulated. The bloat was MASKING this bug. Fixing the drop (0e6843f)
+          // surfaced it immediately — the 2026-09-25 refresh dropped codebase_ai_lab cleanly,
+          // then all 4,477 upsert batches failed 'Collection not found' and chromadb was left
+          // permanently EMPTY while qdrant and weaviate rebuilt to 5,630.
+          // Worth naming the shape: a latent fault hidden by a second fault, where repairing the
+          // first is what exposes it. The refresh reported success throughout.
+          //
+          // get_or_create also replaces a ~173 KB collection-list fetch PER BATCH (4,477 batches
+          // on a single nightly run) with one call that returns the id directly.
+          const base = `${url}/api/v2/tenants/default_tenant/databases/default_database/collections`;
+          let col = null;
+          try {
+            const mk = await fetch(base, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: collection, get_or_create: true }),
+              signal: AbortSignal.timeout(30000),
+            });
+            if (mk.ok) col = await mk.json();
+            else console.warn(`[vector-all] chromadb get_or_create '${collection}': HTTP ${mk.status}`);
+          } catch (e) {
+            console.warn(`[vector-all] chromadb get_or_create '${collection}': ${e?.message || e}`);
+          }
+          if (!col?.id) {
+            // Fallback for a chroma build without get_or_create — never worse than the old path.
+            try {
+              const cols = await (await fetch(base, { signal: AbortSignal.timeout(10000) })).json();
+              col = (Array.isArray(cols) ? cols : []).find(c => c.name === collection) || null;
+            } catch (e) {
+              console.warn(`[vector-all] chromadb list fallback '${collection}': ${e?.message || e}`);
+            }
+          }
+          if (!col?.id) return { db: db.name, ok: false, count: 0, error: 'Collection absent and could not be created' };
+          return await fetch(`${base}/${col.id}/upsert`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: safeStringify({
@@ -500,7 +534,15 @@ export function createVectorProxyRouter() {
               documents: points.map(p => p.metadata?.text || ''),
             }),
             signal: AbortSignal.timeout(30000),
-          }).then(r => ({ db: db.name, ok: r.ok, count: r.ok ? points.length : 0 }));
+          }).then(async (r) => ({
+            db: db.name,
+            ok: r.ok,
+            count: r.ok ? points.length : 0,
+            // Keep the REASON. Without this every caller could only report "rejected by
+            // chromadb" with no way to find out why — which cost a manual reproduction to learn
+            // the answer was 'Collection not found'.
+            ...(r.ok ? {} : { error: `HTTP ${r.status}: ${(await r.text().catch(() => '')).slice(0, 200)}` }),
+          }));
         }
 
         default:
