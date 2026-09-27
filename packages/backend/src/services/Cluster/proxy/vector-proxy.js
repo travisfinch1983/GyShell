@@ -92,6 +92,29 @@ function tryParseVersion(data, type) {
   return null;
 }
 
+/**
+ * Per-backend DROP result that keeps the REASON.
+ *
+ * Every drop path used to end `.then(r => ({ db, ok: r.ok }))`, discarding status and body. A
+ * THROWN error (timeout, connection reset) still carried its message out through the enclosing
+ * catch, but a non-ok HTTP RESPONSE carried nothing at all -- so a drop the backend actively
+ * REFUSED was indistinguishable from any other failure, and every log line downstream could only
+ * say "failed".
+ *
+ * That cost a real diagnosis: on 2026-09-27 chromadb failed the pre-index drop on eleven
+ * consecutive collections, ~3s apart, including on an EMPTY one. Reading the code the failure
+ * looked like the 600s timeout budget, which 3-second spacing rules out entirely. The actual
+ * answer -- chromadb returning 429 while saturated -- was in the response body the whole time,
+ * and this line threw it away; it took a manual reproduction to recover it.
+ *
+ * Same fix as the upsert path in b42230f, applied to ALL FOUR backends rather than only the one
+ * that bit us, because the gap was identical in each.
+ */
+async function dropResult(dbName, r, okStatuses = []) {
+  if (r.ok || okStatuses.includes(r.status)) return { db: dbName, ok: true };
+  const body = await r.text().catch(() => '');
+  return { db: dbName, ok: false, error: `HTTP ${r.status}${body ? `: ${body.slice(0, 200)}` : ''}` };
+}
 export function createVectorProxyRouter() {
   const router = Router();
 
@@ -354,17 +377,17 @@ export function createVectorProxyRouter() {
       switch (db.type) {
         case 'qdrant':
           return await fetch(`${url}/collections/${name}`, { method: 'DELETE', signal: AbortSignal.timeout(10000) })
-            .then(r => ({ db: db.name, ok: r.ok }));
+            .then(r => dropResult(db.name, r));
         case 'milvus':
           return await fetch(`${url}/v2/vectordb/collections/drop`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ collectionName: name }),
             signal: AbortSignal.timeout(10000),
-          }).then(r => ({ db: db.name, ok: r.ok }));
+          }).then(r => dropResult(db.name, r));
         case 'weaviate':
           return await fetch(`${url}/v1/schema/${name}`, { method: 'DELETE', signal: AbortSignal.timeout(10000) })
-            .then(r => ({ db: db.name, ok: r.ok }));
+            .then(r => dropResult(db.name, r));
         case 'chromadb': {
           // ChromaDB v2 API: DELETE by collection name (not UUID)
           // 10s was NOT enough to drop a large collection — chromadb reached 35,699 points on
@@ -382,7 +405,7 @@ export function createVectorProxyRouter() {
           // typical case silently reinstates the orphan bug for the biggest collections, which is
           // exactly where it does the most damage.
           return await fetch(`${url}/api/v2/tenants/default_tenant/databases/default_database/collections/${name}`, { method: 'DELETE', signal: AbortSignal.timeout(600000) })
-            .then(r => ({ db: db.name, ok: r.ok || r.status === 404 }));
+            .then(r => dropResult(db.name, r, [404]));
         }
         default:
           return { db: db.name, ok: false, count: 0, error: `Unsupported type: ${db.type}` };
