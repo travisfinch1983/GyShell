@@ -84,6 +84,11 @@ const SettingField: React.FC<{ k: string; arg: any }> = observer(({ k, arg }) =>
           max={arg.max}
           value={val ?? ''}
           onChange={(e) => store.setSetting(k, e.target.value)}
+          // A focused number input CHANGES VALUE on mouse-wheel, so scrolling the settings form past
+          // a field silently edits it. A saved template came back with --pipeline-parallel-size -3
+          // (2026-09-28): the field had no min, so four wheel ticks walked it 1 -> -3 and a Save
+          // persisted it. Blurring on wheel lets the page scroll and leaves the value alone.
+          onWheel={(e) => { if (arg.type === 'number') (e.currentTarget as HTMLInputElement).blur() }}
         />
       )}
     </div>
