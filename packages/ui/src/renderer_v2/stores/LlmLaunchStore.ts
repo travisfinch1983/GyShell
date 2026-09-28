@@ -63,6 +63,23 @@ const FORMAT_PROVIDER_MAP: Record<string, string[]> = {
   GPTQ: ['vllm', '1cat-vllm', 'lmdeploy', 'sglang', 'aphrodite', 'tabbyapi'],
   EXL2: ['tabbyapi', 'aphrodite'],
   EXL3: ['tabbyapi'],
+  // Weight folders named by their QUANTISATION rather than a container format. The model scanner
+  // indexes these (FP8/, NVFP4/, W4A16-*/, W8A16-*/ -- see is_format_name in ai.js) but this map did
+  // not know them, so selecting e.g. Qwen3.8 Flash-Next FP8 left the engine dropdown EMPTY and the
+  // model unlaunchable. The two lists must move together; resolveFormatProviders() also falls back
+  // to the leading token so a folder like W4A16-FP8PLE resolves via W4A16.
+  FP8:   ['vllm', '1cat-vllm', 'sglang'],
+  NVFP4: ['vllm', '1cat-vllm', 'sglang'],
+  W4A16: ['vllm', '1cat-vllm', 'sglang'],
+  W8A16: ['vllm', '1cat-vllm', 'sglang'],
+}
+
+/** Exact format first, then the leading token of a dashed folder name (W4A16-FP8PLE -> W4A16).
+ *  Without the fallback, any new free-form quant folder silently yields zero engines. */
+function resolveFormatProviders(format: string): string[] {
+  if (FORMAT_PROVIDER_MAP[format]) return FORMAT_PROVIDER_MAP[format]
+  const head = String(format || '').split('-')[0]
+  return FORMAT_PROVIDER_MAP[head] || []
 }
 
 export interface QuantRow { format: string; quant: string; bpw: number | null; path: string | null; sizeMB: number | null; onDisk: boolean }
@@ -344,7 +361,7 @@ export class LlmLaunchStore {
   }
 
   get compatibleProviders(): any[] {
-    const ids = FORMAT_PROVIDER_MAP[this.selectedFormat] || []
+    const ids = resolveFormatProviders(this.selectedFormat)
     return this.providers.filter((p) => ids.includes(p.id))
   }
   get template(): any {
