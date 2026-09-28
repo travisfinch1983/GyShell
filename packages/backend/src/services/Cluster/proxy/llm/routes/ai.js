@@ -1065,7 +1065,7 @@ export function createAiRouter(config, gpuMonitor, pveApi, sshService, hookscrip
       # reading "GGUF" as the variant made the model disappear from the index entirely.
       is_format_name() {
         case "$1" in
-          GGUF|EXL2|EXL3|AWQ|GPTQ|MLX|ONNX|TensorRT|FP8|FP16|BF16|FP16-Safetensors|BF16-Safetensors|Safetensors|MMPROJ)
+          GGUF|EXL2|EXL3|AWQ|GPTQ|MLX|ONNX|TensorRT|FP8|NVFP4|W4A16*|W8A16*|FP16|BF16|FP16-Safetensors|BF16-Safetensors|Safetensors|MMPROJ)
             return 0 ;;
           *) return 1 ;;
         esac
@@ -1213,6 +1213,33 @@ print(n if n else '')
                 size=$(du -sm "$fmt_dir" 2>/dev/null | cut -f1)
                 formats="$formats\${TAB}$fmt/$sub:$fmt_dir:$size"
               fi
+              ;;
+            *)
+              # Weight folders named by their QUANTISATION rather than a container format:
+              # FP8, NVFP4, W4A16-FP8PLE ... (Qwen3.8/Flash-Next-180B ships all three side by side).
+              # FP8 was already in is_format_name, so the variant qualified -- but no branch here
+              # handled it, so the folder produced no entry and the checkpoint could not be picked
+              # or saved into a launch template. Named but unhandled (2026-09-28).
+              # Require a real HF checkpoint (config.json + weights) so .cache/, assets/, runtime/
+              # and the like are never indexed.
+              [ -f "$fmt_dir/config.json" ] || continue
+              has_model_files "$fmt_dir" || continue
+              # FP8 checkpoints declare quant_method=fp8 with NO bit count, so the bits logic used
+              # elsewhere in this scanner returns nothing and would label it "full" -- wrong.
+              sub=$(python3 -c "
+import json,sys
+c=json.load(open(sys.argv[1]))
+q=c.get('quantization_config') or (c.get('text_config') or {}).get('quantization_config') or {}
+n=q.get('bits')
+if not n:
+    g=(q.get('config_groups') or {}).get('group_0') or {}
+    n=(g.get('weights') or {}).get('num_bits')
+if not n and str(q.get('quant_method','')).lower()=='fp8': n=8
+print(str(n)+'-bit' if n else 'full')
+" "$fmt_dir/config.json" 2>/dev/null)
+              [ -n "$sub" ] || sub="full"
+              size=$(du -sm "$fmt_dir" 2>/dev/null | cut -f1)
+              formats="$formats\${TAB}$fmt/$sub:$fmt_dir:$size"
               ;;
           esac
         done

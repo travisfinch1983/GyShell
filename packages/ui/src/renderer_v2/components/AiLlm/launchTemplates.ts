@@ -735,5 +735,14 @@ export const LAUNCH_TEMPLATES = {
       disableLogRequests: { flag: '--disable-log-requests', type: 'flag', default: false,
                         label: 'Disable Request Log',
                         tooltip: '1Cat-vLLM only. Suppress per-request log lines.' },
+      // Skip the vision tower of a multimodal checkpoint (Qwen3.8 Flash-Next / the Qwen 4 line all
+      // carry one). The existing limitMmImage/limitMmVideo fields CANNOT express this: they are
+      // skipIfZero, so 0 emits nothing and the model's default image/video limits apply — a 0 there
+      // means "unset", not "zero". 1Cat-vLLM 1.5.0 documents this flag as equivalent to setting every
+      // --limit-mm-per-prompt to 0. Every Flash-Next benchmark (2026-09-20..23) ran with it on, so a
+      // template WITHOUT it is running a configuration that was never measured.
+      languageModelOnly: { flag: '--language-model-only', type: 'flag', default: false,
+                        label: 'Language Model Only (no vision)',
+                        tooltip: 'Skip multimodal inputs so the vision tower is not used. Frees VRAM for KV cache on multimodal checkpoints like Qwen3.8 Flash-Next. The model then accepts text only.' },
     },
   };
