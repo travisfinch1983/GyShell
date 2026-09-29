@@ -2351,7 +2351,24 @@ if out: print(json.dumps(out))
       const escCache = cachePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const modelPathRe = new RegExp('((?:/models|' + escCache + ')/[^\\s"\'\\\\]+)', 'g');
       if (modelPathRe.test(finalCommand)) {
-        finalCommand = finalCommand.replace(modelPathRe, (m) => "$(mc '" + m + "')");
+        // A path inside a single-quoted argument (the drafter "model" in --speculative-config
+        // JSON, e.g. DFlash2) must NOT get a bare $(mc ...): bash never expands inside single
+        // quotes, so vLLM received the literal text "$(mc /models/...)" as a model id and every
+        // DFlash2 launch died in SpeculativeConfig validation. There, close the quote, expand in
+        // double quotes, and reopen: '...'"$(mc '/models/x')"'...'. Quote state is tracked from
+        // the start of the command (backslash escapes honoured outside single quotes).
+        const inSingleQuote = (str, idx) => {
+          let sq = false, dq = false;
+          for (let i = 0; i < idx; i++) {
+            const c = str[i];
+            if (c === '\\' && !sq) { i++; continue; }
+            if (c === "'" && !dq) sq = !sq;
+            else if (c === '"' && !sq) dq = !dq;
+          }
+          return sq;
+        };
+        finalCommand = finalCommand.replace(modelPathRe, (m, _p, offset, str) =>
+          inSingleQuote(str, offset) ? "'\"$(mc '" + m + "')\"'" : "$(mc '" + m + "')");
         mcHelper =
           'mc(){ p="$1"; case "$p" in\n' +
           '  ' + cachePath + '/*) c="$p"; n="/models/${p#' + cachePath + '/}";;\n' +
