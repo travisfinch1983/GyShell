@@ -126,10 +126,12 @@ export const EXTERNAL_ROLE_SERVICES: Record<string, string> = {
   memory_vlm: 'openviking',
 }
 
-/** Profile dirs that are TEMPLATES, not addressable agents. `hermes -p default` means "no
- *  profile" and writes the GLOBAL config, so a template's own config.yaml never receives an
- *  apply — it would sit at Auto forever and manufacture permanent, unfixable "drift". */
-export const TEMPLATE_PROFILES = new Set<string>(['default', 'zztmpl', 'zzglob'])
+/** Profile dirs that are TEMPLATES, not addressable agents (defined in templateProfiles.ts,
+ *  re-exported here for existing importers). `hermes -p default` means "no profile" and writes the
+ *  GLOBAL config, so a template's own config.yaml never receives an apply — it would sit at Auto
+ *  forever and manufacture permanent, unfixable "drift". */
+import { TEMPLATE_PROFILES, isTemplateProfile } from './templateProfiles'
+export { TEMPLATE_PROFILES }
 
 /** Roles Hermes READS (auxiliary.<key>) but does NOT advertise via _all_aux_tasks() — supplied here. */
 const AUX_TASK_SUPPLEMENT: Array<{ key: string; label: string; description: string }> = [
@@ -727,6 +729,7 @@ export class HermesManagementService {
   private async sweepToolHealthInner(): Promise<void> {
     let agents: string[]
     try { agents = await this.listAgentsStrict() } catch { return }   // cannot-check ≠ failed
+    agents = agents.filter((a) => !isTemplateProfile(a))                // templates never run turns
     const latch = this.toolAlarms()
     const FAULTS = HermesManagementService.TOOL_FAULT_CLASSES
 
@@ -1028,6 +1031,9 @@ export class HermesManagementService {
       await this.setAuxExtraBody(agentId, key, !!role.noThink)
     }
     if (key === 'vision') {
+      // A template carries no model of its own, and every agent cloned from it gets its vision
+      // config from its OWN apply — so there is nothing to do here and nothing to warn about.
+      if (isTemplateProfile(agentId)) return
       const model = this.getSpec(agentId)?.model
       if (model) {
         await this.applyVisionConfig(agentId, model)
@@ -3026,7 +3032,8 @@ export class HermesManagementService {
   /** List existing agent profiles (directory names under the profile home base). */
   async listAgents(): Promise<string[]> {
     try {
-      return await this.listAgentsStrict()
+      // Read-only surface (/api/hermes/agents, the UI): templates are config, not agents.
+      return (await this.listAgentsStrict()).filter((a) => !isTemplateProfile(a))
     } catch (e) {
       console.warn('[hermes-mgmt] agent enumeration failed — treating as empty for a read-only surface:', (e as Error)?.message)
       return []
@@ -3057,7 +3064,8 @@ export class HermesManagementService {
   }
 
   async agentExists(agentId: string): Promise<boolean> {
-    return (await this.listAgents()).includes(agentId)
+    // RAW roster on purpose: a template profile exists (applySpec must not try to re-create it).
+    try { return (await this.listAgentsStrict()).includes(agentId) } catch { return false }
   }
 
   /**

@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { EventEmitter } from 'events'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname } from 'path'
+import { isTemplateProfile } from './templateProfiles'
 
 /**
  * HermesAcpBridge — the BACKEND-OWNED persistent runner for Hermes agent sessions
@@ -94,6 +95,15 @@ export class HermesAcpBridge extends EventEmitter {
         if (typeof v === 'string') out[k] = { sessionId: v, agentId: '', lastActive: 0 } // migrate legacy string entries
         else if (v && typeof v === 'object' && (v as ConversationMeta).sessionId) out[k] = { sessionId: v.sessionId, agentId: v.agentId || '', title: v.title, lastActive: v.lastActive || 0 }
       }
+      // Drop sessions bound to a template profile (the resurrected 'default' ghost). Also covers
+      // legacy string entries whose key IS the template id. Dropped from memory -> the next save
+      // removes them from disk.
+      for (const [k, v] of Object.entries(out)) {
+        if (isTemplateProfile(v.agentId) || (!v.agentId && isTemplateProfile(k))) {
+          console.warn(`[hermes-acp] dropping persisted session '${k}': bound to template profile '${v.agentId || k}'`)
+          delete out[k]
+        }
+      }
       this.persistedSessions = out
     } catch (e) {
       // A corrupt map silently discarded EVERY conversation's resume id and
@@ -128,6 +138,10 @@ export class HermesAcpBridge extends EventEmitter {
    *  (a per-conversation id for chat tabs, or the agentId for bus/one-per-agent callers).
    *  `agentId` selects the Hermes profile to spawn. Idempotent per sessionKey. */
   startSession(sessionKey: string, agentId: string): AcpSession {
+    // The single spawn point (ensureReady, prompt, runTurn, reload all come through here).
+    if (isTemplateProfile(agentId)) {
+      throw new Error(`'${agentId}' is a template profile (global config), not an agent — no chat session`)
+    }
     const existing = this.sessions.get(sessionKey)
     if (existing && existing.proc.exitCode === null) return existing
 
