@@ -2617,12 +2617,15 @@ else
       # blocks are served from RAM so their files are never read); the manager sees every lookup.
       export VLLM_KV_HOTNESS_PATH="$_kvdir/hotness.json"
       export VLLM_KV_HOTNESS_FLUSH=64
-      _kvcfg=$(printf '{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"spec_name":"TieringOffloadingSpec","cpu_bytes_to_use":%s,"eviction_policy":"lru","secondary_tiers":[{"type":"fs","root_dir":"%s","n_read_threads":16,"n_write_threads":16}]}}' "$_bytes" "$_kvdir")
+      _kvcfg=$(printf '{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"spec_name":"TieringOffloadingSpec","cpu_bytes_to_use":%s,"eviction_policy":"lru","secondary_tiers":[{"type":"fs","root_dir":"%s","n_read_threads":16,"n_write_threads":4}]}}' "$_bytes" "$_kvdir")
       # --no-disable-hybrid-kv-cache-manager: without it the engine turns HMA off as soon as a
       #   transfer config is present, which hard-fails every hybrid GDN model.
       # --mamba-cache-mode all: one page per block, so a restored block maps to exactly one
       #   recurrent state. Measured cost at 262k context on the 27B: none (GPU KV cache unchanged
       #   at 1,125,767 tokens).
+      # n_write_threads=4: Optane is fsdax, so every block store is a CPU memcpy (no DMA). At 16
+      # threads the flush-heavy gate held ~15 cores and starved nvidia-smi (gpu-exporter timeouts,
+      # 2026-09-29). Stores are background work; reads stay at 16 so restores stay fast.
       KV_ARGS=(--no-disable-hybrid-kv-cache-manager ${mambaFlag}--kv-transfer-config "$_kvcfg")
       echo "[kv] Optane KV ON: dir=$_kvdir ram_tier=$(( _bytes / 1073741824 ))GiB" >&2
     fi
