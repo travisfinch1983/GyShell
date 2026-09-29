@@ -2573,6 +2573,8 @@ else
   #   GROUPFIX: drain the pending cudaHostRegister error (ranks >= 1 otherwise die at warmup) and
   #             count distinct block sizes, not KV groups (hybrid models always have > 1 group).
   #   RINGSKIP: never look up / store / load non-prefix-cacheable groups (Flash-Next QSA ring).
+  #   PATHFIX:  key the snapshot dir by model identity, not /model-cache vs /models, so every
+  #             instance of the same model (any GPU, any mount) shares one pool.
   # Verified 2026-09-28 on 1Cat 1.5.0: 27B (MTP on) + 9B + Flash-Next NVFP4 all byte-exact.
   _kvver=$("$_kvpy" -c 'import sys;print("python%d.%d"%sys.version_info[:2])' 2>/dev/null)
   _kvpkg="${envBin}/lib/$_kvver/site-packages/vllm"
@@ -2580,6 +2582,7 @@ else
   _kvreq="GROUPFIX:v1/kv_offload/tiering/spec.py GROUPFIX:v1/kv_offload/cpu/gpu_worker.py"
   _kvreq="$_kvreq RINGSKIP:distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py"
   _kvreq="$_kvreq RINGSKIP:distributed/kv_transfer/kv_connector/v1/offloading/worker.py"
+  _kvreq="$_kvreq PATHFIX:v1/kv_offload/file_mapper.py"
   for _kvp in $_kvreq; do
     grep -q "$(echo "$_kvp" | cut -d: -f1)" "$_kvpkg/$(echo "$_kvp" | cut -d: -f2)" 2>/dev/null || _kvmiss="$_kvmiss $_kvp"
   done
@@ -2635,7 +2638,7 @@ fi
         // fine and the failure looked like an unsupported flag rather than a quoting bug.
         // Empty-array expansion is guarded so the launch still works under `set -u`.
         finalCommand = finalCommand.replace(/[\s\\]+$/, '') + ' ${KV_ARGS[@]+"${KV_ARGS[@]}"}';
-        console.log(`[svc-launch] vLLM Optane KV -> ${optaneDir} (model=${modelName} tp=${tp} fp=${fp}, RAM tier <=${maxGib}GiB, gated on GROUPFIX+RINGSKIP in the env)`);
+        console.log(`[svc-launch] vLLM Optane KV -> ${optaneDir} (model=${modelName} tp=${tp} fp=${fp}, RAM tier <=${maxGib}GiB, gated on GROUPFIX+RINGSKIP+PATHFIX in the env)`);
         }
       }
     }
