@@ -2528,7 +2528,14 @@ export CUDA_HOME="${vllmEnvPrefix}"
         // the vllm binary in the command so a differently-named env still resolves correctly.
         const envBin = (finalCommand.match(/(\/[^\s"']*)\/bin\/vllm\b/) || [])[1] || '';
         // Cap only; the real size is chosen at RUN time from free /dev/shm (see preamble).
-        const maxGib = Number(process.env.AILAB_VLLM_KV_RAM_GIB || 256);
+        // 64 GiB per engine: px-gpu's model-cache tmpfs holds ~443 GiB of host RAM that the
+        // container's own free/df cannot see (host had ~232 GiB available on 2026-09-28), so
+        // "60% of free /dev/shm" alone would size each tier at ~226 GiB and two engines would
+        // exhaust the host. Override per deployment with AILAB_VLLM_KV_RAM_GIB.
+        const maxGib = Number(process.env.AILAB_VLLM_KV_RAM_GIB || 64);
+        // A template that sets its own --mamba-cache-mode wins (Flash-Next was gated on align);
+        // otherwise inject 'all', which the 27B/9B gates passed on.
+        const mambaFlag = /--mamba-cache-mode[ =]/.test(finalCommand) ? '' : '--mamba-cache-mode all ';
 
         // Everything below is decided when the service STARTS, not when it is created: the node
         // may be rebooted, repatched, or running other engines by then. A generated script that
@@ -2542,13 +2549,25 @@ if [ ! -d "${optaneBase}" ]; then
 elif [ ! -x "$_kvpy" ]; then
   echo "[kv] no interpreter at $_kvpy -> KV offload OFF" >&2
 else
-  # The marker is written by install-marker.sh ONLY when all five patches verify, and it lives
-  # inside site-packages so a vLLM reinstall removes it. Absent marker => run without the
-  # connector, because an unpatched engine does not degrade here, it asserts at init.
+  # Gate on the patched CODE itself, never on a marker file. A marker proved nothing: pip does not
+  # delete files it does not own, so the 1.3.0 marker survived the 1.5.0 upgrade while the patched
+  # files were replaced, and this gate would have wired an unpatched engine. Grep each patched file
+  # for its tag instead -- an upgrade that replaces the file removes the tag with it.
+  #   GROUPFIX: drain the pending cudaHostRegister error (ranks >= 1 otherwise die at warmup) and
+  #             count distinct block sizes, not KV groups (hybrid models always have > 1 group).
+  #   RINGSKIP: never look up / store / load non-prefix-cacheable groups (Flash-Next QSA ring).
+  # Verified 2026-09-28 on 1Cat 1.5.0: 27B (MTP on) + 9B + Flash-Next NVFP4 all byte-exact.
   _kvver=$("$_kvpy" -c 'import sys;print("python%d.%d"%sys.version_info[:2])' 2>/dev/null)
   _kvpkg="${envBin}/lib/$_kvver/site-packages/vllm"
-  if [ ! -f "$_kvpkg/.ailab-optane-kv-ready" ]; then
-    echo "[kv] optane-gdn-fix not verified in $_kvpkg -> KV offload OFF" >&2
+  _kvmiss=""
+  _kvreq="GROUPFIX:v1/kv_offload/tiering/spec.py GROUPFIX:v1/kv_offload/cpu/gpu_worker.py"
+  _kvreq="$_kvreq RINGSKIP:distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py"
+  _kvreq="$_kvreq RINGSKIP:distributed/kv_transfer/kv_connector/v1/offloading/worker.py"
+  for _kvp in $_kvreq; do
+    grep -q "$(echo "$_kvp" | cut -d: -f1)" "$_kvpkg/$(echo "$_kvp" | cut -d: -f2)" 2>/dev/null || _kvmiss="$_kvmiss $_kvp"
+  done
+  if [ -n "$_kvmiss" ]; then
+    echo "[kv] required patches missing in $_kvpkg:$_kvmiss -> KV offload OFF" >&2
   else
     mkdir -p "$_kvdir"
     # Each Tiering engine maps a /dev/shm region sized cpu_bytes_to_use and does NOT unlink it on
@@ -2584,7 +2603,7 @@ else
       # --mamba-cache-mode all: one page per block, so a restored block maps to exactly one
       #   recurrent state. Measured cost at 262k context on the 27B: none (GPU KV cache unchanged
       #   at 1,125,767 tokens).
-      KV_ARGS=(--no-disable-hybrid-kv-cache-manager --mamba-cache-mode all --kv-transfer-config "$_kvcfg")
+      KV_ARGS=(--no-disable-hybrid-kv-cache-manager ${mambaFlag}--kv-transfer-config "$_kvcfg")
       echo "[kv] Optane KV ON: dir=$_kvdir ram_tier=$(( _bytes / 1073741824 ))GiB" >&2
     fi
   fi
@@ -2599,7 +2618,7 @@ fi
         // fine and the failure looked like an unsupported flag rather than a quoting bug.
         // Empty-array expansion is guarded so the launch still works under `set -u`.
         finalCommand = finalCommand.replace(/[\s\\]+$/, '') + ' ${KV_ARGS[@]+"${KV_ARGS[@]}"}';
-        console.log(`[svc-launch] vLLM Optane KV -> ${optaneDir} (model=${modelName} tp=${tp} fp=${fp}, RAM tier <=${maxGib}GiB, gated on patch marker)`);
+        console.log(`[svc-launch] vLLM Optane KV -> ${optaneDir} (model=${modelName} tp=${tp} fp=${fp}, RAM tier <=${maxGib}GiB, gated on GROUPFIX+RINGSKIP in the env)`);
         }
       }
     }

@@ -744,5 +744,10 @@ export const LAUNCH_TEMPLATES = {
       languageModelOnly: { flag: '--language-model-only', type: 'flag', default: false,
                         label: 'Language Model Only (no vision)',
                         tooltip: 'Skip multimodal inputs so the vision tower is not used. Frees VRAM for KV cache on multimodal checkpoints like Qwen3.8 Flash-Next. The model then accepts text only.' },
+      mambaCacheMode: { flag: '--mamba-cache-mode', type: 'select', default: '',
+                        options: ['', 'align', 'all', 'none'],
+                        labels: { '': 'auto (launcher decides)', align: 'align', all: 'all', none: 'none' },
+                        label: 'Mamba Cache Mode',
+                        tooltip: 'How hybrid (GDN/Mamba) models cache recurrent state for prefix caching and KV offload.\n• auto: omit the flag. When RAM/Optane KV offload is wired, the launcher injects "all" (verified byte-exact on Qwen3.8 27B and 9B).\n• align: required for Qwen3.8 Flash-Next (QSA). Its offload gate passed on align; all is untested.\n• all: one recurrent-state page per block.\n• none: no recurrent-state caching (disables prefix reuse on hybrid models).' },
     },
   };
