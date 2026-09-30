@@ -4307,6 +4307,68 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
   /**
    * POST /active-services/:id/suspend — Stop a systemd service without removing it (temporary pause).
    */
+  // ─── ComfyUI Manager UI mode (Modern / Legacy) ───────────────────────────────────────────
+  // Services do not store their launch command and nothing regenerates their scripts, so the
+  // SCRIPT is the persistent per-instance state. Read the mode from it, and switch it by swapping
+  // the ONE manager flag in place. Never restarts (Travis may be mid-generation) and never touches
+  // the unit's drop-ins (e.g. ailab-comfyui-8188.service.d/coerce-patch.conf).
+  //   modern -> --enable-manager            legacy -> --enable-manager-legacy-ui (implies the former)
+  // The helper travels base64-encoded so no quoting layer (node -> ssh -> pct exec -> bash) can
+  // mangle it. It refuses to edit unless exactly ONE manager flag is present.
+  const COMFY_MANAGER_SH = [
+    'f="$1"; want="$2"',
+    '[ -f "$f" ] || { echo "NOSCRIPT"; exit 0; }',
+    'n=$(grep -cE -- "--enable-manager(-legacy-ui)?([^a-z-]|$)" "$f" || true)',
+    'cur=none',
+    'if grep -qE -- "--enable-manager-legacy-ui" "$f"; then cur=legacy; elif grep -qE -- "--enable-manager([^a-z-]|$)" "$f"; then cur=modern; fi',
+    'if [ -z "$want" ]; then echo "MODE $cur"; exit 0; fi',
+    '[ "$n" = 1 ] || { echo "AMBIGUOUS $n"; exit 0; }',
+    'if [ "$cur" = "$want" ]; then echo "UNCHANGED $cur"; exit 0; fi',
+    'flag=--enable-manager; [ "$want" = legacy ] && flag=--enable-manager-legacy-ui',
+    'cp -p "$f" "$f.bak-managerui-$(date +%Y%m%d%H%M%S)"',
+    'sed -i -E "s/--enable-manager(-legacy-ui)?([^a-z-]|$)/$flag\\2/" "$f"',
+    'if grep -qE -- "$flag([^a-z-]|$)" "$f"; then echo "CHANGED $want"; else echo "FAILED"; fi',
+  ].join('\n');
+
+  async function comfyManagerScript(svc, want) {
+    const b64 = Buffer.from(COMFY_MANAGER_SH, 'utf8').toString('base64');
+    const cmd = `pct exec ${svc.vmid} -- bash -c "echo ${b64} | base64 -d > /tmp/.comfy-manager-ui.sh && bash /tmp/.comfy-manager-ui.sh '${String(svc.scriptPath).replace(/'/g, '')}' '${want || ''}'"`;
+    const r = await sshService.exec(svc.pveHostIp, cmd, { timeout: 30000 });
+    return String((r && (r.stdout ?? r.output ?? r)) || '').trim().split('\n').pop();
+  }
+
+  /** GET /active-services/comfy-manager-ui?node=&port= — Manager UI mode of the ComfyUI service
+   *  running on that node + port (404 when there is none). */
+  router.get('/active-services/comfy-manager-ui', async (req, res) => {
+    try {
+      const node = String(req.query.node || ''); const port = Number(req.query.port) || 0;
+      const state = loadActiveServices();
+      const svc = Object.values(state.services || {}).find((s) => s && s.providerId === 'comfyui' && s.node === node && Number(s.port) === port);
+      if (!svc) return res.status(404).json({ error: `no ComfyUI service on ${node}:${port}` });
+      if (!svc.scriptPath) return res.json({ serviceId: svc.id, mode: 'none' });
+      const out = await comfyManagerScript(svc, '');
+      const mode = /^MODE (modern|legacy|none)$/.exec(out)?.[1] ?? 'none';
+      res.json({ serviceId: svc.id, mode, scriptPath: svc.scriptPath });
+    } catch (e) { res.status(500).json({ error: String((e && e.message) || e) }); }
+  });
+
+  /** POST /active-services/:id/comfy-manager-ui {mode:'modern'|'legacy'} — rewrite the flag in the
+   *  service's script. Applies on the service's NEXT restart; does not restart it. */
+  router.post('/active-services/:id/comfy-manager-ui', async (req, res) => {
+    try {
+      const want = req.body && req.body.mode;
+      if (want !== 'modern' && want !== 'legacy') return res.status(400).json({ error: "mode must be 'modern' or 'legacy'" });
+      const svc = loadActiveServices().services[req.params.id];
+      if (!svc) return res.status(404).json({ error: 'Service not found' });
+      if (svc.providerId !== 'comfyui') return res.status(400).json({ error: 'not a ComfyUI service' });
+      if (!svc.scriptPath) return res.status(400).json({ error: 'service has no script to edit' });
+      const out = await comfyManagerScript(svc, want);
+      if (/^CHANGED /.test(out)) return res.json({ ok: true, changed: true, mode: want });
+      if (/^UNCHANGED /.test(out)) return res.json({ ok: true, changed: false, mode: want });
+      res.status(409).json({ error: `script not edited (${out || 'no output'})` });
+    } catch (e) { res.status(500).json({ error: String((e && e.message) || e) }); }
+  });
+
   router.post('/active-services/:id/suspend', async (req, res) => {
     const id = req.params.id;
     try {

@@ -119,6 +119,15 @@ export const ServiceLaunchPanel: React.FC<{ store: ServiceLaunchStore; emptyLabe
                 </>
               )}
 
+              {p.id === 'comfyui' && (
+                <>
+                  <label className={styles.lbl} title="Which ComfyUI-Manager interface to enable. Modern: the new-frontend Manager dialog; its search only covers Comfy's hosted node registry. Legacy: the classic Manager UI; its search covers Manager's locally cached GitHub list, including thousands of node packs that are not in the registry.">Manager UI</label>
+                  <select className={styles.select} value={c.managerUi ?? 'modern'} onChange={(e) => void store.setManagerUi(p.id, e.target.value as 'modern' | 'legacy')}>
+                    <option value="modern">Modern</option>
+                    <option value="legacy">Legacy</option>
+                  </select>
+                </>
+              )}
               {!cli && (
                 <>
                   <label className={styles.lbl}>Port</label>
@@ -137,6 +146,9 @@ export const ServiceLaunchPanel: React.FC<{ store: ServiceLaunchStore; emptyLabe
               )}
             </div>
 
+            {p.id === 'comfyui' && store.managerSvc[p.id]?.msg && (
+              <div className={store.managerSvc[p.id]?.ok ? styles.ok : styles.error}>{store.managerSvc[p.id]?.msg}</div>
+            )}
             {showTrain && <TrainWorkspace store={store} providerId={p.id} />}
           </section>
         )

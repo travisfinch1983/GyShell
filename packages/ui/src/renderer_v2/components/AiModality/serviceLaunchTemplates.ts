@@ -252,6 +252,12 @@ export const GENERIC_LAUNCH_TEMPLATES: Record<string, any> = {
         // /opt/comfyui/manager_requirements.txt` in the conda env, and
         // any custom_nodes/ComfyUI-Manager dir must be removed (security
         // policy blocks legacy + pip-pkg loading simultaneously).
+        //
+        // opts.managerUi === 'legacy' emits --enable-manager-legacy-ui INSTEAD (cli_args.py: it
+        // implies --enable-manager, so never emit both). The modern dialog searches only Comfy's
+        // hosted registry index; the legacy UI searches Manager's locally cached GitHub list,
+        // which holds thousands of packs that were never published to the registry.
+        const managerFlag = opts && opts.managerUi === 'legacy' ? '--enable-manager-legacy-ui' : '--enable-manager'
         const cacheSubdirs = 'checkpoints ckpts loras lycoris vae vae-approx taesd clip-vision ' +
           'controlnet t2i-adapter diffusion-models text-encoders embeddings ' +
           'upscale-models latent_upscale_models diffusers gligen style-models ' +
@@ -333,7 +339,7 @@ export const GENERIC_LAUNCH_TEMPLATES: Record<string, any> = {
           'cd /opt/comfyui &&',
           `/opt/conda/envs/comfyui/bin/python main.py \\`,
           `  --listen 0.0.0.0 --port ${port} \\`,
-          `  --enable-manager`,
+          `  ${managerFlag}`,
         ].join('\n');
       },
     },

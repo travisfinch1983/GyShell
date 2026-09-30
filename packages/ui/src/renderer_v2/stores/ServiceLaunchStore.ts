@@ -10,7 +10,10 @@ function bridge(): any {
 }
 
 type Cat = 'tts' | 'image' | 'training'
-interface CardState { node: string; gpus: string[]; model?: string; backend?: string; port: number; configName?: string }
+type ManagerUi = 'modern' | 'legacy'
+interface CardState { node: string; gpus: string[]; model?: string; backend?: string; port: number; configName?: string; managerUi?: ManagerUi }
+/** A running ComfyUI service matched to a card by node + port; its SCRIPT holds the live mode. */
+interface ManagerSvcState { serviceId?: string; mode?: ManagerUi | 'none'; msg?: string; ok?: boolean }
 interface GpuOpt { pciId: string; containerIdx: number; label: string }
 
 /**
@@ -39,6 +42,7 @@ export class ServiceLaunchStore {
   trainSelTemplate: Record<string, string> = {}
   trainEditor: Record<string, string> = {}
   trainStatus: Record<string, { msg: string; ok: boolean }> = {}
+  managerSvc: Record<string, ManagerSvcState> = {}
 
   constructor(category: Cat) {
     this.category = category
@@ -72,6 +76,7 @@ export class ServiceLaunchStore {
         }
         this.loaded = true
       })
+      if (this.cards['comfyui']) void this.syncManagerUi('comfyui')
       // The list above comes from a CACHE (ai-config.json), refreshed only when something
       // explicitly re-checks a provider. It silently under-reported for months: three trainers
       // were listed while five were installed on px-epyc, so a tool you owned looked unavailable.
@@ -139,6 +144,41 @@ export class ServiceLaunchStore {
   }
   set(providerId: string, patch: Partial<CardState>): void {
     this.cards[providerId] = { ...this.cards[providerId], ...patch }
+    // A different node/port may match a different (or no) running ComfyUI service.
+    if (providerId === 'comfyui' && ('node' in patch || 'port' in patch)) void this.syncManagerUi(providerId)
+  }
+
+  /** Read the Manager UI mode from the running ComfyUI service on this card's node + port (its
+   *  script is the persistent per-instance state) and show it on the card. */
+  async syncManagerUi(providerId: string): Promise<void> {
+    const c = this.cards[providerId]
+    if (!c?.node || !c.port) { this.managerSvc[providerId] = {}; return }
+    try {
+      const r: any = await bridge().request('GET', `/api/ai/active-services/comfy-manager-ui?node=${encodeURIComponent(c.node)}&port=${c.port}`)
+      runInAction(() => {
+        this.managerSvc[providerId] = { serviceId: r?.serviceId, mode: r?.mode }
+        if (r?.mode === 'legacy' || r?.mode === 'modern') this.cards[providerId] = { ...this.cards[providerId], managerUi: r.mode }
+      })
+    } catch {
+      runInAction(() => { this.managerSvc[providerId] = {} })   // no service on this node+port
+    }
+  }
+
+  /** Set the Manager UI mode. Always changes what the NEXT launch emits; if a ComfyUI service is
+   *  running on this node + port, also rewrites that service's script (applies on its next restart). */
+  async setManagerUi(providerId: string, mode: ManagerUi): Promise<void> {
+    this.cards[providerId] = { ...this.cards[providerId], managerUi: mode }
+    const svc = this.managerSvc[providerId]
+    if (!svc?.serviceId) return
+    try {
+      const r: any = await bridge().request('POST', `/api/ai/active-services/${encodeURIComponent(svc.serviceId)}/comfy-manager-ui`, { mode })
+      runInAction(() => {
+        this.managerSvc[providerId] = { ...svc, mode: r?.mode ?? mode, ok: true,
+          msg: r?.changed ? 'Saved to the service script. Restart the service to apply.' : 'Already set on the service.' }
+      })
+    } catch (e: any) {
+      runInAction(() => { this.managerSvc[providerId] = { ...svc, ok: false, msg: 'Could not update the service script: ' + (e?.message || e) } })
+    }
   }
   /** Single-GPU select (TTS + single-GPU generic). pciId === 'auto' clears the selection. */
   setGpu(providerId: string, pciId: string): void {
@@ -167,7 +207,7 @@ export class ServiceLaunchStore {
       return buildTtsLaunchCommand(providerId, c.port, c.model, idxs.length ? idxs[0] : undefined, c.backend)
     }
     const gpuIndices = idxs.length ? idxs.join(',') : undefined
-    return buildGenericLaunchCommand(providerId, c.port, gpuIndices, { configName: c.configName || 'default' })
+    return buildGenericLaunchCommand(providerId, c.port, gpuIndices, { configName: c.configName || 'default', managerUi: c.managerUi || 'modern' })
   }
 
   async launch(providerId: string): Promise<void> {
