@@ -5,6 +5,9 @@ import { makeAutoObservable, runInAction } from 'mobx'
 const BASE = '/api/imagegen'
 export const igThumb = (rel: string, v?: number) => `${BASE}/thumb?path=${encodeURIComponent(rel)}${v ? `&v=${v}` : ''}`
 export const igImage = (rel: string, bust?: number) => `${BASE}/image?path=${encodeURIComponent(rel)}${bust ? `&t=${bust}` : ''}`
+/** The ORIGINAL file as a download (full resolution, original format; video via /video). */
+export const igDownload = (rel: string, isVideo = false) =>
+  `${BASE}/${isVideo ? 'video' : 'image'}?path=${encodeURIComponent(rel)}&download=1`
 /** Range-streamed so the <video> element can actually seek. */
 export const igVideo = (rel: string) => `${BASE}/video?path=${encodeURIComponent(rel)}`
 /** ffmpeg poster frame, cached server-side beside the clip in a dot-dir. */

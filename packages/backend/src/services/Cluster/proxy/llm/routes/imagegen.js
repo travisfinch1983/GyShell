@@ -707,6 +707,8 @@ export function createImagegenRouter(config) {
     }
     const st = statSync(file);
     const type = VID_MIME[path.extname(file).toLowerCase()] || 'application/octet-stream';
+    // ?download=1 -> attachment under the real filename (range handling below is unchanged).
+    if (req.query.download === '1' || req.query.download === 'true') res.attachment(path.basename(file));
     const range = req.headers.range;
     if (!range) {
       res.writeHead(200, { 'Content-Type': type, 'Content-Length': st.size, 'Accept-Ranges': 'bytes' });
@@ -827,6 +829,15 @@ export function createImagegenRouter(config) {
     // NB: only clamp when maxdim was ACTUALLY supplied. Folding the floor into the
     // no-param case turns "serve the original" into Math.max(64, 0) === 64, i.e. every
     // full-image request silently came back as a 64px thumbnail (smaller than /thumb).
+    // ?download=1 -> the ORIGINAL bytes as an attachment under the real filename. Never combined
+    // with maxdim: a "download" that silently handed back a webp thumbnail is the failure to avoid.
+    const wantDownload = req.query.download === '1' || req.query.download === 'true';
+    if (wantDownload) {
+      res.attachment(path.basename(file));
+      res.set('Cache-Control', 'no-store');
+      res.type(type);
+      return createReadStream(file).pipe(res);
+    }
     const maxdimRaw = parseInt(String(req.query.maxdim || ''), 10);
     const maxdim = Number.isFinite(maxdimRaw) && maxdimRaw > 0
       ? Math.max(64, Math.min(4096, maxdimRaw))

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Layers, FolderOpen, Star, X, ChevronUp, ChevronDown } from 'lucide-react'
-import { trainingImagesStore as store, igThumb, igImage, igVideo, igVthumb, imKey, cropDone, type IgImage } from '../../stores/TrainingImagesStore'
+import { trainingImagesStore as store, igThumb, igImage, igVideo, igVthumb, igDownload, imKey, cropDone, type IgImage } from '../../stores/TrainingImagesStore'
 import { confirmStore } from '../../stores/confirmStore'
 import { promptStore } from '../../stores/promptStore'
 import { CropEditor } from './CropEditor'
@@ -500,7 +500,11 @@ const VideoModal: React.FC<{ rel: string; name: string; onClose: () => void }> =
       <div className={styles.pkBox} style={{ width: 'min(1100px,96%)' }} onClick={(e) => e.stopPropagation()}>
         <div className={styles.modalHead}>
           <strong>{name}</strong>
-          <button className={styles.btn} onClick={onClose}>Close</button>
+          <span>
+            <a className={styles.btn} href={igDownload(rel, true)} download={name} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
+               title="Download the original video file">⬇ Download</a>{' '}
+            <button className={styles.btn} onClick={onClose}>Close</button>
+          </span>
         </div>
         <video
           ref={vref} src={igVideo(rel)} controls autoPlay={false} preload="metadata"
@@ -537,6 +541,8 @@ const Lightbox: React.FC<{ rel: string; name: string; bust?: number; onClose: ()
         <span className={styles.dim}>{Math.round(z * 100)}%</span>
         <span className={styles.spacer} />
         <span className={styles.dim}>scroll = zoom · drag = pan · dbl-click resets</span>
+        <a className={styles.btn} href={igDownload(rel)} download={name} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
+           title="Download the original file (full resolution, original format)">⬇ Download</a>
         <button className={styles.btn} onClick={onClose}><X size={14} /> Close</button>
       </div>
       <div className={styles.lbStage} onClick={(e) => e.stopPropagation()} onWheel={onWheel}
@@ -742,6 +748,22 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   // come through here. Paging used to re-derive the decision inline and call setCrop()
   // unconditionally, so stepping off an image walked the next VIDEO into the still-frame
   // crop editor — 235 of the 670 files in aniaspoison are video, so it fired immediately.
+  // Download the selection as ORIGINAL files. One anchor click per file, spaced out: browsers
+  // drop rapid-fire programmatic downloads, and the spacing lets the "allow multiple downloads"
+  // prompt appear once instead of eating files.
+  const doDownload = async () => {
+    const byKey = new Map(store.visibleImages.map((im) => [imKey(im), im]))
+    const items = [...store.selected].map((k) => byKey.get(k)).filter((im): im is IgImage => !!im)
+    if (!items.length) { store.msg = 'Nothing selected to download.'; return }
+    for (const [i, im] of items.entries()) {
+      const a = document.createElement('a')
+      a.href = igDownload(im.rel, !!im.is_video)
+      a.download = im.name
+      document.body.appendChild(a); a.click(); a.remove()
+      if (i < items.length - 1) await new Promise((r) => setTimeout(r, 350))
+    }
+    store.msg = `Downloading ${items.length} file${items.length > 1 ? 's' : ''}…`
+  }
   const openImage = (im: IgImage) => {
     if (im.is_video) { setCrop(null); setVid({ rel: im.rel, name: im.name }) }
     else { setVid(null); setCrop({ rel: im.rel, name: im.name }) }
@@ -1017,6 +1039,9 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           {/* Was gated on inTrainingSet, so a wrong image in a root tag folder could not be
               removed at all. The server enforces the real boundary (model roots refuse by
               name), so the UI no longer second-guesses it. */}
+          <button className={styles.btn}
+                  title="Download the selected images as their original files (full resolution, original format). With several selected, the browser may ask once to allow multiple downloads."
+                  onClick={() => void doDownload()}>⬇ Download</button>
           <button className={styles.btnDanger} onClick={() => void doDelete()}>Delete</button>
           <button className={styles.btn} title="Add or remove the same booru tags across the selected images" onClick={() => setBlanket(true)}>Blanket tags…</button>
           <button className={styles.btn} title="Replace text across the selected images' .txt and .caption sidecars — preview before applying" onClick={() => setFindRep(true)}>Find &amp; replace…</button>

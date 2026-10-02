@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { trainingImagesStore as store, igImage, imKey } from '../../stores/TrainingImagesStore'
+import { trainingImagesStore as store, igImage, igDownload, imKey } from '../../stores/TrainingImagesStore'
 import { confirmStore } from '../../stores/confirmStore'
 import styles from './TrainingImages.module.scss'
 
@@ -218,6 +218,8 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
                   title="Delete this image and its caption sidecars, then go straight to the next one. No confirmation, and it cannot be undone."
                   onClick={() => void deleteThis()}>🗑 Delete</button>
           <button className={styles.btnPrimary} disabled={busy} onClick={() => void apply()}>Apply crop</button>
+          <a className={styles.btn} href={igDownload(rel)} download={name} style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
+             title="Download the original file (full resolution, original format)">⬇ Download</a>
           <button className={styles.btn} onClick={closeSave}>Close</button>
         </div>
         <div className={styles.crStage} ref={stageRef}>
