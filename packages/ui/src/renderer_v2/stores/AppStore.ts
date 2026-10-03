@@ -102,6 +102,7 @@ export type SettingsSection =
   | 'cluster-ui'
   | 'cluster-identity'
   | 'cluster-services'
+  | 'cluster-matrix'
   | 'cluster-servicenames'
   | 'cluster-gpu'
   | 'cluster-storage'

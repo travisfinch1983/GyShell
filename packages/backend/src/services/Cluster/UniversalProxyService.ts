@@ -140,6 +140,7 @@ export class UniversalProxyService {
     const { createCivitaiRouter } = await import('./proxy/civitai.js')
     const { createFilesRouter } = await import('./proxy/files.js')
     const { createDatasetRouter } = await import('./proxy/dataset.js')
+    const { createMatrixRouter } = await import('./proxy/matrix.js')
     const { createFlowchartsRouter } = await import('./flowchartsHttp')
     const { createPagesRouter } = await import('./pagesHttp')
     const { createReportsRouter } = await import('./reportsHttp')
@@ -275,6 +276,8 @@ export class UniversalProxyService {
     // Dataset Review (AI · Image Gen -> Dataset Review): serves dataset-forge output from
     // shared storage for accept/reject before export.
     app.use('/api/dataset', express.json({ limit: '2mb' }), createDatasetRouter())
+    // Matrix homeserver controls (sign-up mode) via a restricted forced-command key to the VPS.
+    app.use('/api/matrix', express.json({ limit: '16kb' }), createMatrixRouter())
     // RAG routes (/api/ai/rag/*, /api/ai/docrag/*) registered BEFORE the /api/ai router so the specific
     // codebase/document-RAG paths match first.
     const { registerRagRoutes } = await import('./proxy/rag.js')

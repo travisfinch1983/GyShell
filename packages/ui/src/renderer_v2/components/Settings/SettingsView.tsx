@@ -27,10 +27,12 @@ import {
   SlidersHorizontal,
   Activity,
   Network,
+  MessagesSquare,
 } from "lucide-react";
 import { observer } from "mobx-react-lite";
 import type { AppStore } from "../../stores/AppStore";
 import { BUILTIN_THEMES } from "../../theme/themes";
+import { MatrixServerPanel } from "./MatrixServerPanel";
 import { ProxmoxSettingsPanel, ClusterTokensPanel, ClusterUiPanel, ContainerIdentityPanel, ExternalServicesPanel, ServiceNamesPanel, GpuPoolsPanel, SharedFoldersPanel } from "./ClusterSettingsPanels";
 import type { AppTheme } from "../../theme/themes";
 import "./settings.scss";
@@ -673,6 +675,15 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
           >
             <span className="icon"><Globe size={16} strokeWidth={2} /></span>
             <span>External Services</span>
+          </div>
+          <div
+            className={store.settingsSection === "cluster-matrix" ? "settings-nav-item is-active" : "settings-nav-item"}
+            onClick={() => store.setSettingsSection("cluster-matrix")}
+            role="button"
+            tabIndex={0}
+          >
+            <span className="icon"><MessagesSquare size={16} strokeWidth={2} /></span>
+            <span>Matrix Server</span>
           </div>
           <div
             className={store.settingsSection === "cluster-servicenames" ? "settings-nav-item is-active" : "settings-nav-item"}
@@ -2271,6 +2282,7 @@ export const SettingsView: React.FC<{ store: AppStore }> = observer(
           {store.settingsSection === "cluster-ui" ? <ClusterUiPanel /> : null}
           {store.settingsSection === "cluster-identity" ? <ContainerIdentityPanel /> : null}
           {store.settingsSection === "cluster-services" ? <ExternalServicesPanel /> : null}
+          {store.settingsSection === "cluster-matrix" ? <MatrixServerPanel /> : null}
           {store.settingsSection === "cluster-servicenames" ? <ServiceNamesPanel /> : null}
           {store.settingsSection === "cluster-gpu" ? <GpuPoolsPanel /> : null}
           {store.settingsSection === "cluster-storage" ? <SharedFoldersPanel /> : null}
