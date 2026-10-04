@@ -2212,7 +2212,13 @@ if out: print(json.dumps(out))
     }
     diag.push('echo -e "\\e[36m─────────────────────\\e[0m"');
 
-    const scriptContent = `#!/bin/bash\ntrap 'echo -e "\\n\\e[33m[Process exited with code \\$?]\\e[0m"; read -r -p "Press Enter to close..."' EXIT\n${diag.join('\n')}\n${command}\n`;
+    // GPU identity pin (see gpuPinPreamble): the UI's indices mean positions in the CT's assigned
+    // card list; translate them to PCI addresses now and resolve against the ATTACHED cards at launch.
+    const _cvdIdxL = ((command.match(/CUDA_VISIBLE_DEVICES=([0-9][0-9,]*)/) || [])[1] || '')
+      .split(',').filter(Boolean).map(Number);
+    const _pinL = applyGpuPin(command, _cvdIdxL.length ? resolveServiceGpuPciIds(agent.vmid, _cvdIdxL) : []);
+    command = _pinL.command;
+    const scriptContent = `#!/bin/bash\ntrap 'echo -e "\\n\\e[33m[Process exited with code \\$?]\\e[0m"; read -r -p "Press Enter to close..."' EXIT\n${_pinL.preamble}${diag.join('\n')}\n${command}\n`;
     const b64Script = Buffer.from(scriptContent).toString('base64');
 
     // Combined command: decode script, create detached tmux session, then attach.
@@ -4680,8 +4686,15 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
       const script = result.stdout || '';
 
       // Extract CUDA_VISIBLE_DEVICES for GPU info
+      // Pinned scripts carry PCI identities (AILAB_GPU_PCIS, see gpuPinPreamble); map them back to
+      // positions in the CT's assigned list. Legacy scripts still carry bare indices.
+      const pinMatch = script.match(/AILAB_GPU_PCIS="([^"]+)"/);
       const cudaMatch = script.match(/CUDA_VISIBLE_DEVICES=([0-9,]+)/);
-      const cudaDevices = cudaMatch ? cudaMatch[1].split(',').map(Number) : [];
+      let cudaDevices = cudaMatch ? cudaMatch[1].split(',').map(Number) : [];
+      if (pinMatch) {
+        const assigned = (loadGpuAssignments()[String(vmid)]?.gpus || []).map((g) => String(g).toLowerCase());
+        cudaDevices = pinMatch[1].split(/\s+/).filter(Boolean).map((pci) => assigned.indexOf(pci)).filter((i) => i >= 0);
+      }
 
       if (providerId === 'koboldcpp') {
         // KoboldCpp: base64-encoded .kcpps config
@@ -5263,8 +5276,10 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
 
       const instances = await Promise.all(comfy.map(async (s) => {
         const node = s.node;
-        const sortedPci = [...s.gpuPciIds].sort();  // CUDA index order under CUDA_DEVICE_ORDER=PCI_BUS_ID
-        const gpus = sortedPci.map((pciId, idx) => {
+        // Inside the process, CUDA numbers devices in CUDA_VISIBLE_DEVICES LIST order ("4,1,2,3" makes the
+        // 4090 device 0), and gpuPciIds is stored in that launch order. Sorting here misnumbered them.
+        const launchPci = [...s.gpuPciIds];
+        const gpus = launchPci.map((pciId, idx) => {
           const g = pciLookup[`${node}:${pciId}`] || {};
           return {
             cuda_index: idx,
