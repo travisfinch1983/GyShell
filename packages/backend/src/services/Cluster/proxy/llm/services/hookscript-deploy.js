@@ -200,14 +200,19 @@ resolve_dri_devices() {
     echo "$CARD_NUM $RENDER_NUM"
 }
 
+# Minor number straight from the driver's /proc entry for the PCI address. NEVER nvidia-smi here:
+# against a stalled card it can take the driver's RM lock and wedge the whole host (2026-08-17),
+# and this runs inside every container start. Falls back to matching the UUID if the address moved.
 resolve_nvidia_minor() {
-    local UUID="$1"
-    if [ -z "$UUID" ]; then
-        echo ""
-        return
+    local PCI="$1" UUID="$2" INFO=""
+    PCI=$(echo "$PCI" | tr 'A-F' 'a-f')
+    if [ -r "/proc/driver/nvidia/gpus/$PCI/information" ]; then
+        INFO="/proc/driver/nvidia/gpus/$PCI/information"
+    elif [ -n "$UUID" ]; then
+        INFO=$(grep -l "GPU UUID:.*$UUID" /proc/driver/nvidia/gpus/*/information 2>/dev/null | head -1)
     fi
-    local MINOR=$(nvidia-smi -q -i "$UUID" 2>/dev/null | grep "Minor Number" | awk '{print $NF}')
-    echo "$MINOR"
+    [ -n "$INFO" ] || { echo ""; return; }
+    sed -n 's/^Device Minor:[[:space:]]*//p' "$INFO"
 }
 
 get_cgroup_devnums() {
@@ -232,6 +237,10 @@ do_pre_start() {
     fi
 
     proxlab_log "CT $VMID: configuring $GPU_COUNT GPU(s) using $MOUNT_STYLE mount style"
+    # PVE has ALREADY parsed this conf for the start in progress, so a block rewritten here only
+    # takes effect on the NEXT start. Remember what this start is using, to flag drift below.
+    local OLD_BLOCK=$(sed -n "/^$MARKER_START$/,/^$MARKER_END$/p" "$CONF" 2>/dev/null)
+    local MISSING=""
 
     # Clean any stale entries first
     clean_conf
@@ -302,7 +311,7 @@ do_pre_start() {
         # NVIDIA-specific: resolve nvidia device minor (independent of DRI resolution)
         if echo "$VENDOR" | grep -qi "nvidia"; then
             HAS_NVIDIA=1
-            local NV_MINOR=$(resolve_nvidia_minor "$UUID")
+            local NV_MINOR=$(resolve_nvidia_minor "$PCI_BUS" "$UUID")
             if [ -n "$NV_MINOR" ]; then
                 proxlab_ok "CT $VMID:   nvidia\${NV_MINOR}"
                 if [ "$MOUNT_STYLE" = "new" ]; then
@@ -310,6 +319,7 @@ do_pre_start() {
                     DEV_INDEX=$((DEV_INDEX + 1))
                 else
                     local NV_DEVNUMS=$(get_cgroup_devnums "/dev/nvidia\${NV_MINOR}")
+                    [ -n "$NV_DEVNUMS" ] || NV_DEVNUMS="195 $NV_MINOR"
                     CONF_LINES+="\nlxc.mount.entry: /dev/nvidia\${NV_MINOR} dev/nvidia\${NV_MINOR} none bind,optional,create=file 0 0"
                     if [ -n "$NV_DEVNUMS" ]; then
                         CONF_LINES+="\nlxc.cgroup2.devices.allow: c $(echo $NV_DEVNUMS | awk '{print $1}'):$(echo $NV_DEVNUMS | awk '{print $2}') rwm"
@@ -317,6 +327,7 @@ do_pre_start() {
                 fi
             else
                 proxlab_warn "CT $VMID:   could not resolve nvidia minor for GPU $i (UUID: $UUID)"
+                MISSING="$MISSING $GPU_NAME($PCI_BUS)"
             fi
         fi
     done
@@ -366,6 +377,11 @@ do_pre_start() {
             echo "$MARKER_END"
         } >> "$CONF"
         proxlab_ok "CT $VMID: GPU config written ($DEV_INDEX device entries)"
+    fi
+    [ -n "$MISSING" ] && proxlab_err "CT $VMID: GPU(s) NOT present on this host:$MISSING -- the container starts without them"
+    local NEW_BLOCK=$(sed -n "/^$MARKER_START$/,/^$MARKER_END$/p" "$CONF" 2>/dev/null)
+    if [ "\${PROXLAB_HOOK_CONTEXT:-start}" = start ] && [ "$OLD_BLOCK" != "$NEW_BLOCK" ]; then
+        proxlab_err "CT $VMID: GPU device set CHANGED since PVE loaded this config -- THIS start uses the OLD set; restart CT $VMID to apply the new one"
     fi
 }
 
@@ -690,6 +706,72 @@ exit 0
     console.log('HookscriptDeploy: static files deployed to PVE storage');
   }
 
+  /**
+   * Boot-time refresh, installed on every PVE node we deploy to.
+   * PVE parses an LXC conf BEFORE the pre-start hookscript runs, so the GPU block the hook writes is
+   * always one start behind. After a host reboot where a card's state changed (5060 Ti #1 dropped off
+   * the bus and came back after an IPMI cycle, 2026-10-04), the autostarted container got the
+   * PREVIOUS start's card set and ran without the card. This oneshot runs the gpu-hook for every
+   * ProxLab GPU container on the node after udev/storage are up and BEFORE pve-guests.service.
+   */
+  generateBootRefreshScript() {
+    return `#!/bin/bash
+# ProxLab GPU boot refresh - auto-deployed by AI-Lab (hookscript-deploy.js), do not edit manually
+udevadm settle -t 30 2>/dev/null
+# Device nodes for every card the driver sees (the bind mounts are 'optional': no node = no card).
+for d in /proc/driver/nvidia/gpus/*; do
+  m=$(sed -n 's/^Device Minor:[[:space:]]*//p' "$d/information" 2>/dev/null)
+  [ -n "$m" ] && [ ! -e "/dev/nvidia$m" ] && mknod -m 666 "/dev/nvidia$m" c 195 "$m"
+done
+for conf in /etc/pve/lxc/*.conf; do
+  hs=$(grep -E '^hookscript: .*proxlab-master[.]sh$' "$conf" | cut -d' ' -f2)
+  [ -n "$hs" ] || continue
+  vmid=$(basename "$conf" .conf)
+  # Resolve the snippets dir the way PVE does: the same share mounts at different paths per node.
+  master=$(pvesm path "$hs" 2>/dev/null); SNIP=$(dirname "$master")
+  for _ in $(seq 1 30); do [ -f "$SNIP/proxlab-hooks/gpu-hook.sh" ] && break; sleep 2; done
+  vars="$SNIP/proxlab-vars/$vmid.sh"
+  [ -f "$vars" ] && [ -f "$SNIP/proxlab-hooks/gpu-hook.sh" ] || continue
+  ( set -a; . "$vars"; set +a
+    [ "\${PROXLAB_GPU_COUNT:-0}" -gt 0 ] || exit 0
+    echo "proxlab-gpu-refresh: CT $vmid"
+    PROXLAB_HOOK_CONTEXT=boot-refresh bash "$SNIP/proxlab-hooks/gpu-hook.sh" "$vmid" pre-start )
+done
+exit 0
+`;
+  }
+
+  async ensureNodeBootRefresh(nodeIp) {
+    this.bootRefreshNodes = this.bootRefreshNodes || new Set();
+    if (this.bootRefreshNodes.has(nodeIp)) return;
+    const unit = [
+      '[Unit]',
+      'Description=ProxLab: refresh LXC GPU passthrough entries before guests autostart',
+      'After=pve-cluster.service pve-storage.target systemd-udev-settle.service network-online.target',
+      'Wants=network-online.target',
+      'Before=pve-guests.service',
+      '',
+      '[Service]',
+      'Type=oneshot',
+      'ExecStart=/usr/local/sbin/proxlab-gpu-refresh',
+      'TimeoutStartSec=180',
+      '',
+      '[Install]',
+      'WantedBy=multi-user.target',
+      '',
+    ].join('\n');
+    try {
+      await this.sshWriteFile(nodeIp, '/usr/local/sbin/proxlab-gpu-refresh', this.generateBootRefreshScript(), '755');
+      await this.sshWriteFile(nodeIp, '/etc/systemd/system/proxlab-gpu-refresh.service', unit, '644');
+      const r = await this.sshService.exec(nodeIp, 'systemctl daemon-reload && systemctl enable proxlab-gpu-refresh.service', { timeout: 15000 });
+      if (r.code !== 0) throw new Error(r.stderr || `exit ${r.code}`);
+      this.bootRefreshNodes.add(nodeIp);
+      console.log(`HookscriptDeploy: GPU boot refresh installed on ${nodeIp}`);
+    } catch (err) {
+      console.error(`HookscriptDeploy: GPU boot refresh install FAILED on ${nodeIp}: ${err.message}`);
+    }
+  }
+
   // --- Per-container operations ---
 
   async deployContainerVars(vmid, assignment) {
@@ -697,6 +779,7 @@ exit 0
     if (!node) throw new Error(`No reachable PVE node for CT ${vmid}`);
 
     await this.ensureStaticFiles(node.ip);
+    await this.ensureNodeBootRefresh(node.ip);
 
     const inventory = this.gpuMonitor.getInventory();
     const gpuConfig = this.gpuMonitor.getConfig();
