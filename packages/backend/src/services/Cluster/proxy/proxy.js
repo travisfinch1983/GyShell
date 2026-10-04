@@ -21,7 +21,7 @@
 
 import { Router } from 'express';
 import * as fsForState from 'fs';
-import { loadJsonState } from './lib/notify.js';
+import { loadJsonState, emitNotification } from './lib/notify.js';
 import http from 'http';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
@@ -1267,6 +1267,47 @@ function configuredFallbackModel() {
   return model;
 }
 
+// ─── Known vs unknown model names ────────────────────────────────────────────────────────────
+// The backup exists for a KNOWN model that is temporarily down (a registered service that is
+// stopped, or a launch template that isn't running). It must NOT cover a name AI-Lab has never
+// heard of (a typo, or a deleted model): the deleted 9B's name kept "working" for weeks by
+// silently answering from the external backup, auto-captioner images included (2026-10-04).
+// Unknown names now get an explicit 404 instead.
+const LAUNCH_TEMPLATES_FILE = process.env.AILAB_LAUNCH_TEMPLATES
+  || '/opt/ai-lab/.gybackend-data/launch-templates.json';
+function isKnownModelName(cache, name) {
+  const bare = String(name || '').replace(/@\d+$/, '');
+  if (!bare) return false;
+  if (cache?.byModel?.has(name) || cache?.byModel?.has(bare)) return true;
+  if (cache?.externalByModel?.has(name) || cache?.externalByModel?.has(bare)) return true;
+  try {
+    for (const svc of Object.values(loadActiveServices().services || {})) {
+      if ([svc.servedModelName, svc.aliasOverride, svc.model].includes(bare)) return true;
+    }
+  } catch { /* fall through to templates */ }
+  try {
+    const raw = JSON.parse(readFileSync(LAUNCH_TEMPLATES_FILE, 'utf-8'));
+    const list = Array.isArray(raw) ? raw : Object.values(raw?.templates ?? raw ?? {});
+    for (const t of list) {
+      const st = t?.settings || {};
+      if ([st.servedModelName, st.aliasOverride, st.alias].includes(bare)) return true;
+    }
+  } catch (e) {
+    // Can't tell → treat as known, so an unreadable templates file never blocks a legit backup.
+    if (e?.code !== 'ENOENT') return true;
+  }
+  return false;
+}
+
+function unknownModelResponse(res, name) {
+  console.warn(`[proxy] unknown model '${name}' — 404 (no service, template or external source serves it; backup NOT used)`);
+  return res.status(404).json({
+    error: `Model '${name}' is not known to AI-Lab — no service, launch template or external source serves that name.`,
+    hint: 'Check the model name (GET /api/proxy/llm/v1/models lists what is available). The configured backup model is only used for KNOWN models that are temporarily offline.',
+    requestedModel: name,
+  });
+}
+
 /** Resolve the configured backup to something reachable, or null. Never returns the model that
  *  was just found unreachable (that would loop), and never guesses at a substitute. */
 function resolveFallbackTarget(cache, requestedModel) {
@@ -1280,12 +1321,25 @@ function resolveFallbackTarget(cache, requestedModel) {
   return null;
 }
 
-function markFallback(res, from, to) {
+// One notification per (from → to) pair per hour: headers + a log line alone let a dead model
+// name ride the backup unnoticed for weeks.
+const _fallbackNotified = new Map();
+function markFallback(res, from, to, req) {
   try {
     res.setHeader('X-AILab-Fallback-From', from);
     res.setHeader('X-AILab-Fallback-To', to);
   } catch { /* headers already sent — the log line below is the durable record */ }
-  console.warn(`[proxy] '${from}' unreachable → serving from configured backup '${to}'`);
+  const caller = req?.ip || req?.socket?.remoteAddress || 'unknown';
+  console.warn(`[proxy] '${from}' unreachable → serving from configured backup '${to}' (caller ${caller})`);
+  const key = `${from}→${to}`;
+  const last = _fallbackNotified.get(key) || 0;
+  if (Date.now() - last > 3600_000) {
+    _fallbackNotified.set(key, Date.now());
+    void emitNotification('warning', 'llm-proxy',
+      `Model '${from}' is offline — requests are being answered by the backup '${to}'`,
+      `Caller ${caller}. Every request for '${from}' goes to '${to}' until '${from}' is launched again or the caller is pointed at a running model. (Shown at most once an hour per pair.)`,
+    ).catch(() => {});
+  }
 }
 
 function findServiceOrExternal(type) {
@@ -1335,9 +1389,10 @@ async function handleModelRouting(req, res, path) {
   // backup if there is one — an intentional substitution, not a guess at a replacement.
   if (!svc && modelId) {
     const cache = await refreshModelCache();
+    if (!isKnownModelName(cache, modelId)) return unknownModelResponse(res, modelId);
     const fb = resolveFallbackTarget(cache, modelId);
     if (fb) {
-      markFallback(res, modelId, fb.model);
+      markFallback(res, modelId, fb.model, req);
       let parsed = null;
       try { parsed = JSON.parse(body.toString()); } catch {}
       if (parsed) {
@@ -1415,9 +1470,10 @@ async function handleChatWithTools(req, res) {
   }
   if (!svc && parsed.model) {
     const cache2 = await refreshModelCache();
+    if (!isKnownModelName(cache2, parsed.model)) return unknownModelResponse(res, parsed.model);
     const fb = resolveFallbackTarget(cache2, parsed.model);
     if (fb) {
-      markFallback(res, parsed.model, fb.model);
+      markFallback(res, parsed.model, fb.model, req);
       if (fb.kind === 'external') {
         parsed.model = fb.ext.upstreamModel;
         return forwardToExternalSource(res, fb.ext.source, fb.ext.upstreamModel, parsed);

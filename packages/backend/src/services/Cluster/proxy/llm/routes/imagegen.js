@@ -48,7 +48,9 @@ const BLIP_MODEL_DIR = '/imagegen/blip/hf-large';
 // red garment) and elsewhere omitted the garment entirely. ~3s/image, so ~4 min for 90 images.
 // Runs under the same venv as BLIP (it only needs PIL + stdlib http).
 const VLM_SCRIPT = '/opt/imagegen-tagger/vlm_caption.py';
-const VLM_MODEL = process.env.IMAGEGEN_VLM_MODEL || 'Qwen3.5-9B-INT8-MM-Thinking-Non_preserved-256k';
+// The 9B this used to name was retired; the name kept answering only because the proxy fell
+// back to the EXTERNAL backup, so training images were being captioned off-box (2026-10-04).
+const VLM_MODEL = process.env.IMAGEGEN_VLM_MODEL || 'Qwen3.8-27B-INT8-MM-8_Slot-Think_Preserve-256k';
 const VLM_API = process.env.IMAGEGEN_VLM_API || 'http://10.0.0.219:17890/api/proxy/llm/v1/chat/completions';
 // CUDA numbers devices by FASTEST_FIRST unless told otherwise, under which index 4 is a
 // 5060 Ti and the 4090 is index 0 -- i.e. the exact inverse of what TAGGER_GPU_INDEX means.
