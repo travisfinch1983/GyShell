@@ -1975,7 +1975,9 @@ export function createImagegenRouter(config) {
     'ai-gpu':  { label: 'ai-gpu (V100)', prom: 'px-gpu', ssh: 'root@10.0.0.235',
                  worker: '/opt/pose-mannequin/worker.py', python: '/opt/conda/envs/comfyui/bin/python', comfyRoot: '/opt/comfyui' },
   };
-  const MQ_AVOID = { 'ai-gpu': { 7: 'GPU 7 throws Xid 74 NVLink faults' } };
+  // Cards to keep jobs off ({ host: { index: reason } }). Empty: the old ai-gpu GPU7 Xid 74 note was stale
+  // (no Xid 74 on px-gpu since the 2026-09-22 boot; Travis repasted/reseated the V100s).
+  const MQ_AVOID = {};
   const MQ_MIN_FREE_MB = 15000;   // int8 model + int8 encoder are loaded one at a time; ~15 GB is the floor
   const mqJobs = new Map();       // jobId -> { state, total, done, ok, errors, results, workers[], ... }
   const sshBase = () => {

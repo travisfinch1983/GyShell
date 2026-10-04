@@ -174,7 +174,7 @@ const ConvertModal: React.FC<{ ids: string[]; onClose: () => void }> = observer(
     <div className={styles.modalBg}>
       <div className={styles.modalBox} onClick={(e) => e.stopPropagation()}>
         <div className={styles.modalHead}>
-          <strong>Convert {ids.length} pose{ids.length === 1 ? '' : 's'} to mannequin</strong>
+          <strong>{ids.length > 0 && replacing === ids.length ? 'Regenerate' : 'Convert'} {ids.length} pose{ids.length === 1 ? '' : 's'} {replacing === ids.length ? 'mannequin' + (ids.length === 1 ? '' : 's') : 'to mannequin'}</strong>
           <button className={styles.btn} onClick={onClose} disabled={busy}>Cancel</button>
         </div>
         <div className={styles.hint}>
@@ -189,7 +189,7 @@ const ConvertModal: React.FC<{ ids: string[]; onClose: () => void }> = observer(
         <div className={styles.modalFoot}>
           {msg && <span className={styles.dim}>{msg}</span>}
           <span className={styles.spacer} />
-          <button className={styles.btnPrimary} disabled={busy || !opts.gpus.length} onClick={() => void go()}>Convert</button>
+          <button className={styles.btnPrimary} disabled={busy || !opts.gpus.length} onClick={() => void go()}>{replacing === ids.length ? 'Regenerate' : 'Convert'}</button>
         </div>
       </div>
     </div>
@@ -277,7 +277,7 @@ const PoseCard: React.FC<{ pose: Pose; onConvert: (ids: string[]) => void }> = o
             <img className={styles.thumbMq} src={igThumb(pose.mannequin_rel, pose.mannequin_at)} alt="mannequin" loading="lazy"
                  onClick={() => setBig(igImage(pose.mannequin_rel!, pose.mannequin_at))} title="Mannequin version — click to see it full size" />
             <div className={styles.mqActions}>
-              <button className={styles.btnSm} disabled={converting} title="Redo the mannequin" onClick={() => onConvert([pose.id])}><RotateCcw size={11} /></button>
+              <button className={styles.btnSm} disabled={converting} title="Regenerate this mannequin (new seed; the current one is replaced when the new one is done)" onClick={() => onConvert([pose.id])}><RotateCcw size={11} /> Regen</button>
               <button className={styles.btnSm} title="Remove the mannequin version" onClick={() => void removeMq()}><X size={11} /></button>
             </div>
           </div>
