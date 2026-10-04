@@ -53,7 +53,19 @@ echo "Selected PyTorch CUDA tag: ${CUDA_TAG}"
 
 # ─── Check / Create conda environment ──────────────────────────────────────
 
-CONDA_ENV="${PROXLAB_CONDA_ENV:-base}"
+CONDA_ENV="${PROXLAB_CONDA_ENV:-}"
+
+# No target env => SKIP. This used to default to `base`, so every provider the orchestrator does
+# not assign an env to (rvc, dramabox, kohya-ss, ...) installed a full torch stack into the
+# SHARED base conda env (/opt/conda) — that is how a 2026-10-04 RVC reinstall on ai-epyc dropped
+# torch 2.11+cu128 into base. Those providers' own scripts install torch into their own env, so
+# nothing ever relied on the base copy. Do NOT "fix" this by assigning such providers an env in
+# the orchestrator: this script would then CREATE that env at Python 3.12 before the provider
+# script runs, and rvc needs 3.10 (fairseq 0.12.2), 1cat-vllm uses an env not named after itself.
+if [ -z "$CONDA_ENV" ] || [ "$CONDA_ENV" = "base" ]; then
+    echo "No provider conda env assigned — skipping (the provider script installs its own torch)."
+    exit 0
+fi
 PYTHON_VER="${PROXLAB_PYTHON_VERSION:-3.12}"
 
 if [ "$CONDA_ENV" != "base" ]; then

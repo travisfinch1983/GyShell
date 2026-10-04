@@ -68,9 +68,20 @@ do_install() {
     # (removed in 13.0), and the TTS provider now runs 2.9.1+cu128 on the same cards.
     # RVC stays on 2.6.0+cu124 only because its env is pinned to Python 3.10 for
     # fairseq 0.12.2, and fairseq against torch 2.9 is UNTESTED. Test before bumping.
+    #
+    # Blackwell (RTX 50xx, sm_120) is NOT in the cu124 wheels — 2.6.0+cu124 imports fine and then
+    # fails at the first kernel launch. Any host with a Blackwell card gets 2.11.0+cu128 instead
+    # (it covers Ada/Ampere too); this is what ai-epyc's RVC ran on 5060 Tis before the 2026-10-04
+    # reinstall clobbered it, verified with fairseq 0.12.2 + numpy 1.26.4 on Python 3.10.
+    if echo "${PROXLAB_GPU_ARCHS:-}" | grep -qi 'blackwell'; then
+        RVC_TORCH="torch==2.11.0 torchaudio==2.11.0"; RVC_CUDA_TAG="cu128"
+    else
+        RVC_TORCH="torch==2.6.0 torchaudio==2.6.0"; RVC_CUDA_TAG="cu124"
+    fi
+    echo "RVC torch: ${RVC_TORCH} (${RVC_CUDA_TAG}) for GPU archs: ${PROXLAB_GPU_ARCHS:-unknown}"
     conda run -n "$CONDA_ENV" pip install \
-        torch==2.6.0 torchaudio==2.6.0 \
-        --index-url https://download.pytorch.org/whl/cu124 \
+        $RVC_TORCH \
+        --index-url "https://download.pytorch.org/whl/${RVC_CUDA_TAG}" \
         2>&1
 
     # fairseq needs these present at build time or its setup.py fails.
