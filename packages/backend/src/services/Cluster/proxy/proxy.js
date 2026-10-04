@@ -34,7 +34,8 @@ import { resolveModelCapabilities, registerCatalogModalities } from './model-cap
 import { refreshPool, pickInstance, markFailure, markSuccess, invalidatePools } from './servicePools.js';
 import { listBackends, emptyReason, nextIndex, createHealthCache,
          setProviderCaps, getModelCatalog, selectBackends,
-         invalidateModelCatalog, isPooledTtsProvider } from './audio-registry.js';
+         invalidateModelCatalog, isPooledTtsProvider,
+         withInflight, orderByLoad, inflightSnapshot, backendKey } from './audio-registry.js';
 import { getPipelineConfig, savePipelineConfig, applyPipelineDefaults,
          PIPELINE_DEFAULTS } from './audio-pipeline.js';
 import { isKvEligible, getOrchestrator, getKvSettings, saveKvSettings, getAllKvStats, getKvIndexStats, reapNow, resetOrchestratorCache } from './kvcache/integration.js';
@@ -2330,6 +2331,10 @@ export function createProxyRouter(sshService) {
       pipelines,
       pipelineCount: pipelines.length,
       rvcAvailable: healthyRvc.length > 0,
+      // Flat healthy lists for per-stage balancing (processSentenceBalanced). The `pipelines`
+      // pairing above is kept only for callers that still want a fixed TTS/RVC pair.
+      healthyTts,
+      healthyRvc,
       ttsInstances: { total: allTts.length, healthy: healthyTts.length, services: allTts, healthResults: ttsHealth },
       rvcInstances: { total: allRvc.length, healthy: healthyRvc.length, services: allRvc, healthResults: rvcHealth },
     };
@@ -2439,8 +2444,9 @@ export function createProxyRouter(sshService) {
   /**
    * Process one sentence: TTS → optional RVC → { audio: base64, duration_ms }
    */
-  async function processSentence(sentence, ttsSvc, rvcSvc, params) {
-    const ttsBase = `http://${ttsSvc.containerIp}:${ttsSvc.port}`;
+  /** One TTS call. Throws on failure; the caller decides whether to fail over. */
+  async function ttsStage(sentence, ttsSvc, params) {
+    const base = `http://${ttsSvc.containerIp}:${ttsSvc.port}`;
     const ttsBody = {
       input: sentence,
       voice: params.voice || 'default',
@@ -2449,16 +2455,11 @@ export function createProxyRouter(sshService) {
       model: params.model || 'chatterbox-turbo',
     };
     // Pass through model-specific params if present
-    if (params.temperature != null) ttsBody.temperature = params.temperature;
-    if (params.top_k != null) ttsBody.top_k = params.top_k;
-    if (params.top_p != null) ttsBody.top_p = params.top_p;
-    if (params.repetition_penalty != null) ttsBody.repetition_penalty = params.repetition_penalty;
-    if (params.exaggeration != null) ttsBody.exaggeration = params.exaggeration;
-    if (params.cfg_weight != null) ttsBody.cfg_weight = params.cfg_weight;
-    if (params.min_p != null) ttsBody.min_p = params.min_p;
-
+    for (const k of ['temperature', 'top_k', 'top_p', 'repetition_penalty', 'exaggeration', 'cfg_weight', 'min_p']) {
+      if (params[k] != null) ttsBody[k] = params[k];
+    }
     const t0 = Date.now();
-    const ttsResp = await fetch(`${ttsBase}/v1/audio/speech`, {
+    const ttsResp = await fetch(`${base}/v1/audio/speech`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(ttsBody),
@@ -2468,28 +2469,29 @@ export function createProxyRouter(sshService) {
       const errText = await ttsResp.text().catch(() => 'unknown');
       throw new Error(`TTS failed (${ttsResp.status}): ${errText.slice(0, 200)}`);
     }
-    let audioBuffer = Buffer.from(await ttsResp.arrayBuffer());
-    const tts_time_ms = Date.now() - t0;
+    const audioBuffer = Buffer.from(await ttsResp.arrayBuffer());
+    return { audioBuffer, tts_time_ms: Date.now() - t0 };
+  }
 
-    let rvc_time_ms = 0;
-    if (rvcSvc && params.rvc_model) {
-      const rvcBase = `http://${rvcSvc.containerIp}:${rvcSvc.port}`;
-      const { body: multipartBody, contentType } = buildRvcMultipart(audioBuffer, params);
-      const rt0 = Date.now();
-      const rvcResp = await fetch(`${rvcBase}/convert`, {
-        method: 'POST',
-        headers: { 'Content-Type': contentType },
-        body: multipartBody,
-        signal: AbortSignal.timeout(60_000),
-      });
-      if (!rvcResp.ok) {
-        const errText = await rvcResp.text().catch(() => 'unknown');
-        throw new Error(`RVC failed (${rvcResp.status}): ${errText.slice(0, 200)}`);
-      }
-      audioBuffer = Buffer.from(await rvcResp.arrayBuffer());
-      rvc_time_ms = Date.now() - rt0;
+  /** One RVC conversion of already-synthesized audio. Throws on failure. */
+  async function rvcStage(audioBuffer, rvcSvc, params) {
+    const base = `http://${rvcSvc.containerIp}:${rvcSvc.port}`;
+    const { body: multipartBody, contentType } = buildRvcMultipart(audioBuffer, params);
+    const rt0 = Date.now();
+    const rvcResp = await fetch(`${base}/convert`, {
+      method: 'POST',
+      headers: { 'Content-Type': contentType },
+      body: multipartBody,
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!rvcResp.ok) {
+      const errText = await rvcResp.text().catch(() => 'unknown');
+      throw new Error(`RVC failed (${rvcResp.status}): ${errText.slice(0, 200)}`);
     }
+    return { audioBuffer: Buffer.from(await rvcResp.arrayBuffer()), rvc_time_ms: Date.now() - rt0 };
+  }
 
+  function sentenceResult(audioBuffer, ttsSvc, rvcSvc, tts_time_ms, rvc_time_ms) {
     // Estimate duration from WAV header
     let duration_ms = 0;
     if (audioBuffer.length > 44) {
@@ -2503,7 +2505,6 @@ export function createProxyRouter(sshService) {
         duration_ms = Math.round((totalSamples / sampleRate) * 1000);
       }
     }
-
     return {
       audio: audioBuffer.toString('base64'),
       duration_ms,
@@ -2511,9 +2512,82 @@ export function createProxyRouter(sshService) {
       rvc_time_ms,
       total_time_ms: tts_time_ms + rvc_time_ms,
       audio_bytes: audioBuffer.length,
-      tts_host: `${ttsSvc.containerIp}:${ttsSvc.port}`,
-      rvc_host: rvcSvc ? `${rvcSvc.containerIp}:${rvcSvc.port}` : null,
+      tts_host: backendKey(ttsSvc),
+      rvc_host: rvcSvc ? backendKey(rvcSvc) : null,
     };
+  }
+
+  /**
+   * TTS (+ optional RVC) on a FIXED pair. Kept for callers that pin a backend; pooled traffic
+   * should use processSentenceBalanced. Load is still counted so pinned calls are visible to
+   * the balancer.
+   */
+  async function processSentence(sentence, ttsSvc, rvcSvc, params) {
+    const tts = await withInflight(ttsSvc, () => ttsStage(sentence, ttsSvc, params));
+    let audio = tts.audioBuffer;
+    let rvc_time_ms = 0;
+    if (rvcSvc && params.rvc_model) {
+      const r = await withInflight(rvcSvc, () => rvcStage(audio, rvcSvc, params));
+      audio = r.audioBuffer;
+      rvc_time_ms = r.rvc_time_ms;
+    }
+    return sentenceResult(audio, ttsSvc, rvcSvc && params.rvc_model ? rvcSvc : null, tts.tts_time_ms, rvc_time_ms);
+  }
+
+  /**
+   * TTS then RVC, each stage picked INDEPENDENTLY from its own pool, least-busy first, failing
+   * over within the stage. There are no TTS/RVC pairs: a slow RVC never holds a TTS backend
+   * hostage, and an RVC failure retries only the RVC step instead of re-synthesizing.
+   *
+   * requireRvc: when params.rvc_model is set but no RVC backend is healthy, throw (endpoints
+   * that promise RVC) instead of returning plain TTS with result.rvc_skipped set (the stream
+   * and preset paths, which have always degraded to TTS-only).
+   */
+  async function processSentenceBalanced(sentence, ttsCands, rvcCands, params, selectorKey = 'tts:default', { requireRvc = false } = {}) {
+    let lastErr = null;
+    let tts = null;
+    let ttsSvc = null;
+    for (const svc of orderByLoad(selectorKey, ttsCands)) {
+      try {
+        tts = await withInflight(svc, () => ttsStage(sentence, svc, params));
+        ttsSvc = svc;
+        break;
+      } catch (err) {
+        lastErr = err;
+        console.error(`[tts-balance] TTS ${backendKey(svc)} failed, trying next: ${err.message}`);
+      }
+    }
+    if (!tts) throw lastErr || new Error('No healthy TTS backend');
+
+    let audio = tts.audioBuffer;
+    let rvc_time_ms = 0;
+    let rvcSvc = null;
+    let rvcSkipped = null;
+    if (params.rvc_model) {
+      if (!rvcCands || rvcCands.length === 0) {
+        if (requireRvc) throw new Error('rvc_model was requested but no healthy RVC backend is available');
+        rvcSkipped = 'no healthy RVC backend';
+        console.warn(`[tts-balance] rvc_model '${params.rvc_model}' requested, no healthy RVC — returning plain TTS`);
+      } else {
+        lastErr = null;
+        for (const svc of orderByLoad('rvc', rvcCands)) {
+          try {
+            const r = await withInflight(svc, () => rvcStage(audio, svc, params));
+            audio = r.audioBuffer;
+            rvc_time_ms = r.rvc_time_ms;
+            rvcSvc = svc;
+            break;
+          } catch (err) {
+            lastErr = err;
+            console.error(`[tts-balance] RVC ${backendKey(svc)} failed, trying next: ${err.message}`);
+          }
+        }
+        if (!rvcSvc) throw lastErr || new Error('All RVC backends failed');
+      }
+    }
+    const result = sentenceResult(audio, ttsSvc, rvcSvc, tts.tts_time_ms, rvc_time_ms);
+    if (rvcSkipped) result.rvc_skipped = rvcSkipped;
+    return result;
   }
 
   router.get('/rvc/health', async (req, res) => {
@@ -2680,12 +2754,17 @@ export function createProxyRouter(sshService) {
   router.get('/multi-tts/status', async (req, res) => {
     try {
       const { pipelines, pipelineCount, rvcAvailable, ttsInstances, rvcInstances } = await buildHealthyPipelines();
+      const inflight = inflightSnapshot();
       res.json({
         // Readiness is a TTS question. RVC is optional post-processing, so a dead
         // RVC must not make the whole surface report "not ready".
         ready: ttsInstances.healthy > 0,
         pipelines: pipelineCount,
         rvcAvailable,
+        // Requests currently running per backend ("ip:port" -> n), i.e. what the least-busy
+        // balancer is deciding on. Empty object = everything idle.
+        inflight,
+        balancing: 'least-busy per stage (TTS and RVC independent), rotation tie-break',
         tts: {
           total: ttsInstances.total,
           healthy: ttsInstances.healthy,
@@ -2825,7 +2904,7 @@ export function createProxyRouter(sshService) {
     if (!body.input?.trim()) return res.status(400).json({ error: 'input is required' });
     if (!body.rvc_model) return res.status(400).json({ error: 'rvc_model is required' });
 
-    const { pipelines, rvcAvailable } = await buildHealthyPipelines();
+    const { pipelines, rvcAvailable, healthyTts: msTts, healthyRvc: msRvc } = await buildHealthyPipelines();
     if (pipelines.length === 0) {
       return res.status(503).json({ error: 'No healthy TTS backends available' });
     }
@@ -2853,23 +2932,19 @@ export function createProxyRouter(sshService) {
       output_format: body.output_format || 'wav',
     };
 
-    // Try each pipeline until one succeeds
-    let lastErr;
-    for (const pipeline of pipelines) {
-      try {
-        const result = await processSentence(body.input.trim(), pipeline.ttsSvc, pipeline.rvcSvc, params);
-        const audioBuffer = Buffer.from(result.audio, 'base64');
-        const mimeMap = { wav: 'audio/wav', flac: 'audio/flac', mp3: 'audio/mpeg' };
-        res.set('Content-Type', mimeMap[params.output_format] || 'audio/wav');
-        res.set('Content-Disposition', `attachment; filename="multi_tts_output.${params.output_format}"`);
-        res.set('X-Duration-Ms', String(result.duration_ms));
-        return res.send(audioBuffer);
-      } catch (err) {
-        lastErr = err;
-        console.error(`[multi-tts/speech] Pipeline failed: ${err.message}`);
-      }
+    // Each stage is balanced and fails over on its own (processSentenceBalanced).
+    try {
+      const result = await processSentenceBalanced(body.input.trim(), msTts, msRvc, params, 'tts:default', { requireRvc: true });
+      const audioBuffer = Buffer.from(result.audio, 'base64');
+      const mimeMap = { wav: 'audio/wav', flac: 'audio/flac', mp3: 'audio/mpeg' };
+      res.set('Content-Type', mimeMap[params.output_format] || 'audio/wav');
+      res.set('Content-Disposition', `attachment; filename="multi_tts_output.${params.output_format}"`);
+      res.set('X-Duration-Ms', String(result.duration_ms));
+      return res.send(audioBuffer);
+    } catch (err) {
+      console.error(`[multi-tts/speech] failed: ${err.message}`);
+      return res.status(502).json({ error: `All pipelines failed: ${err.message}` });
     }
-    res.status(502).json({ error: `All pipelines failed: ${lastErr?.message}` });
   });
 
   // POST /multi-tts/v1/audio/speech — OpenAI-compatible TTS endpoint with load balancing
@@ -2965,9 +3040,9 @@ export function createProxyRouter(sshService) {
     // Forward the BARE model. Backends are pool-unaware and reject
     // "provider/model" outright, so the composite must not survive past here.
     if (_sel.model) body.model = _sel.model;
-    const ttsIdx = nextIndex(`tts:${_sel.matched || 'default'}`, healthyTts.length);
-    const ttsSvc = healthyTts[ttsIdx];
-    const tryOrder = [ttsSvc, ...healthyTts.filter(s => s !== ttsSvc)];
+    // Least-busy first, rotation as tie-break; the full list is the failover order.
+    const ttsSelKey = `tts:${_sel.matched || 'default'}`;
+    const tryOrder = orderByLoad(ttsSelKey, healthyTts);
 
     // --- TTS-only path (no RVC): proxy directly to backend with requested format ---
     if (!body.rvc_model) {
@@ -2986,12 +3061,12 @@ export function createProxyRouter(sshService) {
           for (const k of ['temperature', 'top_k', 'top_p', 'repetition_penalty', 'exaggeration', 'cfg_weight', 'min_p']) {
             if (body[k] != null) ttsPayload[k] = body[k];
           }
-          const ttsResp = await fetch(`${ttsBase}/v1/audio/speech`, {
+          const ttsResp = await withInflight(svc, () => fetch(`${ttsBase}/v1/audio/speech`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(ttsPayload),
             signal: AbortSignal.timeout(60_000),
-          });
+          }));
           if (!ttsResp.ok) {
             const errText = await ttsResp.text().catch(() => 'unknown');
             throw new Error(`TTS ${ttsResp.status}: ${errText.slice(0, 200)}`);
@@ -3023,23 +3098,17 @@ export function createProxyRouter(sshService) {
       output_format: 'wav',
     };
 
-    let lastErr;
-    for (const svc of tryOrder) {
-      try {
-        const pipelineRvc = pipelines.find(p => p.ttsSvc === svc)?.rvcSvc
-          || (pipelines.length > 0 ? pipelines[0].rvcSvc : null);
-        if (!pipelineRvc) throw new Error('No healthy RVC instance for pipeline');
-        const result = await processSentence(body.input.trim(), svc, pipelineRvc, params);
-        const audioBuffer = Buffer.from(result.audio, 'base64');
-        res.set('Content-Type', mimeMap.wav);
-        res.set('X-Duration-Ms', String(result.duration_ms));
-        return res.send(audioBuffer);
-      } catch (err) {
-        lastErr = err;
-        console.error(`[multi-tts/v1/audio/speech] Pipeline ${svc.containerIp}:${svc.port} failed: ${err.message}`);
-      }
+    try {
+      const { healthyRvc: uRvc } = await buildHealthyPipelines();
+      const result = await processSentenceBalanced(body.input.trim(), healthyTts, uRvc, params, ttsSelKey, { requireRvc: true });
+      const audioBuffer = Buffer.from(result.audio, 'base64');
+      res.set('Content-Type', mimeMap.wav);
+      res.set('X-Duration-Ms', String(result.duration_ms));
+      return res.send(audioBuffer);
+    } catch (err) {
+      console.error(`[multi-tts/v1/audio/speech] pipeline failed: ${err.message}`);
+      return res.status(502).json({ error: `All pipelines failed: ${err.message}` });
     }
-    res.status(502).json({ error: `All pipelines failed: ${lastErr?.message}` });
   });
 
   /**
@@ -3645,10 +3714,11 @@ export function createProxyRouter(sshService) {
     // Forward the BARE model. Backends are pool-unaware and reject
     // "provider/model" outright, so the composite must not survive past here.
     if (_sel.model) body.model = _sel.model;
-    const ttsIdx = nextIndex(`tts:${_sel.matched || 'default'}`, healthyTts.length);
-    const ttsSvc = healthyTts[ttsIdx];
-    const tryOrder = [ttsSvc, ...healthyTts.filter(s => s !== ttsSvc)];
+    // Least-busy first, rotation as tie-break; the full list is the failover order.
+    const ttsSelKey = `tts:${_sel.matched || 'default'}`;
+    const tryOrder = orderByLoad(ttsSelKey, healthyTts);
 
+    let presetRvcTried = false;
     let lastErr;
     for (const svc of tryOrder) {
       try {
@@ -3664,11 +3734,11 @@ export function createProxyRouter(sshService) {
           if (merged[k] != null) ttsPayload[k] = merged[k];
         }
 
-        // If preset has RVC, route through a TTS+RVC pipeline using the
-        // standard processSentence helper. pipelines is an array of healthy
-        // {ttsSvc, rvcSvc} pairs (already filtered by buildHealthyPipelines).
-        if (merged.rvc_model && pipelines.length > 0) {
-          const pipeline = pipelines[0];
+        // If preset has RVC, run TTS->RVC with each stage balanced independently
+        // (processSentenceBalanced). It used to take pipelines[0] — the first TTS and
+        // first RVC by slot — on every call, so all preset/agent voice landed on one pair.
+        if (merged.rvc_model && !presetRvcTried) {
+          presetRvcTried = true;   // one balanced attempt (it fails over internally); then TTS-only
           const pipelineParams = {
             voice: merged.voice || 'default',
             speed: merged.speed || 1.0,
@@ -3680,7 +3750,8 @@ export function createProxyRouter(sshService) {
             if (merged[k] != null) pipelineParams[k] = merged[k];
           }
           try {
-            const result = await processSentence(merged.input.trim(), pipeline.ttsSvc, pipeline.rvcSvc, pipelineParams);
+            const { healthyRvc: ptRvc } = await buildHealthyPipelines();
+            const result = await processSentenceBalanced(merged.input.trim(), healthyTts, ptRvc, pipelineParams, ttsSelKey, { requireRvc: true });
             let audioBuffer = Buffer.from(result.audio, 'base64');
             // processSentence's RVC pipeline always returns WAV. Transcode to
             // the client's requested format if it asked for something else.
@@ -3699,12 +3770,12 @@ export function createProxyRouter(sshService) {
           }
         }
 
-        const ttsResp = await fetch(`${ttsBase}/v1/audio/speech`, {
+        const ttsResp = await withInflight(svc, () => fetch(`${ttsBase}/v1/audio/speech`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(ttsPayload),
           signal: AbortSignal.timeout(60_000),
-        });
+        }));
         if (!ttsResp.ok) {
           const errText = await ttsResp.text().catch(() => 'unknown');
           throw new Error(`TTS ${ttsResp.status}: ${errText.slice(0, 200)}`);
@@ -3770,9 +3841,9 @@ export function createProxyRouter(sshService) {
     // Forward the BARE model. Backends are pool-unaware and reject
     // "provider/model" outright, so the composite must not survive past here.
     if (_sel.model) body.model = _sel.model;
-    const ttsIdx = nextIndex(`tts:${_sel.matched || 'default'}`, healthyTts.length);
-    const ttsSvc = healthyTts[ttsIdx];
-    const tryOrder = [ttsSvc, ...healthyTts.filter(s => s !== ttsSvc)];
+    // Least-busy first, rotation as tie-break; the full list is the failover order.
+    const ttsSelKey = `tts:${_sel.matched || 'default'}`;
+    const tryOrder = orderByLoad(ttsSelKey, healthyTts);
 
     if (!merged.rvc_model) {
       let lastErr;
@@ -3789,12 +3860,12 @@ export function createProxyRouter(sshService) {
           for (const k of ['temperature', 'top_k', 'top_p', 'repetition_penalty', 'exaggeration', 'cfg_weight', 'min_p']) {
             if (merged[k] != null) ttsPayload[k] = merged[k];
           }
-          const ttsResp = await fetch(`${ttsBase}/v1/audio/speech`, {
+          const ttsResp = await withInflight(svc, () => fetch(`${ttsBase}/v1/audio/speech`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(ttsPayload),
             signal: AbortSignal.timeout(60_000),
-          });
+          }));
           if (!ttsResp.ok) {
             const errText = await ttsResp.text().catch(() => 'unknown');
             throw new Error(`TTS ${ttsResp.status}: ${errText.slice(0, 200)}`);
@@ -3812,12 +3883,10 @@ export function createProxyRouter(sshService) {
 
     // TTS+RVC path
     let lastErr;
-    for (const svc of tryOrder) {
+    const { healthyRvc: spRvc } = await buildHealthyPipelines();
+    for (const svc of [tryOrder[0]]) {   // single balanced attempt; per-stage failover is inside
       try {
-        const pipelineRvc = pipelines.find(p => p.ttsSvc === svc)?.rvcSvc
-          || (pipelines.length > 0 ? pipelines[0].rvcSvc : null);
-        if (!pipelineRvc) throw new Error('No healthy RVC instance for pipeline');
-        const result = await processSentence((merged.input || '').trim(), svc, pipelineRvc, {
+        const result = await processSentenceBalanced((merged.input || '').trim(), healthyTts, spRvc, {
           voice: merged.voice || 'default',
           speed: merged.speed || 1.0,
           model: merged.model || 'chatterbox-turbo',
@@ -3829,7 +3898,7 @@ export function createProxyRouter(sshService) {
           rms_mix_rate: merged.rms_mix_rate ?? 0.25,
           protect: merged.protect ?? 0.33,
           output_format: 'wav',
-        });
+        }, ttsSelKey, { requireRvc: true });
         const audioBuffer = Buffer.from(result.audio, 'base64');
         res.set('Content-Type', mimeMap.wav);
         res.set('X-Voice-Preset', req.params.name);
@@ -3867,12 +3936,10 @@ export function createProxyRouter(sshService) {
     }
     const useRvc = !!body.rvc_model;
 
-    // Build healthy pipelines
-    const { pipelines, pipelineCount, ttsInstances, rvcInstances } = await buildHealthyPipelines();
-
-    // TTS-only mode: just need healthy TTS instances
-    const effectivePipelines = useRvc ? pipelines : ttsInstances.healthResults.filter(h => h.healthy).map(h => ({ ttsSvc: h.svc, rvcSvc: null }));
-    const effectiveCount = effectivePipelines.length;
+    // Healthy pools. TTS and RVC are balanced independently per sentence (processSentenceBalanced),
+    // so there are no fixed TTS/RVC lanes any more.
+    const { ttsInstances, rvcInstances, healthyTts: stTts, healthyRvc: stRvc } = await buildHealthyPipelines();
+    const effectiveCount = stTts.length;   // worker count = healthy TTS backends
     if (effectiveCount === 0) {
       return res.status(503).json({ error: useRvc ? 'No healthy TTS+RVC pipelines available' : 'No healthy TTS instances available' });
     }
@@ -3942,50 +4009,37 @@ export function createProxyRouter(sshService) {
             audio_bytes: r.audio_bytes,
             tts_host: r.tts_host,
             rvc_host: r.rvc_host,
+            // Set when rvc_model was asked for but no RVC backend was healthy and this sentence
+            // was returned as plain TTS — so the client can say so instead of silently
+            // playing the wrong voice.
+            ...(r.rvc_skipped ? { rvc_skipped: r.rvc_skipped } : {}),
           });
         }
         nextToSend++;
       }
     }
 
-    // Dispatch sentences round-robin to pipeline queues
-    const pipelineQueues = Array.from({ length: effectiveCount }, () => []);
-    sentences.forEach((_, idx) => {
-      pipelineQueues[idx % effectiveCount].push(idx);
-    });
-
-    const pipelinePromises = pipelineQueues.map(async (queue, pipelineIdx) => {
-      const pipeline = effectivePipelines[pipelineIdx];
-      for (const sentenceIdx of queue) {
-        if (clientDisconnected) return;
+    // Shared work queue: each worker pulls the NEXT unclaimed sentence, so a fast backend takes
+    // more sentences and a slow one fewer. The old code pre-split sentences round-robin into fixed
+    // per-lane queues, so one slow lane held up its whole share while the others sat idle, and every
+    // request started on lane 0. Order is still preserved by results[] + flushResults().
+    let nextSentence = 0;
+    const worker = async () => {
+      while (!clientDisconnected) {
+        const sentenceIdx = nextSentence++;
+        if (sentenceIdx >= sentences.length) return;
         try {
-          const result = await processSentence(
-            sentences[sentenceIdx], pipeline.ttsSvc, pipeline.rvcSvc, params
+          results[sentenceIdx] = await processSentenceBalanced(
+            sentences[sentenceIdx], stTts, useRvc ? stRvc : [], params, 'tts:stream'
           );
-          results[sentenceIdx] = result;
         } catch (err) {
-          console.error(`[multi-tts/stream] Pipeline ${pipelineIdx} sentence ${sentenceIdx} error: ${err.message}`);
-          // Fallback: try ALL other pipelines
-          let recovered = false;
-          for (let fb = 1; fb < effectiveCount; fb++) {
-            const fbIdx = (pipelineIdx + fb) % effectiveCount;
-            try {
-              results[sentenceIdx] = await processSentence(
-                sentences[sentenceIdx], effectivePipelines[fbIdx].ttsSvc, effectivePipelines[fbIdx].rvcSvc, params
-              );
-              recovered = true;
-              break;
-            } catch {}
-          }
-          if (!recovered) {
-            results[sentenceIdx] = { error: err.message };
-          }
+          console.error(`[multi-tts/stream] sentence ${sentenceIdx} failed on every backend: ${err.message}`);
+          results[sentenceIdx] = { error: err.message };
         }
         flushResults();
       }
-    });
-
-    await Promise.all(pipelinePromises);
+    };
+    await Promise.all(Array.from({ length: Math.min(effectiveCount, sentences.length) }, worker));
     flushResults();
 
     sendEvent('done', {

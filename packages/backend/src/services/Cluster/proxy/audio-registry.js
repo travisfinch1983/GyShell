@@ -120,6 +120,59 @@ export function pickRoundRobin(selectorKey, candidates) {
 /** Test/debug helper — drop all balancer state. */
 export function resetBalancer() {
   _counters.clear();
+  _inflight.clear();
+}
+
+// ─── Least-busy selection ───────────────────────────────────────────────────
+//
+// Round-robin alone balanced REQUESTS, not LOAD: a 40-sentence stream and a one-word reply each
+// advanced the counter by one, and the TTS pipeline did not use the counter at all — every request
+// started at slot order index 0, so single-sentence replies (most chat/agent speech) always hit
+// the first TTS and the first RVC while the rest idled (found 2026-10-04).
+//
+// So we count requests IN FLIGHT per backend (this process is the only dispatcher, so the count
+// is exact for proxy traffic) and try the least-busy backend first. Ties fall back to the
+// rotating per-selector counter so an idle pool still spreads work instead of piling onto
+// whichever backend sorts first.
+const _inflight = new Map(); // "ip:port" -> requests currently running there
+
+export function backendKey(svc) {
+  return `${svc.containerIp}:${svc.port}`;
+}
+
+export function inflightCount(svc) {
+  return _inflight.get(backendKey(svc)) || 0;
+}
+
+/** Run fn while counting it against svc's in-flight load. Always releases, even on throw. */
+export async function withInflight(svc, fn) {
+  const key = backendKey(svc);
+  _inflight.set(key, (_inflight.get(key) || 0) + 1);
+  try {
+    return await fn();
+  } finally {
+    const n = (_inflight.get(key) || 1) - 1;
+    if (n <= 0) _inflight.delete(key); else _inflight.set(key, n);
+  }
+}
+
+/**
+ * Candidates in try order: least in-flight first, ties broken by the per-selector rotation.
+ * Returns ALL candidates (not just the winner) so callers can fail over down the list.
+ */
+export function orderByLoad(selectorKey, candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) return [];
+  const start = nextIndex(selectorKey, candidates.length);
+  return candidates
+    .map((_, i) => candidates[(start + i) % candidates.length])
+    .map((svc, rank) => ({ svc, rank, load: inflightCount(svc) }))
+    .sort((a, b) => a.load - b.load || a.rank - b.rank)
+    .map((x) => x.svc);
+}
+
+/** Current in-flight counts, for status endpoints. */
+export function inflightSnapshot() {
+  return Object.fromEntries(_inflight);
 }
 
 // ─── Health caching ─────────────────────────────────────────────────────────
