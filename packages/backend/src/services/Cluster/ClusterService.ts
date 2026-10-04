@@ -28,7 +28,11 @@ export class ClusterService {
   private readonly timeoutMs: number
 
   // Only cluster-management paths are proxyable from the renderer.
-  private static readonly ALLOWED_PREFIXES = ['/api/guests/', '/api/gpu', '/api/storages', '/api/pve/', '/api/ai', '/api/discovery', '/api/scripts', '/api/script-catalog', '/api/civitai', '/api/system', '/api/mcp', '/api/ui-prefs', '/api/proxy', '/api/claude', '/api/hermes', '/api/roadmap', '/api/flowcharts', '/api/ftp', '/api/agent', '/api/addons', '/api/fleet', '/api/pages', '/api/notifications', '/api/reports', '/api/reports-search', '/api/journal', '/api/imagegen']
+  // 🛑 Every NEW backend route the UI calls through gyshell.cluster.request MUST be added here
+  // (and to LOCAL_PREFIXES below), or the UI gets "path not allowed" while curl against :17890
+  // works fine — so testing the route directly proves nothing about the UI. Bit /api/matrix and
+  // /api/clipboard (2026-10-04): both shipped working over curl, both blocked in the browser.
+  private static readonly ALLOWED_PREFIXES = ['/api/guests/', '/api/gpu', '/api/storages', '/api/pve/', '/api/ai', '/api/discovery', '/api/scripts', '/api/script-catalog', '/api/civitai', '/api/system', '/api/mcp', '/api/ui-prefs', '/api/proxy', '/api/claude', '/api/hermes', '/api/roadmap', '/api/flowcharts', '/api/ftp', '/api/agent', '/api/addons', '/api/fleet', '/api/pages', '/api/notifications', '/api/reports', '/api/reports-search', '/api/journal', '/api/imagegen', '/api/clipboard', '/api/matrix']
 
   constructor(opts: ClusterServiceOptions = {}) {
     this.base = (opts.proxlabBase || DEFAULT_BASE).replace(/\/+$/, '')
@@ -40,7 +44,7 @@ export class ClusterService {
   // /api/ai is now fully native (the ported launch/scan/estimate/gpu/providers/services/HF router on the
   // universal proxy). AI-Lab only uses /api/ai/{providers,hf,active-services,config} + the launch
   // endpoints — none of the un-ported RAG/inventory sub-paths — so the whole prefix routes local.
-  private static readonly LOCAL_PREFIXES = ['/api/civitai', '/api/ai', '/api/system', '/api/mcp', '/api/ui-prefs', '/api/proxy', '/api/claude', '/api/discovery', '/api/pve', '/api/guests', '/api/gpu', '/api/storages', '/api/scripts', '/api/script-catalog', '/api/hermes', '/api/roadmap', '/api/flowcharts', '/api/ftp', '/api/agent', '/api/addons', '/api/fleet', '/api/pages', '/api/notifications', '/api/reports', '/api/reports-search', '/api/journal', '/api/imagegen']
+  private static readonly LOCAL_PREFIXES = ['/api/civitai', '/api/ai', '/api/system', '/api/mcp', '/api/ui-prefs', '/api/proxy', '/api/claude', '/api/discovery', '/api/pve', '/api/guests', '/api/gpu', '/api/storages', '/api/scripts', '/api/script-catalog', '/api/hermes', '/api/roadmap', '/api/flowcharts', '/api/ftp', '/api/agent', '/api/addons', '/api/fleet', '/api/pages', '/api/notifications', '/api/reports', '/api/reports-search', '/api/journal', '/api/imagegen', '/api/clipboard', '/api/matrix']
   private localBase = `http://127.0.0.1:${process.env.AILAB_PROXY_PORT || 17890}`
 
   private async send(method: HttpMethod, path: string, body?: unknown): Promise<unknown> {

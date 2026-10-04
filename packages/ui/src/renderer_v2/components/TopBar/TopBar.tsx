@@ -1,9 +1,10 @@
 import React from 'react'
 import { observer } from 'mobx-react-lite'
-import { Bell, Server, Settings, Square } from 'lucide-react'
+import { Bell, ClipboardCopy, Server, Settings, Square } from 'lucide-react'
 import type { AppStore } from '../../stores/AppStore'
 import { aiServicesStore } from '../../stores/AiServicesStore'
 import { notificationsStore } from '../../stores/NotificationsStore'
+import { clipboardStore } from '../../stores/ClipboardStore'
 import { NotificationsPanel } from '../Notifications/NotificationsPanel'
 import { isLinux } from '../../platform/platform'
 import './topbar.scss'
@@ -62,6 +63,17 @@ export const TopBar: React.FC<{
             {notificationsStore.runningTaskCount}
           </span>
         )}
+      </button>
+      {/* Clipboard drops — text agents posted for Travis to copy. The drawer also opens by
+          itself when something new arrives; this is the way back to older entries. */}
+      <button
+        className={`topbar-services-btn${clipboardStore.open ? ' active' : ''}`}
+        onClick={() => clipboardStore.toggle()}
+        title="Clipboard: text agents posted for you to copy"
+      >
+        <ClipboardCopy size={14} strokeWidth={2} />
+        <span>Clipboard</span>
+        {clipboardStore.items.length > 0 && <span className="topbar-services-badge">{clipboardStore.items.length}</span>}
       </button>
       <button
         className={`topbar-services-btn${servicesOpen ? ' active' : ''}`}

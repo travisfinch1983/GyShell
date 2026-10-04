@@ -3,6 +3,7 @@ import { resolve as dnsResolve } from 'node:dns/promises'
 import path from 'node:path'
 import { AlarmLatch } from '../AlarmLatch'
 import { TaskProgress, type TaskReportInput } from './TaskProgress'
+import { ClipboardDrops } from './ClipboardDrops'
 
 /**
  * NotificationsService — the answer to "far too many things can fail silently
@@ -198,6 +199,8 @@ export class NotificationsService {
     // properties are assigned, and `broadcast` would be undefined (the AlarmLatch
     // lesson, same class of crash).
     this.tasks = new TaskProgress((ch, data) => this.broadcast(ch, data))
+    // Clipboard drops (text agents post for Travis to copy) share the same live transport.
+    this.clips = new ClipboardDrops(path.join(dataDir, 'notifications', 'clipboard.json'), (ch, data) => this.broadcast(ch, data))
     if (!Number.isFinite(intervalMs) || intervalMs < 5_000) {
       const bad = intervalMs
       intervalMs = 30_000
@@ -850,6 +853,7 @@ export class NotificationsService {
 
   /** Task Progress registry (panel section + bell pip). Public: routers and pollers report into it. */
   readonly tasks: TaskProgress
+  readonly clips: ClipboardDrops
   /** In-process reporting hook for routers that predate this service (imagegen.js etc.). */
   taskReport(t: TaskReportInput): void { this.tasks.report(t) }
 

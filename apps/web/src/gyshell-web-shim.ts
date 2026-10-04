@@ -319,6 +319,11 @@ const gyshellApi = {
     onAcked: (cb: (data: any) => void): CleanupFn => onRaw('notify:acked', cb),
     onTasks: (cb: (data: any) => void): CleanupFn => onRaw('notify:tasks', cb),
   },
+  clipboard: {
+    // Clipboard drops — text agents post for Travis to copy (backend ClipboardDrops).
+    onPosted: (cb: (data: any) => void): CleanupFn => onRaw('clip:posted', cb),
+    onChanged: (cb: (data: any) => void): CleanupFn => onRaw('clip:changed', cb),
+  },
   fleet: {
     // Fleet vertical: feed replay/live-tail, sends, guard config.
     send: (request: any) => rpc('fleet:send', request),

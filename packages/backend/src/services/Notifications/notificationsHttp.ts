@@ -1,6 +1,7 @@
 // @ts-expect-error — express ships untyped in this repo (same pattern as flowchartsHttp)
 import express from 'express'
 import type { NotificationsService, NotifySeverity } from './NotificationsService'
+import { MAX_TEXT_BYTES } from './ClipboardDrops'
 
 type Req = express.Request
 type Res = express.Response
@@ -18,6 +19,37 @@ const SEVERITIES: NotifySeverity[] = ['info', 'warning', 'error', 'critical']
 export function createNotificationsRouter(svc: NotificationsService): express.Router {
   const router = express.Router()
   const json = express.json({ limit: '256kb' })
+
+  // ─── Clipboard drops: text an agent posts for Travis to COPY (MCP ailab-clipboard). ───
+  router.get('/api/clipboard', (_req: Req, res: Res) => {
+    res.json({ items: svc.clips.list() })
+  })
+
+  router.post('/api/clipboard', json, (req: Req, res: Res) => {
+    const b = (req.body ?? {}) as Record<string, unknown>
+    const text = typeof b.text === 'string' ? b.text : ''
+    if (!text.trim()) return res.status(400).json({ ok: false, error: 'text is required' })
+    if (Buffer.byteLength(text, 'utf8') > MAX_TEXT_BYTES) {
+      return res.status(413).json({ ok: false, error: `text exceeds ${MAX_TEXT_BYTES} bytes` })
+    }
+    const str = (v: unknown, max: number) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : undefined)
+    const item = svc.clips.post({
+      text,
+      title: str(b.title, 200),
+      from: str(b.from, 60),
+      sensitive: b.sensitive === true,
+    })
+    res.json({ ok: true, item })
+  })
+
+  router.delete('/api/clipboard/:id', (req: Req, res: Res) => {
+    const removed = svc.clips.remove(String(req.params.id))
+    res.status(removed ? 200 : 404).json({ ok: removed })
+  })
+
+  router.delete('/api/clipboard', (_req: Req, res: Res) => {
+    res.json({ ok: true, cleared: svc.clips.clear() })
+  })
 
   router.get('/api/notifications/state', (_req: Req, res: Res) => {
     res.json(svc.state())
