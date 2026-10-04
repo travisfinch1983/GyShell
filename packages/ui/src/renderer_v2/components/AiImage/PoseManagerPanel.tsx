@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { RefreshCw, Plus, Trash2, Undo2, Save } from 'lucide-react'
-import { poseManagerStore as store, type Pose } from '../../stores/PoseManagerStore'
+import { RefreshCw, Plus, Trash2, Undo2, Save, PersonStanding, Settings2, RotateCcw, X } from 'lucide-react'
+import { poseManagerStore as store, type Pose, type MqStartOpts } from '../../stores/PoseManagerStore'
 import { igThumb, igImage } from '../../stores/TrainingImagesStore'
 import { confirmStore } from '../../stores/confirmStore'
 import styles from './PoseManager.module.scss'
@@ -91,9 +91,171 @@ const AddPoseModal: React.FC<{ onClose: () => void }> = observer(({ onClose }) =
   )
 })
 
-const PoseCard: React.FC<{ pose: Pose }> = observer(({ pose }) => {
+/** GPU / model picker shared by the Convert dialog and the auto-convert settings. Free VRAM is live
+ *  (Prometheus); a GPU is pickable only with enough of it free, and every warning is shown on its row. */
+const MqOptions: React.FC<{ value: MqStartOpts; onChange: (v: MqStartOpts) => void; disabled?: boolean }> = observer(({ value, onChange, disabled }) => {
+  useEffect(() => { void store.loadMqGpus(); const t = setInterval(() => void store.loadMqGpus(), 5000); return () => clearInterval(t) }, [])
+  const host = store.mqHosts[value.host]
+  const busy = new Set(store.runningMqJobs.filter((j) => j.host === value.host).flatMap((j) => j.gpus))
+  const toggleGpu = (g: number) => onChange({ ...value, gpus: value.gpus.includes(g) ? value.gpus.filter((x) => x !== g) : [...value.gpus, g].sort((a, b) => a - b) })
+  return (
+    <>
+      <div className={styles.section}>Host</div>
+      <select className={styles.input} style={{ width: '100%' }} disabled={disabled} value={value.host}
+              onChange={(e) => onChange({ ...value, host: e.target.value, gpus: [] })}>
+        {Object.entries(store.mqHosts).map(([k, h]) => <option key={k} value={k} disabled={!!h.disabled}>{h.label}{h.disabled ? ` — ${h.disabled}` : ''}</option>)}
+        {!Object.keys(store.mqHosts).length && <option value={value.host}>{value.host}</option>}
+      </select>
+
+      <div className={styles.section}>GPU(s) <span className={styles.dim}>— one worker per GPU; the batch is split between them</span></div>
+      {store.mqGpuError && <div className={styles.err}>{store.mqGpuError}</div>}
+      {host && !host.disabled && (
+        <div className={styles.gpuList}>
+          {host.gpus.map((g) => {
+            const low = g.freeMB < store.mqMinFreeMB
+            const off = g.avoid || busy.has(g.index)
+            const checked = value.gpus.includes(g.index)
+            return (
+              <label key={g.index} className={`${styles.gpuRow} ${checked ? styles.gpuOn : ''} ${off ? styles.gpuOff : ''}`}>
+                <input type="checkbox" disabled={disabled || off} checked={checked} onChange={() => toggleGpu(g.index)} />
+                <span className={styles.gpuName}>#{g.index} {g.name}</span>
+                <span className={low ? styles.gpuLow : styles.gpuFree}>{(g.freeMB / 1024).toFixed(1)} / {(g.totalMB / 1024).toFixed(0)} GB free</span>
+                {busy.has(g.index) && <span className={styles.gpuWarn}>already converting</span>}
+                {g.warn.map((w) => <span key={w} className={styles.gpuWarn}>⚠ {w}</span>)}
+              </label>
+            )
+          })}
+        </div>
+      )}
+
+      <div className={styles.row}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className={styles.section}>Model</div>
+          <select className={styles.input} style={{ width: '100%' }} disabled={disabled} value={value.quant} onChange={(e) => onChange({ ...value, quant: e.target.value as 'int8' | 'bf16' })}>
+            <option value="int8">int8 (7 GB)</option><option value="bf16">bf16 (14 GB)</option>
+          </select>
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className={styles.section}>Text encoder</div>
+          <select className={styles.input} style={{ width: '100%' }} disabled={disabled} value={value.te} onChange={(e) => onChange({ ...value, te: e.target.value as 'int8' | 'bf16' })}>
+            <option value="int8">int8 (9 GB)</option><option value="bf16">bf16 (17 GB)</option>
+          </select>
+        </div>
+        <div style={{ width: 70 }}>
+          <div className={styles.section}>Steps</div>
+          <input className={styles.input} style={{ width: '100%' }} type="number" min={4} max={60} disabled={disabled}
+                 value={value.steps} onChange={(e) => onChange({ ...value, steps: parseInt(e.target.value, 10) || 25 })} />
+        </div>
+      </div>
+      <div className={styles.section}>Outpaint cropped bodies</div>
+      <select className={styles.input} style={{ width: '100%' }} disabled={disabled} value={value.outpaint}
+              onChange={(e) => onChange({ ...value, outpaint: e.target.value as MqStartOpts['outpaint'] })}>
+        <option value="auto">Auto — extend only the sides the body runs off</option>
+        <option value="always">Always — pad every side</option>
+        <option value="off">Off — keep the original framing</option>
+      </select>
+    </>
+  )
+})
+
+const ConvertModal: React.FC<{ ids: string[]; onClose: () => void }> = observer(({ ids, onClose }) => {
+  const s = store.mqSettings
+  const [opts, setOpts] = useState<MqStartOpts>({ host: s.host, gpus: s.gpus, quant: s.quant, te: s.te, steps: s.steps, outpaint: s.outpaint, extra_prompt: '' })
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const replacing = ids.filter((id) => store.poses.find((p) => p.id === id)?.mannequin).length
+  const go = async () => {
+    if (!opts.gpus.length) { setMsg('Pick at least one GPU.'); return }
+    setBusy(true); setMsg('Starting…')
+    try { await store.startMannequin(ids, opts); store.clearSelection(); onClose() }
+    catch (e: any) { setMsg('Failed: ' + String(e?.message || e)); setBusy(false) }
+  }
+  return (
+    <div className={styles.modalBg}>
+      <div className={styles.modalBox} onClick={(e) => e.stopPropagation()}>
+        <div className={styles.modalHead}>
+          <strong>Convert {ids.length} pose{ids.length === 1 ? '' : 's'} to mannequin</strong>
+          <button className={styles.btn} onClick={onClose} disabled={busy}>Cancel</button>
+        </div>
+        <div className={styles.hint}>
+          Qwen-Image 2.1 redraws each pose as a featureless grey mannequin in the same pose, on white, and finishes bodies that run off
+          the edge. The original pose image is kept; the mannequin is saved alongside it.
+          {replacing > 0 && <> <strong>{replacing}</strong> already {replacing === 1 ? 'has a mannequin — it' : 'have mannequins — they'} will be replaced.</>}
+        </div>
+        <MqOptions value={opts} onChange={setOpts} disabled={busy} />
+        <div className={styles.section}>Extra instructions <span className={styles.dim}>(optional, added to the prompt)</span></div>
+        <input className={styles.input} style={{ width: '100%' }} disabled={busy} value={opts.extra_prompt || ''}
+               placeholder="e.g. keep the right hand resting on the hip" onChange={(e) => setOpts({ ...opts, extra_prompt: e.target.value })} />
+        <div className={styles.modalFoot}>
+          {msg && <span className={styles.dim}>{msg}</span>}
+          <span className={styles.spacer} />
+          <button className={styles.btnPrimary} disabled={busy || !opts.gpus.length} onClick={() => void go()}>Convert</button>
+        </div>
+      </div>
+    </div>
+  )
+})
+
+const MqSettingsModal: React.FC<{ onClose: () => void }> = observer(({ onClose }) => {
+  const s = store.mqSettings
+  const [auto, setAuto] = useState(s.auto)
+  const [opts, setOpts] = useState<MqStartOpts>({ host: s.host, gpus: s.gpus, quant: s.quant, te: s.te, steps: s.steps, outpaint: s.outpaint })
+  const [msg, setMsg] = useState('')
+  const save = async () => {
+    try { await store.saveMqSettings({ ...opts, auto }); onClose() }
+    catch (e: any) { setMsg('Failed: ' + String(e?.message || e)) }
+  }
+  return (
+    <div className={styles.modalBg}>
+      <div className={styles.modalBox} onClick={(e) => e.stopPropagation()}>
+        <div className={styles.modalHead}>
+          <strong>Mannequin conversion settings</strong>
+          <button className={styles.btn} onClick={onClose}>Cancel</button>
+        </div>
+        <label className={styles.autoRow}>
+          <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
+          <span><strong>Auto-convert new poses</strong> — every pose added to the library is converted right away on the GPU(s) below.</span>
+        </label>
+        <div className={styles.hint}>These are also the defaults the Convert dialog starts with.</div>
+        <MqOptions value={opts} onChange={setOpts} />
+        <div className={styles.modalFoot}>
+          {msg && <span className={styles.err}>{msg}</span>}
+          <span className={styles.spacer} />
+          <button className={styles.btnPrimary} onClick={() => void save()}>Save</button>
+        </div>
+      </div>
+    </div>
+  )
+})
+
+const MqJobBar: React.FC = observer(() => {
+  const recent = store.mqJobs.filter((j) => j.state === 'running' || (j.finishedAt && Date.now() - j.finishedAt < 10 * 60_000))
+  if (!recent.length) return null
+  return (
+    <>
+      {recent.map((j) => (
+        <div key={j.id} className={j.state === 'running' ? styles.jobBar : j.state === 'done' ? styles.jobDone : styles.jobFail}>
+          <strong>{j.state === 'running' ? 'Converting' : j.state === 'done' ? 'Converted' : j.state === 'cancelled' ? 'Cancelled' : 'Failed'}</strong>
+          <span>{j.ok}/{j.total}{j.errors ? ` · ${j.errors} failed` : ''} · {j.host} GPU {j.gpus.join(', ')}{j.auto ? ' · auto' : ''}</span>
+          {j.state === 'running' && <span className={styles.dim}>{j.workers.map((w) => `#${w.gpu} ${w.state} ${w.done}/${w.total}`).join(' · ')}</span>}
+          {(j.error || j.lastError) && <span className={styles.jobErr} title={j.error || j.lastError || ''}>{j.error || j.lastError}</span>}
+          <span className={styles.spacer} />
+          {j.state === 'running' && <button className={styles.btnDangerSm} onClick={() => void store.cancelMannequin(j.id)}>Cancel</button>}
+        </div>
+      ))}
+    </>
+  )
+})
+
+const PoseCard: React.FC<{ pose: Pose; onConvert: (ids: string[]) => void }> = observer(({ pose, onConvert }) => {
   const dirty = store.drafts.has(pose.id)
-  const [big, setBig] = useState(false)
+  const [big, setBig] = useState<string | null>(null)
+  const sel = store.selected.has(pose.id)
+  const converting = store.converting.has(pose.id)
+  const removeMq = async () => {
+    if (!(await confirmStore.confirm({ title: `Remove mannequin of ${pose.name}`, message: 'Delete the mannequin version? The original pose is kept.', confirmText: 'Remove' }))) return
+    try { await store.removeMannequin(pose.id) } catch (e: any) { store.msg = 'Failed: ' + String(e?.message || e) }
+  }
 
   const doDelete = async () => {
     if (!(await confirmStore.confirm({
@@ -105,9 +267,23 @@ const PoseCard: React.FC<{ pose: Pose }> = observer(({ pose }) => {
   }
 
   return (
-    <div className={`${styles.card} ${dirty ? styles.cardDirty : ''}`}>
-      <img className={styles.thumb} src={igThumb(pose.rel)} alt={pose.name} loading="lazy"
-           onClick={() => setBig(true)} title="Click to see it full size" />
+    <div className={`${styles.card} ${dirty ? styles.cardDirty : ''} ${sel ? styles.cardSel : ''}`}>
+      <div className={styles.thumbCol}>
+        <label className={styles.selBox} title="Select for conversion"><input type="checkbox" checked={sel} onChange={() => store.toggleSelect(pose.id)} /></label>
+        <img className={styles.thumb} src={igThumb(pose.rel)} alt={pose.name} loading="lazy"
+             onClick={() => setBig(igImage(pose.rel))} title="Original — click to see it full size" />
+        {pose.mannequin_rel ? (
+          <div className={styles.mqWrap}>
+            <img className={styles.thumbMq} src={igThumb(pose.mannequin_rel, pose.mannequin_at)} alt="mannequin" loading="lazy"
+                 onClick={() => setBig(igImage(pose.mannequin_rel!, pose.mannequin_at))} title="Mannequin version — click to see it full size" />
+            <div className={styles.mqActions}>
+              <button className={styles.btnSm} disabled={converting} title="Redo the mannequin" onClick={() => onConvert([pose.id])}><RotateCcw size={11} /></button>
+              <button className={styles.btnSm} title="Remove the mannequin version" onClick={() => void removeMq()}><X size={11} /></button>
+            </div>
+          </div>
+        ) : converting ? <div className={styles.mqPending}>converting…</div>
+          : <button className={styles.mqMake} title="Convert this pose to a mannequin" onClick={() => onConvert([pose.id])}><PersonStanding size={12} /> mannequin</button>}
+      </div>
       <div className={styles.cardBody}>
         <div className={styles.cardName} title={`${pose.name}\n(id ${pose.id} — the name is the node's stable id and is not editable)`}>
           {pose.name}
@@ -142,8 +318,8 @@ const PoseCard: React.FC<{ pose: Pose }> = observer(({ pose }) => {
       </div>
 
       {big && (
-        <div className={styles.modalBg} onClick={() => setBig(false)}>
-          <img className={styles.full} src={igImage(pose.rel)} alt={pose.name} />
+        <div className={styles.modalBg} onClick={() => setBig(null)}>
+          <img className={styles.full} src={big} alt={pose.name} />
         </div>
       )}
     </div>
@@ -152,7 +328,9 @@ const PoseCard: React.FC<{ pose: Pose }> = observer(({ pose }) => {
 
 export const PoseManagerPanel: React.FC = observer(() => {
   const [adding, setAdding] = useState(false)
-  useEffect(() => { void store.load() }, [])
+  const [convertIds, setConvertIds] = useState<string[] | null>(null)
+  const [mqSettingsOpen, setMqSettingsOpen] = useState(false)
+  useEffect(() => { void store.load(); void store.loadMqSettings(); void store.pollMq() }, [])
 
   return (
     <div className={styles.wrap}>
@@ -161,7 +339,10 @@ export const PoseManagerPanel: React.FC = observer(() => {
           <RefreshCw size={14} /> {store.loading ? 'Loading…' : 'Reload'}
         </button>
         <button className={styles.btnPrimary} onClick={() => setAdding(true)}><Plus size={14} /> Add pose</button>
-        <span className={styles.dim}>{store.poses.length} poses</span>
+        <span className={styles.dim}>{store.poses.length} poses · {store.poses.filter((p) => p.mannequin).length} with mannequin</span>
+        <button className={styles.btn} title="Mannequin conversion settings (auto-convert new poses, default GPU)" onClick={() => setMqSettingsOpen(true)}>
+          <Settings2 size={14} /> Mannequin{store.mqSettings.auto ? ' · auto' : ''}
+        </button>
         <span className={styles.spacer} />
         <input className={styles.input} placeholder="filter by name, prompt, category…"
                value={store.filterText} onChange={(e) => { store.filterText = e.target.value }} />
@@ -194,11 +375,23 @@ export const PoseManagerPanel: React.FC = observer(() => {
         </div>
       )}
 
+      <div className={styles.selBar}>
+        <span>{store.selected.size ? <><strong>{store.selected.size}</strong> selected</> : <span className={styles.dim}>Tick poses to convert them to mannequins</span>}</span>
+        <button className={styles.btnSm} onClick={() => store.selectVisible()}>Select all shown</button>
+        <button className={styles.btnSm} onClick={() => store.selectWithoutMannequin()}>Select shown without mannequin</button>
+        {store.selected.size > 0 && <button className={styles.btnSm} onClick={() => store.clearSelection()}>Clear</button>}
+        <span className={styles.spacer} />
+        <button className={styles.btnPrimary} disabled={!store.selected.size} onClick={() => setConvertIds([...store.selected])}>
+          <PersonStanding size={14} /> Convert to mannequin…
+        </button>
+      </div>
+      <MqJobBar />
+
       {store.error && <div className={styles.err}>{store.error}</div>}
       {store.msg && <div className={styles.msg}>{store.msg}</div>}
 
       <div className={styles.grid}>
-        {store.visible.map((p) => <PoseCard key={p.id} pose={p} />)}
+        {store.visible.map((p) => <PoseCard key={p.id} pose={p} onConvert={setConvertIds} />)}
         {!store.loading && !store.visible.length && !store.error && (
           <div className={styles.dim}>No poses match that filter.</div>
         )}
@@ -210,6 +403,8 @@ export const PoseManagerPanel: React.FC = observer(() => {
       <datalist id="pm-cats">{store.categories.map((c) => <option key={c} value={c} />)}</datalist>
 
       {adding && <AddPoseModal onClose={() => setAdding(false)} />}
+      {convertIds && <ConvertModal ids={convertIds} onClose={() => setConvertIds(null)} />}
+      {mqSettingsOpen && <MqSettingsModal onClose={() => setMqSettingsOpen(false)} />}
     </div>
   )
 })

@@ -1955,6 +1955,244 @@ export function createImagegenRouter(config) {
     try { chmodSync(POSE_FILE, 0o664); } catch { /* not owner */ }
   }
 
+  // ---- POSE → MANNEQUIN ---------------------------------------------------------
+  // Converts pose references (real photos / drawings, which leak their art style into a
+  // generation) into a featureless grey mannequin in the SAME pose with Qwen-Image 2.1, and
+  // outpaints bodies that run off the frame. Each chosen GPU gets its own short-lived,
+  // core-only ComfyUI "pose worker" (/opt/pose-mannequin/worker.py on that host, pinned with
+  // CUDA_DEVICE_ORDER=PCI_BUS_ID + CUDA_VISIBLE_DEVICES), so the managed ComfyUI services and
+  // the GPUs nobody picked are never touched. Same ssh/remote-pid/cancel pattern as auto-caption.
+  // Results: pose_library/mannequin_images/<id>.png + pose.mannequin in poses.json; the
+  // original pose image is never modified.
+  const MQ_DIR = path.join(POSE_DIR, 'mannequin_images');
+  const MQ_JOBS_DIR = path.join(POSE_DIR, '.mq-jobs');
+  const MQ_SETTINGS_FILE = path.join(POSE_DIR, 'mannequin_settings.json');
+  const MQ_REMOTE_POSE_DIR = '/imagegen/pose_library';
+  // prom = the `host` label the nvidia_smi exporter uses for that machine.
+  const MQ_HOSTS = {
+    'ai-epyc': { label: 'ai-epyc (RTX 4090 / 5060 Ti)', prom: 'px-epyc', ssh: 'root@10.0.0.234',
+                 worker: '/opt/pose-mannequin/worker.py', python: '/opt/conda/envs/comfyui/bin/python', comfyRoot: '/opt/comfyui' },
+    'ai-gpu':  { label: 'ai-gpu (V100)', prom: 'px-gpu', ssh: 'root@10.0.0.235',
+                 worker: '/opt/pose-mannequin/worker.py', python: '/opt/conda/envs/comfyui/bin/python', comfyRoot: '/opt/comfyui' },
+  };
+  const MQ_AVOID = { 'ai-gpu': { 7: 'GPU 7 throws Xid 74 NVLink faults' } };
+  const MQ_MIN_FREE_MB = 15000;   // int8 model + int8 encoder are loaded one at a time; ~15 GB is the floor
+  const mqJobs = new Map();       // jobId -> { state, total, done, ok, errors, results, workers[], ... }
+  const sshBase = () => {
+    const a = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=20'];
+    if (SSH_KEY) a.push('-i', SSH_KEY);
+    return a;
+  };
+  const mqRel = (p) => (p && p.mannequin ? `pose_library/mannequin_images/${p.mannequin}` : null);
+  const withRels = (p) => ({ ...p, rel: `pose_library/pose_images/${p.image}`, mannequin_rel: mqRel(p) });
+
+  function loadMqSettings() {
+    try { return { auto: false, host: 'ai-epyc', gpus: [], quant: 'int8', te: 'int8', steps: 25, outpaint: 'auto', ...JSON.parse(readFileSync(MQ_SETTINGS_FILE, 'utf8')) }; }
+    catch { return { auto: false, host: 'ai-epyc', gpus: [], quant: 'int8', te: 'int8', steps: 25, outpaint: 'auto' }; }
+  }
+
+  /** Live per-GPU free VRAM from Prometheus (never nvidia-smi on ai-gpu - a stalled V100 can wedge the host). */
+  async function mqGpuInventory() {
+    const promBase = process.env.PROMETHEUS_URL || 'http://10.0.0.79:9090';
+    const q = async (query) => {
+      const r = await fetch(`${promBase}/api/v1/query?query=${encodeURIComponent(query)}`, { signal: AbortSignal.timeout(8000) });
+      const d = await r.json(); return (d && d.data && d.data.result) || [];
+    };
+    const [info, used, total] = await Promise.all([q('nvidia_smi_gpu_info'), q('nvidia_smi_memory_used_bytes'), q('nvidia_smi_memory_total_bytes')]);
+    const key = (r) => `${r.metric.host}|${r.metric.uuid}`;
+    const usedB = Object.fromEntries(used.map((r) => [key(r), Number(r.value[1]) || 0]));
+    const totB = Object.fromEntries(total.map((r) => [key(r), Number(r.value[1]) || 0]));
+    const hosts = {};
+    for (const [name, h] of Object.entries(MQ_HOSTS)) {
+      const gpus = info.filter((r) => r.metric.host === h.prom).map((r) => {
+        const index = parseInt(r.metric.index, 10);
+        const totalMB = Math.round((totB[key(r)] || 0) / 1048576), usedMB = Math.round((usedB[key(r)] || 0) / 1048576);
+        const cc = parseFloat(r.metric.compute_cap || '0');
+        const warn = [];
+        if (cc && cc < 8) warn.push('no bf16 (sm_' + String(r.metric.compute_cap).replace('.', '') + ') - runs in fp16, may produce blank images');
+        const avoid = MQ_AVOID[name] && MQ_AVOID[name][index];
+        if (avoid) warn.push(avoid);
+        const freeMB = totalMB - usedMB;
+        if (freeMB < MQ_MIN_FREE_MB) warn.push(`only ${(freeMB / 1024).toFixed(1)} GB free - suspend what runs on it first (~15 GB needed)`);
+        return { index, name: String(r.metric.name || '').replace(/^NVIDIA (GeForce )?/, ''), uuid: r.metric.uuid, totalMB, usedMB, freeMB,
+                 computeCap: r.metric.compute_cap, warn, avoid: !!avoid };
+      }).sort((a, b) => a.index - b.index);
+      hosts[name] = { label: h.label, disabled: h.disabled || null, gpus };
+    }
+    return hosts;
+  }
+
+  /** Source for a pose: the full-size original when the pose recorded one, else the 224px library image. */
+  function mqSourceFor(p) {
+    if (p.source) {
+      try { const abs = safeResolve(p.source); if (existsSync(abs)) return `/imagegen/${path.relative(BASE, abs)}`; } catch { /* fall back */ }
+    }
+    return `${MQ_REMOTE_POSE_DIR}/pose_images/${p.image}`;
+  }
+
+  function mqStart(ids, opts) {
+    const host = MQ_HOSTS[opts.host];
+    if (!host) throw new Error(`unknown host ${opts.host}`);
+    if (host.disabled) throw new Error(`${opts.host}: ${host.disabled}`);
+    const gpus = [...new Set((opts.gpus || []).map((g) => parseInt(g, 10)))].filter((g) => Number.isInteger(g) && g >= 0 && g <= 15);
+    if (!gpus.length) throw new Error('pick at least one GPU');
+    for (const g of gpus) if (MQ_AVOID[opts.host] && MQ_AVOID[opts.host][g]) throw new Error(`GPU ${g}: ${MQ_AVOID[opts.host][g]}`);
+    const running = [...mqJobs.values()].filter((j) => j.state === 'running' && j.host === opts.host);
+    for (const j of running) for (const g of gpus) if (j.gpus.includes(g)) throw new Error(`GPU ${g} on ${opts.host} is already converting (job ${j.id})`);
+    const poses = loadPoses();
+    const list = ids.map((id) => poses.find((p) => p.id === id)).filter(Boolean);
+    if (!list.length) throw new Error('no matching poses');
+    const quant = opts.quant === 'bf16' ? 'bf16' : 'int8';
+    const te = opts.te === 'bf16' ? 'bf16' : 'int8';
+    const steps = Math.max(4, Math.min(60, parseInt(opts.steps, 10) || 25));
+    const outpaint = ['auto', 'off', 'always'].includes(opts.outpaint) ? opts.outpaint : 'auto';
+    const extra = String(opts.extra_prompt || '').slice(0, 1000);
+
+    const jobId = crypto.randomBytes(6).toString('hex');
+    const job = { id: jobId, state: 'running', host: opts.host, gpus, total: list.length, done: 0, ok: 0, errors: 0,
+                  results: {}, workers: [], startedAt: Date.now(), ids: list.map((p) => p.id), auto: !!opts.auto };
+    mqJobs.set(jobId, job);
+    const taskId = `pose-mannequin:${jobId}`;
+    const report = (extraFields = {}) => taskReport({ id: taskId, source: 'pose-mannequin', done: job.done, total: job.total, ...extraFields });
+    report({ state: 'running', label: `Pose → mannequin · ${list.length} pose${list.length === 1 ? '' : 's'} · ${opts.host} GPU ${gpus.join(',')}` + (job.auto ? ' (auto)' : '') });
+
+    mkdirSync(MQ_JOBS_DIR, { recursive: true }); mkdirSync(MQ_DIR, { recursive: true });
+    try { chmodSync(MQ_DIR, 0o777); chmodSync(MQ_JOBS_DIR, 0o777); } catch { /* not owner */ }
+    // Round-robin split so every GPU gets a similar mix of easy and hard poses.
+    const shards = gpus.map(() => []);
+    list.forEach((p, i) => shards[i % gpus.length].push(p));
+    const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+    gpus.forEach((gpu, wi) => {
+      if (!shards[wi].length) return;
+      const manifestName = `${jobId}-gpu${gpu}.json`;
+      writeFileSync(path.join(MQ_JOBS_DIR, manifestName), JSON.stringify({
+        poses: shards[wi].map((p) => ({ id: p.id, src: mqSourceFor(p) })),
+        out_dir: `${MQ_REMOTE_POSE_DIR}/mannequin_images`, quant, te, steps, outpaint, extra_prompt: extra,
+      }));
+      const cmd = `${host.python} ${host.worker} --manifest ${q(`${MQ_REMOTE_POSE_DIR}/.mq-jobs/${manifestName}`)} --gpu ${gpu} --port ${8300 + gpu} `
+                + `--comfy-root ${q(host.comfyRoot)} --python ${q(host.python)}`;
+      const child = spawn('ssh', [...sshBase(), host.ssh, cmd], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const w = { gpu, child, remote_pid: null, state: 'starting', total: shards[wi].length, done: 0, raw: '' };
+      job.workers.push(w);
+      let ebuf = '';
+      child.stderr.on('data', (d) => {
+        const chunk = d.toString(); w.raw = (w.raw + chunk).slice(-4000); ebuf += chunk;
+        let i;
+        while ((i = ebuf.indexOf('\n')) >= 0) {
+          const line = ebuf.slice(0, i).trim(); ebuf = ebuf.slice(i + 1);
+          if (!line.startsWith('{')) continue;
+          let ev; try { ev = JSON.parse(line); } catch { continue; }
+          if (ev.event === 'start') { w.remote_pid = ev.pid; w.state = 'loading ComfyUI'; }
+          else if (ev.event === 'ready') w.state = 'converting';
+          else if (ev.event === 'fatal') { w.state = 'failed'; w.error = ev.error; }
+          else if (ev.event === 'img') {
+            w.done = ev.done; job.done += 1;
+            if (ev.status === 'ok') {
+              job.ok += 1;
+              job.results[ev.id] = { status: 'ok', secs: ev.secs, sides: ev.sides };
+              try {   // record it on the pose immediately, so a cancel keeps everything finished so far
+                const all = loadPoses(); const p = all.find((x) => x.id === ev.id);
+                if (p) { p.mannequin = `${ev.id}.png`; p.mannequin_at = Date.now(); savePoses(all); }
+              } catch (e) { job.results[ev.id] = { status: 'error', error: 'saved image but could not update poses.json: ' + String(e.message || e) }; }
+            } else { job.errors += 1; job.results[ev.id] = { status: 'error', error: ev.error }; job.lastError = `${ev.id}: ${ev.error}`; }
+            report({ detail: `${job.ok} done${job.errors ? `, ${job.errors} failed` : ''}` });
+          } else if (ev.event === 'done') w.state = 'done';
+        }
+      });
+      child.on('close', (code) => {
+        if (w.state !== 'done' && w.state !== 'failed') w.state = job.cancelled ? 'cancelled' : (code === 0 ? 'done' : 'failed');
+        if (w.state === 'failed' && !w.error) w.error = `worker exited ${code}: ` + w.raw.trim().split('\n').filter((l) => !l.startsWith('{')).slice(-3).join(' | ');
+        try { unlinkSync(path.join(MQ_JOBS_DIR, manifestName)); } catch { /* ignore */ }
+        if (job.workers.every((x) => ['done', 'failed', 'cancelled'].includes(x.state))) {
+          job.state = job.cancelled ? 'cancelled' : (job.ok ? 'done' : 'error');
+          job.finishedAt = Date.now();
+          const failed = job.workers.filter((x) => x.state === 'failed').map((x) => `GPU ${x.gpu}: ${x.error}`);
+          if (failed.length) job.error = failed.join(' · ').slice(0, 800);
+          report({ state: job.state === 'done' ? 'done' : 'failed',
+                   detail: job.cancelled ? `cancelled after ${job.done}/${job.total}` : `${job.ok} converted${job.errors ? `, ${job.errors} failed` : ''}${failed.length ? ` — ${job.error}` : ''}`.slice(0, 300) });
+          setTimeout(() => mqJobs.delete(jobId), 6 * 3600_000);
+        }
+      });
+      child.on('error', (e) => { w.state = 'failed'; w.error = String(e.message || e); });
+    });
+    return job;
+  }
+  const mqPublic = (j) => ({ id: j.id, state: j.state, host: j.host, gpus: j.gpus, total: j.total, done: j.done, ok: j.ok, errors: j.errors,
+    results: j.results, error: j.error || null, lastError: j.lastError || null, auto: j.auto, ids: j.ids, startedAt: j.startedAt, finishedAt: j.finishedAt || null,
+    workers: j.workers.map((w) => ({ gpu: w.gpu, state: w.state, done: w.done, total: w.total, error: w.error || null })) });
+
+  router.get('/poses/mannequin/gpus', async (_req, res) => {
+    try { res.json({ ok: true, hosts: await mqGpuInventory(), min_free_mb: MQ_MIN_FREE_MB }); }
+    catch (e) { res.status(502).json({ error: 'GPU inventory unavailable: ' + String(e.message || e) }); }
+  });
+  router.post('/poses/mannequin/start', express.json(), (req, res) => {
+    const b = req.body || {};
+    const ids = Array.isArray(b.ids) ? b.ids.map(String) : [];
+    if (!ids.length) return res.status(400).json({ error: 'select at least one pose' });
+    try { res.json({ ok: true, job: mqPublic(mqStart(ids, b)) }); }
+    catch (e) { res.status(400).json({ error: String(e.message || e) }); }
+  });
+  router.get('/poses/mannequin/status', (req, res) => {
+    const j = mqJobs.get(String(req.query.jobId || ''));
+    if (!j) return res.status(404).json({ error: 'unknown job' });
+    res.json({ ok: true, job: mqPublic(j) });
+  });
+  router.get('/poses/mannequin/jobs', (_req, res) => {
+    res.json({ ok: true, jobs: [...mqJobs.values()].sort((a, b) => b.startedAt - a.startedAt).slice(0, 20).map(mqPublic) });
+  });
+  router.post('/poses/mannequin/cancel', express.json(), (req, res) => {
+    const j = mqJobs.get(String((req.body || {}).jobId || ''));
+    if (!j) return res.status(404).json({ error: 'unknown job' });
+    if (j.state !== 'running') return res.json({ ok: true, already: j.state });
+    j.cancelled = true;
+    const host = MQ_HOSTS[j.host];
+    for (const w of j.workers) {
+      // 🛑 REMOTE FIRST, by the numeric pid the worker reported about itself (its SIGTERM handler
+      // stops its private ComfyUI). ssh doesn't forward signals; killing only the local ssh would
+      // orphan a worker that keeps holding the GPU.
+      if (w.remote_pid) {
+        try { spawn('ssh', [...sshBase(), host.ssh, `kill -TERM ${parseInt(w.remote_pid, 10)} 2>/dev/null || true`], { stdio: 'ignore' }); } catch { /* best effort */ }
+      }
+      setTimeout(() => { try { w.child.kill('SIGTERM'); } catch { /* gone */ } }, 4000);
+    }
+    res.json({ ok: true, cancelled: true, done: j.done, total: j.total });
+  });
+  router.post('/poses/mannequin/remove', express.json(), (req, res) => {
+    const id = String((req.body || {}).id || '');
+    let poses;
+    try { poses = loadPoses(); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    const p = poses.find((x) => x.id === id);
+    if (!p) return res.status(404).json({ error: `no such pose: ${id}` });
+    const file = p.mannequin;
+    delete p.mannequin; delete p.mannequin_at;
+    try { savePoses(poses); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    if (file) { try { unlinkSync(path.join(MQ_DIR, file)); } catch { /* already gone */ } }
+    res.json({ ok: true, pose: withRels(p) });
+  });
+  router.get('/poses/mannequin/settings', (_req, res) => res.json({ ok: true, settings: loadMqSettings() }));
+  router.post('/poses/mannequin/settings', express.json(), (req, res) => {
+    const b = req.body || {}; const cur = loadMqSettings();
+    const next = { ...cur };
+    if (typeof b.auto === 'boolean') next.auto = b.auto;
+    if (typeof b.host === 'string' && MQ_HOSTS[b.host]) next.host = b.host;
+    if (Array.isArray(b.gpus)) next.gpus = b.gpus.map((g) => parseInt(g, 10)).filter((g) => Number.isInteger(g) && g >= 0 && g <= 15);
+    for (const k of ['quant', 'te']) if (b[k] === 'int8' || b[k] === 'bf16') next[k] = b[k];
+    if (b.steps !== undefined) next.steps = Math.max(4, Math.min(60, parseInt(b.steps, 10) || 25));
+    if (['auto', 'off', 'always'].includes(b.outpaint)) next.outpaint = b.outpaint;
+    if (next.auto && !next.gpus.length) return res.status(400).json({ error: 'pick the GPU(s) auto-convert should use' });
+    try { writeFileSync(MQ_SETTINGS_FILE, JSON.stringify(next, null, 2)); try { chmodSync(MQ_SETTINGS_FILE, 0o664); } catch { /* */ } }
+    catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    res.json({ ok: true, settings: next });
+  });
+  /** Called after poses are added: converts them right away when auto-convert is on. Never throws. */
+  function mqAutoConvert(ids) {
+    const s = loadMqSettings();
+    if (!s.auto || !ids.length || !s.gpus.length) return null;
+    try { return mqStart(ids, { ...s, auto: true }).id; }
+    catch (e) { taskReport({ id: `pose-mannequin:auto-${Date.now()}`, source: 'pose-mannequin', state: 'failed',
+                             label: 'Pose → mannequin (auto)', detail: String(e.message || e).slice(0, 300) }); return null; }
+  }
+
   router.get('/poses', (_req, res) => {
     try {
       const poses = loadPoses();
@@ -1964,7 +2202,7 @@ export function createImagegenRouter(config) {
         categories: [...new Set(poses.map((p) => p.category).filter(Boolean))].sort(),
         views: [...new Set(poses.map((p) => p.view).filter(Boolean))].sort(),
         // rel is what /thumb and /image want, so the UI never builds a path itself
-        poses: poses.map((p) => ({ ...p, rel: `pose_library/pose_images/${p.image}` })),
+        poses: poses.map(withRels),
       });
     } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
   });
@@ -1984,7 +2222,7 @@ export function createImagegenRouter(config) {
     }
     if (!pose.prompt) return res.status(400).json({ error: 'prompt cannot be empty — it is what the node emits' });
     try { savePoses(poses); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
-    res.json({ ok: true, pose: { ...pose, rel: `pose_library/pose_images/${pose.image}` } });
+    res.json({ ok: true, pose: withRels(pose) });
   });
 
   router.post('/poses/add', express.json({ limit: '25mb' }), async (req, res) => {
@@ -2041,7 +2279,8 @@ export function createImagegenRouter(config) {
     poses.push(pose);
     poses.sort((a, c) => (a.index || 0) - (c.index || 0));
     try { savePoses(poses); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
-    res.json({ ok: true, pose: { ...pose, rel: `pose_library/pose_images/${file}` }, restart_required: true });
+    const autoJob = mqAutoConvert([id]);
+    res.json({ ok: true, pose: { ...pose, rel: `pose_library/pose_images/${file}` }, restart_required: true, mannequin_job: autoJob });
   });
 
   // ---- Add a SELECTION of browsed images as poses, captions becoming the prompts. ----
@@ -2114,8 +2353,9 @@ export function createImagegenRouter(config) {
       poses.sort((a, c) => (a.index || 0) - (c.index || 0));
       try { savePoses(poses); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
     }
+    const autoJob = !dryRun && added.length ? mqAutoConvert(added.map((a) => a.id)) : null;
     res.json({ ok: true, dry_run: dryRun, added: added.length, skipped: skipped.length,
-               added_poses: added, skipped_files: skipped, restart_required: !dryRun && added.length > 0 });
+               added_poses: added, skipped_files: skipped, restart_required: !dryRun && added.length > 0, mannequin_job: autoJob });
   });
 
   router.post('/poses/delete', express.json(), (req, res) => {
@@ -2130,6 +2370,7 @@ export function createImagegenRouter(config) {
     // Image removed only AFTER the JSON commit: if the write failed the pose still
     // exists and must still have its picture.
     try { unlinkSync(path.join(POSE_IMAGES, pose.image)); } catch { /* already gone */ }
+    if (pose.mannequin) { try { unlinkSync(path.join(MQ_DIR, pose.mannequin)); } catch { /* already gone */ } }
     res.json({ ok: true, deleted: id, remaining: rest.length, restart_required: true });
   });
 

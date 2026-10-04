@@ -65,3 +65,30 @@
 .hint { margin-top: 4px; font-size: 10.5px; color: var(--fg-faint); line-height: 1.45; }
 .req { color: var(--accent); text-transform: none; letter-spacing: 0; }
 .full { max-width: 90vw; max-height: 90vh; border-radius: 8px; }
+
+// ── pose → mannequin ──
+.cardSel { border-color: #22c55e; box-shadow: 0 0 0 1px rgba(34,197,94,0.35); }
+.thumbCol { position: relative; display: flex; flex-direction: column; gap: 4px; flex: 0 0 74px; }
+.selBox { position: absolute; top: 3px; left: 3px; z-index: 2; background: rgba(0,0,0,0.55); border-radius: 4px; padding: 1px 2px; line-height: 0; }
+.mqWrap { position: relative; }
+.thumbMq { width: 74px; height: 94px; object-fit: contain; border-radius: 5px; background: #fff; cursor: zoom-in; border: 1px solid #22c55e; }
+.mqActions { position: absolute; bottom: 3px; right: 3px; display: flex; gap: 2px; }
+.mqMake { font-size: 10px; padding: 3px 4px; border: 1px dashed var(--border); border-radius: 5px; background: transparent; color: var(--fg-muted);
+  cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 3px; &:hover { color: var(--fg); border-color: var(--accent); } }
+.mqPending { font-size: 10px; text-align: center; color: #22c55e; padding: 4px 0; animation: mqPulse 1.4s ease-in-out infinite; }
+@keyframes mqPulse { 50% { opacity: 0.4; } }
+.selBar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 12px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.jobBar, .jobDone, .jobFail { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 6px 12px; font-size: 12px; border-bottom: 1px solid var(--border); }
+.jobBar { background: rgba(34,197,94,0.08); }
+.jobDone { background: rgba(78,161,255,0.08); }
+.jobFail { background: rgba(239,68,68,0.10); }
+.jobErr { color: #f87171; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gpuList { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow: auto; }
+.gpuRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; cursor: pointer; }
+.gpuOn { border-color: #22c55e; background: rgba(34,197,94,0.08); }
+.gpuOff { opacity: 0.5; cursor: not-allowed; }
+.gpuName { font-weight: 600; }
+.gpuFree { color: #4ade80; }
+.gpuLow { color: #fbbf24; }
+.gpuWarn { width: 100%; font-size: 11px; color: #fbbf24; padding-left: 22px; }
+.autoRow { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; margin: 6px 0; }
