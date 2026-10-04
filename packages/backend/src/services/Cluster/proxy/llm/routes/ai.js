@@ -691,6 +691,65 @@ export function createAiRouter(config, gpuMonitor, pveApi, sshService, hookscrip
       .map(idx => assign.gpus[idx]);
   }
 
+  /**
+   * GPU PIN — pin a service to its cards by IDENTITY, never by position.
+   *
+   * Scripts used to say CUDA_VISIBLE_DEVICES=1 (an index under PCI_BUS_ID order). An index means
+   * "whatever card is 2nd in this container right now": when ai-epyc came up with 5060 Ti #1
+   * (02:00.0) unbound (2026-10-04), every service pinned to index 1 silently ran on 22:00.0 instead,
+   * piled onto another service's card, and AI-Lab still attributed it to the absent card.
+   *
+   * Now the script carries the cards' PCI addresses (the stable identity behind the UI's friendly
+   * names) and resolves them AT LAUNCH, inside the container:
+   *   /proc/driver/nvidia/gpus/<pci>/information -> GPU UUID + Device Minor
+   *   /dev/nvidia<minor> must exist (the card is actually bound to this container)
+   * then exports CUDA_VISIBLE_DEVICES as the cards' indices among the ATTACHED cards (PCI order), in the chosen order. A missing card REFUSES
+   * the start with exit 78 (unit: RestartPreventExitStatus=78, so no retry loop) and a clear log
+   * line, instead of running on a different card.
+   */
+  const GPU_PIN_EXIT = 78;
+  function gpuPinPreamble(pciIds) {
+    const list = pciIds.map((p) => String(p).toLowerCase()).filter((p) => /^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]$/.test(p));
+    if (!list.length || list.length !== pciIds.length) return null;
+    // Emits NUMERIC indices, not GPU-<uuid>: vLLM int()-parses CUDA_VISIBLE_DEVICES
+    // (platforms/interface.py device_id_to_physical_device_id) and crashed on a UUID (2026-10-04).
+    // The index is computed AT LAUNCH as the card's rank among the cards ACTUALLY ATTACHED to this
+    // container, in PCI bus order (= CUDA's order under CUDA_DEVICE_ORDER=PCI_BUS_ID, which only
+    // enumerates devices whose /dev/nvidiaN node exists) — so it is right whatever else is missing.
+    return [
+      '# ── AI-Lab GPU pin: cards by PCI identity -> index among ATTACHED cards at launch; refuse if absent ──',
+      `AILAB_GPU_PCIS="${list.join(' ')}"`,
+      'export CUDA_DEVICE_ORDER=PCI_BUS_ID',
+      '_attached=""',
+      'for _d in /proc/driver/nvidia/gpus/*; do',
+      '  _m=$(sed -n "s/^Device Minor:[[:space:]]*//p" "$_d/information" 2>/dev/null)',
+      '  [ -n "$_m" ] && [ -e "/dev/nvidia$_m" ] && _attached="$_attached $(basename "$_d" | tr A-F a-f)"',
+      'done',
+      '_attached=$(printf "%s\\n" $_attached | sort)',
+      'AILAB_CVD=""',
+      'for _pci in $AILAB_GPU_PCIS; do',
+      '  _idx=$(printf "%s\\n" $_attached | grep -nx "$_pci" | cut -d: -f1)',
+      `  if [ -z "$_idx" ]; then echo "AI-LAB GPU PIN: GPU $_pci is NOT attached to this container (attached: $(echo $_attached)) -- refusing to start rather than run on a different card"; exit ${GPU_PIN_EXIT}; fi`,
+      '  AILAB_CVD="${AILAB_CVD:+$AILAB_CVD,}$((_idx - 1))"',
+      'done',
+      'export CUDA_VISIBLE_DEVICES="$AILAB_CVD"',
+      'echo "AI-LAB GPU PIN: $AILAB_GPU_PCIS -> CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES (PCI order among attached)"',
+      '',
+    ].join('\n');
+  }
+  /** Rewrite index-based CUDA_VISIBLE_DEVICES (export or inline) to the pinned value. */
+  function applyGpuPin(command, pciIds) {
+    const m = command.match(/CUDA_VISIBLE_DEVICES=([0-9][0-9,]*)/);
+    if (!m) return { command, preamble: '' };                  // no GPU pin requested (CPU service)
+    const idxCount = m[1].split(',').filter(Boolean).length;
+    const pre = Array.isArray(pciIds) && pciIds.length === idxCount ? gpuPinPreamble(pciIds) : null;
+    if (!pre) {
+      console.warn(`[gpu-pin] not pinning: CUDA_VISIBLE_DEVICES=${m[1]} vs gpuPciIds=${JSON.stringify(pciIds)} (count/format mismatch) — leaving the index form`);
+      return { command, preamble: '' };
+    }
+    return { command: command.replace(/CUDA_VISIBLE_DEVICES=([0-9][0-9,]*)/g, 'CUDA_VISIBLE_DEVICES="$AILAB_CVD"'), preamble: pre };
+  }
+
   /** Extract content between marker lines from pct exec output (filters noise/ANSI) */
   function extractBetweenMarkers(text, startMarker, endMarker) {
     const startIdx = text.indexOf(startMarker);
@@ -2676,10 +2735,18 @@ fi
     const mkdirBlock = slotPathDirs.length
       ? slotPathDirs.map(p => `mkdir -p "${p}"`).join('\n') + '\n'
       : '';
+    // GPU identity pin (see gpuPinPreamble). Same resolution the registry uses below for gpuPciIds.
+    const _cvdIdx = ((finalCommand.match(/CUDA_VISIBLE_DEVICES=([0-9][0-9,]*)/) || [])[1] || '')
+      .split(',').filter(Boolean).map(Number);
+    const pinPciIds = (Array.isArray(explicitGpuPciIds) && explicitGpuPciIds.length > 0)
+      ? explicitGpuPciIds
+      : resolveServiceGpuPciIds(agent.vmid, (Array.isArray(cudaDevices) && cudaDevices.length) ? cudaDevices : _cvdIdx);
+    const _pin = applyGpuPin(finalCommand, pinPciIds);
+    finalCommand = _pin.command;
     const scriptContent = `#!/bin/bash
 # ProxLab managed service — ${providerId} on port ${port || 'auto'}
 # Generated: ${new Date().toISOString()}
-${mcHelper}${tmpdirLine}${mkdirBlock}${vllmEnvPreamble}${kvPreamble}${finalCommand}
+${mcHelper}${tmpdirLine}${mkdirBlock}${_pin.preamble}${vllmEnvPreamble}${kvPreamble}${finalCommand}
 `;
     const b64Script = Buffer.from(scriptContent).toString('base64');
 
@@ -2696,6 +2763,8 @@ Type=simple
 ExecStart=/bin/bash ${scriptPath}
 Restart=on-failure
 RestartSec=30
+# 78 = AI-Lab GPU pin refused: the service's card is not attached. Retrying cannot help.
+RestartPreventExitStatus=78
 TimeoutStartSec=600
 TimeoutStopSec=60
 StandardOutput=append:${logFile}
