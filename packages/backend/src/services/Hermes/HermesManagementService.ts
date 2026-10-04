@@ -1457,6 +1457,30 @@ export class HermesManagementService {
     }
   }
 
+  /** Give a newly created agent its Matrix channel via /usr/local/bin/hermes-matrix-provision
+   *  (see that script's header). Fire-and-forget; the outcome is a notification either way. */
+  private provisionMatrixInBackground(agentId: string, displayName: string): void {
+    const cmd = `/usr/local/bin/hermes-matrix-provision ${shq(agentId)} --name ${shq(displayName)}`
+    void this.ssh(cmd)
+      .then((out) => {
+        const last = out.trim().split('\n').pop() ?? ''
+        if (last.startsWith('OK ')) {
+          console.log(`[hermes-matrix] ${agentId}: ${last}`)
+          this.cfg.notify?.({ severity: 'info', source: 'hermes-matrix',
+            message: `Matrix channel ready for new agent ${agentId} — invite sent`, detail: last.slice(3) })
+        } else if (!last.startsWith('SKIP')) {
+          this.cfg.notify?.({ severity: 'warning', source: 'hermes-matrix',
+            message: `Matrix channel not confirmed for new agent ${agentId}`, detail: last.slice(0, 400) })
+        }
+      })
+      .catch((e) => {
+        console.error(`[hermes-matrix] ${agentId}: ${String((e as Error)?.message ?? e)}`)
+        this.cfg.notify?.({ severity: 'warning', source: 'hermes-matrix',
+          message: `Matrix channel NOT set up for new agent ${agentId}`,
+          detail: `${String((e as Error)?.message ?? e).slice(0, 400)} — rerun: hermes-matrix-provision ${agentId}` })
+      })
+  }
+
   /** hermes <args...> as a properly-quoted remote command. */
   private hermes(parts: string[]): Promise<string> {
     return this.ssh([this.hermesBin, ...parts.map(shq)].join(' '))
@@ -3417,6 +3441,11 @@ async lintProfileDocs(agentId: string): Promise<{
       console.warn(`[hermes] doc-lint failed for ${id} (non-fatal):`, e)
     }
 
+    // Matrix channel for NEW agents (2026-10-04): bot account, encrypted DM room inviting Travis,
+    // MATRIX_* env and a running gateway — all via the native gateway, never a Hermes patch. Runs in
+    // the BACKGROUND (account + gateway start take ~30-60 s) and reports through notifications, so
+    // saving a new agent is not slowed down and a Matrix failure never fails the save.
+    if (created && !isTemplateProfile(id)) this.provisionMatrixInBackground(id, spec.displayName ?? id)
     return { created, home, docIssues }
   }
 
@@ -3592,6 +3621,20 @@ async lintProfileDocs(agentId: string): Promise<{
 
   /** Delete an agent profile (and its per-profile state). */
   async deleteAgent(agentId: string): Promise<void> {
+    // Stop + remove the agent's messaging gateway FIRST. `profile delete` leaves the systemd unit
+    // behind, still restarting against a profile that no longer exists, and its Matrix/Telegram
+    // bot keeps a live session. The Matrix bot is logged out (its access token dies); the account
+    // itself remains (deactivation needs the password, which lives only in the vault).
+    const unit = `hermes-gateway-${agentId}`
+    const home = this.profileHome(agentId)
+    await this.ssh([
+      `T=$(sed -n 's/^MATRIX_ACCESS_TOKEN=//p' ${shq(home + '/.env')} 2>/dev/null)`,
+      `H=$(sed -n 's/^MATRIX_HOMESERVER=//p' ${shq(home + '/.env')} 2>/dev/null)`,
+      `[ -n "$T" ] && [ -n "$H" ] && curl -s -m 10 -X POST -H "Authorization: Bearer $T" "$H/_matrix/client/v3/logout" >/dev/null || true`,
+      `systemctl disable --now ${shq(unit)} 2>/dev/null || true`,
+      `rm -f /etc/systemd/system/${shq(unit + '.service')}`,
+      `systemctl daemon-reload || true`,
+    ].join('; ')).catch((e) => console.warn(`[deleteAgent] gateway cleanup for ${agentId}: ${String((e as Error)?.message ?? e)}`))
     await this.hermes(['profile', 'delete', agentId, '--yes'])
     await this.deleteOpenVikingKey(agentId)
     if (this.cfg.specsFile) {
