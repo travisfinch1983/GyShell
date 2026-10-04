@@ -30,6 +30,33 @@
   :global(.xterm) { height: 100%; }
 }
 
+.consoleKeyBar {
+  display: flex;
+  gap: 6px;
+  padding: 4px 6px;
+  border-top: 1px solid var(--border);
+  background: var(--control-bg);
+  flex-shrink: 0;
+}
+
+.consoleKey {
+  min-width: 64px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: var(--font-mono, monospace);
+  letter-spacing: 0.5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--app-bg);
+  color: var(--fg);
+  cursor: pointer;
+  touch-action: manipulation;   // no double-tap zoom delay on phones
+
+  &:active:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  &:disabled { opacity: 0.4; cursor: default; }
+}
+
 .consoleStatus {
   display: flex;
   align-items: center;

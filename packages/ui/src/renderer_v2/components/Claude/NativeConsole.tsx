@@ -29,6 +29,8 @@ export const NativeConsole: React.FC<{ instanceId: string; height: number }> = (
   const [state, setState] = useState<ConsoleState>('connecting')
   const [detail, setDetail] = useState<string | null>(null)
   const retakeRef = useRef<() => void>(() => undefined)
+  /** Send raw key bytes to the instance — for keys a phone keyboard does not have (Esc). */
+  const sendKeysRef = useRef<(bytes: string) => boolean>(() => false)
 
   useEffect(() => {
     const host = hostRef.current
@@ -150,6 +152,11 @@ export const NativeConsole: React.FC<{ instanceId: string; height: number }> = (
     const onInput = term.onData((data) => {
       if (ws?.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data))
     })
+    sendKeysRef.current = (bytes: string) => {
+      if (ws?.readyState !== WebSocket.OPEN) return false
+      ws.send(new TextEncoder().encode(bytes))
+      return true
+    }
     const ro = new ResizeObserver(() => {
       try { fit.fit() } catch { /* host hidden */ }
       sendResize()
@@ -208,6 +215,20 @@ export const NativeConsole: React.FC<{ instanceId: string; height: number }> = (
         </div>
       )}
       <div ref={hostRef} className={styles.nativeConsoleHost} />
+      {/* Phone keyboards have no Escape key, so a hung Claude Code turn could not be interrupted
+          from mobile. preventDefault on pointerdown keeps focus where it was: the soft keyboard
+          neither pops up nor closes when the button is tapped. */}
+      <div className={styles.consoleKeyBar}>
+        <button
+          className={styles.consoleKey}
+          disabled={state !== 'attached'}
+          onPointerDown={(e) => e.preventDefault()}
+          onClick={() => { sendKeysRef.current('\x1b') }}
+          title="Send Escape (interrupts Claude Code)"
+        >
+          ESC
+        </button>
+      </div>
     </div>
   )
 }
