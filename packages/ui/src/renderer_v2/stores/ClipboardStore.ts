@@ -9,6 +9,11 @@ export interface ClipDrop {
   sensitive?: boolean
 }
 
+export interface ClipHistoryEntry extends ClipDrop {
+  /** Still in the drawer (vs. deleted/cleared from it). */
+  inClipboard: boolean
+}
+
 function cluster(): { request: (m: string, p: string, b?: unknown) => Promise<any> } | undefined {
   return (window as any).gyshell?.cluster
 }
@@ -28,6 +33,11 @@ class ClipboardStore {
   freshId: string | null = null
   loaded = false
   error: string | null = null
+  /** Drawer is showing History (every drop ever posted) instead of the current clipboard. */
+  view: 'clipboard' | 'history' = 'clipboard'
+  history: ClipHistoryEntry[] = []
+  historyLoading = false
+  historyFilter = ''
   private started = false
   private freshTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -46,6 +56,8 @@ class ClipboardStore {
         runInAction(() => {
           if (!this.items.some((i) => i.id === data.item!.id)) this.items = [data.item!, ...this.items]
           this.open = true
+          // A new drop is what Travis wants to see — jump back from History to the clipboard.
+          this.view = 'clipboard'
           this.flagFresh(data.item!.id)
         })
       })
@@ -81,6 +93,57 @@ class ClipboardStore {
     this.freshId = id
     if (this.freshTimer) clearTimeout(this.freshTimer)
     this.freshTimer = setTimeout(() => runInAction(() => { this.freshId = null }), 4_000)
+  }
+
+  get filteredHistory(): ClipHistoryEntry[] {
+    const q = this.historyFilter.trim().toLowerCase()
+    if (!q) return this.history
+    return this.history.filter((h) =>
+      (h.title || '').toLowerCase().includes(q)
+      || (h.from || '').toLowerCase().includes(q)
+      || (!h.sensitive && h.text.toLowerCase().includes(q)))
+  }
+
+  setView(v: 'clipboard' | 'history'): void {
+    this.view = v
+    if (v === 'history') void this.loadHistory()
+  }
+
+  setHistoryFilter(q: string): void { this.historyFilter = q }
+
+  async loadHistory(): Promise<void> {
+    const c = cluster()
+    if (!c) return
+    runInAction(() => { this.historyLoading = true })
+    try {
+      const r = await c.request('GET', '/api/clipboard/history')
+      runInAction(() => { this.history = r?.items ?? []; this.error = null })
+    } catch (e: any) {
+      runInAction(() => { this.error = `Could not load history: ${e?.message || e}` })
+    } finally {
+      runInAction(() => { this.historyLoading = false })
+    }
+  }
+
+  async restore(id: string): Promise<void> {
+    try {
+      await cluster()?.request('POST', `/api/clipboard/history/${encodeURIComponent(id)}/restore`)
+      await this.loadHistory()
+    } catch (e: any) {
+      runInAction(() => { this.error = `Restore failed: ${e?.message || e}` })
+    }
+  }
+
+  async removeFromHistory(id: string): Promise<void> {
+    runInAction(() => { this.history = this.history.filter((h) => h.id !== id) })
+    try { await cluster()?.request('DELETE', `/api/clipboard/history/${encodeURIComponent(id)}`) }
+    catch (e: any) { runInAction(() => { this.error = `Delete failed: ${e?.message || e}` }); void this.loadHistory() }
+  }
+
+  async clearHistory(): Promise<void> {
+    runInAction(() => { this.history = [] })
+    try { await cluster()?.request('DELETE', '/api/clipboard/history') }
+    catch (e: any) { runInAction(() => { this.error = `Clear history failed: ${e?.message || e}` }); void this.loadHistory() }
   }
 
   toggle(): void { this.open = !this.open }

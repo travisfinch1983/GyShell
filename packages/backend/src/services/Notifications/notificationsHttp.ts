@@ -42,6 +42,27 @@ export function createNotificationsRouter(svc: NotificationsService): express.Ro
     res.json({ ok: true, item })
   })
 
+  // History: every drop ever posted. Registered BEFORE /api/clipboard/:id, or
+  // DELETE /api/clipboard/history would be read as 'delete the entry whose id is "history"'.
+  router.get('/api/clipboard/history', (_req: Req, res: Res) => {
+    res.json({ items: svc.clips.listHistory() })
+  })
+
+  router.post('/api/clipboard/history/:id/restore', (req: Req, res: Res) => {
+    const item = svc.clips.restore(String(req.params.id))
+    if (!item) return res.status(404).json({ ok: false, error: 'not in history' })
+    res.json({ ok: true, item })
+  })
+
+  router.delete('/api/clipboard/history/:id', (req: Req, res: Res) => {
+    const removed = svc.clips.removeFromHistory(String(req.params.id))
+    res.status(removed ? 200 : 404).json({ ok: removed })
+  })
+
+  router.delete('/api/clipboard/history', (_req: Req, res: Res) => {
+    res.json({ ok: true, cleared: svc.clips.clearHistory() })
+  })
+
   router.delete('/api/clipboard/:id', (req: Req, res: Res) => {
     const removed = svc.clips.remove(String(req.params.id))
     res.status(removed ? 200 : 404).json({ ok: removed })

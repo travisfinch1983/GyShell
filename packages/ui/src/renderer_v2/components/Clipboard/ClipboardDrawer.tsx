@@ -1,7 +1,7 @@
 import React from 'react'
 import { observer } from 'mobx-react-lite'
-import { Check, ClipboardCopy, Eye, EyeOff, Trash2, X } from 'lucide-react'
-import { clipboardStore, copyText, type ClipDrop } from '../../stores/ClipboardStore'
+import { ArrowLeft, Check, ClipboardCopy, Eye, EyeOff, History, RotateCcw, Trash2, X } from 'lucide-react'
+import { clipboardStore, copyText, type ClipDrop, type ClipHistoryEntry } from '../../stores/ClipboardStore'
 import { confirmStore } from '../../stores/confirmStore'
 import styles from './Clipboard.module.scss'
 
@@ -13,10 +13,12 @@ function ago(ts: string): string {
   return new Date(ts).toLocaleDateString()
 }
 
-const Entry: React.FC<{ item: ClipDrop; fresh: boolean }> = observer(({ item, fresh }) => {
+/** One entry. In history mode it gets Restore (when no longer in the drawer) and deletes from history. */
+const Entry: React.FC<{ item: ClipDrop | ClipHistoryEntry; fresh?: boolean; history?: boolean }> = observer(({ item, fresh, history }) => {
   const [copied, setCopied] = React.useState<'ok' | 'fail' | null>(null)
   const [revealed, setRevealed] = React.useState(false)
   const masked = item.sensitive && !revealed
+  const inClipboard = history ? (item as ClipHistoryEntry).inClipboard : true
 
   const doCopy = async () => {
     const ok = await copyText(item.text)
@@ -25,11 +27,12 @@ const Entry: React.FC<{ item: ClipDrop; fresh: boolean }> = observer(({ item, fr
   }
 
   return (
-    <div className={`${styles.entry}${fresh ? ` ${styles.fresh}` : ''}`}>
+    <div className={`${styles.entry}${fresh ? ` ${styles.fresh}` : ''}${history && !inClipboard ? ` ${styles.dismissed}` : ''}`}>
       <div className={styles.entryHead}>
         <span className={styles.entryTitle}>{item.title || 'Untitled'}</span>
         <span className={styles.entryMeta}>
           {item.from ? `${item.from} · ` : ''}{ago(item.ts)}
+          {history && (inClipboard ? ' · in clipboard' : ' · cleared')}
         </span>
         <span className={styles.spacer} />
         {item.sensitive && (
@@ -37,7 +40,16 @@ const Entry: React.FC<{ item: ClipDrop; fresh: boolean }> = observer(({ item, fr
             {revealed ? <EyeOff size={13} /> : <Eye size={13} />}
           </button>
         )}
-        <button className={styles.iconBtn} onClick={() => void clipboardStore.remove(item.id)} title="Delete">
+        {history && !inClipboard && (
+          <button className={styles.iconBtn} onClick={() => void clipboardStore.restore(item.id)} title="Put it back in the clipboard">
+            <RotateCcw size={13} />
+          </button>
+        )}
+        <button
+          className={styles.iconBtn}
+          onClick={() => void (history ? clipboardStore.removeFromHistory(item.id) : clipboardStore.remove(item.id))}
+          title={history ? 'Delete from history' : 'Remove from clipboard (stays in History)'}
+        >
           <Trash2 size={13} />
         </button>
       </div>
@@ -72,6 +84,7 @@ const Entry: React.FC<{ item: ClipDrop; fresh: boolean }> = observer(({ item, fr
 
 /**
  * Slide-down drawer for clipboard drops. Mounted once in App; opens itself when an agent posts.
+ * The History view lists every drop ever posted, including ones removed from the clipboard.
  */
 export const ClipboardDrawer: React.FC = observer(() => {
   React.useEffect(() => { void clipboardStore.ensureLoaded() }, [])
@@ -83,38 +96,91 @@ export const ClipboardDrawer: React.FC = observer(() => {
     return () => window.removeEventListener('keydown', onKey)
   }, [clipboardStore.open])
 
-  const { items, open, freshId, error } = clipboardStore
+  const { items, open, freshId, error, view } = clipboardStore
+  const inHistory = view === 'history'
+  const historyRows = clipboardStore.filteredHistory
 
   return (
     <>
       {open && <div className={styles.backdrop} onClick={() => clipboardStore.close()} />}
       <div className={`${styles.drawer}${open ? ` ${styles.open}` : ''}`} aria-hidden={!open}>
         <div className={styles.head}>
-          <ClipboardCopy size={14} />
-          <span className={styles.headTitle}>Clipboard</span>
-          <span className={styles.headHint}>text agents posted for you to copy</span>
+          {inHistory ? (
+            <button className={styles.iconBtn} onClick={() => clipboardStore.setView('clipboard')} title="Back to clipboard">
+              <ArrowLeft size={15} />
+            </button>
+          ) : (
+            <ClipboardCopy size={14} />
+          )}
+          <span className={styles.headTitle}>{inHistory ? 'Clipboard history' : 'Clipboard'}</span>
+          <span className={styles.headHint}>
+            {inHistory ? 'everything ever posted, newest first' : 'text agents posted for you to copy'}
+          </span>
           <span className={styles.spacer} />
-          {items.length > 0 && (
+          {!inHistory && (
+            <button className={styles.textBtn} onClick={() => clipboardStore.setView('history')} title="Everything ever posted, including cleared entries">
+              <History size={13} /> History
+            </button>
+          )}
+          {!inHistory && items.length > 0 && (
             <button
               className={styles.textBtn}
               onClick={async () => {
-                if (await confirmStore.confirm({ title: 'Clear clipboard', message: `Delete all ${items.length} entries?`, confirmText: 'Clear' })) {
-                  void clipboardStore.clear()
-                }
+                if (await confirmStore.confirm({
+                  title: 'Clear clipboard',
+                  message: `Remove all ${items.length} entries from the clipboard? They stay in History.`,
+                  confirmText: 'Clear',
+                  danger: false,
+                })) void clipboardStore.clear()
               }}
             >
               Clear all
+            </button>
+          )}
+          {inHistory && clipboardStore.history.length > 0 && (
+            <button
+              className={styles.textBtn}
+              onClick={async () => {
+                if (await confirmStore.confirm({
+                  title: 'Clear history',
+                  message: `Permanently delete all ${clipboardStore.history.length} history entries? Entries still in the clipboard stay there.`,
+                  confirmText: 'Delete history',
+                })) void clipboardStore.clearHistory()
+              }}
+            >
+              Clear history
             </button>
           )}
           <button className={styles.iconBtn} onClick={() => clipboardStore.close()} title="Close (Esc)">
             <X size={15} />
           </button>
         </div>
+        {inHistory && (
+          <div className={styles.filterRow}>
+            <input
+              className={styles.filter}
+              placeholder="Filter by title, sender or text…"
+              value={clipboardStore.historyFilter}
+              onChange={(e) => clipboardStore.setHistoryFilter(e.target.value)}
+            />
+          </div>
+        )}
         {error && <div className={styles.error}>{error}</div>}
         <div className={styles.list}>
-          {items.length === 0 ? (
+          {inHistory ? (
+            clipboardStore.historyLoading && clipboardStore.history.length === 0 ? (
+              <div className={styles.empty}>Loading…</div>
+            ) : historyRows.length === 0 ? (
+              <div className={styles.empty}>
+                {clipboardStore.historyFilter ? 'Nothing matches that filter.' : 'No history yet.'}
+              </div>
+            ) : (
+              historyRows.map((h) => <Entry key={h.id} item={h} history />)
+            )
+          ) : items.length === 0 ? (
             <div className={styles.empty}>
-              Nothing here yet. Agents post here with the <code>clipboard_post</code> tool.
+              Nothing here right now. Agents post here with the <code>clipboard_post</code> tool;
+              older entries are under History.
             </div>
           ) : (
             items.map((i) => <Entry key={i.id} item={i} fresh={i.id === freshId} />)
