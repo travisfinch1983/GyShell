@@ -412,6 +412,17 @@ do_uninstall() {
 }
 
 do_status() {
+    # A pre-rename install lives at $LEGACY_DIR with no .version anywhere. Reporting it as
+    # not_installed hid ai-epyc from the RVC launch picker while 3 RVC services were RUNNING from
+    # it (2026-10-04), which pushed a reinstall. A working legacy install IS installed; the next
+    # install run migrates it to $INSTALL_DIR.
+    if [ ! -f "$INSTALL_DIR/.version" ] && [ -f "$LEGACY_DIR/server.py" ] && [ ! -L "$LEGACY_DIR" ]; then
+        if conda run -n "$CONDA_ENV" python3 -c "import infer_rvc_python" 2>/dev/null; then
+            echo "PROXLAB_STATUS=installed"
+            echo "PROXLAB_VERSION=legacy"
+            return 0
+        fi
+    fi
     if [ -f "$INSTALL_DIR/.version" ]; then
         VER=$(cat "$INSTALL_DIR/.version")
         if conda run -n "$CONDA_ENV" python3 -c "import infer_rvc_python" 2>/dev/null; then
