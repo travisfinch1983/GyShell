@@ -1,0 +1,57 @@
+#!/bin/bash
+# hermes-gateway-quiet-restart <profile> [<profile>...]
+#
+# Restart Hermes messaging gateways WITHOUT the "Gateway shutting down" message that a plain
+# restart posts into each agent's home room (on Matrix that is the user's DM; Kyla got one for a
+# restart she had nothing to do with, 2026-10-04).
+#
+# Uses Hermes's own drain-control contract (gateway/drain_control.py), no source patch: an ACTIVE
+# drain marker with suppress_notification=true makes the shutdown path skip the home-channel
+# broadcast (run.py: drain_notification_suppressed()). It never suppresses the per-session
+# "your turn was interrupted" ping, and a real crash still announces itself.
+#
+# 🛑 ORDER MATTERS: stop -> clear -> start, never `systemctl restart`. The marker is stamped with
+# the CONTAINER's instantiation epoch, not the gateway's, so a gateway restarted while the marker
+# exists re-reads it, parks itself in "draining" and refuses every turn for up to an hour
+# (DRAIN_REQUEST_MAX_AGE_SECONDS). The trap clears the marker on every exit path.
+#
+# A gateway that is not running is simply started (nothing to announce).
+set -u
+PY=/usr/local/lib/hermes-agent/venv/bin/python
+BASE=/root/.hermes/profiles
+rc=0
+
+marker() {  # marker <write|clear> <home>
+  HERMES_HOME="$2" "$PY" - "$1" "$2" <<'EOF'
+import sys
+from pathlib import Path
+from gateway.drain_control import write_drain_request, clear_drain_request
+action, home = sys.argv[1], Path(sys.argv[2])
+if action == "write":
+    write_drain_request(principal="ailab-quiet-restart", suppress_notification=True, home=home)
+else:
+    clear_drain_request(home=home)
+EOF
+}
+
+for p in "$@"; do
+  if ! [[ "$p" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ ]]; then echo "$p: invalid profile name"; rc=1; continue; fi
+  home="$BASE/$p"; unit="hermes-gateway-$p"
+  if [ ! -d "$home" ]; then echo "$p: no profile at $home"; rc=1; continue; fi
+  if ! systemctl cat "$unit.service" >/dev/null 2>&1; then echo "$p: no gateway unit"; continue; fi
+  if ! systemctl is-active --quiet "$unit"; then
+    systemctl start "$unit" && echo "$p: was not running, started" || { echo "$p: start FAILED"; rc=1; }
+    continue
+  fi
+  trap 'marker clear "$home" >/dev/null 2>&1' EXIT
+  if ! marker write "$home"; then
+    echo "$p: could not write the drain marker, falling back to a normal restart"
+    systemctl restart "$unit" || rc=1
+    continue
+  fi
+  systemctl stop "$unit" || rc=1
+  marker clear "$home" || { echo "$p: marker clear FAILED, check $home/.drain_request.json"; rc=1; }
+  trap - EXIT
+  systemctl start "$unit" && echo "$p: quietly restarted" || { echo "$p: start FAILED"; rc=1; }
+done
+exit $rc

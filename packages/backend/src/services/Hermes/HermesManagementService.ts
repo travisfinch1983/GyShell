@@ -1246,7 +1246,9 @@ export class HermesManagementService {
         updated.push(p)
         const unit = `hermes-gateway-${p}.service`
         const active = (await this.ssh(`systemctl is-active ${shq(unit)} || true`)).trim() === 'active'
-        if (active) { await this.ssh(`systemctl restart ${shq(unit)}`); gatewaysRestarted.push(p) }
+        // Quiet: a plain restart posts "Gateway shutting down" into the agent's home room (the
+        // user's Matrix DM). See /usr/local/bin/hermes-gateway-quiet-restart.
+        if (active) { await this.ssh(`/usr/local/bin/hermes-gateway-quiet-restart ${shq(p)}`); gatewaysRestarted.push(p) }
       } catch (e) {
         failed.push({ agent: p, error: String((e as Error).message) })
       }
@@ -1308,7 +1310,7 @@ export class HermesManagementService {
     } catch { /* no unit for this profile — config applies on next gateway start */ }
     if (active) {
       try {
-        await this.ssh(`systemctl restart ${shq(unit)}`)
+        await this.ssh(`/usr/local/bin/hermes-gateway-quiet-restart ${shq(agentId)}`)   // quiet: no shutdown notice in the user's DM
         gatewayRestarted = true
       } catch (e) {
         // One catch used to cover both probes, so a GENUINE restart failure
@@ -1320,7 +1322,7 @@ export class HermesManagementService {
         this.cfg.notify?.({
           severity: 'warning', source: 'hermes-tts',
           message: `Voice config saved but the gateway restart failed for '${agentId}'`,
-          detail: `systemctl restart ${unit} failed (${(e as Error)?.message}). The new config is on disk; the OLD voice keeps serving until the gateway restarts.`,
+          detail: `quiet gateway restart of ${unit} failed (${(e as Error)?.message}). The new config is on disk; the OLD voice keeps serving until the gateway restarts.`,
         })
       }
     }
@@ -2524,7 +2526,7 @@ export class HermesManagementService {
     try {
       const active = (await this.ssh(`systemctl is-active ${shq(unit)} 2>/dev/null || true`)).trim()
       if (active !== 'active') return false
-      await this.ssh(`systemctl restart ${shq(unit)} >/dev/null 2>&1 || true`)
+      await this.ssh(`/usr/local/bin/hermes-gateway-quiet-restart ${shq(agentId)} >/dev/null 2>&1 || true`)   // quiet: no shutdown notice in the user's DM
       return true
     } catch {
       return false

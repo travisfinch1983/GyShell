@@ -118,7 +118,8 @@ def main():
     unit = f"hermes-gateway-{p}"
     has_unit = subprocess.run(["systemctl", "cat", f"{unit}.service"], capture_output=True).returncode == 0
     if has_unit:
-        subprocess.run(["systemctl", "restart", unit], timeout=60)
+        # quiet: a plain restart posts "Gateway shutting down" into the user's DM
+        subprocess.run(["/usr/local/bin/hermes-gateway-quiet-restart", p], timeout=120)
     else:
         r = subprocess.run([HERMES, "-p", p, "gateway", "install", "--system", "--run-as-user", "root", "--no-start-now"],
                            capture_output=True, text=True, timeout=120, input="")
