@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { RefreshCw, Plus, Trash2, Undo2, Save, PersonStanding, Settings2, RotateCcw, X } from 'lucide-react'
+import { RefreshCw, Plus, Trash2, Undo2, Save, PersonStanding, Settings2, RotateCcw, X, Bone } from 'lucide-react'
 import { poseManagerStore as store, type Pose, type MqStartOpts } from '../../stores/PoseManagerStore'
 import { igThumb, igImage } from '../../stores/TrainingImagesStore'
 import { confirmStore } from '../../stores/confirmStore'
 import styles from './PoseManager.module.scss'
+import { PoseSkeletonEditor } from './PoseSkeletonEditor'
 
 /** Add a pose. The source is a path inside /imagegen — Travis already browses his
  *  references in the Training Images tab, so a path is the shortest route from
@@ -247,7 +248,40 @@ const MqJobBar: React.FC = observer(() => {
   )
 })
 
-const PoseCard: React.FC<{ pose: Pose; onConvert: (ids: string[]) => void }> = observer(({ pose, onConvert }) => {
+const SkJobBar: React.FC = observer(() => {
+  const recent = store.skJobs.filter((j) => j.state === 'running' || (j.finishedAt && Date.now() - j.finishedAt < 10 * 60_000))
+  if (!recent.length) return null
+  return (
+    <>
+      {recent.map((j) => (
+        <div key={j.id} className={j.state === 'running' ? styles.jobBar : j.state === 'done' ? styles.jobDone : styles.jobFail}>
+          <strong>{j.state === 'running' ? 'Detecting skeletons' : j.state === 'done' ? 'Skeletons detected' : j.state === 'cancelled' ? 'Cancelled' : 'Skeletons failed'}</strong>
+          <span>{j.done}/{j.total}{j.flagged ? ` · ${j.flagged} to check` : ''}{j.kept ? ` · ${j.kept} hand-edited kept` : ''}{j.errors ? ` · ${j.errors} failed` : ''} · ai-epyc CPU{j.auto ? ' · auto' : ''}</span>
+          {j.error && <span className={styles.jobErr} title={j.error}>{j.error}</span>}
+          <span className={styles.spacer} />
+          {j.flagged > 0 && j.state !== 'running' && <button className={styles.btnSm} onClick={() => { store.filterSkeleton = 'review' }}>Show the ones to check</button>}
+          {j.state === 'running' && <button className={styles.btnDangerSm} onClick={() => void store.cancelSkeletons(j.id)}>Cancel</button>}
+        </div>
+      ))}
+    </>
+  )
+})
+
+/** Skeleton status under the mannequin thumbnail; opens the editor. */
+const SkChip: React.FC<{ pose: Pose; onOpen: () => void }> = observer(({ pose, onOpen }) => {
+  if (!pose.mannequin) return null
+  if (store.detecting.has(pose.id)) return <div className={styles.mqPending}>skeleton…</div>
+  const review = store.needsSkeletonReview(pose)
+  const label = !pose.skeleton_at ? '+ skeleton' : pose.skeleton_stale ? 'skeleton stale' : review ? 'check skeleton' : pose.skeleton_source === 'edited' ? 'skeleton ✎' : 'skeleton ✓'
+  return (
+    <button className={`${styles.skChip} ${review ? styles.skChipWarn : pose.skeleton_at ? styles.skChipOk : ''}`} onClick={onOpen}
+            title={pose.skeleton_at ? 'Open the skeleton editor' : 'No skeleton yet - open the editor to detect or place one'}>
+      <Bone size={10} /> {label}
+    </button>
+  )
+})
+
+const PoseCard: React.FC<{ pose: Pose; onConvert: (ids: string[]) => void; onSkeleton: (p: Pose) => void }> = observer(({ pose, onConvert, onSkeleton }) => {
   const dirty = store.drafts.has(pose.id)
   const [big, setBig] = useState<string | null>(null)
   const sel = store.selected.has(pose.id)
@@ -283,6 +317,7 @@ const PoseCard: React.FC<{ pose: Pose; onConvert: (ids: string[]) => void }> = o
           </div>
         ) : converting ? <div className={styles.mqPending}>converting…</div>
           : <button className={styles.mqMake} title="Convert this pose to a mannequin" onClick={() => onConvert([pose.id])}><PersonStanding size={12} /> mannequin</button>}
+        {pose.mannequin_rel && !converting && <SkChip pose={pose} onOpen={() => onSkeleton(pose)} />}
       </div>
       <div className={styles.cardBody}>
         <div className={styles.cardName} title={`${pose.name}\n(id ${pose.id} — the name is the node's stable id and is not editable)`}>
@@ -330,7 +365,10 @@ export const PoseManagerPanel: React.FC = observer(() => {
   const [adding, setAdding] = useState(false)
   const [convertIds, setConvertIds] = useState<string[] | null>(null)
   const [mqSettingsOpen, setMqSettingsOpen] = useState(false)
-  useEffect(() => { void store.load(); void store.loadMqSettings(); void store.pollMq() }, [])
+  const [skPose, setSkPose] = useState<Pose | null>(null)
+  useEffect(() => { void store.load(); void store.loadMqSettings(); void store.pollMq(); void store.pollSk() }, [])
+  const withMq = [...store.selected].filter((id) => store.poses.find((p) => p.id === id)?.mannequin)
+  const skCheck = store.poses.filter((p) => store.needsSkeletonReview(p)).length
 
   return (
     <div className={styles.wrap}>
@@ -339,7 +377,7 @@ export const PoseManagerPanel: React.FC = observer(() => {
           <RefreshCw size={14} /> {store.loading ? 'Loading…' : 'Reload'}
         </button>
         <button className={styles.btnPrimary} onClick={() => setAdding(true)}><Plus size={14} /> Add pose</button>
-        <span className={styles.dim}>{store.poses.length} poses · {store.poses.filter((p) => p.mannequin).length} with mannequin</span>
+        <span className={styles.dim}>{store.poses.length} poses · {store.poses.filter((p) => p.mannequin).length} with mannequin · {store.poses.filter((p) => p.skeleton_at).length} with skeleton{skCheck ? ` (${skCheck} to check)` : ''}</span>
         <button className={styles.btn} title="Mannequin conversion settings (auto-convert new poses, default GPU)" onClick={() => setMqSettingsOpen(true)}>
           <Settings2 size={14} /> Mannequin{store.mqSettings.auto ? ' · auto' : ''}
         </button>
@@ -355,6 +393,12 @@ export const PoseManagerPanel: React.FC = observer(() => {
                 onChange={(e) => { store.filterCategory = e.target.value }}>
           <option value="">all categories</option>
           {store.categories.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select className={styles.input} value={store.filterSkeleton} title="Filter by skeleton state"
+                onChange={(e) => { store.filterSkeleton = e.target.value as typeof store.filterSkeleton }}>
+          <option value="">any skeleton</option>
+          <option value="review">skeleton to check</option>
+          <option value="none">mannequin, no skeleton</option>
         </select>
       </div>
 
@@ -381,17 +425,23 @@ export const PoseManagerPanel: React.FC = observer(() => {
         <button className={styles.btnSm} onClick={() => store.selectWithoutMannequin()}>Select shown without mannequin</button>
         {store.selected.size > 0 && <button className={styles.btnSm} onClick={() => store.clearSelection()}>Clear</button>}
         <span className={styles.spacer} />
+        <button className={styles.btn} disabled={!withMq.length}
+                title="Detect OpenPose skeletons on the selected poses' mannequins (ai-epyc CPU, ~2 s each). Hand-edited skeletons are kept."
+                onClick={() => void store.detectSkeletons(withMq).catch((e) => { store.msg = 'Failed: ' + String(e?.message || e) })}>
+          <Bone size={14} /> Detect skeletons{withMq.length ? ` (${withMq.length})` : ''}
+        </button>
         <button className={styles.btnPrimary} disabled={!store.selected.size} onClick={() => setConvertIds([...store.selected])}>
           <PersonStanding size={14} /> Convert to mannequin…
         </button>
       </div>
       <MqJobBar />
+      <SkJobBar />
 
       {store.error && <div className={styles.err}>{store.error}</div>}
       {store.msg && <div className={styles.msg}>{store.msg}</div>}
 
       <div className={styles.grid}>
-        {store.visible.map((p) => <PoseCard key={p.id} pose={p} onConvert={setConvertIds} />)}
+        {store.visible.map((p) => <PoseCard key={p.id} pose={p} onConvert={setConvertIds} onSkeleton={setSkPose} />)}
         {!store.loading && !store.visible.length && !store.error && (
           <div className={styles.dim}>No poses match that filter.</div>
         )}
@@ -405,6 +455,7 @@ export const PoseManagerPanel: React.FC = observer(() => {
       {adding && <AddPoseModal onClose={() => setAdding(false)} />}
       {convertIds && <ConvertModal ids={convertIds} onClose={() => setConvertIds(null)} />}
       {mqSettingsOpen && <MqSettingsModal onClose={() => setMqSettingsOpen(false)} />}
+      {skPose && <PoseSkeletonEditor pose={store.poses.find((p) => p.id === skPose.id) || skPose} onClose={() => setSkPose(null)} />}
     </div>
   )
 })

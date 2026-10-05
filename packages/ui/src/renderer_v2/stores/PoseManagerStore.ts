@@ -16,6 +16,34 @@ export interface Pose {
   mannequin?: string
   mannequin_at?: number
   mannequin_rel?: string | null
+  /** OpenPose skeleton drawn on the mannequin (summary; the keypoints live in skeletons/<id>.json). */
+  skeleton_at?: number
+  skeleton_source?: 'auto' | 'edited'
+  /** Number of review reasons still open (0 = looks fine or a human checked it). */
+  skeleton_review?: number
+  /** Hand-edited skeleton whose mannequin has since been regenerated. */
+  skeleton_stale?: boolean
+  skeleton_rel?: string | null
+  skeleton_only_rel?: string | null
+}
+
+/** [x, y, score] in mannequin-image pixels; null = not placed. */
+export type SkPoint = [number, number, number] | null
+export interface Skeleton {
+  version?: number; width: number; height: number
+  /** 18 points, OpenPose / COCO-18 order (see SK_BODY_NAMES). */
+  body: SkPoint[]
+  hand_left: SkPoint[] | null; hand_right: SkPoint[] | null
+  /** Body points kept but not drawn (rear views hide the face points). */
+  hidden: number[]
+  source?: 'auto' | 'edited'; framing?: string | null; review?: string[]; reviewed?: boolean; mannequin_at?: number | null; saved_at?: number
+}
+export const SK_BODY_NAMES = ['nose', 'neck', 'right shoulder', 'right elbow', 'right wrist', 'left shoulder', 'left elbow', 'left wrist',
+  'right hip', 'right knee', 'right ankle', 'left hip', 'left knee', 'left ankle', 'right eye', 'left eye', 'right ear', 'left ear']
+export interface SkJob {
+  id: string; state: 'running' | 'done' | 'error' | 'cancelled'; total: number; done: number; ok: number; errors: number; flagged: number; kept: number
+  results: Record<string, { status: 'ok' | 'error' | 'kept'; error?: string; review?: string[] }>; ids: string[]; auto: boolean
+  error: string | null; startedAt: number; finishedAt: number | null
 }
 
 export interface MqGpu { index: number; name: string; uuid: string; totalMB: number; usedMB: number; freeMB: number; computeCap: string; warn: string[]; avoid: boolean }
@@ -67,6 +95,12 @@ export class PoseManagerStore {
   mqJobs: MqJob[] = []
   private mqTimer: ReturnType<typeof setTimeout> | null = null
 
+  // ── skeletons ──
+  /** '' all · 'review' flagged or stale · 'none' mannequin without skeleton */
+  filterSkeleton: '' | 'review' | 'none' = ''
+  skJobs: SkJob[] = []
+  private skTimer: ReturnType<typeof setTimeout> | null = null
+
   constructor() { makeAutoObservable(this) }
 
   toggleSelect(id: string) { const n = new Set(this.selected); if (n.has(id)) n.delete(id); else n.add(id); this.selected = n }
@@ -74,6 +108,14 @@ export class PoseManagerStore {
   selectWithoutMannequin() { this.selected = new Set(this.visible.filter((p) => !p.mannequin).map((p) => p.id)) }
   clearSelection() { this.selected = new Set() }
   get runningMqJobs(): MqJob[] { return this.mqJobs.filter((j) => j.state === 'running') }
+  get runningSkJobs(): SkJob[] { return this.skJobs.filter((j) => j.state === 'running') }
+  /** Pose ids whose skeleton is being detected right now. */
+  get detecting(): Set<string> {
+    const s = new Set<string>()
+    for (const j of this.runningSkJobs) for (const id of j.ids) if (!j.results[id]) s.add(id)
+    return s
+  }
+  needsSkeletonReview(p: Pose): boolean { return !!p.skeleton_at && (!!p.skeleton_review || !!p.skeleton_stale) }
   /** Pose ids currently being converted (cards show a spinner instead of a redo button). */
   get converting(): Set<string> {
     const s = new Set<string>()
@@ -119,6 +161,42 @@ export class PoseManagerStore {
       if (after !== before) await this.refreshMannequins()
     } catch { /* retry */ }
     if (this.runningMqJobs.length) this.mqTimer = setTimeout(() => void this.pollMq(), 4000)
+    else void this.pollSk()   // finished conversions start an automatic skeleton job
+  }
+
+  async detectSkeletons(ids: string[], overwriteEdited = false) {
+    const d = await api('/poses/skeleton/detect', { method: 'POST', body: { ids, overwriteEdited } })
+    runInAction(() => { this.skJobs = [d.job, ...this.skJobs.filter((j) => j.id !== d.job.id)]; this.msg = `Detecting ${d.job.total} skeleton${d.job.total === 1 ? '' : 's'} (CPU)…` })
+    void this.pollSk()
+    return d.job as SkJob
+  }
+  async cancelSkeletons(jobId: string) {
+    await api('/poses/skeleton/cancel', { method: 'POST', body: { jobId } })
+    void this.pollSk()
+  }
+  async pollSk() {
+    if (this.skTimer) { clearTimeout(this.skTimer); this.skTimer = null }
+    try {
+      const d = await api('/poses/skeleton/jobs')
+      const before = this.skJobs.reduce((n, j) => n + j.done, 0)
+      runInAction(() => { this.skJobs = d.jobs || [] })
+      const after = (d.jobs || []).reduce((n: number, j: SkJob) => n + j.done, 0)
+      if (after !== before) await this.refreshMannequins()
+    } catch { /* retry */ }
+    if (this.runningSkJobs.length) this.skTimer = setTimeout(() => void this.pollSk(), 2500)
+  }
+  async getSkeleton(id: string): Promise<{ pose: Pose; skeleton: Skeleton | null; default_hidden: number[]; stale: boolean }> {
+    return api(`/poses/skeleton/${encodeURIComponent(id)}`)
+  }
+  /** unchanged = "OK as is": keep the detected skeleton, just mark it reviewed. */
+  async saveSkeleton(id: string, skeleton: Skeleton, unchanged = false) {
+    const d = await api('/poses/skeleton/save', { method: 'POST', body: { id, skeleton, unchanged } })
+    runInAction(() => { const i = this.poses.findIndex((p) => p.id === id); if (i >= 0) this.poses[i] = { ...this.poses[i], ...d.pose }; this.msg = `Saved the skeleton of ${id}.` })
+    return d as { pose: Pose; skeleton: Skeleton }
+  }
+  async removeSkeleton(id: string) {
+    const d = await api('/poses/skeleton/remove', { method: 'POST', body: { id } })
+    runInAction(() => { const i = this.poses.findIndex((p) => p.id === id); if (i >= 0) this.poses[i] = { ...this.poses[i], ...d.pose } })
   }
   /** Merge mannequin fields from the server without touching unsaved prompt drafts. */
   async refreshMannequins() {
@@ -126,7 +204,12 @@ export class PoseManagerStore {
       const d = await api('/poses')
       runInAction(() => {
         const byId = new Map<string, Pose>((d.poses || []).map((p: Pose) => [p.id, p]))
-        this.poses = this.poses.map((p) => { const n = byId.get(p.id); return n ? { ...p, mannequin: n.mannequin, mannequin_at: n.mannequin_at, mannequin_rel: n.mannequin_rel } : p })
+        this.poses = this.poses.map((p) => {
+          const n = byId.get(p.id)
+          return n ? { ...p, mannequin: n.mannequin, mannequin_at: n.mannequin_at, mannequin_rel: n.mannequin_rel,
+                       skeleton_at: n.skeleton_at, skeleton_source: n.skeleton_source, skeleton_review: n.skeleton_review, skeleton_stale: n.skeleton_stale,
+                       skeleton_rel: n.skeleton_rel, skeleton_only_rel: n.skeleton_only_rel } : p
+        })
       })
     } catch { /* next poll */ }
   }
@@ -136,6 +219,8 @@ export class PoseManagerStore {
     return this.poses.filter((p) => {
       if (this.filterCategory && p.category !== this.filterCategory) return false
       if (this.filterView && p.view !== this.filterView) return false
+      if (this.filterSkeleton === 'review' && !this.needsSkeletonReview(p)) return false
+      if (this.filterSkeleton === 'none' && !(p.mannequin && !p.skeleton_at)) return false
       if (!q) return true
       return `${p.name} ${p.prompt} ${p.category} ${p.view}`.toLowerCase().includes(q)
     })

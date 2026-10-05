@@ -1988,7 +1988,8 @@ export function createImagegenRouter(config) {
     return a;
   };
   const mqRel = (p) => (p && p.mannequin ? `pose_library/mannequin_images/${p.mannequin}` : null);
-  const withRels = (p) => ({ ...p, rel: `pose_library/pose_images/${p.image}`, mannequin_rel: mqRel(p) });
+  const withRels = (p) => ({ ...p, rel: `pose_library/pose_images/${p.image}`, mannequin_rel: mqRel(p),
+                              skeleton_rel: skRel(p, 'overlay'), skeleton_only_rel: skRel(p, 'skel') });
 
   function loadMqSettings() {
     try { return { auto: false, host: 'ai-epyc', gpus: [], quant: 'int8', te: 'int8', steps: 25, outpaint: 'auto', ...JSON.parse(readFileSync(MQ_SETTINGS_FILE, 'utf8')) }; }
@@ -2112,6 +2113,9 @@ export function createImagegenRouter(config) {
           job.finishedAt = Date.now();
           const failed = job.workers.filter((x) => x.state === 'failed').map((x) => `GPU ${x.gpu}: ${x.error}`);
           if (failed.length) job.error = failed.join(' · ').slice(0, 800);
+          // New/regenerated mannequins get their skeleton detected (CPU); hand-edited ones are kept and marked stale.
+          const okIds = Object.entries(job.results).filter(([, r]) => r.status === 'ok').map(([id]) => id);
+          job.skeletonJob = skAutoDetect(okIds);
           report({ state: job.state === 'done' ? 'done' : 'failed',
                    detail: job.cancelled ? `cancelled after ${job.done}/${job.total}` : `${job.ok} converted${job.errors ? `, ${job.errors} failed` : ''}${failed.length ? ` — ${job.error}` : ''}`.slice(0, 300) });
           setTimeout(() => mqJobs.delete(jobId), 6 * 3600_000);
@@ -2169,8 +2173,10 @@ export function createImagegenRouter(config) {
     if (!p) return res.status(404).json({ error: `no such pose: ${id}` });
     const file = p.mannequin;
     delete p.mannequin; delete p.mannequin_at;
+    skClear(p);   // the skeleton was drawn on that mannequin
     try { savePoses(poses); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
     if (file) { try { unlinkSync(path.join(MQ_DIR, file)); } catch { /* already gone */ } }
+    skRemoveFiles(id);
     res.json({ ok: true, pose: withRels(p) });
   });
   router.get('/poses/mannequin/settings', (_req, res) => res.json({ ok: true, settings: loadMqSettings() }));
@@ -2196,6 +2202,208 @@ export function createImagegenRouter(config) {
     catch (e) { taskReport({ id: `pose-mannequin:auto-${Date.now()}`, source: 'pose-mannequin', state: 'failed',
                              label: 'Pose → mannequin (auto)', detail: String(e.message || e).slice(0, 300) }); return null; }
   }
+
+  // ---- POSE SKELETONS (OpenPose) -----------------------------------------------------
+  // An OpenPose skeleton drawn over each MANNEQUIN tells an edit model the pose and - through the
+  // fixed left/right limb colours - which way the body faces, which a bare grey mannequin doesn't.
+  // Detected with DWPose on the mannequin itself (never the original photo: outpainting and hand
+  // corrections make the two differ) by /opt/pose-mannequin/skeleton.py on ai-epyc, CPU-only, so it
+  // never competes with a generation. DWPose misreads some folded/lying mannequins, so anything
+  // doubtful is flagged and fixed by hand in the Pose Manager skeleton editor.
+  //   skeletons/<id>.json          canonical keypoints (see SK_SCHEMA below) - the only source of truth
+  //   skeletons/<id>_overlay.png   mannequin + skeleton (what an edit model gets)
+  //   skeletons/<id>_skel.png      skeleton alone on black (ControlNet-style)
+  // A hand-edited skeleton is never overwritten by automatic detection: when its mannequin is
+  // regenerated it is only marked stale, and the editor offers to re-detect.
+  // SK_SCHEMA: { version, width, height, body: [[x,y,score]|null] x18 (OpenPose/COCO-18 order),
+  //   hand_left|hand_right: [[x,y,score]|null] x21 | null, hidden: [body indices not drawn],
+  //   source: 'auto'|'edited', framing, review: [reasons], reviewed: bool, mannequin_at, saved_at }
+  const SK_DIR = path.join(POSE_DIR, 'skeletons');
+  const SK_HOST = 'ai-epyc';
+  const SK_WORKER = '/opt/pose-mannequin/skeleton.py';
+  const skJobs = new Map();
+  const skRel = (p, kind) => (p && p.skeleton_at ? `pose_library/skeletons/${p.id}_${kind}.png` : null);
+  // Rear views: DWPose still puts eyes and a nose on the back of the head, which reads as "the face is
+  // here". The left/right limb colours already carry the facing; hide the face points by default.
+  const skDefaultHidden = (p) => (/\b(rear|back)\b/i.test(`${p.view} ${p.prompt}`) ? [0, 14, 15] : []);
+
+  // OpenPose drawing standard (controlnet_aux util.draw_bodypose / draw_handpose).
+  const SK_LIMBS = [[1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7], [1, 8], [8, 9], [9, 10], [1, 11], [11, 12], [12, 13], [1, 0], [0, 14], [14, 16], [0, 15], [15, 17]];
+  const SK_COLORS = [[255, 0, 0], [255, 85, 0], [255, 170, 0], [255, 255, 0], [170, 255, 0], [85, 255, 0], [0, 255, 0], [0, 255, 85], [0, 255, 170],
+    [0, 255, 255], [0, 170, 255], [0, 85, 255], [0, 0, 255], [85, 0, 255], [170, 0, 255], [255, 0, 255], [255, 0, 170], [255, 0, 85]];
+  const SK_HAND_EDGES = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [0, 9], [9, 10], [10, 11], [11, 12], [0, 13], [13, 14], [14, 15], [15, 16], [0, 17], [17, 18], [18, 19], [19, 20]];
+  const hsvRgb = (h) => { const i = Math.floor(h * 6), f = h * 6 - i, q = 1 - f; const [r, g, b] = [[1, f, 0], [q, 1, 0], [0, 1, f], [0, q, 1], [f, 0, 1], [1, 0, q]][i % 6]; return [r, g, b].map((v) => Math.round(v * 255)); };
+  function skSvg(sk) {
+    const W = sk.width, H = sk.height, u = Math.max(W, H) / 512;        // OpenPose sizes are for a 512 canvas
+    const stick = Math.max(2, 4 * u), dot = Math.max(2, 4 * u), hdot = Math.max(1.5, 2 * u), hline = Math.max(1, 1.5 * u);
+    const hidden = new Set(sk.hidden || []);
+    const B = (i) => (!hidden.has(i) && sk.body[i]) || null;
+    const rgb = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+    let s = '';
+    SK_LIMBS.forEach(([a, b], i) => {
+      const p = B(a), q = B(b); if (!p || !q) return;
+      const len = Math.hypot(q[0] - p[0], q[1] - p[1]), ang = Math.atan2(q[1] - p[1], q[0] - p[0]) * 180 / Math.PI;
+      s += `<ellipse cx="${(p[0] + q[0]) / 2}" cy="${(p[1] + q[1]) / 2}" rx="${len / 2}" ry="${stick}" transform="rotate(${ang} ${(p[0] + q[0]) / 2} ${(p[1] + q[1]) / 2})" fill="${rgb(SK_COLORS[i], 0.6)}"/>`;
+    });
+    sk.body.forEach((k, i) => { if (B(i)) s += `<circle cx="${k[0]}" cy="${k[1]}" r="${dot}" fill="${rgb(SK_COLORS[i])}"/>`; });
+    for (const hand of [sk.hand_left, sk.hand_right]) {
+      if (!hand) continue;
+      SK_HAND_EDGES.forEach(([a, b], i) => { const p = hand[a], q = hand[b]; if (p && q) s += `<line x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}" stroke="${rgb(hsvRgb(i / SK_HAND_EDGES.length))}" stroke-width="${hline}"/>`; });
+      hand.forEach((k) => { if (k) s += `<circle cx="${k[0]}" cy="${k[1]}" r="${hdot}" fill="rgb(0,0,255)"/>`; });
+    }
+    return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${s}</svg>`);
+  }
+  async function skRender(p, sk) {
+    mkdirSync(SK_DIR, { recursive: true }); try { chmodSync(SK_DIR, 0o777); } catch { /* not owner */ }
+    const svg = skSvg(sk);
+    const mq = path.join(MQ_DIR, p.mannequin);
+    await sharp(mq).resize(sk.width, sk.height, { fit: 'fill' }).composite([{ input: svg }]).png().toFile(path.join(SK_DIR, `${p.id}_overlay.png`));
+    await sharp({ create: { width: sk.width, height: sk.height, channels: 3, background: '#000' } }).composite([{ input: svg }]).png().toFile(path.join(SK_DIR, `${p.id}_skel.png`));
+  }
+  function skLoad(id) { try { return JSON.parse(readFileSync(path.join(SK_DIR, `${id}.json`), 'utf8')); } catch { return null; } }
+  /** Write a skeleton + its images and record the summary on the pose (the list never reads 180 JSON files). */
+  async function skStore(id, sk) {
+    const poses = loadPoses(); const p = poses.find((x) => x.id === id);
+    if (!p) throw new Error(`no such pose: ${id}`);
+    if (!p.mannequin) throw new Error(`${id} has no mannequin to draw the skeleton on`);
+    const full = { version: 1, ...sk, mannequin_at: p.mannequin_at || null, saved_at: Date.now() };
+    await skRender(p, full);
+    const tmp = path.join(SK_DIR, `${id}.json.tmp`);
+    writeFileSync(tmp, JSON.stringify(full)); renameSync(tmp, path.join(SK_DIR, `${id}.json`));
+    p.skeleton_at = full.saved_at; p.skeleton_source = full.source;
+    p.skeleton_review = full.reviewed ? 0 : (full.review || []).length; p.skeleton_stale = false;
+    savePoses(poses);
+    return { pose: withRels(p), skeleton: full };
+  }
+  function skRemoveFiles(id) { for (const f of [`${id}.json`, `${id}_overlay.png`, `${id}_skel.png`]) { try { unlinkSync(path.join(SK_DIR, f)); } catch { /* gone */ } } }
+  const skClear = (p) => { delete p.skeleton_at; delete p.skeleton_source; delete p.skeleton_review; delete p.skeleton_stale; };
+
+  /** Detect on ai-epyc (CPU). keepEdited: automatic runs leave a hand-edited skeleton alone and mark it stale. */
+  function skStart(ids, { keepEdited = false, auto = false } = {}) {
+    const host = MQ_HOSTS[SK_HOST];
+    const all = loadPoses();
+    const list = ids.map((id) => all.find((p) => p.id === id)).filter((p) => p && p.mannequin);
+    if (!list.length) throw new Error('none of those poses has a mannequin yet - convert them first');
+    const jobId = crypto.randomBytes(6).toString('hex');
+    const job = { id: jobId, state: 'running', total: list.length, done: 0, ok: 0, errors: 0, flagged: 0, kept: 0, results: {},
+                  ids: list.map((p) => p.id), auto, startedAt: Date.now(), child: null, remote_pid: null };
+    skJobs.set(jobId, job);
+    const taskId = `pose-skeleton:${jobId}`;
+    const report = (x = {}) => taskReport({ id: taskId, source: 'pose-skeleton', done: job.done, total: job.total, ...x });
+    report({ state: 'running', label: `Pose skeletons · ${list.length} pose${list.length === 1 ? '' : 's'} · ${SK_HOST} CPU` + (auto ? ' (auto)' : '') });
+    const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+    const cmd = `${host.python} ${SK_WORKER} --pose-dir ${q(MQ_REMOTE_POSE_DIR)} --ids ${job.ids.map(q).join(' ')}`;
+    const child = spawn('ssh', [...sshBase(), host.ssh, cmd], { stdio: ['ignore', 'pipe', 'pipe'] });
+    job.child = child;
+    let ebuf = '', raw = '';
+    const onResult = async (ev) => {
+      job.done = ev.done;
+      if (ev.status !== 'ok') { job.errors += 1; job.results[ev.id] = { status: 'error', error: ev.error }; return; }
+      try {
+        const old = skLoad(ev.id);
+        if (keepEdited && old && old.source === 'edited') {
+          const poses = loadPoses(); const p = poses.find((x) => x.id === ev.id);
+          // Stale = drawn on an older mannequin than the current one (not merely "detection was asked for").
+          const stale = !!(p && p.mannequin_at && old.mannequin_at !== p.mannequin_at);
+          if (p && stale !== !!p.skeleton_stale) { p.skeleton_stale = stale; savePoses(poses); }
+          job.kept += 1; job.results[ev.id] = { status: 'kept', note: `hand-edited skeleton kept${stale ? ' - its mannequin changed, check it' : ''}` };
+          return;
+        }
+        const p = all.find((x) => x.id === ev.id);
+        const r = await skStore(ev.id, { ...ev.skeleton, hidden: skDefaultHidden(p), source: 'auto', reviewed: false });
+        job.ok += 1; if (r.skeleton.review.length) job.flagged += 1;
+        job.results[ev.id] = { status: 'ok', review: r.skeleton.review };
+      } catch (e) { job.errors += 1; job.results[ev.id] = { status: 'error', error: String(e.message || e) }; }
+    };
+    let chain = Promise.resolve();          // results are stored one at a time (poses.json is rewritten per result)
+    child.stderr.on('data', (d) => {
+      const chunk = d.toString(); raw = (raw + chunk).slice(-4000); ebuf += chunk;
+      let i;
+      while ((i = ebuf.indexOf('\n')) >= 0) {
+        const line = ebuf.slice(0, i).trim(); ebuf = ebuf.slice(i + 1);
+        if (!line.startsWith('{')) continue;
+        let ev; try { ev = JSON.parse(line); } catch { continue; }
+        if (ev.event === 'start') job.remote_pid = ev.pid;
+        else if (ev.event === 'sk') chain = chain.then(() => onResult(ev)).then(() => report({ detail: `${job.ok} done${job.flagged ? `, ${job.flagged} to review` : ''}${job.errors ? `, ${job.errors} failed` : ''}` }));
+      }
+    });
+    child.on('close', (code) => chain.then(() => {
+      job.state = job.cancelled ? 'cancelled' : (job.ok || job.kept ? 'done' : 'error');
+      if (job.state === 'error') job.error = `worker exited ${code}: ` + raw.trim().split('\n').filter((l) => !l.startsWith('{')).slice(-3).join(' | ');
+      job.finishedAt = Date.now();
+      report({ state: job.state === 'done' ? 'done' : 'failed',
+               detail: job.cancelled ? `cancelled after ${job.done}/${job.total}` : `${job.ok} detected, ${job.flagged} to review${job.kept ? `, ${job.kept} hand-edited kept` : ''}${job.errors ? `, ${job.errors} failed` : ''}${job.error ? ` - ${job.error}` : ''}`.slice(0, 300) });
+      setTimeout(() => skJobs.delete(jobId), 6 * 3600_000);
+    }));
+    child.on('error', (e) => { job.error = String(e.message || e); });
+    return job;
+  }
+  const skPublic = (j) => ({ id: j.id, state: j.state, total: j.total, done: j.done, ok: j.ok, errors: j.errors, flagged: j.flagged, kept: j.kept,
+    results: j.results, ids: j.ids, auto: j.auto, error: j.error || null, startedAt: j.startedAt, finishedAt: j.finishedAt || null });
+  /** After mannequins are (re)made: detect their skeletons, keeping hand-edited ones. Never throws. */
+  function skAutoDetect(ids) {
+    if (!ids.length) return null;
+    try { return skStart(ids, { keepEdited: true, auto: true }).id; }
+    catch (e) { taskReport({ id: `pose-skeleton:auto-${Date.now()}`, source: 'pose-skeleton', state: 'failed', label: 'Pose skeletons (auto)', detail: String(e.message || e).slice(0, 300) }); return null; }
+  }
+
+  router.post('/poses/skeleton/detect', express.json(), (req, res) => {
+    const b = req.body || {};
+    const ids = Array.isArray(b.ids) ? b.ids.map(String) : [];
+    if (!ids.length) return res.status(400).json({ error: 'select at least one pose' });
+    // An explicit request overwrites hand edits only when asked to (the editor's "Re-detect" does).
+    try { res.json({ ok: true, job: skPublic(skStart(ids, { keepEdited: !b.overwriteEdited })) }); }
+    catch (e) { res.status(400).json({ error: String(e.message || e) }); }
+  });
+  router.get('/poses/skeleton/jobs', (_req, res) => {
+    res.json({ ok: true, jobs: [...skJobs.values()].sort((a, b) => b.startedAt - a.startedAt).slice(0, 20).map(skPublic) });
+  });
+  router.post('/poses/skeleton/cancel', express.json(), (req, res) => {
+    const j = skJobs.get(String((req.body || {}).jobId || ''));
+    if (!j) return res.status(404).json({ error: 'unknown job' });
+    if (j.state !== 'running') return res.json({ ok: true, already: j.state });
+    j.cancelled = true;
+    if (j.remote_pid) { try { spawn('ssh', [...sshBase(), MQ_HOSTS[SK_HOST].ssh, `kill -TERM ${parseInt(j.remote_pid, 10)} 2>/dev/null || true`], { stdio: 'ignore' }); } catch { /* best effort */ } }
+    setTimeout(() => { try { j.child.kill('SIGTERM'); } catch { /* gone */ } }, 3000);
+    res.json({ ok: true, cancelled: true });
+  });
+  router.get('/poses/skeleton/:id', (req, res) => {
+    const p = (() => { try { return loadPoses().find((x) => x.id === req.params.id); } catch { return null; } })();
+    if (!p) return res.status(404).json({ error: `no such pose: ${req.params.id}` });
+    const sk = skLoad(p.id);
+    res.json({ ok: true, pose: withRels(p), skeleton: sk, default_hidden: skDefaultHidden(p),
+               stale: !!(sk && p.mannequin_at && sk.mannequin_at !== p.mannequin_at) });
+  });
+  const skPoint = (k) => (k === null ? null : (Array.isArray(k) && k.length >= 2 && k.slice(0, 3).every((v) => typeof v === 'number' && Number.isFinite(v))
+    ? [Math.round(k[0] * 10) / 10, Math.round(k[1] * 10) / 10, k.length > 2 ? Math.max(0, Math.min(1, k[2])) : 1] : undefined));
+  /** Save a hand-edited skeleton (from the editor). "OK as is" saves the detected one unchanged with reviewed=true. */
+  router.post('/poses/skeleton/save', express.json({ limit: '2mb' }), async (req, res) => {
+    const b = req.body || {}; const id = String(b.id || ''); const s = b.skeleton || {};
+    const body = Array.isArray(s.body) && s.body.length === 18 ? s.body.map(skPoint) : null;
+    const hand = (h) => (h == null ? null : Array.isArray(h) && h.length === 21 ? h.map(skPoint) : undefined);
+    const hl = hand(s.hand_left), hr = hand(s.hand_right);
+    if (!body || body.includes(undefined) || hl === undefined || hr === undefined || (hl && hl.includes(undefined)) || (hr && hr.includes(undefined)))
+      return res.status(400).json({ error: 'skeleton must have 18 body points and 21-point hands (null = missing)' });
+    const W = parseInt(s.width, 10), H = parseInt(s.height, 10);
+    if (!(W > 0 && H > 0)) return res.status(400).json({ error: 'width/height required' });
+    const hidden = Array.isArray(s.hidden) ? [...new Set(s.hidden.map((i) => parseInt(i, 10)).filter((i) => i >= 0 && i < 18))] : [];
+    try {
+      const r = await skStore(id, { width: W, height: H, body, hand_left: hl, hand_right: hr, hidden, framing: s.framing || null,
+                                    review: Array.isArray(s.review) ? s.review.map(String).slice(0, 20) : [], reviewed: true,
+                                    source: b.unchanged ? (s.source || 'auto') : 'edited' });
+      res.json({ ok: true, ...r });
+    } catch (e) { res.status(400).json({ error: String(e.message || e) }); }
+  });
+  router.post('/poses/skeleton/remove', express.json(), (req, res) => {
+    const id = String((req.body || {}).id || '');
+    let poses; try { poses = loadPoses(); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    const p = poses.find((x) => x.id === id);
+    if (!p) return res.status(404).json({ error: `no such pose: ${id}` });
+    skClear(p);
+    try { savePoses(poses); } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    skRemoveFiles(id);
+    res.json({ ok: true, pose: withRels(p) });
+  });
 
   router.get('/poses', (_req, res) => {
     try {
@@ -2375,6 +2583,7 @@ export function createImagegenRouter(config) {
     // exists and must still have its picture.
     try { unlinkSync(path.join(POSE_IMAGES, pose.image)); } catch { /* already gone */ }
     if (pose.mannequin) { try { unlinkSync(path.join(MQ_DIR, pose.mannequin)); } catch { /* already gone */ } }
+    skRemoveFiles(id);
     res.json({ ok: true, deleted: id, remaining: rest.length, restart_required: true });
   });
 
