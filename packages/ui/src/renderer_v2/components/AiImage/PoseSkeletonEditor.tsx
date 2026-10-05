@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Undo2, RefreshCw, ArrowLeftRight, Save, Check, X, EyeOff, Eye, Trash2, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Undo2, RefreshCw, ArrowLeftRight, Save, Check, X, EyeOff, Eye, Trash2, ChevronLeft, ChevronRight, Wand2 } from 'lucide-react'
 import { poseManagerStore as store, SK_BODY_NAMES, type Pose, type Skeleton, type SkPoint } from '../../stores/PoseManagerStore'
 import { igImage } from '../../stores/TrainingImagesStore'
 import { confirmStore } from '../../stores/confirmStore'
@@ -178,13 +178,16 @@ export const PoseSkeletonEditor: React.FC<{ pose: Pose; onClose: () => void; lis
     }
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey)
   })
-  const redetect = async () => {
-    if (dirty || saved?.source === 'edited') {
+  const redetect = async (fromPoints = false) => {
+    if (!fromPoints && (dirty || saved?.source === 'edited')) {
       if (!(await confirmStore.confirm({ title: 'Re-detect skeleton', message: 'Replace this skeleton (including your edits) with a fresh automatic detection?', confirmText: 'Re-detect' }))) return
     }
-    setBusy('Detecting on the CPU (a few seconds)…')
+    // "Detect from my points": every joint currently placed is sent as a hint and kept exactly; the
+    // detector uses them to frame and turn the figure upright, then fills in only the missing ones.
+    const hints = fromPoints && sk ? { [pose.id]: sk.body.map((k) => (k ? [k[0], k[1]] : null)) } : undefined
+    setBusy(fromPoints ? 'Detecting the rest around your points (a few seconds)…' : 'Detecting on the CPU (a few seconds)…')
     try {
-      const job = await store.detectSkeletons([pose.id], true)
+      const job = await store.detectSkeletons([pose.id], true, hints)
       for (let t = 0; t < 120; t++) {
         await new Promise((r) => setTimeout(r, 1500))
         const j = store.skJobs.find((x) => x.id === job.id)
@@ -304,6 +307,13 @@ export const PoseSkeletonEditor: React.FC<{ pose: Pose; onClose: () => void; lis
               </div>
             ) : <div className={styles.dim}>none</div>}
             {placing !== null && <div className={styles.hint}>Click on the image to place the <strong>{SK_BODY_NAMES[placing]}</strong>.</div>}
+            {missing.length > 0 && (
+              <>
+                <button className={styles.btnSm} onClick={() => void redetect(true)} disabled={!!busy || !sk || 18 - missing.length < 2}
+                        title="Keep every joint you've placed and let the detector find the rest around them"><Wand2 size={11} /> Detect the rest from my points</button>
+                <div className={styles.hint}>Place a few anchor joints first - head or neck, both hips and a foot work best (they tell it which way is up) - then let it fill in the others.</div>
+              </>
+            )}
 
             <div className={styles.section}>Facing</div>
             <button className={styles.btnSm} onClick={swapLR} disabled={!sk}><ArrowLeftRight size={11} /> Swap left / right</button>
@@ -327,7 +337,7 @@ export const PoseSkeletonEditor: React.FC<{ pose: Pose; onClose: () => void; lis
         <div className={styles.modalFoot}>
           <button className={styles.btn} onClick={doUndo} disabled={!undo.length || !!busy}><Undo2 size={13} /> Undo</button>
           <button className={styles.btn} onClick={() => { if (saved) { setSk(clone(saved)); setUndo([]); setSel(null) } }} disabled={!dirty || !!busy}>Revert</button>
-          <button className={styles.btn} onClick={() => void redetect()} disabled={!!busy || !pose.mannequin_rel}><RefreshCw size={13} /> Re-detect</button>
+          <button className={styles.btn} onClick={() => void redetect(false)} disabled={!!busy || !pose.mannequin_rel}><RefreshCw size={13} /> Re-detect</button>
           {(busy || msg) && <span className={styles.dim}>{busy || msg}</span>}
           <span className={styles.spacer} />
           {reviewOpen && !dirty && <button className={styles.btn} onClick={() => void save(true)} disabled={!!busy} title="The detection is fine - clear the review flag"><Check size={13} /> OK as is</button>}

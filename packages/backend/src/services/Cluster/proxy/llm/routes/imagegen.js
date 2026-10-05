@@ -2313,7 +2313,7 @@ export function createImagegenRouter(config) {
   const skClear = (p) => { delete p.skeleton_at; delete p.skeleton_source; delete p.skeleton_review; delete p.skeleton_stale; };
 
   /** Detect on ai-epyc (CPU). keepEdited: automatic runs leave a hand-edited skeleton alone and mark it stale. */
-  function skStart(ids, { keepEdited = false, auto = false } = {}) {
+  function skStart(ids, { keepEdited = false, auto = false, hints = null } = {}) {
     const host = MQ_HOSTS[SK_HOST];
     const all = loadPoses();
     const list = ids.map((id) => all.find((p) => p.id === id)).filter((p) => p && p.mannequin);
@@ -2326,7 +2326,9 @@ export function createImagegenRouter(config) {
     const report = (x = {}) => taskReport({ id: taskId, source: 'pose-skeleton', done: job.done, total: job.total, ...x });
     report({ state: 'running', label: `Pose skeletons · ${list.length} pose${list.length === 1 ? '' : 's'} · ${SK_HOST} CPU` + (auto ? ' (auto)' : '') });
     const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
-    const cmd = `${host.python} ${SK_WORKER} --pose-dir ${q(MQ_REMOTE_POSE_DIR)} --ids ${job.ids.map(q).join(' ')}`;
+    // hints: joints placed by hand in the editor; the worker keeps them and detects the rest around them.
+    const hintArg = hints ? ` --hints-b64 ${q(Buffer.from(JSON.stringify(hints)).toString('base64'))}` : '';
+    const cmd = `${host.python} ${SK_WORKER} --pose-dir ${q(MQ_REMOTE_POSE_DIR)} --ids ${job.ids.map(q).join(' ')}${hintArg}`;
     const child = spawn('ssh', [...sshBase(), host.ssh, cmd], { stdio: ['ignore', 'pipe', 'pipe'] });
     job.child = child;
     let ebuf = '', raw = '';
@@ -2344,7 +2346,7 @@ export function createImagegenRouter(config) {
           return;
         }
         const p = all.find((x) => x.id === ev.id);
-        const r = await skStore(ev.id, { ...ev.skeleton, hidden: skDefaultHidden(p, ev.skeleton), source: 'auto', reviewed: false });
+        const r = await skStore(ev.id, { ...ev.skeleton, hidden: skDefaultHidden(p, ev.skeleton), source: hints?.[ev.id] ? 'edited' : 'auto', reviewed: false });
         job.ok += 1; if (r.skeleton.review.length) job.flagged += 1;
         job.results[ev.id] = { status: 'ok', review: r.skeleton.review };
       } catch (e) { job.errors += 1; job.results[ev.id] = { status: 'error', error: String(e.message || e) }; }
@@ -2386,7 +2388,15 @@ export function createImagegenRouter(config) {
     const ids = Array.isArray(b.ids) ? b.ids.map(String) : [];
     if (!ids.length) return res.status(400).json({ error: 'select at least one pose' });
     // An explicit request overwrites hand edits only when asked to (the editor's "Re-detect" does).
-    try { res.json({ ok: true, job: skPublic(skStart(ids, { keepEdited: !b.overwriteEdited })) }); }
+    // hints: {poseId: [18 x ([x, y] | null)]} - "Detect from my points" in the editor.
+    let hints = null;
+    if (b.hints != null) {
+      const okPt = (k) => k === null || (Array.isArray(k) && k.length >= 2 && k.slice(0, 2).every((v) => Number.isFinite(v)));
+      const bad = typeof b.hints !== 'object' || Object.entries(b.hints).some(([id, arr]) => !ids.includes(id) || !Array.isArray(arr) || arr.length !== 18 || !arr.every(okPt));
+      if (bad) return res.status(400).json({ error: 'hints must be {poseId: 18 x ([x, y] | null)} for the requested poses' });
+      hints = Object.fromEntries(Object.entries(b.hints).map(([id, arr]) => [id, arr.map((k) => (k ? [k[0], k[1]] : null))]));
+    }
+    try { res.json({ ok: true, job: skPublic(skStart(ids, { keepEdited: !b.overwriteEdited && !hints, hints })) }); }
     catch (e) { res.status(400).json({ error: String(e.message || e) }); }
   });
   router.get('/poses/skeleton/jobs', (_req, res) => {

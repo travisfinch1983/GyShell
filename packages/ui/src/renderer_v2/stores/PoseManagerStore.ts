@@ -164,8 +164,9 @@ export class PoseManagerStore {
     else void this.pollSk()   // finished conversions start an automatic skeleton job
   }
 
-  async detectSkeletons(ids: string[], overwriteEdited = false) {
-    const d = await api('/poses/skeleton/detect', { method: 'POST', body: { ids, overwriteEdited } })
+  /** hints: joints placed by hand ({poseId: 18 x ([x, y] | null)}) - kept exactly, the rest detected around them. */
+  async detectSkeletons(ids: string[], overwriteEdited = false, hints?: Record<string, (number[] | null)[]>) {
+    const d = await api('/poses/skeleton/detect', { method: 'POST', body: { ids, overwriteEdited, ...(hints ? { hints } : {}) } })
     runInAction(() => { this.skJobs = [d.job, ...this.skJobs.filter((j) => j.id !== d.job.id)]; this.msg = `Detecting ${d.job.total} skeleton${d.job.total === 1 ? '' : 's'} (CPU)…` })
     void this.pollSk()
     return d.job as SkJob
