@@ -313,7 +313,7 @@ export class UniversalProxyService {
     const { createUiPrefsRouter } = await import('./proxy/ui-prefs.js')
     app.use('/api/ui-prefs', createUiPrefsRouter())
     const { createClaudeRouter } = await import('./proxy/claude.js')
-    app.use('/api/claude', createClaudeRouter({ exec: this.sshExec }))
+    app.use('/api/claude', createClaudeRouter({ exec: this.sshExec, keyPath: this.keyPath }))
     // @ts-expect-error — JS router: LoRA training-image browser/organizer (local-fs + sharp on /ai-assets/imagegen)
     const { createImagegenRouter } = await import('./proxy/llm/routes/imagegen.js')
     app.use('/api/imagegen', createImagegenRouter({ keyPath: this.keyPath, taskReport: (t: any) => this.notifications?.taskReport?.(t) }))

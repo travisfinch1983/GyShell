@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import styles from './Claude.module.scss'
+import { SendImagesDialog } from './SendImagesDialog'
 
 /**
  * Native console for a consolidated Claude instance — replaces the ttyd iframe.
@@ -31,6 +32,21 @@ export const NativeConsole: React.FC<{ instanceId: string; height: number }> = (
   const retakeRef = useRef<() => void>(() => undefined)
   /** Send raw key bytes to the instance — for keys a phone keyboard does not have (Esc). */
   const sendKeysRef = useRef<(bytes: string) => boolean>(() => false)
+  /** Images picked with the IMAGES button, waiting in the send dialog. */
+  const [imgFiles, setImgFiles] = useState<File[] | null>(null)
+  const imgInputRef = useRef<HTMLInputElement | null>(null)
+
+  /** Type the uploaded images into the instance's prompt as one message, then submit it. Each path
+   *  goes in its own bracketed paste: Claude Code turns a pasted image path into an attached image
+   *  ([Image #N]); if it ever doesn't, the path is still there in plain text for the instance to Read. */
+  const pasteImages = async (paths: string[], message: string) => {
+    const paste = (t: string) => sendKeysRef.current(`\x1b[200~${t}\x1b[201~`)
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
+    if (message) { paste(message + ' '); await wait(150) }
+    for (const p of paths) { paste(p + ' '); await wait(250) }
+    await wait(500)                 // let Claude Code finish reading the images before Enter
+    sendKeysRef.current('\r')
+  }
 
   useEffect(() => {
     const host = hostRef.current
@@ -228,7 +244,26 @@ export const NativeConsole: React.FC<{ instanceId: string; height: number }> = (
         >
           ESC
         </button>
+        <button
+          className={styles.consoleKey}
+          disabled={state !== 'attached'}
+          onPointerDown={(e) => e.preventDefault()}
+          onClick={() => imgInputRef.current?.click()}
+          title="Send images to this Claude instance as a message"
+        >
+          IMAGES
+        </button>
+        <input ref={imgInputRef} type="file" accept="image/*" multiple hidden
+               onChange={(e) => { const l = Array.from(e.target.files || []); e.target.value = ''; if (l.length) setImgFiles(l.slice(0, 20)) }} />
       </div>
+      {imgFiles && (
+        <SendImagesDialog
+          instanceId={instanceId}
+          initial={imgFiles}
+          onClose={() => setImgFiles(null)}
+          onSent={(paths, message) => { setImgFiles(null); void pasteImages(paths, message) }}
+        />
+      )}
     </div>
   )
 }

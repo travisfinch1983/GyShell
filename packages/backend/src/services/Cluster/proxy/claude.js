@@ -8,6 +8,7 @@ import { Router } from 'express'
 import express from 'express'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { spawn } from 'node:child_process'
 
 const FILE_WHITELIST = new Set(['CLAUDE.md', 'RULES.md', 'MEMORY.md', 'TOOLS.md'])
 const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'` // single-quote shell-escape
@@ -19,7 +20,7 @@ function loadConns() { try { return JSON.parse(readFileSync(join(DATA(), 'claude
 /** Provisioning script (run via `pct exec <vmid> -- sh -c '<b64 | base64 -d | sh>'`). Idempotent:
  *  reuses an existing dtach session if present, installs ttyd if missing, and registers a managed
  *  base-path ttyd systemd unit that auto-starts at boot. Auto-accept via the env var (the --flag fails as root). */
-export function createClaudeRouter({ exec }) {
+export function createClaudeRouter({ exec, keyPath }) {
   const router = Router()
   const json = express.json({ limit: '10mb' })
   const dataDir = process.env.AILAB_PROXY_DATA_DIR || '/tmp'
@@ -46,6 +47,64 @@ export function createClaudeRouter({ exec }) {
   // runtime (users/dtach/ttyd) and returns the frozen Instance contract shape.
   // All methods + subpaths forward verbatim; body is piped raw (no re-parse).
   const IM_URL = (process.env.CLAUDE_INSTANCE_MANAGER_URL || 'http://10.0.0.161:7700').replace(/\/+$/, '')
+  // ── images -> a Claude Code instance (the "Images" button under the console) ──
+  // POST /send-images/:id  { files: [{ name, dataB64 }] }  -> { paths: [...] }
+  // Each image is streamed over ssh (stdin, never argv - images are MBs) into a 0700 folder owned
+  // by the instance's own Unix user on the instance container; the UI then pastes the paths into
+  // that instance's prompt, where Claude Code attaches image paths as images. Files older than 14
+  // days in that folder are pruned on each upload.
+  const CONSOLE_SSH = process.env.CLAUDE_CONSOLE_SSH_TARGET || 'root@10.0.0.161'
+  const IMG_EXT = /\.(png|jpe?g|webp|gif|bmp)$/i
+  const sshPipe = (cmd, input) => new Promise((resolve) => {
+    const args = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=10']
+    if (keyPath) args.push('-i', keyPath)
+    const child = spawn('ssh', [...args, CONSOLE_SSH, cmd], { stdio: ['pipe', 'pipe', 'pipe'] })
+    let out = '', err = ''
+    child.stdout.on('data', (d) => { out += d })
+    child.stderr.on('data', (d) => { err += d })
+    child.on('error', (e) => resolve({ code: 255, out, err: String(e.message || e) }))
+    child.on('close', (code) => resolve({ code, out, err }))
+    child.stdin.on('error', () => { /* surfaced via exit code */ })
+    child.stdin.end(input || undefined)
+  })
+  router.post('/send-images/:id', express.json({ limit: '120mb' }), async (req, res) => {
+    const id = String(req.params.id || '')
+    const files = Array.isArray(req.body?.files) ? req.body.files : []
+    if (!files.length) return res.status(400).json({ error: 'no images' })
+    if (files.length > 20) return res.status(400).json({ error: 'at most 20 images at a time' })
+    let inst
+    try {
+      const r = await fetch(`${IM_URL}/instances`, { signal: AbortSignal.timeout(8000) })
+      inst = ((await r.json()).instances || []).find((i) => i.id === id)
+    } catch (e) { return res.status(502).json({ error: `instance-manager unreachable: ${e?.cause?.message || e.message}` }) }
+    if (!inst) return res.status(404).json({ error: `unknown instance '${id}'` })
+    const user = inst.user || 'root'
+    if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(user)) return res.status(400).json({ error: `bad user for instance '${id}'` })
+    // home from passwd (root -> /root); folder private to that user
+    const dirCmd = `h=$(getent passwd ${q(user)} | cut -d: -f6); [ -n "$h" ] || exit 3; d="$h/claude-uploads"; ` +
+      `install -d -m 700 -o ${q(user)} -g "$(id -gn ${q(user)})" "$d" && find "$d" -type f -mtime +14 -delete 2>/dev/null; echo "$d"`
+    const dr = await sshPipe(dirCmd)
+    const dir = dr.out.trim().split('\n').pop()
+    if (dr.code !== 0 || !dir) return res.status(500).json({ error: `could not prepare the upload folder (${dr.code}): ${dr.err.trim().slice(0, 200)}` })
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
+    const paths = [], errors = []
+    for (const [i, f] of files.entries()) {
+      const base = String(f?.name || `image-${i + 1}.png`).split(/[\\/]/).pop()
+      const clean = base.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[._]+/, '').slice(-80) || `image-${i + 1}.png`
+      if (!IMG_EXT.test(clean)) { errors.push(`${base}: not an image (png/jpg/webp/gif/bmp)`); continue }
+      let buf
+      try { buf = Buffer.from(String(f.dataB64 || ''), 'base64') } catch { buf = null }
+      if (!buf || !buf.length) { errors.push(`${base}: empty`); continue }
+      const dest = `${dir}/${stamp}-${i + 1}-${clean}`
+      const w = await sshPipe(`umask 077; cat > ${q(dest)} && chown ${q(user)}: ${q(dest)}`, buf)
+      if (w.code !== 0) { errors.push(`${base}: write failed (${w.code}) ${w.err.trim().slice(0, 120)}`); continue }
+      paths.push(dest)
+    }
+    if (!paths.length) return res.status(400).json({ error: errors.join('; ') || 'nothing written' })
+    console.log(`[claude] ${paths.length} image(s) -> ${id} (${user}) in ${dir}${errors.length ? `; ${errors.length} skipped` : ''}`)
+    res.json({ ok: true, paths, errors })
+  })
+
   router.use('/instances', (req, res) => {
     const target = `${IM_URL}/instances${req.url === '/' ? '' : req.url}`
     const chunks = []
