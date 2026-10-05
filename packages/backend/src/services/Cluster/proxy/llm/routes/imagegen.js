@@ -2090,17 +2090,28 @@ export function createImagegenRouter(config) {
           if (ev.event === 'start') { w.remote_pid = ev.pid; w.state = 'loading ComfyUI'; }
           else if (ev.event === 'ready') w.state = 'converting';
           else if (ev.event === 'fatal') { w.state = 'failed'; w.error = ev.error; }
+          // worker v2 (claude2, 2026-10-05): the landmark pass failed and the plain mannequin was kept.
+          else if (ev.event === 'warn') {
+            job.warnings = (job.warnings || 0) + 1;
+            (job.warnById = job.warnById || {})[ev.id] = String(ev.warning || 'landmark pass failed');
+            job.lastWarning = `${ev.id}: ${ev.warning}`;
+          }
           else if (ev.event === 'img') {
             w.done = ev.done; job.done += 1;
             if (ev.status === 'ok') {
               job.ok += 1;
-              job.results[ev.id] = { status: 'ok', secs: ev.secs, sides: ev.sides };
+              job.results[ev.id] = { status: 'ok', secs: ev.secs, sides: ev.sides, landmarks: ev.landmarks,
+                                     ...(job.warnById?.[ev.id] ? { warning: job.warnById[ev.id] } : {}) };
               try {   // record it on the pose immediately, so a cancel keeps everything finished so far
                 const all = loadPoses(); const p = all.find((x) => x.id === ev.id);
-                if (p) { p.mannequin = `${ev.id}.png`; p.mannequin_at = Date.now(); savePoses(all); }
+                if (p) {
+                  p.mannequin = `${ev.id}.png`; p.mannequin_at = Date.now();
+                  if (typeof ev.landmarks === 'boolean') p.mannequin_landmarks = ev.landmarks;   // false = landmark pass failed, plain kept
+                  savePoses(all);
+                }
               } catch (e) { job.results[ev.id] = { status: 'error', error: 'saved image but could not update poses.json: ' + String(e.message || e) }; }
             } else { job.errors += 1; job.results[ev.id] = { status: 'error', error: ev.error }; job.lastError = `${ev.id}: ${ev.error}`; }
-            report({ detail: `${job.ok} done${job.errors ? `, ${job.errors} failed` : ''}` });
+            report({ detail: `${job.ok} done${job.errors ? `, ${job.errors} failed` : ''}${job.warnings ? `, ${job.warnings} without landmarks` : ''}` });
           } else if (ev.event === 'done') w.state = 'done';
         }
       });
@@ -2126,7 +2137,7 @@ export function createImagegenRouter(config) {
     return job;
   }
   const mqPublic = (j) => ({ id: j.id, state: j.state, host: j.host, gpus: j.gpus, total: j.total, done: j.done, ok: j.ok, errors: j.errors,
-    results: j.results, error: j.error || null, lastError: j.lastError || null, auto: j.auto, ids: j.ids, startedAt: j.startedAt, finishedAt: j.finishedAt || null,
+    results: j.results, error: j.error || null, lastError: j.lastError || null, warnings: j.warnings || 0, lastWarning: j.lastWarning || null, auto: j.auto, ids: j.ids, startedAt: j.startedAt, finishedAt: j.finishedAt || null,
     workers: j.workers.map((w) => ({ gpu: w.gpu, state: w.state, done: w.done, total: w.total, error: w.error || null })) });
 
   router.get('/poses/mannequin/gpus', async (_req, res) => {
