@@ -14,6 +14,16 @@ const HAND_EDGES: [number, number][] = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], 
 /** Left/right partners in the body list - swapping them turns the figure to face the other way. */
 /** Nose, eyes, ears - the points DWPose guesses worst on a faceless mannequin. */
 const FACE_POINTS = [0, 14, 15, 16, 17]
+/** Far-side eye + ear of a head in profile - same rule as skFarFace() in imagegen.js. f = nose - ear
+ *  midpoint, u = ear midpoint - neck; sign of f x u says which side faces away. null = not clearly profile. */
+const farFace = (b: SkPoint[]): number[] | null => {
+  const mid = (a: SkPoint, c: SkPoint): number[] | null => (a && c ? [(a[0] + c[0]) / 2, (a[1] + c[1]) / 2] : (a || c || null))
+  const nose = b[0], neck = b[1], ear = mid(b[16], b[17]) || mid(b[14], b[15])
+  if (!nose || !neck || !ear) return null
+  const fx = nose[0] - ear[0], fy = nose[1] - ear[1], ux = ear[0] - neck[0], uy = ear[1] - neck[1]
+  const sin = (fx * uy - fy * ux) / ((Math.hypot(fx, fy) * Math.hypot(ux, uy)) || 1)
+  return sin > 0.35 ? [14, 16] : sin < -0.35 ? [15, 17] : null
+}
 const LR_PAIRS: [number, number][] = [[2, 5], [3, 6], [4, 7], [8, 11], [9, 12], [10, 13], [14, 15], [16, 17]]
 const hsv = (h: number) => { const i = Math.floor(h * 6), f = h * 6 - i, q = 1 - f; const v = [[1, f, 0], [q, 1, 0], [0, 1, f], [0, q, 1], [f, 0, 1], [1, 0, q]][i % 6]; return `rgb(${v.map((x) => Math.round(x * 255)).join(',')})` }
 const rgb = (c: number[], a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`
@@ -116,6 +126,16 @@ export const PoseSkeletonEditor: React.FC<{ pose: Pose; onClose: () => void; lis
     if (!sk) return; const n = clone(sk); const h = new Set(n.hidden || [])
     for (const i of FACE_POINTS) { if (hide) h.add(i); else h.delete(i) }
     n.hidden = [...h].sort((a, b) => a - b); commit(n)
+  }
+  const hideFarFace = () => {
+    if (!sk) return
+    const far = farFace(sk.body)
+    if (!far) { setMsg('Can\'t tell which side is far - the head doesn\'t look clearly in profile (needs nose, neck and an ear or eye). Hide them by hand.'); return }
+    const n = clone(sk); const h = new Set(n.hidden || [])
+    for (const i of [0, 14, 15, 16, 17]) h.delete(i)
+    for (const i of far) h.add(i)
+    n.hidden = [...h].sort((a, b) => a - b); commit(n)
+    setMsg(`Hid the far ${far[0] === 14 ? 'right' : 'left'} eye and ear; nose and near eye/ear shown.`)
   }
   const removeSel = () => {
     if (!sk || !sel) return; const n = clone(sk); setPoint(n, sel.part, sel.i, null); commit(n); setSel(null)
@@ -267,6 +287,8 @@ export const PoseSkeletonEditor: React.FC<{ pose: Pose; onClose: () => void; lis
                       title="Unhide the nose, both eyes and both ears"><Eye size={11} /> Show all facial features</button>
               <button className={styles.btnSm} onClick={() => setFaceHidden(true)} disabled={!sk || FACE_POINTS.every((i) => hidden.has(i))}
                       title="Hide the nose, both eyes and both ears (e.g. a rear view)"><EyeOff size={11} /> Hide all</button>
+              <button className={styles.btnSm} onClick={hideFarFace} disabled={!sk}
+                      title="Profile: show the nose and near eye/ear, hide the far eye and ear (worked out from where the nose points)"><EyeOff size={11} /> Hide far eye &amp; ear</button>
             </div>
             {sk && FACE_POINTS.some((i) => !sk.body[i]) && (
               <div className={styles.hint}>Not detected (place them under Missing joints): {FACE_POINTS.filter((i) => !sk.body[i]).map((i) => SK_BODY_NAMES[i]).join(', ')}</div>

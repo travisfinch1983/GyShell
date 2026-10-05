@@ -2225,7 +2225,41 @@ export function createImagegenRouter(config) {
   const skRel = (p, kind) => (p && p.skeleton_at ? `pose_library/skeletons/${p.id}_${kind}.png` : null);
   // Rear views: DWPose still puts eyes and a nose on the back of the head, which reads as "the face is
   // here". The left/right limb colours already carry the facing; hide the face points by default.
-  const skDefaultHidden = (p) => (/\b(rear|back)\b/i.test(`${p.view} ${p.prompt}`) ? [0, 14, 15] : []);
+  /**
+   * Which eye + ear are on the FAR side of the head (hidden from the camera), from the skeleton itself.
+   * f = nose - ear midpoint (where the face points), u = ear midpoint - neck (head "up"); the sign of the
+   * 2-D cross product f x u says whether the figure's right side faces away (cross > 0) or toward the
+   * camera, for any head orientation (upright, lying, head back). Returns null when the head isn't
+   * clearly in profile. Checked against Travis's hand edits on 2026-10-04 (4/4 agree).
+   * Body indices: 14 right eye, 15 left eye, 16 right ear, 17 left ear.
+   */
+  function skFarFace(sk) {
+    const b = sk && sk.body; if (!b) return null;
+    const mid = (a, c) => (a && c ? [(a[0] + c[0]) / 2, (a[1] + c[1]) / 2] : (a || c || null));
+    const nose = b[0], neck = b[1], ear = mid(b[16], b[17]) || mid(b[14], b[15]);
+    if (!nose || !neck || !ear) return null;
+    const fx = nose[0] - ear[0], fy = nose[1] - ear[1], ux = ear[0] - neck[0], uy = ear[1] - neck[1];
+    const sin = (fx * uy - fy * ux) / ((Math.hypot(fx, fy) * Math.hypot(ux, uy)) || 1);
+    return sin > 0.35 ? [14, 16] : sin < -0.35 ? [15, 17] : null;
+  }
+  /**
+   * Points drawn hidden by default, from the view named in the label/prompt (a comma-separated list
+   * whose first part is usually the view: "Rear 3/4 view, high angle, ..."). Matched only as a phrase
+   * ending in "view" within one comma part - never a bare "back": prompts say "lying on back",
+   * "leaning back", "head back" on front/profile poses (that hid ~40 faces wrongly, fixed 2026-10-04).
+   *   rear / back view, incl. rear 3/4  -> nose + both eyes hidden (ears usually still visible)
+   *   front or side 3/4                 -> far ear hidden
+   *   profile / side view               -> far eye + far ear hidden
+   */
+  const skDefaultHidden = (p, sk) => {
+    const parts = `${p.view || ''},${p.prompt || ''}`.toLowerCase().split(',').map((x) => x.trim());
+    const view = (re) => parts.some((x) => re.test(x) && /\bview\b/.test(x));
+    const far = () => skFarFace(sk);
+    if (view(/\b(rear|back)\b/)) return [0, 14, 15];
+    if (view(/(3\/4|three[- ]quarter)/)) { const f = far(); return f ? [f[1]] : []; }
+    if (view(/\b(profile|side)\b/)) return far() || [];
+    return [];
+  };
 
   // OpenPose drawing standard (controlnet_aux util.draw_bodypose / draw_handpose).
   const SK_LIMBS = [[1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7], [1, 8], [8, 9], [9, 10], [1, 11], [11, 12], [12, 13], [1, 0], [0, 14], [14, 16], [0, 15], [15, 17]];
@@ -2310,7 +2344,7 @@ export function createImagegenRouter(config) {
           return;
         }
         const p = all.find((x) => x.id === ev.id);
-        const r = await skStore(ev.id, { ...ev.skeleton, hidden: skDefaultHidden(p), source: 'auto', reviewed: false });
+        const r = await skStore(ev.id, { ...ev.skeleton, hidden: skDefaultHidden(p, ev.skeleton), source: 'auto', reviewed: false });
         job.ok += 1; if (r.skeleton.review.length) job.flagged += 1;
         job.results[ev.id] = { status: 'ok', review: r.skeleton.review };
       } catch (e) { job.errors += 1; job.results[ev.id] = { status: 'error', error: String(e.message || e) }; }
@@ -2371,7 +2405,7 @@ export function createImagegenRouter(config) {
     const p = (() => { try { return loadPoses().find((x) => x.id === req.params.id); } catch { return null; } })();
     if (!p) return res.status(404).json({ error: `no such pose: ${req.params.id}` });
     const sk = skLoad(p.id);
-    res.json({ ok: true, pose: withRels(p), skeleton: sk, default_hidden: skDefaultHidden(p),
+    res.json({ ok: true, pose: withRels(p), skeleton: sk, default_hidden: skDefaultHidden(p, sk),
                stale: !!(sk && p.mannequin_at && sk.mannequin_at !== p.mannequin_at) });
   });
   const skPoint = (k) => (k === null ? null : (Array.isArray(k) && k.length >= 2 && k.slice(0, 3).every((v) => typeof v === 'number' && Number.isFinite(v))
