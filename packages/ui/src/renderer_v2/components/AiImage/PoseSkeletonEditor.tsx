@@ -12,6 +12,8 @@ const COLORS = [[255, 0, 0], [255, 85, 0], [255, 170, 0], [255, 255, 0], [170, 2
   [0, 255, 255], [0, 170, 255], [0, 85, 255], [0, 0, 255], [85, 0, 255], [170, 0, 255], [255, 0, 255], [255, 0, 170], [255, 0, 85]]
 const HAND_EDGES: [number, number][] = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [0, 9], [9, 10], [10, 11], [11, 12], [0, 13], [13, 14], [14, 15], [15, 16], [0, 17], [17, 18], [18, 19], [19, 20]]
 /** Left/right partners in the body list - swapping them turns the figure to face the other way. */
+/** Nose, eyes, ears - the points DWPose guesses worst on a faceless mannequin. */
+const FACE_POINTS = [0, 14, 15, 16, 17]
 const LR_PAIRS: [number, number][] = [[2, 5], [3, 6], [4, 7], [8, 11], [9, 12], [10, 13], [14, 15], [16, 17]]
 const hsv = (h: number) => { const i = Math.floor(h * 6), f = h * 6 - i, q = 1 - f; const v = [[1, f, 0], [q, 1, 0], [0, 1, f], [0, q, 1], [f, 0, 1], [1, 0, q]][i % 6]; return `rgb(${v.map((x) => Math.round(x * 255)).join(',')})` }
 const rgb = (c: number[], a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`
@@ -109,6 +111,11 @@ export const PoseSkeletonEditor: React.FC<{ pose: Pose; onClose: () => void; lis
   const toggleHidden = (i: number) => {
     if (!sk) return; const n = clone(sk); const h = new Set(n.hidden || [])
     if (h.has(i)) h.delete(i); else h.add(i); n.hidden = [...h].sort((a, b) => a - b); commit(n)
+  }
+  const setFaceHidden = (hide: boolean) => {
+    if (!sk) return; const n = clone(sk); const h = new Set(n.hidden || [])
+    for (const i of FACE_POINTS) { if (hide) h.add(i); else h.delete(i) }
+    n.hidden = [...h].sort((a, b) => a - b); commit(n)
   }
   const removeSel = () => {
     if (!sk || !sel) return; const n = clone(sk); setPoint(n, sel.part, sel.i, null); commit(n); setSel(null)
@@ -253,6 +260,17 @@ export const PoseSkeletonEditor: React.FC<{ pose: Pose; onClose: () => void; lis
                 <button className={styles.btnDangerSm} onClick={removeSel} title="Remove this point (it becomes 'missing')"><Trash2 size={11} /></button>
               </div>
             ) : <div className={styles.dim}>Drag a joint to move it; click one to hide or remove it.</div>}
+
+            <div className={styles.section}>Face</div>
+            <div className={styles.skChips}>
+              <button className={styles.btnSm} onClick={() => setFaceHidden(false)} disabled={!sk || !FACE_POINTS.some((i) => hidden.has(i))}
+                      title="Unhide the nose, both eyes and both ears"><Eye size={11} /> Show all facial features</button>
+              <button className={styles.btnSm} onClick={() => setFaceHidden(true)} disabled={!sk || FACE_POINTS.every((i) => hidden.has(i))}
+                      title="Hide the nose, both eyes and both ears (e.g. a rear view)"><EyeOff size={11} /> Hide all</button>
+            </div>
+            {sk && FACE_POINTS.some((i) => !sk.body[i]) && (
+              <div className={styles.hint}>Not detected (place them under Missing joints): {FACE_POINTS.filter((i) => !sk.body[i]).map((i) => SK_BODY_NAMES[i]).join(', ')}</div>
+            )}
 
             <div className={styles.section}>Missing joints</div>
             {missing.length ? (
