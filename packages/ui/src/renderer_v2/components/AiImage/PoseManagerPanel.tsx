@@ -366,6 +366,10 @@ export const PoseManagerPanel: React.FC = observer(() => {
   const [convertIds, setConvertIds] = useState<string[] | null>(null)
   const [mqSettingsOpen, setMqSettingsOpen] = useState(false)
   const [skPose, setSkPose] = useState<Pose | null>(null)
+  // Previous/Next order is SNAPSHOTTED when the editor opens: with the "check skeleton" filter on,
+  // saving a pose drops it from store.visible, which would otherwise strand the navigation.
+  const [skListIds, setSkListIds] = useState<string[]>([])
+  const openSkeleton = (p: Pose) => { setSkListIds(store.visible.filter((x) => x.mannequin_rel).map((x) => x.id)); setSkPose(p) }
   useEffect(() => { void store.load(); void store.loadMqSettings(); void store.pollMq(); void store.pollSk() }, [])
   const withMq = [...store.selected].filter((id) => store.poses.find((p) => p.id === id)?.mannequin)
   const skCheck = store.poses.filter((p) => store.needsSkeletonReview(p)).length
@@ -441,7 +445,7 @@ export const PoseManagerPanel: React.FC = observer(() => {
       {store.msg && <div className={styles.msg}>{store.msg}</div>}
 
       <div className={styles.grid}>
-        {store.visible.map((p) => <PoseCard key={p.id} pose={p} onConvert={setConvertIds} onSkeleton={setSkPose} />)}
+        {store.visible.map((p) => <PoseCard key={p.id} pose={p} onConvert={setConvertIds} onSkeleton={openSkeleton} />)}
         {!store.loading && !store.visible.length && !store.error && (
           <div className={styles.dim}>No poses match that filter.</div>
         )}
@@ -455,7 +459,8 @@ export const PoseManagerPanel: React.FC = observer(() => {
       {adding && <AddPoseModal onClose={() => setAdding(false)} />}
       {convertIds && <ConvertModal ids={convertIds} onClose={() => setConvertIds(null)} />}
       {mqSettingsOpen && <MqSettingsModal onClose={() => setMqSettingsOpen(false)} />}
-      {skPose && <PoseSkeletonEditor pose={store.poses.find((p) => p.id === skPose.id) || skPose} onClose={() => setSkPose(null)} />}
+      {skPose && <PoseSkeletonEditor pose={store.poses.find((p) => p.id === skPose.id) || skPose} onClose={() => setSkPose(null)}
+                                     list={skListIds.map((id) => store.poses.find((p) => p.id === id)).filter((p): p is Pose => !!p)} onNavigate={setSkPose} />}
     </div>
   )
 })

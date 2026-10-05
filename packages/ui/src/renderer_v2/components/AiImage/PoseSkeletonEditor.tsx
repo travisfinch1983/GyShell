@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Undo2, RefreshCw, ArrowLeftRight, Save, Check, X, EyeOff, Eye, Trash2 } from 'lucide-react'
+import { Undo2, RefreshCw, ArrowLeftRight, Save, Check, X, EyeOff, Eye, Trash2, ChevronLeft, ChevronRight } from 'lucide-react'
 import { poseManagerStore as store, SK_BODY_NAMES, type Pose, type Skeleton, type SkPoint } from '../../stores/PoseManagerStore'
 import { igImage } from '../../stores/TrainingImagesStore'
 import { confirmStore } from '../../stores/confirmStore'
@@ -24,7 +24,9 @@ const emptySkeleton = (w: number, h: number, hidden: number[]): Skeleton =>
 
 /** Fix or place a pose's OpenPose skeleton by hand. Drag joints, place missing ones, swap left/right
  *  (that is what tells the edit model which way the body faces), hide points that shouldn't be drawn. */
-export const PoseSkeletonEditor: React.FC<{ pose: Pose; onClose: () => void }> = observer(({ pose, onClose }) => {
+/** `list` = the poses to cycle through with Previous / Next (the panel passes what it is showing, so the
+ *  active filters apply - e.g. filter to "check skeleton" and Next walks only the flagged ones). */
+export const PoseSkeletonEditor: React.FC<{ pose: Pose; onClose: () => void; list?: Pose[]; onNavigate?: (p: Pose) => void }> = observer(({ pose, onClose, list = [], onNavigate }) => {
   const [sk, setSk] = useState<Skeleton | null>(null)
   const [saved, setSaved] = useState<Skeleton | null>(null)
   const [undo, setUndo] = useState<Skeleton[]>([])
@@ -114,16 +116,41 @@ export const PoseSkeletonEditor: React.FC<{ pose: Pose; onClose: () => void }> =
   const removeHand = (part: 'hand_left' | 'hand_right') => { if (!sk) return; const n = clone(sk); n[part] = null; commit(n); setSel(null) }
   const doUndo = () => { setUndo((u) => { if (!u.length) return u; setSk(u[u.length - 1]); return u.slice(0, -1) }); setSel(null) }
 
-  const save = async (unchanged = false) => {
-    if (!sk) return
+  const save = async (unchanged = false): Promise<boolean> => {
+    if (!sk) return false
     setBusy('Saving…')
     try {
       const r = await store.saveSkeleton(pose.id, sk, unchanged)
       setSk(clone(r.skeleton)); setSaved(clone(r.skeleton)); setUndo([]); setStale(false)
       setMsg(unchanged ? 'Marked as checked.' : 'Saved - the overlay image was redrawn.')
-    } catch (e: any) { setMsg('Save failed: ' + String(e?.message || e)) }
+      return true
+    } catch (e: any) { setMsg('Save failed: ' + String(e?.message || e)); return false }
     finally { setBusy('') }
   }
+
+  // Previous / Next through `list`. Unsaved edits are never dropped silently.
+  const idx = list.findIndex((p) => p.id === pose.id)
+  const prevPose = idx > 0 ? list[idx - 1] : null
+  const nextPose = idx >= 0 && idx < list.length - 1 ? list[idx + 1] : null
+  const go = async (target: Pose | null) => {
+    if (!target || !onNavigate || busy) return
+    if (dirty && !(await confirmStore.confirm({ title: 'Unsaved changes', message: `Leave ${pose.name} without saving your skeleton edits?`, confirmText: 'Discard and go' }))) return
+    onNavigate(target)
+  }
+  const saveAndNext = async (unchanged = false) => {
+    if (!(await save(unchanged))) return
+    if (nextPose && onNavigate) onNavigate(nextPose)
+    else setMsg(unchanged ? 'Marked as checked - that was the last one in the list.' : 'Saved - that was the last one in the list.')
+  }
+  // Keyboard: Alt+Left / Alt+Right = previous / next (plain arrows are left alone for inputs/sliders).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.altKey) return
+      if (e.key === 'ArrowLeft') { e.preventDefault(); void go(prevPose) }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); void go(nextPose) }
+    }
+    window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey)
+  })
   const redetect = async () => {
     if (dirty || saved?.source === 'edited') {
       if (!(await confirmStore.confirm({ title: 'Re-detect skeleton', message: 'Replace this skeleton (including your edits) with a fresh automatic detection?', confirmText: 'Re-detect' }))) return
@@ -159,6 +186,13 @@ export const PoseSkeletonEditor: React.FC<{ pose: Pose; onClose: () => void }> =
           <strong>Skeleton · {pose.name}</strong>
           <span className={styles.dim}>{saved ? `${saved.source === 'edited' ? 'hand-edited' : `auto-detected${saved.framing ? ` (${saved.framing})` : ''}`}${saved.reviewed ? ' · checked' : ''}` : 'no skeleton yet - place the joints, or Re-detect'}</span>
           <span className={styles.spacer} />
+          {onNavigate && list.length > 1 && (
+            <>
+              <button className={styles.btn} onClick={() => void go(prevPose)} disabled={!prevPose || !!busy} title={prevPose ? `Previous: ${prevPose.name} (Alt+←)` : 'First in the list'}><ChevronLeft size={13} /> Previous</button>
+              <span className={styles.dim}>{idx >= 0 ? `${idx + 1} / ${list.length}` : `not in the current list`}</span>
+              <button className={styles.btn} onClick={() => void go(nextPose)} disabled={!nextPose || !!busy} title={nextPose ? `Next: ${nextPose.name} (Alt+→)` : 'Last in the list'}>Next <ChevronRight size={13} /></button>
+            </>
+          )}
           <button className={styles.btn} onClick={() => void close()} disabled={!!busy}><X size={13} /> Close</button>
         </div>
 
@@ -257,7 +291,9 @@ export const PoseSkeletonEditor: React.FC<{ pose: Pose; onClose: () => void }> =
           {(busy || msg) && <span className={styles.dim}>{busy || msg}</span>}
           <span className={styles.spacer} />
           {reviewOpen && !dirty && <button className={styles.btn} onClick={() => void save(true)} disabled={!!busy} title="The detection is fine - clear the review flag"><Check size={13} /> OK as is</button>}
+          {reviewOpen && !dirty && onNavigate && <button className={styles.btn} onClick={() => void saveAndNext(true)} disabled={!!busy} title="Clear the review flag and open the next pose"><Check size={13} /> OK &amp; Next</button>}
           <button className={styles.btnPrimary} onClick={() => void save(false)} disabled={!sk || (!dirty && !!saved) || !!busy}><Save size={13} /> Save</button>
+          {onNavigate && <button className={styles.btnPrimary} onClick={() => void saveAndNext(false)} disabled={!sk || (!dirty && !!saved) || !!busy} title={nextPose ? `Save, then open ${nextPose.name}` : 'Save (this is the last one in the list)'}><Save size={13} /> Save &amp; Next <ChevronRight size={13} /></button>}
         </div>
       </div>
     </div>
