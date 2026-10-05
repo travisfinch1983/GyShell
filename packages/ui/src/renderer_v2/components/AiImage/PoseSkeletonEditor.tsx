@@ -24,6 +24,18 @@ const farFace = (b: SkPoint[]): number[] | null => {
   const sin = (fx * uy - fy * ux) / ((Math.hypot(fx, fy) * Math.hypot(ux, uy)) || 1)
   return sin > 0.35 ? [14, 16] : sin < -0.35 ? [15, 17] : null
 }
+/** Far ear on a REAR view - same rule as skRearFarEar() in imagegen.js: the face DWPose invents on the
+ *  back of the head sits on the side the head turns toward; nose to the figure's right -> left ear hidden. */
+const rearFarEar = (b: SkPoint[]): number[] => {
+  const nose = b[0], neck = b[1], rs = b[2], ls = b[5]
+  const hips = [b[8], b[11]].filter(Boolean) as number[][]
+  if (!nose || !neck || !rs || !ls || !hips.length) return []
+  const hx = hips.reduce((a, k) => a + k[0], 0) / hips.length, hy = hips.reduce((a, k) => a + k[1], 0) / hips.length
+  let ux = neck[0] - hx, uy = neck[1] - hy; const ul = Math.hypot(ux, uy) || 1; ux /= ul; uy /= ul
+  const sw = Math.hypot(rs[0] - ls[0], rs[1] - ls[1]) || 1
+  const off = ((nose[0] - neck[0]) * -uy + (nose[1] - neck[1]) * ux) / sw
+  return off > 0.35 ? [17] : off < -0.35 ? [16] : []
+}
 const LR_PAIRS: [number, number][] = [[2, 5], [3, 6], [4, 7], [8, 11], [9, 12], [10, 13], [14, 15], [16, 17]]
 const hsv = (h: number) => { const i = Math.floor(h * 6), f = h * 6 - i, q = 1 - f; const v = [[1, f, 0], [q, 1, 0], [0, 1, f], [0, q, 1], [f, 0, 1], [1, 0, q]][i % 6]; return `rgb(${v.map((x) => Math.round(x * 255)).join(',')})` }
 const rgb = (c: number[], a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`
@@ -129,6 +141,16 @@ export const PoseSkeletonEditor: React.FC<{ pose: Pose; onClose: () => void; lis
   }
   const hideFarFace = () => {
     if (!sk) return
+    // Rear view (its default hides the nose): nose + eyes hidden, plus the far ear if the head is turned.
+    if (defaultHidden.current.includes(0)) {
+      const ear = rearFarEar(sk.body)
+      const n = clone(sk); const h = new Set(n.hidden || [])
+      for (const i of [0, 14, 15, 16, 17]) h.delete(i)
+      for (const i of [0, 14, 15, ...ear]) h.add(i)
+      n.hidden = [...h].sort((a, b) => a - b); commit(n)
+      setMsg(ear.length ? `Rear view: face hidden, plus the far ${ear[0] === 16 ? 'right' : 'left'} ear.` : 'Rear view: face hidden; the head looks straight, so both ears stay.')
+      return
+    }
     const far = farFace(sk.body)
     if (!far) { setMsg('Can\'t tell which side is far - the head doesn\'t look clearly in profile (needs nose, neck and an ear or eye). Hide them by hand.'); return }
     const n = clone(sk); const h = new Set(n.hidden || [])

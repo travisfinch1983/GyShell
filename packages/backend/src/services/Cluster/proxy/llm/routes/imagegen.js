@@ -2243,11 +2243,32 @@ export function createImagegenRouter(config) {
     return sin > 0.35 ? [14, 16] : sin < -0.35 ? [15, 17] : null;
   }
   /**
+   * Far ear on a REAR view. From behind, DWPose still invents a face on the back of the head, but it
+   * puts it on the side the head is turned toward: the invented nose sits off the neck in the turn
+   * direction. Nose to the figure's image-right (upright frame) -> the LEFT ear is the hidden one, and
+   * vice versa. Matched all 6 of Travis's own rear-view ear choices (poses 20-25, 2026-10-04).
+   * The offset is measured across the body axis (neck - hip midpoint), in shoulder widths, so lying and
+   * crawling poses work too; under 0.35 shoulder widths = head straight, both ears stay.
+   */
+  function skRearFarEar(sk) {
+    const b = sk && sk.body; if (!b) return [];
+    const nose = b[0], neck = b[1], rs = b[2], ls = b[5];
+    const hips = [b[8], b[11]].filter(Boolean);
+    if (!nose || !neck || !rs || !ls || !hips.length) return [];
+    const hx = hips.reduce((a, k) => a + k[0], 0) / hips.length, hy = hips.reduce((a, k) => a + k[1], 0) / hips.length;
+    let ux = neck[0] - hx, uy = neck[1] - hy; const ul = Math.hypot(ux, uy) || 1; ux /= ul; uy /= ul;
+    const px = -uy, py = ux;                                  // "image-right" when the body is upright
+    const sw = Math.hypot(rs[0] - ls[0], rs[1] - ls[1]) || 1;
+    const off = ((nose[0] - neck[0]) * px + (nose[1] - neck[1]) * py) / sw;
+    return off > 0.35 ? [17] : off < -0.35 ? [16] : [];
+  }
+
+  /**
    * Points drawn hidden by default, from the view named in the label/prompt (a comma-separated list
    * whose first part is usually the view: "Rear 3/4 view, high angle, ..."). Matched only as a phrase
    * ending in "view" within one comma part - never a bare "back": prompts say "lying on back",
    * "leaning back", "head back" on front/profile poses (that hid ~40 faces wrongly, fixed 2026-10-04).
-   *   rear / back view, incl. rear 3/4  -> nose + both eyes hidden (ears usually still visible)
+   *   rear / back view, incl. rear 3/4  -> nose + both eyes hidden, plus the far ear if the head is turned
    *   front or side 3/4                 -> far ear hidden
    *   profile / side view               -> far eye + far ear hidden
    */
@@ -2255,7 +2276,7 @@ export function createImagegenRouter(config) {
     const parts = `${p.view || ''},${p.prompt || ''}`.toLowerCase().split(',').map((x) => x.trim());
     const view = (re) => parts.some((x) => re.test(x) && /\bview\b/.test(x));
     const far = () => skFarFace(sk);
-    if (view(/\b(rear|back)\b/)) return [0, 14, 15];
+    if (view(/\b(rear|back)\b/)) return [0, 14, 15, ...skRearFarEar(sk)];
     if (view(/(3\/4|three[- ]quarter)/)) { const f = far(); return f ? [f[1]] : []; }
     if (view(/\b(profile|side)\b/)) return far() || [];
     return [];
