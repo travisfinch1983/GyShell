@@ -1,5 +1,5 @@
-import React, { useState } from 'react'
-import { trainingImagesStore as store, type FindReplaceResult } from '../../stores/TrainingImagesStore'
+import React, { useEffect, useState } from 'react'
+import { trainingImagesStore as store, type FindReplaceResult, type CaptionTrigger } from '../../stores/TrainingImagesStore'
 import styles from './TrainingImages.module.scss'
 
 type Ext = 'txt' | 'caption'
@@ -27,11 +27,27 @@ export const FindReplaceModal: React.FC<{ files: string[]; onClose: () => void; 
     const [busy, setBusy] = useState(false)
     const [msg, setMsg] = useState('')
     const [preview, setPreview] = useState<FindReplaceResult | null>(null)
+    // Folder scope only. Default ON: captions usually live in the training_set_* subfolders, and a
+    // replace started from the parent folder used to touch nothing at all.
+    const [recursive, setRecursive] = useState(true)
+    const [triggers, setTriggers] = useState<CaptionTrigger[] | null>(null)
 
     const scoped = files.length > 0
+    const folderName = store.cwd.split('/').pop() || 'this folder'
     const scopeLabel = scoped
       ? `${files.length} selected image${files.length > 1 ? 's' : ''}`
-      : `every image in ${store.cwd.split('/').pop() || 'this folder'}`
+      : recursive ? `every image in ${folderName} and all its subfolders` : `images directly in ${folderName} (not subfolders)`
+
+    // Trigger mode: show the triggers actually in use, so the wrong one can be clicked, not guessed.
+    useEffect(() => {
+      if (!triggerMode) return
+      let live = true
+      setTriggers(null)
+      store.captionTriggers(scoped ? { keys: files } : { recursive })
+        .then((t) => { if (live) setTriggers(t) })
+        .catch((e) => { if (live) { setTriggers([]); setMsg('Could not list triggers: ' + (e?.message || e)) } })
+      return () => { live = false }
+    }, [triggerMode, recursive, scoped, files.join('|')])
 
     const toggleExt = (e: Ext) =>
       setExts((prev) => (prev.includes(e) ? prev.filter((x) => x !== e) : [...prev, e]))
@@ -42,6 +58,7 @@ export const FindReplaceModal: React.FC<{ files: string[]; onClose: () => void; 
       exts,
       whole_tag: wholeTag,
       ...(triggerMode ? { mode: 'trigger' as const } : {}),
+      ...(!scoped ? { recursive } : {}),
       case_sensitive: caseSensitive,
       dry_run: dry,
     })
@@ -74,6 +91,10 @@ export const FindReplaceModal: React.FC<{ files: string[]; onClose: () => void; 
       } finally { setBusy(false) }
     }
 
+    // Trigger mode may run with an empty Find ("replace whatever trigger is there") - the buttons
+    // used to require Find regardless, so that documented path could never be clicked.
+    const canRun = !!find || (triggerMode && !!replace)
+
     // Any criteria edit drops the preview so the shown before/after can't disagree with the form.
     const edit = <T,>(setter: (v: T) => void) => (v: T) => { setter(v); setPreview(null) }
 
@@ -93,9 +114,28 @@ export const FindReplaceModal: React.FC<{ files: string[]; onClose: () => void; 
           <div className={styles.acSection}>Find</div>
           <input
             className={styles.input} style={{ width: '100%' }} disabled={busy}
-            placeholder={triggerMode ? "current trigger — leave EMPTY to match whatever is there" : "large bulge"} value={find}
+            placeholder={triggerMode ? "current trigger (pick one below), or leave EMPTY to match whatever is there; several words: a, b" : "large bulge"} value={find}
             onChange={(e) => edit(setFind)(e.target.value)}
           />
+
+          {triggerMode && (
+            <div style={{ marginTop: 6 }}>
+              {triggers === null ? <span className={styles.acHint}>Reading the triggers in use…</span>
+                : triggers.length === 0 ? <span className={styles.acHint}>No trigger-like first tokens found in this scope.</span>
+                : (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    <span className={styles.acHint} style={{ alignSelf: 'center' }}>In use:</span>
+                    {triggers.slice(0, 16).map((t) => (
+                      <button key={t.trigger} className={styles.btn} disabled={busy} onClick={() => edit(setFind)(t.trigger)}
+                              title={`${t.txt} .txt + ${t.caption} .caption\n${t.folders.join('\n')}`}
+                              style={{ padding: '2px 8px', fontSize: 12, outline: find === t.trigger ? '1px solid var(--accent, #58a6ff)' : undefined }}>
+                        {t.trigger} <span style={{ opacity: 0.6 }}>×{t.count}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+            </div>
+          )}
 
           <div className={styles.acSection}>Replace with</div>
           <input
@@ -105,6 +145,13 @@ export const FindReplaceModal: React.FC<{ files: string[]; onClose: () => void; 
           />
 
           <div className={styles.acSection}>Apply to</div>
+          {!scoped && (
+            <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', marginBottom: 6 }}
+                   title="Also every subfolder - e.g. all the training sets under this folder">
+              <input type="checkbox" disabled={busy} checked={recursive} onChange={(e) => edit(setRecursive)(e.target.checked)} />
+              <span>Include subfolders</span>
+            </label>
+          )}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center' }}>
             <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
               <input type="checkbox" disabled={busy} checked={exts.includes('txt')} onChange={() => edit(toggleExt)('txt')} />
@@ -159,11 +206,11 @@ export const FindReplaceModal: React.FC<{ files: string[]; onClose: () => void; 
 
           <div className={styles.msg}>{msg}</div>
           <div className={styles.pkFoot}>
-            <button className={styles.btn} disabled={busy || !find || !exts.length} onClick={() => void run(true)}>Preview</button>
+            <button className={styles.btn} disabled={busy || !canRun || !exts.length} onClick={() => void run(true)}>Preview</button>
             <span className={styles.spacer} />
             <button
               className={styles.btnPrimary}
-              disabled={busy || !find || !exts.length || (!!preview && preview.occurrences === 0)}
+              disabled={busy || !canRun || !exts.length || (!!preview && preview.occurrences === 0)}
               onClick={() => void run(false)}
             >
               {busy ? '…' : 'Replace'}

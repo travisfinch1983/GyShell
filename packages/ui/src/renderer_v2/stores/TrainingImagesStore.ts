@@ -76,10 +76,13 @@ export interface FindReplaceBody {
   /** 'trigger' rewrites ONLY the leading token of each sidecar — the trigger word. With an
    *  empty `find` it replaces whatever currently leads the file. */
   mode?: 'trigger'
+  /** folder scope only: also every subfolder (all training sets under a parent folder) */
+  recursive?: boolean
   case_sensitive?: boolean
   dry_run?: boolean
   files?: string[]
 }
+export interface CaptionTrigger { trigger: string; count: number; txt: number; caption: number; folders: string[] }
 export interface FindReplaceSample { file: string; ext: string; before: string; after: string }
 export interface FindReplaceResult {
   ok: boolean
@@ -564,6 +567,22 @@ export class TrainingImagesStore {
    *  `dry_run` writes nothing and returns counts plus a few before/after pairs — a preview
    *  reporting only "142 occurrences" is a number the user has to take on faith, and
    *  substring mode is exactly where a match can land somewhere nobody intended. */
+  /** Leading comma token of every sidecar in scope, counted - which triggers are actually in use. */
+  async captionTriggers(opts: { recursive?: boolean; keys?: string[] }): Promise<CaptionTrigger[]> {
+    const merged = new Map<string, CaptionTrigger>()
+    const add = (list: CaptionTrigger[]) => { for (const t of list || []) { const m = merged.get(t.trigger); if (m) { m.count += t.count; m.txt += t.txt; m.caption += t.caption } else merged.set(t.trigger, { ...t }) } }
+    if (opts.keys && opts.keys.length) {
+      for (const g of this.splitKeys(opts.keys)) {
+        const d = await ig(`/caption-triggers?path=${encodeURIComponent(this.dirPath(g.sub))}&files=${encodeURIComponent(g.names.join(','))}`)
+        add(d.triggers)
+      }
+    } else {
+      const d = await ig(`/caption-triggers?path=${encodeURIComponent(this.dirPath(''))}&recursive=${opts.recursive ? 1 : 0}`)
+      add(d.triggers)
+    }
+    return [...merged.values()].sort((a, b) => b.count - a.count)
+  }
+
   async findReplace(body: FindReplaceBody, sub = ''): Promise<FindReplaceResult> {
     return ig('/caption-replace', { method: 'POST', body: { path: this.dirPath(sub), ...body } })
   }

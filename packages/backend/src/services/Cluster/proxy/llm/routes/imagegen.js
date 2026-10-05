@@ -2970,6 +2970,54 @@ export function createImagegenRouter(config) {
   // ---- Find & replace across caption sidecars.
   // POST { path, files?, find, replace, exts?:['txt','caption'], whole_tag?, case_sensitive?, dry_run? }
   // .txt is comma-tokenised; .caption is free prose. See the two modes below.
+  /** Images a caption operation covers: the folder's own images, plus every subfolder's when
+   *  recursive. Skips hidden and `_`-prefixed folders (trash, quarantine, batches). */
+  function captionScopeEntries(dir, recursive) {
+    const out = [];
+    (function walk(d, depth) {
+      const ents = readdirSync(d, { withFileTypes: true });
+      for (const e of ents) {
+        if (e.isFile() && isImage(e.name) && !isCollageFile(e.name)) out.push({ d, nm: e.name });
+        else if (recursive && e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('_') && depth < 8) walk(path.join(d, e.name), depth + 1);
+      }
+    })(dir, 0);
+    return out;
+  }
+
+  // ---- Which triggers are in use: the leading comma token of every sidecar in scope, counted.
+  // GET ?path=<folder rel>&recursive=1[&files=a.jpg,b.jpg] -> { triggers: [{ trigger, count, txt, caption, folders }] }
+  // Lets the find & replace dialog show "wrong_trigger x 162" instead of making the user guess.
+  router.get('/caption-triggers', (req, res) => {
+    let dir;
+    try { dir = safeResolve(String(req.query.path || '')); } catch { return res.status(400).json({ error: 'bad path' }); }
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'not a directory' });
+    let entries;
+    try {
+      const files = String(req.query.files || '').split(',').map((x) => x.trim()).filter(Boolean);
+      entries = files.length
+        ? files.map((n) => resolveImageName(dir, n)).filter(Boolean).map((nm) => ({ d: dir, nm }))
+        : captionScopeEntries(dir, req.query.recursive === '1' || req.query.recursive === 'true');
+    } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    const map = new Map();
+    let scanned = 0;
+    for (const { d, nm } of entries) {
+      for (const ext of ['txt', 'caption']) {
+        const p = ext === 'txt' ? captionPath(path.join(d, nm)) : path.join(d, nm).replace(/\.[^/.]+$/, '') + '.caption';
+        if (!existsSync(p)) continue;
+        let raw; try { raw = readFileSync(p, 'utf8'); } catch { continue; }
+        scanned++;
+        const lead = raw.split(',')[0].trim();
+        if (!lead || lead.length > 60 || /\s{1}\S+\s+\S+\s+\S+/.test(lead)) continue;   // a long / sentence-like first "token" is prose, not a trigger
+        const t = map.get(lead) || { trigger: lead, count: 0, txt: 0, caption: 0, folders: new Set() };
+        t.count++; t[ext]++; t.folders.add(path.relative(dir, d) || '.');
+        map.set(lead, t);
+      }
+    }
+    const triggers = [...map.values()].sort((a, b) => b.count - a.count).slice(0, 40)
+      .map((t) => ({ ...t, folders: [...t.folders].slice(0, 6) }));
+    res.json({ ok: true, scanned, triggers });
+  });
+
   router.post('/caption-replace', express.json(), (req, res) => {
     const b = req.body || {};
     let dir;
@@ -2998,11 +3046,14 @@ export function createImagegenRouter(config) {
     const cs = !!b.case_sensitive;
     const dryRun = !!b.dry_run;
 
-    let names;
+    // entries: [{ d: folder, nm: image name }]. `recursive` (folder scope only) walks every
+    // subfolder too, so one run covers all the training sets under a parent folder - without it a
+    // replace started from the parent touched only images sitting directly in it.
+    let entries;
     if (Array.isArray(b.files) && b.files.length) {
-      names = b.files.map((n) => resolveImageName(dir, String(n || ''))).filter(Boolean);
+      entries = b.files.map((n) => resolveImageName(dir, String(n || ''))).filter(Boolean).map((nm) => ({ d: dir, nm }));
     } else {
-      try { names = readdirSync(dir).filter((f) => isImage(f) && !isCollageFile(f)); }
+      try { entries = captionScopeEntries(dir, !!b.recursive); }
       catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
     }
 
@@ -3037,14 +3088,26 @@ export function createImagegenRouter(config) {
      * trigger rename cannot quietly renormalise spacing or drop a duplicate elsewhere in the
      * caption the way the whole_tag path deliberately does.
      */
+    // A trigger can be several comma tokens ("evegladden, satin_panties"): Find with commas
+    // matches that many LEADING tokens, all of them, in order.
+    const findToks = find.split(',').map((t) => t.trim()).filter(Boolean);
     const applyTrigger = (raw) => {
-      const idx = raw.indexOf(',');
+      const k = Math.max(1, findToks.length);
+      let idx = -1;
+      for (let i = 0, from = 0; i < k; i++) { idx = raw.indexOf(',', from); if (idx === -1) break; from = idx + 1; }
+      if (idx === -1 && k > 1) {
+        // fewer than k commas: the whole caption must BE the k tokens to match
+        const all = raw.split(',').map((t) => t.trim()).filter(Boolean);
+        if (all.length !== k || !all.every((t, i) => eq(t, findToks[i]))) return { text: raw, hits: 0 };
+        return { text: replace, hits: 1 };
+      }
       const head = idx === -1 ? raw : raw.slice(0, idx);
       const tail = idx === -1 ? '' : raw.slice(idx);      // keeps the comma + original spacing
       const cur = head.trim();
       if (!cur) return { text: raw, hits: 0 };
       if (find) {
-        if (!eq(cur, find)) return { text: raw, hits: 0 };
+        const curToks = head.split(',').map((t) => t.trim());
+        if (curToks.length !== findToks.length || !curToks.every((t, i) => eq(t, findToks[i]))) return { text: raw, hits: 0 };
       } else if (idx === -1) {
         // No comma and no `find` to confirm intent: this is a one-line caption, not a
         // trigger + body. Replacing here would overwrite the ENTIRE caption, so refuse.
@@ -3056,14 +3119,15 @@ export function createImagegenRouter(config) {
 
     let filesScanned = 0, filesChanged = 0, occurrences = 0;
     const samples = []; const errors = [];
-    for (const nm of names) {
+    for (const { d, nm } of entries) {
+      const shown = path.relative(dir, path.join(d, nm));
       for (const ext of exts) {
         const p = ext === 'txt'
-          ? captionPath(path.join(dir, nm))
-          : path.join(dir, nm).replace(/\.[^/.]+$/, '') + '.caption';
+          ? captionPath(path.join(d, nm))
+          : path.join(d, nm).replace(/\.[^/.]+$/, '') + '.caption';
         if (!existsSync(p)) continue;
         let raw;
-        try { raw = readFileSync(p, 'utf8'); } catch { errors.push(nm + '.' + ext); continue; }
+        try { raw = readFileSync(p, 'utf8'); } catch { errors.push(shown + '.' + ext); continue; }
         filesScanned++;
         // whole_tag is a TAG-LIST concept; .caption is prose with no token boundaries, so it
         // is always a substring replace there whatever the flag says.
@@ -3077,12 +3141,12 @@ export function createImagegenRouter(config) {
         if (!hits || text === raw) continue;
         occurrences += hits;
         filesChanged++;
-        if (samples.length < 5) samples.push({ file: nm, ext, before: raw.slice(0, 200), after: text.slice(0, 200) });
+        if (samples.length < 5) samples.push({ file: shown, ext, before: raw.slice(0, 200), after: text.slice(0, 200) });
         if (dryRun) continue;
         try {
           if (!text.trim()) { unlinkSync(p); }        // an emptied sidecar is removed, not left blank
           else { writeFileSync(p, text, 'utf8'); try { chmodSync(p, 0o664); } catch { /* not owner */ } }
-        } catch { errors.push(nm + '.' + ext); filesChanged--; occurrences -= hits; }
+        } catch { errors.push(shown + '.' + ext); filesChanged--; occurrences -= hits; }
       }
     }
     res.json({ ok: true, dry_run: dryRun, mode: triggerMode ? 'trigger' : 'text',
