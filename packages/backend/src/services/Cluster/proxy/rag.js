@@ -1191,7 +1191,7 @@ const DOC_RAG_MANIFEST = '/opt/mcp-document-rag/data/collections.json';
 
 const docUpload = multer({
   dest: '/tmp/docrag-uploads/',
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: { fileSize: 1024 * 1024 * 1024 },   // service manuals run to hundreds of MB
   fileFilter: (req, file, cb) => {
     const allowed = /\.(pdf|docx|xlsx|png|jpg|jpeg|webp|gif|bmp|txt|md|csv|json|yaml|yml|xml|html)$/i;
     cb(null, allowed.test(file.originalname));
@@ -1490,7 +1490,13 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
   }
 }
 
-app.post('/api/ai/docrag/index', docUpload.array('files', 50), (req, res) => {
+// multer errors (file too large, wrong type) answer as JSON instead of an HTML error page, so the
+// UI can show the reason rather than "upload failed".
+const docUploadMw = (req, res, next) => docUpload.array('files', 2000)(req, res, (err) => {   // a manual split into many small PDFs
+  if (err) return res.status(400).json({ error: `upload rejected: ${err.message || err}` });
+  next();
+});
+app.post('/api/ai/docrag/index', docUploadMw, (req, res) => {
   if (docRagJob.active) return res.status(409).json({ error: 'A document indexing job is already running.', status: docRagStatus() });
   const collection = req.body?.collection;
   const description = req.body?.description || '';

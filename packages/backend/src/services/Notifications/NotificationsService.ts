@@ -933,8 +933,37 @@ export class NotificationsService {
     }
   }
 
+  /**
+   * Health-check ids that probe a vector DB, mapped to its name in vector-db-config.json.
+   * A backend switched off there (excludeFromAll) is RETIRED, not down: the one switch that stops
+   * writes to it also stops its health probe, so retiring a backend happens in one place.
+   * (2026-10-06: chroma retired, weaviate frozen; "ChromaDB is DOWN ... a listener that did not
+   * bind (check the last deploy)" would have sent someone hunting for a broken deploy.)
+   */
+  private static readonly VECTOR_CHECK_DB: Record<string, string> = { qdrant: 'qdrant', weaviate: 'weaviate', chroma: 'chromadb', milvus: 'milvus' }
+  private retiredVectorChecks(): Set<string> {
+    const out = new Set<string>()
+    try {
+      const raw = JSON.parse(readFileSync(path.join(this.dataDir, 'vector-db-config.json'), 'utf-8'))
+      const list: Array<{ name?: string; excludeFromAll?: boolean }> = Array.isArray(raw) ? raw : (raw?.dbs ?? [])
+      const off = new Set(list.filter((d) => d?.excludeFromAll).map((d) => String(d.name)))
+      for (const [checkId, db] of Object.entries(NotificationsService.VECTOR_CHECK_DB)) if (off.has(db)) out.add(checkId)
+    } catch (e) {
+      // Unreadable config: probe everything (an alarm we didn't need beats a silent dead DB).
+      this.debug('health', `vector-db-config.json unreadable, probing all vector DBs: ${(e as Error).message}`)
+    }
+    return out
+  }
+
   private async probeAll(): Promise<void> {
-    const results = await Promise.all(this.checks.map((c) => this.probeOne(c)))
+    const retired = this.retiredVectorChecks()
+    for (const id of retired) {
+      // Drop the dot and any latched DOWN silently: it was switched off on purpose, not recovered.
+      this.health.delete(id); this.downStreak.delete(id)
+      if (this.alarmLatch.clear(id, ['down']).length > 0) this.alarmLatch.save()
+    }
+    const live = this.checks.filter((c) => !retired.has(c.id))
+    const results = await Promise.all(live.map((c) => this.probeOne(c)))
     const byId = new Map(this.checks.map((c) => [c.id, c]))
     for (const r of results) {
       // The board always shows the live result. Only the EVENT is debounced --

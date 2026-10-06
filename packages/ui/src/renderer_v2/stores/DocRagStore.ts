@@ -2,7 +2,7 @@ import { makeAutoObservable, runInAction } from 'mobx'
 
 function bridge(): any { return (window as any).gyshell?.cluster }
 
-interface PickedFile { name: string; size: number; dataB64: string }
+interface PickedFile { name: string; size: number; file: File }
 interface ServerFile { name: string; path: string; size: number }
 interface DirEntry { name: string; path: string }
 interface BrowseState {
@@ -45,14 +45,12 @@ export class DocRagStore {
   setDescription(v: string): void { this.description = v }
 
   async addFiles(fileList: FileList | File[]): Promise<void> {
-    const arr = Array.from(fileList)
-    const read = await Promise.all(arr.map((f) => new Promise<PickedFile>((resolve) => {
-      const r = new FileReader()
-      r.onload = () => resolve({ name: f.name, size: f.size, dataB64: String(r.result).split(',')[1] || '' })
-      r.onerror = () => resolve({ name: f.name, size: f.size, dataB64: '' })
-      r.readAsDataURL(f)
-    })))
-    runInAction(() => { this.files = [...this.files, ...read] })
+    // Keep the File itself: it is streamed as multipart at index time. Reading it into base64 up
+    // front (the old way) held the whole document in memory 1.33x over and pushed it through the
+    // websocket bridge, where a large manual hit the 100 MB message cap / 20 s proxy timeout and
+    // the job silently never reached the backend (Travis, 2026-10-06: 2012 Juke service manual).
+    const arr = Array.from(fileList).map((f) => ({ name: f.name, size: f.size, file: f }))
+    runInAction(() => { this.files = [...this.files, ...arr] })
   }
   removeFile(i: number): void { this.files = this.files.filter((_, j) => j !== i) }
   removeServerFile(i: number): void { this.serverFiles = this.serverFiles.filter((_, j) => j !== i) }
@@ -133,9 +131,15 @@ export class DocRagStore {
           paths: this.serverFiles.map((f) => f.path),
         })
       } else {
-        await bridge().request('POST', '/api/ai/docrag/index-b64', {
-          collection: this.collection.trim(), description: this.description, files: this.files,
-        })
+        // Plain HTTP multipart, same-origin (/api -> backend, like the imagegen images): no base64,
+        // no websocket message cap, no bridge timeout on a slow upload.
+        const fd = new FormData()
+        fd.append('collection', this.collection.trim())
+        fd.append('description', this.description)
+        for (const f of this.files) fd.append('files', f.file, f.name)
+        const r = await fetch('/api/ai/docrag/index', { method: 'POST', body: fd })
+        const d = await r.json().catch(() => ({}))
+        if (!r.ok) throw new Error(d?.error || `upload failed (HTTP ${r.status})`)
       }
       void this.refreshStatus()
     } catch (e: any) {
