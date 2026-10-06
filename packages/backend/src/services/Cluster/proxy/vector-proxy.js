@@ -740,7 +740,12 @@ export function createVectorProxyRouter() {
   // Reciprocal Rank Fusion (RRF), and returns a unified ranked list.
 
   /** Search a single vector DB and return scored results */
-  async function searchDb(db, queryVector, collection, topK) {
+  /**
+   * Optional payload filter (qdrant only; other backends ignore it). The doc-RAG search uses it to
+   * rank text chunks and PDF page images SEPARATELY: a text query scores every text chunk above
+   * every image (the text/image "modality gap"), so in one list a matching diagram never surfaces.
+   */
+  async function searchDb(db, queryVector, collection, topK, filter = null) {
     const url = `http://${db.host}:${db.port}`;
     try {
       switch (db.type) {
@@ -749,7 +754,7 @@ export function createVectorProxyRouter() {
           const r = await fetch(`${url}/collections/${qCol}/points/query`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: queryVector, limit: topK, with_payload: true }),
+            body: JSON.stringify({ query: queryVector, limit: topK, with_payload: true, ...(filter ? { filter } : {}) }),
             signal: AbortSignal.timeout(15000),
           });
           const d = await r.json();
@@ -888,6 +893,7 @@ export function createVectorProxyRouter() {
   // Or pre-vectorized: { vector: [...], topK: 10 }
   router.post('/all/collections/:name/search', jsonParser(), async (req, res) => {
     const { query, vector, topK = 10 } = req.body || {};
+    const filter = (req.body?.filter && typeof req.body.filter === 'object') ? req.body.filter : null;
     const collection = req.params.name;
 
     // Get query vector
@@ -909,7 +915,7 @@ export function createVectorProxyRouter() {
     const dbs = getEligibleDbs();
     const searchResults = {};
     const dbResults = await Promise.all(dbs.map(async (db) => {
-      const results = await searchDb(db, queryVector, collection, topK);
+      const results = await searchDb(db, queryVector, collection, topK, filter);
       return { db: db.name, results, count: results.length };
     }));
 

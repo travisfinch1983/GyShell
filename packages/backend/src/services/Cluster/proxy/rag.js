@@ -9,8 +9,9 @@ import { stripLoneSurrogates, embedSafeText } from './lib/text-safety.js';
 import multer from 'multer'
 import { readFile as readFileAsync, readdir, stat } from 'node:fs/promises'
 import { extname, join, resolve as pathResolve, dirname, basename } from 'node:path'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, openSync, writeSync, closeSync, statSync as statSyncFs, readdirSync as readdirSyncFs, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, openSync, writeSync, closeSync, statSync as statSyncFs, readdirSync as readdirSyncFs, rmSync, renameSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 
 // ─── Embed input safety ──────────────────────────────────────────────────────
@@ -251,7 +252,7 @@ app.get('/api/ai/docrag/browse', async (req, res) => {
 // Index files that already live on the container (selected via /docrag/browse). Reads them
 // in place; keepSource:true so the shared cleanup never unlinks the user's real files.
 app.post('/api/ai/docrag/index-paths', express.json({ limit: '2mb' }), async (req, res) => {
-  const { collection, description, paths } = req.body || {};
+  const { collection, description, paths, pageImages } = req.body || {};
   if (!collection || !Array.isArray(paths) || !paths.length) return res.status(400).json({ error: 'collection and paths are required' });
   if (docRagJob.active) return res.status(409).json({ error: 'A document indexing job is already running.' });
   const files = [];
@@ -259,7 +260,7 @@ app.post('/api/ai/docrag/index-paths', express.json({ limit: '2mb' }), async (re
     try { const s = await stat(p); if (s.isFile()) files.push({ path: p, originalname: basename(p) }); } catch {}
   }
   if (!files.length) return res.status(400).json({ error: 'none of the given paths are readable files on the container' });
-  runDocRagIndexing(files, collection, description, { keepSource: true });
+  runDocRagIndexing(files, collection, description, { keepSource: true, pageImages: pageImages !== false });
   res.json({ started: true, collection, fileCount: files.length });
 });
 
@@ -1247,10 +1248,29 @@ async function extractDocContent(filePath, originalName) {
   const ext = extname(originalName).toLowerCase();
 
   if (ext === '.pdf') {
+    // pdftotext (poppler) emits a form feed after EVERY page, so page numbers are real. pdf-parse
+    // never did: its text has no \f, so every chunk of every PDF was labelled "page 1" (found
+    // 2026-10-06), which also broke matching a page's text to its page image. pdf-parse remains
+    // the fallback for files poppler rejects.
+    try {
+      const text = await new Promise((resolve, reject) => {
+        const child = spawn('pdftotext', ['-enc', 'UTF-8', filePath, '-'], { stdio: ['ignore', 'pipe', 'pipe'] });
+        const out = []; let err = '';
+        child.stdout.on('data', (d) => out.push(d));
+        child.stderr.on('data', (d) => { err += d; });
+        child.on('error', reject);
+        child.on('close', (code) => (code === 0 ? resolve(Buffer.concat(out).toString('utf8')) : reject(new Error(`pdftotext exit ${code}: ${err.trim().slice(0, 160)}`))));
+      });
+      const pages = text.split('\f');
+      if (pages.length > 1 || text.trim()) {
+        return pages.map((t, i) => ({ text: t.trim(), page_number: i + 1 })).filter((p) => p.text);
+      }
+    } catch (e) {
+      console.warn(`[docrag] pdftotext failed for ${originalName} (${e.message}); falling back to pdf-parse`);
+    }
     const buffer = await readFileAsync(filePath);
     const data = await pdfParse(buffer);
-    // Split by page markers or just return full text
-    const pages = (data.text || '').split(/\f/); // form-feed = page break
+    const pages = (data.text || '').split(/\f/);
     return pages.map((text, i) => ({ text: text.trim(), page_number: i + 1 })).filter(p => p.text);
   }
 
@@ -1283,6 +1303,50 @@ async function extractDocContent(filePath, originalName) {
   return [];
 }
 
+// ─── PDF page images (2026-10-06) ───────────────────────────────────────────
+// pdf-parse sees only the text layer, so diagrams, exploded views and scanned pages were invisible
+// to search. Each page is also rendered and embedded as an IMAGE with the same VL embedder, so a
+// query like "ECM connector pinout" can land on the diagram itself. Page JPEGs are kept (served by
+// GET /api/ai/docrag/page-image) so a search hit can be opened. Long side 1536 px: about 1,650
+// vision tokens, inside the embedder's 4,096-token window, and enough detail for wiring diagrams.
+const DOC_PAGES_ROOT = join(RAG_DATA_DIR, 'docrag-pages');
+const PAGE_LONG_SIDE = 1536;
+const pageSlug = (name) => String(name).replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 150) || 'file';
+function docPagesDir(colName, fileName) { return join(DOC_PAGES_ROOT, colName, pageSlug(fileName)); }
+async function renderPdfPages(pdfPath, outDir) {
+  rmSync(outDir, { recursive: true, force: true });
+  mkdirSync(outDir, { recursive: true });
+  await new Promise((resolve, reject) => {
+    const child = spawn('pdftoppm', ['-jpeg', '-jpegopt', 'quality=82', '-scale-to', String(PAGE_LONG_SIDE), pdfPath, join(outDir, 'p')],
+      { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('error', reject);
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`pdftoppm exit ${code}: ${err.trim().slice(0, 200)}`))));
+  });
+  // pdftoppm names pages p-1.jpg / p-01.jpg / p-001.jpg depending on page count: normalise to p<N>.jpg
+  const out = [];
+  for (const f of readdirSyncFs(outDir)) {
+    const m = f.match(/^p-0*(\d+)\.jpg$/);
+    if (!m) continue;
+    const n = parseInt(m[1], 10);
+    const dest = join(outDir, `p${n}.jpg`);
+    renameSync(join(outDir, f), dest);
+    out.push({ page: n, path: dest });
+  }
+  return out.sort((a, b) => a.page - b.page);
+}
+/** Upsert and report what was really STORED (the proxy says so) instead of assuming the batch. */
+async function upsertDocPoints(port, colName, points) {
+  const r = await fetch(`http://127.0.0.1:${port}/api/proxy/vector/all/collections/${colName}/upsert`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ points }), signal: AbortSignal.timeout(60000),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`upsert HTTP ${r.status}`);
+  return typeof d.stored === 'number' ? d.stored : points.length;
+}
+
 async function runDocRagIndexing(files, collection, description, opts = {}) {
   const colName = sanitizeDocCollectionName(collection);
   const port = selfPort;
@@ -1310,7 +1374,10 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
     }
 
     const EMBED_BATCH = 16;
+    const pageImages = opts.pageImages !== false;
     let upsertedCount = 0;
+    let pageImageCount = 0;
+    const skipped = [];
     let embedErrors = 0;
     const fileTypes = {};
     let filesProcessed = 0;
@@ -1411,21 +1478,56 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
               metadata: { text: stripLoneSurrogates(c.text), file_name: c.file_name, file_type: c.file_type, page_number: c.page_number || null, chunk_index: c.chunk_index, collection: colName },
             }));
 
-            await fetch(`http://127.0.0.1:${port}/api/proxy/vector/all/collections/${colName}/upsert`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ points }),
-              signal: AbortSignal.timeout(60000),
-            }).then(r => r.text().catch(() => ''));
-            upsertedCount += batch.length;
+            upsertedCount += await upsertDocPoints(port, colName, points);
           } catch (e) {
             if (e.message.includes('consecutive batches')) throw e;
             console.warn(`[docrag] Embed/upsert batch failed: ${e.message}`);
           }
         }
+
+        // Page images: every PDF page, including ones with no text layer at all.
+        let filePages = 0;
+        if (pageImages && ext === '.pdf') {
+          let pages = [];
+          try { pages = await renderPdfPages(file.path, docPagesDir(colName, origName)); }
+          catch (e) { console.warn(`[docrag] page render failed for ${origName}: ${e.message}`); }
+          const textByPage = new Map(contents.filter((c) => c.page_number != null).map((c) => [c.page_number, c.text || '']));
+          for (const pg of pages) {
+            docRagJob.detail = `Processing: ${filesProcessed}/${files.length} files - ${origName} page image ${pg.page}/${pages.length}`;
+            try {
+              const b64 = (await readFileAsync(pg.path)).toString('base64');
+              const er = await fetch(`http://127.0.0.1:${port}/api/proxy/embed/v1/embeddings`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: effEmbedModel(), messages: [{ role: 'user', content: [
+                  { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } },
+                ] }], encoding_format: 'float' }),
+                signal: AbortSignal.timeout(180000),
+              });
+              if (!er.ok) { console.warn(`[docrag] page ${pg.page} of ${origName}: embed HTTP ${er.status}`); continue; }
+              const vector = (await er.json()).data?.[0]?.embedding;
+              if (!vector?.length) continue;
+              const pageText = stripLoneSurrogates((textByPage.get(pg.page) || '').replace(/\s+/g, ' ').trim());
+              const stored = await upsertDocPoints(port, colName, [{
+                id: `${colName}::${origName}::pimg::${pg.page}`,
+                vector,
+                metadata: {
+                  // The text is what a search hit SHOWS: say it is a page image, carry the page's words.
+                  text: `[page image: ${origName} p.${pg.page}]${pageText ? ' ' + pageText.slice(0, 600) : ' (no text layer - diagram/scan)'}`,
+                  file_name: origName, file_type: 'pdf_page_image', page_number: pg.page, collection: colName,
+                  page_image: `/api/ai/docrag/page-image?collection=${encodeURIComponent(colName)}&file=${encodeURIComponent(origName)}&page=${pg.page}`,
+                },
+              }]);
+              pageImageCount += stored; upsertedCount += stored; filePages += stored;
+            } catch (e) {
+              console.warn(`[docrag] page ${pg.page} of ${origName}: ${e.message}`);
+            }
+          }
+        }
+        if (!fileChunks.length && !filePages && !contents.some((c) => c.isImage)) skipped.push(origName);
       } catch (e) {
         if (e.message.includes('consecutive batches')) throw e;
         console.warn(`[docrag] Error processing ${origName}: ${e.message}`);
+        skipped.push(`${origName} (${String(e.message).slice(0, 80)})`);
       }
 
       filesProcessed++;
@@ -1460,10 +1562,12 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
 
     docRagJob.phase = 'done';
     docRagJob.progress = 100;
-    docRagJob.detail = `Indexed ${filesProcessed} files (${upsertedCount} chunks)`;
+    docRagJob.detail = `Indexed ${filesProcessed - skipped.length} files (${upsertedCount} chunks`
+      + `${pageImageCount ? `, incl. ${pageImageCount} page images` : ''})`
+      + `${skipped.length ? `; skipped ${skipped.length}: ${skipped.slice(0, 3).join(', ')}${skipped.length > 3 ? '…' : ''}` : ''}`;
     docRagJob.result = {
-      collection: colName, files_indexed: filesProcessed,
-      chunks_created: upsertedCount, file_types: fileTypes,
+      collection: colName, files_indexed: filesProcessed - skipped.length,
+      chunks_created: upsertedCount, page_images: pageImageCount, file_types: fileTypes, skipped,
     };
   } catch (e) {
     docRagJob.phase = 'error';
@@ -1558,7 +1662,7 @@ app.post('/api/ai/docrag/staging/:session/index', express.json({ limit: '2mb' })
   }
   if (bad.length) return res.status(400).json({ error: `incomplete upload: ${bad.slice(0, 5).join(', ')}${bad.length > 5 ? ` and ${bad.length - 5} more` : ''}` });
   console.log(`[docrag] staged upload ${req.params.session}: ${ready.length} files ready`);
-  Promise.resolve(runDocRagIndexing(ready, collection, description))
+  Promise.resolve(runDocRagIndexing(ready, collection, description, { pageImages: req.body?.pageImages !== false }))
     .finally(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
   res.json({ started: true, collection, fileCount: ready.length });
 });
@@ -1570,8 +1674,20 @@ app.post('/api/ai/docrag/index', docUploadMw, (req, res) => {
   const files = req.files || [];
   if (!collection) return res.status(400).json({ error: 'collection name is required' });
   if (files.length === 0) return res.status(400).json({ error: 'No files uploaded' });
-  runDocRagIndexing(files, collection, description);
+  runDocRagIndexing(files, collection, description, { pageImages: String(req.body?.pageImages ?? 'true') !== 'false' });
   res.json({ started: true, collection, fileCount: files.length });
+});
+
+// A page image from a search hit (metadata.page_image). Path is rebuilt from validated parts,
+// never taken from the query string, so it cannot leave DOC_PAGES_ROOT.
+app.get('/api/ai/docrag/page-image', (req, res) => {
+  const col = String(req.query.collection || ''); const page = parseInt(String(req.query.page || ''), 10);
+  if (!/^docs_[a-z0-9_]+$/.test(col) || !(page > 0)) return res.status(400).json({ error: 'collection (docs_*) and page are required' });
+  const p = join(docPagesDir(col, String(req.query.file || '')), `p${page}.jpg`);
+  if (!existsSync(p)) return res.status(404).json({ error: 'no page image (indexed without page images, or deleted)' });
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  // dotfiles:'allow' - the data dir is .gybackend-data, and send() 404s any dot-path by default.
+  res.sendFile(p, { dotfiles: 'allow' });
 });
 
 app.get('/api/ai/docrag/index/status', (req, res) => {
@@ -1601,6 +1717,7 @@ app.delete('/api/ai/docrag/collections/:name', async (req, res) => {
       method: 'DELETE', signal: AbortSignal.timeout(30000),
     });
     const delData = await delResp.json().catch(() => ({}));
+    try { rmSync(join(DOC_PAGES_ROOT, colName), { recursive: true, force: true }); } catch {}
     await exec(MCPJUNGLE_HOST,
       `node -e "
         const fs = require('fs'), p = '${DOC_RAG_MANIFEST}';

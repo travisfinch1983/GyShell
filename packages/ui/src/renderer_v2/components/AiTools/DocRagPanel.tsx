@@ -133,6 +133,11 @@ export const DocRagPanel: React.FC = observer(() => {
           </div>
         )}
 
+        <label className={styles.formRow} style={{ alignItems: 'center', gap: 8 }}
+               title="Render every PDF page and embed it as an image too, so diagrams, wiring schematics and scanned pages are searchable. Roughly doubles indexing time.">
+          <input type="checkbox" checked={store.pageImages} onChange={(e) => store.setPageImages(e.target.checked)} />
+          <span>Index PDF page images (diagrams &amp; scanned pages)</span>
+        </label>
         <div className={styles.formActions}>
           <button className={styles.btnPrimary} disabled={st.active || store.busy || !store.totalStaged} onClick={() => void store.index()}>
             {st.active || store.busy ? 'Indexing…' : `Index${store.totalStaged ? ` (${store.totalStaged})` : ''}`}

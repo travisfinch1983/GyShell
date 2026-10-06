@@ -28,6 +28,8 @@ export class DocRagStore {
   files: PickedFile[] = []
   serverFiles: ServerFile[] = []
   busy = false
+  /** Also render + embed every PDF page as an image (diagrams, scans). ~2x indexing time. */
+  pageImages = true
   browse: BrowseState = { open: false, path: '/nas', parent: null, dirs: [], files: [], selected: [], loading: false, error: null }
   private timer: any = null
   private wasActive = false
@@ -43,6 +45,7 @@ export class DocRagStore {
   }
   setCollection(v: string): void { this.collection = v }
   setDescription(v: string): void { this.description = v }
+  setPageImages(v: boolean): void { this.pageImages = v }
 
   async addFiles(fileList: FileList | File[]): Promise<void> {
     // Keep the File itself: it is streamed as multipart at index time. Reading it into base64 up
@@ -128,7 +131,7 @@ export class DocRagStore {
       if (this.serverFiles.length) {
         await bridge().request('POST', '/api/ai/docrag/index-paths', {
           collection: this.collection.trim(), description: this.description,
-          paths: this.serverFiles.map((f) => f.path),
+          paths: this.serverFiles.map((f) => f.path), pageImages: this.pageImages,
         })
       } else {
         await this.uploadStagedAndIndex()
@@ -187,7 +190,7 @@ export class DocRagStore {
     runInAction(() => { this.uploadMsg = 'Upload complete, starting indexing…' })
     await jsonOrThrow(await fetch(`/api/ai/docrag/staging/${session}/index`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ collection: this.collection.trim(), description: this.description,
+      body: JSON.stringify({ collection: this.collection.trim(), description: this.description, pageImages: this.pageImages,
         files: this.files.map((f, idx) => ({ idx, name: f.name, size: f.size })) }),
     }))
     runInAction(() => { this.uploadMsg = '' })
