@@ -1010,6 +1010,7 @@ export function createVectorProxyRouter() {
     const { query, vector, topK = 10 } = req.body || {};
     const filter = (req.body?.filter && typeof req.body.filter === 'object') ? req.body.filter : null;
     const collection = req.params.name;
+    console.log(`[vector-search] ${collection} topK=${topK} ${query ? 'q="' + String(query).slice(0, 60).replace(/\s+/g, ' ') + '"' : 'vector'} from ${req.ip || req.socket?.remoteAddress} ua=${String(req.headers['user-agent'] || '-').slice(0, 40)}`);
 
     // Get query vector
     let queryVector;
@@ -1045,7 +1046,15 @@ export function createVectorProxyRouter() {
     let finalResults = fused;
     let reranked = false;
     if (query && fused.length > 1) {
-      const docs = fused.filter(r => r.text).map(r => r.text);
+      // Bounded rerank: the head of the fused list only, each passage truncated. Uncapped, a caller asking
+      // for topK 140 sent 140 full chunks (codebase chunks run to thousands of tokens) - ~10 min of V100
+      // time per search. Tunable: RERANK_MAX_DOCS / RERANK_MAX_CHARS.
+      const RR_MAX = Number(process.env.RERANK_MAX_DOCS || 32);
+      const RR_CHARS = Number(process.env.RERANK_MAX_CHARS || 1500);
+      const withText = fused.filter(r => r.text);
+      const head = withText.slice(0, RR_MAX);
+      const tail = withText.slice(RR_MAX);
+      const docs = head.map(r => r.text.length > RR_CHARS ? r.text.slice(0, RR_CHARS) : r.text);
       if (docs.length > 1) {
         const rerankerScores = await rerank(query, docs);
         if (rerankerScores) {
@@ -1056,15 +1065,12 @@ export function createVectorProxyRouter() {
             scoreMap.set(s.index, s.relevance_score);
           }
           // Re-sort by reranker score
-          const textsInOrder = docs;
-          finalResults = fused
-            .filter(r => r.text)
-            .map((r, i) => ({
-              ...r,
-              rerankerScore: scoreMap.get(textsInOrder.indexOf(r.text)) || 0,
-            }))
-            .sort((a, b) => b.rerankerScore - a.rerankerScore)
-            .map((r, i) => ({ ...r, rank: i + 1 }));
+          // Scores are by position in `docs` (== position in `head`); the unreranked tail keeps fused order.
+          finalResults = [
+            ...head.map((r, i) => ({ ...r, rerankerScore: scoreMap.get(i) || 0 }))
+              .sort((a, b) => b.rerankerScore - a.rerankerScore),
+            ...tail,
+          ].map((r, i) => ({ ...r, rank: i + 1 }));
         }
       }
     }

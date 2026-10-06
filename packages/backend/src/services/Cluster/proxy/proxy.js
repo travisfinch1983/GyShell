@@ -147,6 +147,8 @@ const STT_PROVIDERS = new Set(['faster-whisper']);
 const EMBED_KEYWORDS = ['embed', 'bge-', 'e5-', 'gte-', 'encoding', 'encoder'];
 /** Keywords that identify reranker models */
 const RERANK_KEYWORDS = ['rerank', 'ranker', 'cross-encoder'];
+/** Rerank requests the backend is still working on, per `ip:port` (see the /rerank route). */
+const rerankInflight = new Map();
 
 // ─── TTS/STT Provider Capabilities ─────────────────────────────────────────
 // `clipVoice` = synthesises from a reference voice CLIP (as opposed to a fixed
@@ -1219,8 +1221,13 @@ function proxyBuffered(req, res, targetHost, targetPort, targetPath, body, captu
       }
     }
   );
+  // Caller gone before the reply finished -> cancel upstream too. Without this an abandoned request
+  // kept running on the backend: vLLM only aborts on client disconnect, so every caller that timed out
+  // (vector search gives the reranker 15 s) left its whole batch queued. On 2026-10-06 that stacked
+  // ~370 rerank docs on V100 #7 and timed out every memory recall behind them.
+  res.on('close', () => { if (!res.writableFinished && !proxyReq.destroyed) proxyReq.destroy(); });
   proxyReq.on('error', (err) => {
-    if (!res.headersSent) {
+    if (!res.headersSent && !res.destroyed) {
       res.status(502).json({ error: `Proxy error: ${err.message}` });
     }
     fireDone(false);
@@ -2009,8 +2016,44 @@ export function createProxyRouter(sshService) {
           out = Buffer.from(JSON.stringify(parsed));
         } catch {}
       }
-      proxyBuffered(req, res, svc.containerIp, svc.port, downstreamPath, out, undefined,
-        ({ completed }) => { if (completed) markSuccess(svc); else markFailure(svc); });
+      // In-flight cap per reranker, counted until the BACKEND finishes - not until the caller leaves.
+      // vLLM's /rerank does not abort on client disconnect, so callers that time out (vector search
+      // waits 15 s) and retry used to pile work on the card: 560 queued docs on V100 #7, 2026-10-06,
+      // and every memory recall timed out behind them. Over the cap we refuse at once with 503; every
+      // internal caller already degrades to un-reranked order. RERANK_MAX_INFLIGHT tunes it.
+      const key = `${svc.containerIp}:${svc.port}`;
+      const cap = Number(process.env.RERANK_MAX_INFLIGHT || 3);
+      const cur = rerankInflight.get(key) || 0;
+      let ndocs = 0; try { ndocs = (JSON.parse(out.toString()).documents || []).length; } catch {}
+      if (cur >= cap) {
+        console.warn(`[rerank] ${key} busy (${cur}/${cap} in flight) - refused ${ndocs} docs from ${req.ip || req.socket?.remoteAddress} ua=${String(req.headers['user-agent'] || '-').slice(0, 40)}`);
+        return res.status(503).json({ error: 'reranker busy', inflight: cur, cap });
+      }
+      rerankInflight.set(key, cur + 1);
+      const t0 = Date.now();
+      let released = false;
+      const release = () => { if (!released) { released = true; rerankInflight.set(key, Math.max(0, (rerankInflight.get(key) || 1) - 1)); } };
+      const ctrl = new AbortController();
+      const hardStop = setTimeout(() => ctrl.abort(), 10 * 60 * 1000);
+      try {
+        const up = await fetch(`http://${svc.containerIp}:${svc.port}${downstreamPath}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: out, signal: ctrl.signal,
+        });
+        const text = await up.text();   // wait for the backend to FINISH, whether or not the caller is still here
+        release();
+        const ms = Date.now() - t0;
+        if (ms > 5000) console.warn(`[rerank] slow: ${ndocs} docs took ${ms} ms on ${key}`);
+        if (up.ok) markSuccess(svc); else markFailure(svc);
+        if (!res.writableEnded && !res.destroyed) res.status(up.status).type(up.headers.get('content-type') || 'application/json').send(text);
+      } catch (e) {
+        release();
+        markFailure(svc);
+        console.warn(`[rerank] ${key} failed after ${Date.now() - t0} ms (${ndocs} docs): ${e.message}`);
+        if (!res.headersSent && !res.destroyed) res.status(502).json({ error: `Proxy error: ${e.message}` });
+      } finally {
+        clearTimeout(hardStop);
+        release();
+      }
     });
   }
 
