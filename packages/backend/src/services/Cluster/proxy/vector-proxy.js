@@ -115,6 +115,78 @@ async function dropResult(dbName, r, okStatuses = []) {
   const body = await r.text().catch(() => '');
   return { db: dbName, ok: false, error: `HTTP ${r.status}${body ? `: ${body.slice(0, 200)}` : ''}` };
 }
+// ─── Keyword (BM25) companion index (2026-10-06) ─────────────────────────────
+// Dense vectors match MEANING and are weak on exact tokens - a part number "P0300", a thread
+// "M8x1.25", a torque "35 N·m". Every docs_*/codebase_* collection gets a qdrant companion
+// "<name>__kw" holding a BM25 sparse vector per point (same point id, same payload), kept in step
+// on every upsert and drop. Qdrant applies IDF itself (modifier:'idf'); we supply the saturated
+// term-frequency part. The companion is separate because a collection's vector config cannot gain
+// a sparse vector in place, and it is rebuildable from the stored text (scripts: kw-backfill).
+export const KW_SUFFIX = '__kw';
+export const KW_PREFIXES = /^(docs_|codebase_)/;
+const KW_STOP = new Set(('a an and are as at be but by for from has have i if in into is it its no not of on or ' +
+  'so such than that the their then there these they this to was were will with you your we our can may ' +
+  'do does did done been being he she him her his them which who whom what when where why how all any each').split(' '));
+export function kwTokens(text) {
+  const out = [];
+  const re = /[\p{L}\p{N}]+(?:[.\-\/·_][\p{L}\p{N}]+)*/gu;
+  for (const m of String(text || '').toLowerCase().matchAll(re)) {
+    const tok = m[0];
+    if (tok.length > 64) continue;
+    if (!KW_STOP.has(tok)) out.push(tok);
+    // Compound tokens also index their parts, so "m8x1.25" matches both the whole and "m8x1".
+    if (/[.\-\/·_]/.test(tok)) {
+      for (const part of tok.split(/[.\-\/·_]+/)) if (part.length > 1 && part !== tok && !KW_STOP.has(part)) out.push(part);
+    }
+  }
+  return out;
+}
+function kwHash(t) { let h = 0x811c9dc5; for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 0x01000193); } return h >>> 0; }
+export function kwSparseDoc(text, k1 = 1.2, b = 0.75, avgdl = 180) {
+  const toks = kwTokens(text);
+  const tf = new Map();
+  for (const t of toks) { const id = kwHash(t); tf.set(id, (tf.get(id) || 0) + 1); }
+  const dl = toks.length || 1;
+  const indices = [], values = [];
+  for (const [id, f] of tf) { indices.push(id); values.push(+(f * (k1 + 1) / (f + k1 * (1 - b + b * dl / avgdl))).toFixed(4)); }
+  return { indices, values };
+}
+export function kwSparseQuery(text) {
+  const ids = [...new Set(kwTokens(text).map(kwHash))];
+  return { indices: ids, values: ids.map(() => 1) };
+}
+const kwReady = new Set();
+export async function kwEnsure(url, kwName) {
+  if (kwReady.has(kwName)) return;
+  const g = await fetch(`${url}/collections/${kwName}`, { signal: AbortSignal.timeout(5000) });
+  if (!g.ok) {
+    const c = await fetch(`${url}/collections/${kwName}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vectors: {}, sparse_vectors: { bm25: { modifier: 'idf' } } }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!c.ok && c.status !== 409) throw new Error(`create ${kwName}: HTTP ${c.status} ${(await c.text()).slice(0, 120)}`);
+  }
+  kwReady.add(kwName);
+}
+/** Mirror points (already in qdrant shape: {id, payload}) plus their text into the companion. */
+export async function kwUpsert(url, baseName, qPoints) {
+  const kwName = baseName + KW_SUFFIX;
+  const pts = [];
+  for (const p of qPoints) {
+    const sv = kwSparseDoc(p.payload?.text || '');
+    if (sv.indices.length) pts.push({ id: p.id, vector: { bm25: sv }, payload: p.payload });
+  }
+  if (!pts.length) return 0;
+  await kwEnsure(url, kwName);
+  const r = await fetch(`${url}/collections/${kwName}/points?wait=true`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ points: pts }), signal: AbortSignal.timeout(30000),
+  });
+  if (!r.ok) throw new Error(`kw upsert ${kwName}: HTTP ${r.status} ${(await r.text()).slice(0, 120)}`);
+  return pts.length;
+}
+
 export function createVectorProxyRouter() {
   const router = Router();
 
@@ -376,6 +448,10 @@ export function createVectorProxyRouter() {
     try {
       switch (db.type) {
         case 'qdrant':
+          if (!String(name).endsWith(KW_SUFFIX)) {
+            kwReady.delete(name + KW_SUFFIX);
+            await fetch(`${url}/collections/${name}${KW_SUFFIX}`, { method: 'DELETE', signal: AbortSignal.timeout(10000) }).catch(() => {});
+          }
           return await fetch(`${url}/collections/${name}`, { method: 'DELETE', signal: AbortSignal.timeout(10000) })
             .then(r => dropResult(db.name, r));
         case 'milvus':
@@ -447,6 +523,14 @@ export function createVectorProxyRouter() {
           if (!qResp.ok) {
             const errBody = await qResp.text().catch(() => '');
             console.warn(`[vector-all] Qdrant upsert error ${qResp.status}: ${errBody.slice(0, 200)}`);
+          } else if (KW_PREFIXES.test(qUpCol) && !qUpCol.endsWith(KW_SUFFIX)) {
+            // Keyword companion: best effort, logged, never fails the dense write it shadows.
+            try {
+              await kwUpsert(url, qUpCol, points.map((p) => ({
+                id: typeof p.id === 'number' ? p.id : stableHash(String(p.id)),
+                payload: JSON.parse(safeStringify({ ...(p.metadata || {}), _original_id: String(p.id || '') })),
+              })));
+            } catch (e) { console.warn(`[vector-kw] ${qUpCol}: ${e.message}`); }
           }
           // count = points actually STORED. Returning points.length on a rejected batch is how a
           // failed upsert became an optimistic number all the way up to the run total.
@@ -708,7 +792,7 @@ export function createVectorProxyRouter() {
           case 'qdrant': {
             const r = await fetch(`${url}/collections`, { signal: AbortSignal.timeout(5000) });
             const d = await r.json();
-            return { db: db.name, collections: (d.result?.collections || []).map(c => c.name) };
+            return { db: db.name, collections: (d.result?.collections || []).map(c => c.name).filter((n) => !n.endsWith(KW_SUFFIX)) };
           }
           case 'milvus': {
             const r = await fetch(`${url}/v2/vectordb/collections/list`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(5000) });
@@ -891,6 +975,37 @@ export function createVectorProxyRouter() {
   // POST /api/proxy/vector/all/collections/:name/search — Consensus search across all DBs
   // Body: { query: "search text", topK: 10 }
   // Or pre-vectorized: { vector: [...], topK: 10 }
+  // BM25 keyword search over the companion index. Same result shape as /search, so callers can
+  // fuse the lists by rank. A collection without a companion (not backfilled yet) returns [].
+  router.post('/all/collections/:name/keyword-search', jsonParser(), async (req, res) => {
+    const { query, topK = 10 } = req.body || {};
+    const filter = (req.body?.filter && typeof req.body.filter === 'object') ? req.body.filter : null;
+    if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (text) is required' });
+    const sv = kwSparseQuery(query);
+    if (!sv.indices.length) return res.json({ collection: req.params.name, results: [], note: 'no searchable terms' });
+    const db = getEligibleDbs().find((d) => d.type === 'qdrant');
+    if (!db) return res.status(503).json({ error: 'no qdrant backend' });
+    const url = `http://${db.host}:${db.port}`;
+    try {
+      const qCol = await resolveCollection('qdrant', req.params.name);
+      const r = await fetch(`${url}/collections/${qCol}${KW_SUFFIX}/points/query`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: sv, using: 'bm25', limit: topK, with_payload: true, ...(filter ? { filter } : {}) }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (r.status === 404) return res.json({ collection: req.params.name, results: [], note: 'no keyword index for this collection yet' });
+      const d = await r.json();
+      if (!r.ok) return res.status(502).json({ error: d?.status?.error || `HTTP ${r.status}` });
+      const results = (d.result?.points || []).map((p, rank) => ({
+        id: String(p.payload?._original_id || p.id), score: p.score || 0, rank: rank + 1,
+        text: p.payload?.text || '', metadata: p.payload || {},
+      }));
+      res.json({ collection: req.params.name, results, mode: 'bm25' });
+    } catch (e) {
+      res.status(502).json({ error: String(e.message || e) });
+    }
+  });
+
   router.post('/all/collections/:name/search', jsonParser(), async (req, res) => {
     const { query, vector, topK = 10 } = req.body || {};
     const filter = (req.body?.filter && typeof req.body.filter === 'object') ? req.body.filter : null;
