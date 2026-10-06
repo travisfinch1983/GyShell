@@ -131,23 +131,68 @@ export class DocRagStore {
           paths: this.serverFiles.map((f) => f.path),
         })
       } else {
-        // Plain HTTP multipart, same-origin (/api -> backend, like the imagegen images): no base64,
-        // no websocket message cap, no bridge timeout on a slow upload.
-        const fd = new FormData()
-        fd.append('collection', this.collection.trim())
-        fd.append('description', this.description)
-        for (const f of this.files) fd.append('files', f.file, f.name)
-        const r = await fetch('/api/ai/docrag/index', { method: 'POST', body: fd })
-        const d = await r.json().catch(() => ({}))
-        if (!r.ok) throw new Error(d?.error || `upload failed (HTTP ${r.status})`)
+        await this.uploadStagedAndIndex()
       }
       void this.refreshStatus()
     } catch (e: any) {
-      runInAction(() => { this.err = 'Index failed: ' + (e?.message || e) })
+      runInAction(() => { this.err = 'Index failed: ' + (e?.message || e); this.uploadMsg = '' })
     } finally {
       runInAction(() => { this.busy = false })
     }
   }
+  /** Upload progress line while files are going up ('' when idle). */
+  uploadMsg = ''
+
+  /**
+   * Each file goes up on its own in 32 MB pieces (same-origin HTTP, no websocket bridge), so no
+   * request ever approaches Cloudflare's 100 MB cap however big the file or the batch. A failed
+   * piece is retried from the server's own byte count, so a blip resumes instead of restarting.
+   * Once every file is complete the server indexes them from its staging folder.
+   */
+  private async uploadStagedAndIndex(): Promise<void> {
+    const CHUNK = 32 * 1024 * 1024
+    const jsonOrThrow = async (r: Response) => {
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) throw Object.assign(new Error(d?.error || `HTTP ${r.status}`), { status: r.status, body: d })
+      return d
+    }
+    const { session } = await jsonOrThrow(await fetch('/api/ai/docrag/staging', { method: 'POST' }))
+    const total = this.files.reduce((a, f) => a + f.size, 0) || 1
+    let sent = 0
+    const mb = (n: number) => (n / 1048576).toFixed(n < 10485760 ? 1 : 0)
+    for (const [idx, f] of this.files.entries()) {
+      let offset = 0
+      const q = (o: number) => `/api/ai/docrag/staging/${session}/${idx}?name=${encodeURIComponent(f.name)}&offset=${o}`
+      while (offset < f.size || (f.size === 0 && offset === 0)) {
+        const piece = f.file.slice(offset, Math.min(offset + CHUNK, f.size))
+        let attempt = 0
+        for (;;) {
+          try {
+            const d = await jsonOrThrow(await fetch(q(offset), { method: 'PUT', body: piece, headers: { 'Content-Type': 'application/octet-stream' } }))
+            sent += d.size - offset; offset = d.size
+            break
+          } catch (e: any) {
+            // 409 = server has a different byte count than we think: resync to it and carry on.
+            if (e?.status === 409 && typeof e.body?.size === 'number') { sent += e.body.size - offset; offset = e.body.size; break }
+            if (++attempt >= 4) throw new Error(`uploading ${f.name} failed at ${mb(offset)} MB: ${e?.message || e}`)
+            await new Promise((r) => setTimeout(r, 1500 * attempt))
+            try { const s2 = await jsonOrThrow(await fetch(`/api/ai/docrag/staging/${session}/${idx}`)); sent += s2.size - offset; offset = s2.size } catch { /* retry blind */ }
+            if (offset >= f.size) break
+          }
+        }
+        runInAction(() => { this.uploadMsg = `Uploading ${idx + 1}/${this.files.length}: ${f.name} — ${mb(sent)} of ${mb(total)} MB (${Math.round((sent / total) * 100)}%)` })
+        if (f.size === 0) break
+      }
+    }
+    runInAction(() => { this.uploadMsg = 'Upload complete, starting indexing…' })
+    await jsonOrThrow(await fetch(`/api/ai/docrag/staging/${session}/index`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ collection: this.collection.trim(), description: this.description,
+        files: this.files.map((f, idx) => ({ idx, name: f.name, size: f.size })) }),
+    }))
+    runInAction(() => { this.uploadMsg = '' })
+  }
+
   async deleteCollection(name: string): Promise<void> {
     await bridge().request('DELETE', `/api/ai/docrag/collections/${encodeURIComponent(name)}`).catch(() => undefined)
     await this.load()

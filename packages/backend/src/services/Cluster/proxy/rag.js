@@ -9,7 +9,8 @@ import { stripLoneSurrogates, embedSafeText } from './lib/text-safety.js';
 import multer from 'multer'
 import { readFile as readFileAsync, readdir, stat } from 'node:fs/promises'
 import { extname, join, resolve as pathResolve, dirname, basename } from 'node:path'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, openSync, writeSync, closeSync, statSync as statSyncFs, readdirSync as readdirSyncFs, rmSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 
 // ─── Embed input safety ──────────────────────────────────────────────────────
@@ -1496,6 +1497,72 @@ const docUploadMw = (req, res, next) => docUpload.array('files', 2000)(req, res,
   if (err) return res.status(400).json({ error: `upload rejected: ${err.message || err}` });
   next();
 });
+// ─── Document RAG: chunked staging upload ──────────────────────────────────
+// Every request stays small whatever the file or batch size, so the upload works through
+// Cloudflare (100 MB per request) as well as on the LAN:
+//   POST /docrag/staging                              -> { session }
+//   PUT  /docrag/staging/:session/:idx?name=&offset=  raw bytes (<= 64 MB), appended at offset
+//   GET  /docrag/staging/:session/:idx                -> { size }   (resume point after a failure)
+//   POST /docrag/staging/:session/index {collection, description, files:[{idx, name, size}]}
+// Files are reassembled in a per-session dir, indexed in place, then the dir is removed.
+const STAGING_ROOT = '/tmp/docrag-staging';
+const STAGING_MAX_AGE_MS = 24 * 3600_000;
+const stagingDir = (session) => (/^[a-f0-9]{24}$/.test(String(session)) ? join(STAGING_ROOT, session) : null);
+const stagedName = (idx, name) => `${idx}_${String(name || 'file').replace(/[^a-zA-Z0-9._-]/g, '_').slice(-120)}`;
+function sweepStaging() {
+  try {
+    for (const d of readdirSyncFs(STAGING_ROOT)) {
+      const p = join(STAGING_ROOT, d);
+      try { if (Date.now() - statSyncFs(p).mtimeMs > STAGING_MAX_AGE_MS) rmSync(p, { recursive: true, force: true }); } catch {}
+    }
+  } catch {}
+}
+app.post('/api/ai/docrag/staging', (req, res) => {
+  sweepStaging();
+  const session = randomBytes(12).toString('hex');
+  mkdirSync(join(STAGING_ROOT, session), { recursive: true });
+  res.json({ session });
+});
+app.get('/api/ai/docrag/staging/:session/:idx', (req, res) => {
+  const dir = stagingDir(req.params.session); const idx = parseInt(req.params.idx, 10);
+  if (!dir || !existsSync(dir) || !(idx >= 0)) return res.status(404).json({ error: 'unknown upload session' });
+  const f = readdirSyncFs(dir).find((n) => n.startsWith(`${idx}_`));
+  res.json({ size: f ? statSyncFs(join(dir, f)).size : 0 });
+});
+app.put('/api/ai/docrag/staging/:session/:idx', express.raw({ type: '*/*', limit: '64mb' }), (req, res) => {
+  const dir = stagingDir(req.params.session); const idx = parseInt(req.params.idx, 10);
+  const offset = parseInt(String(req.query.offset ?? ''), 10);
+  if (!dir || !existsSync(dir)) return res.status(404).json({ error: 'unknown upload session' });
+  if (!(idx >= 0) || !(offset >= 0)) return res.status(400).json({ error: 'idx and offset are required' });
+  const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+  const p = join(dir, stagedName(idx, req.query.name));
+  const have = existsSync(p) ? statSyncFs(p).size : 0;
+  // Strictly sequential: a gap or overlap means the client is out of step; tell it where we are.
+  if (offset !== have) return res.status(409).json({ error: `offset ${offset} does not match received ${have}`, size: have });
+  const fd = openSync(p, have ? 'r+' : 'w');
+  try { writeSync(fd, body, 0, body.length, offset); } finally { closeSync(fd); }
+  res.json({ size: have + body.length });
+});
+app.post('/api/ai/docrag/staging/:session/index', express.json({ limit: '2mb' }), (req, res) => {
+  const dir = stagingDir(req.params.session);
+  if (!dir || !existsSync(dir)) return res.status(404).json({ error: 'unknown upload session' });
+  const { collection, description, files } = req.body || {};
+  if (!collection || !Array.isArray(files) || !files.length) return res.status(400).json({ error: 'collection and files are required' });
+  if (docRagJob.active) return res.status(409).json({ error: 'A document indexing job is already running.' });
+  const ready = [], bad = [];
+  for (const f of files) {
+    const p = join(dir, stagedName(parseInt(f.idx, 10), f.name));
+    const got = existsSync(p) ? statSyncFs(p).size : -1;
+    if (got !== Number(f.size)) bad.push(`${f.name} (${got < 0 ? 'missing' : `${got} of ${f.size} bytes`})`);
+    else ready.push({ path: p, originalname: String(f.name) });
+  }
+  if (bad.length) return res.status(400).json({ error: `incomplete upload: ${bad.slice(0, 5).join(', ')}${bad.length > 5 ? ` and ${bad.length - 5} more` : ''}` });
+  console.log(`[docrag] staged upload ${req.params.session}: ${ready.length} files ready`);
+  Promise.resolve(runDocRagIndexing(ready, collection, description))
+    .finally(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+  res.json({ started: true, collection, fileCount: ready.length });
+});
+
 app.post('/api/ai/docrag/index', docUploadMw, (req, res) => {
   if (docRagJob.active) return res.status(409).json({ error: 'A document indexing job is already running.', status: docRagStatus() });
   const collection = req.body?.collection;

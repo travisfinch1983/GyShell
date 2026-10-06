@@ -138,9 +138,15 @@ export const DocRagPanel: React.FC = observer(() => {
             {st.active || store.busy ? 'Indexing…' : `Index${store.totalStaged ? ` (${store.totalStaged})` : ''}`}
           </button>
         </div>
+        {store.uploadMsg && (
+          <div className={styles.statusBox}>
+            <div>{store.uploadMsg}</div>
+          </div>
+        )}
         {(st.active || st.detail) && (
           <div className={styles.statusBox}>
-            <div>{st.detail || st.phase}</div>
+            {/* Name the job: a finished job's line used to read like the current one's status. */}
+            <div>{st.active ? '' : 'Last job'}{st.collection ? `${st.active ? '' : ' · '}${st.collection}: ` : (st.active ? '' : ': ')}{st.detail || st.phase}</div>
             {st.active && <div className={styles.progressWrap}><div className={styles.progressBar} style={{ width: `${st.progress || 0}%` }} /></div>}
           </div>
         )}
