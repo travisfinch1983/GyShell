@@ -2596,6 +2596,11 @@ export CUDA_HOME="${vllmEnvPrefix}"
         console.log('[svc-launch] vLLM KV offload: disabled by AILAB_VLLM_KV_OFFLOAD=0');
       } else if (/--kv-transfer-config[ =]|--kv-offloading-size[ =]/.test(finalCommand)) {
         console.log('[svc-launch] vLLM KV offload: launch already carries its own KV config; leaving untouched');
+      } else if (/--runner[ =]pooling|--convert[ =]|--task[ =](embed|embedding|score|classify|reward)\b/.test(finalCommand)) {
+        // Pooling models (embedders, rerankers, classifiers) produce no reusable decode KV, and the
+        // assumption above that only the plain `vllm` provider serves them stopped being true on
+        // 2026-10-06 (Qwen3-VL-Embedding W8A16 runs on 1cat-vllm for its sm70 int8 kernels).
+        console.log('[svc-launch] vLLM KV offload: pooling model (--runner pooling/--convert/--task); not wired');
       } else {
         const { optaneDir, modelName, tp, fp } = computeVllmKvFingerprint(finalCommand);
         // An unparsed model name would key every service at this TP/dtype to the SAME pool.
