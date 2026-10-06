@@ -6736,7 +6736,9 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
 
     const hasGguf = paths.some(p => p.endsWith('.gguf'));
     const hasModelIndex = paths.includes('model_index.json');
-    const hasAdapterConfig = paths.includes('adapter_config.json') || paths.some(p => p.endsWith('adapter_model.safetensors'));
+    // ROOT only: a repo that ships a PEFT adapter in a subfolder (peft/adapter_model.safetensors) next to
+    // full weights is not "a LoRA repo" - that misfiled Viggle/Qwen-Image-2.1-viggle-turbo as loras/.
+    const hasAdapterConfig = paths.includes('adapter_config.json') || paths.includes('adapter_model.safetensors');
     const hasSafetensors = paths.some(p => p.endsWith('.safetensors'));
     const hasConfig = paths.includes('config.json');
     const hasVaeFolder = paths.some(p => p.startsWith('vae/'));
@@ -6876,7 +6878,11 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
     // showed "0 files available to download". Surface every real artifact (weights + code + essential
     // sidecars), excluding only the truly-optional extras and GGUF (handled by ggufQuants).
     const extraSet = new Set(extras.map(e => e.path));
-    const weightFiles = (!hasGguf && !hasModelIndex)
+    //
+    // NOT gated on !hasGguf (fixed 2026-10-06): a MIXED repo - GGUF quants beside safetensors, e.g.
+    // Viggle/Qwen-Image-2.1-viggle-turbo with its 14 GB transformer/ - listed ONLY the GGUFs, so every
+    // safetensors in the root and in every subfolder vanished from the picker. GGUFs stay in ggufQuants.
+    const weightFiles = !hasModelIndex
       ? files
           .filter(f => !extraSet.has(f.path) && !f.path.endsWith('.gguf'))
           .map(f => ({ path: f.path, name: f.path.split('/').pop(), size: f.size || 0 }))
