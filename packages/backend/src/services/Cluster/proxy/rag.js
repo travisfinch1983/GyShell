@@ -1517,7 +1517,12 @@ app.get('/api/ai/docrag/collections', async (req, res) => {
 });
 
 app.delete('/api/ai/docrag/collections/:name', async (req, res) => {
-  const colName = req.params.name;
+  // Document collections are stored as docs_<name> (runDocRagIndexing prefixes it). Accept either
+  // form: deleting by the bare name used to drop a non-existent collection, report every backend
+  // "ok", and leave the real one in place.
+  const raw = String(req.params.name || '');
+  if (!/^[A-Za-z0-9_-]+$/.test(raw)) return res.status(400).json({ error: 'bad collection name' });
+  const colName = raw.startsWith('docs_') ? raw : `docs_${raw}`;
   try {
     const delResp = await fetch(`http://127.0.0.1:${selfPort}/api/proxy/vector/all/collections/${colName}`, {
       method: 'DELETE', signal: AbortSignal.timeout(30000),
