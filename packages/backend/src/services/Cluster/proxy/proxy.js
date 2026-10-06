@@ -2021,10 +2021,34 @@ export function createProxyRouter(sshService) {
       // waits 15 s) and retry used to pile work on the card: 560 queued docs on V100 #7, 2026-10-06,
       // and every memory recall timed out behind them. Over the cap we refuse at once with 503; every
       // internal caller already degrades to un-reranked order. RERANK_MAX_INFLIGHT tunes it.
+      // Per-request size cap, enforced HERE for every caller. Capping callers one by one kept missing
+      // one (HippocampAI sends ~145 full passages from TOP_K_QDRANT=200 - 20-70 s each on the V100).
+      // Only the first RERANK_MAX_DOCS documents (callers send them best-first) are scored, each cut
+      // to RERANK_MAX_CHARS; the rest come back BELOW every scored one, in their original order, so
+      // a caller still receives an entry for every index it sent.
+      let trimmed = null;
+      try {
+        const parsed = JSON.parse(out.toString());
+        const docs = Array.isArray(parsed.documents) ? parsed.documents : null;
+        const maxDocs = Number(process.env.RERANK_MAX_DOCS || 32);
+        const maxChars = Number(process.env.RERANK_MAX_CHARS || 1500);
+        if (docs) {
+          const cut = (d) => (typeof d === 'string' && d.length > maxChars ? d.slice(0, maxChars) : d);
+          const needCut = docs.length > maxDocs || docs.some((d) => typeof d === 'string' && d.length > maxChars);
+          if (needCut) {
+            trimmed = { total: docs.length, kept: Math.min(docs.length, maxDocs), topN: parsed.top_n, originals: docs };
+            parsed.documents = docs.slice(0, maxDocs).map(cut);
+            delete parsed.top_n;
+            out = Buffer.from(JSON.stringify(parsed));
+          }
+        }
+      } catch {}
       const key = `${svc.containerIp}:${svc.port}`;
       const cap = Number(process.env.RERANK_MAX_INFLIGHT || 3);
       const cur = rerankInflight.get(key) || 0;
       let ndocs = 0; try { ndocs = (JSON.parse(out.toString()).documents || []).length; } catch {}
+      const who = `${req.ip || req.socket?.remoteAddress} ua=${String(req.headers['user-agent'] || '-').slice(0, 40)}`;
+      if (trimmed && trimmed.total > trimmed.kept) console.log(`[rerank] trimmed ${trimmed.total} -> ${trimmed.kept} docs from ${who}`);
       if (cur >= cap) {
         console.warn(`[rerank] ${key} busy (${cur}/${cap} in flight) - refused ${ndocs} docs from ${req.ip || req.socket?.remoteAddress} ua=${String(req.headers['user-agent'] || '-').slice(0, 40)}`);
         return res.status(503).json({ error: 'reranker busy', inflight: cur, cap });
@@ -2039,10 +2063,24 @@ export function createProxyRouter(sshService) {
         const up = await fetch(`http://${svc.containerIp}:${svc.port}${downstreamPath}`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: out, signal: ctrl.signal,
         });
-        const text = await up.text();   // wait for the backend to FINISH, whether or not the caller is still here
+        let text = await up.text();   // wait for the backend to FINISH, whether or not the caller is still here
+        if (up.ok && trimmed) {
+          try {
+            const d = JSON.parse(text);
+            const results = (d.results || []).slice().sort((a, b) => b.relevance_score - a.relevance_score);
+            const floor = results.length ? Math.min(...results.map((r) => r.relevance_score)) : 0;
+            for (const r of results) if (r.document && typeof trimmed.originals[r.index] === 'string') r.document = { ...r.document, text: trimmed.originals[r.index] };
+            for (let i = trimmed.kept; i < trimmed.total; i++) {
+              const orig = trimmed.originals[i];
+              results.push({ index: i, relevance_score: floor - 1 - (i - trimmed.kept) * 1e-6, ...(typeof orig === 'string' ? { document: { text: orig } } : {}) });
+            }
+            d.results = trimmed.topN ? results.slice(0, trimmed.topN) : results;
+            text = JSON.stringify(d);
+          } catch (e) { console.warn(`[rerank] could not re-expand trimmed result: ${e.message}`); }
+        }
         release();
         const ms = Date.now() - t0;
-        if (ms > 5000) console.warn(`[rerank] slow: ${ndocs} docs took ${ms} ms on ${key}`);
+        if (ms > 5000) console.warn(`[rerank] slow: ${ndocs} docs took ${ms} ms on ${key} for ${who}`);
         if (up.ok) markSuccess(svc); else markFailure(svc);
         if (!res.writableEnded && !res.destroyed) res.status(up.status).type(up.headers.get('content-type') || 'application/json').send(text);
       } catch (e) {
