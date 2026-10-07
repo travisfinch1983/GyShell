@@ -33,8 +33,14 @@ const cold: any = { model: 'm1', cum_kvOffloadStoredBytes: 2 * GB, cum_kvOffload
 poller._checkKvOffloadDead(cold)
 assert(raised.length === 0, 'below the floor stays silent')
 
-// Past the floor with zero restored → the wired-but-dead signature, exactly one event.
-const dead: any = { model: 'm2', cum_kvOffloadStoredBytes: 12 * GB, cum_kvOffloadRestoredBytes: 0 }
+// Past the floor, zero restored, but the GPU cache NEVER came under pressure → silent. Nothing was ever
+// evicted, so nothing needed restoring (the 2026-10-07 false alarm: 27B, 5.5 GB stored, peak usage 8.5%).
+const unpressured: any = { model: 'm2a', cum_kvOffloadStoredBytes: 12 * GB, cum_kvOffloadRestoredBytes: 0, kvUsagePeak: 0.085 }
+poller._checkKvOffloadDead(unpressured)
+assert(raised.length === 0, 'no GPU-cache pressure: zero restores is correct, stays silent')
+
+// Past the floor with zero restored AFTER real pressure → the wired-but-dead signature, exactly one event.
+const dead: any = { model: 'm2', cum_kvOffloadStoredBytes: 12 * GB, cum_kvOffloadRestoredBytes: 0, kvUsagePeak: 0.97 }
 poller._checkKvOffloadDead(dead)
 assert(raised.length === 1 && raised[0].source === 'kv-offload', 'dead cache raises one event')
 assert(raised[0].severity === 'error' && raised[0].message.includes('12.0 GB'), 'event names the volume')
@@ -53,6 +59,11 @@ poller._checkKvOffloadDead(dead)          // recovers → unlatch
 dead.cum_kvOffloadRestoredBytes = 0
 poller._checkKvOffloadDead(dead)          // fails again → fires again
 assert(raised.length === 2, 'recovery unlatches so a later failure is not swallowed')
+
+// Preemptions alone also count as pressure (low peak usage, but the engine had to preempt).
+const preempted: any = { model: 'm4', cum_kvOffloadStoredBytes: 8 * GB, cum_kvOffloadRestoredBytes: 0, kvUsagePeak: 0.5, cum_preemptions: 3 }
+poller._checkKvOffloadDead(preempted)
+assert(raised.length === 3, 'preemptions count as GPU-cache pressure')
 
 // No notify sink → no throw (the poller must run unchanged without notifications).
 const bare = new LlmMetricsPoller({ dataDir: mkdtempSync(join(tmpdir(), 'emit-spec2-')), gpuMonitor: null })

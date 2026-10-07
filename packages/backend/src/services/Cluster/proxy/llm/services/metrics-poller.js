@@ -81,6 +81,13 @@ export class LlmMetricsPoller {
     const restored = row.cum_kvOffloadRestoredBytes || 0;
     if (restored > 0) { row._kvDeadFlagged = false; return; }   // it earns its keep — unlatch
     if (stored < FLOOR_BYTES) return;                            // too early to judge
+    // A restore can only happen for a prefix the GPU prefix cache no longer holds, i.e. after the
+    // GPU cache EVICTED something. With the cache never near full, every offloaded block is still
+    // on the GPU and served from there, so restored == 0 is the CORRECT reading, not a dead cache.
+    // False alarm 2026-10-07: the 27B had 5.5 GB stored / 0 restored over 7d21h with a lifetime
+    // PEAK kv_cache_usage of 8.5% and zero preemptions. Judge only after real GPU-cache pressure.
+    const pressured = (row.kvUsagePeak || 0) >= 0.9 || (row.cum_preemptions || 0) > 0;
+    if (!pressured) return;
     if (row._kvDeadFlagged) return;                              // already reported
     row._kvDeadFlagged = true;
     const gb = (stored / 1024 / 1024 / 1024).toFixed(1);
@@ -88,7 +95,7 @@ export class LlmMetricsPoller {
       severity: 'error',
       source: 'kv-offload',
       message: `KV offload is storing but never restoring on ${row.model || row.currentServiceId || 'a service'} — ${gb} GB written, 0 bytes restored`,
-      detail: 'Stored bytes climb whenever the connector is attached; restored bytes climb only on a real hit. Zero restored past the 5GB floor means the cache is present but dead (wrong block hashes, PYTHONHASHSEED unset, or a restore path that never matches).',
+      detail: `Stored bytes climb whenever the connector is attached; restored bytes climb only on a real hit. This fires only after the GPU KV cache has been under pressure (peak usage ${Math.round((row.kvUsagePeak || 0) * 100)}%, ${row.cum_preemptions || 0} preemptions), so evicted prefixes SHOULD have been restored from the offload tier and none were: wrong block hashes, PYTHONHASHSEED unset, or a restore path that never matches. Note /proc/<pid>/environ of VLLM::* processes is zeroed by setproctitle and cannot show the env.`,
     });
   }
 
@@ -246,6 +253,9 @@ export class LlmMetricsPoller {
         // grows is the exact signature of the cache being broken, which is the failure Travis
         // could not see before.
         kvOffloadStoredBytes: promSumLabeled(text, 'vllm:kv_offload_total_bytes_total', 'transfer_type', 'GPU_to_CPU'),
+        // GPU-cache pressure, which is what makes an offload restore possible at all (see _checkKvOffloadDead).
+        kvUsage: promSum(text, 'vllm:kv_cache_usage_perc'),
+        preemptions: promSum(text, 'vllm:num_preemptions_total'),
         kvOffloadRestoredBytes: promSumLabeled(text, 'vllm:kv_offload_total_bytes_total', 'transfer_type', 'CPU_to_GPU'),
         kvOffloadStoredSec: promSumLabeled(text, 'vllm:kv_offload_total_time_total', 'transfer_type', 'GPU_to_CPU'),
         kvOffloadRestoredSec: promSumLabeled(text, 'vllm:kv_offload_total_time_total', 'transfer_type', 'CPU_to_GPU'),
@@ -398,6 +408,8 @@ export class LlmMetricsPoller {
           this._accum(row, 'kvOffloadRestoredBytes', m.kvOffloadRestoredBytes, runId)
           this._accum(row, 'kvOffloadStoredSec', m.kvOffloadStoredSec, runId)
           this._accum(row, 'kvOffloadRestoredSec', m.kvOffloadRestoredSec, runId)
+          this._accum(row, 'preemptions', m.preemptions, runId)
+          if (typeof m.kvUsage === 'number' && m.kvUsage > (row.kvUsagePeak || 0)) row.kvUsagePeak = m.kvUsage
           this._checkKvOffloadDead(row);
         }
         row._lastRun = runId
