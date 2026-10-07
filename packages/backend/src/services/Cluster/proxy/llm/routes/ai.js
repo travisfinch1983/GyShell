@@ -7884,7 +7884,12 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
   // Per-provider startup grace periods (seconds) — how long to skip health checks after start/restart
   const STARTUP_GRACE = {
     sdnext:    300,  // 5 min — pip installs, model scanning
-    comfyui:   180,  // 3 min — custom node loading
+    // 10 min. Custom-node import is only the first phase: afterwards LoRA-Manager indexes ~2,000
+    // LoRAs and each /object_info build (73 MB with the multi-slot LoRA stackers) blocks the event
+    // loop for ~7 s. Measured 2026-10-07 on 8188: health probes missed from ~2 to ~7 min after start,
+    // AFTER it had already answered once - so 3 min of grace let the watchdog count 8 "failures" of
+    // a healthy service and restart it mid-warmup, which then started the same warmup again.
+    comfyui:   600,
     fooocus:   180,
     invokeai:  180,
     vllm:      300,  // 5 min — model loading; a large TP model exceeds 2 min on its own
