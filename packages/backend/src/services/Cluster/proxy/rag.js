@@ -876,7 +876,7 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
         try {
           // Truncate any chunks that might exceed token limit (safety net)
           const truncatedTexts = embedBatch.map(c => embedSafeText(c.text));
-          const embedResp = await fetch(`http://127.0.0.1:${selfPort}/api/proxy/embed/v1/embeddings`, {
+          const embedResp = await embedFetch(`http://127.0.0.1:${selfPort}/api/proxy/embed/v1/embeddings`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model: effEmbedModel(), input: truncatedTexts }),
@@ -1347,6 +1347,33 @@ async function upsertDocPoints(port, colName, points) {
   return typeof d.stored === 'number' ? d.stored : points.length;
 }
 
+/**
+ * fetch() for the embedder that rides out a restart. A 5xx or a connection error is retried with
+ * backoff for up to EMBED_RETRY_MS (5 min) before the response or error is handed back to the caller's
+ * own failure counting. Before this, an embedder that dropped for a minute (crash, watchdog restart,
+ * a GPU move) failed every remaining page of the current PDF in about a second and then aborted the
+ * whole job: the Nissan Juke manual died 4 of 57 files in on 2026-10-06. Each attempt gets its own
+ * timeout; any signal the caller passed is replaced, since one shared timeout would expire mid-retry.
+ */
+const EMBED_RETRY_MS = Number(process.env.EMBED_RETRY_MS || 5 * 60 * 1000);
+async function embedFetch(url, init = {}) {
+  const deadline = Date.now() + EMBED_RETRY_MS;
+  let delay = 5000, attempt = 0;
+  for (;;) {
+    attempt++;
+    try {
+      const r = await fetch(url, { ...init, signal: AbortSignal.timeout(180000) });
+      if (r.status < 500 || Date.now() + delay > deadline) return r;
+      console.warn(`[embed-retry] HTTP ${r.status} from the embedder (attempt ${attempt}); retrying in ${delay / 1000}s`);
+    } catch (e) {
+      if (Date.now() + delay > deadline) throw e;
+      console.warn(`[embed-retry] ${e.message} (attempt ${attempt}); retrying in ${delay / 1000}s`);
+    }
+    await new Promise((res) => setTimeout(res, delay));
+    delay = Math.min(delay * 2, 60000);
+  }
+}
+
 async function runDocRagIndexing(files, collection, description, opts = {}) {
   const colName = sanitizeDocCollectionName(collection);
   const port = selfPort;
@@ -1402,7 +1429,7 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
             const mime = mimeMap[ext] || 'image/png';
 
             try {
-              const embedResp = await fetch(`http://127.0.0.1:${port}/api/proxy/embed/v1/embeddings`, {
+              const embedResp = await embedFetch(`http://127.0.0.1:${port}/api/proxy/embed/v1/embeddings`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1450,7 +1477,7 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
           const batch = fileChunks.slice(j, j + EMBED_BATCH);
           try {
             const truncated = batch.map(c => embedSafeText(c.text));
-            const embedResp = await fetch(`http://127.0.0.1:${port}/api/proxy/embed/v1/embeddings`, {
+            const embedResp = await embedFetch(`http://127.0.0.1:${port}/api/proxy/embed/v1/embeddings`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ model: effEmbedModel(), input: truncated }),
@@ -1496,7 +1523,7 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
             docRagJob.detail = `Processing: ${filesProcessed}/${files.length} files - ${origName} page image ${pg.page}/${pages.length}`;
             try {
               const b64 = (await readFileAsync(pg.path)).toString('base64');
-              const er = await fetch(`http://127.0.0.1:${port}/api/proxy/embed/v1/embeddings`, {
+              const er = await embedFetch(`http://127.0.0.1:${port}/api/proxy/embed/v1/embeddings`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ model: effEmbedModel(), messages: [{ role: 'user', content: [
                   { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } },
