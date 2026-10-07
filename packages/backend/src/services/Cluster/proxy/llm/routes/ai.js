@@ -38,6 +38,7 @@ import { getAllProviders, getProvider } from '../services/providers.js';
 import { ProviderInstaller } from '../services/provider-installer.js';
 import { inspectModel, detectFormat, recommendedHeaderSize, safetensorsHeaderSize } from '../services/model-inspector.js';
 import { getProviderSymlinks } from '../services/shared-folder-mappings.js';
+import { GPU_PIN_EXIT, applyGpuPin } from '../services/gpu-pin.js';
 import { LlmMetricsPoller } from '../services/metrics-poller.js';
 // Single source of truth for service type — see the note on classifyService in proxy.js.
 // (proxy.js does not import this module, so there is no cycle.)
@@ -691,63 +692,10 @@ export function createAiRouter(config, gpuMonitor, pveApi, sshService, hookscrip
       .map(idx => assign.gpus[idx]);
   }
 
-  /**
-   * GPU PIN — pin a service to its cards by IDENTITY, never by position.
-   *
-   * Scripts used to say CUDA_VISIBLE_DEVICES=1 (an index under PCI_BUS_ID order). An index means
-   * "whatever card is 2nd in this container right now": when ai-epyc came up with 5060 Ti #1
-   * (02:00.0) unbound (2026-10-04), every service pinned to index 1 silently ran on 22:00.0 instead,
-   * piled onto another service's card, and AI-Lab still attributed it to the absent card.
-   *
-   * Now the script carries the cards' PCI addresses (the stable identity behind the UI's friendly
-   * names) and resolves them AT LAUNCH, inside the container:
-   *   /proc/driver/nvidia/gpus/<pci>/information -> GPU UUID + Device Minor
-   *   /dev/nvidia<minor> must exist (the card is actually bound to this container)
-   * then exports CUDA_VISIBLE_DEVICES as the cards' indices among the ATTACHED cards (PCI order), in the chosen order. A missing card REFUSES
-   * the start with exit 78 (unit: RestartPreventExitStatus=78, so no retry loop) and a clear log
-   * line, instead of running on a different card.
-   */
-  const GPU_PIN_EXIT = 78;
-  function gpuPinPreamble(pciIds) {
-    const list = pciIds.map((p) => String(p).toLowerCase()).filter((p) => /^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]$/.test(p));
-    if (!list.length || list.length !== pciIds.length) return null;
-    // Emits NUMERIC indices, not GPU-<uuid>: vLLM int()-parses CUDA_VISIBLE_DEVICES
-    // (platforms/interface.py device_id_to_physical_device_id) and crashed on a UUID (2026-10-04).
-    // The index is computed AT LAUNCH as the card's rank among the cards ACTUALLY ATTACHED to this
-    // container, in PCI bus order (= CUDA's order under CUDA_DEVICE_ORDER=PCI_BUS_ID, which only
-    // enumerates devices whose /dev/nvidiaN node exists) — so it is right whatever else is missing.
-    return [
-      '# ── AI-Lab GPU pin: cards by PCI identity -> index among ATTACHED cards at launch; refuse if absent ──',
-      `AILAB_GPU_PCIS="${list.join(' ')}"`,
-      'export CUDA_DEVICE_ORDER=PCI_BUS_ID',
-      '_attached=""',
-      'for _d in /proc/driver/nvidia/gpus/*; do',
-      '  _m=$(sed -n "s/^Device Minor:[[:space:]]*//p" "$_d/information" 2>/dev/null)',
-      '  [ -n "$_m" ] && [ -e "/dev/nvidia$_m" ] && _attached="$_attached $(basename "$_d" | tr A-F a-f)"',
-      'done',
-      '_attached=$(printf "%s\\n" $_attached | sort)',
-      'AILAB_CVD=""',
-      'for _pci in $AILAB_GPU_PCIS; do',
-      '  _idx=$(printf "%s\\n" $_attached | grep -nx "$_pci" | cut -d: -f1)',
-      `  if [ -z "$_idx" ]; then echo "AI-LAB GPU PIN: GPU $_pci is NOT attached to this container (attached: $(echo $_attached)) -- refusing to start rather than run on a different card"; exit ${GPU_PIN_EXIT}; fi`,
-      '  AILAB_CVD="${AILAB_CVD:+$AILAB_CVD,}$((_idx - 1))"',
-      'done',
-      'export CUDA_VISIBLE_DEVICES="$AILAB_CVD"',
-      'echo "AI-LAB GPU PIN: $AILAB_GPU_PCIS -> CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES (PCI order among attached)"',
-      '',
-    ].join('\n');
-  }
-  /** Rewrite index-based CUDA_VISIBLE_DEVICES (export or inline) to the pinned value. */
-  function applyGpuPin(command, pciIds) {
-    const m = command.match(/CUDA_VISIBLE_DEVICES=([0-9][0-9,]*)/);
-    if (!m) return { command, preamble: '' };                  // no GPU pin requested (CPU service)
-    const idxCount = m[1].split(',').filter(Boolean).length;
-    const pre = Array.isArray(pciIds) && pciIds.length === idxCount ? gpuPinPreamble(pciIds) : null;
-    if (!pre) {
-      console.warn(`[gpu-pin] not pinning: CUDA_VISIBLE_DEVICES=${m[1]} vs gpuPciIds=${JSON.stringify(pciIds)} (count/format mismatch) — leaving the index form`);
-      return { command, preamble: '' };
-    }
-    return { command: command.replace(/CUDA_VISIBLE_DEVICES=([0-9][0-9,]*)/g, 'CUDA_VISIBLE_DEVICES="$AILAB_CVD"'), preamble: pre };
+  // GPU identity pin: implementation + rationale in ../services/gpu-pin.js (UUID first, then PCI).
+  /** PCI -> GPU-uuid for one node, from the GPU monitor's live inventory (the hook's own source). */
+  function gpuUuidsForNode(node) {
+    try { return gpuMonitor.getInventory()?.[node]?.uuidMap || {}; } catch { return {}; }
   }
 
   /** Extract content between marker lines from pct exec output (filters noise/ANSI) */
@@ -2212,11 +2160,11 @@ if out: print(json.dumps(out))
     }
     diag.push('echo -e "\\e[36m─────────────────────\\e[0m"');
 
-    // GPU identity pin (see gpuPinPreamble): the UI's indices mean positions in the CT's assigned
+    // GPU identity pin (see services/gpu-pin.js): the UI's indices mean positions in the CT's assigned
     // card list; translate them to PCI addresses now and resolve against the ATTACHED cards at launch.
     const _cvdIdxL = ((command.match(/CUDA_VISIBLE_DEVICES=([0-9][0-9,]*)/) || [])[1] || '')
       .split(',').filter(Boolean).map(Number);
-    const _pinL = applyGpuPin(command, _cvdIdxL.length ? resolveServiceGpuPciIds(agent.vmid, _cvdIdxL) : []);
+    const _pinL = applyGpuPin(command, _cvdIdxL.length ? resolveServiceGpuPciIds(agent.vmid, _cvdIdxL) : [], gpuUuidsForNode(node));
     command = _pinL.command;
     const scriptContent = `#!/bin/bash\ntrap 'echo -e "\\n\\e[33m[Process exited with code \\$?]\\e[0m"; read -r -p "Press Enter to close..."' EXIT\n${_pinL.preamble}${diag.join('\n')}\n${command}\n`;
     const b64Script = Buffer.from(scriptContent).toString('base64');
@@ -2746,13 +2694,13 @@ fi
     const mkdirBlock = slotPathDirs.length
       ? slotPathDirs.map(p => `mkdir -p "${p}"`).join('\n') + '\n'
       : '';
-    // GPU identity pin (see gpuPinPreamble). Same resolution the registry uses below for gpuPciIds.
+    // GPU identity pin (see services/gpu-pin.js). Same resolution the registry uses below for gpuPciIds.
     const _cvdIdx = ((finalCommand.match(/CUDA_VISIBLE_DEVICES=([0-9][0-9,]*)/) || [])[1] || '')
       .split(',').filter(Boolean).map(Number);
     const pinPciIds = (Array.isArray(explicitGpuPciIds) && explicitGpuPciIds.length > 0)
       ? explicitGpuPciIds
       : resolveServiceGpuPciIds(agent.vmid, (Array.isArray(cudaDevices) && cudaDevices.length) ? cudaDevices : _cvdIdx);
-    const _pin = applyGpuPin(finalCommand, pinPciIds);
+    const _pin = applyGpuPin(finalCommand, pinPciIds, gpuUuidsForNode(node));
     finalCommand = _pin.command;
     const scriptContent = `#!/bin/bash
 # ProxLab managed service — ${providerId} on port ${port || 'auto'}
@@ -4691,9 +4639,11 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
       const script = result.stdout || '';
 
       // Extract CUDA_VISIBLE_DEVICES for GPU info
-      // Pinned scripts carry PCI identities (AILAB_GPU_PCIS, see gpuPinPreamble); map them back to
-      // positions in the CT's assigned list. Legacy scripts still carry bare indices.
-      const pinMatch = script.match(/AILAB_GPU_PCIS="([^"]+)"/);
+      // Pinned scripts carry identities - AILAB_GPU_PINS="<pci>=<uuid> ..." (gpu-pin.js) or the older
+      // AILAB_GPU_PCIS="<pci> ..."; map the PCI part back to positions in the CT's assigned list.
+      // Legacy scripts still carry bare indices.
+      const pinRaw = script.match(/AILAB_GPU_(?:PINS|PCIS)="([^"]+)"/);
+      const pinMatch = pinRaw ? [pinRaw[0], pinRaw[1].split(/\s+/).filter(Boolean).map((t) => t.split('=')[0]).join(' ')] : null;
       const cudaMatch = script.match(/CUDA_VISIBLE_DEVICES=([0-9,]+)/);
       let cudaDevices = cudaMatch ? cudaMatch[1].split(',').map(Number) : [];
       if (pinMatch) {

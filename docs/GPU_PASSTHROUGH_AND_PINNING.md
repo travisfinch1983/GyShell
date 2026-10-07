@@ -30,7 +30,7 @@ after ai-epyc (CT176) booted without 5060 Ti #1 and its services silently moved 
 |---|---|---|---|
 | Friendly name | `GeForce RTX 5060 Ti #1` | yes (AI-Lab label) | UI |
 | **PCI address** | `0000:02:00.0` | **yes**, per slot | **the identity AI-Lab stores** (`gpuPciIds`, `gpu-assignments.json`) |
-| UUID | `GPU-a33cd194-…` | yes, per card | hook fallback if a card changes slot |
+| UUID | `GPU-a33cd194-…` | yes, per card | hook fallback if a card changes slot; **service pin: primary** (since 2026-10-07) |
 | Host device minor | `/dev/nvidia2` | **no**: probe order, can shift | bind mount + cgroup line |
 | CUDA index | `CUDA_VISIBLE_DEVICES=1` | **no**: position among the cards *visible right now* | what CUDA programs consume |
 
@@ -156,3 +156,21 @@ Existing scripts are migrated in place. Backups sit next to them: `<script>.pre-
   wrong card while a card is missing.
 - The UI still sends bare indices. The backend translates them, but the UI could send `gpuPciIds`
   directly everywhere.
+
+
+## Service pin follows the card by UUID (2026-10-07)
+
+Until 2026-10-07 the hook followed a moved card by UUID but the **service pin matched PCI only**, so after a
+slot change the card was attached to the container and every service pinned to it refused to start (exit 78).
+The pin now lives in `packages/backend/src/services/Cluster/proxy/llm/services/gpu-pin.js` and scripts carry
+`AILAB_GPU_PINS="<pci>=<uuid> ..."` (UUIDs from the GPU monitor's `uuidMap`, the hook's own source):
+
+- UUID known: use the attached card **with that UUID** wherever it sits (logged as `moved <old> -> <new>`);
+  if it is not attached, refuse, even if another card now occupies the old address (swapped cards must not
+  silently trade services).
+- No UUID (non-NVIDIA): PCI address, as before.
+
+Existing scripts were migrated in place (backups `*.sh.pre-uuidpin-20261007`, 10 on CT176, 7 on CT177).
+Verified inside CT176 against real /proc: normal, moved, swapped, missing (refused), PCI-only, multi-card.
+⚠ After a move, the registry's `gpuPciIds` (UI attribution) still names the old address until the service is
+relaunched from the UI.
