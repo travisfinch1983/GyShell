@@ -56,9 +56,13 @@ export interface NotifyEvent {
 export interface HealthCheckConfig {
   id: string
   label: string
-  kind: 'http' | 'dns'
-  /** http: URL to GET. dns: hostname to resolve. */
+  kind: 'http' | 'dns' | 'prom'
+  /** http: URL to GET. dns: hostname to resolve. prom: a PromQL instant query (one series per thing watched). */
   target: string
+  /** prom only: DOWN when ANY returned series is above this value (e.g. 84 for a GPU temperature in C). */
+  above?: number
+  /** prom only: unit shown in the reason, e.g. "C". */
+  unit?: string
   /** http only: acceptable statuses. 'any-response' = any HTTP response proves liveness. */
   expect?: number[] | '2xx3xx' | 'any-response'
   timeoutMs?: number
@@ -890,6 +894,40 @@ export class NotificationsService {
     this.timer = null
   }
 
+  /**
+   * kind 'prom': threshold over a Prometheus query (added 2026-10-08 for the px-epyc 5060 Ti temperature
+   * alert - two of those cards are cooled by 40 mm fans with no tach, so temperature is the only signal).
+   * No data at all is UNKNOWN, never ok: an exporter that stopped reporting is not evidence of cool cards.
+   * Series carrying a `uuid` label are named by their GPU friendly name from gpu-config.json.
+   */
+  private async probeProm(c: HealthCheckConfig, base: Omit<HealthState, 'status' | 'reason'>): Promise<HealthState> {
+    if (typeof c.above !== 'number') return { ...base, status: 'unknown', reason: 'prom check has no numeric "above" threshold' }
+    const prom = process.env.PROMETHEUS_URL || 'http://10.0.0.79:9090'
+    let series: Array<{ metric: Record<string, string>; value: [number, string] }>
+    try {
+      const r = await fetch(`${prom}/api/v1/query?query=${encodeURIComponent(c.target)}`, { signal: AbortSignal.timeout(c.timeoutMs ?? 8000) })
+      const d = (await r.json()) as { status?: string; error?: string; data?: { result?: typeof series } }
+      if (!r.ok || d.status !== 'success') return { ...base, status: 'unknown', reason: `prometheus: ${d.error || `HTTP ${r.status}`}` }
+      series = d.data?.result ?? []
+    } catch (e) {
+      return { ...base, status: 'unknown', reason: `prometheus unreachable: ${(e as Error).message}` }
+    }
+    if (!series.length) return { ...base, status: 'unknown', reason: 'query returned no data (exporter down or nothing matched)' }
+    let names: Record<string, string> = {}
+    try {
+      const cfg = JSON.parse(readFileSync(path.join(this.dataDir, 'gpu-config.json'), 'utf-8')) as Record<string, { uuid?: string; friendlyName?: string }>
+      for (const e of Object.values(cfg)) if (e?.uuid && e.friendlyName) names[e.uuid.replace(/^GPU-/i, '').toLowerCase()] = e.friendlyName
+    } catch { names = {} }
+    const u = c.unit ?? ''
+    const label = (m: Record<string, string>) => (m.uuid && names[m.uuid.toLowerCase()]) || m.name || m.uuid || m.instance || 'series'
+    const over = series
+      .map((x) => ({ who: label(x.metric), v: Number(x.value?.[1]) }))
+      .filter((x) => Number.isFinite(x.v) && x.v > (c.above as number))
+      .sort((a, b) => b.v - a.v)
+    if (!over.length) return { ...base, status: 'ok' }
+    return { ...base, status: 'down', reason: over.map((x) => `${x.who} at ${Math.round(x.v)}${u} (limit ${c.above}${u})`).join('; ') }
+  }
+
   private async probeOne(c: HealthCheckConfig): Promise<HealthState> {
     const base: Omit<HealthState, 'status' | 'reason'> = {
       id: c.id, label: c.label, checkedAt: new Date().toISOString(), downSeverity: c.downSeverity,
@@ -903,6 +941,7 @@ export class NotificationsService {
           return { ...base, status: 'down', reason: `cannot resolve ${c.target}: ${(e as Error).message}` }
         }
       }
+      if (c.kind === 'prom') return await this.probeProm(c, base)
       if (c.kind !== 'http') {
         // A kind we don't implement is a CONFIG problem, not a dependency problem.
         return { ...base, status: 'unknown', reason: `unrecognised check kind ${JSON.stringify(c.kind)}` }
