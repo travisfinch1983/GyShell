@@ -343,6 +343,23 @@ export const GENERIC_LAUNCH_TEMPLATES: Record<string, any> = {
         ].join('\n');
       },
     },
+    // Dataset Forge (samd): SAM + ultralytics detectors for Dataset Review, detector training and
+    // the training-image Auto-crop. One GPU. The launcher exports CUDA_VISIBLE_DEVICES for the
+    // chosen card, so inside the process that card is cuda:0 (FORGE_DEVICE=0).
+    'dataset-forge': {
+      defaultPort: 8791,
+      multiGpu: false,
+      buildCommand(port) {
+        return [
+          'export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
+          'export FORGE_DEVICE=0',
+          `export FORGE_PORT=${port}`,
+          'export FORGE_SAM=/imagegen/sam/sam_vit_h_4b8939.pth',
+          'cd /opt/dataset-forge &&',
+          'exec /opt/conda/envs/comfyui/bin/python /opt/dataset-forge/samd.py',
+        ].join('\n');
+      },
+    },
     sdnext: {
       defaultPort: 7860,
       multiGpu: false,

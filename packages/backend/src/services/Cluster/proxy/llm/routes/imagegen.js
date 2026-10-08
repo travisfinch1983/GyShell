@@ -21,6 +21,7 @@ import path from 'path';
 import crypto from 'crypto';
 import sharp from 'sharp';
 import { spawn, execFile } from 'child_process';
+import { forgeEndpoint } from '../../forge-endpoint.js';
 
 // ---- auto-caption (Phase 6): dispatch the tagger to the GPU container (CT 176,
 // ai-epyc) over SSH. It sees the same data at /imagegen/training_images/<rel>
@@ -1063,7 +1064,6 @@ export function createImagegenRouter(config) {
   // /reset-crop undoes it exactly like a manual crop. Images with NO detection are written to
   // .autocrop.json as status "review": the listing turns that into needs_review (yellow border,
   // "Needs review" filter). Cropped ones are status "auto" (badge), so the results can be checked.
-  const FORGE_SAMD = process.env.FORGE_SAMD || 'http://10.0.0.234:8791';
   const AUTOCROP_FILE = '.autocrop.json';
   const loadAutoCrop = (dir) => { try { return JSON.parse(readFileSync(path.join(dir, AUTOCROP_FILE), 'utf8')) || {}; } catch { return {}; } };
   const saveAutoCrop = (dir, obj) => {
@@ -1104,7 +1104,7 @@ export function createImagegenRouter(config) {
         if (!todo.length) continue;
         let results = [];
         try {
-          const r = await fetch(`${FORGE_SAMD}/detect`, {
+          const r = await fetch(`${forgeEndpoint()}/detect`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ detector: detectorRel, rels: todo.map((t) => t.srcRel), conf }),
             signal: AbortSignal.timeout(180000),
@@ -1113,7 +1113,7 @@ export function createImagegenRouter(config) {
           if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
           results = d.results || [];
         } catch (e) {
-          throw new Error(`detector service (samd ${FORGE_SAMD}) failed: ${e.message}`);
+          throw new Error(`detector service (dataset-forge ${forgeEndpoint()}) failed: ${e.message}`);
         }
         const byRel = new Map(results.map((x) => [x.rel, x]));
         const touched = new Map();                        // dir -> autocrop map

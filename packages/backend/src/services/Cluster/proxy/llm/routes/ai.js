@@ -58,6 +58,9 @@ const PROVIDER_VRAM_RESERVES = {
   'faster-whisper': 3072, piper: 0,
   'audio-tools': 4096,
   rvc: 2048,
+  // SAM vit_h + one YOLO detector measured 2.6 GiB on the PNY 5060 Ti (2026-10-08); headroom for a
+  // second detector / training-time models.
+  'dataset-forge': 4096,
 };
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -2840,6 +2843,10 @@ WantedBy=multi-user.target
       endpoint,
       isTts: isTts || false,
       ...(isTools ? { isTools: true } : {}),
+      // Persist the image-gen flag like isTools. It was dropped here, so an image provider missing
+      // from IMAGE_GEN_PROVIDERS (dataset-forge, 2026-10-08) was classified 'llm' and could be
+      // pulled into LLM routing/metrics.
+      ...(isImageGen ? { isImageGen: true } : {}),
       model: model || null,
       // The name the PROXY routes by, which is what every model BINDING names --
       // distinct from `model` above, which is the weights path shown in the UI.
@@ -3766,6 +3773,7 @@ WantedBy=multi-user.target
     'automatic1111': '/sdapi/v1/start',
     comfyui: '/',
     'audio-tools': '/health',
+    'dataset-forge': '/health',
   };
 
   /**
@@ -7851,6 +7859,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
     '1cat-vllm': 600,  // 10 min
     koboldcpp: 90,
     'llama-server': 90,
+    'dataset-forge': 180,   // loads SAM vit_h (2.5 GB) before it binds the port
     default:   60,   // 1 min for everything else
   };
 
@@ -7894,6 +7903,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
     sdnext: '/sdapi/v1/start',
     fooocus: '/',
     invokeai: '/api/v1/app/version',
+    'dataset-forge': '/health',
   // Gradio serves its app at `/` and has no /health — probing the default 404s forever, so the
   // service never flips to everHealthy and emits "never became healthy" ~20 min after a launch
   // that in fact succeeded. Verified 2026-08-31 on a live instance: /health 404, / 200, /config 200.

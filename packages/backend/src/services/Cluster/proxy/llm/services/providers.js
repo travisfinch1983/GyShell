@@ -431,6 +431,19 @@ export const PROVIDERS = {
 
   // ─── Tools Providers ──────────────────────────────────────────────────
 
+  'dataset-forge': {
+    category: 'image',
+    id: 'dataset-forge',
+    name: 'Dataset Forge (SAM + detectors)',
+    description: 'SAM + ultralytics daemon: Dataset Review segmentation, detector training, training-image Auto-crop',
+    website: 'https://github.com/facebookresearch/segment-anything',
+    scriptFile: 'dataset-forge.sh',
+    defaultPort: 8791,
+    supportedArchs: ['Volta', 'Turing', 'Ampere', 'Ada Lovelace', 'Blackwell'],
+    supportedFormats: [],
+    complexity: 'medium',
+    installChain: [],
+  },
   'audio-tools': {
     category: 'tools',
     id: 'audio-tools',

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import sharp from 'sharp';
 import { readdirSync, existsSync, readFileSync, writeFileSync, statSync, renameSync, createReadStream, mkdirSync, unlinkSync } from 'fs';
 import { join, basename, extname } from 'path';
+import { forgeEndpoint } from './forge-endpoint.js';
 
 /**
  * Dataset Review — /api/dataset
@@ -163,7 +164,7 @@ export function createDatasetRouter() {
   // SAM lives on ai-epyc because it needs the GPU; this proxies to it. The point of the
   // whole feature: a tile the DETECTOR missed has no seed, and calling it "negative" would
   // teach the new model that the target is background. A human click fixes exactly that.
-  const SAMD = process.env.FORGE_SAMD || 'http://10.0.0.234:8791';
+  // Resolved per call: dataset-forge is an AI-Lab service now and can move (forge-endpoint.js).
   // Seed detector for new images. Held here rather than in the UI so a dataset is
   // always seeded by the same model, whoever adds to it.
   // Seed detector for newly added images. Swapped to our own v4 (92% vs the stock model's
@@ -189,12 +190,12 @@ export function createDatasetRouter() {
   // it -- and a UI that only sees "400" can only say "failed".
   const fwd = async (res, path, init, timeoutMs = 30000) => {
     try {
-      const r = await fetch(SAMD + path, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+      const r = await fetch(forgeEndpoint() + path, { ...init, signal: AbortSignal.timeout(timeoutMs) });
       const body = await r.json().catch(() => ({ error: 'trainer returned a non-JSON response' }));
       res.status(r.status).json(body);
     } catch (e) {
-      res.status(502).json({ error: 'trainer service unreachable at ' + SAMD + ' (' + e.message +
-        '). On ai-epyc: systemctl status forge-samd' });
+      res.status(502).json({ error: 'trainer service unreachable at ' + forgeEndpoint() + ' (' + e.message +
+        '). Check the Dataset Forge service card in AI-Lab' });
     }
   };
   const post = (body) => ({ method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -216,7 +217,7 @@ export function createDatasetRouter() {
     const dir = setDir(req.params.name);
     if (!dir || !existsSync(manPath(dir))) return res.status(404).json({ error: 'no such dataset' });
     try {
-      const r = await fetch(SAMD + '/segment', {
+      const r = await fetch(forgeEndpoint() + '/segment', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...req.body, dataset: req.params.name }),
         signal: AbortSignal.timeout(60000),
@@ -224,8 +225,8 @@ export function createDatasetRouter() {
       res.status(r.status).json(await r.json());
     } catch (e) {
       // Say WHERE it failed — "fetch failed" alone sends people looking in the browser.
-      res.status(502).json({ error: 'SAM service unreachable at ' + SAMD + ' (' + e.message +
-        '). On ai-epyc: systemctl status forge-samd' });
+      res.status(502).json({ error: 'SAM service unreachable at ' + forgeEndpoint() + ' (' + e.message +
+        '). Check the Dataset Forge service card in AI-Lab' });
     }
   });
 
@@ -268,7 +269,7 @@ export function createDatasetRouter() {
     const paths = (req.body?.paths || []).filter((p) => typeof p === 'string' && !p.includes('..'));
     if (!paths.length) return res.status(400).json({ error: 'no paths' });
     try {
-      const r = await fetch(SAMD + '/ingest', {
+      const r = await fetch(forgeEndpoint() + '/ingest', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           dataset: name, paths,
@@ -279,14 +280,14 @@ export function createDatasetRouter() {
       });
       res.status(r.status).json(await r.json());
     } catch (e) {
-      res.status(502).json({ error: 'forge service unreachable at ' + SAMD + ' (' + e.message +
-        '). On ai-epyc: systemctl status forge-samd' });
+      res.status(502).json({ error: 'forge service unreachable at ' + forgeEndpoint() + ' (' + e.message +
+        '). Check the Dataset Forge service card in AI-Lab' });
     }
   });
 
   router.get('/job/:id', async (req, res) => {
     try {
-      const r = await fetch(SAMD + '/job/' + encodeURIComponent(req.params.id), { signal: AbortSignal.timeout(15000) });
+      const r = await fetch(forgeEndpoint() + '/job/' + encodeURIComponent(req.params.id), { signal: AbortSignal.timeout(15000) });
       res.status(r.status).json(await r.json());
     } catch (e) { res.status(502).json({ error: String(e.message) }); }
   });
