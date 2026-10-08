@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Layers, FolderOpen, Star, X, ChevronUp, ChevronDown } from 'lucide-react'
-import { trainingImagesStore as store, igThumb, igImage, igVideo, igVthumb, igDownload, imKey, cropDone, type IgImage, type BatchSection } from '../../stores/TrainingImagesStore'
+import { trainingImagesStore as store, igThumb, igImage, igVideo, igVthumb, igDownload, imKey, cropDone, type IgImage, type BatchSection, type AutoCropJob } from '../../stores/TrainingImagesStore'
 import { confirmStore } from '../../stores/confirmStore'
 import { promptStore } from '../../stores/promptStore'
 import { CropEditor } from './CropEditor'
@@ -666,6 +666,96 @@ const MergeModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   )
 }
 
+// ── Auto-crop ──
+// A detector finds the subject in each image and a 1024x1024 crop is centred on it. Images it
+// finds nothing in get a yellow border and the "Needs review" filter. Every crop snapshots the
+// original first, so a bad one is undone with the editor's restore, exactly like a manual crop.
+const AutoCropModal: React.FC<{ onClose: () => void }> = observer(({ onClose }) => {
+  const [dets, setDets] = useState<Array<{ rel: string; name: string; kind: string }>>([])
+  const [det, setDet] = useState('')
+  const [conf, setConf] = useState('0.25')
+  const [overwrite, setOverwrite] = useState(false)
+  const [job, setJob] = useState<AutoCropJob | null>(null)
+  const [err, setErr] = useState('')
+  const useSel = store.selectionMode && store.selected.size > 0
+  const pool = store.images.filter((im) => !im.is_video && (useSel ? store.selected.has(imKey(im)) : true))
+  const files = pool.filter((im) => overwrite || !cropDone(im)).map((im) => im.rel)
+  useEffect(() => {
+    store.autoCropDetectors()
+      .then((d) => { setDets(d.detectors); setDet(d.default || d.detectors[0]?.rel || '') })
+      .catch((e) => setErr(String(e?.message || e)))
+    // Re-attach to a run that is still going (the dialog was closed and reopened).
+    store.autoCropStatus().then((j) => { if (j && j.state === 'running') setJob(j) }).catch(() => { /* none */ })
+  }, [])
+  useEffect(() => {
+    if (!job || job.state !== 'running') return
+    const t = setInterval(async () => {
+      try {
+        const j = await store.autoCropStatus()
+        if (j) setJob(j)
+        if (j && j.state !== 'running') void store.browse(store.cwd)   // show the new crops + flags
+      } catch (e: any) { setErr(String(e?.message || e)) }
+    }, 1500)
+    return () => clearInterval(t)
+  }, [job?.state])
+  const start = async () => {
+    setErr('')
+    const c = parseFloat(conf)
+    if (!(c > 0 && c < 1)) { setErr('Confidence must be between 0 and 1.'); return }
+    try { setJob(await store.startAutoCrop(files, det, c, overwrite)) } catch (e: any) { setErr(String(e?.message || e)) }
+  }
+  const running = job?.state === 'running'
+  return (
+    <div className={styles.modalBg}>
+      <div className={styles.pkBox} style={{ width: 'min(560px,94%)' }} onClick={(e) => e.stopPropagation()}>
+        <div className={styles.modalHead}>
+          <strong>✂ Auto-crop</strong><span className={styles.spacer} />
+          <button className={styles.btn} onClick={onClose} title={running ? 'Close — the run keeps going; reopen to watch it' : 'Close'}><X size={14} /></button>
+        </div>
+        {!job || !running ? (
+          <>
+            <label className={styles.sortLbl}>Detector
+              <select className={styles.input} value={det} onChange={(e) => setDet(e.target.value)} style={{ maxWidth: 380 }}>
+                {dets.map((d) => <option key={d.rel} value={d.rel}>{d.name}{d.kind === 'bbox' ? ' (bbox)' : ''}</option>)}
+              </select>
+            </label>
+            <label className={styles.sortLbl}>Min confidence
+              <input className={styles.input} style={{ width: 70 }} value={conf} onChange={(e) => setConf(e.target.value)} />
+            </label>
+            <label className={styles.sortLbl}>
+              <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} />
+              Re-crop images that are already cropped / at 1024 (always crops from the original)
+            </label>
+            <div className={styles.dim}>
+              {useSel ? `Scope: the ${store.selected.size} selected image(s)` : 'Scope: every image in this view'} — {files.length} to process.
+              A 1024×1024 crop is centred on the best detection (larger if the detection is bigger, never past the image edge).
+              No detection → yellow border + "Needs review". Undo any crop with the editor's restore.
+            </div>
+          </>
+        ) : null}
+        {job && (
+          <div className={styles.dim} style={{ marginTop: 8 }}>
+            {job.state === 'running' ? 'Running' : job.state === 'done' ? 'Done' : job.state === 'cancelled' ? 'Cancelled' : 'Failed'}:
+            {' '}{job.done}/{job.total} · cropped {job.cropped} · needs review {job.review} · skipped {job.skipped}
+            {job.errors.length ? ` · errors ${job.errors.length}` : ''}
+            {job.error && <div style={{ color: '#f87171' }}>{job.error}</div>}
+            {job.errors.length > 0 && <div style={{ maxHeight: 90, overflow: 'auto' }}>{job.errors.slice(0, 20).map((e) => <div key={e}>{e}</div>)}</div>}
+          </div>
+        )}
+        {err && <div style={{ color: '#f87171' }}>{err}</div>}
+        <div className={styles.pkFoot}>
+          <span className={styles.spacer} />
+          {running
+            ? <button className={styles.btn} onClick={() => void store.cancelAutoCrop()}>Cancel run</button>
+            : <button className={styles.btnPrimary} disabled={!det || !files.length} onClick={() => void start()}>
+                {job ? 'Run again' : 'Start'} ({files.length})
+              </button>}
+        </div>
+      </div>
+    </div>
+  )
+})
+
 // ── Drag images into subsections ──
 // Dragging a SELECTED image carries the whole selection; an unselected one carries just itself.
 const AIG_DRAG = 'application/x-aig-keys'
@@ -718,7 +808,7 @@ const Tile: React.FC<{ im: IgImage; i: number; onOpen: () => void }> = observer(
   const timer = useRef<any>(null); const longRef = useRef(false); const down = useRef({ x: 0, y: 0 })
   const label = im.w && im.h ? `${im.w}×${im.h}` : im.name
   return (
-    <div className={`${styles.tile} ${cropDone(im) ? styles.tileDone : im.is_video ? '' : styles.tileTodo} ${sel ? styles.tileSel : ''}`}
+    <div className={`${styles.tile} ${cropDone(im) ? styles.tileDone : im.is_video ? '' : im.needs_review ? styles.tileReview : styles.tileTodo} ${sel ? styles.tileSel : ''}`}
       draggable
       onDragStart={(e) => {
         // A drag is not a long-press: cancel the pending select-on-hold.
@@ -761,6 +851,8 @@ const Tile: React.FC<{ im: IgImage; i: number; onOpen: () => void }> = observer(
         <span className={`${styles.bdg} ${styles.bdgCrop}`}
               title={im.cropped ? 'Cropped here' : `Already ${im.w}×${im.h} — no crop needed`}>✓</span>
       )}
+      {im.auto_cropped && <span className={`${styles.bdg} ${styles.bdgAuto}`} title={`Auto-cropped${im.auto_score != null ? ` (detection ${Math.round(im.auto_score * 100)}%)` : ''} — check it; restore in the editor to undo`}>AI</span>}
+      {im.needs_review && <span className={`${styles.bdg} ${styles.bdgReview}`} title="Auto-crop found nothing here — crop by hand">?</span>}
       {im.has_alt && <span className={styles.bdg} title="Upscaled — swap available in editor">⤴</span>}
       {im.has_caption && <span className={styles.bdg} title="Has tags (.txt)">✎</span>}
       {im.has_nl_caption && <span className={styles.bdg} title="Has caption (.caption)">❝</span>}
@@ -784,6 +876,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   const [capFiles, setCapFiles] = useState<string[] | undefined>(undefined)
   const [varsModal, setVarsModal] = useState(false)
   const [autoCap, setAutoCap] = useState(false)
+  const [autoCrop, setAutoCrop] = useState(false)
   const [blanket, setBlanket] = useState(false)
   const [findRep, setFindRep] = useState(false)
   const [poseAdd, setPoseAdd] = useState(false)
@@ -998,6 +1091,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
               <option value="all">All ({store.images.length})</option>
               <option value="uncropped">Needs crop ({store.images.filter((im) => !cropDone(im)).length})</option>
               <option value="cropped">At 1024 / cropped ({store.images.filter((im) => cropDone(im)).length})</option>
+              <option value="review">Needs review ({store.images.filter((im) => !!im.needs_review).length})</option>
             </select>
           </label>
         )}
@@ -1045,6 +1139,13 @@ export const TrainingImagesPanel: React.FC = observer(() => {
             }}>
             {store.selectionMode && store.selected.size ? `🏷 Auto-caption (${store.selected.size})…` : '🏷 Auto-caption…'}
           </button>
+          {(store.inTrainingSet || store.batchContext) && (
+            <button className={styles.btn}
+              title="Detect the subject in each image and centre a 1024×1024 crop on it; images with no detection are flagged for review"
+              onClick={() => setAutoCrop(true)}>
+              {store.selectionMode && store.selected.size ? `✂ Auto-crop (${store.selected.size})…` : '✂ Auto-crop…'}
+            </button>
+          )}
           {/* 🛑 NOT in the selection bar. Adding a variable is a property of the BATCH, not of
               whatever happens to be selected — putting it there meant the only way to create
               the first variable was to select images first, and with zero fields the
@@ -1307,6 +1408,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
           }} />
       })()}
       {autoCap && <AutoCaptionModal files={capFiles} onClose={() => setAutoCap(false)} />}
+      {autoCrop && <AutoCropModal onClose={() => setAutoCrop(false)} />}
       {varsModal && <VariablesModal onClose={() => setVarsModal(false)} />}
 
       {dsAdd && <AddToDataset onClose={() => setDsAdd(false)} />}

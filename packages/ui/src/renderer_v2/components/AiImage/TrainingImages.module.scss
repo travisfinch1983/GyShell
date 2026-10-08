@@ -74,6 +74,10 @@
 /* Not cropped AND not at the target size yet: thick red, so the ones still to crop jump out.
    Before .tileSel so a selected image still shows the accent (at the same thickness). */
 .tileTodo { border: 4px solid #dc2626; }
+/* Auto-crop found nothing: yellow instead of red, so the review pile is its own colour. */
+.tileReview { border: 4px solid #eab308; }
+.bdgAuto { background: #7c3aed; top: auto; bottom: 20px; }
+.bdgReview { background: #eab308; color: #111; top: auto; bottom: 20px; }
 .tileSel { border-color: var(--accent); }
 /* Drag-and-drop into subsections */
 .secBlock { border-radius: 8px; outline: 2px dashed transparent; outline-offset: 3px; transition: outline-color .1s, background .1s; }

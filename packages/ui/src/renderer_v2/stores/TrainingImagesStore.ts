@@ -47,6 +47,16 @@ export interface IgImage {
   /** A video rather than a still. Listed in the same grid because it lives in the same
    *  folder and the point is to pull frames OUT of it into that folder. */
   is_video?: boolean
+  /** Auto-crop found nothing here; cleared by itself once the image is cropped by hand. */
+  needs_review?: boolean
+  /** Currently cropped by Auto-crop (not by hand); auto_score = the detection's confidence. */
+  auto_cropped?: boolean
+  auto_score?: number
+}
+export interface AutoCropJob {
+  id: string; state: 'running' | 'done' | 'cancelled' | 'error'
+  total: number; done: number; cropped: number; review: number; skipped: number
+  errors: string[]; error?: string; detector: string; conf: number
 }
 
 /** Selection key: the same filename can exist in two subsections, so bare names collide. */
@@ -141,7 +151,7 @@ export class TrainingImagesStore {
   showAllRoots = localStorage.getItem('aig-show-all-roots') === '1'
   /** Crop-status filter: trim the grid to what still NEEDS cropping, then page through
    *  just those in the editor. Persisted — a cropping session survives a reload. */
-  cropFilter: 'all' | 'uncropped' | 'cropped' = (localStorage.getItem('aig-crop-filter') as any) || 'all'
+  cropFilter: 'all' | 'uncropped' | 'cropped' | 'review' = (localStorage.getItem('aig-crop-filter') as any) || 'all'
 
   constructor() { makeAutoObservable(this) }
 
@@ -267,7 +277,7 @@ export class TrainingImagesStore {
   }
 
   // ── selection ──
-  setCropFilter(f: 'all' | 'uncropped' | 'cropped') {
+  setCropFilter(f: 'all' | 'uncropped' | 'cropped' | 'review') {
     this.cropFilter = f
     localStorage.setItem('aig-crop-filter', f)
     // Selection indices are positions in the VISIBLE list; a filter change re-numbers
@@ -279,6 +289,7 @@ export class TrainingImagesStore {
    *  (toggleOne/selectRange) are positions in THIS list, never in the raw one. */
   get visibleImages(): IgImage[] {
     if (this.cropFilter === 'all') return this.images
+    if (this.cropFilter === 'review') return this.images.filter((im) => !!im.needs_review)
     return this.images.filter((im) => (this.cropFilter === 'cropped' ? cropDone(im) : !cropDone(im)))
   }
 
@@ -588,6 +599,15 @@ export class TrainingImagesStore {
     return ig('/rating', { method: 'POST', body })
   }
   async crop(body: any): Promise<any> { return ig('/crop', { method: 'POST', body }) }
+  // ── Auto-crop (detector in samd on ai-epyc; crops go through the same snapshot/restore path) ──
+  async autoCropDetectors(): Promise<{ detectors: Array<{ rel: string; name: string; kind: string }>; default: string | null }> {
+    return ig('/auto-crop/detectors')
+  }
+  async startAutoCrop(files: string[], detector: string, conf: number, overwrite: boolean): Promise<AutoCropJob> {
+    return (await ig('/auto-crop', { method: 'POST', body: { files, detector, conf, overwrite } })).job
+  }
+  async autoCropStatus(): Promise<AutoCropJob | null> { return (await ig('/auto-crop/status')).job }
+  async cancelAutoCrop(): Promise<void> { await ig('/auto-crop/cancel', { method: 'POST' }) }
   async resetCrop(rel: string): Promise<any> { return ig('/reset-crop', { method: 'POST', body: { path: rel } }) }
   async upscale(rel: string): Promise<any> { return ig('/upscale', { method: 'POST', body: { path: rel } }) }
   async upscaleStatus(jobId: string): Promise<any> { return ig(`/upscale-status?jobId=${jobId}`) }

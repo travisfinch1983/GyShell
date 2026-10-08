@@ -649,6 +649,18 @@ export function createImagegenRouter(config) {
         });
       }
     }
+    // Auto-crop outcomes (see /auto-crop). needs_review clears by itself once the image is cropped
+    // by hand (or reaches the target size); auto_cropped only shows while the auto crop is in place.
+    if (images.length) {
+      const ac = loadAutoCrop(dir);
+      if (Object.keys(ac).length) {
+        images.forEach((im) => {
+          const e = ac[im.name]; if (!e) return;
+          if (e.status === 'review' && !im.cropped && !im.at_target) im.needs_review = true;
+          if (e.status === 'auto' && im.cropped) { im.auto_cropped = true; im.auto_score = e.score; }
+        });
+      }
+    }
     // attach Cinder's ratings (score/comment) to images when present
     if (images.length) {
       const ratings = loadRatings(dir);
@@ -974,6 +986,46 @@ export function createImagegenRouter(config) {
     });
   });
 
+  /**
+   * Crop `rect` (source px) out of `src` and write it, resized to tw x th, to `file`.
+   * Shared by the crop editor (/crop) and Auto-crop, so both snapshot and encode identically.
+   * `src` is normally `file`; Auto-crop passes the pristine baseline when re-cropping, so a
+   * second pass crops the ORIGINAL rather than an already-cropped image.
+   * Throws Error with .status for request errors.
+   */
+  async function cropToTarget(file, rect, tw, th, src = file) {
+    const meta = await sharp(src).metadata();
+    let left = Math.max(0, Math.round(+rect.left || 0));
+    let top = Math.max(0, Math.round(+rect.top || 0));
+    let width = Math.round(+rect.width), height = Math.round(+rect.height);
+    width = Math.min(width, meta.width - left);
+    height = Math.min(height, meta.height - top);
+    if (!(width > 0 && height > 0)) throw Object.assign(new Error('bad crop rect'), { status: 400 });
+    const ext = path.extname(file).toLowerCase();
+    let pipe = sharp(src).extract({ left, top, width, height })
+      .resize(tw, th, { fit: 'fill' });
+    if (ext === '.png') pipe = pipe.png();
+    else if (ext === '.webp') pipe = pipe.webp({ quality: 95 });
+    else pipe = pipe.jpeg({ quality: 95 });
+    const buf = await pipe.toBuffer();
+    // 🛑 SNAPSHOT BEFORE OVERWRITING. A set gets its .orig from send-to-set; a batch has no
+    // baseline at all, so without this the first crop in a batch is irreversible and
+    // reset-crop has nothing to restore. Taken only once — a second crop must not overwrite
+    // the pristine copy with an already-cropped one.
+    if (!baselinePath(file)) {
+      try {
+        const od = path.join(path.dirname(file), '.orig');
+        mkdirSync(od, { recursive: true });
+        copyFileSync(file, path.join(od, path.basename(file)));
+      } catch (e) {
+        throw Object.assign(new Error(`could not snapshot the original, refusing to crop: ${String(e.message || e)}`), { status: 500 });
+      }
+    }
+    writeFileSync(file, buf);
+    try { chmodSync(file, 0o664); } catch { /* ignore */ }
+    return { w: tw, h: th, src: { left, top, width, height } };
+  }
+
   // ---- Crop/resize a training_set working copy (non-destructive: only ever
   // overwrites a file inside a */training_set/ folder; the pristine original
   // lives one level up). Body: { path, left, top, width, height (source px),
@@ -989,39 +1041,126 @@ export function createImagegenRouter(config) {
     const tw = Math.round(+b.target_w), th = Math.round(+b.target_h);
     if (!(tw > 0 && th > 0)) return res.status(400).json({ error: 'bad target' });
     try {
-      const meta = await sharp(file).metadata();
-      let left = Math.max(0, Math.round(+b.left || 0));
-      let top = Math.max(0, Math.round(+b.top || 0));
-      let width = Math.round(+b.width), height = Math.round(+b.height);
-      width = Math.min(width, meta.width - left);
-      height = Math.min(height, meta.height - top);
-      if (!(width > 0 && height > 0)) return res.status(400).json({ error: 'bad crop rect' });
-      const ext = path.extname(file).toLowerCase();
-      let pipe = sharp(file).extract({ left, top, width, height })
-        .resize(tw, th, { fit: 'fill' });
-      if (ext === '.png') pipe = pipe.png();
-      else if (ext === '.webp') pipe = pipe.webp({ quality: 95 });
-      else pipe = pipe.jpeg({ quality: 95 });
-      const buf = await pipe.toBuffer();
-      // 🛑 SNAPSHOT BEFORE OVERWRITING. A set gets its .orig from send-to-set; a batch has no
-      // baseline at all, so without this the first crop in a batch is irreversible and
-      // reset-crop has nothing to restore. Taken only once — a second crop must not overwrite
-      // the pristine copy with an already-cropped one.
-      if (!baselinePath(file)) {
-        try {
-          const od = path.join(path.dirname(file), '.orig');
-          mkdirSync(od, { recursive: true });
-          copyFileSync(file, path.join(od, path.basename(file)));
-        } catch (e) {
-          return res.status(500).json({ error: `could not snapshot the original, refusing to crop: ${String(e.message || e)}` });
-        }
-      }
-      writeFileSync(file, buf);
-      try { chmodSync(file, 0o664); } catch { /* ignore */ }
-      res.json({ ok: true, w: tw, h: th, src: { left, top, width, height } });
+      const r = await cropToTarget(file, b, tw, th);
+      res.json({ ok: true, ...r });
     } catch (e) {
-      res.status(500).json({ error: String(e.message || e) });
+      res.status(e.status || 500).json({ error: String(e.message || e) });
     }
+  });
+
+  // ---- Auto-crop: a segmentation detector finds the subject, a TARGET x TARGET crop is centred
+  // on it. Detection runs in samd on ai-epyc (it owns the GPUs and already caches ultralytics
+  // models); cropping goes through cropToTarget, so every auto-crop snapshots the original and
+  // /reset-crop undoes it exactly like a manual crop. Images with NO detection are written to
+  // .autocrop.json as status "review": the listing turns that into needs_review (yellow border,
+  // "Needs review" filter). Cropped ones are status "auto" (badge), so the results can be checked.
+  const FORGE_SAMD = process.env.FORGE_SAMD || 'http://10.0.0.234:8791';
+  const AUTOCROP_FILE = '.autocrop.json';
+  const loadAutoCrop = (dir) => { try { return JSON.parse(readFileSync(path.join(dir, AUTOCROP_FILE), 'utf8')) || {}; } catch { return {}; } };
+  const saveAutoCrop = (dir, obj) => {
+    const f = path.join(dir, AUTOCROP_FILE);
+    try { writeFileSync(f, JSON.stringify(obj, null, 1)); try { chmodSync(f, 0o664); } catch { /* ignore */ } }
+    catch (e) { console.warn(`[auto-crop] could not write ${f}: ${e.message}`); }
+  };
+  /** Square TARGET crop centred on the detection. The side grows to fit a large detection (+15%
+   *  margin), never exceeds the image, and the square is shifted (not shrunk) to stay inside. */
+  function autoCropRect(w, h, box, target) {
+    const [x1, y1, x2, y2] = box;
+    const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+    let side = Math.max(target, Math.max(x2 - x1, y2 - y1) * 1.15);
+    side = Math.floor(Math.min(side, w, h));
+    const left = Math.round(Math.min(Math.max(cx - side / 2, 0), w - side));
+    const top = Math.round(Math.min(Math.max(cy - side / 2, 0), h - side));
+    return { left, top, width: side, height: side };
+  }
+  let autoCropJob = null;
+  async function runAutoCrop(job, rels, detectorRel, conf, overwrite) {
+    const CHUNK = 8;
+    const T = CROP_TARGET;
+    console.log(`[auto-crop] ${job.id}: ${rels.length} image(s), detector=${path.basename(detectorRel)} conf=${conf} overwrite=${overwrite}`);
+    try {
+      for (let i = 0; i < rels.length && !job.cancel; i += CHUNK) {
+        const todo = [];                                  // { rel, file, src, srcRel }
+        for (const rel of rels.slice(i, i + CHUNK)) {
+          let file;
+          try { file = safeResolve(rel); } catch { job.errors.push(`${rel}: bad path`); job.done++; continue; }
+          if (!EDITABLE_GUARD.test(rel.replace(/^\/+/, '')) || !existsSync(file)) { job.errors.push(`${rel}: not an editable training image`); job.done++; continue; }
+          if (!overwrite) {
+            const d = await dimsOf(file).catch(() => ({ w: 0, h: 0 }));
+            if (d.w === T && d.h === T) { job.skipped++; job.done++; continue; }   // cropped already, or arrived at size
+          }
+          const src = baselinePath(file) || file;         // always detect + crop from the ORIGINAL
+          todo.push({ rel, file, src, srcRel: path.relative(BASE, src) });
+        }
+        if (!todo.length) continue;
+        let results = [];
+        try {
+          const r = await fetch(`${FORGE_SAMD}/detect`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ detector: detectorRel, rels: todo.map((t) => t.srcRel), conf }),
+            signal: AbortSignal.timeout(180000),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+          results = d.results || [];
+        } catch (e) {
+          throw new Error(`detector service (samd ${FORGE_SAMD}) failed: ${e.message}`);
+        }
+        const byRel = new Map(results.map((x) => [x.rel, x]));
+        const touched = new Map();                        // dir -> autocrop map
+        for (const t of todo) {
+          const dir = path.dirname(t.file), name = path.basename(t.file);
+          if (!touched.has(dir)) touched.set(dir, loadAutoCrop(dir));
+          const ac = touched.get(dir);
+          const res = byRel.get(t.srcRel);
+          job.done++;
+          if (!res || res.error) { job.errors.push(`${t.rel}: ${res?.error || 'no result'}`); continue; }
+          const best = (res.dets || [])[0];
+          if (!best) {
+            ac[name] = { status: 'review', detector: path.basename(detectorRel), conf, at: new Date().toISOString() };
+            job.review++; continue;
+          }
+          try {
+            const rect = autoCropRect(res.w, res.h, best.box, T);
+            await cropToTarget(t.file, rect, T, T, t.src);
+            ac[name] = { status: 'auto', detector: path.basename(detectorRel), score: best.conf, box: best.box, rect, at: new Date().toISOString() };
+            job.cropped++;
+          } catch (e) { job.errors.push(`${t.rel}: ${e.message}`); }
+        }
+        for (const [dir, ac] of touched) saveAutoCrop(dir, ac);
+      }
+      job.state = job.cancel ? 'cancelled' : 'done';
+    } catch (e) {
+      job.state = 'error'; job.error = e.message;
+      console.warn(`[auto-crop] ${job.id} failed: ${e.message}`);
+    }
+    job.finishedAt = new Date().toISOString();
+    console.log(`[auto-crop] ${job.id} ${job.state}: cropped ${job.cropped}, review ${job.review}, skipped ${job.skipped}, errors ${job.errors.length}`);
+  }
+
+  router.get('/auto-crop/detectors', (_req, res) => {
+    const out = [];
+    for (const sub of ['segm', 'bbox']) {
+      const d = path.join(BASE, 'ultralytics', sub);
+      try { for (const f of readdirSync(d)) if (f.endsWith('.pt')) out.push({ rel: `ultralytics/${sub}/${f}`, name: f.replace(/\.pt$/, ''), kind: sub }); } catch { /* none */ }
+    }
+    out.sort((a, b) => a.name.localeCompare(b.name));
+    const def = out.find((x) => /pant/i.test(x.name) && /travis/i.test(x.name)) || out.find((x) => /pant/i.test(x.name)) || out[0];
+    res.json({ detectors: out, default: def ? def.rel : null });
+  });
+  router.get('/auto-crop/status', (_req, res) => res.json({ job: autoCropJob }));
+  router.post('/auto-crop/cancel', (_req, res) => { if (autoCropJob && autoCropJob.state === 'running') autoCropJob.cancel = true; res.json({ ok: true, job: autoCropJob }); });
+  router.post('/auto-crop', express.json({ limit: '4mb' }), (req, res) => {
+    const b = req.body || {};
+    if (autoCropJob && autoCropJob.state === 'running') return res.status(409).json({ error: 'an auto-crop is already running', job: autoCropJob });
+    const rels = (Array.isArray(b.files) ? b.files : []).map(String).filter(Boolean);
+    if (!rels.length) return res.status(400).json({ error: 'files required' });
+    const det = String(b.detector || '').replace(/^\/+/, '');
+    if (!/^ultralytics\/(segm|bbox)\/[^/]+\.pt$/.test(det) || !existsSync(path.join(BASE, det))) return res.status(400).json({ error: 'unknown detector' });
+    const conf = Math.min(0.95, Math.max(0.05, +b.conf || 0.25));
+    autoCropJob = { id: crypto.randomBytes(4).toString('hex'), state: 'running', total: rels.length, done: 0, cropped: 0, review: 0, skipped: 0, errors: [], detector: path.basename(det), conf, startedAt: new Date().toISOString() };
+    void runAutoCrop(autoCropJob, rels, det, conf, !!b.overwrite);
+    res.json({ ok: true, job: autoCropJob });
   });
 
   // ---- Reset a training_set copy back to its pristine original (one level up).

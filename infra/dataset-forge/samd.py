@@ -147,6 +147,54 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a):  # keep the journal readable
         pass
 
+    def _detect(self):
+        """Run one ultralytics detector over whole images (AI-Lab training-image Auto-crop).
+
+        Body: {detector: <path to .pt under IMAGEGEN>, rels: [imagegen-relative paths], conf}.
+        Returns {results: [{rel, w, h, dets: [{box: [x1,y1,x2,y2] source px, conf}]}]}, best first.
+        A segmentation model's box is tightened to its MASK, which hugs the garment better than the
+        detection box. Shares the GPU lock with /segment; keep batches small (the caller chunks).
+        """
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            req = json.loads(self.rfile.read(n) or b"{}")
+            det_path = os.path.normpath(os.path.join(IMAGEGEN, str(req.get("detector", "")).lstrip("/")))
+            if not det_path.startswith(IMAGEGEN + os.sep) or not det_path.endswith(".pt") or not os.path.exists(det_path):
+                return self._send(400, {"error": "detector must be an existing .pt under the imagegen root"})
+            conf = float(req.get("conf", 0.25))
+            rels = [str(r) for r in (req.get("rels") or [])][:32]
+            paths, out = [], []
+            for rel in rels:
+                ap = os.path.normpath(os.path.join(IMAGEGEN, rel.lstrip("/")))
+                if not ap.startswith(IMAGEGEN + os.sep) or not os.path.isfile(ap):
+                    out.append({"rel": rel, "error": "not found"})
+                else:
+                    paths.append((rel, ap))
+            if paths:
+                det = _detector(det_path)
+                with _lock:                              # one GPU, shared with /segment
+                    res = det.predict([ap for _, ap in paths], conf=conf, device=DEV, verbose=False)
+                for (rel, _), r in zip(paths, res):
+                    h, w = r.orig_shape
+                    dets = []
+                    boxes = r.boxes
+                    if boxes is not None and len(boxes):
+                        xyxy = boxes.xyxy.cpu().numpy(); cs = boxes.conf.cpu().numpy()
+                        ms = r.masks.data.cpu().numpy() if r.masks is not None else None
+                        for i in range(len(cs)):
+                            x1, y1, x2, y2 = [float(v) for v in xyxy[i]]
+                            if ms is not None and i < len(ms):
+                                m = ms[i]; ys, xs = np.nonzero(m)
+                                if len(xs):              # mask is at model res: scale to the source
+                                    sx, sy = w / m.shape[1], h / m.shape[0]
+                                    x1, y1, x2, y2 = xs.min() * sx, ys.min() * sy, (xs.max() + 1) * sx, (ys.max() + 1) * sy
+                            dets.append({"box": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)], "conf": round(float(cs[i]), 4)})
+                    dets.sort(key=lambda d: -d["conf"])
+                    out.append({"rel": rel, "w": int(w), "h": int(h), "dets": dets})
+            return self._send(200, {"results": out})
+        except Exception as e:
+            return self._send(500, {"error": "%s: %s" % (type(e).__name__, e)})
+
     def _send(self, code, obj):
         b = json.dumps(obj).encode()
         self.send_response(code)
@@ -237,6 +285,8 @@ class H(BaseHTTPRequestHandler):
                 jid, ds, rels, det, req.get("unseeded", "unlabelled"),
                 float(req.get("conf", 0.15)))).start()
             return self._send(202, {"job": jid})
+        if self.path.startswith("/detect"):
+            return self._detect()
         if not self.path.startswith("/segment"):
             return self._send(404, {"error": "not found"})
         try:
