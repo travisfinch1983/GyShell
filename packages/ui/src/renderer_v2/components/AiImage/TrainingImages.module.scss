@@ -76,6 +76,9 @@
 .tileTodo { border: 4px solid #dc2626; }
 /* Auto-crop found nothing: yellow instead of red, so the review pile is its own colour. */
 .tileReview { border: 4px solid #eab308; }
+/* Cropped BY Auto-crop (not by hand): deep blue, distinct from the light-blue selection accent, so
+   the auto results can be picked out and checked. Becomes green once re-cropped by hand. */
+.tileAuto { border: 4px solid #1e3a8a; box-shadow: inset 0 0 0 1px #3b82f6; }
 .bdgAuto { background: #7c3aed; top: auto; bottom: 20px; }
 .bdgReview { background: #eab308; color: #111; top: auto; bottom: 20px; }
 .tileSel { border-color: var(--accent); }

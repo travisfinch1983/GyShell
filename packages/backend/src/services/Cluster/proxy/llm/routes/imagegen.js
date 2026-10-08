@@ -657,7 +657,10 @@ export function createImagegenRouter(config) {
         images.forEach((im) => {
           const e = ac[im.name]; if (!e) return;
           if (e.status === 'review' && !im.cropped && !im.at_target) im.needs_review = true;
-          if (e.status === 'auto' && im.cropped) { im.auto_cropped = true; im.auto_score = e.score; }
+          // NOT `im.cropped` alone: that is only computed for training sets / the batch root, never in
+          // a batch subsection, so blue never showed there. A hand crop deletes this record (see /crop)
+          // and a restore takes the file off 1024, so "auto record + at target" = still the auto crop.
+          if (e.status === 'auto' && (im.cropped || im.at_target)) { im.auto_cropped = true; im.auto_score = e.score; }
         });
       }
     }
@@ -1042,6 +1045,12 @@ export function createImagegenRouter(config) {
     if (!(tw > 0 && th > 0)) return res.status(400).json({ error: 'bad target' });
     try {
       const r = await cropToTarget(file, b, tw, th);
+      // A hand crop supersedes any Auto-crop outcome: drop its record so the tile stops showing as
+      // auto-cropped (blue) or needs-review (yellow). loadAutoCrop is defined further down this
+      // factory; it is only CALLED at request time, after the whole router has been built.
+      const dir = path.dirname(file), nm = path.basename(file);
+      const ac = loadAutoCrop(dir);
+      if (ac[nm]) { delete ac[nm]; saveAutoCrop(dir, ac); }
       res.json({ ok: true, ...r });
     } catch (e) {
       res.status(e.status || 500).json({ error: String(e.message || e) });

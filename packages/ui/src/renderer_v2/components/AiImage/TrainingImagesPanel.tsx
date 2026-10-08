@@ -808,7 +808,7 @@ const Tile: React.FC<{ im: IgImage; i: number; onOpen: () => void }> = observer(
   const timer = useRef<any>(null); const longRef = useRef(false); const down = useRef({ x: 0, y: 0 })
   const label = im.w && im.h ? `${im.w}×${im.h}` : im.name
   return (
-    <div className={`${styles.tile} ${cropDone(im) ? styles.tileDone : im.is_video ? '' : im.needs_review ? styles.tileReview : styles.tileTodo} ${sel ? styles.tileSel : ''}`}
+    <div className={`${styles.tile} ${cropDone(im) ? (im.auto_cropped ? styles.tileAuto : styles.tileDone) : im.is_video ? '' : im.needs_review ? styles.tileReview : styles.tileTodo} ${sel ? styles.tileSel : ''}`}
       draggable
       onDragStart={(e) => {
         // A drag is not a long-press: cancel the pending select-on-hold.

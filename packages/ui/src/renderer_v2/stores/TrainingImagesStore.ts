@@ -219,6 +219,9 @@ export class TrainingImagesStore {
           // read it, and every one still rendered as a still and opened the crop editor,
           // because it never survived this function. Add new fields HERE too.
           is_video: !!im.is_video,
+          // Auto-crop outcomes (yellow / blue borders, AI + ? badges). Dropped here = never shown.
+          needs_review: !!im.needs_review, auto_cropped: !!im.auto_cropped,
+          auto_score: im.auto_score != null ? im.auto_score : undefined,
         })
         // Loose files at the imagegen root are strays, not training data — hide them with the
         // folders rather than leaving one orphan image to imply this is a real image directory.
