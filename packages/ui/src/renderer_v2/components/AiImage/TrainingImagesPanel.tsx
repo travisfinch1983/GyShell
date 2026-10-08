@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Layers, FolderOpen, Star, X, ChevronUp, ChevronDown } from 'lucide-react'
-import { trainingImagesStore as store, igThumb, igImage, igVideo, igVthumb, igDownload, imKey, cropDone, type IgImage } from '../../stores/TrainingImagesStore'
+import { trainingImagesStore as store, igThumb, igImage, igVideo, igVthumb, igDownload, imKey, cropDone, type IgImage, type BatchSection } from '../../stores/TrainingImagesStore'
 import { confirmStore } from '../../stores/confirmStore'
 import { promptStore } from '../../stores/promptStore'
 import { CropEditor } from './CropEditor'
@@ -666,12 +666,67 @@ const MergeModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   )
 }
 
+// ── Drag images into subsections ──
+// Dragging a SELECTED image carries the whole selection; an unselected one carries just itself.
+const AIG_DRAG = 'application/x-aig-keys'
+const dragHasKeys = (e: React.DragEvent) => Array.from(e.dataTransfer.types || []).includes(AIG_DRAG)
+
+/** Drop target for one subsection: an expanded panel or a collapsed tile. The enter/leave counter
+ *  keeps the highlight steady while the pointer crosses child elements. */
+const SecDrop: React.FC<{ folder: string; className?: string; title?: string; onClick?: () => void; children: React.ReactNode }> =
+  observer(({ folder, className, title, onClick, children }) => {
+    const [over, setOver] = useState(0)
+    return (
+      <div className={`${className || ''} ${over ? styles.dropOver : ''}`} title={title} onClick={onClick}
+        onDragEnter={(e) => { if (!dragHasKeys(e)) return; e.preventDefault(); setOver((n) => n + 1) }}
+        onDragOver={(e) => { if (!dragHasKeys(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'move' }}
+        onDragLeave={(e) => { if (!dragHasKeys(e)) return; setOver((n) => Math.max(0, n - 1)) }}
+        onDrop={(e) => {
+          if (!dragHasKeys(e)) return
+          e.preventDefault(); e.stopPropagation(); setOver(0)
+          let keys: string[] = []
+          try { keys = JSON.parse(e.dataTransfer.getData(AIG_DRAG)) } catch { /* not ours */ }
+          if (keys.length) void store.dropIntoSection(keys, folder)
+        }}>
+        {children}
+      </div>
+    )
+  })
+
+/** A collapsed subsection: one tile, covered by one of its own images. Click to expand. */
+const CollapsedSecTile: React.FC<{ meta: BatchSection }> = observer(({ meta }) => {
+  const imgs = store.imagesInSub(meta.folder)
+  const cover = imgs.find((im) => !im.is_video) || imgs[0]
+  return (
+    <SecDrop folder={meta.folder} className={`${styles.tile} ${styles.secCollapsed}`}
+      title={`${meta.concept}: ${meta.count} image(s), ×${meta.repeats}. Click to expand. Drop images here to move them in.`}
+      onClick={() => store.toggleCollapsed(meta.folder)}>
+      {cover
+        ? <img src={cover.is_video ? igVthumb(cover.rel, cover.mtime) : igThumb(cover.rel, cover.mtime)} alt="" loading="lazy" draggable={false} />
+        : <span className={styles.folderThumbEmpty}><Layers size={30} /></span>}
+      <span className={styles.secCount}>{meta.count}</span>
+      <span className={styles.folderFoot}>
+        <span className={styles.folderName}>{meta.concept}</span>
+        <span className={styles.folderMeta}>×{meta.repeats} · collapsed</span>
+      </span>
+    </SecDrop>
+  )
+})
+
 const Tile: React.FC<{ im: IgImage; i: number; onOpen: () => void }> = observer(({ im, i, onOpen }) => {
   const sel = store.selected.has(imKey(im))
   const timer = useRef<any>(null); const longRef = useRef(false); const down = useRef({ x: 0, y: 0 })
   const label = im.w && im.h ? `${im.w}×${im.h}` : im.name
   return (
-    <div className={`${styles.tile} ${cropDone(im) ? styles.tileDone : ''} ${sel ? styles.tileSel : ''}`}
+    <div className={`${styles.tile} ${cropDone(im) ? styles.tileDone : im.is_video ? '' : styles.tileTodo} ${sel ? styles.tileSel : ''}`}
+      draggable
+      onDragStart={(e) => {
+        // A drag is not a long-press: cancel the pending select-on-hold.
+        if (timer.current) { clearTimeout(timer.current); timer.current = null }
+        const keys = store.selected.has(imKey(im)) ? [...store.selected] : [imKey(im)]
+        e.dataTransfer.setData(AIG_DRAG, JSON.stringify(keys))
+        e.dataTransfer.effectAllowed = 'move'
+      }}
       onMouseDown={(e) => { if (e.button !== 0) return; longRef.current = false; down.current = { x: e.clientX, y: e.clientY }; timer.current = setTimeout(() => { longRef.current = true; if (!store.selectionMode) store.enterSelection(); if (!store.selected.has(imKey(im))) store.toggleOne(i); store.lastIndex = i }, 400) }}
       onMouseMove={(e) => { if (timer.current && (Math.abs(e.clientX - down.current.x) > 6 || Math.abs(e.clientY - down.current.y) > 6)) { clearTimeout(timer.current); timer.current = null } }}
       onMouseLeave={() => { if (timer.current) { clearTimeout(timer.current); timer.current = null } }}
@@ -1119,7 +1174,11 @@ export const TrainingImagesPanel: React.FC = observer(() => {
               const renderGroup = (sub: string, meta?: (typeof store.sections)[number]) => {
                 const items = bySub.get(sub) || []
                 if (!meta && !items.length) return
-                out.push(
+                // Subsection panels are drop targets; the unsectioned group is not.
+                const wrap = (node: React.ReactElement) => meta
+                  ? <SecDrop key={`drop-${sub}`} folder={sub} className={styles.secBlock}>{node}</SecDrop>
+                  : node
+                out.push(wrap(
                   <React.Fragment key={`sec-${sub || 'root'}`}>
                   <div className={styles.secDivider}>
                     {meta ? (
@@ -1128,6 +1187,8 @@ export const TrainingImagesPanel: React.FC = observer(() => {
                         <span className={styles.secRepeats} title="kohya per-epoch repeats — click to change"
                               onClick={() => void doRepeats(`${store.cwd}/${meta.folder}`, meta)}>×{meta.repeats}</span>
                         <span className={styles.dim}>{items.length} shown / {meta.count}</span>
+                        <button className={styles.btn} title="Collapse into a single tile (drop images onto the tile to move them in)"
+                                onClick={() => store.toggleCollapsed(meta.folder)}><ChevronUp size={13} /> Collapse</button>
                         <span className={styles.spacer} />
                         {/* Per-subsection actions. Everything here acts on THIS subsection only
                             and leaves selections in other subsections untouched — the point is
@@ -1194,10 +1255,24 @@ export const TrainingImagesPanel: React.FC = observer(() => {
                     {items.map(({ im, i }) => <Tile key={im.rel} im={im} i={i} onOpen={() => openImage(im)} />)}
                   </div>
                   </React.Fragment>,
-                )
+                ))
               }
               renderGroup('')
-              for (const s of store.sections) renderGroup(s.folder, s)
+              // Collapsed subsections sit as tiles between the unsectioned images and the first
+              // expanded subsection. They keep their position in the batch's order among themselves.
+              const collapsed = store.sections.filter((s) => store.isCollapsed(s.folder))
+              if (collapsed.length) {
+                out.push(
+                  <React.Fragment key="collapsed-secs">
+                    <div className={styles.secDivider}>
+                      <span className={styles.secName}>collapsed subsections</span>
+                      <span className={styles.dim}>{collapsed.length} — click a tile to expand · drop images on one to move them in</span>
+                    </div>
+                    <div className={styles.grid}>{collapsed.map((s) => <CollapsedSecTile key={s.folder} meta={s} />)}</div>
+                  </React.Fragment>,
+                )
+              }
+              for (const s of store.sections) if (!store.isCollapsed(s.folder)) renderGroup(s.folder, s)
               return out
             })()}
       </div>

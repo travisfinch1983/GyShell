@@ -303,6 +303,42 @@ export class TrainingImagesStore {
    *  the kind of quiet wrong that is hard to notice afterwards. */
   imagesInSub(sub: string): IgImage[] { return this.images.filter((im) => (im.dir || '') === sub) }
 
+  // ── collapsed subsections ──
+  // Keyed by batch folder + subsection so collapsing "blue" in one batch never collapses a
+  // same-named subsection elsewhere. Remembered across visits (a per-viewer convenience).
+  collapsedSecs: Set<string> = (() => {
+    try { return new Set<string>(JSON.parse(localStorage.getItem('aig-collapsed-secs') || '[]')) } catch { return new Set<string>() }
+  })()
+  secKey(folder: string) { return `${this.cwd}::${folder}` }
+  isCollapsed(folder: string) { return this.collapsedSecs.has(this.secKey(folder)) }
+  toggleCollapsed(folder: string) {
+    const k = this.secKey(folder)
+    const s = new Set(this.collapsedSecs)
+    if (s.has(k)) s.delete(k); else s.add(k)
+    this.collapsedSecs = s
+    try { localStorage.setItem('aig-collapsed-secs', JSON.stringify([...s])) } catch { /* private window: just not remembered */ }
+  }
+
+  /** Drag-and-drop target: move these image keys into subsection `folder` (same move as the
+   *  "Move to subsection" dialog). Images already in that subsection are skipped, not re-moved. */
+  async dropIntoSection(keys: string[], folder: string) {
+    const meta = this.sections.find((s) => s.folder === folder)
+    if (!meta) return
+    const want = new Set(keys)
+    const todo = this.images.filter((im) => want.has(imKey(im)) && (im.dir || '') !== folder).map((im) => imKey(im))
+    const already = keys.length - todo.length
+    if (!todo.length) { this.msg = `Already in ${meta.concept}.`; return }
+    this.msg = `Moving ${todo.length} → ${meta.concept}…`
+    try {
+      const r = await this.subsectionKeys(todo, meta.concept, meta.repeats)
+      runInAction(() => { this.msg = `Moved ${r.moved} → ${r.subsection}${already ? ` (${already} already there)` : ''}.` })
+      this.exitSelection()
+      await this.browse(this.cwd)
+    } catch (e: any) {
+      runInAction(() => { this.msg = `Move to ${meta.concept} failed: ${e?.message || e}` })
+    }
+  }
+
   /** Select every image in one subsection, leaving selections in OTHER subsections alone. */
   selectSubsection(sub: string) {
     this.selectionMode = true

@@ -71,7 +71,15 @@
    to crop among 269 thumbnails means spotting an ABSENCE, and a border makes the odd one out
    the thing that stands out instead. */
 .tileDone { border-color: #16a34a; }
+/* Not cropped AND not at the target size yet: thick red, so the ones still to crop jump out.
+   Before .tileSel so a selected image still shows the accent (at the same thickness). */
+.tileTodo { border: 4px solid #dc2626; }
 .tileSel { border-color: var(--accent); }
+/* Drag-and-drop into subsections */
+.secBlock { border-radius: 8px; outline: 2px dashed transparent; outline-offset: 3px; transition: outline-color .1s, background .1s; }
+.dropOver { outline: 2px dashed var(--accent) !important; outline-offset: 3px; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.secCollapsed { border-color: var(--accent); }
+.secCount { position: absolute; top: 4px; right: 4px; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 9px; background: var(--accent); color: #fff; z-index: 2; }
 .tileName { position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 6px; font-size: 10px; background: linear-gradient(transparent, rgba(0,0,0,0.75)); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pick { position: absolute; top: 5px; left: 5px; width: 18px; height: 18px; border-radius: 50%; border: 2px solid #fff; background: rgba(0,0,0,0.35); z-index: 2; opacity: 0; transition: opacity .1s; }
 .tile:hover .pick, .tileSel .pick { opacity: 1; }
