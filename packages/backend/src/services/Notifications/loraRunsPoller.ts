@@ -232,7 +232,8 @@ export function startLoraRunsWatch(tasks: TaskProgress): void {
 
       let step = 0
       let lastMtime = 0
-      const look = (d: string, re: RegExp): void => {
+      let lastCkptMtime = 0   // newest NUMBERED checkpoint
+      const look = (d: string, re: RegExp, isCkpt = false): void => {
         let ents: string[]
         try { ents = readdirSync(d) } catch { return }
         for (const f of ents) {
@@ -241,10 +242,22 @@ export function startLoraRunsWatch(tasks: TaskProgress): void {
           if (st.mtimeMs > lastMtime) lastMtime = st.mtimeMs
           const m = re.exec(f)
           if (m && Number(m[1]) > step) step = Number(m[1])
+          if (m && isCkpt && st.mtimeMs > lastCkptMtime) lastCkptMtime = st.mtimeMs
         }
       }
-      look(base, /_(\d{6,})\.safetensors$/)
+      look(base, /_(\d{6,})\.safetensors$/, true)
       look(path.join(base, 'samples'), /__(\d+)_\d+\.\w+$/)
+      // ai-toolkit writes the FINAL model as <name>.safetensors with NO step suffix (and logs no
+      // "Saving at step N" for it), so the numbered checkpoints top out at the last save_every
+      // multiple below `steps`. Without this a finished run sat at e.g. 5750/6000 once its console
+      // line vanished, then flipped to "presumed dead" (claude2, 2026-10-08, futanari_bulge_qwen21_v1).
+      // An unsuffixed final at least as new as the last numbered checkpoint = the run completed.
+      let finalSaved = false
+      try {
+        const fst = statSync(path.join(base, `${name}.safetensors`))
+        if (fst.isFile() && fst.mtimeMs >= lastCkptMtime) finalSaved = true
+      } catch { /* no final yet */ }
+      if (finalSaved) step = total
 
       const taskId = `lora:aitoolkit:${dir}`
       // Console truth beats checkpoint truth: per-step vs per-save_every resolution.
@@ -253,7 +266,11 @@ export function startLoraRunsWatch(tasks: TaskProgress): void {
       const con = live.get(name)
       if (con && con.step > step) step = con.step
       const idleMs = con ? 0 : Date.now() - lastMtime
-      const tracking = tasks.state().tasks.some((t) => t.id === taskId)
+      const prev = tasks.state().tasks.find((t) => t.id === taskId)
+      const tracking = !!prev
+      // Never move a tracked run BACKWARDS: the console gives per-step resolution, and when that
+      // line disappears the checkpoint fallback is coarser (99% -> 96% on screen). Keep the max seen.
+      if (prev && prev.state === 'running' && typeof prev.done === 'number' && prev.done > step) step = Math.min(prev.done, total)
       const label = `LoRA · ${name} (ai-toolkit)`
 
       if (step >= total) {
