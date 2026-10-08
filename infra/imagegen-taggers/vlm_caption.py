@@ -22,6 +22,8 @@ error string into a sidecar. Those count as errors and are reported.
 """
 import argparse
 import base64
+import concurrent.futures
+import threading
 import io
 import json
 import os
@@ -37,29 +39,60 @@ IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 # This is about HOW to caption, not WHAT the subject is: consistency of vocabulary, only what
 # is visible, describe what VARIES across the set (that is what the model learns to control),
 # and no preamble. Subject-specific direction arrives through the composed fields below.
-UNIVERSAL_DISCIPLINE = (
+# Split into HEAD + PERSON clause + TAIL (2026-10-08) so "describe the person" can be a per-set choice.
+# Garment-set finding (training_batch_solid_colors, Qwen-2.1 LoRA): with the person never described, the
+# recurring models' faces/poses were absorbed into the trigger, and co-occurring clothing that was only
+# SOMETIMES named (tops 33x, jackets 0x across 280 captions) came back as unrequested tops and jackets.
+DISCIPLINE_HEAD = (
     "You write training captions for a LoRA image dataset: exactly ONE flowing, factual "
     "sentence per image \u2014 never a list, numbered items, bullet points, or multiple sentences. "
     "Describe only what is clearly visible; never guess or invent a colour, material, size, or "
     "detail. Write the varying elements as a single sentence of comma-separated clauses in this "
     "fixed order: camera view (front, rear, three-quarter or side), pose, then the clothing (its "
     "cut, colour and fabric), and a few words of setting \u2014 no sub-lists, aiming for roughly "
-    "20-30 words (hard cap ~40). Name each garment's type, colour and fabric separately \u2014 "
-    "never collapse to a category word like 'lingerie', 'undergarments' or 'outfit', and "
-    "never drop the fabric/cut detail when you name it. "
+    "25-40 words (hard cap ~50). Name EVERY garment and accessory in the frame, not only the "
+    "focal one \u2014 tops, bras, shirts, jackets, skirts, shorts, jeans, stockings, socks, "
+    "garters, belts, shoes and jewellery \u2014 each separately with its type, colour and fabric, "
+    "in every caption: anything worn but left unnamed is learned as part of the trigger. Never "
+    "collapse items to a category word like 'lingerie', 'undergarments' or 'outfit', and never "
+    "drop the fabric/cut detail when you name one. "
     "Vocabulary consistency across the whole set matters MORE than "
     "per-image precision: when unsure between a plain word already used in the set and a unique "
     "word for one image, use the plain word, and never reword for variety. Keep it clinical and "
-    "literal, never suggestive or evaluative."
-    "Describe ONLY these things: the camera view, the pose, each garment named by type, "
-    "colour and fabric, the focal subject exactly as the naming rule specifies, and the "
+    "literal, never suggestive or evaluative. "
+)
+# Default for bulge sets: the ban also closes a size-word back door ("muscular", "large") there.
+PERSON_OFF = (
+    "Describe ONLY these things: the camera view, the pose, each garment and accessory named by "
+    "type, colour and fabric, the focal subject exactly as the naming rule specifies, and the "
     "setting. Describe NOTHING else about the person \u2014 no hair, face, body build, skin, "
     "nudity level, or marking such as a tattoo, piercing, scar or birthmark. These are not "
     "control axes and describing them overfits the LoRA to the training subjects. "
+)
+# Garment sets: naming the recurring people keeps them OUT of the trigger.
+PERSON_BRIEF = (
+    "Describe ONLY these things: the camera view, the pose, the person in ONE short neutral clause "
+    "placed right after the pose \u2014 apparent gender plus hair colour and length only, e.g. "
+    "'woman with long brown hair' \u2014 each garment and accessory named by type, colour and "
+    "fabric, the focal subject exactly as the naming rule specifies, and the setting. Say NOTHING "
+    "else about the person \u2014 no face, expression, body build, skin, size, nudity level, or "
+    "marking such as a tattoo, piercing, scar or birthmark. The person clause exists so that the "
+    "recurring models are described rather than absorbed into the trigger. "
+)
+DISCIPLINE_TAIL = (
     "Do not judge or re-name the core subject the trigger word already names, and never open "
     "with a phrase that describes the picture rather than its contents (e.g. 'The image', 'The "
     "subject', 'A photo of')."
 )
+PERSON_CLAUSES = {"off": PERSON_OFF, "brief": PERSON_BRIEF}
+
+
+def default_discipline(person="off"):
+    """The base prompt for a describe-person mode. `off` reproduces the original discipline."""
+    return DISCIPLINE_HEAD + PERSON_CLAUSES.get((person or "off").strip().lower(), PERSON_OFF) + DISCIPLINE_TAIL
+
+
+UNIVERSAL_DISCIPLINE = default_discipline("off")
 
 # Split OUT of the discipline so it can be the LAST thing the model reads. A few-shot exemplar
 # wants recency to work, and the composed subject fields sit between the two -- so the output
@@ -97,7 +130,10 @@ def compose_instruction(a):
     if free:
         base = a.instruction.strip()
     else:
-        base = UNIVERSAL_DISCIPLINE
+        # --discipline replaces ONLY the base prompt (edited in the UI); the subject fields, size
+        # rule, example and output rule below still compose on top of it. It wins over
+        # --describe-person, because the person clause is part of the text the user edited.
+        base = a.discipline.strip() or default_discipline(a.describe_person)
         preset = PRESETS.get((a.preset or "").strip().lower())
         if preset:
             base += " " + preset
@@ -112,9 +148,23 @@ def compose_instruction(a):
     if a.context.strip():
         parts.append("This image set is: %s" % sentence(a.context))
     if a.naming.strip():
-        # Verbatim: the whole point is that the caller dictates the exact word, because the
-        # model drifting between synonyms is what makes a token unlearnable.
-        parts.append(a.naming.strip())
+        # 🛑 WRAP IT IN A RULE. This used to append the field's raw text, which works only if
+        # the caller types a full sentence ("always call X the bulge"). The field is labelled
+        # "Consistent Naming Convention", so what people actually type is a NOUN PHRASE —
+        # "teal smiley print satin string bikini panties" — and a dangling noun phrase in a
+        # system prompt reads as a hint, not an instruction. Observed 2026-09-17: the model
+        # paraphrased it as "teal string-side satin panties", and the enforcement sentence had
+        # to be hand-written into the context box on every run. That sentence is now here.
+        # Drifting between synonyms is what makes a trigger token unlearnable, so this is the
+        # one field where obedience matters more than fluency.
+        parts.append(
+            'NAMING RULE - MANDATORY AND VERBATIM. Refer to the subject as "%s" - exactly '
+            'those words, in that order, in EVERY caption. Do not substitute synonyms, '
+            'reorder, shorten, expand, or vary the wording for the sake of variety, not even '
+            'once. Inconsistent naming across a caption set makes the token unlearnable and '
+            'defeats the purpose of the set. If a caption reads repetitively as a result, '
+            'that is correct and intended - repeat it anyway.' % a.naming.strip()
+        )
     # Size is MODE-driven, and the universal text above is deliberately size-NEUTRAL so the two
     # cannot contradict each other: it forbids guessing a size (true in both modes) and says
     # nothing about whether one may be stated. Default omit, because the model is measurably
@@ -165,9 +215,16 @@ REFUSAL_MARKERS = (
 )
 
 
+_LOG_LOCK = threading.Lock()
+
+
 def log(o):
-    sys.stderr.write(json.dumps(o) + "\n")
-    sys.stderr.flush()
+    # Serialised because --concurrency > 1 has several workers logging progress, and the
+    # BACKEND PARSES these lines. Two interleaved writes are not a cosmetic problem: they
+    # produce a line that is not valid JSON, which the caller reads as a failed job.
+    with _LOG_LOCK:
+        sys.stderr.write(json.dumps(o) + "\n")
+        sys.stderr.flush()
 
 
 def list_images(folder):
@@ -275,7 +332,8 @@ def validate(cap, min_chars):
                            % (len(cap), min_chars, cap))
 
 
-def call_model(api, model, b64, instruction, max_tokens, timeout, retries):
+def call_model(api, model, b64, instruction, max_tokens, timeout, retries,
+               reasoning=""):
     """Returns (content, truncated). `truncated` is the caller's only honest way to tell
     whether a caption lacking a full stop was CUT SHORT or simply written tersely."""
     body = {
@@ -284,6 +342,13 @@ def call_model(api, model, b64, instruction, max_tokens, timeout, retries):
         "temperature": 0.2,
         # The request-body equivalent of /no_think. AI-Lab sets exactly this for its own vision
         # role; without it a *-Thinking-* model will sometimes return its reasoning as content.
+        # enable_thinking IS A QWEN CHAT-TEMPLATE KWARG. It is silently ignored by every other
+        # family - notably DeepSeek, which then reasons at full length. The reply either
+        # exceeds --timeout or arrives as reasoning prose that REASONING_MARKERS rejects, and
+        # either way the sidecar is left BLANK. That was the intermittent blank-caption bug
+        # (2026-09-17); the mechanism had been doing nothing on DeepSeek all along.
+        # reasoning_effort is the runtime lever those models DO honour, so both are sent -
+        # each is ignored by the family that does not use it.
         "chat_template_kwargs": {"enable_thinking": False},
         "messages": [
             {"role": "system", "content": instruction},
@@ -296,6 +361,14 @@ def call_model(api, model, b64, instruction, max_tokens, timeout, retries):
             ]},
         ],
     }
+    # DeepSeek-style control. `thinking` is the field that actually turns reasoning OFF —
+    # reasoning_effort alone only sets a LEVEL, so sending it without the companion object
+    # leaves thinking on and does not fix the blank-caption case it was added for.
+    if reasoning == "off":
+        body["thinking"] = {"type": "disabled"}
+    elif reasoning:
+        body["thinking"] = {"type": "enabled"}
+        body["reasoning_effort"] = reasoning
     last = None
     budget = max_tokens
     # +2: budget escalations need their own attempts on top of the transient-error retries.
@@ -348,7 +421,10 @@ def call_model(api, model, b64, instruction, max_tokens, timeout, retries):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--folder", required=True)
+    ap.add_argument("--folder", default="")     # required unless --print-default
+    ap.add_argument("--describe-person", default="off", choices=["off", "brief"])
+    ap.add_argument("--discipline", default="")   # replaces only the base prompt (see compose_instruction)
+    ap.add_argument("--print-default", action="store_true")  # JSON of the default prompt parts, then exit
     ap.add_argument("--api", default=os.environ.get(
         "AILAB_PROXY_API", "http://10.0.0.219:17890/api/proxy/llm/v1/chat/completions"))
     ap.add_argument("--model", default="Qwen3.5-9B-INT8-MM-Thinking-Non_preserved-256k")
@@ -379,7 +455,28 @@ def main():
     ap.add_argument("--files", default="")   # comma-separated names within --folder; empty = whole folder
     ap.add_argument("--caption-ext", default="caption")
     ap.add_argument("--json", action="store_true")
+    # Runtime reasoning control for families that honour it (DeepSeek et al).
+    #   off              -> {"thinking": {"type": "disabled"}}          <- what captioning wants
+    #   none|low|high|max-> {"thinking": {"type": "enabled"}} + reasoning_effort
+    #   ""               -> send NEITHER field; the provider's own default applies
+    # Empty is the honest default: guessing here means sending a value some providers reject.
+    ap.add_argument("--reasoning", default="",
+                    choices=["", "off", "none", "low", "high", "max"])
+    # 1 = the old strictly-sequential behaviour, kept as a real option: a LOCAL model serving
+    # one stream can be slower, not faster, under parallel load. API models are stateless and
+    # benefit; the caller decides which it is talking to.
+    ap.add_argument("--concurrency", type=int, default=1)
     a = ap.parse_args()
+    if a.print_default:
+        # For the AI-Lab UI: what the default base prompt says in each describe-person mode, plus the
+        # fixed output rule that always ends the composed prompt. Nothing is captioned.
+        print(json.dumps({"discipline": {m: default_discipline(m) for m in PERSON_CLAUSES},
+                          "output_rule": OUTPUT_RULE, "output_rule_free": OUTPUT_RULE_FREE,
+                          "composed_after": ["context", "naming rule", "size rule", "priority",
+                                             "format example", "output rule"]}))
+        return
+    if not a.folder:
+        ap.error("--folder is required")
 
     # Context used to be PREPENDED to a garment-shaped default, which meant the skeleton could
     # not be replaced from the UI however the box was filled in. Now the shape is composed.
@@ -402,25 +499,35 @@ def main():
          "provider": a.model, "model": a.model})
 
     done = wrote = skipped = errs = 0
-    for nm in imgs:
-        done += 1
+    _stat_lock = threading.Lock()
+
+    def process_one(nm):
+        """Caption ONE image. Never raises — every outcome is counted and logged.
+
+        Extracted from the loop so SEQUENTIAL AND CONCURRENT RUN THE SAME CODE. Two copies
+        of this body would drift, and the divergence would show up as captions that differ
+        by which mode produced them — the hardest kind of difference to notice in a dataset.
+        """
+        nonlocal done, wrote, skipped, errs
         stem = os.path.splitext(nm)[0]
         txt = os.path.join(a.folder, stem + "." + a.caption_ext)
         if os.path.exists(txt) and not a.overwrite:
-            skipped += 1
+            with _stat_lock:
+                done += 1; skipped += 1; d = done
             if a.json:
-                log({"event": "img", "done": done, "total": total, "file": nm, "status": "skip"})
-            continue
+                log({"event": "img", "done": d, "total": total, "file": nm, "status": "skip"})
+            return
         try:
             b64 = encode(os.path.join(a.folder, nm), a.max_side)
-            # A reasoning-shaped reply is RETRYABLE: at temperature 0.2 a resample usually lands
-            # on a real caption, and a retried image beats a gap the user fills by hand. Only
-            # after the retries are exhausted is it an error — and it stays an error, never a
-            # written sidecar.
+            # A reasoning-shaped reply is RETRYABLE: at temperature 0.2 a resample usually
+            # lands on a real caption, and a retried image beats a gap the user fills by hand.
+            # Only after the retries are exhausted is it an error — and it stays an error,
+            # never a written sidecar.
             cap, last_err = None, None
             for attempt in range(a.retries + 1):
                 raw, was_cut = call_model(a.api, a.model, b64, instruction,
-                                          a.max_new_tokens, a.timeout, 1)
+                                          a.max_new_tokens, a.timeout, 1,
+                                          a.reasoning)
                 candidate = clean(raw, avoid, was_cut)
                 try:
                     validate(candidate, a.min_chars)
@@ -442,16 +549,30 @@ def main():
                 os.chmod(txt, 0o664)
             except Exception:
                 pass
-            wrote += 1
+            with _stat_lock:
+                done += 1; wrote += 1; d = done
             if a.json:
-                log({"event": "img", "done": done, "total": total, "file": nm,
+                log({"event": "img", "done": d, "total": total, "file": nm,
                      "status": "ok", "chars": len(cap)})
         except Exception as e:
-            errs += 1
+            with _stat_lock:
+                done += 1; errs += 1; d = done
             # No sidecar is written. An unwritten caption is visible as an error; a wrong one
             # would sit in the training set looking exactly like a good one.
-            log({"event": "img", "done": done, "total": total, "file": nm,
+            log({"event": "img", "done": d, "total": total, "file": nm,
                  "status": "error", "error": str(e)[:200]})
+
+    # Bounded above so a mistyped setting cannot open 500 sockets at a shared proxy. `done` is
+    # a COMPLETION counter under a lock, not a position, so progress stays monotonic and
+    # correct out of order.
+    workers = max(1, min(int(a.concurrency or 1), 16))
+    if workers > 1 and len(imgs) > 1:
+        log({"event": "mode", "concurrency": workers})
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+            list(ex.map(process_one, imgs))
+    else:
+        for nm in imgs:
+            process_one(nm)
 
     log({"event": "done", "total": total, "wrote": wrote, "skipped": skipped, "errors": errs})
     print(json.dumps({"ok": True, "total": total, "wrote": wrote,

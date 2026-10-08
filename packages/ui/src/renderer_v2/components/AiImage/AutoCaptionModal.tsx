@@ -174,6 +174,29 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
   const [sizeMode, setSizeModeRaw] = useState<'omit' | 'state'>(() => (per('aig-cap-sizemode:') === 'state' ? 'state' : 'omit'))
   const setSizeMode = (v: 'omit' | 'state') => { setSizeModeRaw(v); setPer('aig-cap-sizemode:', v) }
 
+  // STRICTLY per set - deliberately NOT per()/setPer(): those fall back to the last value used in ANY
+  // folder, so choosing "brief" for a garment set would silently become the default for the next
+  // bulge set, where the person ban also closes a size-word back door. Unset folders get the defaults.
+  const strictGet = (k: string) => { try { return localStorage.getItem(k + scope) ?? '' } catch { return '' } }
+  const strictSet = (k: string, v: string) => { try { if (v) localStorage.setItem(k + scope, v); else localStorage.removeItem(k + scope) } catch { /* private window */ } }
+  const [describePerson, setDescribePersonRaw] = useState<'off' | 'brief'>(() => (strictGet('aig-cap-person:') === 'brief' ? 'brief' : 'off'))
+  const setDescribePerson = (v: 'off' | 'brief') => { setDescribePersonRaw(v); strictSet('aig-cap-person:', v === 'brief' ? 'brief' : '') }
+  // '' = the default base prompt for the chosen person mode (shown, not stored); anything else = edited.
+  const [discipline, setDisciplineRaw] = useState(() => strictGet('aig-cap-discipline:'))
+  const [capDefaults, setCapDefaults] = useState<{ discipline: Record<string, string>; output_rule: string } | null>(null)
+  const [capDefaultsErr, setCapDefaultsErr] = useState('')
+  useEffect(() => {
+    fetch('/api/imagegen/caption-default').then(async (r) => {
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`)
+      setCapDefaults(d)
+    }).catch((e) => setCapDefaultsErr(String(e?.message || e)))
+  }, [])
+  const defaultBase = capDefaults?.discipline?.[describePerson] ?? ''
+  const shownBase = discipline || defaultBase
+  const baseModified = !!discipline && discipline !== defaultBase
+  const setDiscipline = (v: string) => { const keep = v === defaultBase ? '' : v; setDisciplineRaw(keep); strictSet('aig-cap-discipline:', keep) }
+
   const [status, setStatus] = useState(''); const [running, setRunning] = useState(false)
   // Custom NL engine: which proxy model does the captioning. The list is fetched lazily
   // (only when the vlm engine is chosen); on failure the picker degrades to a free-text
@@ -272,6 +295,9 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
     if (isVlm && naming.trim()) body.naming = naming.trim()
     if (isVlm && emphasize.trim()) body.emphasize = emphasize.trim()
     if (isVlm && example.trim()) body.example = example.trim()
+    if (isVlm) body.describe_person = describePerson
+    // Only an EDITED base prompt is sent; the default is the captioner's own, never a UI copy of it.
+    if (isVlm && !instruction.trim() && baseModified) body.discipline = discipline.trim()
     if (isVlm) {
       body.size_mode = sizeMode
       if (sizeMode === 'state' && sizeWord.trim()) body.size_word = sizeWord.trim()
@@ -319,7 +345,7 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
         // being edited and the captioner re-run for every colour.
         const jvars = j.sub ? store.varsFor(j.sub) : {}
         if (isVlm && Object.keys(jvars).length) {
-          for (const f of ['instruction', 'context', 'naming', 'emphasize', 'example'] as const) {
+          for (const f of ['instruction', 'discipline', 'context', 'naming', 'emphasize', 'example'] as const) {
             if (typeof jbody[f] === 'string') jbody[f] = expandVars(jbody[f] as string, jvars)
           }
         }
@@ -481,6 +507,37 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
                 : <>Empty, so the built-in LoRA caption discipline is used and the fields below
                   describe the subject within it. Fill this in when the folder is not for LoRA
                   training — the fields below cannot change the job, only the subject.</>}
+            </div>
+
+            <div className={styles.acSection}>
+              Base prompt — LoRA caption discipline{baseModified ? <span style={{ color: '#f59e0b' }}> · modified</span> : ' · default'}
+            </div>
+            <label className={styles.sortLbl} style={{ marginBottom: 6 }}>Describe the person
+              <select className={styles.input} value={describePerson} disabled={running}
+                      onChange={(e) => setDescribePerson(e.target.value === 'brief' ? 'brief' : 'off')}>
+                <option value="off">Off — never describe the person (bulge sets)</option>
+                <option value="brief">Brief — gender + hair colour/length only (garment sets)</option>
+              </select>
+            </label>
+            <textarea
+              className={styles.input}
+              style={{ width: '100%', minHeight: 140, resize: 'vertical', fontSize: 11.5 }}
+              value={capDefaults || discipline ? shownBase : ''}
+              placeholder={capDefaultsErr ? `Could not load the default prompt: ${capDefaultsErr}` : 'Loading the captioner default…'}
+              disabled={running || !!instruction.trim() || (!capDefaults && !discipline)}
+              onChange={(e) => setDiscipline(e.target.value)}
+            />
+            <div className={styles.acHint}>
+              {instruction.trim()
+                ? <>Not used — the custom instruction above replaces the whole prompt.</>
+                : <>This is exactly what the captioner sends first{baseModified ? ' (your edited version, saved for this set)' : ''}.
+                  The fields below (context, naming rule, size rule, priority, example) are composed AFTER it, then
+                  {capDefaults ? <> &ldquo;{capDefaults.output_rule}&rdquo;</> : ' the output rule'}. {'{$VARIABLES}'} work here too.
+                  {baseModified && <> Describe-the-person has no effect while the base prompt is edited — the person rule is part of your text.</>}</>}
+              {' '}
+              <button className={styles.btn} style={{ marginLeft: 6 }} disabled={running || !discipline}
+                      title="Discard your edits and use the captioner's default for the selected person mode"
+                      onClick={() => setDiscipline('')}>Reset to default</button>
             </div>
 
             <div className={styles.acSection}>Set context</div>

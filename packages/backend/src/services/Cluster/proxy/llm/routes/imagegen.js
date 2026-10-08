@@ -1351,6 +1351,11 @@ export function createImagegenRouter(config) {
           // teaches the model to write it twice.
           + (b.example ? ` --example ${q(String(b.example))}` : '')
           + (b.preset ? ` --preset ${q(String(b.preset))}` : '')
+          // Per-set person handling: off = never describe the person (bulge sets); brief = one neutral
+          // gender + hair clause, so recurring models are described instead of absorbed into the trigger.
+          + ` --describe-person ${b.describe_person === 'brief' ? 'brief' : 'off'}`
+          // An EDITED base prompt replaces only the discipline; subject fields still compose on top.
+          + (b.discipline ? ` --discipline ${q(String(b.discipline))}` : '')
           + (b.avoid ? ` --avoid ${q(String(b.avoid))}` : '')
           + (b.max_side ? ` --max-side ${parseInt(b.max_side, 10)}` : '')
           + (b.trigger ? ` --trigger ${q(b.trigger)}` : '')
@@ -1460,6 +1465,27 @@ export function createImagegenRouter(config) {
   });
 
   // ---- Model-based caption correction.
+  // The captioner's DEFAULT base prompt, per describe-person mode, straight from vlm_caption.py on the
+  // tagger host (--print-default), so the UI shows exactly what will be sent instead of a copy that
+  // drifts. Cached 5 min; ?refresh=1 re-reads after the script changes.
+  let captionDefaultCache = { at: 0, data: null };
+  router.get('/caption-default', (req, res) => {
+    if (captionDefaultCache.data && !req.query.refresh && Date.now() - captionDefaultCache.at < 300000) return res.json(captionDefaultCache.data);
+    const args = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8'];
+    if (SSH_KEY) args.push('-i', SSH_KEY);
+    args.push(TAGGER_SSH, `${BLIP_PY} ${VLM_SCRIPT} --print-default`);
+    execFile('ssh', args, { timeout: 20000, maxBuffer: 1 << 20 }, (err, stdout, stderr) => {
+      if (err) return res.status(502).json({ error: `could not read the captioner default on ${TAGGER_SSH}: ${String(stderr || err.message).slice(0, 300)}` });
+      try {
+        const data = JSON.parse(String(stdout));
+        captionDefaultCache = { at: Date.now(), data };
+        res.json(data);
+      } catch (e) {
+        res.status(502).json({ error: `captioner printed something that is not JSON (an older vlm_caption.py without --print-default?): ${String(stdout).slice(0, 200)}` });
+      }
+    });
+  });
+
   // POST { path, files?, instruction, model, exts?:['caption'], dry_run?, max_files? } -> { jobId }
   // Poll with /auto-caption-status (shared job map). Only sidecars that ALREADY exist are
   // touched — there is nothing to correct otherwise.
