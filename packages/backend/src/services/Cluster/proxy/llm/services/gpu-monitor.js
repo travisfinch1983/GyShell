@@ -63,6 +63,122 @@ export class GpuMonitor {
   }
 
   /**
+   * Make NVIDIA config entries (friendly name, showInFleet, every per-GPU setting) follow the CARD.
+   *
+   * Entries stay KEYED by `node:pciId`, so every reader keeps working unchanged, but an NVIDIA entry
+   * also records its card's `uuid`. After each discovery, an entry whose UUID now answers at another
+   * slot is MOVED to that slot - swaps included (2026-10-08: two 5060 Tis traded slots and "#1"
+   * stayed on the slot, labelling the other physical card). Non-NVIDIA cards (Intel Arc) expose no
+   * UUID and stay keyed by slot. Entries without a uuid get the card at their slot stamped on first
+   * sight. When the UUID query fails (empty uuidMap) NOTHING moves - a missing answer is never
+   * evidence that a card left. A card that moved OUTSIDE a container's assignment list is re-mapped
+   * there too, so pickers and resolveServiceGpuPciIds do not name an empty slot.
+   */
+  reconcileConfigByUuid(inventory) {
+    const cfg = { ...this.gpuConfig };
+    let changed = false;
+    const moves = [];   // { node, from, to, name }
+    for (const [node, info] of Object.entries(inventory || {})) {
+      const uuidMap = info?.uuidMap || {};
+      const pciByUuid = {};
+      for (const [pci, u] of Object.entries(uuidMap)) if (u) pciByUuid[u] = pci;
+      if (!Object.keys(pciByUuid).length) continue;
+      const relocated = {};
+      for (const [key, e] of Object.entries(cfg)) {
+        if (!key.startsWith(`${node}:`) || !e || !e.uuid) continue;
+        const cur = pciByUuid[e.uuid];
+        if (!cur || cur === e.pciId) continue;          // absent this round, or already in place
+        relocated[`${node}:${cur}`] = { ...e, pciId: cur };
+        delete cfg[key];
+        moves.push({ node, from: e.pciId, to: cur, name: e.friendlyName || e.uuid });
+      }
+      for (const [k, e] of Object.entries(relocated)) {
+        if (cfg[k] && cfg[k].uuid !== e.uuid) {
+          console.warn(`[gpu-names] ${k}: "${cfg[k].friendlyName || '?'}" displaced by moved card "${e.friendlyName || e.uuid}"`);
+        }
+        cfg[k] = e;
+        changed = true;
+      }
+      for (const [pci, u] of Object.entries(uuidMap)) {          // first sight: bind entry to its card
+        const k = `${node}:${pci}`;
+        if (cfg[k] && !cfg[k].uuid && u) { cfg[k] = { ...cfg[k], uuid: u }; changed = true; }
+      }
+    }
+    if (!changed) return;
+    this.saveConfig(cfg);
+    for (const m of moves) console.log(`[gpu-names] ${m.node}: "${m.name}" moved ${m.from} -> ${m.to}; config entry followed the card`);
+    if (moves.length) { this.remapAssignments(moves); this.remapActiveServices(moves); }
+  }
+
+  /** Services record the slots they were LAUNCHED on (gpuPciIds). Their scripts follow the card by
+   *  UUID, so after a move the service runs on the right card while its card in the UI named the
+   *  slot's NEW occupant (2026-10-08: Beholder showed "#3" while running on #1). Remap the records
+   *  on that node with ONE simultaneous mapping, so a swap (02->43 and 43->02) is not applied twice. */
+  remapActiveServices(moves) {
+    try {
+      const aPath = join(dirname(GPU_CONFIG_PATH), 'active-services.json');
+      if (!existsSync(aPath)) return;
+      const state = JSON.parse(readFileSync(aPath, 'utf-8'));
+      const byNode = {};
+      for (const m of moves) (byNode[m.node] ||= {})[m.from] = m.to;
+      let n = 0;
+      for (const svc of Object.values(state.services || {})) {
+        const map = byNode[svc?.node];
+        if (!map || !Array.isArray(svc.gpuPciIds)) continue;
+        const next = svc.gpuPciIds.map((p) => map[String(p).toLowerCase()] || p);
+        if (next.join() !== svc.gpuPciIds.join()) { svc.gpuPciIds = next; n++; }
+      }
+      if (n) {
+        writeFileSync(aPath, JSON.stringify(state, null, 2));
+        console.log(`[gpu-names] remapped gpuPciIds on ${n} service record(s) to follow moved cards`);
+      }
+    } catch (e) {
+      console.warn(`[gpu-names] service remap skipped: ${e.message}`);
+    }
+  }
+
+  /** A moved card's new slot replaces its old one in a container's assignment list, but only when
+   *  the new slot is not already listed (a swap within the list leaves the set - and the indices the
+   *  UI and launchers use - unchanged). Scoped by node: a vmid alone is not unique across nodes. */
+  remapAssignments(moves) {
+    try {
+      const dir = dirname(GPU_CONFIG_PATH);
+      const aPath = join(dir, 'gpu-assignments.json');
+      if (!existsSync(aPath)) return;
+      const assign = JSON.parse(readFileSync(aPath, 'utf-8'));
+      let ai = {};
+      try { ai = JSON.parse(readFileSync(join(dir, 'ai-config.json'), 'utf-8')); } catch { /* none */ }
+      // vmid -> node, but only when UNIQUE: the nodes are not clustered and the same CT number exists
+      // on several of them, so an ambiguous vmid is skipped (logged) rather than guessed.
+      const vmidNodes = {};
+      for (const [node, a] of Object.entries(ai.agents || {})) {
+        if (a?.vmid != null) (vmidNodes[String(a.vmid)] ||= []).push(node);
+      }
+      const vmidNode = {};
+      for (const [v, nodes] of Object.entries(vmidNodes)) {
+        if (nodes.length === 1) vmidNode[v] = nodes[0];
+        else console.warn(`[gpu-names] CT${v} is an agent on ${nodes.join(' and ')} - its assignment is not remapped automatically`);
+      }
+      let dirty = false;
+      for (const [vmid, entry] of Object.entries(assign)) {
+        const gpus = Array.isArray(entry?.gpus) ? entry.gpus : null;
+        if (!gpus) continue;
+        for (const m of moves) {
+          if (vmidNode[vmid] !== m.node) continue;
+          const i = gpus.findIndex((g) => String(g).toLowerCase() === m.from);
+          if (i >= 0 && !gpus.some((g) => String(g).toLowerCase() === m.to)) {
+            gpus[i] = m.to; dirty = true;
+            console.log(`[gpu-names] CT${vmid}: assignment ${m.from} -> ${m.to} (followed "${m.name}")`);
+          }
+        }
+      }
+      if (dirty) writeFileSync(aPath, JSON.stringify(assign, null, 2));
+    } catch (e) {
+      console.warn(`[gpu-names] assignment remap skipped: ${e.message}`);
+    }
+  }
+
+  /**
    * Get a friendly name for a GPU by node:pciId key.
    */
   getFriendlyName(node, pciId) {
@@ -272,6 +388,9 @@ export class GpuMonitor {
           // UUID query failed, PCI-only fallback
         }
       }));
+
+      // NVIDIA config entries follow the CARD, not the slot (see reconcileConfigByUuid).
+      this.reconcileConfigByUuid(inventory);
 
       this.gpuInventory = inventory;
 
