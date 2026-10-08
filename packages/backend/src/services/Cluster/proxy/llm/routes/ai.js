@@ -7881,6 +7881,26 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
   // restart addresses neither.
   const NEVER_HEALTHY_MAX_FAILS = 40;  // 20 min past the grace period
 
+  // Providers whose HTTP server can block while the GPU is doing real work (see the busy check in
+  // watchdogCheck). LLM servers answer /health during inference, so they are not included.
+  const BUSY_AWARE_PROVIDERS = new Set(['comfyui', 'sdnext', 'fooocus', 'invokeai', 'dataset-forge']);
+  const watchdogBusyLogged = {};
+  /** Peak utilization (%) over the last 2 min of the GPUs this service is pinned to, from the GPU
+   *  exporter in Prometheus (keyed by uuid without the GPU- prefix). null = cannot tell. */
+  async function gpuBusyPct(svc) {
+    const pcis = Array.isArray(svc.gpuPciIds) ? svc.gpuPciIds : [];
+    if (!pcis.length) return null;
+    const map = gpuMonitor.getInventory()?.[svc.node]?.uuidMap || {};
+    const uuids = pcis.map((p) => String(map[p] || '').replace(/^GPU-/i, '')).filter(Boolean);
+    if (!uuids.length) return null;
+    const promBase = process.env.PROMETHEUS_URL || 'http://10.0.0.79:9090';
+    const q = `max(max_over_time(nvidia_smi_utilization_gpu_ratio{uuid=~"${uuids.join('|')}"}[2m]))`;
+    const r = await fetch(`${promBase}/api/v1/query?query=${encodeURIComponent(q)}`, { signal: AbortSignal.timeout(5000) });
+    const d = await r.json();
+    const v = d?.data?.result?.[0]?.value?.[1];
+    return v == null ? null : Math.round(Number(v) * 100);
+  }
+
   /** Health check paths by provider */
   const HEALTH_PATHS = {
     koboldcpp: '/api/v1/info/version',
@@ -8133,6 +8153,20 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
           throw new Error(`HTTP ${resp.status}`);
         }
       } catch (e) {
+        // BUSY IS NOT DEAD. An image-gen server loading/swapping big models on a single card can stop
+        // answering HTTP for many minutes while working flat out; on 2026-10-08 the watchdog killed
+        // comfyui-8189 15 min into a Qwen-Image job. Before counting a failure for these providers,
+        // ask Prometheus whether the service's OWN pinned GPUs were busy recently. A hung process
+        // leaves its GPU idle, so real hangs are still caught.
+        if (BUSY_AWARE_PROVIDERS.has(svc.providerId)) {
+          const busy = await gpuBusyPct(svc).catch(() => null);
+          if (busy != null && busy >= 30) {
+            if (!watchdogBusyLogged[id]) console.log(`[watchdog] ${svc.providerId}:${svc.port} not answering (${e.message}) but its GPU is ${busy}% busy — working, not hung; not counting it`);
+            watchdogBusyLogged[id] = true;
+            continue;
+          }
+        }
+        delete watchdogBusyLogged[id];
         watchdogFailCounts[id] = (watchdogFailCounts[id] || 0) + 1;
         const fails = watchdogFailCounts[id];
         const everHealthy = watchdogEverHealthy[id] === svc.startedAt;
