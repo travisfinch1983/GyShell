@@ -200,11 +200,15 @@ export const NotificationsPanel: React.FC<{ onClose: () => void }> = observer(({
         </div>
 
         <div className={styles.section}>
-          <div className={styles.sectionHead}>Task progress</div>
+          <div className={styles.sectionHead}>Task progress{store.tasks.length > 0 ? ` (${store.tasks.length})` : ''}</div>
           {store.tasks.length === 0 ? (
             <div className={styles.emptyNote}>No tracked tasks running.</div>
           ) : (
-            store.tasks.map((t) => <TaskRow key={t.id} t={t} />)
+            // Own scroll box, like Health / Warnings / Debug. The rows used to sit directly in the
+            // shrinkable section, so past ~5 tasks they overflowed ON TOP of Warnings & errors.
+            <div className={styles.taskList}>
+              {store.tasks.map((t) => <TaskRow key={t.id} t={t} />)}
+            </div>
           )}
         </div>
 

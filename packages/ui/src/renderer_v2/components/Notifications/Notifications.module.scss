@@ -22,13 +22,17 @@ $sev-error: #e07b39;
   border-radius: 10px;
   background: var(--panel-bg);
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
-  overflow: hidden;
+  overflow-y: auto;    /* still clips to the rounded corners, and scrolls when sections exceed the screen */
+  overflow-x: hidden;
 }
 
 .section {
   display: flex;
   flex-direction: column;
-  min-height: 0;
+  /* Sections keep their natural height (each long list already scrolls inside its own capped box);
+     if together they exceed the panel, the PANEL scrolls. Shrinking them instead let a section be
+     squashed below its content, which then painted over the next section (task list over Warnings). */
+  flex: 0 0 auto;
   border-bottom: 1px solid var(--border);
 
   &:last-child { border-bottom: none; }
@@ -269,6 +273,8 @@ $sev-error: #e07b39;
 }
 
 /* ── Task Progress section (central progress meters; the auto-captioner's strip moved here) ── */
+/* Task list scrolls inside its section (max ~5 rows visible) instead of spilling over the next one. */
+.taskList { overflow-y: auto; max-height: 240px; flex: 0 1 auto; min-height: 0; }
 .taskRow { padding: 5px 0 7px; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
 .taskRow:last-child { border-bottom: none; }
 .taskTop { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
