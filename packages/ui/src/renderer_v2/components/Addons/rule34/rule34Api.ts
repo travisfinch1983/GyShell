@@ -69,4 +69,6 @@ export const rule34Api = {
   createTrainingSet: (name: string) => postForm('/api/training-sets/create', { name }),
   addToTrainingSet: (set: string, postIds: number[]) => postJson('/api/training-sets/add', { set, post_ids: postIds }),
   trainingSetMembers: (set: string) => getJson<any>(`/api/training-sets/members?set=${encodeURIComponent(set)}`),
+  /** {post_id: [set labels]} across every training set and training batch. */
+  trainingSetMembersAll: () => getJson<any>('/api/training-sets/members-all'),
 }

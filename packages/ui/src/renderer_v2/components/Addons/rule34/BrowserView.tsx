@@ -65,6 +65,8 @@ export const BrowserView: React.FC = () => {
   const [tsMsg, setTsMsg] = useState('')
   const [newSetName, setNewSetName] = useState('')
   const [setMemberIds, setSetMemberIds] = useState<Set<number>>(new Set())
+  // Every set/batch a post is already in - so a post added to ANOTHER bulge size shows up too.
+  const [allMembers, setAllMembers] = useState<Record<string, string[]>>({})
 
   // Lightbox zoom/pan
   const [zoom, setZoom] = useState(1)
@@ -290,6 +292,10 @@ export const BrowserView: React.FC = () => {
     catch { setSetMemberIds(new Set()) }
   }, [])
   useEffect(() => { void loadMembers(selectedSet) }, [selectedSet, loadMembers])
+  const loadAllMembers = useCallback(async () => {
+    try { const r = await rule34Api.trainingSetMembersAll(); setAllMembers(r?.members ?? {}) } catch { /* keep last */ }
+  }, [])
+  useEffect(() => { void loadAllMembers() }, [loadAllMembers])
   const toggleSelect = (id: number) =>
     setSelectedIds((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n })
   const handleCreateSet = async () => {
@@ -318,7 +324,7 @@ export const BrowserView: React.FC = () => {
     setTsBusy(true)
     try {
       const r = await rule34Api.addToTrainingSet(selectedSet, ids)
-      if (r?.ok) { setTsMsg(`Added ${r.added} to ${selectedSet}${r.skipped ? ` (${r.skipped} skipped)` : ''}`); setSelectedIds(new Set()); await loadSets(); await loadMembers(selectedSet) }
+      if (r?.ok) { setTsMsg(`Added ${r.added} to ${selectedSet}${r.skipped ? ` (${r.skipped} skipped)` : ''}`); setSelectedIds(new Set()); await loadSets(); void loadAllMembers(); await loadMembers(selectedSet) }
       else setTsMsg(r?.error || 'Add failed')
     } catch (e: any) { setTsMsg(String(e?.message || e)) }
     finally { setTsBusy(false) }
@@ -510,6 +516,12 @@ export const BrowserView: React.FC = () => {
                     <span>{p.score}</span>
                     {isVideo(p.file_ext) && <span className={styles.videoBadge}>VID</span>}
                   </div>
+                  {!setMemberIds.has(p.id) && (allMembers[String(p.id)]?.length ?? 0) > 0 && (
+                    <>
+                      <div style={{ position: 'absolute', inset: 0, border: '3px dashed #14b8a6', borderRadius: 'inherit', boxSizing: 'border-box', pointerEvents: 'none', zIndex: 3 }} />
+                      <span title={`Already in: ${allMembers[String(p.id)].join(', ')}`} style={{ position: 'absolute', top: 4, right: 4, zIndex: 4, background: '#14b8a6', color: '#fff', borderRadius: 4, fontSize: 10, fontWeight: 700, padding: '1px 4px' }}>In other set</span>
+                    </>
+                  )}
                   {setMemberIds.has(p.id) && (
                     <>
                       <div style={{ position: 'absolute', inset: 0, border: '3px solid #22c55e', borderRadius: 'inherit', boxSizing: 'border-box', pointerEvents: 'none', zIndex: 3 }} />

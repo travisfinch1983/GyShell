@@ -1,6 +1,8 @@
 """FastAPI application for Rule34 scraper addon."""
 
 import asyncio
+import json
+import time
 import os
 import re
 import shutil
@@ -242,6 +244,80 @@ async def api_watched_backfill():
     return {"ok": True, "linked": n}
 
 
+# --- Training-set membership (2026-10-08) -----------------------------------------------------------
+# Membership used to be "an r34_<id>.<ext> file at the TOP LEVEL of the set folder". That lost every
+# image the moment it was renamed (subsection moves -> concept-N, the bulk renamer) or sat in a nested
+# training_set_* subfolder, so the green "already added" border vanished and the same post could be
+# added twice. Now: a per-set LEDGER written at add time (survives renames/moves inside the set), plus
+# a RECURSIVE r34_ name scan, plus a one-time content-hash backfill (backfill_set_ledgers.py).
+BATCHES_ROOT = os.environ.get("TRAINING_BATCHES_ROOT", "/imagegen/_batches")
+LEDGER = ".r34-members.json"
+
+
+def _ledger_read(d):
+    try:
+        with open(os.path.join(d, LEDGER)) as fh:
+            data = json.load(fh)
+        return {int(k): v for k, v in (data.get("posts") or {}).items()}
+    except Exception:
+        return {}
+
+
+def _ledger_add(d, entries):
+    """entries: {post_id: relative file path}. Merged into the set's ledger."""
+    cur = _ledger_read(d)
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    for pid, rel in entries.items():
+        cur.setdefault(int(pid), {"file": rel, "at": now})
+    tmp = os.path.join(d, LEDGER + ".tmp")
+    with open(tmp, "w") as fh:
+        json.dump({"posts": {str(k): v for k, v in sorted(cur.items())}}, fh, indent=1)
+    os.replace(tmp, os.path.join(d, LEDGER))
+    try:
+        os.chmod(os.path.join(d, LEDGER), 0o666)
+    except Exception:
+        pass
+
+
+def _set_members(d):
+    """Post ids in a set: the ledger, plus any r34_<id> file anywhere below it (dot-dirs skipped)."""
+    ids = set(_ledger_read(d))
+    for root, dirs, files in os.walk(d):
+        dirs[:] = [x for x in dirs if not x.startswith(".")]
+        for f in files:
+            m = re.match(r"^r34_(\d+)\.", f)
+            if m:
+                ids.add(int(m.group(1)))
+    return ids
+
+
+def _all_set_dirs():
+    """(label, path) for every training set and every training batch."""
+    out = []
+    for root, prefix in ((TRAINING_IMAGES_ROOT, ""), (BATCHES_ROOT, "batch: ")):
+        try:
+            for e in sorted(os.listdir(root)):
+                p = os.path.join(root, e)
+                if os.path.isdir(p) and not e.startswith("."):
+                    out.append((prefix + e, p))
+        except FileNotFoundError:
+            pass
+    return out
+
+
+@app.get("/api/training-sets/members-all")
+async def api_training_set_members_all():
+    """{post_id: [set labels]} across every training set AND training batch."""
+    def scan():
+        acc = {}
+        for label, p in _all_set_dirs():
+            for pid in _set_members(p):
+                acc.setdefault(pid, []).append(label)
+        return acc
+    acc = await asyncio.to_thread(scan)
+    return JSONResponse({"members": {str(k): v for k, v in acc.items()}})
+
+
 @app.get("/api/training-sets")
 async def api_list_training_sets():
     """List training image sets (top-level folders under the imagegen training_images root)."""
@@ -266,18 +342,13 @@ async def api_list_training_sets():
 
 @app.get("/api/training-sets/members")
 async def api_training_set_members(set: str = Query(default="")):
-    """Return the rule34 post ids already copied into a training set (from r34_<id>.<ext> filenames)."""
+    """Post ids already in a training set: ledger + recursive r34_ scan (see _set_members)."""
     name = _slug_setname(set)
     ids = []
     if name:
         d = os.path.join(TRAINING_IMAGES_ROOT, name)
-        try:
-            for f in os.listdir(d):
-                m = re.match(r"^r34_(\d+)\.", f)
-                if m:
-                    ids.append(int(m.group(1)))
-        except FileNotFoundError:
-            pass
+        if os.path.isdir(d):
+            ids = sorted(await asyncio.to_thread(_set_members, d))
     return JSONResponse({"set": name, "post_ids": ids})
 
 
@@ -321,10 +392,16 @@ async def api_add_to_training_set(request: Request):
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
     storage_path = await get_setting("storage_path") or "/mnt/shared/rule34"
-    added = skipped = 0
+    added = skipped = already = 0
     errors = []
+    have = await asyncio.to_thread(_set_members, dest_dir)   # renamed/nested copies count too
+    new_entries = {}
     for pid in post_ids:
         try:
+            if int(pid) in have:
+                already += 1
+                skipped += 1
+                continue
             post = await get_post(int(pid))
             if not post or post.get("downloaded") != 1 or not post.get("local_path"):
                 skipped += 1
@@ -339,10 +416,17 @@ async def api_add_to_training_set(request: Request):
                 skipped += 1
                 continue
             shutil.copy2(src, dest)
+            new_entries[int(pid)] = os.path.basename(dest)
             added += 1
         except Exception as e:
             errors.append(f"{pid}: {e}")
-    return JSONResponse({"ok": True, "set": set_name, "added": added, "skipped": skipped, "errors": errors[:10]})
+    if new_entries:
+        try:
+            _ledger_add(dest_dir, new_entries)
+        except Exception as e:
+            errors.append(f"ledger: {e}")
+    return JSONResponse({"ok": True, "set": set_name, "added": added, "skipped": skipped,
+                         "already_in_set": already, "errors": errors[:10]})
 
 
 @app.post("/api/settings")
