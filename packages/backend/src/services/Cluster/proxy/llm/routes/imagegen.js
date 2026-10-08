@@ -1747,11 +1747,35 @@ export function createImagegenRouter(config) {
         const car = path.join(dir, stem + ext);
         if (existsSync(car)) renameSync(car, path.join(dest, newStem + ext));
       }
+      // Per-image sidecar DIRS travel too: .orig = the crop baseline (restore), .preup = the upscale
+      // alternate. Leaving them behind (as this did until 2026-10-08) cost every moved image its
+      // restore point - and a stale dest/.orig/<newName> from some earlier, deleted image would make
+      // restore bring back a DIFFERENT picture. So: move ours, and clear any stale one in the way.
+      for (const sd of ['.orig', '.preup']) {
+        const from = path.join(dir, sd, nm), to = path.join(dest, sd, newName);
+        try {
+          if (existsSync(to)) unlinkSync(to);                      // stale: belongs to no live image
+          if (existsSync(from)) { mkdirSync(path.join(dest, sd), { recursive: true }); renameSync(from, to); }
+        } catch (e) { console.warn(`[imagegen] subsection move: ${sd} sidecar for ${nm}: ${e.message}`); }
+      }
+      { // Auto-crop outcome follows the image (blue / yellow border survives the move).
+        const sAc = loadAutoCrop(dir);
+        if (sAc[nm]) {
+          const dAc = loadAutoCrop(dest); dAc[newName] = sAc[nm]; delete sAc[nm];
+          saveAutoCrop(dir, sAc); saveAutoCrop(dest, dAc);
+        }
+      }
       if (srcRatings[nm]) { destRatings[newName] = srcRatings[nm]; delete srcRatings[nm]; ratingsMoved++; }
       renamed.push({ from: nm, to: newName });
       moved++;
     }
     if (ratingsMoved) { saveRatings(dir, srcRatings); saveRatings(dest, destRatings); }
+    // Drop sidecar dirs this move emptied, so a fully-merged-away subsection is not left holding
+    // nothing but an empty .orig/.preup.
+    for (const sd of ['.orig', '.preup']) {
+      const d = path.join(dir, sd);
+      try { if (existsSync(d) && readdirSync(d).length === 0) rmSync(d, { recursive: false, force: true }); } catch { /* not empty / gone */ }
+    }
     res.json({ ok: true, subsection: destName, reused: destName !== `${repeats}_${name}`,
                path: path.relative(BASE, dest), moved, renamed, already_in_section: alreadyThere,
                not_found: notFound, ratings_moved: ratingsMoved });
