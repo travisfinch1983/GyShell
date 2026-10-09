@@ -13,7 +13,8 @@ export const KIND_LABEL: Record<string, string> = { unet: 'UNet', te: 'Text enco
 export interface ModelRow {
   kind: string; name: string
   ram: any | null; persist: any | null
-  hotOn: { service: string; port: number; tier: string; busy: boolean; waiting: number }[]
+  // One entry per loaded COPY: the same model can sit on several GPUs of one service (multi-GPU serve.py).
+  hotOn: { service: string; port: number; tier: string; busy: boolean; waiting: number; gpu: number | null; gpuName: string | null }[]
   sizeGb: number | null
 }
 
@@ -69,7 +70,8 @@ export class ImageModelsStore {
     for (const s of n.services || []) {
       if (!s.ok) continue
       for (const [kind, names] of Object.entries(s.available || {})) for (const name of names as string[]) row(kind, name)
-      for (const m of s.resident || []) row(m.kind, m.name).hotOn.push({ service: s.id, port: s.port, tier: m.tier, busy: !!m.busy, waiting: m.waiting || 0 })
+      for (const m of s.resident || []) row(m.kind, m.name).hotOn.push({ service: s.id, port: s.port, tier: m.tier, busy: !!m.busy, waiting: m.waiting || 0,
+        gpu: m.gpu ?? null, gpuName: m.gpu_name ?? null })
     }
     for (const [kind, e] of Object.entries(n.cache?.entries || {})) {
       for (const x of (e as any).ram || []) { const r = row(kind, x.name); r.ram = x; r.sizeGb = x.size_gb }

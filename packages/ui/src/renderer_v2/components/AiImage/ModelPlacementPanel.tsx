@@ -26,15 +26,19 @@ const smallBtn: React.CSSProperties = { height: 22, padding: '0 7px', fontSize: 
 
 const Row: React.FC<{ n: any; r: ModelRow; label: string }> = observer(({ n, r, label }) => {
   const [target, setTarget] = useState('')
+  const [gpuSel, setGpuSel] = useState('')   // '' = auto (omit gpu: the service picks)
   const svcs = store.servicesFor(n, r.kind)
   const cs = n.cacheService
   const busy = !!store.busyKey
   const body = { kind: r.kind, name: r.name }
-  const loadOn = target || svcs.find((s: any) => !r.hotOn.some((h) => h.service === s.id))?.id || ''
+  const loadOn = target || svcs.find((s: any) => !r.hotOn.some((h) => h.service === s.id))?.id || svcs[0]?.id || ''
+  const loadSvc = svcs.find((s: any) => s.id === loadOn)
+  const gpus: any[] = loadSvc?.service?.gpus || []
+  const hotLabel = (h: ModelRow['hotOn'][number]) => `:${h.port}${h.gpu != null ? ` GPU${h.gpu}` : ''}`
   return (
     <tr>
       <td style={{ whiteSpace: 'nowrap' }}>
-        {r.hotOn.map((h) => <span key={h.service} style={{ ...chip, borderColor: 'var(--accent)' }} title={`${h.tier} on :${h.port}${h.busy ? ' (busy)' : ''}${h.waiting ? `, ${h.waiting} waiting` : ''}`}>🔥 :{h.port}{h.tier !== 'hot' ? ' (RAM-offloaded)' : ''}</span>)}
+        {r.hotOn.map((h) => <span key={`${h.service}:${h.gpu}`} style={{ ...chip, borderColor: 'var(--accent)' }} title={`${h.tier} on :${h.port}${h.gpuName ? ` ${h.gpuName}` : ''}${h.busy ? ' (busy)' : ''}${h.waiting ? `, ${h.waiting} waiting` : ''}`}>🔥 {hotLabel(h)}{h.tier !== 'hot' ? ' (RAM-offloaded)' : ''}</span>)}
         {r.ram && <span style={chip} title={`RAM tier${r.ram.copying ? ' (copying)' : ''}`}>⚡ RAM{r.ram.copying ? '…' : ''}</span>}
         {r.persist && <span style={chip} title={`${label} tier${r.persist.copying ? ' (copying)' : ''}`}>💾 {label}{r.persist.copying ? '…' : ''}</span>}
         {!r.hotOn.length && !r.ram && !r.persist && <span style={{ ...chip, opacity: 0.6 }}>❄ NAS</span>}
@@ -49,13 +53,21 @@ const Row: React.FC<{ n: any; r: ModelRow; label: string }> = observer(({ n, r, 
           {!r.ram && cs && <button className={styles.btn} style={smallBtn} disabled={busy} title="Copy into this host's RAM tier (and the persistent mirror)" onClick={() => void store.act(cs, '/cache/warm', body, `Warm ${r.name}`)}>Warm</button>}
           {r.kind !== 'lora' && svcs.length > 0 && (
             <>
-              <select className={styles.subInput} value={loadOn} onChange={(e) => setTarget(e.target.value)} title="Service (GPU) to load it on">
-                {svcs.map((s: any) => <option key={s.id} value={s.id}>:{s.port} {s.gpuName || s.service?.gpu || ''}</option>)}
+              <select className={styles.subInput} value={loadOn} onChange={(e) => { setTarget(e.target.value); setGpuSel('') }} title="Service to load it on">
+                {svcs.map((s: any) => <option key={s.id} value={s.id}>:{s.port} {s.service?.gpu || s.gpuName || ''}</option>)}
               </select>
-              <button className={styles.btn} style={smallBtn} disabled={busy || !loadOn} title="Make it hot on that service's GPU" onClick={() => void store.act(loadOn, '/models/load', body, `Load ${r.name}`)}>Load</button>
+              {gpus.length > 1 && (
+                <select className={styles.subInput} value={gpuSel} onChange={(e) => setGpuSel(e.target.value)} title="GPU within that service (auto: where it is already loaded, else the most free VRAM that fits)">
+                  <option value="">auto</option>
+                  {gpus.map((g) => <option key={g.index} value={String(g.index)}>GPU{g.index} {g.name?.replace(/^NVIDIA (GeForce )?/, '')} ({Number(g.free_gb).toFixed(1)} GB free)</option>)}
+                </select>
+              )}
+              <button className={styles.btn} style={smallBtn} disabled={busy || !loadOn} title="Make it hot on that service's GPU"
+                onClick={() => void store.act(loadOn, '/models/load', gpuSel === '' ? body : { ...body, gpu: Number(gpuSel) }, `Load ${r.name}`)}>Load</button>
             </>
           )}
-          {r.hotOn.map((h) => <button key={h.service} className={styles.btn} style={smallBtn} disabled={busy} title={`Unload from :${h.port}`} onClick={() => void store.act(h.service, '/models/unload', body, `Unload ${r.name}`)}>Unload :{h.port}</button>)}
+          {r.hotOn.map((h) => <button key={`${h.service}:${h.gpu}`} className={styles.btn} style={smallBtn} disabled={busy} title={`Unload the copy on ${hotLabel(h)}`}
+            onClick={() => void store.act(h.service, '/models/unload', h.gpu != null ? { ...body, gpu: h.gpu } : body, `Unload ${r.name}`)}>Unload {hotLabel(h)}</button>)}
           {r.ram && cs && <button className={styles.btn} style={smallBtn} disabled={busy} title={r.ram.pinned ? 'Unpin (may be evicted)' : 'Pin (never evicted, restored first)'} onClick={() => void store.act(cs, '/cache/pin', { ...body, pinned: !r.ram.pinned, tier: 'ram' }, `${r.ram.pinned ? 'Unpin' : 'Pin'} ${r.name}`)}>{r.ram.pinned ? <PinOff size={11} /> : <Pin size={11} />}</button>}
           {r.ram && cs && <button className={styles.btn} style={smallBtn} disabled={busy} title="Remove from the RAM tier (the NAS copy stays)" onClick={() => void store.act(cs, '/cache/evict', { ...body, tier: 'ram' }, `Evict ${r.name} from RAM`)}>Evict RAM</button>}
           {r.persist && cs && <button className={styles.btn} style={smallBtn} disabled={busy} title={`Remove from the ${label} tier (the NAS copy stays)`} onClick={() => void store.act(cs, '/cache/evict', { ...body, tier: 'optane' }, `Evict ${r.name} from ${label}`)}>Evict {label}</button>}
@@ -86,9 +98,16 @@ const NodeCard: React.FC<{ n: any }> = observer(({ n }) => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div className={styles.muted} style={{ fontSize: 11, fontWeight: 600 }}>{label} tier · VRAM</div>
           {c?.optane && <Bar label={label} used={c.optane.used_gb ?? 0} total={c.optane.quota_gb ?? 0} note={c.optane.copy_error ? `copy error: ${c.optane.copy_error}` : `${c.optane.files ?? 0} files`} />}
-          {n.services.map((s: any) => s.ok
-            ? <Bar key={s.id} label={`:${s.port} ${s.gpuName || s.service?.gpu || 'GPU'}`} used={(s.service?.vram_total_gb ?? 0) - (s.service?.vram_free_gb ?? 0)} total={s.service?.vram_total_gb ?? 0} note={`${(s.resident || []).length} loaded`} />
-            : <div key={s.id} style={{ color: 'var(--danger, #f87171)', fontSize: 11 }}>:{s.port} unreachable: {s.error}</div>)}
+          {n.services.map((s: any) => !s.ok
+            ? <div key={s.id} style={{ color: 'var(--danger, #f87171)', fontSize: 11 }}>:{s.port} unreachable: {s.error}</div>
+            : Array.isArray(s.service?.gpus) && s.service.gpus.length
+              // Multi-GPU serve.py: one bar per GPU (vram_total/free_gb are sums over them).
+              ? s.service.gpus.map((g: any) => {
+                  const loaded = (s.resident || []).filter((m: any) => m.gpu === g.index).length
+                  return <Bar key={`${s.id}:${g.index}`} label={`:${s.port} GPU${g.index} ${String(g.name || '').replace(/^NVIDIA (GeForce )?/, '')}`} used={(g.total_gb ?? 0) - (g.free_gb ?? 0)} total={g.total_gb ?? 0}
+                    note={`${loaded} loaded${g.busy ? ' · busy' : ''}${g.waiting ? ` · ${g.waiting} waiting` : ''}`} />
+                })
+              : <Bar key={s.id} label={`:${s.port} ${s.gpuName || s.service?.gpu || 'GPU'}`} used={(s.service?.vram_total_gb ?? 0) - (s.service?.vram_free_gb ?? 0)} total={s.service?.vram_total_gb ?? 0} note={`${(s.resident || []).length} loaded`} />)}
         </div>
         {d && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
