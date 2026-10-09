@@ -698,7 +698,17 @@ export function createAiRouter(config, gpuMonitor, pveApi, sshService, hookscrip
   // GPU identity pin: implementation + rationale in ../services/gpu-pin.js (UUID first, then PCI).
   /** PCI -> GPU-uuid for one node, from the GPU monitor's live inventory (the hook's own source). */
   function gpuUuidsForNode(node) {
-    try { return gpuMonitor.getInventory()?.[node]?.uuidMap || {}; } catch { return {}; }
+    // Live discovery first; the UUIDs saved in gpu-config.json fill any gap. Discovery's UUID map
+    // can be empty right after a restart, and a launch in that window wrote a PCI-only pin
+    // (faster-whisper-8079, 2026-10-09) that would not follow the card if it moved slots.
+    const out = {};
+    try {
+      for (const [k, v] of Object.entries(gpuMonitor.getConfig() || {})) {
+        if (k.startsWith(`${node}:`) && v && v.uuid) out[k.slice(node.length + 1)] = v.uuid;
+      }
+    } catch (e) { console.warn(`[gpu-pin] gpu-config uuids unavailable: ${e.message}`); }
+    try { Object.assign(out, gpuMonitor.getInventory()?.[node]?.uuidMap || {}); } catch (e) { console.warn(`[gpu-pin] inventory uuids unavailable: ${e.message}`); }
+    return out;
   }
 
   /** Extract content between marker lines from pct exec output (filters noise/ANSI) */
