@@ -923,7 +923,7 @@ export function createAiRouter(config, gpuMonitor, pveApi, sshService, hookscrip
   /** PUT /agents/:node/cache — Save per-node cache config */
   router.put('/agents/:node/cache', (req, res) => {
     const { node } = req.params;
-    const { enabled, hostPath, containerPath, modelsHostPath, imagegenHostPath, ttsHostPath } = req.body;
+    const { enabled, hostPath, containerPath, modelsHostPath, imagegenHostPath, ttsHostPath, llmLimitGB } = req.body;
     const cfg = loadAiConfig();
     if (!cfg.agents?.[node]) return res.status(404).json({ error: 'Unknown agent node' });
     cfg.agents[node].cache = {
@@ -933,6 +933,9 @@ export function createAiRouter(config, gpuMonitor, pveApi, sshService, hookscrip
       modelsHostPath: (modelsHostPath || '').replace(/\/+$/, ''),
       imagegenHostPath: (imagegenHostPath || '').replace(/\/+$/, ''),
       ttsHostPath: (ttsHostPath || '').replace(/\/+$/, ''),
+      // Cap on LLM entries (sourceDir /models/...) in this node's RAM drive; blank/0 = no cap. Lets the
+      // drive be shared: px-gpu keeps 256 GB for the image model services' hot tier (Travis, 2026-10-09).
+      llmLimitGB: Number(llmLimitGB) > 0 ? Number(llmLimitGB) : null,
     };
     saveAiConfig(cfg);
     res.json({ ok: true });
@@ -6393,6 +6396,18 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
     // Check for duplicate
     const manifest = loadCacheManifest();
     const existing = manifest.entries.find(e => e.node === node && e.cacheDir === cacheDir);
+    // LLM cap (agents[node].cache.llmLimitGB): the UI checks first; this keeps agents and MCP callers honest.
+    // Read from the saved config: resolveAgent() returns connection info without the cache block.
+    const llmLimitGB = Number(loadAiConfig().agents?.[node]?.cache?.llmLimitGB) || 0;
+    if (!existing && llmLimitGB > 0 && String(sourceDir).startsWith('/models/')) {
+      const usedMB = manifest.entries
+        .filter((e) => e.node === node && String(e.sourceDir || '').startsWith('/models/'))
+        .reduce((a, e) => a + (Number(e.sizeMB) || 0), 0);
+      const addMB = Number(sizeMB) || 0;
+      if (usedMB + addMB > llmLimitGB * 1024) {
+        return res.status(409).json({ error: `LLM cache limit on ${node} is ${llmLimitGB} GB: ${(usedMB / 1024).toFixed(1)} GB already cached + ${(addMB / 1024).toFixed(1)} GB would exceed it. Uncache an LLM first, or raise the limit in Node Cache Config.` });
+      }
+    }
     if (existing) {
       return res.status(409).json({ error: 'Model already cached or caching', entry: existing });
     }

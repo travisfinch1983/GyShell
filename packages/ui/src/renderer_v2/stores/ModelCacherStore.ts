@@ -66,6 +66,21 @@ export class ModelCacherStore {
 
   get nodes(): string[] { return Object.keys(this.agents) }
   get cacheableNodes(): string[] { return this.nodes.filter((n) => this.agents[n]?.cache?.enabled) }
+
+  // ── LLM cap per node (agents[node].cache.llmLimitGB; LLM = sourceDir under /models/) ──
+  llmLimitMB(node: string): number { return (Number(this.agents[node]?.cache?.llmLimitGB) || 0) * 1024 }
+  llmUsedMB(node: string): number {
+    return this.entries.filter((e: any) => e.node === node && String(e.sourceDir || '').startsWith('/models/'))
+      .reduce((a: number, e: any) => a + (Number(e.sizeMB) || 0), 0)
+  }
+  /** Error text when caching sizeMB more LLM data on node would pass its limit, else ''. */
+  llmLimitError(node: string, sourceDir: string, sizeMB: number): string {
+    const lim = this.llmLimitMB(node)
+    if (!lim || !String(sourceDir).startsWith('/models/')) return ''
+    const used = this.llmUsedMB(node)
+    if (used + (Number(sizeMB) || 0) <= lim) return ''
+    return `LLM cache limit on ${node} is ${(lim / 1024).toFixed(0)} GB: ${(used / 1024).toFixed(1)} GB cached + ${((Number(sizeMB) || 0) / 1024).toFixed(1)} GB would exceed it. Uncache an LLM first, or raise the limit in Node Cache Config.`
+  }
   entriesForNode(node: string): any[] { return this.entries.filter((e) => e.node === node) }
 
   // ── Family / Variant / Quant quick-cache (whole quant folder) ──
@@ -95,6 +110,8 @@ export class ModelCacherStore {
     if (!q || !this.qcNode) { this.err = 'Pick a node, family, variant, and quant first.'; return }
     // The quant folder: drop a trailing filename if path points at a file (e.g. sharded GGUF).
     const folder = /\.[a-z0-9]+$/i.test(q.path) ? q.path.replace(/\/[^/]+$/, '') : q.path
+    const limErr = this.llmLimitError(this.qcNode, folder, q.sizeMB)
+    if (limErr) { this.err = limErr; this.msg = ''; return }
     this.busy = true; this.err = ''; this.msg = ''
     runInAction(() => { this.cacheTargets[folder] = q.sizeMB })
     try {
@@ -141,6 +158,8 @@ export class ModelCacherStore {
     if (this.bRoot === 'models') {
       const segs = sourceDir.replace(/^\/models\//, '').split('/').filter(Boolean)
       body.type = 'llm'; body.family = segs[0]; body.variant = segs[1]; body.quant = segs[segs.length - 1]
+      const limErr = this.llmLimitError(this.bNode, sourceDir, sizeMB)
+      if (limErr) { this.err = limErr; this.msg = ''; return }
     } else {
       body.type = this.bRoot
     }

@@ -20,6 +20,9 @@ const NodeConfigRow: React.FC<{ node: string }> = observer(({ node }) => {
         {edit && <button className={styles.smBtn} onClick={() => { void store.saveNodeConfig(node, cur); setEdit(null) }}><Save size={12} /> Save</button>}
       </div>
       <div className={styles.cfgGrid}>
+        <label className={styles.cfgField} title="Most LLM data this node's RAM drive may hold (blank = no limit). The rest stays free for other caches, e.g. the image model services' hot tier.">
+          <span className={styles.subLbl}>LLM limit (GB)</span>
+          <input className={styles.subInput} type="number" min={0} value={cur.llmLimitGB ?? ''} onChange={(e) => set('llmLimitGB', e.target.value === '' ? null : Number(e.target.value))} /></label>
         {[['containerPath', 'Container'], ['hostPath', 'Host'], ['modelsHostPath', 'LLM models'], ['imagegenHostPath', 'Imagegen'], ['ttsHostPath', 'TTS']].map(([k, label]) => (
           <label key={k} className={styles.cfgField}><span className={styles.subLbl}>{label}</span>
             <input className={styles.subInput} value={cur[k] ?? ''} onChange={(e) => set(k, e.target.value)} /></label>
@@ -54,6 +57,18 @@ export const ModelCacherPanel: React.FC = observer(() => {
               <div key={node} className={styles.capBox}>
                 <div className={styles.capLabel}><HardDrive size={13} /> <strong>{node}</strong> — {gb(cap.usedMB)} used / {gb(cap.totalMB)} total · {gb(cap.freeMB)} free ({pct}%)</div>
                 <div className={styles.capBar}><div className={pct > 90 ? styles.capFillHot : styles.capFill} style={{ width: `${pct}%` }} /></div>
+                {(() => {
+                  const lim = store.llmLimitMB(node)
+                  if (!lim) return null
+                  const used = store.llmUsedMB(node)
+                  const lp = Math.min(100, Math.round((used / lim) * 100))
+                  return (
+                    <>
+                      <div className={styles.capLabel}>LLMs: {gb(used)} of the {gb(lim)} LLM limit · {gb(Math.max(0, lim - used))} left for LLMs</div>
+                      <div className={styles.capBar}><div className={lp > 90 ? styles.capFillHot : styles.capFill} style={{ width: `${lp}%` }} /></div>
+                    </>
+                  )
+                })()}
               </div>
             )
           })}
