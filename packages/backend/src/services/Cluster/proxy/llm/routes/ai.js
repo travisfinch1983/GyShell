@@ -6556,6 +6556,89 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
     return run;
   }
 
+  // ─── Image model RAM-cache restore after a node reboot (Travis, 2026-10-09) ────────────────────
+  // The services keep their own durable state (/var/lib/ailab-modelsvc/state.json in the CT) and
+  // re-warm themselves via POST /cache/restore (copies go through /models/cache-file above). AI-Lab
+  // only decides WHEN and in what ORDER: once a node's boot_id changes, after the LLM model-cache
+  // restore is finished and its copy queue is idle, and once the imagegen-models services pass
+  // /health - then the first service per CT with wait:true (restores the shared RAM cache + its
+  // models), the rest one at a time with wait:false (just their models). Never in parallel per CT.
+  const icFile = join(dataDir, 'imagegen-ramcache.json');   // { node: { bootId, restoredAt, result } }
+  let icBusy = false;
+  let icLast = null;
+  const icLoad = () => { try { return existsSync(icFile) ? JSON.parse(readFileSync(icFile, 'utf-8')) : {}; } catch (e) { console.warn(`[imagegen-cache] state unreadable: ${e.message}`); return {}; } };
+  const icSave = (x) => { try { writeFileSync(icFile, JSON.stringify(x, null, 2)); } catch (e) { console.error(`[imagegen-cache] could not save state: ${e.message}`); } };
+  const icLlmIdle = (node) => !cacheReconcileRunning && !(copyQueues[node]?.active) && !((copyQueues[node]?.pending || []).length);
+  async function icHealthy(svc) {
+    try { const r = await fetch(`http://${svc.containerIp}:${svc.port}/health`, { signal: AbortSignal.timeout(5000) }); return r.ok; }
+    catch { return false; }
+  }
+  async function icRestoreCall(svc, wait) {
+    const r = await fetch(`http://${svc.containerIp}:${svc.port}/cache/restore`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wait, models: true }), signal: AbortSignal.timeout(wait ? 3600000 : 30000),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.ok === false) throw new Error(d.error || `HTTP ${r.status}`);
+    return d;
+  }
+  /** Check every node running imagegen-models services; restore the ones that rebooted. Never throws.
+   *  force:true restores regardless of boot_id (manual). */
+  async function runImageCacheRestore(trigger, force = false) {
+    if (icBusy) return { skipped: 'already-running' };
+    icBusy = true;
+    const summary = { trigger, at: new Date().toISOString(), nodes: {} };
+    try {
+      const svcs = Object.values(loadActiveServices().services || {}).filter((s) =>
+        s && s.providerId === 'imagegen-models' && s.containerIp && s.port && !s.suspended);
+      const byNode = {};
+      for (const s of svcs) (byNode[s.node] = byNode[s.node] || []).push(s);
+      const st = icLoad();
+      for (const [node, list] of Object.entries(byNode)) {
+        const ns = (summary.nodes[node] = {});
+        try {
+          const ct = await cfContainer(node);
+          const r = await sshService.exec(ct.hostIp, 'cat /proc/sys/kernel/random/boot_id', { timeout: 15000 });
+          const bootId = String(r?.stdout || '').trim();
+          if (!bootId) throw new Error('could not read boot_id');
+          const known = st[node]?.bootId;
+          if (!known && !force) { st[node] = { bootId, restoredAt: null, note: 'first sight - baseline only' }; icSave(st); ns.mode = 'baseline'; continue; }
+          if (known === bootId && !force) { ns.mode = 'up-to-date'; continue; }
+          if (!icLlmIdle(node)) { Object.assign(ns, { mode: 'waiting', reason: 'LLM model-cache restore still running' }); continue; }
+          const healthy = [];
+          for (const s of list.sort((a, b) => Number(a.port) - Number(b.port))) if (await icHealthy(s)) healthy.push(s);
+          if (!healthy.length) { Object.assign(ns, { mode: 'waiting', reason: 'no imagegen-models service healthy yet' }); continue; }
+          const results = [];
+          for (let i = 0; i < healthy.length; i++) {
+            const s = healthy[i];
+            try {
+              const d = await icRestoreCall(s, i === 0);
+              results.push({ service: s.id, port: s.port, wait: i === 0, warmed: d.warmed?.length ?? null, already: d.already?.length ?? null, failed: d.failed?.length ?? null });
+            } catch (e) {
+              results.push({ service: s.id, port: s.port, error: e.message });
+              console.warn(`[imagegen-cache] restore via ${s.id}: ${e.message}`);
+            }
+          }
+          // Only mark this boot done once a FIRST call (the shared RAM cache) succeeded; else retry next tick.
+          const firstOk = results[0] && !results[0].error;
+          if (firstOk) st[node] = { bootId, restoredAt: new Date().toISOString(), result: results };
+          else st[node] = { ...(st[node] || {}), lastAttempt: new Date().toISOString(), result: results };
+          icSave(st);
+          Object.assign(ns, { mode: firstOk ? 'restored' : 'failed', results, skippedUnhealthy: list.length - healthy.length });
+          console.log(`[imagegen-cache] ${node}: ${firstOk ? 'restored' : 'restore FAILED'} (${trigger}) ${JSON.stringify(results)}`);
+        } catch (e) {
+          Object.assign(ns, { mode: 'error', error: e.message });
+          console.warn(`[imagegen-cache] ${node}: ${e.message}`);
+        }
+      }
+    } finally { icBusy = false; icLast = summary; }
+    return summary;
+  }
+  /** GET /models/imagegen-cache - per-node restore state + the last pass. */
+  router.get('/models/imagegen-cache', (req, res) => res.json({ running: icBusy, last: icLast, nodes: icLoad() }));
+  /** POST /models/imagegen-cache/restore {force?} - run the check now (force: restore every node). */
+  router.post('/models/imagegen-cache/restore', async (req, res) => res.json(await runImageCacheRestore('manual', !!req.body?.force)));
+
   /** POST /models/cache-file {node|vmid|node_hostname, src, dst, async?} - host-side copy of ONE file
    *  into /model-cache/ailab-modelsvc. Waits for the copy unless async:true (then 202 + id). */
   router.post('/models/cache-file', async (req, res) => {
@@ -8696,6 +8779,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
     stopWatchdog,
     validateAndRestoreCache,
     runCacheReconcile,
+    runImageCacheRestore,
     runOrphanCleanup,
     ensureAgentSshKeys,
     setBroadcast: (fn) => { broadcastFn = fn; },

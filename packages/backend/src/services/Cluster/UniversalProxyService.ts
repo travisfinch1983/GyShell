@@ -25,6 +25,7 @@ export class UniversalProxyService {
   private registry: Record<string, any[]> = {}
   private refreshTimer?: ReturnType<typeof setInterval>
   private cacheReconcileTimer?: ReturnType<typeof setInterval>
+  private imageCacheRestoreTimer?: ReturnType<typeof setInterval>
   private lastRefresh = 0
   private host = '0.0.0.0'
   private port = DEFAULT_PORT
@@ -207,6 +208,11 @@ export class UniversalProxyService {
           totalEntries: s.totalEntries, present: s.present, missing: s.missing, requeued: s.requeued, skippedNodes: s.skippedNodes,
         })))
         .catch((e: any) => console.warn('[universal-proxy] boot cache reconcile failed:', e?.message))
+        // Image model RAM cache AFTER the LLM cache: the pass waits for the LLM copy queue to drain and
+        // the services to pass /health; the 2-min check below retries until both hold.
+        .finally(() => Promise.resolve(aiModule.runImageCacheRestore?.('boot'))
+          .then((s: any) => s && console.log('[universal-proxy] imagegen cache restore (boot):', JSON.stringify(s.nodes || s)))
+          .catch((e: any) => console.warn('[universal-proxy] imagegen cache restore (boot) failed:', e?.message)))
       Promise.resolve(aiModule.runOrphanCleanup?.('boot'))
         .then((s: any) => { if (s && s.count > 0) console.log('[universal-proxy] orphan cleanup (boot): removed', s.count, 'orphan unit(s)') })
         .catch(() => undefined)
@@ -225,6 +231,14 @@ export class UniversalProxyService {
         .then((s: any) => { if (s && s.count > 0) console.log('[universal-proxy] orphan cleanup (periodic): removed', s.count, 'orphan(s):', (s.cleaned || []).join(', ')) })
         .catch(() => undefined)
     }, 10 * 60 * 1000)
+
+    // Image model RAM-cache restore after a NODE reboot: one boot_id read per node every 2 min (cheap);
+    // it only acts when a boot_id changed, and waits for the LLM cache + the services' /health first.
+    this.imageCacheRestoreTimer = setInterval(() => {
+      Promise.resolve(aiModule.runImageCacheRestore?.('periodic'))
+        .then((s: any) => { const n = s?.nodes || {}; if (Object.values(n).some((x: any) => x?.mode && !['up-to-date', 'baseline'].includes(x.mode))) console.log('[universal-proxy] imagegen cache restore (periodic):', JSON.stringify(n)) })
+        .catch(() => undefined)
+    }, 2 * 60 * 1000)
 
     const app = express()
     app.use('/api/proxy/vector', createVectorProxyRouter())
@@ -419,6 +433,7 @@ export class UniversalProxyService {
   async stop(): Promise<void> {
     if (this.refreshTimer) clearInterval(this.refreshTimer)
     if (this.cacheReconcileTimer) clearInterval(this.cacheReconcileTimer)
+    if (this.imageCacheRestoreTimer) clearInterval(this.imageCacheRestoreTimer)
     if (this.server) await new Promise<void>((r) => this.server!.close(() => r()))
   }
 
