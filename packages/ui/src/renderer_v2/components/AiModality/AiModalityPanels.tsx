@@ -15,6 +15,7 @@ import { TrainingImagesPanel } from '../AiImage/TrainingImagesPanel'
 import { DatasetReviewPanel } from '../AiImage/DatasetReviewPanel'
 import { PoseManagerPanel } from '../AiImage/PoseManagerPanel'
 import { DetectorTrainingPanel } from '../AiImage/DetectorTrainingPanel'
+import { ModelPlacementPanel } from '../AiImage/ModelPlacementPanel'
 import { TtsTestPanel } from '../AiTts/TtsTestPanel'
 import { VoiceManagerPanel } from '../AiTts/VoiceManagerPanel'
 import { ttsLaunchStore, imageLaunchStore, trainingLaunchStore } from '../../stores/ServiceLaunchStore'
@@ -62,6 +63,7 @@ export const AiImagePanel: React.FC = observer(() => (
     { id: 'dataset-review', label: 'Dataset Review', render: () => <DatasetReviewPanel /> },
     { id: 'detector-training', label: 'Detector Training', render: () => <DetectorTrainingPanel /> },
     { id: 'pose-library', label: 'Pose Library', render: () => <PoseManagerPanel /> },
+    { id: 'model-placement', label: 'Model Cache & Placement', render: () => <ModelPlacementPanel /> },
     { id: 'providers', label: 'Provider Install', render: () => <ProviderInstall categories={['image', 'training']} /> },
   ]} />
 ))

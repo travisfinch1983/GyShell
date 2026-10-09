@@ -360,24 +360,17 @@ export const GENERIC_LAUNCH_TEMPLATES: Record<string, any> = {
         ].join('\n');
       },
     },
-    // AI-Lab image MODEL SERVICE (claude2): one process keeps SEVERAL models of any kind resident on
-    // one GPU (e.g. text encoder + VAE on a V100) and serves every ComfyUI via the comfyui-ailab-pack
-    // Remote nodes. The launcher pins the card (cuda:0 inside). Models = optional --preload list of
-    // kind:name; a request naming any other model loads it on demand.
+    // AI-Lab image MODEL SERVICE (claude2): one process serves UNet / text-encoder / VAE models to every
+    // ComfyUI via the comfyui-ailab-pack Remote nodes. Multi-GPU: the launcher pins the chosen cards
+    // (cuda:0..N-1 inside, one FIFO queue per GPU). Starts EMPTY - models are placed from AI · Image Gen
+    // -> Model Cache & Placement or the ComfyUI Model Manager (POST /models/load).
     'imagegen-models': {
       defaultPort: 9310,
-      multiGpu: false,
-      modelKinds: [
-        { kind: 'unet', label: 'UNet', root: 'diffusion-models' },
-        { kind: 'te', label: 'Text encoder', root: 'text-encoders' },
-        { kind: 'vae', label: 'VAE', root: 'vae' },
-      ],
-      defaultModel: '',
-      buildCommand(port, opts) {
-        const pre = opts && opts.model ? ` --preload ${shq(opts.model)}` : ''
+      multiGpu: true,
+      buildCommand(port) {
         return [
           'export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
-          `exec /opt/conda/envs/ailab-modelsvc/bin/python /opt/ailab-modelsvc/serve.py --port ${port}${pre}`,
+          `exec /opt/conda/envs/ailab-modelsvc/bin/python /opt/ailab-modelsvc/serve.py --port ${port}`,
         ].join('\n')
       },
     },

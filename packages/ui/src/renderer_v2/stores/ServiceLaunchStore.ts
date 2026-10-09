@@ -43,9 +43,6 @@ export class ServiceLaunchStore {
   trainEditor: Record<string, string> = {}
   trainStatus: Record<string, { msg: string; ok: boolean }> = {}
   managerSvc: Record<string, ManagerSvcState> = {}
-  /** Weight files per model root (templates with modelRoot), for the --preload dropdown. */
-  modelFiles: Record<string, string[]> = {}
-  modelFilesErr: Record<string, string> = {}
 
   constructor(category: Cat) {
     this.category = category
@@ -211,17 +208,6 @@ export class ServiceLaunchStore {
     }
     const gpuIndices = idxs.length ? idxs.join(',') : undefined
     return buildGenericLaunchCommand(providerId, c.port, gpuIndices, { configName: c.configName || 'default', managerUi: c.managerUi || 'modern', model: c.model || '' })
-  }
-
-  /** List the weight files under a model root (diffusion-models / text-encoders / vae). */
-  async loadModelFiles(root: string): Promise<void> {
-    try {
-      const r: any = await bridge().request('GET', `/api/imagegen/model-files?root=${encodeURIComponent(root)}`)
-      runInAction(() => { this.modelFiles[root] = Array.isArray(r?.files) ? r.files : []; delete this.modelFilesErr[root] })
-    } catch (e: any) {
-      console.warn(`[launch] model list for ${root} unavailable:`, e)
-      runInAction(() => { this.modelFilesErr[root] = String(e?.message || e) })
-    }
   }
 
   /** Auto-assign: move the card to the first FREE port at/above its current one on the chosen node

@@ -6641,6 +6641,64 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
   /** POST /models/imagegen-cache/restore {force?} - run the check now (force: restore every node). */
   router.post('/models/imagegen-cache/restore', async (req, res) => res.json(await runImageCacheRestore('manual', !!req.body?.force)));
 
+  // ─── Model Cache & Placement page (AI · Image Gen) ─────────────────────────────────────────────
+  // Reads claude2's image model services (GET /models per service, GET /cache once per HOST - the
+  // cache is shared by every service on it) and forwards a FIXED set of actions, so the browser never
+  // talks to the containers directly.
+  const IMS_ACTIONS = new Set(['/cache/warm', '/cache/evict', '/cache/pin', '/cache/quotas', '/cache/restore', '/models/load', '/models/unload']);
+  const imsServices = () => Object.values(loadActiveServices().services || {}).filter((s) =>
+    s && s.providerId === 'imagegen-models' && s.containerIp && s.port && !s.suspended);
+  async function imsGet(svc, pathName) {
+    const r = await fetch(`http://${svc.containerIp}:${svc.port}${pathName}`, { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) throw new Error(`${pathName}: HTTP ${r.status}`);
+    return r.json();
+  }
+  /** GET /imagegen-models/overview - per node: services (VRAM + resident models) and the host cache. */
+  router.get('/imagegen-models/overview', async (req, res) => {
+    try {
+      const byNode = {};
+      for (const s of imsServices()) (byNode[s.node] = byNode[s.node] || []).push(s);
+      const nodes = await Promise.all(Object.entries(byNode).map(async ([node, list]) => {
+        list.sort((a, b) => Number(a.port) - Number(b.port));
+        const services = await Promise.all(list.map(async (s) => {
+          const base = { id: s.id, port: Number(s.port), host: s.containerIp, gpuPciIds: s.gpuPciIds || [],
+            gpuName: (s.assignedGpus || [])[0]?.name || null };
+          try { return { ...base, ok: true, ...(await imsGet(s, '/models')) }; }
+          catch (e) { return { ...base, ok: false, error: e.message }; }
+        }));
+        const first = services.find((x) => x.ok);
+        let cache = null, cacheError = null;
+        if (first) {
+          try { cache = await imsGet(list.find((s) => s.id === first.id), '/cache'); }
+          catch (e) { cacheError = e.message; }
+        } else cacheError = 'no service on this node answered';
+        return { node, cacheService: first?.id || null, services, cache, cacheError };
+      }));
+      res.json({ nodes: nodes.sort((a, b) => a.node.localeCompare(b.node)) });
+    } catch (e) {
+      console.error(`[imagegen-models] overview: ${e.message}`);
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+  /** POST /imagegen-models/action {service, path, body} - one whitelisted action on one service. */
+  router.post('/imagegen-models/action', async (req, res) => {
+    const { service, path: actionPath, body } = req.body || {};
+    if (!IMS_ACTIONS.has(actionPath)) return res.status(400).json({ error: `action must be one of ${[...IMS_ACTIONS].join(', ')}` });
+    const svc = imsServices().find((s) => s.id === service);
+    if (!svc) return res.status(404).json({ error: `no running imagegen-models service ${service}` });
+    try {
+      const r = await fetch(`http://${svc.containerIp}:${svc.port}${actionPath}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
+        signal: AbortSignal.timeout(actionPath === '/cache/restore' && body?.wait ? 3600000 : 60000),
+      });
+      const d = await r.json().catch(() => ({}));
+      console.log(`[imagegen-models] ${service} ${actionPath} ${JSON.stringify(body || {}).slice(0, 160)} -> ${r.status}`);
+      res.status(r.status).json(d);
+    } catch (e) {
+      res.status(502).json({ error: `${service} ${actionPath}: ${e.message}` });
+    }
+  });
+
   /** POST /models/cache-file {node|vmid|node_hostname, src, dst, async?} - host-side copy of ONE file
    *  into /model-cache/ailab-modelsvc. Waits for the copy unless async:true (then 202 + id). */
   router.post('/models/cache-file', async (req, res) => {
