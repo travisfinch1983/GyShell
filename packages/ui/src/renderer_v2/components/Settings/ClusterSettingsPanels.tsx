@@ -974,7 +974,7 @@ const POOL_MODES = ['reserved', 'ai-pool']
 export const GpuPoolsPanel: React.FC = () => {
   const { s, busy, msg, save } = useClusterSettings()
   const [cfg, setCfg] = useState<Record<string, any>>({})
-  const [gpus, setGpus] = useState<Array<{ node: string; pciId: string; product: string; vendor: string }>>([])
+  const [gpus, setGpus] = useState<Array<{ node: string; pciId: string; product: string; vendor: string; liveName: string }>>([])
   const [invErr, setInvErr] = useState<string | null>(null)
   useEffect(() => { if (s) setCfg({ ...(s.gpuConfig ?? {}) }) }, [s])
   useEffect(() => {
@@ -984,7 +984,7 @@ export const GpuPoolsPanel: React.FC = () => {
         const out: any[] = []
         for (const [node, data] of Object.entries(inv || {})) {
           for (const g of ((data as any).allGpus ?? (data as any).nvidiaGpus ?? [])) {
-            out.push({ node, pciId: g.pciId, product: g.productName || g.friendlyName || '', vendor: g.vendor || '' })
+            out.push({ node, pciId: g.pciId, product: g.productName || g.friendlyName || '', vendor: g.vendor || '', liveName: g.friendlyName || '' })
           }
         }
         setGpus(out)
@@ -1007,7 +1007,8 @@ export const GpuPoolsPanel: React.FC = () => {
             <span style={{ width: 70, fontSize: 11, color: 'var(--fg-faint)' }}>{g.node}</span>
             <span style={{ width: 120, fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)' }}>{g.pciId}</span>
             <span style={{ width: 130, fontSize: 11 }}>{g.product}</span>
-            <input style={{ ...smallInp, width: 140 }} placeholder="friendly name" value={c.friendlyName ?? ''} onChange={(e) => set(key, { friendlyName: e.target.value })} />
+            <input style={{ ...smallInp, width: 140 }} placeholder={g.liveName || 'friendly name'} value={c.friendlyName ?? ''} onChange={(e) => set(key, { friendlyName: e.target.value })} />
+            {g.liveName && <span style={{ fontSize: 11, color: 'var(--fg-muted)' }} title="The name service launches and the GPU Fleet panel use (follows the card by UUID)">in use: {g.liveName}</span>}
             <select style={{ ...smallInp, width: 100 }} value={c.poolMode ?? 'reserved'} onChange={(e) => set(key, { poolMode: e.target.value })}>
               {POOL_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>

@@ -46,7 +46,7 @@ export interface SkJob {
   error: string | null; startedAt: number; finishedAt: number | null
 }
 
-export interface MqGpu { index: number; name: string; uuid: string; totalMB: number; usedMB: number; freeMB: number; computeCap: string; warn: string[]; avoid: boolean }
+export interface MqGpu { index: number; name: string; uuid: string; friendlyName?: string | null; totalMB: number; usedMB: number; freeMB: number; computeCap: string; warn: string[]; avoid: boolean }
 export interface MqHost { label: string; disabled: string | null; gpus: MqGpu[] }
 export interface MqSettings { auto: boolean; host: string; gpus: number[]; quant: 'int8' | 'bf16'; te: 'int8' | 'bf16'; steps: number; outpaint: 'auto' | 'off' | 'always' }
 export interface MqJob {

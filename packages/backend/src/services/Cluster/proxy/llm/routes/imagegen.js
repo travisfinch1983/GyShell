@@ -1257,13 +1257,15 @@ export function createImagegenRouter(config) {
     // on a full card fails with a BFC arena error that reads like a driver fault.
     const sshArgs = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8'];
     if (SSH_KEY) sshArgs.push('-i', SSH_KEY);
-    sshArgs.push(TAGGER_SSH, 'nvidia-smi --query-gpu=index,name,memory.free,memory.total --format=csv,noheader,nounits 2>/dev/null');
+    sshArgs.push(TAGGER_SSH, 'nvidia-smi --query-gpu=index,name,memory.free,memory.total,uuid --format=csv,noheader,nounits 2>/dev/null');
+    const names = friendlyByUuid();
     execFile('ssh', sshArgs, { timeout: 10000 }, (err, stdout) => {
       let gpus = [];
       if (!err) {
         gpus = String(stdout).trim().split('\n').filter(Boolean).map((l) => {
-          const [idx, name, free, total] = l.split(',').map((s) => s.trim());
-          return { index: parseInt(idx, 10), name, free_mib: parseInt(free, 10), total_mib: parseInt(total, 10) };
+          const [idx, name, free, total, uuid] = l.split(',').map((s) => s.trim());
+          return { index: parseInt(idx, 10), name, friendlyName: friendlyFor(names, uuid), uuid,
+                   free_mib: parseInt(free, 10), total_mib: parseInt(total, 10) };
         }).filter((g) => Number.isInteger(g.index) && g.name);
       }
       // gpus: [] means the host could not be read — the UI must say “unknown”, not render
@@ -2194,6 +2196,21 @@ export function createImagegenRouter(config) {
     catch { return { auto: false, host: 'ai-epyc', gpus: [], quant: 'int8', te: 'int8', steps: 25, outpaint: 'auto' }; }
   }
 
+  /** GPU friendly names by UUID (gpu-config.json entries carry the card's uuid). The nvidia-smi index
+   *  shown in pickers is SLOT order, so without this "#1" read as friendly "#1" on a different card. */
+  function friendlyByUuid() {
+    const out = {};
+    try {
+      const dir = process.env.AILAB_PROXY_DATA_DIR || path.join(process.cwd(), '.gybackend-data');
+      const cfg = JSON.parse(readFileSync(path.join(dir, 'gpu-config.json'), 'utf8'));
+      for (const v of Object.values(cfg)) {
+        if (v && v.uuid && v.friendlyName) out[String(v.uuid).replace(/^GPU-/i, '').toLowerCase()] = v.friendlyName;
+      }
+    } catch (e) { console.warn(`[imagegen] gpu friendly names unavailable: ${e.message}`); }
+    return out;
+  }
+  const friendlyFor = (names, uuid) => (uuid ? names[String(uuid).replace(/^GPU-/i, '').toLowerCase()] : null) || null;
+
   /** Live per-GPU free VRAM from Prometheus (never nvidia-smi on ai-gpu - a stalled V100 can wedge the host). */
   async function mqGpuInventory() {
     const promBase = process.env.PROMETHEUS_URL || 'http://10.0.0.79:9090';
@@ -2206,6 +2223,7 @@ export function createImagegenRouter(config) {
     const usedB = Object.fromEntries(used.map((r) => [key(r), Number(r.value[1]) || 0]));
     const totB = Object.fromEntries(total.map((r) => [key(r), Number(r.value[1]) || 0]));
     const hosts = {};
+    const names = friendlyByUuid();
     for (const [name, h] of Object.entries(MQ_HOSTS)) {
       const gpus = info.filter((r) => r.metric.host === h.prom).map((r) => {
         const index = parseInt(r.metric.index, 10);
@@ -2217,7 +2235,8 @@ export function createImagegenRouter(config) {
         if (avoid) warn.push(avoid);
         const freeMB = totalMB - usedMB;
         if (freeMB < MQ_MIN_FREE_MB) warn.push(`only ${(freeMB / 1024).toFixed(1)} GB free - suspend what runs on it first (~15 GB needed)`);
-        return { index, name: String(r.metric.name || '').replace(/^NVIDIA (GeForce )?/, ''), uuid: r.metric.uuid, totalMB, usedMB, freeMB,
+        return { index, name: String(r.metric.name || '').replace(/^NVIDIA (GeForce )?/, ''), uuid: r.metric.uuid,
+                 friendlyName: friendlyFor(names, r.metric.uuid), totalMB, usedMB, freeMB,
                  computeCap: r.metric.compute_cap, warn, avoid: !!avoid };
       }).sort((a, b) => a.index - b.index);
       hosts[name] = { label: h.label, disabled: h.disabled || null, gpus };

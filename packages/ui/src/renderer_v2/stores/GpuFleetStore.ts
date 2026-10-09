@@ -63,6 +63,8 @@ class GpuFleetStore {
   loading = false
   updatedAt = 0
   gpuConfig: Record<string, any> = {}
+  /** uuid (no GPU- prefix, lowercase) -> the friendly name services are launched and pinned with. */
+  liveNames: Record<string, string> = {}
   private gpuConfigAt = 0
 
   private timer: ReturnType<typeof setInterval> | null = null
@@ -107,7 +109,20 @@ class GpuFleetStore {
       const s = await (window as any).gyshell?.clusterSettings?.get?.()
       const gc = (s?.gpuConfig ?? s?.settings?.gpuConfig ?? {}) as Record<string, any>
       runInAction(() => { this.gpuConfig = gc; this.gpuConfigAt = now })
-    } catch { /* keep last-known config */ }
+    } catch (e) { console.warn('[GpuFleet] cluster settings unavailable', e) }
+    // The AUTHORITATIVE names: gpu-config.json via the enriched inventory, which follows each NVIDIA
+    // card by UUID. cluster-settings.json's gpuConfig names are a separate, slot-keyed table that the
+    // UUID reconcile never touched - the panel showed "5060 Ti #1" on the card launches call "#3".
+    try {
+      const inv = await (window as any).gyshell?.cluster?.request?.('GET', '/api/gpu/inventory')
+      const names: Record<string, string> = {}
+      for (const data of Object.values(inv || {})) {
+        for (const g of ((data as any)?.allGpus ?? [])) {
+          if (g?.uuid && g?.friendlyName) names[String(g.uuid).replace(/^GPU-/i, '').toLowerCase()] = g.friendlyName
+        }
+      }
+      runInAction(() => { this.liveNames = names })
+    } catch (e) { console.warn('[GpuFleet] gpu inventory unavailable - falling back to settings names', e) }
   }
 
   toggle(): void {
@@ -214,17 +229,24 @@ class GpuFleetStore {
       // bus:dev.func tail. friendlyName overrides the card label; showInFleet curates the panel.
       const cfg = this.gpuConfig || {}
       const normPci = (p: string) => (p || '').toLowerCase().split(':').slice(-2).join(':')
+      // NVIDIA cards bind by UUID FIRST: a friendly name follows the CARD, not the slot (the config
+      // entries carry the uuid since 2026-10-08). PCI is the fallback for entries without one.
+      const normUuid = (u: string) => String(u || '').replace(/^GPU-/i, '').toLowerCase()
       const cfgByNorm: Record<string, any> = {}
+      const cfgByUuid: Record<string, any> = {}
       for (const [k, v] of Object.entries(cfg)) {
         const i = k.indexOf(':')
         if (i < 0) continue
         cfgByNorm[`${k.slice(0, i)}:${normPci(k.slice(i + 1))}`] = v
+        if ((v as any)?.uuid) cfgByUuid[normUuid((v as any).uuid)] = v
       }
       const anyOptIn = Object.values(cfg).some((c: any) => c && c.showInFleet === true)
       let list = Object.values(byUuid)
       for (const g of list) {
-        const c = cfgByNorm[`${g.node}:${normPci(g.pciBusId || '')}`]
-        if (c?.friendlyName) { g.friendlyName = c.friendlyName; g.name = c.friendlyName }
+        const c = cfgByUuid[normUuid(g.uuid)] || cfgByNorm[`${g.node}:${normPci(g.pciBusId || '')}`]
+        const live = this.liveNames[normUuid(g.uuid)]
+        const fname = live || c?.friendlyName
+        if (fname) { g.friendlyName = fname; g.name = fname }
         ;(g as any)._inFleet = !!c?.showInFleet
       }
       // If the user has opted any GPU into the fleet, show ONLY those; otherwise show all.
@@ -234,7 +256,9 @@ class GpuFleetStore {
         ;(nodesMap[g.node] = nodesMap[g.node] || []).push(g)
       }
       const nodes = Object.entries(nodesMap)
-        .map(([node, gpus]) => ({ node, gpus: gpus.sort((a, b) => a.index - b.index) }))
+        // Order by friendly name (natural: "#2" < "#10"), not by nvidia-smi index, which is slot order.
+        .map(([node, gpus]) => ({ node, gpus: gpus.sort((a, b) => (a.friendlyName && b.friendlyName)
+          ? a.friendlyName.localeCompare(b.friendlyName, undefined, { numeric: true }) : a.index - b.index) }))
         .sort((a, b) => a.node.localeCompare(b.node))
 
       runInAction(() => {

@@ -119,7 +119,7 @@ const MqOptions: React.FC<{ value: MqStartOpts; onChange: (v: MqStartOpts) => vo
             return (
               <label key={g.index} className={`${styles.gpuRow} ${checked ? styles.gpuOn : ''} ${off ? styles.gpuOff : ''}`}>
                 <input type="checkbox" disabled={disabled || off} checked={checked} onChange={() => toggleGpu(g.index)} />
-                <span className={styles.gpuName}>#{g.index} {g.name}</span>
+                <span className={styles.gpuName} title={`nvidia-smi index ${g.index}`}>{g.friendlyName || `#${g.index} ${g.name}`}</span>
                 <span className={low ? styles.gpuLow : styles.gpuFree}>{(g.freeMB / 1024).toFixed(1)} / {(g.totalMB / 1024).toFixed(0)} GB free</span>
                 {busy.has(g.index) && <span className={styles.gpuWarn}>already converting</span>}
                 {g.warn.map((w) => <span key={w} className={styles.gpuWarn}>⚠ {w}</span>)}

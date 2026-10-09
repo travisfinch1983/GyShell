@@ -444,7 +444,7 @@ export const AutoCaptionModal: React.FC<{ onClose: () => void; files?: string[];
                 <select className={styles.input} style={{ width: '100%' }} value={gpuIndex} disabled={running} onChange={(e) => setGpuIndex(e.target.value)}>
                   {gpus.map((g) => (
                     <option key={g.index} value={String(g.index)}>
-                      #{g.index} — {g.name} ({(g.free_mib / 1024).toFixed(1)} GiB free of {Math.round(g.total_mib / 1024)})
+                      {g.friendlyName || `#${g.index} — ${g.name}`} ({(g.free_mib / 1024).toFixed(1)} GiB free of {Math.round(g.total_mib / 1024)})
                     </option>
                   ))}
                 </select>

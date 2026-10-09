@@ -176,8 +176,10 @@ const GpuCard: React.FC<{ gpu: FleetGpu; dnd?: React.HTMLAttributes<HTMLDivEleme
   return (
     <div className={styles.gpuCard} {...dnd}>
       <div className={styles.gpuTop}>
-        <span className={styles.gpuIdx}>#{gpu.index >= 0 ? gpu.index : '?'}</span>
-        <span className={styles.gpuName} title={gpu.name}>
+        {/* The nvidia-smi index is SLOT order and contradicted the friendly name ("#1" beside
+            "5060 Ti #3"), so it only shows for cards without a name; it stays in the tooltip. */}
+        {!gpu.friendlyName && <span className={styles.gpuIdx}>#{gpu.index >= 0 ? gpu.index : '?'}</span>}
+        <span className={styles.gpuName} title={`${gpu.name}${gpu.pciBusId ? ` · ${gpu.pciBusId}` : ''}${gpu.index >= 0 ? ` · nvidia-smi index ${gpu.index}` : ''}`}>
           {gpu.name}
         </span>
       </div>
