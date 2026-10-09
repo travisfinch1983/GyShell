@@ -8,7 +8,9 @@ function bridge(): any { return (window as any).gyshell?.cluster }
  * tier it sits in. Reads /api/ai/imagegen-models/overview; actions go through .../action, which only
  * forwards the services' own whitelisted routes.
  */
-export const KIND_LABEL: Record<string, string> = { unet: 'UNet', te: 'Text encoder', vae: 'VAE', lora: 'LoRA' }
+export const KIND_LABEL: Record<string, string> = { unet: 'UNet', ckpt: 'Checkpoint', lora: 'LoRA', te: 'Text encoder', detector: 'Detector', vae: 'VAE' }
+/** Model root (under /imagegen) per kind; file names are relative to it, as ComfyUI lists them. */
+export const KIND_ROOT: Record<string, string> = { unet: 'diffusion-models', ckpt: 'checkpoints', lora: 'loras', te: 'text-encoders', detector: 'ultralytics', vae: 'vae' }
 
 export interface ModelRow {
   kind: string; name: string
@@ -29,6 +31,13 @@ export class ImageModelsStore {
   showNas = false
   updatedAt = 0
   quotaDraft: Record<string, any> = {}
+  // ── "Add to cache" picker ──
+  addNode = ''
+  addKind = 'unet'
+  addSearch = ''
+  addFile = ''
+  files: Record<string, string[]> = {}
+  filesErr: Record<string, string> = {}
   private timer: any = null
 
   constructor() { makeAutoObservable(this) }
@@ -51,7 +60,33 @@ export class ImageModelsStore {
     }
   }
 
-  set<K extends 'search' | 'kind' | 'showNas'>(k: K, v: this[K]): void { (this as any)[k] = v }
+  set<K extends 'search' | 'kind' | 'showNas' | 'addNode' | 'addKind' | 'addSearch' | 'addFile'>(k: K, v: this[K]): void {
+    (this as any)[k] = v
+    if (k === 'addKind') { this.addFile = ''; void this.loadFiles(KIND_ROOT[v as string]) }
+  }
+
+  async loadFiles(root: string): Promise<void> {
+    if (!root || this.files[root]) return
+    try {
+      const r: any = await bridge().request('GET', `/api/imagegen/model-files?root=${encodeURIComponent(root)}`)
+      runInAction(() => { this.files[root] = Array.isArray(r?.files) ? r.files : []; delete this.filesErr[root] })
+    } catch (e: any) {
+      runInAction(() => { this.filesErr[root] = String(e?.message || e) })
+    }
+  }
+  get addTarget(): any { return this.nodes.find((n) => n.node === this.addNode) || this.nodes[0] || null }
+  /** The host's cache takes a kind when it has a RAM quota for it (claude2's services add kinds there). */
+  kindSupported(n: any, kind: string): boolean { return !!n?.cache?.config?.quota_gb && kind in n.cache.config.quota_gb }
+  get addMatches(): string[] {
+    const all = this.files[KIND_ROOT[this.addKind]] || []
+    const q = this.addSearch.trim().toLowerCase()
+    return (q ? all.filter((f) => f.toLowerCase().includes(q)) : all).slice(0, 200)
+  }
+  async addToCache(): Promise<void> {
+    const n = this.addTarget
+    if (!n?.cacheService || !this.addFile) return
+    await this.act(n.cacheService, '/cache/warm', { kind: this.addKind, name: this.addFile }, `Add ${this.addFile} to ${n.node} RAM cache`)
+  }
 
   kinds(n: any): string[] {
     const q = n?.cache?.config?.quota_gb

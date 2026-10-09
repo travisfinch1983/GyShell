@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Loader2, Save, Pin, PinOff } from 'lucide-react'
-import { imageModelsStore as store, KIND_LABEL, type ModelRow } from '../../stores/ImageModelsStore'
+import { imageModelsStore as store, KIND_LABEL, KIND_ROOT, type ModelRow } from '../../stores/ImageModelsStore'
 import styles from '../AiTools/AiTools.module.scss'
 
 const gb = (v: any) => (v == null || Number.isNaN(Number(v)) ? '—' : `${Number(v).toFixed(Number(v) < 10 ? 1 : 0)} GB`)
@@ -138,6 +138,38 @@ const NodeCard: React.FC<{ n: any }> = observer(({ n }) => {
   )
 })
 
+const AddToCache: React.FC = observer(() => {
+  const n = store.addTarget
+  const root = KIND_ROOT[store.addKind]
+  useEffect(() => { void store.loadFiles(root) }, [root])
+  if (!n) return null
+  const supported = store.kindSupported(n, store.addKind)
+  const files = store.files[root]
+  const matches = store.addMatches
+  return (
+    <div className={styles.ragCard}>
+      <h4 className={styles.h4} style={{ margin: 0 }}>Add to cache</h4>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <select className={styles.subInput} value={n.node} onChange={(e) => store.set('addNode', e.target.value)} title="Host whose RAM cache gets it">
+          {store.nodes.map((x) => <option key={x.node} value={x.node}>{x.node}</option>)}
+        </select>
+        <select className={styles.subInput} value={store.addKind} onChange={(e) => store.set('addKind', e.target.value)}>
+          {Object.entries(KIND_LABEL).map(([k, l]) => <option key={k} value={k}>{l}{store.kindSupported(n, k) ? '' : ' (not supported yet)'}</option>)}
+        </select>
+        <input className={styles.subInput} style={{ width: 220 }} placeholder={`Search /imagegen/${root}…`} value={store.addSearch} onChange={(e) => store.set('addSearch', e.target.value)} />
+        <select className={styles.subInput} style={{ maxWidth: 420 }} value={store.addFile} onChange={(e) => store.set('addFile', e.target.value)}>
+          <option value="">{store.filesErr[root] ? 'file list unavailable' : !files ? 'loading…' : `${matches.length}${matches.length === 200 ? '+' : ''} file(s) - pick one`}</option>
+          {matches.map((f) => <option key={f} value={f}>{f}</option>)}
+        </select>
+        <button className={styles.btn} disabled={!supported || !store.addFile || !!store.busyKey || !n.cacheService}
+          title={supported ? `Copy into ${n.node}'s RAM cache (and its persistent tier)` : `${n.node}'s image model service has no ${KIND_LABEL[store.addKind]} cache yet`}
+          onClick={() => void store.addToCache()}>Add to RAM cache</button>
+      </div>
+      {!supported && <div className={styles.muted} style={{ fontSize: 12 }}>{KIND_LABEL[store.addKind]} isn't cached by {n.node}'s Image Model Service yet; claude2 is adding it.</div>}
+    </div>
+  )
+})
+
 export const ModelPlacementPanel: React.FC = observer(() => {
   useEffect(() => { store.start(); return () => store.stop() }, [])
   return (
@@ -162,6 +194,7 @@ export const ModelPlacementPanel: React.FC = observer(() => {
         {store.error && <div style={{ fontSize: 12, color: 'var(--danger, #f87171)' }}>{store.error}</div>}
       </div>
       {store.nodes.length === 0 && !store.loading && <div className={styles.ragCard}><div className={styles.muted}>No Image Model Service is running. Launch one from Imagegen Launch → Image Model Service.</div></div>}
+      {store.nodes.length > 0 && <AddToCache />}
       {store.nodes.map((n) => <NodeCard key={n.node} n={n} />)}
     </div>
   )
