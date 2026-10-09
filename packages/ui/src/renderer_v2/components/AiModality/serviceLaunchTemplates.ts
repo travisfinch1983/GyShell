@@ -360,45 +360,24 @@ export const GENERIC_LAUNCH_TEMPLATES: Record<string, any> = {
         ].join('\n');
       },
     },
-    // AI-Lab image-gen MODEL SERVICES (claude2): one resident model kind per GPU, served to every
-    // ComfyUI via the comfyui-ailab-pack Remote UNET/CLIP/VAE nodes. The launcher pins the card, so
-    // it is cuda:0 inside. Model = optional --preload (any request naming another model swaps it in).
-    'imagegen-unet': {
+    // AI-Lab image MODEL SERVICE (claude2): one process keeps SEVERAL models of any kind resident on
+    // one GPU (e.g. text encoder + VAE on a V100) and serves every ComfyUI via the comfyui-ailab-pack
+    // Remote nodes. The launcher pins the card (cuda:0 inside). Models = optional --preload list of
+    // kind:name; a request naming any other model loads it on demand.
+    'imagegen-models': {
       defaultPort: 9310,
       multiGpu: false,
-      modelRoot: 'diffusion-models',
-      defaultModel: 'Qwen_2.1/qwen_image_2.1_int8_convrot.safetensors',
+      modelKinds: [
+        { kind: 'unet', label: 'UNet', root: 'diffusion-models' },
+        { kind: 'te', label: 'Text encoder', root: 'text-encoders' },
+        { kind: 'vae', label: 'VAE', root: 'vae' },
+      ],
+      defaultModel: '',
       buildCommand(port, opts) {
         const pre = opts && opts.model ? ` --preload ${shq(opts.model)}` : ''
         return [
           'export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
-          `exec /opt/conda/envs/ailab-modelsvc/bin/python /opt/ailab-modelsvc/serve.py --kind unet --port ${port}${pre}`,
-        ].join('\n')
-      },
-    },
-    'imagegen-te': {
-      defaultPort: 9320,
-      multiGpu: false,
-      modelRoot: 'text-encoders',
-      defaultModel: 'Qwen_2.1/qwen3vl_8b_bf16.safetensors',
-      buildCommand(port, opts) {
-        const pre = opts && opts.model ? ` --preload ${shq(opts.model)}` : ''
-        return [
-          'export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
-          `exec /opt/conda/envs/ailab-modelsvc/bin/python /opt/ailab-modelsvc/serve.py --kind te --port ${port}${pre} --clip-type qwen_image`,
-        ].join('\n')
-      },
-    },
-    'imagegen-vae': {
-      defaultPort: 9330,
-      multiGpu: false,
-      modelRoot: 'vae',
-      defaultModel: 'Qwen_2.1/qwen_image_2.1_vae_bf16.safetensors',
-      buildCommand(port, opts) {
-        const pre = opts && opts.model ? ` --preload ${shq(opts.model)}` : ''
-        return [
-          'export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
-          `exec /opt/conda/envs/ailab-modelsvc/bin/python /opt/ailab-modelsvc/serve.py --kind vae --port ${port}${pre}`,
+          `exec /opt/conda/envs/ailab-modelsvc/bin/python /opt/ailab-modelsvc/serve.py --port ${port}${pre}`,
         ].join('\n')
       },
     },

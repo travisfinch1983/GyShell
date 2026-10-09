@@ -752,8 +752,7 @@ function ensureProxySlots(state) {
  * @param {Object} svc - Active service entry
  * @returns {'llm'|'tts'|'stt'|'embed'|'rerank'}
  */
-const IMAGE_GEN_PROVIDERS = new Set(['comfyui', 'sdnext', 'fooocus', 'invokeai', 'dataset-forge',
-  'imagegen-unet', 'imagegen-te', 'imagegen-vae']);
+const IMAGE_GEN_PROVIDERS = new Set(['comfyui', 'sdnext', 'fooocus', 'invokeai', 'dataset-forge', 'imagegen-models']);
 
 /** Map of short names → provider IDs for named image gen proxies */
 const IMAGEGEN_ALIASES = {
@@ -2317,6 +2316,91 @@ export function createProxyRouter(sshService) {
     const downstreamPath = parts.length ? '/' + parts.join('/') : '/';
     return proxyRequest(req, res, svc.containerIp, svc.port, downstreamPath);
   }
+
+  // ── Image model service CATALOG (claude2's imagegen-models). Registered BEFORE the alias routes
+  // below so "v1" is never read as a service alias. Only the catalog goes through the proxy: clients
+  // (comfyui-ailab-pack Remote nodes) pick a service here and then talk to it DIRECTLY (Unix socket on
+  // the same machine, else TCP host:port), so the per-image traffic never touches this process.
+  async function imageModelCatalog() {
+    const state = loadActiveServices();
+    const svcs = Object.values(state.services || {}).filter((s) =>
+      s && s.providerId === 'imagegen-models' && s.containerIp && s.port && !s.suspended);
+    const rows = await Promise.all(svcs.map(async (s) => {
+      try {
+        const r = await fetch(`http://${s.containerIp}:${s.port}/models`, { signal: AbortSignal.timeout(4000) });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return { s, d: await r.json(), error: null };
+      } catch (e) {
+        return { s, d: null, error: String(e?.message || e) };
+      }
+    }));
+    const models = [];
+    const services = [];
+    for (const { s, d, error } of rows) {
+      const info = d?.service || {};
+      const svc = {
+        id: s.id, node: s.node, host: s.containerIp, port: Number(s.port),
+        // serve.py reports its machine name as service.host; the client compares it to its own hostname
+        // to choose the Unix socket over TCP. host here is the container IP to dial.
+        gpu: info.gpu ?? null, node_hostname: info.node_hostname ?? info.host ?? null, uds: info.uds ?? null,
+        ok: !error, error,
+      };
+      services.push(svc);
+      if (error) continue;
+      const resident = Array.isArray(d.resident) ? d.resident : [];
+      const residentKey = new Set(resident.map((m) => `${m.kind}\u0000${m.name}`));
+      for (const m of resident) {
+        models.push({ kind: m.kind, name: m.name, loaded: true, busy: !!m.busy, waiting: Number(m.waiting) || 0,
+          service: svc.id, node: svc.node, host: svc.host, port: svc.port, gpu: svc.gpu, uds: svc.uds, node_hostname: svc.node_hostname });
+      }
+      for (const [kind, names] of Object.entries(d.available || {})) {
+        for (const name of (Array.isArray(names) ? names : [])) {
+          if (residentKey.has(`${kind}\u0000${name}`)) continue;
+          models.push({ kind, name, loaded: false, busy: false, waiting: 0,
+            service: svc.id, node: svc.node, host: svc.host, port: svc.port, gpu: svc.gpu, uds: svc.uds, node_hostname: svc.node_hostname });
+        }
+      }
+    }
+    return { services, models };
+  }
+
+  /** GET /imagegen/v1/models[?kind=unet|te|vae] - every model on every running image model service:
+   *  one entry per (service, model), loaded=true when resident, plus where to connect. */
+  router.get('/imagegen/v1/models', async (req, res) => {
+    try {
+      const cat = await imageModelCatalog();
+      const kind = req.query.kind ? String(req.query.kind) : null;
+      res.json({ services: cat.services, models: kind ? cat.models.filter((m) => m.kind === kind) : cat.models });
+    } catch (e) {
+      console.error(`[imagegen-catalog] ${e.message}`);
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  /** GET /imagegen/v1/resolve?kind=te&model=<name> - the best service for one model: resident and idle,
+   *  then resident with the shortest queue, then any service that can load it (fewest models resident). */
+  router.get('/imagegen/v1/resolve', async (req, res) => {
+    const kind = String(req.query.kind || '');
+    const model = String(req.query.model || '');
+    if (!kind || !model) return res.status(400).json({ error: 'kind and model are required' });
+    try {
+      const cat = await imageModelCatalog();
+      const hits = cat.models.filter((m) => m.kind === kind && m.name === model);
+      const residentCount = (id) => cat.models.filter((m) => m.service === id && m.loaded).length;
+      const pick =
+        hits.filter((m) => m.loaded && !m.busy).sort((a, b) => a.waiting - b.waiting)[0] ||
+        hits.filter((m) => m.loaded).sort((a, b) => a.waiting - b.waiting)[0] ||
+        hits.filter((m) => !m.loaded).sort((a, b) => residentCount(a.service) - residentCount(b.service))[0];
+      if (!pick) {
+        return res.status(404).json({ error: `no running image model service has ${kind}:${model}`,
+          services: cat.services.map((s) => ({ id: s.id, ok: s.ok, error: s.error })) });
+      }
+      res.json({ ...pick, reason: pick.loaded ? (pick.busy ? 'resident (busy, shortest queue)' : 'resident and idle') : 'not resident - the service will load it' });
+    } catch (e) {
+      console.error(`[imagegen-resolve] ${e.message}`);
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
 
   // Match /imagegen/:first/:second/* (covers both numbered and sub-path cases)
   router.all('/imagegen/:first/:second/{*rest}', resolveImageGen);

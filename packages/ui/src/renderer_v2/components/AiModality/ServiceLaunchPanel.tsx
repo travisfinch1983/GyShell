@@ -102,20 +102,38 @@ export const ServiceLaunchPanel: React.FC<{ store: ServiceLaunchStore; emptyLabe
                 </select>
               )}
 
-              {t.modelRoot && (() => {
-                const files = store.modelFiles[t.modelRoot]
-                if (!files && !store.modelFilesErr[t.modelRoot]) void store.loadModelFiles(t.modelRoot)
-                const cur = c.model ?? ''
+              {Array.isArray(t.modelKinds) && (() => {
+                // Card model = "kind:name,kind:name" (serve.py --preload). One picker per kind adds to it.
+                const picked = (c.model || '').split(',').map((x) => x.trim()).filter(Boolean)
+                const setPicked = (list: string[]) => store.set(p.id, { model: list.join(',') })
                 return (
                   <>
-                    <label className={styles.lbl} title="Loaded at start (--preload). A request naming another model swaps it in.">Model</label>
-                    <select className={styles.select} value={cur} onChange={(e) => store.set(p.id, { model: e.target.value })}>
-                      <option value="">(none: load on first request)</option>
-                      {cur && files && !files.includes(cur) && <option value={cur}>{cur} (not found on disk)</option>}
-                      {!files && cur && <option value={cur}>{cur}</option>}
-                      {(files || []).map((f) => <option key={f} value={f}>{f}</option>)}
-                    </select>
-                    {store.modelFilesErr[t.modelRoot] && <span className={styles.lbl} title={store.modelFilesErr[t.modelRoot]}>model list unavailable</span>}
+                    <label className={styles.lbl} title="Loaded at start (--preload). A request naming any other model loads it on demand.">Models</label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+                      {t.modelKinds.map((k: any) => {
+                        const files = store.modelFiles[k.root]
+                        if (!files && !store.modelFilesErr[k.root]) void store.loadModelFiles(k.root)
+                        return (
+                          <select key={k.kind} className={styles.select} value=""
+                            onChange={(e) => { const v = `${k.kind}:${e.target.value}`; if (e.target.value && !picked.includes(v)) setPicked([...picked, v]) }}>
+                            <option value="">{store.modelFilesErr[k.root] ? `+ ${k.label} (list unavailable)` : files ? `+ add ${k.label}…` : `+ ${k.label} (loading…)`}</option>
+                            {(files || []).map((f) => <option key={f} value={f}>{f}</option>)}
+                          </select>
+                        )
+                      })}
+                      {picked.length === 0
+                        ? <span className={styles.lbl}>none: every model loads on first request</span>
+                        : picked.map((m) => {
+                            const i = m.indexOf(':'); const kind = m.slice(0, i); const name = m.slice(i + 1)
+                            const root = t.modelKinds.find((k: any) => k.kind === kind)?.root
+                            const missing = root && store.modelFiles[root] && !store.modelFiles[root].includes(name)
+                            return (
+                              <button key={m} type="button" className={styles.gpuChip} title="Remove" onClick={() => setPicked(picked.filter((x) => x !== m))}>
+                                {kind}: {name}{missing ? ' (not found on disk)' : ''} ✕
+                              </button>
+                            )
+                          })}
+                    </div>
                   </>
                 )
               })()}

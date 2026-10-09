@@ -444,42 +444,17 @@ export const PROVIDERS = {
     complexity: 'medium',
     installChain: [],
   },
-  // AI-Lab image-gen MODEL SERVICES (claude2, 2026-10-09): one resident model kind per GPU, served to
-  // every ComfyUI through the comfyui-ailab-pack Remote UNET/CLIP/VAE nodes. Same serve.py, --kind differs.
-  'imagegen-unet': {
+  // AI-Lab image-gen MODEL SERVICE (claude2, 2026-10-09): one process holds SEVERAL resident models of
+  // any kind (UNet / text encoder / VAE) and serves every ComfyUI through the comfyui-ailab-pack Remote
+  // nodes. Clients find it via GET /api/proxy/imagegen/v1/models and connect to it directly.
+  'imagegen-models': {
     category: 'image',
-    id: 'imagegen-unet',
-    name: 'Image Model Service (UNet / sampler)',
-    description: 'Keeps one diffusion model (UNet) resident on its GPU and serves it to every ComfyUI instance',
+    id: 'imagegen-models',
+    name: 'Image Model Service',
+    description: 'Keeps UNet / text-encoder / VAE models resident on one GPU and serves them to every ComfyUI instance',
     website: 'https://github.com/comfyanonymous/ComfyUI',
     scriptFile: 'ailab-modelsvc.sh',
     defaultPort: 9310,
-    supportedArchs: ['Volta', 'Turing', 'Ampere', 'Ada Lovelace', 'Blackwell'],
-    supportedFormats: [],
-    complexity: 'medium',
-    installChain: [],
-  },
-  'imagegen-te': {
-    category: 'image',
-    id: 'imagegen-te',
-    name: 'Text Encoder Service',
-    description: 'Keeps one text encoder resident on its GPU (a V100 is the preferred card) and serves it to every ComfyUI instance',
-    website: 'https://github.com/comfyanonymous/ComfyUI',
-    scriptFile: 'ailab-modelsvc.sh',
-    defaultPort: 9320,
-    supportedArchs: ['Volta', 'Turing', 'Ampere', 'Ada Lovelace', 'Blackwell'],
-    supportedFormats: [],
-    complexity: 'medium',
-    installChain: [],
-  },
-  'imagegen-vae': {
-    category: 'image',
-    id: 'imagegen-vae',
-    name: 'VAE Service',
-    description: 'Keeps one VAE resident on its GPU and serves it to every ComfyUI instance',
-    website: 'https://github.com/comfyanonymous/ComfyUI',
-    scriptFile: 'ailab-modelsvc.sh',
-    defaultPort: 9330,
     supportedArchs: ['Volta', 'Turing', 'Ampere', 'Ada Lovelace', 'Blackwell'],
     supportedFormats: [],
     complexity: 'medium',
