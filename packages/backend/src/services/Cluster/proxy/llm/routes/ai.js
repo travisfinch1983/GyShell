@@ -10,7 +10,7 @@
 
 import express, { Router } from 'express';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, rmSync, createReadStream, unlinkSync, copyFileSync, renameSync, openSync, readSync, closeSync } from 'fs';
-import { join, dirname, extname, resolve as pathResolve, basename } from 'path';
+import { join, dirname, extname, resolve as pathResolve, basename, posix as pathPosix } from 'path';
 import { spawn, execSync } from 'child_process';
 import { randomUUID, createHash } from 'crypto';
 import { computeKvFingerprint, computeVllmKvFingerprint } from '../../kvcache/fingerprint.js';
@@ -6460,6 +6460,128 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
     startNextCopy(node, sshService, hookscriptDeploy);
 
     res.json({ entry, status: 'caching' });
+  });
+
+  // ─── Single-file host copy for the image model services (claude2, 2026-10-09) ───────────────
+  // tmpfs pages are charged to the WRITER's memory cgroup, so a copy into /model-cache made inside a
+  // container eats that container's RAM allowance. Like the model cacher, this copies on the PVE host.
+  // Deliberately narrow so it is not a general host-copy primitive: dst only under
+  // /model-cache/ailab-modelsvc/, src only under /imagegen/ or /optane-sock0/ailab-modelsvc/, mapped
+  // through the container's OWN mount points (pct config), re-checked after mapping. No manifest entry:
+  // the services own that folder's index, quotas and eviction. One copy at a time per node.
+  const CF_DST_ROOTS = ['/model-cache/ailab-modelsvc/'];
+  const CF_SRC_ROOTS = ['/imagegen/', '/optane-sock0/ailab-modelsvc/'];
+  const CF_SAFE = /^\/[A-Za-z0-9 ._+(),@=~\[\]\/-]+$/;   // no quotes, $, `, \, newlines
+  const cfMounts = {};   // vmid -> { at, hostname, unprivileged, mps: [{host, ct}] }
+  const cfQueues = {};   // node -> Promise chain
+  const cfJobs = new Map();   // id -> { state, ... }
+  async function cfContainer(node) {
+    const cfg = loadAiConfig();
+    const vmid = cfg.agents?.[node]?.vmid;
+    const hostIp = pveApi.getNodeMap()[node]?.ip;
+    if (!vmid || !hostIp) throw new Error(`no agent container / host for node ${node}`);
+    const c = cfMounts[vmid];
+    if (c && Date.now() - c.at < 300000) return { vmid, hostIp, ...c };
+    const r = await sshService.exec(hostIp, `pct config ${vmid}`, { timeout: 15000 });
+    const out = String(r?.stdout || '');
+    const mps = [];
+    for (const line of out.split('\n')) {
+      const m = /^mp\d+:\s*([^,]+),.*\bmp=([^,\s]+)/.exec(line);
+      if (m) mps.push({ host: m[1].replace(/\/+$/, ''), ct: m[2].replace(/\/+$/, '') });
+    }
+    const entry = { at: Date.now(), hostname: (/^hostname:\s*(\S+)/m.exec(out) || [])[1] || '',
+      unprivileged: /^unprivileged:\s*1/m.test(out), mps };
+    cfMounts[vmid] = entry;
+    return { vmid, hostIp, ...entry };
+  }
+  /** node | vmid | node_hostname (the container's hostname, e.g. ai-gpu) -> AI-Lab node name. */
+  async function cfResolveNode(body) {
+    const agents = loadAiConfig().agents || {};
+    if (body.node && agents[body.node]) return body.node;
+    if (body.vmid) { const n = Object.keys(agents).find((k) => Number(agents[k].vmid) === Number(body.vmid)); if (n) return n; }
+    const hn = String(body.node_hostname || body.node || '');
+    for (const n of Object.keys(agents)) {
+      try { if ((await cfContainer(n)).hostname === hn) return n; } catch (e) { console.warn(`[cache-file] ${n}: ${e.message}`); }
+    }
+    return null;
+  }
+  function cfToHost(mps, ctPath) {
+    const mp = mps.filter((m) => ctPath === m.ct || ctPath.startsWith(m.ct + '/')).sort((a, b) => b.ct.length - a.ct.length)[0];
+    return mp ? { host: mp.host + ctPath.slice(mp.ct.length), mp } : null;
+  }
+  const cfShq = (x) => `'${String(x).replace(/'/g, `'\\''`)}'`;
+  function cfCheck(pathStr, roots, label) {
+    const raw = String(pathStr || '');
+    const norm = pathPosix.normalize(raw);
+    if (!raw || norm !== raw || raw.includes('/../') || raw.endsWith('/') || !CF_SAFE.test(raw)) return `${label} must be a clean absolute file path`;
+    if (!roots.some((r) => raw.startsWith(r))) return `${label} must be under ${roots.join(' or ')}`;
+    return null;
+  }
+  async function cfRun(job) {
+    const ct = await cfContainer(job.node);
+    const src = cfToHost(ct.mps, job.src);
+    const dst = cfToHost(ct.mps, job.dst);
+    if (!src) throw new Error(`src ${job.src} is not on a mount of CT${ct.vmid}`);
+    if (!dst) throw new Error(`dst ${job.dst} is not on a mount of CT${ct.vmid}`);
+    // The mapped dst must stay inside the mapped ailab-modelsvc folder (belt and braces).
+    const dstRoot = cfToHost(ct.mps, '/model-cache/ailab-modelsvc');
+    if (!dstRoot || !dst.host.startsWith(dstRoot.host + '/')) throw new Error('mapped dst escapes /model-cache/ailab-modelsvc');
+    const owner = ct.unprivileged ? '100000:100000' : '0:0';
+    const d = pathPosix.dirname(dst.host);
+    const part = `${dst.host}.part`;
+    const script = [
+      'set -e',
+      `[ -f ${cfShq(src.host)} ] || { echo "ERR:source-not-found" >&2; exit 3; }`,
+      `mkdir -p ${cfShq(d)}`,
+      // hand the folders below ailab-modelsvc to the container's root so the services can evict
+      `p=${cfShq(d)}; while [ "$p" != ${cfShq(dstRoot.host)} ] && [ "\${#p}" -gt ${dstRoot.host.length} ]; do chown ${owner} "$p"; p=$(dirname "$p"); done`,
+      `cp ${cfShq(src.host)} ${cfShq(part)}; chown ${owner} ${cfShq(part)}; mv -f ${cfShq(part)} ${cfShq(dst.host)}`,
+      `echo "CFOK $(stat -c %s ${cfShq(dst.host)})"`,
+    ].join('\n');
+    const t0 = Date.now();
+    const r = await sshService.exec(ct.hostIp, `bash -c ${cfShq(script)}`, { timeout: 1800000 });
+    const seconds = Math.round((Date.now() - t0) / 10) / 100;
+    const m = /CFOK (\d+)/.exec(String(r?.stdout || ''));
+    if (r?.code !== 0 || !m) {
+      await sshService.exec(ct.hostIp, `rm -f ${cfShq(part)}`, { timeout: 15000 }).catch(() => {});
+      const err = String(r?.stderr || r?.stdout || '').trim().slice(0, 300) || `exit ${r?.code}`;
+      throw new Error(err.includes('ERR:source-not-found') ? `source not found: ${job.src}` : err);
+    }
+    return { bytes: Number(m[1]), seconds };
+  }
+  function cfEnqueue(job) {
+    const prev = cfQueues[job.node] || Promise.resolve();
+    const run = prev.catch(() => {}).then(() => { job.state = 'copying'; job.startedAt = Date.now(); return cfRun(job); });
+    cfQueues[job.node] = run.catch(() => {});
+    return run;
+  }
+
+  /** POST /models/cache-file {node|vmid|node_hostname, src, dst, async?} - host-side copy of ONE file
+   *  into /model-cache/ailab-modelsvc. Waits for the copy unless async:true (then 202 + id). */
+  router.post('/models/cache-file', async (req, res) => {
+    const b = req.body || {};
+    const bad = cfCheck(b.src, CF_SRC_ROOTS, 'src') || cfCheck(b.dst, CF_DST_ROOTS, 'dst');
+    if (bad) return res.status(400).json({ ok: false, error: bad });
+    let node;
+    try { node = await cfResolveNode(b); } catch (e) { return res.status(502).json({ ok: false, error: e.message }); }
+    if (!node) return res.status(400).json({ ok: false, error: `unknown node (send node, vmid or node_hostname)` });
+    const id = randomUUID();
+    const job = { id, node, src: b.src, dst: b.dst, state: 'queued', queuedAt: Date.now() };
+    cfJobs.set(id, job);
+    if (cfJobs.size > 500) cfJobs.delete(cfJobs.keys().next().value);
+    const p = cfEnqueue(job).then((r) => { Object.assign(job, { state: 'done', ok: true, ...r, finishedAt: Date.now() }); return job; },
+      (e) => { Object.assign(job, { state: 'failed', ok: false, error: e.message, finishedAt: Date.now() });
+        console.warn(`[cache-file] ${node} ${b.src} -> ${b.dst}: ${e.message}`); return job; });
+    if (b.async) return res.status(202).json({ ok: true, id, state: job.state, status: `/api/ai/models/cache-file/${id}` });
+    const done = await p;
+    if (done.ok) return res.json({ ok: true, id, bytes: done.bytes, seconds: done.seconds });
+    return res.status(done.error?.startsWith('source not found') ? 404 : 500).json({ ok: false, id, error: done.error });
+  });
+  /** GET /models/cache-file/:id - status of a copy (queued | copying | done | failed). */
+  router.get('/models/cache-file/:id', (req, res) => {
+    const j = cfJobs.get(req.params.id);
+    if (!j) return res.status(404).json({ ok: false, error: 'unknown id (ids are kept in memory, newest 500)' });
+    res.json(j);
   });
 
   /** POST /models/cache/reconcile — Manual kickstart of the auto model-cacher (#266).
