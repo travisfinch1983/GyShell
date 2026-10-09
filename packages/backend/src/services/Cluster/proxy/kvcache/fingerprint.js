@@ -90,7 +90,7 @@ export function extractModelName(finalCommand) {
  * Compute the stable KV fingerprint for a llama-server launch command.
  * @param {string} finalCommand  the fully-resolved llama-server command line
  * @param {object} [opts]
- * @param {string} [opts.optaneBase='/optane-sock0/kvcache']  base dir for slot-save
+ * @param {string} [opts.optaneBase='/optane-sock1/kvcache']  base dir for slot-save
  * @param {string|number} [opts.port]  last-resort slug only when model name is empty
  * @returns {{
  *   modelName: string, slug: string, fp: string, slotName: string, optanePath: string,
@@ -99,7 +99,9 @@ export function extractModelName(finalCommand) {
  */
 export function computeKvFingerprint(finalCommand, opts = {}) {
   const cmd = String(finalCommand || '');
-  const optaneBase = opts.optaneBase || '/optane-sock0/kvcache';
+  // sock1, not sock0: /optane-sock0 is reserved EXCLUSIVELY for the image model services' file cache
+  // (Travis, 2026-10-09). The llama.cpp pools moved here next to vLLM's /optane-sock1/vllm-kv.
+  const optaneBase = opts.optaneBase || '/optane-sock1/kvcache';
 
   const modelName = extractModelName(cmd);
   const ctx = (cmd.match(/--ctx-size[ =]+(\d+)/) || [])[1] || '';

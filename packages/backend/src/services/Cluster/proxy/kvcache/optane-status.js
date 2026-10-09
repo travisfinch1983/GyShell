@@ -22,7 +22,7 @@ const KV_DATA_DIR = process.env.AILAB_KV_DATA_DIR || '/opt/ai-lab/.gybackend-dat
 const VLLM_OPTANE_BASE = process.env.AILAB_VLLM_OPTANE_BASE || '/optane-sock1/vllm-kv';
 // llama.cpp lives on the OTHER Optane namespace — one device per CPU socket, deliberately
 // not shared with vLLM. Both are reported so the panel covers the whole fleet.
-const LLAMA_OPTANE_BASE = process.env.AILAB_LLAMA_OPTANE_BASE || '/optane-sock0/kvcache';
+const LLAMA_OPTANE_BASE = process.env.AILAB_LLAMA_OPTANE_BASE || '/optane-sock1/kvcache';
 
 const COLLECTOR = String.raw`
 # Runs ON a GPU node. Emits ONE JSON blob describing the Optane KV state.
@@ -146,10 +146,10 @@ def scrape(port):
     return out
 
 # Both Optane namespaces are scanned, not just the vLLM one: llama.cpp keeps its pools on
-# /optane-sock0/kvcache and vLLM on /optane-sock1/vllm-kv. Scanning the BASES rather than only
+# /optane-sock1/kvcache and vLLM on /optane-sock1/vllm-kv. Scanning the BASES rather than only
 # the dirs live engines point at means a stopped service's pools -- which still occupy the
 # device -- stay visible, and both namespaces report capacity even when nothing is running.
-bases = [a for a in sys.argv[1:] if a] or ['/optane-sock1/vllm-kv', '/optane-sock0/kvcache']
+bases = [a for a in sys.argv[1:] if a] or ['/optane-sock1/vllm-kv', '/optane-sock1/kvcache']
 base = bases[0]
 procs = engines()
 for p in procs:
@@ -163,7 +163,7 @@ for b in bases:
     if os.path.isdir(b):
         dirs += [os.path.join(b, e) for e in sorted(os.listdir(b))
                  if os.path.isdir(os.path.join(b, e)) and os.path.join(b, e) not in dirs]
-# llama.cpp keeps its pools on the OTHER Optane namespace (/optane-sock0/kvcache/<slot>), so a
+# llama.cpp keeps its pools in their own folder on the same namespace (sock0 is the image model services' cache) (/optane-sock1/kvcache/<slot>), so a
 # base-directory scan alone shows only half the fleet. Take the directory each live engine
 # actually points at, whatever the engine — that also picks up the sock0 filesystem below, so
 # capacity is reported for both namespaces rather than just the vLLM one.

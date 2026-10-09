@@ -394,7 +394,7 @@ export const LAUNCH_TEMPLATES = {
                             tooltip: 'Mount API under a path prefix, e.g. /llama (no trailing slash). Useful behind a reverse proxy' },
         slotSavePath:    { flag: '--slot-save-path',    type: 'string', default: '', hidden: true,
                             label: 'Slot Save Path',
-                            tooltip: 'Managed automatically — hidden. Every llama.cpp / ik_llama.cpp launch is always assigned an Optane KV slot at /optane-sock0/kvcache/<model-file>-<content-fingerprint>, derived from the model file + ctx + cache dtypes so the same model+settings maps to one slot regardless of port/GPUs/alias. Any value here is ignored and replaced by the server.' },
+                            tooltip: 'Managed automatically — hidden. Every llama.cpp / ik_llama.cpp launch is always assigned an Optane KV slot at /optane-sock1/kvcache/<model-file>-<content-fingerprint>, derived from the model file + ctx + cache dtypes so the same model+settings maps to one slot regardless of port/GPUs/alias. Any value here is ignored and replaced by the server.' },
         metrics:         { flag: '--metrics',           type: 'flag',   default: true,
                             label: 'Prometheus Metrics',
                             tooltip: 'Enable /metrics endpoint — ProxLab reads llamacpp:predicted_tokens_seconds from here for live TPS' },
