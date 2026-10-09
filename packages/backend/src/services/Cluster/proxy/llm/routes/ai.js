@@ -7802,9 +7802,10 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
           ? new Set(nodeEntries.map(e => toHostCachePath(node, e.cacheDir)).filter(Boolean))
           : new Set(nodeEntries.map(e => e.cacheDir));
         for (const dir of foundCacheDirs) {
-          // The image-gen model services keep their OWN LoRA RAM cache here (decayed-LRU budget,
-          // AILAB_LORA_CACHE_GB): never an orphan of this manifest.
-          if (/\/ailab-loras(\/|$)/.test(dir)) continue;
+          // The image model services keep their OWN tiered RAM cache of model files + LoRAs here
+          // (/model-cache/ailab-modelsvc/{unet,te,vae,lora}, with its own quotas): never an orphan of
+          // this manifest. ailab-loras was its earlier location.
+          if (/\/ailab-(modelsvc|loras)(\/|$)/.test(dir)) continue;
           if (!manifestHostDirs.has(dir)) {
             console.log(`[cache-validate] ${node}: orphan directory ${dir}, removing`);
             // dir is already in the right path space (host or container) depending on useHostPaths
