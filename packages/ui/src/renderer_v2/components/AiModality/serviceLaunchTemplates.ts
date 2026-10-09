@@ -360,6 +360,48 @@ export const GENERIC_LAUNCH_TEMPLATES: Record<string, any> = {
         ].join('\n');
       },
     },
+    // AI-Lab image-gen MODEL SERVICES (claude2): one resident model kind per GPU, served to every
+    // ComfyUI via the comfyui-ailab-pack Remote UNET/CLIP/VAE nodes. The launcher pins the card, so
+    // it is cuda:0 inside. Model = optional --preload (any request naming another model swaps it in).
+    'imagegen-unet': {
+      defaultPort: 9310,
+      multiGpu: false,
+      modelRoot: 'diffusion-models',
+      defaultModel: 'Qwen_2.1/qwen_image_2.1_int8_convrot.safetensors',
+      buildCommand(port, opts) {
+        const pre = opts && opts.model ? ` --preload ${shq(opts.model)}` : ''
+        return [
+          'export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
+          `exec /opt/conda/envs/ailab-modelsvc/bin/python /opt/ailab-modelsvc/serve.py --kind unet --port ${port}${pre}`,
+        ].join('\n')
+      },
+    },
+    'imagegen-te': {
+      defaultPort: 9320,
+      multiGpu: false,
+      modelRoot: 'text-encoders',
+      defaultModel: 'Qwen_2.1/qwen3vl_8b_bf16.safetensors',
+      buildCommand(port, opts) {
+        const pre = opts && opts.model ? ` --preload ${shq(opts.model)}` : ''
+        return [
+          'export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
+          `exec /opt/conda/envs/ailab-modelsvc/bin/python /opt/ailab-modelsvc/serve.py --kind te --port ${port}${pre} --clip-type qwen_image`,
+        ].join('\n')
+      },
+    },
+    'imagegen-vae': {
+      defaultPort: 9330,
+      multiGpu: false,
+      modelRoot: 'vae',
+      defaultModel: 'Qwen_2.1/qwen_image_2.1_vae_bf16.safetensors',
+      buildCommand(port, opts) {
+        const pre = opts && opts.model ? ` --preload ${shq(opts.model)}` : ''
+        return [
+          'export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
+          `exec /opt/conda/envs/ailab-modelsvc/bin/python /opt/ailab-modelsvc/serve.py --kind vae --port ${port}${pre}`,
+        ].join('\n')
+      },
+    },
     sdnext: {
       defaultPort: 7860,
       multiGpu: false,
@@ -484,6 +526,9 @@ export function buildTtsLaunchCommand(providerId, port, model, gpuIndex, backend
   if (gpuIndex !== undefined && gpuIndex !== null && gpuIndex !== 'auto') envLines.push(`export CUDA_VISIBLE_DEVICES=${gpuIndex}`)
   return envLines.join('\n') + '\n' + cmd
 }
+/** Single-quote for bash (model names can carry spaces/parentheses). */
+function shq(s) { return `'${String(s).replace(/'/g, `'\\''`)}'` }
+
 export function buildGenericLaunchCommand(providerId, port, gpuIndices, opts) {
   const template = GENERIC_LAUNCH_TEMPLATES[providerId]
   if (!template || !template.buildCommand) return ''

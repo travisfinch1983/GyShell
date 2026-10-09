@@ -102,6 +102,23 @@ export const ServiceLaunchPanel: React.FC<{ store: ServiceLaunchStore; emptyLabe
                 </select>
               )}
 
+              {t.modelRoot && (() => {
+                const files = store.modelFiles[t.modelRoot]
+                if (!files && !store.modelFilesErr[t.modelRoot]) void store.loadModelFiles(t.modelRoot)
+                const cur = c.model ?? ''
+                return (
+                  <>
+                    <label className={styles.lbl} title="Loaded at start (--preload). A request naming another model swaps it in.">Model</label>
+                    <select className={styles.select} value={cur} onChange={(e) => store.set(p.id, { model: e.target.value })}>
+                      <option value="">(none: load on first request)</option>
+                      {cur && files && !files.includes(cur) && <option value={cur}>{cur} (not found on disk)</option>}
+                      {!files && cur && <option value={cur}>{cur}</option>}
+                      {(files || []).map((f) => <option key={f} value={f}>{f}</option>)}
+                    </select>
+                    {store.modelFilesErr[t.modelRoot] && <span className={styles.lbl} title={store.modelFilesErr[t.modelRoot]}>model list unavailable</span>}
+                  </>
+                )
+              })()}
               {Array.isArray(t.models) && t.models.length > 0 && (
                 <>
                   <label className={styles.lbl}>Model</label>

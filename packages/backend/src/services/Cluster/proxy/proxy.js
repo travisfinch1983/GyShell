@@ -752,7 +752,8 @@ function ensureProxySlots(state) {
  * @param {Object} svc - Active service entry
  * @returns {'llm'|'tts'|'stt'|'embed'|'rerank'}
  */
-const IMAGE_GEN_PROVIDERS = new Set(['comfyui', 'sdnext', 'fooocus', 'invokeai', 'dataset-forge']);
+const IMAGE_GEN_PROVIDERS = new Set(['comfyui', 'sdnext', 'fooocus', 'invokeai', 'dataset-forge',
+  'imagegen-unet', 'imagegen-te', 'imagegen-vae']);
 
 /** Map of short names → provider IDs for named image gen proxies */
 const IMAGEGEN_ALIASES = {

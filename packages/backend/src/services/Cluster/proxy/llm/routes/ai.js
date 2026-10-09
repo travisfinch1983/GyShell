@@ -61,6 +61,8 @@ const PROVIDER_VRAM_RESERVES = {
   // SAM vit_h + one YOLO detector measured 2.6 GiB on the PNY 5060 Ti (2026-10-08); headroom for a
   // second detector / training-time models.
   'dataset-forge': 4096,
+  // Image-gen model services (claude2): Qwen 2.1 UNet int8 7.3 GB / bf16 14.2 GB; TE int8 9.4 / bf16 17.5.
+  'imagegen-unet': 9000, 'imagegen-te': 11000, 'imagegen-vae': 2000,
 };
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -3797,6 +3799,7 @@ WantedBy=multi-user.target
     comfyui: '/',
     'audio-tools': '/health',
     'dataset-forge': '/health',
+    'imagegen-unet': '/health', 'imagegen-te': '/health', 'imagegen-vae': '/health',
   };
 
   /**
@@ -7798,6 +7801,9 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
           ? new Set(nodeEntries.map(e => toHostCachePath(node, e.cacheDir)).filter(Boolean))
           : new Set(nodeEntries.map(e => e.cacheDir));
         for (const dir of foundCacheDirs) {
+          // The image-gen model services keep their OWN LoRA RAM cache here (decayed-LRU budget,
+          // AILAB_LORA_CACHE_GB): never an orphan of this manifest.
+          if (/\/ailab-loras(\/|$)/.test(dir)) continue;
           if (!manifestHostDirs.has(dir)) {
             console.log(`[cache-validate] ${node}: orphan directory ${dir}, removing`);
             // dir is already in the right path space (host or container) depending on useHostPaths
@@ -7900,6 +7906,8 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
     koboldcpp: 90,
     'llama-server': 90,
     'dataset-forge': 180,   // loads SAM vit_h (2.5 GB) before it binds the port
+    // Model load is 15-35 s, but a --preload from a slow NAS can take minutes (claude2).
+    'imagegen-unet': 240, 'imagegen-te': 240, 'imagegen-vae': 240,
     default:   60,   // 1 min for everything else
   };
 
@@ -7923,7 +7931,8 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
 
   // Providers whose HTTP server can block while the GPU is doing real work (see the busy check in
   // watchdogCheck). LLM servers answer /health during inference, so they are not included.
-  const BUSY_AWARE_PROVIDERS = new Set(['comfyui', 'sdnext', 'fooocus', 'invokeai', 'dataset-forge']);
+  const BUSY_AWARE_PROVIDERS = new Set(['comfyui', 'sdnext', 'fooocus', 'invokeai', 'dataset-forge',
+    'imagegen-unet', 'imagegen-te', 'imagegen-vae']);
   const watchdogBusyLogged = {};
   /** Peak utilization (%) over the last 2 min of the GPUs this service is pinned to, from the GPU
    *  exporter in Prometheus (keyed by uuid without the GPU- prefix). null = cannot tell. */
@@ -7964,6 +7973,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
     fooocus: '/',
     invokeai: '/api/v1/app/version',
     'dataset-forge': '/health',
+    'imagegen-unet': '/health', 'imagegen-te': '/health', 'imagegen-vae': '/health',
   // Gradio serves its app at `/` and has no /health — probing the default 404s forever, so the
   // service never flips to everHealthy and emits "never became healthy" ~20 min after a launch
   // that in fact succeeded. Verified 2026-08-31 on a live instance: /health 404, / 200, /config 200.

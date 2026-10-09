@@ -1233,6 +1233,32 @@ export function createImagegenRouter(config) {
   });
 
   // ---- list available auto-caption models (ONNX taggers + BLIP) ----
+  /** GET /model-files?root=diffusion-models|text-encoders|vae - weight files under one model root,
+   *  as paths relative to it (= the names ComfyUI lists). Feeds the --preload dropdown on the image-gen
+   *  model-service launch cards. Whitelisted roots only; dot-dirs skipped; depth-limited. */
+  const MODEL_FILE_ROOTS = new Set(['diffusion-models', 'text-encoders', 'vae']);
+  const MODEL_FILE_EXT = /\.(safetensors|sft|gguf|pt|pth|ckpt|bin)$/i;
+  router.get('/model-files', async (req, res) => {
+    const root = String(req.query.root || '');
+    if (!MODEL_FILE_ROOTS.has(root)) return res.status(400).json({ error: `root must be one of ${[...MODEL_FILE_ROOTS].join(', ')}` });
+    const top = path.join(BASE, root);
+    const files = [];
+    const walk = async (dir, depth) => {
+      let ents;
+      try { ents = readdirSync(dir, { withFileTypes: true }); }
+      catch (e) { console.warn(`[imagegen] model-files: cannot read ${dir}: ${e.message}`); return; }
+      for (const e of ents) {
+        if (e.name.startsWith('.')) continue;
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) { if (depth < 4) await walk(full, depth + 1); }
+        else if (MODEL_FILE_EXT.test(e.name)) files.push(path.relative(top, full));
+      }
+    };
+    await walk(top, 0);
+    files.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    res.json({ root, files });
+  });
+
   router.get('/taggers', (_req, res) => {
     const out = [];
     try {
