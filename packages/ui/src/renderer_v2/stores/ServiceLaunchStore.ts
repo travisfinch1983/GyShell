@@ -210,7 +210,30 @@ export class ServiceLaunchStore {
     return buildGenericLaunchCommand(providerId, c.port, gpuIndices, { configName: c.configName || 'default', managerUi: c.managerUi || 'modern' })
   }
 
+  /** Auto-assign: move the card to the first FREE port at/above its current one on the chosen node
+   *  (same container-probing allocator the LLM launcher uses), so a second ComfyUI goes to 8189
+   *  instead of colliding on 8188. Returns a note when the port moved, '' otherwise. Failing to
+   *  check is reported, never silently treated as "free". */
+  private async resolveFreePort(providerId: string): Promise<string> {
+    const c = this.cards[providerId]
+    if (!c?.node || !c.port || this.isCli(providerId)) return ''
+    try {
+      const r: any = await bridge().request('GET', `/api/ai/next-port?node=${encodeURIComponent(c.node)}&from=${c.port}`)
+      const free = Number(r?.port)
+      if (r?.warning) console.warn(`[launch] next-port for ${c.node}: ${r.warning}`)
+      if (!free || free === c.port) return ''
+      const from = c.port
+      runInAction(() => { this.set(providerId, { port: free }) })
+      return ` (port ${from} was in use on ${c.node}, so it got ${free})`
+    } catch (e: any) {
+      console.warn(`[launch] could not check free ports on ${c.node}:`, e)
+      return ` (could not check whether port ${c.port} is free: ${e?.message || e})`
+    }
+  }
+
   async launch(providerId: string): Promise<void> {
+    if (!this.cards[providerId]?.node) { this.err = 'Pick a node first.'; return }
+    const portNote = await this.resolveFreePort(providerId)
     const c = this.cards[providerId]
     const command = this.command(providerId)
     if (!c?.node || !command) { this.err = 'Pick a node first.'; return }
@@ -219,7 +242,7 @@ export class ServiceLaunchStore {
       const tmuxSession = `${providerId}-${c.port}`
       const data: any = await bridge().request('POST', '/api/ai/launch', { node: c.node, providerId, command, port: c.port, tmuxSession })
       if (data?.command && data?.pveHostIp) liveConsoleStore.openInstall(`launch:${tmuxSession}`, data.pveHostIp, data.command)
-      runInAction(() => { this.msg = `Launched ${providerId} on ${c.node}${c.port ? ':' + c.port : ''} — see the Live Console.` })
+      runInAction(() => { this.msg = `Launched ${providerId} on ${c.node}${c.port ? ':' + c.port : ''}${portNote} — see the Live Console.` })
     } catch (e: any) {
       runInAction(() => { this.err = 'Launch failed: ' + (e?.message || e) })
     } finally {
@@ -228,6 +251,8 @@ export class ServiceLaunchStore {
   }
 
   async launchAsService(providerId: string): Promise<void> {
+    if (!this.cards[providerId]?.node) { this.err = 'Pick a node first.'; return }
+    const portNote = await this.resolveFreePort(providerId)
     const c = this.cards[providerId]
     const command = this.command(providerId)
     if (!c?.node || !command) { this.err = 'Pick a node first.'; return }
@@ -242,7 +267,10 @@ export class ServiceLaunchStore {
         body.gpuPciIds = c.gpus.map((pid) => opts.find((g) => g.pciId === pid)?.pciId).filter(Boolean)
       }
       const r: any = await bridge().request('POST', '/api/ai/launch-service', body)
-      runInAction(() => { this.msg = r?.service ? `Service created for ${providerId} on port ${c.port} (auto-starts on boot).` : 'Launch-as-service submitted.' })
+      // The backend re-checks and can still move it (a port taken between the two checks): report ITS port.
+      const finalPort = Number(r?.port || r?.service?.port) || c.port
+      if (finalPort !== c.port) runInAction(() => { this.set(providerId, { port: finalPort }) })
+      runInAction(() => { this.msg = r?.service ? `Service created for ${providerId} on port ${finalPort}${portNote} (auto-starts on boot).` : 'Launch-as-service submitted.' })
     } catch (e: any) {
       runInAction(() => { this.err = 'Launch as service failed: ' + (e?.message || e) })
     } finally {

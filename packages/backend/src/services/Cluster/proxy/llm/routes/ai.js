@@ -2274,7 +2274,14 @@ if out: print(json.dumps(out))
   /** Point a launch command at a different port: the flag AND koboldcpp's embedded config. */
   function retargetCommandPort(cmd, oldPort, newPort) {
     let out = String(cmd == null ? '' : cmd);
-    out = out.replace(new RegExp(`(--port[=\\s]+)${oldPort}\\b`, 'g'), `$1${newPort}`);
+    // Every port spelling the launch templates use, not just --port: a launch moved to a free port
+    // whose script still said FORGE_PORT=8791 listened on the OLD port while registered on the new
+    // one - shown Down, then killed when the old service's teardown cleared "whatever holds 8791"
+    // (dataset-forge-8792, 2026-10-09).
+    out = out.replace(new RegExp(`(--(?:server[-_])?port[=\\s]+)${oldPort}\\b`, 'g'), `$1${newPort}`);
+    out = out.replace(new RegExp(`(\\b[A-Z][A-Z0-9_]*PORT=["']?)${oldPort}\\b`, 'g'), `$1${newPort}`);
+    out = out.replace(new RegExp(`(port(?:_number)?['"]\\]\\s*=\\s*)${oldPort}\\b`, 'g'), `$1${newPort}`);
+    out = out.replace(new RegExp(`(0\\.0\\.0\\.0:)${oldPort}\\b`, 'g'), `$1${newPort}`);
     // koboldcpp ships its config as a base64 JSON blob carrying its own "port" key; leaving that
     // stale would start the process on the old port regardless of the flag.
     out = out.replace(/echo '([A-Za-z0-9+/=]+)' \| base64 -d/, (m, b64) => {
