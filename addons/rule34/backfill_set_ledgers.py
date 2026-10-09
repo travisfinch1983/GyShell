@@ -34,7 +34,7 @@ for label, setdir in _all_set_dirs():
             path = os.path.join(root, f)
             base = os.path.join(root, ".orig", f)
             src = base if os.path.isfile(base) else path
-            m = re.match(r"^r34_(\d+)\.", f)
+            m = re.match(r"^r34_(\d+)(?:-\d+)?\.", f)
             if m:
                 pid = int(m.group(1))
             else:

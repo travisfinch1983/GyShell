@@ -285,7 +285,7 @@ def _set_members(d):
     for root, dirs, files in os.walk(d):
         dirs[:] = [x for x in dirs if not x.startswith(".")]
         for f in files:
-            m = re.match(r"^r34_(\d+)\.", f)
+            m = re.match(r"^r34_(\d+)(?:-\d+)?\.", f)
             if m:
                 ids.add(int(m.group(1)))
     return ids
