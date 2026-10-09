@@ -482,6 +482,17 @@ def main():
     # not be replaced from the UI however the box was filled in. Now the shape is composed.
     instruction = compose_instruction(a)
     avoid = (a.avoid or a.trigger or "").strip().rstrip(",")
+    # A trigger that is a real phrase ("satin_string_bikini_panties") can also be what the naming
+    # rule REQUIRES in the prose ("always call it '<colour> satin string bikini panties'"). Telling
+    # the model to avoid it then fights the naming rule and it compromises on "red satin panties"
+    # (7/7 captions, 2026-10-09). So when the naming rule contains the trigger's words, the naming
+    # rule wins: no avoid sentence and no leading-phrase strip. An explicit --avoid still applies.
+    def _norm(t):
+        return " ".join(re.findall(r"[a-z0-9]+", t.lower()))
+    if avoid and not a.avoid and a.naming.strip() and _norm(a.trigger) and \
+            (" %s " % _norm(a.trigger)) in (" %s " % _norm(a.naming)):
+        print("avoid rule skipped: the naming rule uses the trigger words %r" % _norm(a.trigger), flush=True)
+        avoid = ""
     if avoid:
         instruction += (
             "\n\nDo NOT include the phrase \"%s\" (or an underscored/hyphenated form of it) in "
