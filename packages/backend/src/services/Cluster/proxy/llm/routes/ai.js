@@ -2243,6 +2243,12 @@ if out: print(json.dumps(out))
       // kvcache-proxy companions sit on their own port derived from the service port.
       if (s.vmid === vmid && s.kvProxyPort) taken.add(Number(s.kvProxyPort));
     }
+    // A port whose old service is still being torn down is NOT free: a relaunch there reuses the
+    // same unit/script names, and the pending teardown then deletes the NEW service (Beholder on
+    // 5002, 2026-10-09: relaunched 21 s after its removal was queued, stopped by retry 1).
+    for (const e of Object.values(loadPendingRemovals())) {
+      if (Number(e.vmid) === Number(vmid) && e.port) taken.add(Number(e.port));
+    }
 
     let probed = false;
     try {
@@ -4169,12 +4175,23 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
       const map = loadPendingRemovals();
       const keys = Object.keys(map);
       if (!keys.length) return;
+      const done = new Set();
       for (const key of keys) {
         const e = map[key];
         if (e.nextAttemptAt && Date.now() < e.nextAttemptAt) continue;
+        // Never tear down a unit that a DIFFERENT, newer service now owns: teardown kills by unit,
+        // script and port, so it would destroy the relaunch instead of the orphan it was queued for.
+        const owner = Object.values(loadActiveServices().services || {}).find((s) =>
+          s.id !== e.id && Number(s.vmid) === Number(e.vmid) &&
+          ((e.systemdUnit && s.systemdUnit === e.systemdUnit) || (e.port && Number(s.port) === Number(e.port))));
+        if (owner) {
+          done.add(key);
+          console.warn(`[service-teardown] DROPPED ${key}: now owned by ${owner.id} (relaunched) - not tearing down the new service`);
+          continue;
+        }
         const res = await teardownService(e);
         if (res.ok) {
-          delete map[key];
+          done.add(key);
           console.log(`[service-teardown] retry SUCCEEDED, ${key} is gone (after ${e.attempts + 1} attempt(s))`);
         } else {
           e.attempts += 1;
@@ -4185,7 +4202,13 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
           console.warn(`[service-teardown] retry ${e.attempts} FAILED for ${key}: ${res.reason}`);
         }
       }
-      savePendingRemovals(map);
+      // Merge into a FRESH read: entries queued while this drain ran (minutes, over SSH) must survive.
+      const fresh = loadPendingRemovals();
+      for (const key of keys) {
+        if (done.has(key)) delete fresh[key];
+        else if (fresh[key] && map[key]) Object.assign(fresh[key], { attempts: map[key].attempts, lastError: map[key].lastError, nextAttemptAt: map[key].nextAttemptAt });
+      }
+      savePendingRemovals(fresh);
     } catch (err) {
       console.error(`[service-teardown] drain error: ${err.message}`);
     } finally {
@@ -8139,9 +8162,13 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
     const services = Object.entries(state.services || {});
     if (!services.length) return;
 
+    // Services with a teardown queued are being REMOVED: probing them raises false alerts and a
+    // restart races the teardown (llama-server-5002, 2026-10-09: restart issued 2 s before it finished).
+    const removing = Object.values(loadPendingRemovals());
     for (const [id, svc] of services) {
       if (!svc.isSystemService || !svc.containerIp || !svc.port) continue;
       if (svc.suspended) continue;
+      if (removing.some((e) => e.id === id || (Number(e.vmid) === Number(svc.vmid) && e.systemdUnit && e.systemdUnit === svc.systemdUnit))) continue;
 
       // Startup grace period — skip health checks for newly started/restarted services
       const graceSec = STARTUP_GRACE[svc.providerId] || STARTUP_GRACE.default;
