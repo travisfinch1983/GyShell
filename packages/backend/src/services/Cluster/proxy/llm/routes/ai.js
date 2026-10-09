@@ -6470,7 +6470,9 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
   // through the container's OWN mount points (pct config), re-checked after mapping. No manifest entry:
   // the services own that folder's index, quotas and eviction. One copy at a time per node.
   const CF_DST_ROOTS = ['/model-cache/ailab-modelsvc/'];
-  const CF_SRC_ROOTS = ['/imagegen/', '/optane-sock0/ailab-modelsvc/'];
+  // /disk-cache = px-epyc's on-disk persistent tier (ZFS ct-pool/data/ailab-modelsvc-disk), the role
+  // Optane plays on px-gpu.
+  const CF_SRC_ROOTS = ['/imagegen/', '/optane-sock0/ailab-modelsvc/', '/disk-cache/ailab-modelsvc/'];
   const CF_SAFE = /^\/[A-Za-z0-9 ._+(),@=~\[\]\/-]+$/;   // no quotes, $, `, \, newlines
   const cfMounts = {};   // vmid -> { at, hostname, unprivileged, mps: [{host, ct}] }
   const cfQueues = {};   // node -> Promise chain
