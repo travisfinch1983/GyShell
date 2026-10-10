@@ -342,7 +342,7 @@ export function createVectorProxyRouter() {
     const input = Array.isArray(texts) ? texts : [texts];
     const resp = await fetch(EMBED_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-ailab-source': 'vector-proxy' },
       body: JSON.stringify({ model: ragModelCfg().embedModel, input }),
       signal: AbortSignal.timeout(60000),
     });

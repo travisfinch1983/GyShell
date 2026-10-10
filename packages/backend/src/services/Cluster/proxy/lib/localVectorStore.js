@@ -81,7 +81,7 @@ export function createLocalVectorStore({ file, embedUrl, embedModel }) {
       const model = embedModel()
       const resp = await fetch(embedUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-ailab-source': 'inventory-vectors' },
         body: JSON.stringify({ model, input: texts.map((t) => (t.length > 5000 ? t.slice(0, 5000) : t)) }),
         signal: AbortSignal.timeout(60000),
       })

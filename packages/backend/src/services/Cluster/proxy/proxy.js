@@ -149,6 +149,7 @@ const EMBED_KEYWORDS = ['embed', 'bge-', 'e5-', 'gte-', 'encoding', 'encoder'];
 const RERANK_KEYWORDS = ['rerank', 'ranker', 'cross-encoder'];
 /** Rerank requests the backend is still working on, per `ip:port` (see the /rerank route). */
 const rerankInflight = new Map();
+import { beginVectorCall, resolveVectorSource } from './lib/vectorActivity.js';
 
 // ─── TTS/STT Provider Capabilities ─────────────────────────────────────────
 // `clipVoice` = synthesises from a reference voice CLIP (as opposed to a fixed
@@ -1152,7 +1153,12 @@ function bufferBody(req) {
  */
 function proxyBuffered(req, res, targetHost, targetPort, targetPath, body, capture, onDone) {
   let doneFired = false;
-  const fireDone = (ok) => { if (!doneFired) { doneFired = true; try { onDone && onDone({ completed: ok }); } catch {} } };
+  // `completed` is TRANSPORT truth (stream finished) - a 400 response completes fine, so
+  // `status` carries the HTTP verdict for callers that need it (vector-activity error
+  // tracking: embed 400s are exactly the lone-surrogate failure shape and must not read
+  // as success). Additive: existing callers destructure { completed } only.
+  let upstreamStatus = 0;
+  const fireDone = (ok) => { if (!doneFired) { doneFired = true; try { onDone && onDone({ completed: ok, status: upstreamStatus }); } catch {} } };
   const proxyReq = http.request(
     {
       hostname: targetHost,
@@ -1167,6 +1173,7 @@ function proxyBuffered(req, res, targetHost, targetPort, targetPath, body, captu
     },
     (proxyRes) => {
       const isSSE = (proxyRes.headers['content-type'] || '').includes('event-stream');
+      upstreamStatus = proxyRes.statusCode || 0;
       res.writeHead(proxyRes.statusCode, proxyRes.headers);
 
       // Optional response capture (tool-call metrics) — accumulate a text copy without disturbing the
@@ -1962,8 +1969,17 @@ export function createProxyRouter(sshService) {
         out = Buffer.from(JSON.stringify(parsed));
       } catch {}
     }
+    let nItems = 1;
+    try { const p = JSON.parse(out.toString()); nItems = Array.isArray(p.input) ? p.input.length : 1; } catch {}
+    const vcall = beginVectorCall('embed', resolveVectorSource(req), nItems);
     proxyBuffered(req, res, svc.containerIp, svc.port, downstreamPath, out, undefined,
-      ({ completed }) => { if (completed) markSuccess(svc); else markFailure(svc); });
+      ({ completed, status }) => {
+        const httpOk = completed && (!status || status < 400);
+        vcall.end(httpOk, status || 0, httpOk ? '' : (completed ? `upstream ${status}` : 'transport failed'));
+        // Pool health keeps its original transport semantics - a 400 is the CALLER's
+        // fault, not the instance's; only vector-activity judges on HTTP status.
+        if (completed) markSuccess(svc); else markFailure(svc);
+      });
   });
 
   // ─── Universal Rerank Endpoint: /rerank/v1/* & /rerank/v2/* ─────────
@@ -2051,10 +2067,12 @@ export function createProxyRouter(sshService) {
       if (trimmed && trimmed.total > trimmed.kept) console.log(`[rerank] trimmed ${trimmed.total} -> ${trimmed.kept} docs from ${who}`);
       if (cur >= cap) {
         console.warn(`[rerank] ${key} busy (${cur}/${cap} in flight) - refused ${ndocs} docs from ${req.ip || req.socket?.remoteAddress} ua=${String(req.headers['user-agent'] || '-').slice(0, 40)}`);
+        beginVectorCall('rerank', resolveVectorSource(req), ndocs).end(false, 503, 'refused: reranker busy');
         return res.status(503).json({ error: 'reranker busy', inflight: cur, cap });
       }
       rerankInflight.set(key, cur + 1);
       const t0 = Date.now();
+      const vcall = beginVectorCall('rerank', resolveVectorSource(req), ndocs);
       let released = false;
       const release = () => { if (!released) { released = true; rerankInflight.set(key, Math.max(0, (rerankInflight.get(key) || 1) - 1)); } };
       const ctrl = new AbortController();
@@ -2081,10 +2099,12 @@ export function createProxyRouter(sshService) {
         release();
         const ms = Date.now() - t0;
         if (ms > 5000) console.warn(`[rerank] slow: ${ndocs} docs took ${ms} ms on ${key} for ${who}`);
+        vcall.end(up.ok, up.status, up.ok ? '' : `rerank upstream ${up.status}`);
         if (up.ok) markSuccess(svc); else markFailure(svc);
         if (!res.writableEnded && !res.destroyed) res.status(up.status).type(up.headers.get('content-type') || 'application/json').send(text);
       } catch (e) {
         release();
+        vcall.end(false, 0, e.message);
         markFailure(svc);
         console.warn(`[rerank] ${key} failed after ${Date.now() - t0} ms (${ndocs} docs): ${e.message}`);
         if (!res.headersSent && !res.destroyed) res.status(502).json({ error: `Proxy error: ${e.message}` });

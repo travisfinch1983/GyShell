@@ -298,3 +298,16 @@ $sev-error: #e07b39;
   50% { margin-left: 60%; }
   100% { margin-left: 0; }
 }
+
+/* Background vector work section */
+.vecList { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; max-height: 150px; }
+.vecRow { display: flex; align-items: baseline; gap: 8px; font-size: 11.5px; padding: 3px 6px; border-radius: 5px; }
+.vecRow:hover { background: rgba(128, 128, 128, 0.08); }
+.vecOp { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; padding: 1px 6px; border-radius: 4px; flex: 0 0 auto; }
+.vecOpEmbed { background: rgba(80, 140, 255, 0.16); color: #7ab0ff; }
+.vecOpRerank { background: rgba(170, 110, 255, 0.16); color: #c09aff; }
+.vecSource { font-weight: 600; color: var(--fg); flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vecStat { color: var(--fg-muted); flex: 0 0 auto; }
+.vecTotals { color: var(--fg-muted); opacity: 0.75; margin-left: auto; flex: 0 0 auto; }
+.vecErr { color: #ff6b6b; font-weight: 600; flex: 0 0 auto; }
+.vecWarnMuted { color: var(--fg-muted); opacity: 0.7; flex: 0 0 auto; }

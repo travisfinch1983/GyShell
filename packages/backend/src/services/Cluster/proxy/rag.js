@@ -552,12 +552,27 @@ function processRagQueue() {
       // while undefined, then was guard-skipped with a warning until now).
       // Same containment as the indexing branch: an unhandled rejection in a
       // timer callback is just as fatal as a throw.
+      // Claim the runner slot SYNCHRONOUSLY. runRagUpdate spends its first phases in
+      // awaits (manifest read, ls-remote preflight, vector drop) before runRagIndexing
+      // sets ragJob.active — the 3s queue ticker used to dequeue MORE items through that
+      // window (2026-10-09: five collections re-indexing in parallel, embedder queue 82
+      // deep, shared status garbled). One flag claimed before the first await closes it;
+      // every exit of runRagUpdate releases it via the .finally below, and the release
+      // runs in microtasks, ahead of the 500ms re-dispatch the inner indexer schedules.
+      ragJob.active = true;
+      ragJob.phase = 'preparing';
+      ragJob.progress = 0;
+      ragJob.detail = 'Refresh starting: manifest + preflight\u2026';
+      ragJob.collection = next.collection;
+      ragJob.error = null;
       runRagUpdate(next.collection).catch((err) => {
         console.error(`[rag-queue] update '${next.collection}' failed:`, err);
+        ragJob.error = ragJob.error || String(err?.message ?? err);
+        ragJob.phase = 'error';
         void emitNotification('warning', 'codebase-rag',
           'A codebase-RAG collection refresh failed',
           `Collection '${next.collection}': ${err?.message ?? err}`);
-      });
+      }).finally(() => { ragJob.active = false; });
     } else {
       // next.resume is set by the auto-retry path: resume finishes the outstanding files
       // from the checkpoint instead of re-cloning and re-indexing the whole repo.
@@ -1357,6 +1372,9 @@ async function upsertDocPoints(port, colName, points) {
  */
 const EMBED_RETRY_MS = Number(process.env.EMBED_RETRY_MS || 5 * 60 * 1000);
 async function embedFetch(url, init = {}) {
+  // Attribution for the vector-activity panel: name the job driving this call.
+  init.headers = { ...(init.headers || {}), 'x-ailab-source':
+    ragJob.active && docRagJob.active ? 'rag (mixed)' : docRagJob.active ? 'doc-rag' : 'codebase-rag' };
   const deadline = Date.now() + EMBED_RETRY_MS;
   let delay = 5000, attempt = 0;
   for (;;) {
@@ -1823,9 +1841,17 @@ function setupRagAutoSync(cfg) {
   if (!cfg.enabled) return;
   ragAutoSyncTimer = setInterval(async () => {
     const now = new Date();
-    const hhmm = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    // The schedule is wall-clock LOCAL time (Travis's, not the host's): CT152 runs
+    // Etc/UTC, so getHours() made "01:00" fire at 18:00 in Arizona. America/Phoenix
+    // has no DST, but Intl handles it correctly even if the zone is ever changed.
+    const TZ = process.env.AILAB_LOCAL_TZ || 'America/Phoenix';
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: TZ, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', weekday: 'short',
+    }).formatToParts(now);
+    const part = (t) => parts.find((p) => p.type === t)?.value || '';
+    const hhmm = part('hour') + ':' + part('minute');
     if (hhmm !== (cfg.time || '01:00')) return;
-    if (cfg.frequency === 'weekly' && now.getDay() !== 0) return;
+    if (cfg.frequency === 'weekly' && part('weekday') !== 'Sun') return;
     console.log('[rag-autosync] Running scheduled update-all at ' + hhmm);
       void emitDebug('rag-autosync', `scheduled ${cfg.frequency} update-all firing at ${hhmm}`);
     try {
@@ -1856,6 +1882,43 @@ app.put('/api/ai/rag/autosync', express.json(), (req, res) => {
   res.json(cfg);
 });
 try { setupRagAutoSync(loadRagAutoSyncConfig()); } catch {}
+
+// ── Task Progress mirror (Travis, 2026-10-09) ────────────────────────────────────
+// A running RAG index was invisible: nothing reported it to the Task Progress
+// registry, so the panel showed no entry while the embedder sat pinned for hours.
+// A 2s poller mirrors ragJob/docRagJob into POST /api/notifications/task (the
+// documented reporter path; same process, loopback). Poller-origin, per the
+// registry's knower-beats-inferrer rule.
+function mirrorJobToTask(job, idBase, labelPrefix, queueLen, st) {
+  const post = (body) => fetch(`http://127.0.0.1:${selfPort}/api/notifications/task`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body), signal: AbortSignal.timeout(3000),
+  }).catch(() => {});
+  const m = /([0-9]+)\/([0-9]+) files/.exec(job.detail || '');
+  const done = m ? Number(m[1]) : 0;
+  const total = m ? Number(m[2]) : 0;
+  const base = {
+    id: `${idBase}:index`, source: idBase, origin: 'poller',
+    label: `${labelPrefix}: ${job.collection || '\u2026'}`,
+    done, total, ...(total > 0 ? {} : { percent: Number(job.progress) || 0 }),
+  };
+  if (job.active) {
+    st.wasActive = true;
+    void post({ ...base, state: 'running',
+      detail: `${job.phase || ''} \u2014 ${job.detail || ''}${queueLen ? ` (+${queueLen} queued)` : ''}` });
+  } else if (st.wasActive) {
+    st.wasActive = false;
+    void post({ ...base, state: job.error ? 'failed' : 'done',
+      detail: job.error || job.detail || 'finished' });
+  }
+}
+const _ragTaskMirror = { rag: { wasActive: false }, doc: { wasActive: false } };
+setInterval(() => {
+  try {
+    mirrorJobToTask(ragJob, 'codebase-rag', 'RAG index', ragQueue.length, _ragTaskMirror.rag);
+    mirrorJobToTask(docRagJob, 'doc-rag', 'Doc index', 0, _ragTaskMirror.doc);
+  } catch (e) { console.warn(`[rag-task-mirror] tick failed (contained): ${e?.message || e}`); }
+}, 2000).unref?.();
 
   // ── Resume anything a restart interrupted ──
   // Runs once, shortly after boot so the embedder and vector DBs have settled. Every failure is

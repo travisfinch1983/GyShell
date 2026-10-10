@@ -858,13 +858,22 @@ export class NotificationsService {
   /** Task Progress registry (panel section + bell pip). Public: routers and pollers report into it. */
   readonly tasks: TaskProgress
   readonly clips: ClipboardDrops
+  /** Snapshot fn from the proxy's vector-activity tracker (JS module, loaded lazily so a
+   *  broken import degrades to an empty section rather than a dead service). */
+  private vectorActivitySnap: (() => { windowSec: number; buckets: unknown[] }) | null = null
   /** In-process reporting hook for routers that predate this service (imagegen.js etc.). */
   taskReport(t: TaskReportInput): void { this.tasks.report(t) }
 
-  state(): { health: HealthState[]; events: NotifyEvent[]; debug: Array<{ ts: string; source: string; message: string }>; intervalMs: number; routing: ReturnType<NotificationsService['routingState']>; tasks: ReturnType<TaskProgress['state']> } {
+  state(): { health: HealthState[]; events: NotifyEvent[]; debug: Array<{ ts: string; source: string; message: string }>; intervalMs: number; routing: ReturnType<NotificationsService['routingState']>; tasks: ReturnType<TaskProgress['state']>; vectorActivity: { windowSec: number; buckets: unknown[] } } {
+    if (!this.vectorActivitySnap) {
+      void import('../Cluster/proxy/lib/vectorActivity.js')
+        .then((m) => { this.vectorActivitySnap = m.vectorActivitySnapshot })
+        .catch(() => { /* section stays empty; the tracker lives in the proxy module */ })
+    }
     return {
       health: [...this.health.values()],
       tasks: this.tasks.state(),
+      vectorActivity: this.vectorActivitySnap ? this.vectorActivitySnap() : { windowSec: 60, buckets: [] },
       // EVERY unacked event, plus the newest ACKED_VIEW acked ones, in original order.
       // slice(-200) hid outstanding events behind a burst of routine ones, and this is
       // the surface maintenance-claude triages from.

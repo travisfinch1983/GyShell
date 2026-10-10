@@ -31,6 +31,18 @@ export interface DebugEntry {
   message: string
 }
 
+export interface VectorBucket {
+  op: 'embed' | 'rerank'
+  source: string
+  rpm: number; ipm: number; epm: number
+  inflight: number
+  totalReq: number; totalItems: number; totalErrs: number
+  consecutiveErrs: number
+  lastError: { status: number; msg: string; ts: string } | null
+  lastSeen: string | null
+  firstSeen: string
+}
+
 export interface TaskEntry {
   id: string
   source: string
@@ -75,6 +87,9 @@ class NotificationsStore {
   debug: DebugEntry[] = []
   /** Task Progress registry — every tracked long-running task in AI-Lab. */
   tasks: TaskEntry[] = []
+  /** Background vector work (embed/rerank through the proxy), per attributed source. */
+  vectorActivity: VectorBucket[] = []
+  private fastPollTimer: ReturnType<typeof setInterval> | null = null
   loaded = false
   available = true
   error: string | null = null
@@ -215,6 +230,7 @@ class NotificationsStore {
         this.health = s.health ?? []
         this.debug = s.debug ?? []
         this.tasks = s.tasks?.tasks ?? []
+        this.vectorActivity = (s.vectorActivity?.buckets ?? []) as VectorBucket[]
         this.routing = s.routing ?? null
         this.error = null
       })
@@ -223,6 +239,17 @@ class NotificationsStore {
         this.error = e instanceof Error ? e.message : String(e)
       })
     }
+  }
+
+  /** Faster refresh while the panel is OPEN — vector activity moves per-second and has no
+   *  broadcast channel on purpose (it would firehose the gateway). 5s poll, panel-scoped. */
+  startFastPoll(): void {
+    if (this.fastPollTimer) return
+    this.fastPollTimer = setInterval(() => void this.refresh(), 5_000)
+  }
+  stopFastPoll(): void {
+    if (this.fastPollTimer) clearInterval(this.fastPollTimer)
+    this.fastPollTimer = null
   }
 
   /** Suspend or resume forwarding to the maintenance agent. */

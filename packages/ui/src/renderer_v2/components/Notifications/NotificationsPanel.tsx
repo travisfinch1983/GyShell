@@ -7,6 +7,7 @@ import {
   type HealthState,
   type NotifyEvent,
   type TaskEntry,
+  type VectorBucket,
 } from '../../stores/NotificationsStore'
 import styles from './Notifications.module.scss'
 
@@ -17,6 +18,33 @@ function fmtTime(iso: string): string {
   return sameDay
     ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     : `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+}
+
+const ago = (iso: string | null): string => {
+  if (!iso) return '—'
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000))
+  return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`
+}
+
+/** One attributed stream of background vector work. Red only when it is actually failing. */
+const VectorRow: React.FC<{ b: VectorBucket }> = ({ b }) => {
+  const failing = b.consecutiveErrs > 0
+  const active = b.rpm > 0 || b.inflight > 0
+  return (
+    <div className={styles.vecRow} title={b.lastError ? `last error: ${b.lastError.status} ${b.lastError.msg} @ ${b.lastError.ts}` : `first seen ${ago(b.firstSeen)}`}>
+      <span className={`${styles.vecOp} ${b.op === 'embed' ? styles.vecOpEmbed : styles.vecOpRerank}`}>{b.op}</span>
+      <span className={styles.vecSource}>{b.source}</span>
+      <span className={styles.vecStat}>
+        {active
+          ? `${b.rpm}/min · ${b.ipm} items/min${b.inflight ? ` · ${b.inflight} in flight` : ''}`
+          : `idle · last ${ago(b.lastSeen)}`}
+      </span>
+      <span className={styles.vecTotals}>{b.totalReq.toLocaleString()} calls · {b.totalItems.toLocaleString()} items</span>
+      {failing
+        ? <span className={styles.vecErr}>{b.consecutiveErrs} consecutive failures</span>
+        : b.totalErrs > 0 ? <span className={styles.vecWarnMuted}>{b.totalErrs} errors total</span> : null}
+    </div>
+  )
 }
 
 const TaskRow: React.FC<{ t: TaskEntry }> = ({ t }) => {
@@ -138,6 +166,11 @@ export const NotificationsPanel: React.FC<{ onClose: () => void }> = observer(({
   const events = [...store.events].reverse().filter((e) => e.severity !== 'info' || !e.acked)
   const unackedTotal = store.unacked.warning + store.unacked.error + store.unacked.critical
 
+    useEffect(() => {
+    store.startFastPoll()
+    return () => store.stopFastPoll()
+  }, [])
+
   return (
     <>
       <div className={styles.backdrop} onClick={onClose} />
@@ -208,6 +241,20 @@ export const NotificationsPanel: React.FC<{ onClose: () => void }> = observer(({
             // shrinkable section, so past ~5 tasks they overflowed ON TOP of Warnings & errors.
             <div className={styles.taskList}>
               {store.tasks.map((t) => <TaskRow key={t.id} t={t} />)}
+            </div>
+          )}
+        </div>
+
+        <div className={styles.section}>
+          <div className={styles.sectionHead}>
+            Background vector work
+            {store.vectorActivity.some((b) => b.rpm > 0 || b.inflight > 0) ? ' (active)' : ''}
+          </div>
+          {store.vectorActivity.length === 0 ? (
+            <div className={styles.emptyNote}>No embed/rerank traffic since the backend started.</div>
+          ) : (
+            <div className={styles.vecList}>
+              {store.vectorActivity.map((b) => <VectorRow key={`${b.op}|${b.source}`} b={b} />)}
             </div>
           )}
         </div>
