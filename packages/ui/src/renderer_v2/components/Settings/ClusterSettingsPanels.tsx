@@ -727,9 +727,10 @@ const ModelSourcesSection: React.FC<{ catalog: CatalogModel[]; onChanged: () => 
             <datalist id="known-source-tags">
               {KNOWN_SOURCE_TAGS.filter((t) => t !== 'AI-LAB').map((t) => <option key={t} value={t} />)}
             </datalist>
-            <select style={{ ...smallInp, width: 120 }} value={d.transport ?? 'openai_chat'} onChange={(ev) => up(i, { transport: ev.target.value as 'openai_chat' | 'anthropic' })}>
+            <select style={{ ...smallInp, width: 120 }} value={d.transport ?? 'openai_chat'} onChange={(ev) => up(i, { transport: ev.target.value as 'openai_chat' | 'anthropic' | 'wiro' })}>
               <option value="openai_chat">openai_chat</option>
               <option value="anthropic">anthropic</option>
+              <option value="wiro" title="Wiro.ai image/video runs - served at /api/proxy/imagegen/v1/wiro/* (no chat models)">wiro</option>
             </select>
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--fg-muted)' }}>
               <input type="checkbox" checked={d.enabled !== false} onChange={(ev) => up(i, { enabled: ev.target.checked })} /> enabled

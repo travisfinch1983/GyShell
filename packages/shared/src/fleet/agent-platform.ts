@@ -48,8 +48,8 @@ export const externalModelSourceSchema = z.object({
   /** `[TAG]` prefixed onto this source's model ids in the unified catalog. */
   tag: sourceTagSchema,
   displayName: z.string().min(1),
-  /** upstream API dialect the proxy speaks. */
-  transport: z.enum(['openai_chat', 'anthropic']),
+  /** upstream API dialect the proxy speaks. `wiro` = Wiro.ai image/video runs (no chat models; /api/proxy/imagegen/v1/wiro/*). */
+  transport: z.enum(['openai_chat', 'anthropic', 'wiro']),
   /** upstream base URL, e.g. https://api.deepseek.com/v1 or an OAuth-backed proxy base. */
   baseUrl: z.string().url(),
   /**
@@ -58,6 +58,10 @@ export const externalModelSourceSchema = z.object({
    * parsed-out reference. Optional (some upstreams — incl. LAN-open proxies — need none).
    */
   apiKey: z.string().optional(),
+  /** wiro: the project's signature-mode secret (x-signature); unused while the project is in API-key mode. */
+  apiSecret: z.string().optional(),
+  /** wiro: refuse new runs once today's (UTC) spend reaches this many USD. Default 25. */
+  dailyBudgetUsd: z.number().nonnegative().optional(),
   /** Optional alternative: reference a general-vault credential id instead of an inline key. */
   apiKeyRef: z.string().optional(),
   /** Optional SEPARATE admin/usage key for providers whose balance/usage reporting needs a

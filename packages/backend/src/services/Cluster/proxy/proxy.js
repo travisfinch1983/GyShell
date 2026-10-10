@@ -22,6 +22,7 @@
 import { Router } from 'express';
 import * as fsForState from 'fs';
 import { loadJsonState, emitNotification } from './lib/notify.js';
+import { createWiroRoutes } from './lib/wiro.js';
 import http from 'http';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
@@ -278,7 +279,11 @@ function externalTransportEndpoints(source) {
 // Model ids a source exposes: discovery 'list' => source.models; 'auto' => GET the
 // transport's models endpoint (optionally allow-filtered by source.models). Best-effort —
 // unreachable/unauthorized sources yield [].
+// Non-chat sources (Wiro.ai: image/video runs, served by lib/wiro.js) carry no chat models and no balance endpoint.
+const NON_CHAT_TRANSPORTS = new Set(['wiro']);
+
 async function fetchExternalSourceModels(source) {
+  if (NON_CHAT_TRANSPORTS.has(source.transport)) return [];
   if (source.discovery === 'list') return Array.isArray(source.models) ? source.models : [];
   try {
     const key = resolveExternalSourceKey(source);
@@ -319,6 +324,7 @@ async function fetchExternalSourceModels(source) {
 // enable checkboxes + cost columns so a user can curate (e.g. 20 of OpenRouter's ~340). Pricing
 // from OpenAI-compat/OpenRouter `/models` is per-TOKEN; we surface per-1M-tokens for readability.
 async function fetchExternalSourceModelsRaw(source) {
+  if (NON_CHAT_TRANSPORTS.has(source.transport)) return [];
   if (source.discovery === 'list') {
     return (Array.isArray(source.models) ? source.models : []).map((id) => ({ id, name: id }));
   }
@@ -372,6 +378,7 @@ async function fetchExternalSourceModelsRaw(source) {
 // Anthropic: no balance on a standard key (admin key required) → supported:false. Used for the
 // AI-Lab credit tracker (current balance + historical snapshots → cost-over-time).
 async function fetchExternalSourceBalance(source) {
+  if (NON_CHAT_TRANSPORTS.has(source.transport)) return { supported: false, currency: 'USD', checkedAt: Date.now(), note: 'see /api/proxy/imagegen/v1/wiro/usage' };
   const key = resolveExternalSourceKey(source);
   const host = String(source.baseUrl || '').replace(/\/v1\/?$/, '').replace(/\/$/, '');
   const out = { supported: false, currency: 'USD', checkedAt: Date.now() };
@@ -2178,6 +2185,7 @@ export function createProxyRouter(sshService) {
       hasKey: !!s.apiKey,
       adminApiKey: s.adminApiKey ? `***${String(s.adminApiKey).slice(-4)}` : undefined,
       hasAdminKey: !!s.adminApiKey,
+      apiSecret: s.apiSecret ? `***${String(s.apiSecret).slice(-4)}` : undefined,
     }));
     res.json(redacted);
   });
@@ -2202,6 +2210,9 @@ export function createProxyRouter(sshService) {
         if (idx >= 0 && (!src.adminApiKey || String(src.adminApiKey).startsWith('***'))) {
           src.adminApiKey = sources[idx].adminApiKey;
         }
+        // Fields the editor may not render (Wiro's signature-mode secret + spend cap): keep them across UI edits.
+        if (idx >= 0 && (!src.apiSecret || String(src.apiSecret).startsWith('***'))) src.apiSecret = sources[idx].apiSecret;
+        if (idx >= 0 && src.dailyBudgetUsd === undefined && sources[idx].dailyBudgetUsd !== undefined) src.dailyBudgetUsd = sources[idx].dailyBudgetUsd;
         if (idx >= 0) sources[idx] = src; else sources.push(src);
         saveExternalModelSources(sources);
         invalidateModelCache();
@@ -2396,6 +2407,9 @@ export function createProxyRouter(sshService) {
       res.status(500).json({ error: String(e?.message || e) });
     }
   });
+
+  // Wiro.ai (transport "wiro" external source): run/poll/discover with the key added server-side. See lib/wiro.js.
+  createWiroRoutes(router, { loadSources: loadExternalModelSources, dataDir: PROXY_DATA_DIR, bufferBody, emitNotification });
 
   /** GET /imagegen/v1/comfyui - every registered ComfyUI instance, for Builder Studio's orchestrator pool
    *  (claude2 / Travis, 2026-10-10): where it is, which GPUs it is pinned to (friendly name follows the card
