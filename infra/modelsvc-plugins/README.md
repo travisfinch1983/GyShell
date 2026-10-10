@@ -13,5 +13,14 @@ Install on a host (done on ai-gpu 2026-10-10):
 
 Measured (2x V100 NV2, Krea 2 Turbo int8, 8 steps, 1024^2): sampling 15.3 s USP vs 25.1 s one GPU (1.64x).
 Output is not bit-identical to one GPU (fp16 split). Allowed models: env `USP_MODELS` (default Krea 2).
-Known gaps: no LoRAs; one warm group per service; a client that drops without `usp_end` leaves its run
-record (the lease itself is reclaimed by the service's idle revocation); first run after idle is ~8 s slower.
+LoRAs: merged into each worker's weights at group spawn (raylight RAY_LORA list); the warm group is keyed by
+model + LoRAs + GPUs, so changing LoRAs costs a respawn (~16 s + load). Verified 2026-10-10 with a trained Krea 2
+LoRA: USP+LoRA matches the single-GPU+LoRA render in content (not pixels), and differs clearly from no-LoRA.
+
+🛑 Ray must be started from a LONG-LIVED thread: its GCS/raylet carry PR_SET_PDEATHSIG, which fires when the
+starting THREAD exits. ray.init inside a request handler killed Ray ~1 s after the client disconnected, and Ray's
+driver then terminated the whole service. usp.py runs every ray.init/kill on its own `usp-ray` thread, and uses
+its own RAYLIGHT_RAY_TMPDIR (raylight rmtree()s that dir on every init, so a shared one is unsafe).
+
+Known gaps: one warm group per service; a client that drops without `usp_end` leaves its run record (the lease
+itself is reclaimed by the service's idle revocation); first run after idle is ~8 s slower.

@@ -12,12 +12,13 @@ Ops (the Remote UNET node's "usp (N GPUs)" mode; same shapes as begin/forward/en
   usp_forward {x, t, args, put}                    -> {out}
   usp_end     {}                                   -> {ok}
 Only models matching USP_MODELS (regex, default Krea 2) are accepted: raylight's Qwen 2.1 path is BETA and was
-SLOWER than one GPU in our tests. LoRAs are not supported yet (refused clearly). One warm worker group per
-service; a run with another model / GPU set replaces it.
+SLOWER than one GPU in our tests. LoRAs are merged into the workers' weights at group spawn. One warm worker
+group per service, keyed by model + LoRAs + GPUs; a run with a different key replaces it (~16 s + load).
 """
 import os
 import re
 import sys
+import concurrent.futures
 import threading
 import time
 import traceback
@@ -30,6 +31,14 @@ ATTENTION = os.environ.get("USP_ATTENTION", "TORCH_EFFICIENT")   # V100: memory-
 def register(api):
     torch = api.torch
     lock = threading.Lock()            # one group change / spawn at a time
+    # 🛑 Ray starts its GCS + raylet with PR_SET_PDEATHSIG, which fires when the THREAD that started them exits, not
+    # the process. ray.init from a request's handler thread therefore killed the whole Ray cluster ~1 s after that
+    # client disconnected - and Ray's driver then terminated the service ("Failed to connect to GCS ... will terminate",
+    # svc-9310 2026-10-10 03:45). Every ray.init / ray.kill runs on this one long-lived thread instead.
+    ray_thread = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="usp-ray")
+    # Own Ray temp dir: raylight's initializer rmtree()s <RAYLIGHT_RAY_TMPDIR>/ray, so any other raylight process on
+    # this host (the /opt/comfyui-raylight test bed) sharing the default /tmp/raylight-ray would delete our live session.
+    os.environ.setdefault("RAYLIGHT_RAY_TMPDIR", f"/tmp/ailab-modelsvc-ray-{getattr(api.args, 'port', 'x')}")
     group = {"key": None, "actors": None, "gpus": None, "loaded_at": 0.0}
     runs = {}                          # id(session) -> run state
 
@@ -76,8 +85,8 @@ def register(api):
             return [str(g) for g in gpus]
         return [cvd[g] for g in gpus]
 
-    def _ensure_group(model, gpus):
-        key = (model, tuple(gpus))
+    def _ensure_group(model, loras, gpus):
+        key = (model, loras, tuple(gpus))
         if group["key"] == key and group["actors"] is not None:
             return group["actors"]
         rn, RayGGUFLoader = _imports()
@@ -98,12 +107,15 @@ def register(api):
                 os.environ.pop("CUDA_VISIBLE_DEVICES", None)
             else:
                 os.environ["CUDA_VISIBLE_DEVICES"] = saved
+        # LoRAs are merged into each worker's weights at load (raylight's RAY_LORA list), so a different LoRA
+        # set means a different group: the warm group is keyed by model + LoRAs + GPUs.
+        lora = [{"path": api.full_path("lora", n), "strength_model": s} for n, s in loras] or None
         if model.lower().endswith(".gguf"):
-            (actors,) = RayGGUFLoader().load_ray_unet(init, model, "default", "default")
+            (actors,) = RayGGUFLoader().load_ray_unet(init, model, "default", "default", lora=lora)
         else:
-            (actors,) = rn.RayUNETLoader().load_ray_unet(init, model, "default")
+            (actors,) = rn.RayUNETLoader().load_ray_unet(init, model, "default", lora=lora)
         group.update(key=key, actors=(actors,), gpus=list(gpus), loaded_at=time.time())
-        api.log(f"usp group ready: {model} on GPUs {gpus} = physical {phys} ({', '.join(api.GPU_NAMES[g] for g in gpus)}) in {time.time() - t0:.1f}s")
+        api.log(f"usp group ready: {model}{f' + loras {[n for n, _ in loras]}' if loras else ''} on GPUs {gpus} = physical {phys} ({', '.join(api.GPU_NAMES[g] for g in gpus)}) in {time.time() - t0:.1f}s")
         return group["actors"]
 
     def _resolve(o, cache):
@@ -124,8 +136,7 @@ def register(api):
                                f"other models is BETA or untested here; use multi_gpu 'cfg' or 'off'.")
         if model.startswith("ckpt:"):
             raise RuntimeError("USP runs take a diffusion-model file (UNET / GGUF), not a checkpoint (ckpt:)")
-        if m.get("loras"):
-            raise RuntimeError("USP runs don't support LoRAs yet - use multi_gpu 'off' or 'cfg' for LoRA workflows")
+        loras = tuple((str(n), float(s)) for n, s in (m.get("loras") or []) if float(s) != 0.0)
         usp_end(sess, {})                                   # a fresh run from the same session
         n = int(m.get("gpus") or 2)
         gpus = _pick_gpus(n, m.get("lane"))
@@ -138,7 +149,7 @@ def register(api):
                 except Exception:  # noqa: BLE001
                     traceback.print_exc()
             with lock:
-                actors = _ensure_group(model, gpus)
+                actors = ray_thread.submit(_ensure_group, model, loras, gpus).result()
         except Exception:
             ctx.__exit__(*sys.exc_info())
             raise
@@ -202,7 +213,8 @@ def register(api):
         return {"ok": True}
 
     def usp_status(body, query):
-        return {"group": {"model": group["key"][0] if group["key"] else None, "gpus": group["gpus"],
+        return {"group": {"model": group["key"][0] if group["key"] else None,
+                          "loras": [list(x) for x in group["key"][1]] if group["key"] else [], "gpus": group["gpus"],
                           "loaded_at": group["loaded_at"]}, "active_runs": len(runs),
                 "allow": ALLOW.pattern, "attention": ATTENTION}
 
