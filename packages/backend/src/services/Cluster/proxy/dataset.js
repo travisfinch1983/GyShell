@@ -2,7 +2,7 @@ import { Router } from 'express';
 import sharp from 'sharp';
 import { readdirSync, existsSync, readFileSync, writeFileSync, statSync, renameSync, createReadStream, mkdirSync, unlinkSync } from 'fs';
 import { join, basename, extname } from 'path';
-import { forgeEndpoint, forgeJobUrl } from './forge-endpoint.js';
+import { forgeEndpoint, forgeJobUrl, forgeJobId, pickForge, refreshForge, DEFAULT_SAM } from './forge-endpoint.js';
 
 /**
  * Dataset Review — /api/dataset
@@ -190,6 +190,7 @@ export function createDatasetRouter() {
   // it -- and a UI that only sees "400" can only say "failed".
   const fwd = async (res, path, init, timeoutMs = 30000) => {
     try {
+      await refreshForge();   // training is host-bound: go to the service with a GPU reserved for detectors
       const r = await fetch(forgeEndpoint() + path, { ...init, signal: AbortSignal.timeout(timeoutMs) });
       const body = await r.json().catch(() => ({ error: 'trainer returned a non-JSON response' }));
       res.status(r.status).json(body);
@@ -216,8 +217,11 @@ export function createDatasetRouter() {
   router.post('/:name/segment', async (req, res) => {
     const dir = setDir(req.params.name);
     if (!dir || !existsSync(manPath(dir))) return res.status(404).json({ error: 'no such dataset' });
+    let target = null;
     try {
-      const r = await fetch(forgeEndpoint() + '/segment', {
+      // Whichever Image Model Service has this SAM model resident and idle (else one that will load it).
+      target = await pickForge('sam', req.body?.sam || DEFAULT_SAM);
+      const r = await fetch(target.base + '/segment', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...req.body, dataset: req.params.name }),
         signal: AbortSignal.timeout(60000),
@@ -225,7 +229,7 @@ export function createDatasetRouter() {
       res.status(r.status).json(await r.json());
     } catch (e) {
       // Say WHERE it failed — "fetch failed" alone sends people looking in the browser.
-      res.status(502).json({ error: 'SAM service unreachable at ' + forgeEndpoint() + ' (' + e.message +
+      res.status(502).json({ error: 'SAM service unreachable at ' + (target?.base || '(no image model service)') + ' (' + e.message +
         '). Dataset Forge now runs inside the Image Model Service (/forge on its port): check that service card in AI-Lab' });
     }
   });
@@ -268,19 +272,21 @@ export function createDatasetRouter() {
     if (!NAME_OK.test(name)) return res.status(400).json({ error: 'bad dataset name' });
     const paths = (req.body?.paths || []).filter((p) => typeof p === 'string' && !p.includes('..'));
     if (!paths.length) return res.status(400).json({ error: 'no paths' });
+    let target = null;
     try {
-      const r = await fetch(forgeEndpoint() + '/ingest', {
+      const detector = req.body?.detector || DEFAULT_DETECTOR;
+      target = await pickForge('detector', detector);
+      const r = await fetch(target.base + '/ingest', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          dataset: name, paths,
-          detector: req.body?.detector || DEFAULT_DETECTOR,
-          unseeded: req.body?.unseeded || 'unlabelled',
-        }),
+        body: JSON.stringify({ dataset: name, paths, detector, unseeded: req.body?.unseeded || 'unlabelled' }),
         signal: AbortSignal.timeout(30000),
       });
-      res.status(r.status).json(await r.json());
+      const d = await r.json();
+      // The job lives in THAT service: tag the id so /job/:id asks the same one.
+      if (d && d.job) d.job = forgeJobId(target.legacy ? null : target.service, d.job);
+      res.status(r.status).json(d);
     } catch (e) {
-      res.status(502).json({ error: 'forge service unreachable at ' + forgeEndpoint() + ' (' + e.message +
+      res.status(502).json({ error: 'forge service unreachable at ' + (target?.base || '(no image model service)') + ' (' + e.message +
         '). Dataset Forge now runs inside the Image Model Service (/forge on its port): check that service card in AI-Lab' });
     }
   });

@@ -21,7 +21,7 @@ import path from 'path';
 import crypto from 'crypto';
 import sharp from 'sharp';
 import { spawn, execFile } from 'child_process';
-import { forgeEndpoint } from '../../forge-endpoint.js';
+import { pickForge } from '../../forge-endpoint.js';
 
 // ---- auto-caption (Phase 6): dispatch the tagger to the GPU container (CT 176,
 // ai-epyc) over SSH. It sees the same data at /imagegen/training_images/<rel>
@@ -1103,8 +1103,12 @@ export function createImagegenRouter(config) {
         }
         if (!todo.length) continue;
         let results = [];
+        let target = null;
         try {
-          const r = await fetch(`${forgeEndpoint()}/detect`, {
+          // Per chunk: a service with this detector resident and idle, so copies on several image model
+          // services share a long Auto-crop run.
+          target = await pickForge('detector', detectorRel);
+          const r = await fetch(`${target.base}/detect`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ detector: detectorRel, rels: todo.map((t) => t.srcRel), conf }),
             signal: AbortSignal.timeout(180000),
@@ -1113,7 +1117,7 @@ export function createImagegenRouter(config) {
           if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
           results = d.results || [];
         } catch (e) {
-          throw new Error(`detector service (dataset-forge ${forgeEndpoint()}) failed: ${e.message}`);
+          throw new Error(`detector service (${target?.base || 'no image model service'}) failed: ${e.message}`);
         }
         const byRel = new Map(results.map((x) => [x.rel, x]));
         const touched = new Map();                        // dir -> autocrop map
