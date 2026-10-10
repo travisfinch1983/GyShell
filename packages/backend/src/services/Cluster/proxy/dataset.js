@@ -2,7 +2,7 @@ import { Router } from 'express';
 import sharp from 'sharp';
 import { readdirSync, existsSync, readFileSync, writeFileSync, statSync, renameSync, createReadStream, mkdirSync, unlinkSync } from 'fs';
 import { join, basename, extname } from 'path';
-import { forgeEndpoint } from './forge-endpoint.js';
+import { forgeEndpoint, forgeJobUrl } from './forge-endpoint.js';
 
 /**
  * Dataset Review — /api/dataset
@@ -195,7 +195,7 @@ export function createDatasetRouter() {
       res.status(r.status).json(body);
     } catch (e) {
       res.status(502).json({ error: 'trainer service unreachable at ' + forgeEndpoint() + ' (' + e.message +
-        '). Check the Dataset Forge service card in AI-Lab' });
+        '). Dataset Forge now runs inside the Image Model Service (/forge on its port): check that service card in AI-Lab' });
     }
   };
   const post = (body) => ({ method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -226,7 +226,7 @@ export function createDatasetRouter() {
     } catch (e) {
       // Say WHERE it failed — "fetch failed" alone sends people looking in the browser.
       res.status(502).json({ error: 'SAM service unreachable at ' + forgeEndpoint() + ' (' + e.message +
-        '). Check the Dataset Forge service card in AI-Lab' });
+        '). Dataset Forge now runs inside the Image Model Service (/forge on its port): check that service card in AI-Lab' });
     }
   });
 
@@ -281,13 +281,13 @@ export function createDatasetRouter() {
       res.status(r.status).json(await r.json());
     } catch (e) {
       res.status(502).json({ error: 'forge service unreachable at ' + forgeEndpoint() + ' (' + e.message +
-        '). Check the Dataset Forge service card in AI-Lab' });
+        '). Dataset Forge now runs inside the Image Model Service (/forge on its port): check that service card in AI-Lab' });
     }
   });
 
   router.get('/job/:id', async (req, res) => {
     try {
-      const r = await fetch(forgeEndpoint() + '/job/' + encodeURIComponent(req.params.id), { signal: AbortSignal.timeout(15000) });
+      const r = await fetch(forgeJobUrl(req.params.id), { signal: AbortSignal.timeout(15000) });
       res.status(r.status).json(await r.json());
     } catch (e) { res.status(502).json({ error: String(e.message) }); }
   });

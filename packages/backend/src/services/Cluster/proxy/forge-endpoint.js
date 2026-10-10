@@ -13,15 +13,36 @@ import { join } from 'node:path';
 const ACTIVE = join(process.env.AILAB_PROXY_DATA_DIR || '/opt/ai-lab/.gybackend-data', 'active-services.json');
 const FALLBACK = process.env.FORGE_SAMD || 'http://10.0.0.234:8791';
 
-export function forgeEndpoint() {
+// Since 2026-10-09 Dataset Forge runs INSIDE the Image Model Service as a plugin (claude1's
+// infra/dataset-forge/plugin_forge.py -> /opt/ailab-modelsvc/plugins/forge.py), serving the same routes
+// under /forge on that service's port. Preference: an imagegen-models service on FORGE_NODE (default
+// px-epyc, where the datasets were built), then any imagegen-models service, then the legacy standalone
+// dataset-forge service, then FORGE_SAMD. Only the job-status path changed shape (/job/<id> -> /job?id=).
+const FORGE_NODE = process.env.FORGE_NODE || 'px-epyc';
+
+export function forgeTarget() {
   try {
     if (existsSync(ACTIVE)) {
-      const svcs = Object.values(JSON.parse(readFileSync(ACTIVE, 'utf-8')).services || {});
-      const s = svcs.find((x) => x && x.providerId === 'dataset-forge' && x.containerIp && x.port && !x.suspended);
-      if (s) return `http://${s.containerIp}:${s.port}`;
+      const svcs = Object.values(JSON.parse(readFileSync(ACTIVE, 'utf-8')).services || {})
+        .filter((x) => x && x.containerIp && x.port && !x.suspended);
+      const models = svcs.filter((x) => x.providerId === 'imagegen-models');
+      const m = models.find((x) => x.node === FORGE_NODE) || models[0];
+      if (m) return { base: `http://${m.containerIp}:${m.port}/forge`, legacy: false, service: m.id };
+      const s = svcs.find((x) => x.providerId === 'dataset-forge');
+      if (s) return { base: `http://${s.containerIp}:${s.port}`, legacy: true, service: s.id };
     }
   } catch (e) {
     console.warn(`[forge-endpoint] could not read ${ACTIVE}: ${e.message}; using ${FALLBACK}`);
   }
-  return FALLBACK;
+  return { base: FALLBACK, legacy: true, service: null };
+}
+
+export function forgeEndpoint() {
+  return forgeTarget().base;
+}
+
+/** Status URL for an ingest job: /forge/job?id= on the plugin, /job/<id> on the legacy service. */
+export function forgeJobUrl(id) {
+  const t = forgeTarget();
+  return t.legacy ? `${t.base}/job/${encodeURIComponent(id)}` : `${t.base}/job?id=${encodeURIComponent(id)}`;
 }
