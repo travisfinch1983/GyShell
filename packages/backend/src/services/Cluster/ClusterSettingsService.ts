@@ -49,6 +49,7 @@ export interface GpuConfigEntry {
   friendlyName?: string
   showInFleet?: boolean
   poolMode?: 'reserved' | 'ai-pool'
+  uuid?: string // NVIDIA cards: the card this entry names (stamped by the gpu-names UUID reconcile)
 }
 export interface SharedFolderCategory {
   name: string
@@ -244,7 +245,47 @@ export class ClusterSettingsService {
     } catch {
       /* ignore write errors */
     }
+    if (patch?.gpuConfig) this.mirrorGpuNames(patch.gpuConfig)
     return this.get()
+  }
+
+  /**
+   * Settings -> GPU names edits this file's gpuConfig, but every other reader (the GPU fleet panel via
+   * /api/gpu/inventory, service GPU labels, metrics, the ComfyUI pool) takes names from gpu-config.json,
+   * which follows each NVIDIA card by UUID. Copy non-blank friendly names across - matched by uuid first,
+   * slot key second - so a rename in Settings actually shows. A blank name here never erases one there.
+   */
+  private mirrorGpuNames(gpuConfig: Record<string, GpuConfigEntry>): void {
+    const file = path.join(process.env.AILAB_PROXY_DATA_DIR || path.dirname(this.file), 'gpu-config.json')
+    let cfg: Record<string, any> = {}
+    try {
+      if (fs.existsSync(file)) cfg = JSON.parse(fs.readFileSync(file, 'utf8'))
+    } catch (e: any) {
+      console.warn(`[gpu-names] not mirroring Settings names: ${file} unreadable (${e?.message})`)
+      return
+    }
+    const byUuid: Record<string, string> = {}
+    for (const [k, v] of Object.entries(cfg)) if (v?.uuid) byUuid[String(v.uuid).toLowerCase()] = k
+    const changed: string[] = []
+    for (const [key, e] of Object.entries(gpuConfig || {})) {
+      const name = (e?.friendlyName || '').trim()
+      if (!name) continue
+      const uuid = e?.uuid ? e.uuid.toLowerCase() : ''
+      const target = (uuid && byUuid[uuid]) || key
+      const cur = cfg[target]
+      if (cur?.friendlyName === name) continue
+      const i = target.indexOf(':')
+      cfg[target] = cur ? { ...cur, friendlyName: name }
+        : { friendlyName: name, pciId: target.slice(i + 1), node: target.slice(0, i), ...(e?.uuid ? { uuid: e.uuid } : {}) }
+      changed.push(`${target}: "${cur?.friendlyName ?? ''}" -> "${name}"`)
+    }
+    if (!changed.length) return
+    try {
+      fs.writeFileSync(file, JSON.stringify(cfg, null, 2))
+      console.log(`[gpu-names] Settings rename mirrored to gpu-config.json: ${changed.join('; ')}`)
+    } catch (e: any) {
+      console.warn(`[gpu-names] could not write ${file}: ${e?.message}`)
+    }
   }
 }
 

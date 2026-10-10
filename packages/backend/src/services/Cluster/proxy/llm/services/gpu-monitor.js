@@ -4,7 +4,7 @@
  * polls live stats using proxlab-nvtop (all vendors) with nvidia-smi fallback.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -47,18 +47,25 @@ export class GpuMonitor {
   loadConfig() {
     try {
       if (existsSync(GPU_CONFIG_PATH)) {
+        this.gpuConfigMtime = statSync(GPU_CONFIG_PATH).mtimeMs;
         return JSON.parse(readFileSync(GPU_CONFIG_PATH, 'utf-8'));
       }
-    } catch {}
+    } catch (e) { console.warn(`[gpu-names] ${GPU_CONFIG_PATH} unreadable: ${e.message}`); }
     return {};
   }
 
   saveConfig(config) {
     this.gpuConfig = config;
     writeFileSync(GPU_CONFIG_PATH, JSON.stringify(config, null, 2));
+    try { this.gpuConfigMtime = statSync(GPU_CONFIG_PATH).mtimeMs; } catch { /* re-read next call */ }
   }
 
+  /** The file is shared: Settings -> GPU names (ClusterSettingsService) writes friendly names into it too.
+   *  Re-read when it changed on disk, or a rename made there never reaches this cached copy. */
   getConfig() {
+    try {
+      if (existsSync(GPU_CONFIG_PATH) && statSync(GPU_CONFIG_PATH).mtimeMs !== this.gpuConfigMtime) this.gpuConfig = this.loadConfig();
+    } catch (e) { console.warn(`[gpu-names] stat ${GPU_CONFIG_PATH}: ${e.message}`); }
     return this.gpuConfig;
   }
 
@@ -75,7 +82,7 @@ export class GpuMonitor {
    * there too, so pickers and resolveServiceGpuPciIds do not name an empty slot.
    */
   reconcileConfigByUuid(inventory) {
-    const cfg = { ...this.gpuConfig };
+    const cfg = { ...this.getConfig() };
     let changed = false;
     const moves = [];   // { node, from, to, name }
     for (const [node, info] of Object.entries(inventory || {})) {
