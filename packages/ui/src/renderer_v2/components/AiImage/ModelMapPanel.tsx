@@ -156,31 +156,72 @@ const Link: React.FC<{ a: MapGpu; b: MapGpu }> = ({ a, b }) => {
   return <div className={styles.link} style={{ height: BODY + CAP }}>{marks}</div>
 }
 
-const CacheCylView: React.FC<{ cy: CacheCyl }> = observer(({ cy }) => {
-  // Hundreds of LoRAs would be hairlines: fold blocks under ~1.5% of the cylinder into one "N small files" block.
-  const cap = Math.max(cy.capGb, cy.projectedGb)
-  const small = cy.blocks.filter((b) => b.gb < cap * 0.015 && !b.staged && b.pinNext == null)
-  const big = cy.blocks.filter((b) => !small.includes(b))
-  const smallGb = small.reduce((a, b) => a + b.gb, 0)
-  const blocks: (CacheBlock & { group?: number })[] = [...big]
-  if (small.length) blocks.unshift({ id: `${cy.node}|${cy.tier}|small`, kind: 'other', name: `${small.length} small files`, gb: smallGb, pinned: false, group: small.length })
+/**
+ * A cache as a full-width rectangle (Travis: cylinders are far too small for 236-580 GB holding hundreds of files).
+ * An invisible grid of COLS columns; each square stands for `cellGb`, chosen so the cache fills ~ROWS rows. A cached
+ * model is a tile covering as many squares as its size (2 rows tall once it is big enough to carry a readable name),
+ * packed densely; free space shows as faint empty squares. Files smaller than one square fold into one tile.
+ */
+const COLS = 48, ROWS = 12
+const CacheGrid: React.FC<{ cy: CacheCyl }> = observer(({ cy }) => {
+  const [over, setOver] = useState(false)
+  const cap = Math.max(cy.capGb, cy.projectedGb, 1)
+  const cellGb = cap / (COLS * ROWS)
+  const small = cy.blocks.filter((b) => b.gb < cellGb && !b.staged && b.pinNext == null)
+  const tiles: (CacheBlock & { group?: CacheBlock[] })[] = cy.blocks.filter((b) => !small.includes(b))
+  if (small.length) tiles.push({ id: `${cy.node}|${cy.tier}|small`, kind: 'other', name: `${small.length} small files`, gb: small.reduce((a, b) => a + b.gb, 0), pinned: false, group: small })
+  const shape = (g: number) => {
+    const cells = Math.max(1, Math.round(g / cellGb))
+    if (cells > COLS * 2) return { w: COLS, h: Math.ceil(cells / COLS) }
+    if (cells >= 8) return { w: Math.ceil(cells / 2), h: 2 }
+    return { w: cells, h: 1 }
+  }
+  const usedCells = tiles.reduce((a, t) => { const s = shape(t.gb); return a + (t.staged === 'remove' ? 0 : s.w * s.h) }, 0)
+  const free = Math.max(0, Math.min(COLS * ROWS - usedCells, 2000))
+  // usedGb (the cache's own accounting) and the sum of its files differ by rounding - only show an "after Apply" figure
+  // when this cache has staged changes, as used + the staged delta
+  const delta = cy.blocks.reduce((a, b) => a + (b.staged === 'add' ? b.gb : b.staged === 'remove' ? -b.gb : 0), 0)
+  const staged = cy.blocks.some((b) => b.staged)
+  const overfull = cy.usedGb + delta > cy.capGb + 0.05
   return (
-    <Cylinder tone={cy.tier === 'ram' ? 'ram' : 'disk'} title={cy.label} sub={`${gb(cy.usedGb)} / ${Math.round(cy.capGb)} GB`} capGb={cy.capGb}
-              projectedGb={cy.projectedGb} usedGb={cy.usedGb} dropOk onDrop={(d) => store.stageWarm(cy, d.kind, d.name)}>
-      {(scaleCap) => stack(blocks, scaleCap).map((p, i, all) => {
-        const b = p.b as CacheBlock & { group?: number }
-        if (b.group) {
-          return <Block key={b.id} p={p} z={i + 1} top={i === all.length - 1} kind="other" label={b.name} sublabel={`${gb(b.gb)} GB`} pinned={false}
-                        pinTitle="" xTitle="" tooltip={small.map((s) => `${s.kind} · ${s.name} · ${gb(s.gb)} GB`).slice(0, 40).join('\n') + (small.length > 40 ? `\n… ${small.length - 40} more` : '')} />
-        }
-        return <Block key={b.id} p={p} z={i + 1} top={i === all.length - 1} kind={b.kind} label={short(b.name)} sublabel={`${gb(b.gb)} GB${b.copying ? ' · copying' : ''}`}
-                      staged={b.staged} pinned={b.pinned} pinNext={b.pinNext} pinTitle="Pin in this cache: never evicted to make room"
-                      pinDisabled={b.staged === 'add'} onPin={(v) => store.stageCachePin(cy, b, v)} onX={() => store.stageEvict(cy, b)}
-                      xTitle={b.staged === 'add' ? 'Un-stage' : `Evict from ${cy.label}`}
-                      draggableAs={b.staged === 'remove' ? undefined : { src: 'cache', kind: b.kind, name: b.name }}
-                      tooltip={`${b.name}\n${b.kind} · ${gb(b.gb)} GB in ${cy.node} ${cy.label}${b.pinned ? ' · pinned' : ''}\nDrag onto a GPU to load it`} />
-      })}
-    </Cylinder>
+    <div className={styles.cacheWrap}>
+      <div className={styles.cacheHead}>
+        <b>{cy.label}</b>
+        <span className={overfull ? styles.warnText : ''}>{gb(cy.usedGb)} / {Math.round(cy.capGb)} GB{staged ? ` → ${gb(cy.usedGb + delta)} GB after Apply` : ''}</span>
+        <span className={styles.dimText}>{cy.blocks.length} files · each square ≈ {gb(cellGb)} GB · drop a model here to cache it</span>
+      </div>
+      <div className={`${styles.cacheGrid} ${over ? styles.dropOk : ''} ${overfull ? styles.overfullBox : ''}`} style={{ gridTemplateColumns: `repeat(${COLS}, 1fr)` }}
+           onDragOver={(e) => { if (e.dataTransfer.types.includes(MIME)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setOver(true) } }}
+           onDragLeave={() => setOver(false)}
+           onDrop={(e) => { setOver(false); const d = getDrag(e); if (d) { e.preventDefault(); store.stageWarm(cy, d.kind, d.name) } }}>
+        {tiles.map((t) => {
+          const s = shape(t.gb)
+          const c = KIND_COLOR[t.kind] || KIND_COLOR.other
+          const showPin = t.pinNext ?? t.pinned
+          return (
+            <div key={t.id} className={`${styles.tile} ${t.staged === 'add' ? styles.stAdd : ''} ${t.staged === 'remove' ? styles.stRemove : ''}`}
+                 style={{ gridColumn: `span ${s.w}`, gridRow: `span ${s.h}`, background: c, color: KIND_TEXT[t.kind] || '#fff' }}
+                 draggable={!t.group && t.staged !== 'remove'}
+                 onDragStart={!t.group ? (e) => setDrag(e, { src: 'cache', kind: t.kind, name: t.name }) : undefined}
+                 title={t.group ? t.group.map((x) => `${x.kind} · ${x.name} · ${gb(x.gb)} GB`).slice(0, 60).join('\n') + (t.group.length > 60 ? `\n… ${t.group.length - 60} more` : '')
+                   : `${t.name}\n${t.kind} · ${gb(t.gb)} GB in ${cy.node} ${cy.label}${t.pinned ? ' · pinned' : ''}${t.copying ? ' · copying' : ''}\nDrag onto a GPU to load it`}>
+              {s.w >= 3 && <span className={styles.tileName}>{t.group ? t.name : short(t.name)}</span>}
+              {s.w >= 3 && <span className={styles.tileSize}>{t.staged === 'add' ? '≈' : ''}{gb(t.gb)} GB{t.copying ? ' · copying' : ''}</span>}
+              {!t.group && (
+                <>
+                  <label className={`${styles.pin} ${showPin ? styles.pinOn : ''} ${t.pinNext != null ? styles.pinStaged : ''}`} title="Pin in this cache: never evicted to make room" onClick={(e) => e.stopPropagation()}>
+                    <input type="checkbox" checked={showPin} disabled={t.staged === 'add'} onChange={(e) => store.stageCachePin(cy, t, e.target.checked)} />
+                    <Pin size={10} />
+                  </label>
+                  <button className={styles.x} title={t.staged === 'add' ? 'Un-stage' : `Evict from ${cy.label}`} onClick={(e) => { e.stopPropagation(); store.stageEvict(cy, t) }}><X size={11} /></button>
+                </>
+              )}
+            </div>
+          )
+        })}
+        {Array.from({ length: free }, (_, i) => <div key={`f${i}`} className={styles.freeCell} />)}
+      </div>
+    </div>
   )
 })
 
@@ -261,9 +302,8 @@ export const ModelMapPanel: React.FC = observer(() => {
                       <GpuCyl g={g} copies={copies} />
                     </React.Fragment>
                   ))}
-                  {node.caches.length > 0 && <div className={styles.divider} />}
-                  {node.caches.map((cy) => <CacheCylView key={cy.tier} cy={cy} />)}
                 </div>
+                {node.caches.map((cy) => <CacheGrid key={cy.tier} cy={cy} />)}
               </div>
             )
           })}

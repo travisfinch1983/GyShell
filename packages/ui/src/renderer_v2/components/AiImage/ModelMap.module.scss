@@ -105,3 +105,20 @@
   &::before, &::after { content: ''; position: absolute; left: 50%; width: 7px; height: 7px; margin-left: -3.5px; background: var(--fg); transform: rotate(45deg); }
   &::before { top: 0.5px; } &::after { top: 8.5px; }
 }
+
+// Caches: full-width rectangles on an invisible grid (CacheGrid). grid-auto-flow dense packs the tiles.
+.cacheWrap { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.cacheHead { display: flex; gap: 12px; align-items: baseline; font-size: 12px; flex-wrap: wrap; span { font-family: var(--font-mono); font-size: 11px; } }
+.dimText { color: var(--fg-faint); }
+.cacheGrid { display: grid; grid-auto-rows: 26px; grid-auto-flow: row dense; gap: 2px; padding: 4px;
+  border: 1.5px solid var(--fg-faint); border-radius: 8px; transition: box-shadow 0.1s; }
+.cacheGrid.dropOk { filter: none; box-shadow: 0 0 0 2px var(--accent); }
+.overfullBox { border-color: var(--danger); }
+.tile { position: relative; border-radius: 4px; overflow: hidden; display: flex; flex-direction: column; justify-content: center;
+  padding: 0 18px 0 6px; min-width: 0; cursor: grab; box-sizing: border-box;
+  &:hover .x, &:hover .pin { opacity: 1; }
+  .pin { top: 2px; left: auto; right: 22px; }
+}
+.tileName { font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.2; }
+.tileSize { font-size: 10px; opacity: 0.9; white-space: nowrap; overflow: hidden; line-height: 1.2; }
+.freeCell { border: 1px dashed color-mix(in srgb, var(--fg-faint) 35%, transparent); border-radius: 3px; }
