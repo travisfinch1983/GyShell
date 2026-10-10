@@ -407,6 +407,14 @@ export class ModelMapStore {
       return false
     })
   }
+  /** The service's own record of a failed background load (core load_errors, claude2 2026-10-10), newer than t0. */
+  private loadError(c: Change, t0: number): string | null {
+    const s = this.service((c as any).service)
+    const gpu = c.t === 'split' ? c.gpus[0] : (c as any).gpu
+    const kind = c.t === 'split' ? 'te' : (c as any).kind
+    const e = (s?.load_errors || []).find((x: any) => x.kind === kind && x.name === c.name && (x.gpu == null || x.gpu === gpu) && (Number(x.at) || 0) * 1000 >= t0 - 2000)
+    return e ? String(e.error || 'failed') : null
+  }
   async verifyLoads(list: Change[]): Promise<void> {
     const pending = new Set(list)
     const t0 = Date.now()
@@ -417,6 +425,12 @@ export class ModelMapStore {
         if (this.landed(c)) {
           pending.delete(c)
           runInAction(() => { this.applyLog.push({ text: `✓ ${changeLabel(c, (s, g) => this.gpuName(s, g))} - now resident`, ok: true }) })
+          continue
+        }
+        const err = this.loadError(c, t0)
+        if (err) {
+          pending.delete(c)
+          runInAction(() => { this.applyLog.push({ text: `✗ ${changeLabel(c, (s, g) => this.gpuName(s, g))} - the service could not load it: ${err}`, ok: false }) })
         }
       }
     }
