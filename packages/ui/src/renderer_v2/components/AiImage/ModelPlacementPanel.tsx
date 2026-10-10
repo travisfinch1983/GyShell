@@ -34,7 +34,10 @@ const Row: React.FC<{ n: any; r: ModelRow; label: string }> = observer(({ n, r, 
   const loadOn = target || svcs.find((s: any) => !r.hotOn.some((h) => h.service === s.id))?.id || svcs[0]?.id || ''
   const loadSvc = svcs.find((s: any) => s.id === loadOn)
   const gpus: any[] = loadSvc?.service?.gpus || []
-  const hotLabel = (h: ModelRow['hotOn'][number]) => `:${h.port}${h.gpu != null ? ` GPU${h.gpu}` : ''}`
+  const hotLabel = (h: ModelRow['hotOn'][number]) => {
+    const fr = h.gpu != null ? (n.services || []).find((x: any) => x.id === h.service)?.gpuFriendly?.[h.gpu] : null
+    return `:${h.port}${h.gpu != null ? ` GPU${h.gpu}` : ''}${fr ? ` (${fr.replace(/^GeForce /, '')})` : ''}`
+  }
   return (
     <tr>
       <td style={{ whiteSpace: 'nowrap' }}>
@@ -59,7 +62,7 @@ const Row: React.FC<{ n: any; r: ModelRow; label: string }> = observer(({ n, r, 
               {gpus.length > 1 && (
                 <select className={styles.subInput} value={gpuSel} onChange={(e) => setGpuSel(e.target.value)} title="GPU within that service (auto: where it is already loaded, else the most free VRAM that fits)">
                   <option value="">auto</option>
-                  {gpus.map((g) => <option key={g.index} value={String(g.index)}>GPU{g.index} {g.name?.replace(/^NVIDIA (GeForce )?/, '')} ({Number(g.free_gb).toFixed(1)} GB free)</option>)}
+                  {gpus.map((g) => <option key={g.index} value={String(g.index)}>GPU{g.index} · {loadSvc?.gpuFriendly?.[g.index] || g.name?.replace(/^NVIDIA (GeForce )?/, '')} ({Number(g.free_gb).toFixed(1)} GB free)</option>)}
                 </select>
               )}
               <button className={styles.btn} style={smallBtn} disabled={busy || !loadOn} title="Make it hot on that service's GPU"
@@ -104,8 +107,28 @@ const NodeCard: React.FC<{ n: any }> = observer(({ n }) => {
               // Multi-GPU serve.py: one bar per GPU (vram_total/free_gb are sums over them).
               ? s.service.gpus.map((g: any) => {
                   const loaded = (s.resident || []).filter((m: any) => m.gpu === g.index).length
-                  return <Bar key={`${s.id}:${g.index}`} label={`:${s.port} GPU${g.index} ${String(g.name || '').replace(/^NVIDIA (GeForce )?/, '')}`} used={(g.total_gb ?? 0) - (g.free_gb ?? 0)} total={g.total_gb ?? 0}
-                    note={`${loaded} loaded${g.busy ? ' · busy' : ''}${g.waiting ? ` · ${g.waiting} waiting` : ''}`} />
+                  const rules = store.rulesOf(s)
+                  const kinds: string[] = (s.service?.kinds || []).filter((k: string) => k !== 'lora')
+                  return (
+                    <div key={`${s.id}:${g.index}`} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      <Bar label={`:${s.port} GPU${g.index} · ${s.gpuFriendly?.[g.index] || String(g.name || '').replace(/^NVIDIA (GeForce )?/, '')}`} used={(g.total_gb ?? 0) - (g.free_gb ?? 0)} total={g.total_gb ?? 0}
+                        note={`${loaded} loaded${g.busy ? ' · busy' : ''}${g.waiting ? ` · ${g.waiting} waiting` : ''}`} />
+                      {kinds.length > 0 && (
+                        <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center', fontSize: 10 }} title="Reserve this GPU for these kinds in auto-placement (other kinds then skip it). An explicit GPU on Load always wins.">
+                          <span className={styles.muted} style={{ fontSize: 10 }}>reserve for:</span>
+                          {kinds.map((k) => {
+                            const on = (rules[k] || []).includes(g.index)
+                            return (
+                              <button key={k} type="button" disabled={!!store.busyKey} onClick={() => void store.toggleRule(s, k, g.index)}
+                                style={{ ...chip, fontSize: 10, cursor: 'pointer', background: on ? 'var(--accent)' : 'transparent', color: on ? 'var(--accent-fg, #fff)' : 'var(--fg-muted)', borderColor: on ? 'var(--accent)' : 'var(--border)' }}>
+                                {KIND_LABEL[k] || k}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )
                 })
               : <Bar key={s.id} label={`:${s.port} ${s.gpuName || s.service?.gpu || 'GPU'}`} used={(s.service?.vram_total_gb ?? 0) - (s.service?.vram_free_gb ?? 0)} total={s.service?.vram_total_gb ?? 0} note={`${(s.resident || []).length} loaded`} />)}
         </div>

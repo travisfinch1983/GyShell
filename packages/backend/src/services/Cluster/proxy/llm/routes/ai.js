@@ -6645,7 +6645,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
   // Reads claude2's image model services (GET /models per service, GET /cache once per HOST - the
   // cache is shared by every service on it) and forwards a FIXED set of actions, so the browser never
   // talks to the containers directly.
-  const IMS_ACTIONS = new Set(['/cache/warm', '/cache/evict', '/cache/pin', '/cache/quotas', '/cache/restore', '/models/load', '/models/unload']);
+  const IMS_ACTIONS = new Set(['/cache/warm', '/cache/evict', '/cache/pin', '/cache/quotas', '/cache/restore', '/models/load', '/models/unload', '/placement']);
   const imsServices = () => Object.values(loadActiveServices().services || {}).filter((s) =>
     s && s.providerId === 'imagegen-models' && s.containerIp && s.port && !s.suspended);
   async function imsGet(svc, pathName) {
@@ -6661,7 +6661,12 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
       const nodes = await Promise.all(Object.entries(byNode).map(async ([node, list]) => {
         list.sort((a, b) => Number(a.port) - Number(b.port));
         const services = await Promise.all(list.map(async (s) => {
-          const base = { id: s.id, port: Number(s.port), host: s.containerIp, gpuPciIds: s.gpuPciIds || [],
+          // The service's GPU index i IS the i-th pinned card: the pin block emits CUDA_VISIBLE_DEVICES in
+          // gpuPciIds order (e.g. "4,0,3,1"), not PCI order - so name each index from that list, by the
+          // friendly name that follows the card (UUID-reconciled gpu-config).
+          const pcis = s.gpuPciIds || [];
+          const gpuFriendly = pcis.map((pci) => { try { return gpuMonitor.getFriendlyName(s.node, pci) || null; } catch { return null; } });
+          const base = { id: s.id, port: Number(s.port), host: s.containerIp, gpuPciIds: pcis, gpuFriendly,
             gpuName: (s.assignedGpus || [])[0]?.name || null };
           try { return { ...base, ok: true, ...(await imsGet(s, '/models')) }; }
           catch (e) { return { ...base, ok: false, error: e.message }; }

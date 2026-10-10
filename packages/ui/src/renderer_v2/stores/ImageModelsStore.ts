@@ -8,9 +8,9 @@ function bridge(): any { return (window as any).gyshell?.cluster }
  * tier it sits in. Reads /api/ai/imagegen-models/overview; actions go through .../action, which only
  * forwards the services' own whitelisted routes.
  */
-export const KIND_LABEL: Record<string, string> = { unet: 'UNet', ckpt: 'Checkpoint', lora: 'LoRA', te: 'Text encoder', detector: 'Detector', vae: 'VAE' }
+export const KIND_LABEL: Record<string, string> = { unet: 'UNet', ckpt: 'Checkpoint', lora: 'LoRA', te: 'Text encoder', detector: 'Detector', sam: 'SAM', vae: 'VAE' }
 /** Model root (under /imagegen) per kind; file names are relative to it, as ComfyUI lists them. */
-export const KIND_ROOT: Record<string, string> = { unet: 'diffusion-models', ckpt: 'checkpoints', lora: 'loras', te: 'text-encoders', detector: 'ultralytics', vae: 'vae' }
+export const KIND_ROOT: Record<string, string> = { unet: 'diffusion-models', ckpt: 'checkpoints', lora: 'loras', te: 'text-encoders', detector: 'ultralytics', sam: 'sam', vae: 'vae' }
 
 export interface ModelRow {
   kind: string; name: string
@@ -138,6 +138,19 @@ export class ImageModelsStore {
       runInAction(() => { this.busyKey = '' })
       await this.load(true)
     }
+  }
+
+  // ── placement rules (per service): {kind: [gpu index...]}; a GPU named in a rule is RESERVED for
+  //    the kinds naming it (auto-placement only). An explicit gpu on Load always wins. ──
+  rulesOf(s: any): Record<string, number[]> { return (s?.service?.placement && typeof s.service.placement === 'object') ? s.service.placement : {} }
+  async toggleRule(s: any, kind: string, gpu: number): Promise<void> {
+    const cur = this.rulesOf(s)
+    const next: Record<string, number[]> = {}
+    for (const [k, v] of Object.entries(cur)) next[k] = [...(v as number[])]
+    const list = next[kind] || []
+    next[kind] = list.includes(gpu) ? list.filter((g) => g !== gpu) : [...list, gpu].sort((a, b) => a - b)
+    if (!next[kind].length) delete next[kind]
+    await this.act(s.id, '/placement', { rules: next }, `Placement on :${s.port}`)
   }
 
   // ── quota editor (per host) ──
