@@ -1,0 +1,107 @@
+// Graphical Image Model Service manager (ModelMapPanel). Cylinders are plain HTML so every block can carry its
+// own drag / X / pin controls: each block is a rect with an elliptical BOTTOM edge (::after, same colour) that
+// overlaps the block below it (higher z-index), and the topmost block shows a lighter elliptical surface (::before).
+
+.wrap { display: flex; flex-direction: column; gap: 8px; padding: 8px 12px 16px; min-height: 0; }
+.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.spacer { flex: 1; }
+.muted { color: var(--fg-muted); font-size: 12px; padding: 20px; }
+.warnText { color: var(--danger); font-size: 12px; }
+.okText { color: var(--success, var(--ok)); font-size: 12px; }
+
+.btn, .btnPrimary {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 4px 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--control-bg); color: var(--fg); cursor: pointer;
+  &:disabled { opacity: 0.45; cursor: default; }
+}
+.btnPrimary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
+.btnOn { border-color: var(--accent); color: var(--accent); }
+.viewToggle { display: inline-flex; gap: 4px; }
+.input { font-size: 12px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--control-bg); color: var(--fg); width: 100%; box-sizing: border-box; }
+
+.legend { display: inline-flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--fg-muted);
+  span { display: inline-flex; align-items: center; gap: 4px; }
+  i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+}
+
+.staged { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 8px; border: 1px dashed var(--border); border-radius: 8px; }
+.staged > div { flex-basis: 100%; }
+.chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; padding: 2px 4px 2px 8px; border-radius: 12px;
+  background: var(--control-bg); border: 1px solid var(--border);
+  button { border: none; background: none; color: var(--fg-muted); cursor: pointer; display: inline-flex; padding: 2px; }
+}
+
+.main { display: flex; gap: 12px; align-items: flex-start; min-height: 0; }
+.palette { width: 250px; flex: none; display: flex; flex-direction: column; gap: 6px; position: sticky; top: 0; }
+.paletteHint { font-size: 11px; color: var(--fg-faint); }
+.paletteList { max-height: 68vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+.palItem { display: flex; align-items: center; gap: 6px; font-size: 11.5px; padding: 3px 6px; cursor: grab; border-bottom: 1px solid var(--border);
+  &:hover { background: var(--control-bg); }
+  i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+}
+.palName { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palSize { color: var(--fg-muted); font-family: var(--font-mono); font-size: 10.5px; }
+
+.nodes { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 14px; overflow-x: auto; }
+.node { display: flex; flex-direction: column; gap: 6px; }
+.nodeHead { font-size: 12px; font-weight: 700; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.row { display: flex; align-items: flex-start; gap: 4px; padding-bottom: 4px; }
+.divider { width: 1px; align-self: stretch; background: var(--border); margin: 0 10px; }
+
+.cylWrap { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: none; width: 124px; }
+.cylTitle { font-size: 12px; font-weight: 600; margin-top: 4px; max-width: 120px; text-align: center; }
+.cylSub { font-size: 10.5px; color: var(--fg-muted); font-family: var(--font-mono); text-align: center; max-width: 124px; }
+.cylNote { font-size: 10px; color: var(--fg-faint); text-align: center; }
+
+// isolation: the blocks' z-indexes (up to the cap's 1000) stay INSIDE the cylinder - they drew over the GPU Fleet dock
+.cyl { position: relative; transition: filter 0.1s; isolation: isolate; }
+.dropOk { filter: drop-shadow(0 0 6px var(--accent)); }
+.dropNo { filter: drop-shadow(0 0 6px var(--danger)); cursor: not-allowed; }
+.body { position: absolute; left: 0; right: 0; border-left: 1.5px solid var(--fg-faint); border-right: 1.5px solid var(--fg-faint); }
+.floor { position: absolute; left: -1.5px; right: -1.5px; bottom: -11px; height: 22px; border-radius: 50%;
+  background: #2fb344; border: 1.5px solid var(--fg-faint); box-sizing: border-box; z-index: 0; }
+.tone_ram .floor { background: #4c7cf0; }
+.tone_disk .floor { background: #9b8a6a; }
+.cap { position: absolute; top: 0; left: 0; right: 0; border-radius: 50%; border: 1.5px solid var(--fg-faint); box-sizing: border-box;
+  background: var(--panel-bg, var(--app-bg)); display: flex; align-items: center; justify-content: center;
+  font-size: 11.5px; font-weight: 600; z-index: 1000; }
+.overfull .cap { border-color: var(--danger); color: var(--danger); }
+
+.block { position: absolute; left: 0; right: 0; background: var(--c); box-sizing: border-box; cursor: grab;
+  &::after { content: ''; position: absolute; left: 0; right: 0; bottom: calc(var(--cap) / -2); height: var(--cap); border-radius: 50%;
+    background: var(--c); z-index: -1; }
+  &:hover .x, &:hover .pin { opacity: 1; }
+}
+.blockTop::before { content: ''; position: absolute; left: 0; right: 0; top: calc(var(--cap) / -2); height: var(--cap); border-radius: 50%;
+  background: color-mix(in srgb, var(--c) 72%, white); z-index: 1; }
+.blockText { position: absolute; inset: 3px 6px 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; font-size: 10.5px; line-height: 1.15; overflow: hidden; z-index: 2; pointer-events: none;
+  b { font-weight: 600; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
+  span { opacity: 0.9; font-size: 10px; }
+}
+.stAdd { opacity: 0.62; outline: 2px dashed var(--fg); outline-offset: -2px; }
+.stRemove { opacity: 0.3; .blockText b { text-decoration: line-through; } }
+.dim { opacity: 0.5; }
+
+.x, .pin { position: absolute; top: 2px; z-index: 3; opacity: 0; transition: opacity 0.1s; }
+.x { right: 3px; border: none; border-radius: 4px; background: rgba(0, 0, 0, 0.45); color: #fff; cursor: pointer; display: inline-flex; padding: 1px; }
+.pin { left: 3px; display: inline-flex; align-items: center; gap: 1px; background: rgba(0, 0, 0, 0.45); color: #fff; border-radius: 4px; padding: 0 3px; cursor: pointer;
+  input { margin: 0; width: 10px; height: 10px; cursor: pointer; }
+}
+.pinOn { opacity: 1; background: #111; }
+.pinStaged { outline: 1.5px dashed #fff; }
+.copies { position: absolute; bottom: 2px; right: 4px; z-index: 3; font-size: 10px; font-weight: 700; background: rgba(0, 0, 0, 0.45); color: #fff; border-radius: 6px; padding: 0 4px; }
+.grip { position: absolute; right: -9px; top: 50%; transform: translateY(-50%); z-index: 4; width: 16px; height: 20px; border-radius: 4px;
+  background: var(--fg); color: var(--app-bg); font-size: 11px; display: flex; align-items: center; justify-content: center; cursor: ew-resize; }
+
+.link { position: relative; width: 18px; flex: none; }
+.linkPair { position: absolute; left: -4px; right: -4px; height: 12px; z-index: 5;
+  &::before { content: ''; position: absolute; left: 0; right: 0; top: 5px; height: 2px; background: var(--fg); }
+  b { position: absolute; left: 50%; top: 0; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--fg); }
+}
+.linkSplit { position: absolute; left: -4px; right: -4px; height: 16px; z-index: 5;
+  i { position: absolute; left: 0; right: 0; height: 2px; background: var(--fg); }
+  i:first-child { top: 3px; } i:last-child { top: 11px; }
+  &::before, &::after { content: ''; position: absolute; left: 50%; width: 7px; height: 7px; margin-left: -3.5px; background: var(--fg); transform: rotate(45deg); }
+  &::before { top: 0.5px; } &::after { top: 8.5px; }
+}

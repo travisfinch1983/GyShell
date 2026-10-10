@@ -6645,7 +6645,10 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
   // Reads claude2's image model services (GET /models per service, GET /cache once per HOST - the
   // cache is shared by every service on it) and forwards a FIXED set of actions, so the browser never
   // talks to the containers directly.
-  const IMS_ACTIONS = new Set(['/cache/warm', '/cache/evict', '/cache/pin', '/cache/quotas', '/cache/restore', '/models/load', '/models/unload', '/placement']);
+  // /te_split + /te_split/remove: claude1's te_split plugin (a text encoder held across 2 GPUs);
+  // /models/pin: VRAM pin = permanently loaded (core). Both staged from the graphical manager (ModelMapPanel).
+  const IMS_ACTIONS = new Set(['/cache/warm', '/cache/evict', '/cache/pin', '/cache/quotas', '/cache/restore', '/models/load', '/models/unload', '/placement',
+    '/te_split', '/te_split/remove', '/models/pin']);
   const imsServices = () => Object.values(loadActiveServices().services || {}).filter((s) =>
     s && s.providerId === 'imagegen-models' && s.containerIp && s.port && !s.suspended);
   async function imsGet(svc, pathName) {
@@ -6668,7 +6671,14 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
           const gpuFriendly = pcis.map((pci) => { try { return gpuMonitor.getFriendlyName(s.node, pci) || null; } catch { return null; } });
           const base = { id: s.id, port: Number(s.port), host: s.containerIp, gpuPciIds: pcis, gpuFriendly,
             gpuName: (s.assignedGpus || [])[0]?.name || null };
-          try { return { ...base, ok: true, ...(await imsGet(s, '/models')) }; }
+          try {
+            const models = await imsGet(s, '/models');
+            // Can this service split a text encoder across 2 GPUs? Only with the te_split plugin (GET /te_split
+            // answers; unknown routes are 404 since 2026-10-10, so the probe is honest).
+            let teSplit = null;
+            try { teSplit = await imsGet(s, '/te_split'); } catch { /* no plugin */ }
+            return { ...base, ok: true, ...models, teSplit };
+          }
           catch (e) { return { ...base, ok: false, error: e.message }; }
         }));
         const first = services.find((x) => x.ok);
