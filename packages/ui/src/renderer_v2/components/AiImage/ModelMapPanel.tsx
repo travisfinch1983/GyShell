@@ -34,17 +34,16 @@ function stack<T extends { gb: number | null; staged?: string }>(blocks: T[], ca
   const scale = BODY / Math.max(capGb, 0.1)
   let off = 0
   return blocks.map((b) => {
-    // a parked copy holds ~no VRAM but must stay readable: fixed height, drawn hatched
-    const h = (b as any).parked ? 34 : Math.max(b.gb == null ? 14 : 5, (b.gb ?? 0.6) * scale)
+    const h = Math.max(b.gb == null ? 14 : 5, (b.gb ?? 0.6) * scale)
     const p = { b, off, h }; off += h
     return p
   })
 }
 
 const Cylinder: React.FC<{
-  title: string; sub: string; note?: string; capGb: number; projectedGb: number; usedGb: number; dropOk: boolean
+  title: string; sub: string; note?: string; footer?: React.ReactNode; capGb: number; projectedGb: number; usedGb: number; dropOk: boolean
   onDrop: (d: Drag, e: React.DragEvent) => void; children: (scaleCap: number) => React.ReactNode; tone?: 'gpu' | 'ram' | 'disk'
-}> = ({ title, sub, note, capGb, projectedGb, usedGb, dropOk, onDrop, children, tone = 'gpu' }) => {
+}> = ({ title, sub, note, footer, capGb, projectedGb, usedGb, dropOk, onDrop, children, tone = 'gpu' }) => {
   const [over, setOver] = useState(false)
   const scaleCap = Math.max(capGb, projectedGb)
   const overfull = projectedGb > capGb + 0.05
@@ -66,6 +65,7 @@ const Cylinder: React.FC<{
       <div className={styles.cylTitle}>{title}</div>
       <div className={`${styles.cylSub} ${overfull ? styles.warnText : ''}`}>{overfull ? `over by ${gb(projectedGb - capGb)} GB` : sub}</div>
       {note && <div className={styles.cylNote}>{note}</div>}
+      {footer}
     </div>
   )
 }
@@ -106,10 +106,13 @@ const PIN_TITLE: Record<PinState, string> = {
  *  hairline section gets its own readable controls. */
 const SideControls: React.FC<{ g: MapGpu; placed: Placed<MapBlock>[] }> = observer(({ g, placed }) => {
   const ROW = 20
-  const items = placed.filter((p) => !p.b.other && (p.b.gpus[0] === g.svcIndex)).map((p) => {
+  const base = placed.filter((p) => !p.b.other && (p.b.gpus[0] === g.svcIndex))
+  const nBtn = (b: MapBlock) => 2 + (b.kind === 'te' && !b.split && g.teSplit && b.staged !== 'remove' ? 1 : 0)
+  // Many small sections (a card full of detectors) don't fit as vertical stacks: lay each group out as ONE row instead
+  const compact = base.reduce((a, p) => a + nBtn(p.b) * ROW + 3, 0) > BODY + CAP
+  const items = base.map((p) => {
     const b = p.b
-    const n = 2 + (b.kind === 'te' && !b.split && g.teSplit && b.staged !== 'remove' ? 1 : 0)
-    return { b, h: n * ROW, want: CAP / 2 + BODY - p.off - p.h / 2 }   // y of the section's centre
+    return { b, h: compact ? ROW : nBtn(b) * ROW, want: CAP / 2 + BODY - p.off - p.h / 2 }   // y of the section's centre
   }).sort((a, b) => a.want - b.want)
   // place top-down without overlap, then pull back up if the last group overflows the bottom
   let y = 0
@@ -117,7 +120,7 @@ const SideControls: React.FC<{ g: MapGpu; placed: Placed<MapBlock>[] }> = observ
   const limit = BODY + CAP
   for (let i = items.length - 1, floor = limit; i >= 0; i--) { if (tops[i] + items[i].h > floor) tops[i] = floor - items[i].h; floor = tops[i] - 3 }
   return (
-    <div className={styles.side} style={{ height: BODY + CAP }}>
+    <div className={`${styles.side} ${compact ? styles.sideCompact : ''}`} style={{ height: BODY + CAP }}>
       {items.map((it, i) => {
         const b = it.b, ps = pinState(b, g.pinSupported)
         const c = KIND_COLOR[b.kind] || KIND_COLOR.other
@@ -158,10 +161,28 @@ const GpuCyl: React.FC<{ g: MapGpu; copies: Record<string, number> }> = observer
       if (b) store.stageUnload(b)
     }
   }
-  const placed = stack(g.blocks, Math.max(g.totalGb, g.projectedGb))
+  // Copies the service holds OFF the card (offloaded to RAM by the memory manager, or not materialised yet) use no
+  // VRAM: drawing them inside the cylinder (fixed height) made busy cards look several times over-full (2026-10-10,
+  // during claude2's master workflow). They are listed under the card instead.
+  const parked = g.blocks.filter((b) => b.parked && !b.other)
+  const placed = stack(g.blocks.filter((b) => !b.parked), Math.max(g.totalGb, g.projectedGb))
+  const footer = parked.length ? (
+    <div className={styles.parkedList} title="Loaded by the service but held in RAM (offloaded by the memory manager, or not on the card yet) - they move back onto this card when next used">
+      <div className={styles.parkedHead}>off the card · in RAM</div>
+      {parked.map((b) => (
+        <div key={b.id} className={`${styles.parkedChip} ${b.staged === 'remove' ? styles.stRemove : ''}`} style={{ ['--c' as any]: KIND_COLOR[b.kind] || KIND_COLOR.other }}
+             title={`${b.name}\n${b.kind} · ${b.tier}`} draggable onDragStart={(e) => setDrag(e, { src: 'block', kind: b.kind, name: b.name, service: b.service, gpu: g.svcIndex ?? undefined, clipType: b.clipType, blockId: b.id })}>
+          <i />
+          <span>{short(b.name)}</span>
+          <button className={styles.sideBtn} title={b.staged === 'remove' ? 'Unload staged - click to keep' : `Unload ${short(b.name)} entirely`}
+                  onClick={() => (b.staged === 'remove' ? store.unstageUnload(b) : store.stageUnload(b))}><X size={10} /></button>
+        </div>
+      ))}
+    </div>
+  ) : null
   return (
     <div className={styles.cylPair}>
-      <Cylinder title={g.label} sub={`${gb(g.usedGb)} / ${Math.round(g.totalGb)} GB`} note={g.service ? undefined : 'not a model service'}
+      <Cylinder title={g.label} sub={`${gb(g.usedGb)} / ${Math.round(g.totalGb)} GB`} note={g.service ? undefined : 'not a model service'} footer={footer}
                 capGb={g.totalGb} projectedGb={g.projectedGb} usedGb={g.usedGb} dropOk={g.service != null} onDrop={onDrop}>
         {() => placed.map((p, i, all) => {
           const b = p.b

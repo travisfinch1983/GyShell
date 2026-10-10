@@ -147,3 +147,12 @@
   outline: 1.5px dashed var(--c); outline-offset: -1.5px;
   &::after { opacity: 0.5; }
 }
+.parkedList { display: flex; flex-direction: column; gap: 2px; width: 120px; margin-top: 4px; }
+.parkedHead { font-size: 9.5px; color: var(--fg-faint); text-transform: uppercase; letter-spacing: 0.04em; text-align: center; }
+.parkedChip { display: flex; align-items: center; gap: 4px; font-size: 10px; padding: 1px 2px 1px 3px; border-radius: 4px; cursor: grab;
+  border: 1px dashed var(--c); background: color-mix(in srgb, var(--c) 12%, transparent);
+  i { width: 8px; height: 8px; border-radius: 2px; flex: none; background: repeating-linear-gradient(135deg, var(--c) 0 2px, transparent 2px 4px); }
+  span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sideBtn { width: 15px; height: 14px; margin: 0; }
+}
+.sideCompact { width: 64px; .sideGroup { flex-direction: row; gap: 1px; } .sideBtn { margin: 0; } }
