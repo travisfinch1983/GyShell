@@ -397,10 +397,11 @@ export class ModelMapStore {
     setTimeout(() => { void this.loadMetrics() }, 6000)
   }
 
-  private landed(c: Change): boolean {
+  /** The resident entry a staged load produced, or undefined. */
+  private landed(c: Change): any {
     const s = this.service((c as any).service)
-    if (!s) return false
-    return (s.resident || []).some((r: any) => {
+    if (!s) return undefined
+    return (s.resident || []).find((r: any) => {
       const idx: number[] = r.gpus && r.gpus.length ? r.gpus : [r.gpu]
       if (c.t === 'split') return r.kind === 'te' && r.name === c.name && idx.length > 1
       if (c.t === 'load' || c.t === 'pin') return r.kind === c.kind && r.name === c.name && idx.includes(c.gpu)
@@ -422,9 +423,15 @@ export class ModelMapStore {
       await new Promise((r) => setTimeout(r, 5000))
       await imageModelsStore.load(true)
       for (const c of [...pending]) {
-        if (this.landed(c)) {
+        const r = this.landed(c)
+        if (r) {
           pending.delete(c)
-          runInAction(() => { this.applyLog.push({ text: `✓ ${changeLabel(c, (s, g) => this.gpuName(s, g))} - now resident`, ok: true }) })
+          // Registered is not the same as ON the card: SeedVR2's loader only names a cache slot and materialises the
+          // weights on the first request (2026-10-10: '✓ now resident' while the 4090's VRAM never moved).
+          const onCard = !r.tier || String(r.tier).startsWith('hot')
+          runInAction(() => { this.applyLog.push(onCard
+            ? { text: `✓ ${changeLabel(c, (s, g) => this.gpuName(s, g))} - now in VRAM`, ok: true }
+            : { text: `⚠ ${changeLabel(c, (s, g) => this.gpuName(s, g))} - registered, but its weights are not on the card yet (service says: ${r.tier}). This kind loads them on first use.`, ok: false }) })
           continue
         }
         const err = this.loadError(c, t0)

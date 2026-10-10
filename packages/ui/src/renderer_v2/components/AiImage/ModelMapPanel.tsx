@@ -173,10 +173,10 @@ const GpuCyl: React.FC<{ g: MapGpu; copies: Record<string, number> }> = observer
           const pinMark = b.plugin ? ' · always loaded' : (b.pinNext ?? b.pinned) ? ' · 📌 pinned' : ''
           return (
             <Block key={b.id + (lead ? '' : '|b')} p={p} z={i + 1} top={i === all.length - 1} kind={b.kind}
-                   label={short(b.name)} sublabel={b.parked ? 'parked in RAM' : `${b.staged === 'add' ? '≈' : ''}${gb(b.gb)} GB${b.split ? ' (split)' : ''}${(b.pinNext ?? b.pinned) && !b.plugin ? ' 📌' : ''}${b.tier && b.tier !== 'hot' && b.tier !== 'staged' ? ` · ${b.tier}` : ''}`}
+                   label={short(b.name)} sublabel={b.parked ? 'off the card' : `${b.staged === 'add' ? '≈' : ''}${gb(b.gb)} GB${b.split ? ' (split)' : ''}${(b.pinNext ?? b.pinned) && !b.plugin ? ' 📌' : ''}${b.tier && b.tier !== 'hot' && b.tier !== 'staged' ? ` · ${b.tier}` : ''}`}
                    staged={b.staged} copies={b.split ? 0 : copies[`${b.service}|${b.kind}|${b.name}`]}
                    draggableAs={b.staged === 'remove' ? undefined : { src: 'block', kind: b.kind, name: b.name, service: b.service, gpu: g.svcIndex ?? undefined, clipType: b.clipType, blockId: b.id }}
-                   tooltip={`${b.name}\n${b.parked ? 'Parked in RAM: loaded, but the service keeps it off the card between runs and moves it on for each run (SeedVR2 on a 16 GB card OOMs if it stays)\n' : ''}${b.kind} · ${gb(b.gb)} GB${b.split ? ` · split across ${b.gpus.length} cards` : ''}${pinMark}${b.busy ? ' · busy' : ''}${b.tier ? ` · ${b.tier}` : ''}\nDrag onto another card to duplicate (Shift = move)`} />
+                   tooltip={`${b.name}\n${b.parked ? `Registered on this card but its weights are not on it (service: ${b.tier}). Either parked in RAM between runs (SeedVR2 on 16 GB cards) or not materialised yet - it loads onto the card for its next run.\n` : ''}${b.kind} · ${gb(b.gb)} GB${b.split ? ` · split across ${b.gpus.length} cards` : ''}${pinMark}${b.busy ? ' · busy' : ''}${b.tier ? ` · ${b.tier}` : ''}\nDrag onto another card to duplicate (Shift = move)`} />
           )
         })}
       </Cylinder>
