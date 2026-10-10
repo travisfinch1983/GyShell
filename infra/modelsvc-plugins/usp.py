@@ -177,7 +177,9 @@ def register(api):
         a = to(dict(args))
         topts = dict(a.pop("transformer_options", None) or {})
         topts.setdefault("wrappers", {}); topts.setdefault("callbacks", {})
-        with T.inference_mode(), T.cuda.device(dev):
+        # no_grad, NOT inference_mode: weights patched under inference_mode (LoRA merge at load) become inference tensors,
+        # and ComfyUI's later unload of them fails ("Cannot set version_counter for inference tensor") - claude2, 2026-10-10.
+        with T.no_grad(), T.cuda.device(dev):
             out = model.model.diffusion_model(to(x), to(t), transformer_options=topts, **a)
         if not T.is_tensor(out):
             out = out[0]
