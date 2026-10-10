@@ -8,6 +8,7 @@ type SidebarSort = 'count' | 'alpha'
 type BrowseTab = { id: string; tags: string; page: number }
 const TABS_KEY = 'rule34.browseTabs.v1'
 const ACTIVE_KEY = 'rule34.activeTab.v1'
+const SET_KEY = 'rule34.trainingSet.v1'
 const MAX_TABS = 50
 const loadStoredTabs = (): BrowseTab[] => {
   try {
@@ -59,7 +60,10 @@ export const BrowserView: React.FC = () => {
   // Watched tags (download list) — maps tag_query → watched_tag id
   const [watchedMap, setWatchedMap] = useState<Map<string, number>>(new Map())
   const [trainingSets, setTrainingSets] = useState<any[]>([])
-  const [selectedSet, setSelectedSet] = useState('')
+  // ONE selection, shown by both the page's set bar and the viewer's - picking in either changes both.
+  const [selectedSet, setSelectedSet] = useState<string>(() => {
+    try { return localStorage.getItem(SET_KEY) || '' } catch { return '' }
+  })
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [tsBusy, setTsBusy] = useState(false)
   const [tsMsg, setTsMsg] = useState('')
@@ -271,21 +275,29 @@ export const BrowserView: React.FC = () => {
     if (!lightbox) return
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return // let browser shortcuts (Back, page-zoom) through
+      const tag = (e.target as HTMLElement | null)?.tagName
+      if (tag === 'SELECT' || tag === 'INPUT' || tag === 'TEXTAREA') return // arrows belong to the set dropdown
       if (e.key === 'ArrowRight') { e.preventDefault(); void navLightbox(1) }
       else if (e.key === 'ArrowLeft') { e.preventDefault(); void navLightbox(-1) }
       else if (e.key === 'Escape') closeLightbox()
+      else if ((e.key === 'a' || e.key === 'A') && lightbox.downloaded === 1 && selectedSet && !tsBusy && !setMemberIds.has(lightbox.id)) {
+        e.preventDefault(); void addToSet([lightbox.id])
+      }
       else if (!actualSize && (e.key === '+' || e.key === '=')) zoomBy(1)
       else if (!actualSize && e.key === '-') zoomBy(-1)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lightbox, d, page, activeTags, sort, rating, actualSize])
+  }, [lightbox, d, page, activeTags, sort, rating, actualSize, selectedSet, tsBusy, setMemberIds, trainingSets])
 
   const loadSets = useCallback(async () => {
     try { const r = await rule34Api.trainingSets(); setTrainingSets(r?.sets ?? []) } catch { /* ignore */ }
   }, [])
   useEffect(() => { void loadSets() }, [loadSets])
+  useEffect(() => {
+    try { localStorage.setItem(SET_KEY, selectedSet) } catch { /* ignore */ }
+  }, [selectedSet])
   const loadMembers = useCallback(async (set: string) => {
     if (!set) { setSetMemberIds(new Set()); return }
     try { const r = await rule34Api.trainingSetMembers(set); setSetMemberIds(new Set<number>(r?.post_ids ?? [])) }
@@ -631,18 +643,38 @@ export const BrowserView: React.FC = () => {
                 </>
               )}
             </div>
+            <div className={styles.lightboxSetBar}>
+              <select className={styles.select} value={selectedSet} title="Training set (same selection as the browser page)"
+                onChange={(e) => { setSelectedSet(e.target.value); e.currentTarget.blur() }}>
+                <option value="">— select a set —</option>
+                {trainingSets.map((s: any) => (
+                  <option key={s.name} value={s.name}>{s.name} ({s.count})</option>
+                ))}
+              </select>
+              {setMemberIds.has(lightbox.id) ? (
+                <span className={styles.ok} style={{ fontWeight: 600 }} title={`Already in ${selectedSet}`}>✓ In set</span>
+              ) : (
+                <button type="button" className={styles.btnPrimary}
+                  disabled={!selectedSet || tsBusy || lightbox.downloaded !== 1}
+                  title={lightbox.downloaded !== 1 ? 'Not downloaded yet - only downloaded images can go in a set'
+                    : selectedSet ? `Add this image to ${selectedSet} (A)` : 'Pick a training set first'}
+                  onClick={() => addToSet([lightbox.id])}>
+                  {tsBusy ? 'Adding…' : '+ Add to set'}
+                </button>
+              )}
+              {allMembers[String(lightbox.id)]?.some((n) => n !== selectedSet) && (
+                <span className={styles.dim} title={allMembers[String(lightbox.id)].join(', ')}>
+                  also in {allMembers[String(lightbox.id)].filter((n) => n !== selectedSet).join(', ')}
+                </span>
+              )}
+              {tsMsg && <span className={styles.dim}>{tsMsg}</span>}
+            </div>
             <div className={styles.lightboxInfoBar}>
               <div className={styles.lightboxMeta}>
                 <span>ID: {lightbox.id}</span>
                 <span>Score: {lightbox.score}</span>
                 <span>Rating: {lightbox.rating}</span>
                 {lightbox.width && lightbox.height && <span>{lightbox.width}×{lightbox.height}</span>}
-                {lightbox.downloaded === 1 && (
-                  <button type="button" className={styles.btnPrimary} disabled={!selectedSet || tsBusy}
-                    onClick={() => addToSet([lightbox.id])} style={{ marginLeft: 'auto' }}>
-                    {selectedSet ? `+ Add to ${selectedSet}` : 'Select a set first'}
-                  </button>
-                )}
               </div>
               <div className={styles.lightboxTags}>
                 {(() => {

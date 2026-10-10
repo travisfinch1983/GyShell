@@ -512,6 +512,26 @@
   padding: 16px;
 }
 
+// Training-set picker + add button in the viewer: always on screen, whatever the zoom / 1:1 scroll.
+.lightboxSetBar {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 420px);
+  flex-wrap: wrap;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.65);
+  color: rgba(255, 255, 255, 0.85);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
 .zoomIndicator {
   position: absolute;
   top: 14px;
