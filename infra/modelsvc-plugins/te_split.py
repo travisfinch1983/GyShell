@@ -247,6 +247,18 @@ def register(api):
                 unload(k)
         return {"ok": True}
 
+    def status():
+        # The split TE lives outside the core's MODELS, so without this the managers show ~11 GB used on two cards and
+        # "nothing loaded" (claude2's add_status hook). busy = an encode or (re)load holds the lock right now.
+        busy = not lock.acquire(blocking=False)
+        if not busy:
+            lock.release()
+        return [{"kind": "te", "name": k[0], "clip_type": k[1], "gpus": v["gpus"], "vram_gb": round(sum(v["gb"]), 2),
+                 "uses": v.get("encodes", 0), "busy": busy,
+                 "idle_s": round(time.time() - (v.get("last") or {}).get("at", v["loaded_at"]))}
+                for k, v in list(loaded.items()) if v.get("clip") is not None]
+
+    api.add_status(status)
     api.claim_te(claim)
     api.add_route("GET", "/te_split", r_status)
     api.add_route("POST", "/te_split", r_add)
