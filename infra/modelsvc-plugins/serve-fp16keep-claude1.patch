@@ -1,0 +1,25 @@
+--- a/serve.py
++++ b/serve.py
+@@ -299,7 +299,10 @@
+                 mm.load_models_gpu([self.base], force_full_load=True)
+                 self.dtype = self.base.model.get_dtype_inference()
+             elif kind == "unet":
+-                self.base = comfy.sd.load_diffusion_model(path, model_options={"load_device": dev})
++                mo = {"load_device": dev}
++                if dev.type == "cuda" and FP16_KEEP.search(self.name) and not mm.should_use_bf16(dev):
++                    mo["dtype"] = torch.float16      # see FP16_KEEP
++                self.base = comfy.sd.load_diffusion_model(path, model_options=mo)
+                 mm.load_models_gpu([self.base], force_full_load=True)
+                 self.dtype = self.base.model.get_dtype_inference()
+             elif kind == "te":
+@@ -1000,6 +1003,10 @@
+ 
+ # ── plugins ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ PLUGIN_KINDS, PLUGIN_OPS, PLUGIN_ROUTES, PATCH_HANDLERS = {}, {}, {}, {}
++# UNets to keep in fp16 on cards without bf16 (V100). ComfyUI lists Qwen 2.1 as bf16/fp32-only, so on V100 it upcasts the
++# fp16 file to fp32: 28.5 GB and 4.2x slower. Measured 2026-10-10 (claude1): fp16 compute = 0.20% latent drift vs fp32,
++# 53.9 dB image PSNR, 14.2 GB. Opt-in by name (regex) because each architecture's fp16 headroom must be verified first.
++FP16_KEEP = __import__("re").compile(os.environ.get("AILAB_FP16_KEEP", r"(?i)^qwen_2\.1/.*fp16.*\.safetensors$"))
+ TE_CLAIMS = []   # [(plugin, fn)]: fn(sess, m) -> reply dict to serve a text-encoder "encode" itself, or None to decline (claude1)
+ CORE_PATHS = {"/", "/health", "/status", "/models", "/placement", "/cache", "/cache/warm", "/cache/evict", "/cache/pin", "/cache/quotas", "/cache/restore",
+               "/models/load", "/models/unload"}

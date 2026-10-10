@@ -1,0 +1,33 @@
+--- a/serve.py
++++ b/serve.py
+@@ -788,6 +788,10 @@
+     if op == "end":
+         sess.end(); return {"ok": True}
+     if op == "encode" and "tokens" in m:      # text encoder
++        for _plugin, claim in TE_CLAIMS:      # e.g. te_split: an encoder held across 2 GPUs outside ComfyUI's model manager
++            r = claim(sess, m)
++            if r is not None:
++                return r
+         t0 = time.time(); prefetch(m.get("loras"), mk("te", m["model"], m.get("clip_type", "qwen_image")))
+ 
+         ct = m.get("clip_type", "qwen_image")
+@@ -996,6 +1000,7 @@
+ 
+ # ── plugins ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ PLUGIN_KINDS, PLUGIN_OPS, PLUGIN_ROUTES, PATCH_HANDLERS = {}, {}, {}, {}
++TE_CLAIMS = []   # [(plugin, fn)]: fn(sess, m) -> reply dict to serve a text-encoder "encode" itself, or None to decline (claude1)
+ CORE_PATHS = {"/", "/health", "/status", "/models", "/placement", "/cache", "/cache/warm", "/cache/evict", "/cache/pin", "/cache/quotas", "/cache/restore",
+               "/models/load", "/models/unload"}
+ 
+@@ -1027,6 +1032,11 @@
+         fn(model_patcher, args: dict, gpu: int) -> patched model_patcher (clone it; don't mutate the input). Applied for one run."""
+         PATCH_HANDLERS[kind] = fn
+ 
++    def claim_te(self, fn):
++        """Serve text-encoder "encode" ops yourself: fn(session, message) -> reply dict ({"out": [cond, pooled, ...]},
++        the same shape core returns), or None to leave that request to core. Called before core's own encode."""
++        TE_CLAIMS.append((self.name, fn))
++
+     def add_route(self, method, path, fn):
+         """An HTTP route on the service port: fn(body, query) -> dict | (status, dict) | (status, bytes, content_type).
+         body = parsed JSON when the request is JSON, else raw bytes. Core paths can't be overridden."""

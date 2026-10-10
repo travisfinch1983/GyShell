@@ -24,3 +24,22 @@ its own RAYLIGHT_RAY_TMPDIR (raylight rmtree()s that dir on every init, so a sha
 
 Known gaps: one warm group per service; a client that drops without `usp_end` leaves its run record (the lease
 itself is reclaimed by the service's idle revocation); first run after idle is ~8 s slower.
+
+## te_split.py - text encoders held across 2 GPUs
+
+Any text encoder (largest block list by bytes: Qwen/Llama `layers`, T5 `block`, ...) loaded once and pipeline-split
+across two cards, balanced by bytes, always resident, outside ComfyUI's model manager. Needs the core hook in
+`serve-teclaim-claude1.patch` (`PluginAPI.claim_te`; merged into claude2's serve.py 2026-10-10). Config
+`/opt/ailab-modelsvc/te_split-<port>.json`; `GET/POST /te_split`, `POST /te_split/remove {model}`.
+Encodes with LoRAs, or for encoders not on the split list, fall through to core.
+
+Verified on svc-9310 (V100 #4+#5), Qwen 2.1 BF16 qwen3vl 8B: 8.66 + 8.88 GB, 0.2 s/encode, output equals an fp32 CPU
+reference to 0.0004%; a full ComfyUI render is pixel-identical to core's single-card path.
+
+## fp16 UNets on V100 (`serve-fp16keep-claude1.patch`, core)
+
+ComfyUI lists Qwen 2.1 as bf16/fp32-only, so V100 (no bf16) upcasts its fp16 file to fp32: 28.5 GB, 4.2x slower.
+`FP16_KEEP` (env `AILAB_FP16_KEEP`, default Qwen_2.1 *fp16* files) loads them as fp16 on cards without bf16.
+Measured (tests/qwen21_fp16_test.py, 2048^2-equivalent latent, 8 steps): fp16 vs fp32 compute 0.20% latent drift,
+53.9 dB image PSNR; 14.2 GB. At 1024^2 in the service: 1.1 s/step, fitting beside the te_split half on each card.
+Verified on ONE prompt/model (turbo, cfg 1): check high-res / high-CFG base / strong-LoRA runs before widening it.
