@@ -9,7 +9,7 @@ import { stripLoneSurrogates, embedSafeText } from './lib/text-safety.js';
 import multer from 'multer'
 import { readFile as readFileAsync, readdir, stat } from 'node:fs/promises'
 import { extname, join, resolve as pathResolve, dirname, basename } from 'node:path'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, openSync, writeSync, closeSync, statSync as statSyncFs, readdirSync as readdirSyncFs, rmSync, renameSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, openSync, writeSync, closeSync, statSync as statSyncFs, readdirSync as readdirSyncFs, rmSync, renameSync, unlinkSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -291,6 +291,27 @@ const ragJob = {
 
 // ── RAG Queue (FIFO) ��─
 const ragQueue = [];  // { type: 'index'|'update', url, collection, description, branch }
+// Set by POST /rag/index/cancel (Travis, 2026-10-10: a misfired daily update ran for hours during the day
+// and the only way to stop it was killing the backend). The indexer checks it between batches; the
+// checkpoint is kept so the next scheduled run resumes, and a cancel never triggers the auto-retry.
+let ragCancelRequested = false;
+class RagCancelled extends Error { constructor() { super('cancelled by user'); this.cancelled = true; } }
+// A cancel must survive a backend restart: the startup sweep below re-queues every collection with a
+// checkpoint, which is how a cancelled daytime run came straight back after a restart. While this file
+// exists the sweep only logs; the scheduled run (or a manual index/update) removes it.
+const RAG_HOLD_PATH = join(RAG_DATA_DIR, 'rag-hold.json');
+function setRagHold(info) {
+  try { writeFileSync(RAG_HOLD_PATH, JSON.stringify({ heldAt: new Date().toISOString(), ...info }, null, 2)); }
+  catch (e) { console.warn(`[rag] could not write ${RAG_HOLD_PATH}: ${e.message}`); }
+}
+function clearRagHold(why) {
+  try { if (existsSync(RAG_HOLD_PATH)) { unlinkSync(RAG_HOLD_PATH); console.log(`[rag] hold cleared (${why})`); } }
+  catch (e) { console.warn(`[rag] could not clear ${RAG_HOLD_PATH}: ${e.message}`); }
+}
+function ragHold() {
+  try { return existsSync(RAG_HOLD_PATH) ? JSON.parse(readFileSync(RAG_HOLD_PATH, 'utf-8')) : null; }
+  catch { return { heldAt: '?' }; }
+}
 
 // ── Auto-retry for interrupted indexing ──
 // An interruption is usually transient (clone timeout, embedder blip, a backend restart
@@ -542,6 +563,7 @@ async function runRagUpdate(collection) {
 
 function processRagQueue() {
   if (ragJob.active || ragQueue.length === 0) return;
+  ragCancelRequested = false;   // a new run starts clean
   const next = ragQueue.shift();
   console.log(`[rag-queue] Processing: ${next.type} ${next.collection} (${ragQueue.length} remaining)`);
   void emitDebug('rag-queue', `dequeued ${next.type} '${next.collection}'`
@@ -839,6 +861,7 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
     }
 
     for (let i = 0; i < pendingFiles.length; i += READ_BATCH) {
+      if (ragCancelRequested) throw new RagCancelled();
       const batch = pendingFiles.slice(i, i + READ_BATCH);
 
       // Read this batch of files via SSH
@@ -1036,6 +1059,13 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
       chunks_created: upsertedCount, repo_url: url, languages: languageCounts,
     };
   } catch (e) {
+    if (e && e.cancelled) {
+      ragJob.phase = 'cancelled'; ragJob.progress = 0; ragJob.error = null;
+      ragJob.detail = `Cancelled - checkpoint kept; the next scheduled run resumes ${colName}`;
+      console.warn(`[rag] ${colName}: cancelled by user, checkpoint preserved`);
+      emitDebug('rag', `${colName}: cancelled by user (checkpoint kept)`);
+      return;
+    }
     const attempts = (ragAttempts.get(colName) || 0) + 1;
     ragAttempts.set(colName, attempts);
     const willRetry = attempts < RAG_MAX_ATTEMPTS;
@@ -1088,6 +1118,7 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
 }
 
 app.post('/api/ai/rag/index', (req, res) => {
+  clearRagHold('manual index');
   const { url, collection, description, branch } = req.body || {};
   if (!url || !collection) return res.status(400).json({ error: 'url and collection are required' });
   if (ragJob.active) {
@@ -1097,6 +1128,18 @@ app.post('/api/ai/rag/index', (req, res) => {
   }
   runRagIndexing(url, collection, description, branch);
   res.json({ started: true, collection, url });
+});
+
+// POST /api/ai/rag/index/cancel - stop the codebase-RAG run: empties the queue and stops the running
+// job at its next batch (checkpoint kept, no auto-retry). The next scheduled run starts clean.
+app.post('/api/ai/rag/index/cancel', (req, res) => {
+  const dropped = ragQueue.splice(0, ragQueue.length).map((q) => q.collection);
+  const running = ragJob.active ? ragJob.collection : null;
+  ragCancelRequested = !!running;
+  setRagHold({ stopped: running, dropped });
+  console.warn(`[rag] cancel requested: running=${running || 'none'}, dropped ${dropped.length} queued: ${dropped.join(', ')}`);
+  emitDebug('rag', `cancel requested: stopping ${running || 'nothing'}, dropped ${dropped.length} queued`);
+  res.json({ ok: true, stopping: running, dropped });
 });
 
 app.get('/api/ai/rag/index/status', (req, res) => {
@@ -1798,6 +1841,7 @@ app.get('/api/ai/rag/queue', (req, res) => {
 
 // ── Update-all: re-index every collection that has a repo_url ──
 app.post('/api/ai/rag/update-all', async (req, res) => {
+  clearRagHold('update-all');
   try {
     const manifestResult = await exec(MCPJUNGLE_HOST,
       'cat /opt/mcp-codebase-rag/data/collections.json 2>/dev/null || echo "[]"',
@@ -1853,6 +1897,7 @@ function setupRagAutoSync(cfg) {
     if (hhmm !== (cfg.time || '01:00')) return;
     if (cfg.frequency === 'weekly' && part('weekday') !== 'Sun') return;
     console.log('[rag-autosync] Running scheduled update-all at ' + hhmm);
+    clearRagHold('scheduled run');
       void emitDebug('rag-autosync', `scheduled ${cfg.frequency} update-all firing at ${hhmm}`);
     try {
       const resp = await fetch('http://127.0.0.1:' + selfPort + '/api/ai/rag/update-all', {
@@ -1925,6 +1970,12 @@ setInterval(() => {
   // contained: this is startup code, and an uncaught throw here would take the backend with it.
   setTimeout(async () => {
     try {
+      const hold = ragHold();
+      if (hold) {
+        console.log(`[rag] startup: resume HELD (cancelled ${hold.heldAt}) - checkpoints wait for the next scheduled run`);
+        void emitDebug('rag', `startup: resume held since ${hold.heldAt} (cancelled); the next scheduled run picks it up`);
+        return;
+      }
       const cps = await listCheckpoints();
       if (!cps || !cps.length) {
         void emitDebug('rag', 'startup: no interrupted indexing to resume');

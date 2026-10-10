@@ -2397,6 +2397,41 @@ export function createProxyRouter(sshService) {
     }
   });
 
+  /** GET /imagegen/v1/comfyui - every registered ComfyUI instance, for Builder Studio's orchestrator pool
+   *  (claude2 / Travis, 2026-10-10): where it is, which GPUs it is pinned to (friendly name follows the card
+   *  by UUID via gpu-config.json), whether it answers, and whether the AI-Lab node pack is loaded
+   *  (GET /object_info/AILabRemoteUNET returns the node). Suspended instances are left out. */
+  router.get('/imagegen/v1/comfyui', async (_req, res) => {
+    try {
+      let gcfg = {};
+      try { gcfg = JSON.parse(readFileSync(join(PROXY_DATA_DIR, 'gpu-config.json'), 'utf-8')); }
+      catch (e) { console.warn(`[comfyui-pool] gpu-config.json unreadable: ${e.message}`); }
+      const svcs = Object.values(loadActiveServices().services || {}).filter((s) =>
+        s && s.providerId === 'comfyui' && s.containerIp && s.port && !s.suspended);
+      const instances = await Promise.all(svcs.map(async (s) => {
+        const pcis = Array.isArray(s.gpuPciIds) ? s.gpuPciIds : [];
+        const gpus = pcis.map((pci, index) => {
+          const c = gcfg[`${s.node}:${pci}`] || {};
+          return { index, pci, uuid: c.uuid || null, friendly: c.friendlyName || null };
+        });
+        let ok = false, pack = false, error = null;
+        try {
+          const r = await fetch(`http://${s.containerIp}:${s.port}/object_info/AILabRemoteUNET`, { signal: AbortSignal.timeout(8000) });
+          ok = r.ok;
+          if (r.ok) { const d = await r.json().catch(() => ({})); pack = !!(d && d.AILabRemoteUNET); }
+          else error = `HTTP ${r.status}`;
+        } catch (e) { error = String(e?.message || e); }
+        return { id: s.id, node: s.node, node_hostname: s.containerName || null, host: s.containerIp, port: Number(s.port),
+          url: `http://${s.containerIp}:${s.port}`, gpus, ok, pack, error };
+      }));
+      instances.sort((a, b) => a.node.localeCompare(b.node) || a.port - b.port);
+      res.json({ instances });
+    } catch (e) {
+      console.error(`[comfyui-pool] ${e.message}`);
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   /** GET /imagegen/v1/resolve?kind=te&model=<name> - the best service for one model: resident and idle,
    *  then resident with the shortest queue, then any service that can load it (fewest models resident). */
   router.get('/imagegen/v1/resolve', async (req, res) => {
