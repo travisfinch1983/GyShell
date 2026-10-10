@@ -233,7 +233,14 @@ export const NotificationsPanel: React.FC<{ onClose: () => void }> = observer(({
         </div>
 
         <div className={styles.section}>
-          <div className={styles.sectionHead}>Task progress{store.tasks.length > 0 ? ` (${store.tasks.length})` : ''}</div>
+          <div className={styles.sectionHead}>
+            Task progress{store.tasks.length > 0 ? ` (${store.tasks.length})` : ''}
+            {store.ragHold && (
+              <span className={styles.heldChip} title="A codebase-RAG run was stopped; indexing stays held until the next scheduled sync (or a manual index/update) clears it.">
+                RAG indexing held
+              </span>
+            )}
+          </div>
           {store.tasks.length === 0 ? (
             <div className={styles.emptyNote}>No tracked tasks running.</div>
           ) : (

@@ -864,7 +864,7 @@ export class NotificationsService {
   /** In-process reporting hook for routers that predate this service (imagegen.js etc.). */
   taskReport(t: TaskReportInput): void { this.tasks.report(t) }
 
-  state(): { health: HealthState[]; events: NotifyEvent[]; debug: Array<{ ts: string; source: string; message: string }>; intervalMs: number; routing: ReturnType<NotificationsService['routingState']>; tasks: ReturnType<TaskProgress['state']>; vectorActivity: { windowSec: number; buckets: unknown[] } } {
+  state(): { health: HealthState[]; events: NotifyEvent[]; debug: Array<{ ts: string; source: string; message: string }>; intervalMs: number; routing: ReturnType<NotificationsService['routingState']>; tasks: ReturnType<TaskProgress['state']>; vectorActivity: { windowSec: number; buckets: unknown[] }; ragHold: boolean } {
     if (!this.vectorActivitySnap) {
       void import('../Cluster/proxy/lib/vectorActivity.js')
         .then((m) => { this.vectorActivitySnap = m.vectorActivitySnapshot })
@@ -874,6 +874,9 @@ export class NotificationsService {
       health: [...this.health.values()],
       tasks: this.tasks.state(),
       vectorActivity: this.vectorActivitySnap ? this.vectorActivitySnap() : { windowSec: 60, buckets: [] },
+      // Cancelled-and-held codebase-RAG state (rag.js writes the hold file; the panel shows a
+      // chip so "nothing running" is distinguishable from "stopped on purpose, resumes tonight").
+      ragHold: existsSync(path.join(process.env.AILAB_PROXY_DATA_DIR || '/opt/ai-lab/.gybackend-data', 'rag-hold.json')),
       // EVERY unacked event, plus the newest ACKED_VIEW acked ones, in original order.
       // slice(-200) hid outstanding events behind a burst of routine ones, and this is
       // the surface maintenance-claude triages from.

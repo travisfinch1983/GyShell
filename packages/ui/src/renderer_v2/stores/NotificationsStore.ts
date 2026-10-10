@@ -89,6 +89,8 @@ class NotificationsStore {
   tasks: TaskEntry[] = []
   /** Background vector work (embed/rerank through the proxy), per attributed source. */
   vectorActivity: VectorBucket[] = []
+  /** Codebase-RAG indexing is HELD (a cancelled run stays stopped until the next scheduled sync). */
+  ragHold = false
   private fastPollTimer: ReturnType<typeof setInterval> | null = null
   loaded = false
   available = true
@@ -231,6 +233,7 @@ class NotificationsStore {
         this.debug = s.debug ?? []
         this.tasks = s.tasks?.tasks ?? []
         this.vectorActivity = (s.vectorActivity?.buckets ?? []) as VectorBucket[]
+        this.ragHold = !!s.ragHold
         this.routing = s.routing ?? null
         this.error = null
       })
@@ -271,10 +274,17 @@ class NotificationsStore {
   }
 
   /** Task ids are '<source>:<jobId>'. Only the sources that actually HAVE a cancel route are
-   *  offered one — a button that silently does nothing is worse than no button. */
-  static readonly CANCELLABLE = ['auto-caption', 'caption-correct']
+   *  offered one — a button that silently does nothing is worse than no button. Each entry
+   *  maps a source to its real backend stop route. */
+  static readonly CANCEL_ROUTES: Record<string, { path: string; body: (jobId: string) => unknown }> = {
+    'auto-caption': { path: '/api/imagegen/auto-caption-cancel', body: (jobId) => ({ jobId }) },
+    'caption-correct': { path: '/api/imagegen/auto-caption-cancel', body: (jobId) => ({ jobId }) },
+    // Empties the queue, stops the running index at the next batch, keeps the checkpoint,
+    // and HOLDS further runs until the next scheduled autosync (claude1's rag-hold).
+    'codebase-rag': { path: '/api/ai/rag/index/cancel', body: () => ({}) },
+  }
   cancellable(id: string): boolean {
-    return NotificationsStore.CANCELLABLE.includes(String(id).split(':')[0])
+    return String(id).split(':')[0] in NotificationsStore.CANCEL_ROUTES
   }
 
   cancelling = new Set<string>()
@@ -284,10 +294,11 @@ class NotificationsStore {
   async cancelTask(id: string): Promise<void> {
     const [source, ...rest] = String(id).split(':')
     const jobId = rest.join(':')
-    if (!jobId || !NotificationsStore.CANCELLABLE.includes(source)) return
+    const route = NotificationsStore.CANCEL_ROUTES[source]
+    if (!jobId || !route) return
     runInAction(() => { this.cancelling.add(id) })
     try {
-      await cluster()!.request('POST', '/api/imagegen/auto-caption-cancel', { jobId })
+      await cluster()!.request('POST', route.path, route.body(jobId))
       await this.refresh()
     } catch (e) {
       runInAction(() => { this.error = e instanceof Error ? e.message : String(e) })

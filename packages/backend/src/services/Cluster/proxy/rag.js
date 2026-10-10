@@ -1953,8 +1953,11 @@ function mirrorJobToTask(job, idBase, labelPrefix, queueLen, st) {
       detail: `${job.phase || ''} \u2014 ${job.detail || ''}${queueLen ? ` (+${queueLen} queued)` : ''}` });
   } else if (st.wasActive) {
     st.wasActive = false;
-    void post({ ...base, state: job.error ? 'failed' : 'done',
-      detail: job.error || job.detail || 'finished' });
+    // A cancelled run must not wear the success label: phase 'cancelled' has no error set,
+    // which previously read as state 'done' with a stale "Processing X/Y" detail.
+    const cancelled = job.phase === 'cancelled';
+    void post({ ...base, state: job.error ? 'failed' : cancelled ? 'failed' : 'done',
+      detail: job.error || (cancelled ? 'cancelled by user \u2014 checkpoint kept; the next scheduled sync resumes' : job.detail || 'finished') });
   }
 }
 const _ragTaskMirror = { rag: { wasActive: false }, doc: { wasActive: false } };
