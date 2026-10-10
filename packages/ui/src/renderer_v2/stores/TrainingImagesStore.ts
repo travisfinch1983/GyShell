@@ -52,6 +52,12 @@ export interface IgImage {
   /** Currently cropped by Auto-crop (not by hand); auto_score = the detection's confidence. */
   auto_cropped?: boolean
   auto_score?: number
+  /** Watermark removal history: 'cleaned' = the removal is showing, 'original' = swapped back (⇄ in the editor). */
+  wm?: 'cleaned' | 'original'
+}
+export interface WmJob {
+  id: string; label: string; state: 'queued' | 'running' | 'done' | 'cancelled' | 'error' | 'lost'
+  total: number; done: number; cleaned: number; failed: number; current: string; errors: string[]; error?: string
 }
 export interface AutoCropJob {
   id: string; state: 'running' | 'done' | 'cancelled' | 'error'
@@ -756,6 +762,67 @@ export class TrainingImagesStore {
     }
     for (const id of [...this.capTimers.keys()]) this.clearCapTimer(id)
     this.captionJobs = []
+  }
+
+  // ── Watermark removal. Native pipeline (Image Model Service qwen_edit + SeedVR2 + paste-back onto the original);
+  // jobs run server-side, one after another, and report to the bell. Tracked here like caption jobs so the dialog
+  // can close at once and the grid refreshes when each job ends.
+  async watermarkInfo(): Promise<{ available: boolean; services: string[]; defaultPrompt: string }> { return ig('/watermark/info') }
+  async startWatermark(files: string[], prompt: string): Promise<WmJob> { return (await ig('/watermark', { method: 'POST', body: { files, prompt } })).job }
+  async watermarkStatus(id: string): Promise<WmJob> { return (await ig(`/watermark/status?job=${encodeURIComponent(id)}`)).job }
+  async cancelWatermark(id: string): Promise<void> { await ig('/watermark/cancel', { method: 'POST', body: { job: id } }) }
+  async swapWatermark(rel: string): Promise<{ showing: 'cleaned' | 'original' }> { return ig('/watermark/swap', { method: 'POST', body: { path: rel } }) }
+
+  wmJobs: WmJob[] = []
+  /** Bumped whenever a watermark job ends, so an open editor can reload its picture. */
+  wmDoneTick = 0
+  private wmTimers = new Map<string, ReturnType<typeof setInterval>>()
+
+  trackWatermarkJob(id: string, label: string): void {
+    if (this.wmTimers.has(id)) return
+    this.wmJobs.push({ id, label, state: 'queued', total: 0, done: 0, cleaned: 0, failed: 0, current: '', errors: [] })
+    let failures = 0
+    const stop = () => { const t = this.wmTimers.get(id); if (t) { clearInterval(t); this.wmTimers.delete(id) } }
+    this.wmTimers.set(id, setInterval(async () => {
+      let s: WmJob
+      try { s = await this.watermarkStatus(id); failures = 0 } catch {
+        if (++failures >= 15) {   // reported as LOST, not done: the job may well still finish server-side
+          stop()
+          runInAction(() => {
+            const j = this.wmJobs.find((x) => x.id === id)
+            if (j) { j.state = 'lost'; j.error = 'status unreachable - the job may still finish; refresh to see results' }
+          })
+        }
+        return
+      }
+      runInAction(() => {
+        const j = this.wmJobs.find((x) => x.id === id)
+        if (!j) { stop(); return }        // dismissed while in flight
+        const before = j.done
+        Object.assign(j, { state: s.state, total: s.total, done: s.done, cleaned: s.cleaned, failed: s.failed, current: s.current, errors: s.errors || [] })
+        if (s.done !== before) void this.browse(this.cwd)   // each finished image shows up as it lands
+        if (s.state !== 'queued' && s.state !== 'running') {
+          stop()
+          this.wmDoneTick++
+          void this.browse(this.cwd)
+          if (this.wmJobs.length > 20) this.wmJobs = this.wmJobs.slice(-20)
+        }
+      })
+    }, 2000))
+  }
+
+  /** Stop WATCHING (the job keeps running server-side and keeps reporting to the bell). */
+  dismissWatermarkJob(id: string): void {
+    const t = this.wmTimers.get(id); if (t) { clearInterval(t); this.wmTimers.delete(id) }
+    this.wmJobs = this.wmJobs.filter((j) => j.id !== id)
+  }
+
+  /** Re-attach to jobs still running server-side (page reload / reopened panel). */
+  async resumeWatermarkJobs(): Promise<void> {
+    try {
+      const r = await ig('/watermark/jobs')
+      for (const j of (r.jobs || []) as WmJob[]) this.trackWatermarkJob(j.id, j.label)
+    } catch (e) { console.warn('[watermark] could not list running jobs', e) }
   }
 }
 

@@ -10,6 +10,7 @@ import { BlanketTagModal } from './BlanketTagModal'
 import { FindReplaceModal } from './FindReplaceModal'
 import { AddToPoseLibraryModal } from './AddToPoseLibraryModal'
 import { CorrectCaptionsModal } from './CorrectCaptionsModal'
+import { WatermarkModal } from './WatermarkModal'
 import styles from './TrainingImages.module.scss'
 
 const SORT_KEYS: { v: any; label: string }[] = [
@@ -854,6 +855,7 @@ const Tile: React.FC<{ im: IgImage; i: number; onOpen: () => void }> = observer(
       {im.auto_cropped && <span className={`${styles.bdg} ${styles.bdgAuto}`} title={`Auto-cropped${im.auto_score != null ? ` (detection ${Math.round(im.auto_score * 100)}%)` : ''} — check it; restore in the editor to undo`}>AI</span>}
       {im.needs_review && <span className={`${styles.bdg} ${styles.bdgReview}`} title="Auto-crop found nothing here — crop by hand">?</span>}
       {im.has_alt && <span className={styles.bdg} title="Upscaled — swap available in editor">⤴</span>}
+      {im.wm && <span className={styles.bdg} title={im.wm === 'cleaned' ? 'Watermark removed — the original is kept; ⇄ in the editor switches back' : 'Showing the ORIGINAL — a watermark-removed version is parked; ⇄ in the editor brings it back'}>{im.wm === 'cleaned' ? '🧽' : '🧽↩'}</span>}
       {im.has_caption && <span className={styles.bdg} title="Has tags (.txt)">✎</span>}
       {im.has_nl_caption && <span className={styles.bdg} title="Has caption (.caption)">❝</span>}
       {!!im.score && <span className={`${styles.bdg} ${styles.bdgScore}`} title={`Rating ${im.score}/10${im.comment ? ' — ' + im.comment : ''}`}>★{im.score}</span>}
@@ -885,7 +887,9 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   const [batchAdd, setBatchAdd] = useState(false)
   const [setAdd, setSetAdd] = useState(false)
   const [subMove, setSubMove] = useState(false)
-  useEffect(() => { void store.browse('') }, [])
+  // rels to clean: the selection (selection bar) or the open image (editor's button)
+  const [wmFiles, setWmFiles] = useState<string[] | null>(null)
+  useEffect(() => { void store.browse(''); void store.resumeWatermarkJobs() }, [])
   // In a training_set, click = crop/resize editor; elsewhere, click = zoom preview.
   // The crop editor is really the image DETAIL view — it carries the crop box, the .txt tag
   // box, the .caption box and the rating together. It used to open only inside a training_set,
@@ -1199,6 +1203,9 @@ export const TrainingImagesPanel: React.FC = observer(() => {
                   title="Download the selected images as their original files (full resolution, original format). With several selected, the browser may ask once to allow multiple downloads."
                   onClick={() => void doDownload()}>⬇ Download</button>
           <button className={styles.btnDanger} onClick={() => void doDelete()}>Delete</button>
+          <button className={styles.btn}
+                  title="Remove watermarks / signatures / logos from the selected images (Qwen Image 2.1 edit on the Image Model Service). Only the changed regions are pasted back; originals are kept - ⇄ in the editor switches back."
+                  onClick={() => setWmFiles(store.images.filter((im) => store.selected.has(imKey(im)) && !im.is_video).map((im) => im.rel))}>🧽 Remove watermark…</button>
           <button className={styles.btn} title="Add or remove the same booru tags across the selected images" onClick={() => setBlanket(true)}>Blanket tags…</button>
           <button className={styles.btn} title="Replace text across the selected images' .txt and .caption sidecars — preview before applying" onClick={() => setFindRep(true)}>Find &amp; replace…</button>
           <button className={styles.btn} title="Have a text model correct the selected captions against an instruction — preview before applying" onClick={() => setCorrect(true)}>Correct captions…</button>
@@ -1209,6 +1216,22 @@ export const TrainingImagesPanel: React.FC = observer(() => {
         </div>
       )}
 
+      {store.wmJobs.length > 0 && (
+        <div className={styles.acHint} style={{ padding: '0 12px 6px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {store.wmJobs.map((j) => (
+            <div key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span>🧽 {j.label}: {j.state === 'queued' ? 'queued behind another job'
+                : j.state === 'running' ? `${j.done}/${j.total}${j.current ? ` — ${j.current.split('/').pop()}` : ''}`
+                : j.state === 'lost' ? j.error
+                : `${j.state} — ${j.cleaned} cleaned${j.failed ? `, ${j.failed} failed` : ''}`}</span>
+              {j.errors.length > 0 && <span className={styles.dim} title={j.errors.join('\n')}>({j.errors[j.errors.length - 1]})</span>}
+              {(j.state === 'queued' || j.state === 'running')
+                ? <button className={styles.btn} onClick={() => void store.cancelWatermark(j.id)} title="Stops after the image in progress">Cancel</button>
+                : <button className={styles.btn} onClick={() => store.dismissWatermarkJob(j.id)}>Dismiss</button>}
+            </div>
+          ))}
+        </div>
+      )}
       {store.error && <div className={styles.error}>{store.error}</div>}
 
       {store.atNarrowedRoot && (
@@ -1405,10 +1428,12 @@ export const TrainingImagesPanel: React.FC = observer(() => {
             // with path=batch-root 404s ('not found: green-12.png', caught live).
             const key = crop.rel.startsWith(store.cwd + '/') ? crop.rel.slice(store.cwd.length + 1) : crop.name
             setCapFiles([key]); setAutoCap(true)
-          }} />
+          }}
+          onWatermark={() => setWmFiles([crop.rel])} />
       })()}
       {autoCap && <AutoCaptionModal files={capFiles} onClose={() => setAutoCap(false)} />}
       {autoCrop && <AutoCropModal onClose={() => setAutoCrop(false)} />}
+      {wmFiles && <WatermarkModal files={wmFiles} onClose={() => setWmFiles(null)} />}
       {varsModal && <VariablesModal onClose={() => setVarsModal(false)} />}
 
       {dsAdd && <AddToDataset onClose={() => setDsAdd(false)} />}

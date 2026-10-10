@@ -43,3 +43,23 @@ ComfyUI lists Qwen 2.1 as bf16/fp32-only, so V100 (no bf16) upcasts its fp16 fil
 Measured (tests/qwen21_fp16_test.py, 2048^2-equivalent latent, 8 steps): fp16 vs fp32 compute 0.20% latent drift,
 53.9 dB image PSNR; 14.2 GB. At 1024^2 in the service: 1.1 s/step, fitting beside the te_split half on each card.
 Verified on ONE prompt/model (turbo, cfg 1): check high-res / high-CFG base / strong-LoRA runs before widening it.
+
+## qwen_edit.py - Qwen Image 2.1 edits, end to end in the service
+
+`qwen_edit.py` + `qwen_edit_pe_system.md` -> `/opt/ailab-modelsvc/plugins/` on the service holding the Qwen 2.1 UNet
+(ai-epyc 9312, installed 2026-10-10). AI-Lab's native tools call it instead of a ComfyUI workflow (Travis: ComfyUI
+"is just adding a weak link in a chain"). First user: Training Images -> 🧽 Remove watermark (imagegen.js
+`/api/imagegen/watermark*`).
+
+Reproduces Travis's graph `Qwen_21_Watermark_removal_EN_proxyPE` with ComfyUI's LIBRARY code, no ComfyUI server:
+prompt enhancer (qwen-image-2.1-pe-i2i via the AI-Lab LLM proxy, sees the image; system prompt = node 633, saved as
+the .md) -> `TextEncodeQwenImage21` (image as reference, resolution 1088) -> `nodes.common_ksampler` euler/simple
+cfg 1, 35 steps, Image-Consistency LoRA on a per-run clone of the resident UNet -> VAE decode. The text encoder runs
+where the AI-Lab catalog says it is resident (9310's te_split today) over the wire `encode` op; tokenizing is local.
+
+`GET /qwen_edit` -> `{ok, unet, te, vae, resident, busy}`. `POST /qwen_edit {path (under /imagegen) | image (b64),
+prompt, enhance, seed, steps, cfg, sampler, scheduler, resolution, loras, unet, te, vae, lane, who}` ->
+`{image (b64 PNG at model resolution), prompt (as sampled), enhanced, seed, width, height, seconds}`.
+
+Measured on the watermark test image (1570x1600): PE 3.4 s, encode 6.7 s, 35 steps 44 s on the 4090 (1.1 s/step),
+~72 s cold. Change map vs Travis's ComfyUI run: correlation 1.00 (8x8 grid of mean |diff|).

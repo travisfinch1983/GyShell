@@ -11,7 +11,7 @@ const CROP_PRESETS = [
 ]
 const CORNERS: Record<string, [number, number]> = { nw: [-1, -1], ne: [1, -1], sw: [-1, 1], se: [1, 1] }
 
-export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => void; onChanged: () => void; navPos?: { i: number; n: number }; onNav?: (dir: 1 | -1) => void; onCaption?: () => void }> = observer(({ rel, name, onClose, onChanged, navPos, onNav, onCaption }) => {
+export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => void; onChanged: () => void; navPos?: { i: number; n: number }; onNav?: (dir: 1 | -1) => void; onCaption?: () => void; onWatermark?: () => void }> = observer(({ rel, name, onClose, onChanged, navPos, onNav, onCaption, onWatermark }) => {
   const imgRef = useRef<HTMLImageElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
@@ -129,6 +129,21 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
     } catch (e: any) { setBusy(false); setMsg('Failed: ' + (e?.message || e)) }
   }
   const swap = async () => { setBusy(true); setMsg('Swapping…'); try { await store.swapUpscale(rel); setMsg('Swapped version.'); loadImg(); onChanged() } catch (e: any) { setMsg('Failed: ' + (e?.message || e)) } finally { setBusy(false) } }
+  // Watermark removal history: switch between the cleaned image and its kept original.
+  const swapWm = async () => {
+    setBusy(true); setMsg('Switching…')
+    try { const r = await store.swapWatermark(rel); setMsg(r.showing === 'original' ? 'Showing the original (watermark-removed version parked).' : 'Showing the watermark-removed version.'); loadImg(); onChanged() }
+    catch (e: any) { setMsg('Failed: ' + (e?.message || e)) } finally { setBusy(false) }
+  }
+  // A watermark job finishing while this editor is open may have rewritten THIS picture - reload it.
+  const wmTick = store.wmDoneTick
+  const wmConsumed = useRef(wmTick)
+  useEffect(() => {
+    if (wmConsumed.current === wmTick) return
+    wmConsumed.current = wmTick
+    loadImg()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wmTick])
   const stripOne = async () => {
     if (!(await confirmStore.confirm({ title: 'Strip tags (.txt)', message: `Delete ${name}'s .txt tag sidecar? Keeps the image + .caption.`, confirmText: 'Strip' }))) return
     try { await store.stripTags([name]); setTags(''); tagsOrig.current = ''; setMsg('Tags stripped.') } catch (e: any) { setMsg('strip failed') }
@@ -209,6 +224,9 @@ export const CropEditor: React.FC<{ rel: string; name: string; onClose: () => vo
           <span className={styles.crInfo}>{info}</span>
           <span className={styles.spacer} />
           {onCaption && <button className={styles.btn} disabled={busy} title="Run the auto-captioner on THIS image only" onClick={onCaption}>🏷 Caption</button>}
+          {onWatermark && <button className={styles.btn} disabled={busy} title="Remove watermarks / signatures / logos from THIS image" onClick={onWatermark}>🧽 Watermark</button>}
+          {imRec.wm && <button className={styles.btn} disabled={busy} onClick={() => void swapWm()}
+                               title="Switch between the watermark-removed version and the kept original">{imRec.wm === 'cleaned' ? '⇄ Original' : '⇄ Cleaned'}</button>}
           <button className={styles.btn} disabled={busy} onClick={() => void upscale()} title="Re-upscale via SeedVR2">⤴ Upscale</button>
           <button className={styles.btn} disabled={busy} onClick={() => void swap()} title="Toggle upscaled ↔ pre-upscale">⇄ Swap</button>
           <button className={styles.btn} disabled={busy} onClick={() => void reset()}>Reset</button>

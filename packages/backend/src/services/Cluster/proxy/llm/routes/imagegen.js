@@ -536,6 +536,199 @@ async function mapLimit(items, limit, fn) {
   return out;
 }
 
+// ---- WATERMARK REMOVAL (native) ---------------------------------------------------
+// Travis, 2026-10-10: a baked-in tool, NOT a ComfyUI workflow - "relying on ComfyUI just adds a weak link".
+// The edit itself (prompt enhancer -> Qwen Image 2.1 edit with the image as reference -> VAE) runs inside an
+// Image Model Service, which already holds the models; this side picks the service, then pastes the result
+// back onto the ORIGINAL at full resolution and keeps an undo copy.
+//
+// Undo, per image, two dot-dirs beside it (they travel with renames / subsection moves / deletes like .orig):
+//   .prewm/<name>  the pristine pre-removal original. Written once, never overwritten by a later run.
+//   .wmalt/<name>  the cleaned version, present ONLY while the original is the one on display (after a swap).
+// So "cleaned is showing" = .prewm exists and .wmalt does not. A re-run on a cleaned image refines it and
+// leaves .prewm alone; a re-run after swapping back starts again from the original.
+const WM_ORIG = '.prewm';
+const WM_ALT = '.wmalt';
+const WM_ROUTE = '/qwen_edit';              // the Image Model Service route that runs the edit
+const WM_STEPS = 35;                         // Travis's workflow: euler / simple, cfg 1, 35 steps
+const WM_LORAS = [['Qwen_2.1/Edit-TOOL-Image_Consistency-Edits_That_Dont_Move-V1.0-3364470.safetensors', 1.0]];
+export const WM_DEFAULT_PROMPT = 'Remove every watermark, signature, logo, website address and overlaid text from the image. '
+  + 'Fill the vacated areas seamlessly so they match their surroundings. Change nothing else.';
+// Paste-back: where the edit actually changed the picture. The VAE round trip + resize leave a faint
+// everywhere-difference (median ~2/255, measured on Travis's run); a watermark is tens of levels.
+// 9, not 14: Travis's test image carries a SEMI-TRANSPARENT script mark whose blurred difference sits at ~8-10;
+// 14 left half of it behind. At 9 the mask still stays on the marks (quiet regions <2% masked). One image so far - tune here.
+const WM_THRESH = 9;           // blurred mean-abs difference (0-255) that counts as "changed here"
+const WM_FULL_PCT = 40;        // more than this much of the frame changed = the edit moved the image; use it whole
+
+const wmJobs = new Map();      // id -> job (see POST /watermark)
+let wmChain = Promise.resolve();   // jobs run one after another: they share the same GPUs
+
+/** Image Model Services that serve the edit route, best first: the edit UNet resident + idle, then any. */
+async function wmServices() {
+  let svcs = [];
+  try {
+    const a = JSON.parse(readFileSync(path.join(process.env.AILAB_PROXY_DATA_DIR || '/opt/ai-lab/.gybackend-data', 'active-services.json'), 'utf8'));
+    svcs = Object.values(a.services || {}).filter((s) => s && s.providerId === 'imagegen-models' && s.containerIp && s.port && !s.suspended);
+  } catch (e) { console.warn(`[watermark] active-services.json unreadable: ${e.message}`); }
+  const probed = await Promise.all(svcs.map(async (s) => {
+    const base = `http://${s.containerIp}:${s.port}`;
+    try {
+      const r = await fetch(base + WM_ROUTE, { signal: AbortSignal.timeout(3000) });
+      if (!r.ok) return null;
+      const info = await r.json().catch(() => ({}));
+      // The service core answers ANY unknown GET with its /status page and HTTP 200, so 200 alone proved nothing
+      // (9310, without the plugin, was listed as able to edit). Only the plugin's own reply carries `unet`.
+      if (!info || info.ok !== true || !info.unet) return null;
+      return { base, id: s.id, rank: info.resident ? (info.busy ? 1 : 0) : 2, info };
+    } catch { return null; }
+  }));
+  return probed.filter(Boolean).sort((a, b) => a.rank - b.rank);
+}
+
+/** One image through the service: -> { png: Buffer (the edit at the model's resolution), prompt, service }. */
+async function wmEdit(rel, prompt, seed) {
+  const svcs = await wmServices();
+  if (!svcs.length) {
+    throw new Error(`no Image Model Service serves ${WM_ROUTE} yet - the watermark pipeline plugin is not deployed on any imagegen-models service`);
+  }
+  const s = svcs[0];
+  const r = await fetch(s.base + WM_ROUTE, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    // path is relative to the shared /imagegen root, which every GPU host mounts at the same place
+    body: JSON.stringify({ path: rel, prompt, enhance: true, seed, steps: WM_STEPS, loras: WM_LORAS, who: 'ai-lab:watermark' }),
+    signal: AbortSignal.timeout(15 * 60 * 1000),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error(`${s.id}: ${j.error || `HTTP ${r.status}`}`);
+  }
+  const j = await r.json();
+  if (!j.image) throw new Error(`${s.id}: answered without an image`);
+  return { png: Buffer.from(j.image, 'base64'), prompt: j.prompt || '', service: s.id };
+}
+
+// The edit comes back at ~1 MP. When the original is clearly bigger, SeedVR2 (claude2's seedvr2 plugin on the
+// Image Model Service) upscales the edit first, so the repaired regions carry real detail instead of a stretched
+// patch; then the paste-back below takes only those regions. Capped: past this the last step is a plain resize.
+const WM_UPSCALE_RATIO = 1.3;     // original's shortest edge / the edit's, above which SeedVR2 runs
+const WM_UPSCALE_MAX = 2160;      // shortest-edge cap for the SeedVR2 pass
+
+/** -> PNG Buffer from SeedVR2 at `short` px shortest edge, on a service offering the seedvr2 kind. */
+async function wmUpscale(png, short, seed) {
+  let svcs = [];
+  try {
+    const a = JSON.parse(readFileSync(path.join(process.env.AILAB_PROXY_DATA_DIR || '/opt/ai-lab/.gybackend-data', 'active-services.json'), 'utf8'));
+    svcs = Object.values(a.services || {}).filter((s) => s && s.providerId === 'imagegen-models' && s.containerIp && s.port && !s.suspended);
+  } catch (e) { throw new Error(`active-services.json unreadable: ${e.message}`); }
+  let base = null;
+  for (const s of svcs) {
+    try {
+      const r = await fetch(`http://${s.containerIp}:${s.port}/models`, { signal: AbortSignal.timeout(3000) });
+      const m = r.ok ? await r.json() : null;
+      if (m && ((m.service && m.service.kinds) || []).includes('seedvr2')) { base = `http://${s.containerIp}:${s.port}`; break; }
+    } catch { /* unreachable: next */ }
+  }
+  if (!base) throw new Error('no Image Model Service offers seedvr2');
+  const r = await fetch(`${base}/seedvr2/upscale`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    // seed sent explicitly: the route documents it as optional but failed without one (2026-10-10)
+    body: JSON.stringify({ image: png.toString('base64'), resolution: short, seed }),
+    signal: AbortSignal.timeout(10 * 60 * 1000),
+  });
+  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || `seedvr2 HTTP ${r.status}`); }
+  return Buffer.from(await r.arrayBuffer());
+}
+
+/** Encode a sharp pipeline in the file's own format (same rules as crop / upscale). */
+function wmEncodeLike(file, pipe) {
+  const ext = path.extname(file).toLowerCase();
+  if (ext === '.png') return pipe.png().toBuffer();
+  if (ext === '.webp') return pipe.webp({ quality: 95 }).toBuffer();
+  return pipe.jpeg({ quality: 95 }).toBuffer();
+}
+
+/**
+ * Put the cleaned pixels back onto the ORIGINAL, only where the edit changed something.
+ * The edit runs at ~1 MP and can squash the aspect a little; pasting the whole thing would cost every
+ * image its resolution and detail. So: scale the edit to the original's size, find the regions that
+ * differ (blurred difference over WM_THRESH), grow + feather that mask, and blend. Everywhere else the
+ * original's own pixels stay. -> { buf, maskPct, whole }
+ * `fill` (optional): where the pasted pixels come FROM - the SeedVR2-upscaled edit. The mask is still measured on
+ * the plain edit: SeedVR2 sharpens and shifts colour across the whole frame, and measuring on it marked 21% of
+ * the test image as changed instead of 7.5% (2026-10-10).
+ */
+export async function wmPasteBack(file, png, fill = null) {
+  const meta = await sharp(file).metadata();
+  const W = meta.width, H = meta.height, n = W * H;
+  const o = await sharp(file).removeAlpha().toColourspace('srgb').raw().toBuffer();
+  const c = await sharp(png).resize(W, H, { fit: 'fill', kernel: 'lanczos3' }).removeAlpha().toColourspace('srgb').raw().toBuffer();
+  const f = fill ? await sharp(fill).resize(W, H, { fit: 'fill', kernel: 'lanczos3' }).removeAlpha().toColourspace('srgb').raw().toBuffer() : c;
+  const raw1 = { raw: { width: W, height: H, channels: 1 } };
+  const d = Buffer.alloc(n);
+  for (let i = 0, p = 0; i < n; i++, p += 3) {
+    d[i] = (Math.abs(o[p] - c[p]) + Math.abs(o[p + 1] - c[p + 1]) + Math.abs(o[p + 2] - c[p + 2])) / 3;
+  }
+  const s1 = Math.max(2, Math.round(Math.max(W, H) / 400));
+  // extractChannel(0): sharp hands a 1-channel raw input back as 3-channel sRGB after blur(), which
+  // indexed the mask 3x too short and took nothing from the edit (caught in the first test).
+  const db = await sharp(d, raw1).blur(s1).extractChannel(0).raw().toBuffer();
+  const bin = Buffer.alloc(n); let on = 0;
+  for (let i = 0; i < n; i++) if (db[i] > WM_THRESH) { bin[i] = 255; on++; }
+  const maskPct = Math.round((on / n) * 1000) / 10;
+  let rgb;
+  if (maskPct > WM_FULL_PCT) {
+    rgb = f;   // the edit changed most of the frame (re-composed, shifted): blending would ghost it
+  } else {
+    const fb = await sharp(bin, raw1).blur(s1 * 3).extractChannel(0).raw().toBuffer();   // grow + feather
+    rgb = Buffer.alloc(n * 3);
+    for (let i = 0, p = 0; i < n; i++, p += 3) {
+      const a = Math.min(1, fb[i] / 96);
+      rgb[p] = o[p] + (f[p] - o[p]) * a; rgb[p + 1] = o[p + 1] + (f[p + 1] - o[p + 1]) * a; rgb[p + 2] = o[p + 2] + (f[p + 2] - o[p + 2]) * a;
+    }
+  }
+  let pipe = sharp(rgb, { raw: { width: W, height: H, channels: 3 } });
+  if (meta.hasAlpha) pipe = pipe.joinChannel(await sharp(file).extractChannel('alpha').raw().toBuffer(), raw1);
+  return { buf: await wmEncodeLike(file, pipe), maskPct, whole: maskPct > WM_FULL_PCT };
+}
+
+/** Throws unless rel is an image this tool may rewrite: inside the curation area, a still image. */
+function wmCheck(rel) {
+  const file = safeResolve(rel);
+  const top = path.relative(BASE, file).split(path.sep)[0];
+  if (!DELETABLE_ROOTS.has(top)) throw new Error(`${rel}: outside the training-image area`);
+  if (!/\.(png|jpe?g|webp)$/i.test(file)) throw new Error(`${rel}: only png / jpg / webp images`);
+  if (!existsSync(file) || !statSync(file).isFile()) throw new Error(`${rel}: no such file`);
+  return file;
+}
+
+/** Clean one image in place, keeping the undo copies. -> { maskPct, whole, prompt, service } */
+async function wmOne(rel, prompt) {
+  const file = wmCheck(rel);
+  const dir = path.dirname(file), name = path.basename(file);
+  const seed = crypto.randomInt(0, 2 ** 31);
+  const ed = await wmEdit(rel, prompt, seed);
+  let fill = null, upscaled = false, upscaleError = '';
+  const om = await sharp(file).metadata(), em = await sharp(ed.png).metadata();
+  const oShort = Math.min(om.width, om.height), eShort = Math.min(em.width, em.height);
+  if (oShort / eShort > WM_UPSCALE_RATIO) {
+    try { fill = await wmUpscale(ed.png, Math.min(oShort, WM_UPSCALE_MAX), seed); upscaled = true; } catch (e) {
+      upscaleError = String(e.message || e);   // not fatal: the paste-back resizes, the region is just softer
+      console.warn(`[watermark] ${rel}: SeedVR2 upscale failed, pasting back a resized edit: ${upscaleError}`);
+    }
+  }
+  const pb = await wmPasteBack(file, ed.png, fill);
+  const orig = path.join(dir, WM_ORIG, name), alt = path.join(dir, WM_ALT, name);
+  if (!existsSync(orig)) {       // first removal on this image: keep the pristine original
+    mkdirSync(path.dirname(orig), { recursive: true });
+    copyFileSync(file, orig);
+  }
+  writeFileSync(file, pb.buf);
+  try { chmodSync(file, 0o664); } catch { /* ignore */ }
+  try { if (existsSync(alt)) unlinkSync(alt); } catch (e) { console.warn(`[watermark] stale ${alt}: ${e.message}`); }
+  return { maskPct: pb.maskPct, whole: pb.whole, prompt: ed.prompt, service: ed.service, upscaled, upscaleError };
+}
+
 export function createImagegenRouter(config) {
   const router = Router();
   // AI-Lab: CT152 has no default SSH identity for the tagger host, so pass its managed key explicitly.
@@ -635,6 +828,12 @@ export function createImagegenRouter(config) {
         // left to do.
         im.at_target = im.w === CROP_TARGET && im.h === CROP_TARGET;
       });
+      { // Watermark-removal undo state, in ANY folder: one readdir per dot-dir, not a stat per image.
+        // wm = 'cleaned' (the removal is showing) | 'original' (swapped back; the cleaned copy is parked).
+        const ls = (d) => { try { return new Set(readdirSync(path.join(dir, d))); } catch { return null; } };
+        const wo = ls(WM_ORIG);
+        if (wo) { const wa = ls(WM_ALT) || new Set(); images.forEach((im) => { if (wo.has(im.name)) im.wm = wa.has(im.name) ? 'original' : 'cleaned'; }); }
+      }
       // cropped / has_alt STAY here: both are training-set mechanics. `cropped` compares against
       // the pristine baseline copy, and has_alt reads the .preup upscale dir — neither exists
       // outside a set, so asking for them elsewhere would be a wasted stat per image.
@@ -1753,6 +1952,97 @@ export function createImagegenRouter(config) {
     } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
   });
 
+  // ---- Watermark removal (see WATERMARK REMOVAL above). One job = a list of images, processed one at a
+  // time; jobs queue behind each other. Reports to the bell like captions do, so a job started here (or by
+  // an agent) is visible from any page.
+  router.get('/watermark/info', async (req, res) => {
+    const svcs = await wmServices();
+    res.json({ ok: true, available: svcs.length > 0, services: svcs.map((s) => s.id), defaultPrompt: WM_DEFAULT_PROMPT });
+  });
+
+  router.post('/watermark', express.json(), (req, res) => {
+    const files = (req.body && req.body.files) || [];
+    const prompt = String((req.body && req.body.prompt) || '').trim() || WM_DEFAULT_PROMPT;
+    if (!Array.isArray(files) || !files.length) return res.status(400).json({ error: 'no files' });
+    const rels = [];
+    for (const f of files) {
+      const rel = String(f || '').replace(/^\/+/, '');
+      try { wmCheck(rel); } catch (e) { return res.status(400).json({ error: String(e.message || e) }); }
+      rels.push(rel);
+    }
+    const id = crypto.randomBytes(6).toString('hex');
+    const label = rels.length === 1 ? path.basename(rels[0]) : `${rels.length} images in ${path.dirname(rels[0])}`;
+    const job = { id, state: 'queued', total: rels.length, done: 0, cleaned: 0, failed: 0, current: '', errors: [], results: {},
+                  prompt, label, started: Date.now(), cancel: false };
+    wmJobs.set(id, job);
+    const taskId = `watermark-${id}`;
+    taskReport({ id: taskId, source: 'watermark', state: 'running', done: 0, total: job.total, label: `Remove watermark · ${label}`, detail: 'queued' });
+    wmChain = wmChain.then(async () => {
+      if (job.cancel) { job.state = 'cancelled'; return; }
+      job.state = 'running';
+      for (const rel of rels) {
+        if (job.cancel) break;
+        job.current = rel;
+        taskReport({ id: taskId, done: job.done, total: job.total, detail: path.basename(rel) });
+        try {
+          job.results[rel] = await wmOne(rel, prompt);
+          job.cleaned++;
+        } catch (e) {
+          job.failed++;
+          job.errors.push(`${path.basename(rel)}: ${String(e.message || e)}`);
+          console.warn(`[watermark] ${rel}: ${e.message || e}`);
+        }
+        job.done++;
+      }
+      job.current = '';
+      job.state = job.cancel ? 'cancelled' : (job.cleaned === 0 && job.failed > 0 ? 'error' : 'done');
+      job.finished = Date.now();
+      taskReport({ id: taskId, state: job.state === 'error' ? 'failed' : 'done', done: job.done, total: job.total,
+                   detail: `${job.cleaned} cleaned${job.failed ? `, ${job.failed} failed - ${job.errors[0]}` : ''}${job.state === 'cancelled' ? ' (cancelled)' : ''}` });
+      setTimeout(() => wmJobs.delete(id), 6 * 3600 * 1000);
+    }).catch((e) => { job.state = 'error'; job.errors.push(String(e.message || e)); console.error('[watermark] job', id, e); });
+    res.json({ ok: true, job: { ...job, cancel: undefined } });
+  });
+
+  router.get('/watermark/status', (req, res) => {
+    const j = wmJobs.get(String(req.query.job || ''));
+    if (!j) return res.status(404).json({ error: 'unknown job' });
+    res.json({ ok: true, job: { ...j, cancel: undefined } });
+  });
+
+  // Jobs still queued or running - lets a reopened page re-attach to them.
+  router.get('/watermark/jobs', (req, res) => {
+    res.json({ ok: true, jobs: [...wmJobs.values()].filter((j) => j.state === 'queued' || j.state === 'running').map((j) => ({ ...j, cancel: undefined })) });
+  });
+
+  router.post('/watermark/cancel', express.json(), (req, res) => {
+    const j = wmJobs.get(String((req.body && req.body.job) || ''));
+    if (!j) return res.status(404).json({ error: 'unknown job' });
+    j.cancel = true;   // checked between images; the image in flight finishes
+    res.json({ ok: true });
+  });
+
+  // Toggle between the cleaned image and its pre-removal original.
+  router.post('/watermark/swap', express.json(), (req, res) => {
+    const rel = String((req.body && req.body.path) || '').replace(/^\/+/, '');
+    let file;
+    try { file = wmCheck(rel); } catch (e) { return res.status(400).json({ error: String(e.message || e) }); }
+    const dir = path.dirname(file), name = path.basename(file);
+    const orig = path.join(dir, WM_ORIG, name), alt = path.join(dir, WM_ALT, name);
+    if (!existsSync(orig)) return res.status(404).json({ error: 'this image has no watermark-removal history' });
+    try {
+      if (existsSync(alt)) {          // the original is showing: bring the cleaned one back
+        copyFileSync(alt, file); unlinkSync(alt);
+        res.json({ ok: true, showing: 'cleaned' });
+      } else {                        // the cleaned one is showing: park it, show the original
+        mkdirSync(path.dirname(alt), { recursive: true });
+        copyFileSync(file, alt); copyFileSync(orig, file);
+        res.json({ ok: true, showing: 'original' });
+      }
+      try { chmodSync(file, 0o664); } catch { /* ignore */ }
+    } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+  });
+
   // ---- Move selected images into a kohya <repeats>_<concept> SUBSECTION of a training
   // batch (creating it if needed). Sidecars + ratings move with them. Same-concept
   // subsections are unified regardless of the repeats passed — repeats are edited via
@@ -1810,7 +2100,7 @@ export function createImagegenRouter(config) {
       // alternate. Leaving them behind (as this did until 2026-10-08) cost every moved image its
       // restore point - and a stale dest/.orig/<newName> from some earlier, deleted image would make
       // restore bring back a DIFFERENT picture. So: move ours, and clear any stale one in the way.
-      for (const sd of ['.orig', '.preup']) {
+      for (const sd of ['.orig', '.preup', WM_ORIG, WM_ALT]) {
         const from = path.join(dir, sd, nm), to = path.join(dest, sd, newName);
         try {
           if (existsSync(to)) unlinkSync(to);                      // stale: belongs to no live image
@@ -1831,7 +2121,7 @@ export function createImagegenRouter(config) {
     if (ratingsMoved) { saveRatings(dir, srcRatings); saveRatings(dest, destRatings); }
     // Drop sidecar dirs this move emptied, so a fully-merged-away subsection is not left holding
     // nothing but an empty .orig/.preup.
-    for (const sd of ['.orig', '.preup']) {
+    for (const sd of ['.orig', '.preup', WM_ORIG, WM_ALT]) {
       const d = path.join(dir, sd);
       try { if (existsSync(d) && readdirSync(d).length === 0) rmSync(d, { recursive: false, force: true }); } catch { /* not empty / gone */ }
     }
@@ -1974,7 +2264,7 @@ export function createImagegenRouter(config) {
         const c = path.join(dir, stem(name) + ext);
         if (existsSync(c)) out.push([c, ext]);
       }
-      for (const sub of ['.orig', '.preup']) {
+      for (const sub of ['.orig', '.preup', WM_ORIG, WM_ALT]) {
         const c = path.join(dir, sub, name);
         if (existsSync(c)) out.push([c, sub]);
       }
@@ -2036,6 +2326,7 @@ export function createImagegenRouter(config) {
         if (existsSync(f)) unlinkSync(f);
         const o = path.join(dir, '.orig', name); if (existsSync(o)) unlinkSync(o);          // merged baseline
         const pu = path.join(dir, '.preup', name); if (existsSync(pu)) unlinkSync(pu);       // upscale swap backup
+        for (const sd of [WM_ORIG, WM_ALT]) { const w = path.join(dir, sd, name); if (existsSync(w)) unlinkSync(w); }   // watermark undo copies
         const cap = f.replace(/\.[^.]+$/, '.txt'); if (existsSync(cap)) unlinkSync(cap);     // tag sidecar
         const nlcap = f.replace(/\.[^.]+$/, '.caption'); if (existsSync(nlcap)) unlinkSync(nlcap);   // NL caption
         gone.push(name); deleted++;
