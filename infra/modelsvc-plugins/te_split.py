@@ -169,22 +169,61 @@ def register(api):
         if clip is None:
             return None                     # failed to load: core serves it (logged above)
         t0 = time.time()
-        with lock:
+        devs = [api.GPUS[int(g)] for g in st["gpus"]]
+
+        def once():
             csm = clip.cond_stage_model
             csm.reset_clip_options()
             for k, v in (m.get("options") or {}).items():
                 csm.set_clip_options({k: v})
-            dev = api.GPUS[int(st["gpus"][0])]
-            csm.set_clip_options({"execution_device": dev})
-            with torch.no_grad(), torch.cuda.device(dev):
-                o = csm.encode_token_weights(m["tokens"])
+            csm.set_clip_options({"execution_device": devs[0]})
+            with torch.no_grad(), torch.cuda.device(devs[0]):
+                return csm.encode_token_weights(m["tokens"])
+
+        with lock:
+            # Working memory is measured on every encode: image inputs (Qwen-VL vision tower, on card A) need GBs on top
+            # of the resident weights, and nothing outside this plugin budgets for it.
+            base, free0 = [], []
+            for d in devs:
+                torch.cuda.reset_peak_memory_stats(d)
+                base.append(torch.cuda.memory_allocated(d)); free0.append(torch.cuda.mem_get_info(d)[0])
+            retried = False
+            try:
+                o = once()
+            except torch.OutOfMemoryError as e:
+                # Same recovery as core's TE encode: move this service's other models on these cards to RAM, retry once.
+                # free_vram only moves IDLE models (never one mid-step / in an active run / under a lease - claude2's
+                # free_idle), so a running job is never aborted for an encode. Ask for 2x the largest working set seen.
+                need = int(max(4e9, 2e9 * max([1.0] + list((st.get("last") or {}).get("peak_extra_gb") or []))))
+                api.log(f"te_split encode {key[0]} OOM ({str(e).splitlines()[0][:160]}) - freeing up to {need / 1e9:.0f} GB "
+                        f"of IDLE models on GPUs {st['gpus']} and retrying once")
+                for g in st["gpus"]:
+                    try:
+                        api.free_vram(int(g), need)
+                    except Exception:  # noqa: BLE001
+                        traceback.print_exc()
+                torch.cuda.empty_cache()
+                base = []
+                for d in devs:                      # re-baseline: the eviction above changed what is allocated
+                    torch.cuda.reset_peak_memory_stats(d)
+                    base.append(torch.cuda.memory_allocated(d))
+                retried = True
+                try:
+                    o = once()
+                except torch.OutOfMemoryError as e2:
+                    raise RuntimeError(f"te_split: not enough VRAM for this encode on GPUs {st['gpus']} even after moving idle models "
+                                       f"to RAM (the rest are in use by running jobs): {str(e2).splitlines()[0][:200]}") from None
+            peak = [round((torch.cuda.max_memory_allocated(d) - b) / 1e9, 2) for d, b in zip(devs, base)]
             st["encodes"] += 1
-        api.log(f"te_split encode {key[0]} on GPUs {st['gpus']} {time.time() - t0:.2f}s")
+            st["last"] = {"seconds": round(time.time() - t0, 2), "peak_extra_gb": peak,
+                          "free_before_gb": [round(f / 1e9, 2) for f in free0], "retried_after_oom": retried, "at": time.time()}
+        api.log(f"te_split encode {key[0]} on GPUs {st['gpus']} {time.time() - t0:.2f}s, working memory "
+                f"+{peak[0]}/+{peak[1]} GB (free before {st['last']['free_before_gb']}){' after OOM retry' if retried else ''}")
         return {"out": to_cpu(list(o))}
 
     def r_status(body, query):
         return {"config": cfg_path, "splits": read_cfg().get("splits", []),
-                "loaded": [{"model": k[0], "clip_type": k[1], **{x: v.get(x) for x in ("gpus", "cut", "n", "gb", "loaded_at", "encodes", "error")}}
+                "loaded": [{"model": k[0], "clip_type": k[1], **{x: v.get(x) for x in ("gpus", "cut", "n", "gb", "loaded_at", "encodes", "last", "error")}}
                            for k, v in loaded.items()]}
 
     def r_add(body, query):
