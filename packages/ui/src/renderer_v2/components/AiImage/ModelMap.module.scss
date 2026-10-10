@@ -142,3 +142,8 @@
   .sideBtn:not(.pin_on):not(.pin_stagedOn):not(.sideOn) { background: rgba(0, 0, 0, 0.35); border-color: transparent; color: #fff; }
 }
 .tile { padding-right: 46px; }
+.palKind { font-size: 9.5px; color: var(--fg-faint); text-transform: uppercase; letter-spacing: 0.03em; }
+.parked { background: repeating-linear-gradient(135deg, var(--c) 0 6px, color-mix(in srgb, var(--c) 45%, transparent) 6px 12px);
+  outline: 1.5px dashed var(--c); outline-offset: -1.5px;
+  &::after { opacity: 0.5; }
+}

@@ -34,7 +34,8 @@ function stack<T extends { gb: number | null; staged?: string }>(blocks: T[], ca
   const scale = BODY / Math.max(capGb, 0.1)
   let off = 0
   return blocks.map((b) => {
-    const h = Math.max(b.gb == null ? 14 : 5, (b.gb ?? 0.6) * scale)
+    // a parked copy holds ~no VRAM but must stay readable: fixed height, drawn hatched
+    const h = (b as any).parked ? 34 : Math.max(b.gb == null ? 14 : 5, (b.gb ?? 0.6) * scale)
     const p = { b, off, h }; off += h
     return p
   })
@@ -75,7 +76,7 @@ const Block: React.FC<{ p: Placed<MapBlock>; z: number; top: boolean; label: str
   draggableAs?: Drag; copies?: number; staged?: string; tooltip: string }> = ({ p, z, top, label, sublabel, kind, draggableAs, copies, staged, tooltip }) => {
   const c = KIND_COLOR[kind] || KIND_COLOR.other
   return (
-    <div className={`${styles.block} ${top ? styles.blockTop : ''} ${staged === 'add' ? styles.stAdd : ''} ${staged === 'remove' ? styles.stRemove : ''}`}
+    <div className={`${styles.block} ${top ? styles.blockTop : ''} ${(p.b as any).parked ? styles.parked : ''} ${staged === 'add' ? styles.stAdd : ''} ${staged === 'remove' ? styles.stRemove : ''}`}
          style={{ bottom: p.off, height: p.h, zIndex: z, ['--c' as any]: c, color: KIND_TEXT[kind] || '#fff', ['--cap' as any]: `${CAP}px` }}
          draggable={!!draggableAs} onDragStart={draggableAs ? (e) => setDrag(e, draggableAs) : undefined} title={tooltip}>
       {p.h >= 30 && <div className={styles.blockText}><b>{label}</b><span>{sublabel}</span></div>}
@@ -172,10 +173,10 @@ const GpuCyl: React.FC<{ g: MapGpu; copies: Record<string, number> }> = observer
           const pinMark = b.plugin ? ' · always loaded' : (b.pinNext ?? b.pinned) ? ' · 📌 pinned' : ''
           return (
             <Block key={b.id + (lead ? '' : '|b')} p={p} z={i + 1} top={i === all.length - 1} kind={b.kind}
-                   label={short(b.name)} sublabel={`${b.staged === 'add' ? '≈' : ''}${gb(b.gb)} GB${b.split ? ' (split)' : ''}${(b.pinNext ?? b.pinned) && !b.plugin ? ' 📌' : ''}${b.tier && b.tier !== 'hot' && b.tier !== 'staged' ? ` · ${b.tier}` : ''}`}
+                   label={short(b.name)} sublabel={b.parked ? 'parked in RAM' : `${b.staged === 'add' ? '≈' : ''}${gb(b.gb)} GB${b.split ? ' (split)' : ''}${(b.pinNext ?? b.pinned) && !b.plugin ? ' 📌' : ''}${b.tier && b.tier !== 'hot' && b.tier !== 'staged' ? ` · ${b.tier}` : ''}`}
                    staged={b.staged} copies={b.split ? 0 : copies[`${b.service}|${b.kind}|${b.name}`]}
                    draggableAs={b.staged === 'remove' ? undefined : { src: 'block', kind: b.kind, name: b.name, service: b.service, gpu: g.svcIndex ?? undefined, clipType: b.clipType, blockId: b.id }}
-                   tooltip={`${b.name}\n${b.kind} · ${gb(b.gb)} GB${b.split ? ` · split across ${b.gpus.length} cards` : ''}${pinMark}${b.busy ? ' · busy' : ''}${b.tier ? ` · ${b.tier}` : ''}\nDrag onto another card to duplicate (Shift = move)`} />
+                   tooltip={`${b.name}\n${b.parked ? 'Parked in RAM: loaded, but the service keeps it off the card between runs and moves it on for each run (SeedVR2 on a 16 GB card OOMs if it stays)\n' : ''}${b.kind} · ${gb(b.gb)} GB${b.split ? ` · split across ${b.gpus.length} cards` : ''}${pinMark}${b.busy ? ' · busy' : ''}${b.tier ? ` · ${b.tier}` : ''}\nDrag onto another card to duplicate (Shift = move)`} />
           )
         })}
       </Cylinder>
@@ -329,6 +330,7 @@ export const ModelMapPanel: React.FC = observer(() => {
               <div key={`${m.kind}|${m.name}`} className={styles.palItem} draggable onDragStart={(e) => setDrag(e, { src: 'palette', kind: m.kind, name: m.name })} title={m.name}>
                 <i style={{ background: KIND_COLOR[m.kind] || KIND_COLOR.other }} />
                 <span className={styles.palName}>{short(m.name)}</span>
+                <span className={styles.palKind}>{m.kind}</span>
                 <span className={styles.palSize}>{m.gb != null ? `${gb(m.gb)} GB` : ''}</span>
               </div>
             ))}

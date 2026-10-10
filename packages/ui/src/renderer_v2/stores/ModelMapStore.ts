@@ -34,6 +34,7 @@ export interface MapBlock {
   pinned: boolean; busy: boolean; tier: string; clipType?: string; plugin?: string
   staged?: 'add' | 'remove'; pinNext?: boolean   // pinNext: the pin state after Apply, when a pin change is staged
   other?: boolean                                 // usage that is not an image-model-service model
+  parked?: boolean                                // resident but held in RAM between runs (e.g. SeedVR2 on a 16 GB card)
 }
 export interface MapGpu {
   uuid: string; node: string; label: string; totalGb: number; usedGb: number
@@ -169,7 +170,7 @@ export class ModelMapStore {
         const total = r.vram_gb ?? (parked ? 0 : this.sizeOf(r.kind, r.name, s._node))
         const b: MapBlock = { id: `${s.id}|${r.kind}|${r.name}|${r.clip_type || ''}|${idx.join(',')}`, kind: r.kind, name: r.name,
           gb: total != null ? total / idx.length : null, service: s.id, gpus: idx, split: idx.length > 1, pinned: !!r.pinned,
-          busy: !!r.busy, tier: r.tier || '', clipType: r.clip_type || undefined, plugin: r.plugin || undefined }
+          busy: !!r.busy, tier: r.tier || '', clipType: r.clip_type || undefined, plugin: r.plugin || undefined, parked }
         for (const i of idx) gpuOf(s.id, i)?.blocks.push(b)
       }
     }
@@ -252,6 +253,9 @@ export class ModelMapStore {
     for (const s of this.services) for (const [kind, names] of Object.entries(s.available || {})) {
       if (this.kindFilter && kind !== this.kindFilter) continue
       for (const name of names as string[]) {
+        // The 'upscale' kind (spandrel) lists the whole upscale-models tree, SeedVR2 weights included - it cannot load
+        // them (UnsupportedModelError), and a drag of one cached the file + failed silently. SeedVR2 has its own kind.
+        if (kind === 'upscale' && /seedvr2/i.test(name)) continue
         const k = `${kind}\u0000${name}`
         if (!seen.has(k)) seen.set(k, { kind, name, gb: null })
       }
@@ -386,7 +390,39 @@ export class ModelMapStore {
     }
     runInAction(() => { this.changes = failed; this.applying = false })   // failed ones stay staged, to retry or undo
     await imageModelsStore.load(true); await this.loadMetrics()
-    setTimeout(() => { void imageModelsStore.load(true); void this.loadMetrics() }, 6000)   // loads finish in the background
+    // A load only answers "started" - it runs in the background and a failure lands in the service log, so a ✓ here
+    // proved nothing (2026-10-10: an 'upscale'-kind SeedVR2 file reported ✓ and never loaded). Watch each one land.
+    const watch = todo.filter((c) => !failed.includes(c) && (c.t === 'load' || c.t === 'split' || (c.t === 'pin' && c.pinned)))
+    if (watch.length) void this.verifyLoads(watch)
+    setTimeout(() => { void this.loadMetrics() }, 6000)
+  }
+
+  private landed(c: Change): boolean {
+    const s = this.service((c as any).service)
+    if (!s) return false
+    return (s.resident || []).some((r: any) => {
+      const idx: number[] = r.gpus && r.gpus.length ? r.gpus : [r.gpu]
+      if (c.t === 'split') return r.kind === 'te' && r.name === c.name && idx.length > 1
+      if (c.t === 'load' || c.t === 'pin') return r.kind === c.kind && r.name === c.name && idx.includes(c.gpu)
+      return false
+    })
+  }
+  async verifyLoads(list: Change[]): Promise<void> {
+    const pending = new Set(list)
+    const t0 = Date.now()
+    while (pending.size && Date.now() - t0 < 90000) {
+      await new Promise((r) => setTimeout(r, 5000))
+      await imageModelsStore.load(true)
+      for (const c of [...pending]) {
+        if (this.landed(c)) {
+          pending.delete(c)
+          runInAction(() => { this.applyLog.push({ text: `✓ ${changeLabel(c, (s, g) => this.gpuName(s, g))} - now resident`, ok: true }) })
+        }
+      }
+    }
+    for (const c of pending) {
+      runInAction(() => { this.applyLog.push({ ok: false, text: `✗ ${changeLabel(c, (s, g) => this.gpuName(s, g))} - not resident after 90 s. The load runs in the background and failed or is still going; the service log has the reason (a wrong model kind, out of memory, or a GPU the kind can't use).` }) })
+    }
   }
 }
 
