@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Undo2, X, Pin, Trash2, Check } from 'lucide-react'
+import { Undo2, X, Pin, Trash2, Check, Lock } from 'lucide-react'
 import { modelMapStore as store, changeLabel, type MapGpu, type MapBlock, type CacheCyl, type CacheBlock } from '../../stores/ModelMapStore'
 import { imageModelsStore } from '../../stores/ImageModelsStore'
 import { ModelPlacementPanel } from './ModelPlacementPanel'
@@ -69,32 +69,78 @@ const Cylinder: React.FC<{
   )
 }
 
-const Block: React.FC<{
-  p: Placed<MapBlock | CacheBlock>; z: number; top: boolean; label: string; sublabel: string; kind: string
-  draggableAs?: Drag; splitAs?: Drag; pinned: boolean; pinNext?: boolean; pinTitle: string; pinDisabled?: boolean
-  onPin?: (v: boolean) => void; onX?: () => void; xTitle: string; copies?: number; staged?: string; dim?: boolean; tooltip: string
-}> = ({ p, z, top, label, sublabel, kind, draggableAs, splitAs, pinned, pinNext, pinTitle, pinDisabled, onPin, onX, xTitle, copies, staged, dim, tooltip }) => {
+/** A model section inside a GPU cylinder: colour + label only. Its controls live in the side column (SideControls),
+ *  because a small section clipped its own pin / X buttons (Travis, 2026-10-10). */
+const Block: React.FC<{ p: Placed<MapBlock>; z: number; top: boolean; label: string; sublabel: string; kind: string
+  draggableAs?: Drag; copies?: number; staged?: string; tooltip: string }> = ({ p, z, top, label, sublabel, kind, draggableAs, copies, staged, tooltip }) => {
   const c = KIND_COLOR[kind] || KIND_COLOR.other
-  const showPin = pinNext ?? pinned
-  const roomy = p.h >= 30
   return (
-    <div className={`${styles.block} ${top ? styles.blockTop : ''} ${staged === 'add' ? styles.stAdd : ''} ${staged === 'remove' ? styles.stRemove : ''} ${dim ? styles.dim : ''}`}
+    <div className={`${styles.block} ${top ? styles.blockTop : ''} ${staged === 'add' ? styles.stAdd : ''} ${staged === 'remove' ? styles.stRemove : ''}`}
          style={{ bottom: p.off, height: p.h, zIndex: z, ['--c' as any]: c, color: KIND_TEXT[kind] || '#fff', ['--cap' as any]: `${CAP}px` }}
          draggable={!!draggableAs} onDragStart={draggableAs ? (e) => setDrag(e, draggableAs) : undefined} title={tooltip}>
-      {roomy && <div className={styles.blockText}><b>{label}</b><span>{sublabel}</span></div>}
-      {onPin && (
-        <label className={`${styles.pin} ${showPin ? styles.pinOn : ''} ${pinNext != null ? styles.pinStaged : ''}`} title={pinTitle} onClick={(e) => e.stopPropagation()}>
-          <input type="checkbox" checked={showPin} disabled={pinDisabled} onChange={(e) => onPin(e.target.checked)} />
-          <Pin size={10} />
-        </label>
-      )}
-      {onX && <button className={styles.x} title={xTitle} onClick={(e) => { e.stopPropagation(); onX() }}><X size={11} /></button>}
-      {!!copies && copies > 1 && <span className={styles.copies} title={`${copies} copies on this node (CFG split uses them in parallel)`}>×{copies}</span>}
-      {splitAs && <span className={styles.grip} draggable title="Drag onto a neighbouring card of the same node to SPLIT this encoder across both"
-                        onDragStart={(e) => { e.stopPropagation(); setDrag(e, splitAs) }}>⇔</span>}
+      {p.h >= 30 && <div className={styles.blockText}><b>{label}</b><span>{sublabel}</span></div>}
+      {!!copies && copies > 1 && p.h >= 18 && <span className={styles.copies} title={`${copies} copies on this node (CFG split uses them in parallel)`}>×{copies}</span>}
     </div>
   )
 }
+
+type PinState = 'off' | 'on' | 'stagedOn' | 'stagedOff' | 'locked' | 'unsupported'
+const pinState = (b: MapBlock, supported: boolean): PinState => {
+  if (b.plugin) return 'locked'
+  if (!supported) return 'unsupported'
+  if (b.pinNext === true) return 'stagedOn'
+  if (b.pinNext === false) return 'stagedOff'
+  return b.pinned ? 'on' : 'off'
+}
+const PIN_TITLE: Record<PinState, string> = {
+  off: 'Not pinned - click to stage a VRAM pin (permanently loaded: never unloaded or offloaded from this card)',
+  on: 'PINNED in VRAM - permanently loaded. Click to stage an unpin.',
+  stagedOn: 'Pin staged - takes effect on Apply (click again to un-stage)',
+  stagedOff: 'Unpin staged - takes effect on Apply (click again to un-stage)',
+  locked: 'Always loaded: a split encoder is held by the te_split plugin outside the memory manager - nothing evicts it, and it reloads on every service restart. Unload it with X.',
+  unsupported: "This service's core is too old for VRAM pins",
+}
+
+/** The controls column beside a cylinder: one group per model section, level with it; groups push apart so even a
+ *  hairline section gets its own readable controls. */
+const SideControls: React.FC<{ g: MapGpu; placed: Placed<MapBlock>[] }> = observer(({ g, placed }) => {
+  const ROW = 20
+  const items = placed.filter((p) => !p.b.other && (p.b.gpus[0] === g.svcIndex)).map((p) => {
+    const b = p.b
+    const n = 2 + (b.kind === 'te' && !b.split && g.teSplit && b.staged !== 'remove' ? 1 : 0)
+    return { b, h: n * ROW, want: CAP / 2 + BODY - p.off - p.h / 2 }   // y of the section's centre
+  }).sort((a, b) => a.want - b.want)
+  // place top-down without overlap, then pull back up if the last group overflows the bottom
+  let y = 0
+  const tops = items.map((it) => { const t = Math.max(it.want - it.h / 2, y); y = t + it.h + 3; return t })
+  const limit = BODY + CAP
+  for (let i = items.length - 1, floor = limit; i >= 0; i--) { if (tops[i] + items[i].h > floor) tops[i] = floor - items[i].h; floor = tops[i] - 3 }
+  return (
+    <div className={styles.side} style={{ height: BODY + CAP }}>
+      {items.map((it, i) => {
+        const b = it.b, ps = pinState(b, g.pinSupported)
+        const c = KIND_COLOR[b.kind] || KIND_COLOR.other
+        return (
+          <div key={b.id} className={styles.sideGroup} style={{ top: tops[i], borderLeftColor: c }}>
+            <button className={`${styles.sideBtn} ${styles['pin_' + ps]}`} title={`${short(b.name)}\n${PIN_TITLE[ps]}`}
+                    disabled={ps === 'locked' || ps === 'unsupported' || b.staged === 'add'}
+                    onClick={() => store.stagePin(b, !(b.pinNext ?? b.pinned))}>
+              {ps === 'locked' ? <Lock size={11} /> : <Pin size={11} />}
+            </button>
+            <button className={`${styles.sideBtn} ${b.staged === 'remove' ? styles.sideOn : ''}`}
+                    title={b.staged === 'add' ? `Un-stage loading ${short(b.name)}` : b.staged === 'remove' ? `Unload of ${short(b.name)} staged - click again to keep it`
+                      : b.split ? `Unload the split ${short(b.name)} (both cards)` : `Unload ${short(b.name)} from this card`}
+                    onClick={() => (b.staged === 'remove' ? store.unstageUnload(b) : store.stageUnload(b))}><X size={11} /></button>
+            {b.kind === 'te' && !b.split && g.teSplit && b.staged !== 'remove' && (
+              <span className={styles.sideBtn} draggable title={`Drag onto a neighbouring card of this node to SPLIT ${short(b.name)} across both`}
+                    onDragStart={(e) => setDrag(e, { src: 'split', kind: b.kind, name: b.name, service: b.service, gpu: g.svcIndex ?? undefined, blockId: b.id })}>⇔</span>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+})
 
 const GpuCyl: React.FC<{ g: MapGpu; copies: Record<string, number> }> = observer(({ g, copies }) => {
   const onDrop = (d: Drag, e: React.DragEvent) => {
@@ -111,31 +157,30 @@ const GpuCyl: React.FC<{ g: MapGpu; copies: Record<string, number> }> = observer
       if (b) store.stageUnload(b)
     }
   }
+  const placed = stack(g.blocks, Math.max(g.totalGb, g.projectedGb))
   return (
-    <Cylinder title={g.label} sub={`${gb(g.usedGb)} / ${Math.round(g.totalGb)} GB`} note={g.service ? undefined : 'not a model service'}
-              capGb={g.totalGb} projectedGb={g.projectedGb} usedGb={g.usedGb} dropOk={g.service != null} onDrop={onDrop}>
-      {(cap) => stack(g.blocks, cap).map((p, i, all) => {
-        const b = p.b as MapBlock
-        if (b.other) {
-          return <Block key={b.id} p={p} z={i + 1} top={i === all.length - 1} kind="other" label={g.service ? 'other' : ''} sublabel={`${gb(b.gb)} GB`}
-                        pinned={false} pinTitle="" xTitle="" tooltip={g.service ? `${gb(b.gb)} GB not held by a listed model (CUDA contexts, cache, other processes)` : `${gb(b.gb)} GB in use (not an Image Model Service card)`} />
-        }
-        const lead = b.gpus[0] === g.svcIndex
-        return (
-          <Block key={b.id + (lead ? '' : '|b')} p={p} z={i + 1} top={i === all.length - 1} kind={b.kind}
-                 label={short(b.name)} sublabel={`${b.staged === 'add' ? '≈' : ''}${gb(b.gb)} GB${b.split ? ' (split)' : ''}${b.tier && b.tier !== 'hot' && b.tier !== 'staged' ? ` · ${b.tier}` : ''}`}
-                 staged={b.staged} pinned={b.pinned} pinNext={b.pinNext}
-                 pinTitle={b.plugin ? `Held by the ${b.plugin} plugin - not pinnable` : g.pinSupported ? 'Pin: permanently loaded - never unloaded or offloaded from this card' : "This service's core is too old for VRAM pins"}
-                 pinDisabled={!g.pinSupported || b.staged === 'add' || !!b.plugin}
-                 onPin={(v) => store.stagePin(b, v)} onX={() => store.stageUnload(b)}
-                 xTitle={b.staged === 'add' ? 'Un-stage this load' : b.split ? 'Unload the split encoder (both cards)' : 'Unload from this card'}
-                 copies={b.split ? 0 : copies[`${b.service}|${b.kind}|${b.name}`]}
-                 draggableAs={b.staged === 'remove' ? undefined : { src: 'block', kind: b.kind, name: b.name, service: b.service, gpu: g.svcIndex ?? undefined, clipType: b.clipType, blockId: b.id }}
-                 splitAs={b.kind === 'te' && !b.split && g.teSplit && b.staged !== 'remove' ? { src: 'split', kind: b.kind, name: b.name, service: b.service, gpu: g.svcIndex ?? undefined, blockId: b.id } : undefined}
-                 tooltip={`${b.name}\n${b.kind} · ${gb(b.gb)} GB${b.split ? ` · split across ${b.gpus.length} cards` : ''}${b.busy ? ' · busy' : ''}${b.tier ? ` · ${b.tier}` : ''}\nDrag onto another card to duplicate (Shift = move)`} />
-        )
-      })}
-    </Cylinder>
+    <div className={styles.cylPair}>
+      <Cylinder title={g.label} sub={`${gb(g.usedGb)} / ${Math.round(g.totalGb)} GB`} note={g.service ? undefined : 'not a model service'}
+                capGb={g.totalGb} projectedGb={g.projectedGb} usedGb={g.usedGb} dropOk={g.service != null} onDrop={onDrop}>
+        {() => placed.map((p, i, all) => {
+          const b = p.b
+          if (b.other) {
+            return <Block key={b.id} p={p} z={i + 1} top={i === all.length - 1} kind="other" label={g.service ? 'other' : ''} sublabel={`${gb(b.gb)} GB`}
+                          tooltip={g.service ? `${gb(b.gb)} GB not held by a listed model (CUDA contexts, cache, other processes)` : `${gb(b.gb)} GB in use (not an Image Model Service card)`} />
+          }
+          const lead = b.gpus[0] === g.svcIndex
+          const pinMark = b.plugin ? ' · always loaded' : (b.pinNext ?? b.pinned) ? ' · 📌 pinned' : ''
+          return (
+            <Block key={b.id + (lead ? '' : '|b')} p={p} z={i + 1} top={i === all.length - 1} kind={b.kind}
+                   label={short(b.name)} sublabel={`${b.staged === 'add' ? '≈' : ''}${gb(b.gb)} GB${b.split ? ' (split)' : ''}${(b.pinNext ?? b.pinned) && !b.plugin ? ' 📌' : ''}${b.tier && b.tier !== 'hot' && b.tier !== 'staged' ? ` · ${b.tier}` : ''}`}
+                   staged={b.staged} copies={b.split ? 0 : copies[`${b.service}|${b.kind}|${b.name}`]}
+                   draggableAs={b.staged === 'remove' ? undefined : { src: 'block', kind: b.kind, name: b.name, service: b.service, gpu: g.svcIndex ?? undefined, clipType: b.clipType, blockId: b.id }}
+                   tooltip={`${b.name}\n${b.kind} · ${gb(b.gb)} GB${b.split ? ` · split across ${b.gpus.length} cards` : ''}${pinMark}${b.busy ? ' · busy' : ''}${b.tier ? ` · ${b.tier}` : ''}\nDrag onto another card to duplicate (Shift = move)`} />
+          )
+        })}
+      </Cylinder>
+      {g.service && <SideControls g={g} placed={placed} />}
+    </div>
   )
 })
 
@@ -209,11 +254,14 @@ const CacheGrid: React.FC<{ cy: CacheCyl }> = observer(({ cy }) => {
               {s.w >= 3 && <span className={styles.tileSize}>{t.staged === 'add' ? '≈' : ''}{gb(t.gb)} GB{t.copying ? ' · copying' : ''}</span>}
               {!t.group && (
                 <>
-                  <label className={`${styles.pin} ${showPin ? styles.pinOn : ''} ${t.pinNext != null ? styles.pinStaged : ''}`} title="Pin in this cache: never evicted to make room" onClick={(e) => e.stopPropagation()}>
-                    <input type="checkbox" checked={showPin} disabled={t.staged === 'add'} onChange={(e) => store.stageCachePin(cy, t, e.target.checked)} />
-                    <Pin size={10} />
-                  </label>
-                  <button className={styles.x} title={t.staged === 'add' ? 'Un-stage' : `Evict from ${cy.label}`} onClick={(e) => { e.stopPropagation(); store.stageEvict(cy, t) }}><X size={11} /></button>
+                  <div className={styles.tileCtl}>
+                    <button className={`${styles.sideBtn} ${styles['pin_' + (t.pinNext === true ? 'stagedOn' : t.pinNext === false ? 'stagedOff' : showPin ? 'on' : 'off')]}`}
+                            disabled={t.staged === 'add'} onClick={(e) => { e.stopPropagation(); store.stageCachePin(cy, t, !showPin) }}
+                            title={t.pinNext != null ? `${t.pinNext ? 'Pin' : 'Unpin'} staged - takes effect on Apply (click again to un-stage)`
+                              : showPin ? 'PINNED in this cache - never evicted. Click to stage an unpin.' : 'Not pinned - click to stage a cache pin (never evicted to make room)'}><Pin size={11} /></button>
+                    <button className={`${styles.sideBtn} ${t.staged === 'remove' ? styles.sideOn : ''}`} title={t.staged === 'add' ? 'Un-stage' : `Evict from ${cy.label}`}
+                            onClick={(e) => { e.stopPropagation(); store.stageEvict(cy, t) }}><X size={11} /></button>
+                  </div>
                 </>
               )}
             </div>

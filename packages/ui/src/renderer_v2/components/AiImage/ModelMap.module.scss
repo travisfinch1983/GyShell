@@ -122,3 +122,23 @@
 .tileName { font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.2; }
 .tileSize { font-size: 10px; opacity: 0.9; white-space: nowrap; overflow: hidden; line-height: 1.2; }
 .freeCell { border: 1px dashed color-mix(in srgb, var(--fg-faint) 35%, transparent); border-radius: 3px; }
+
+// GPU section controls: a column beside the cylinder, one group per section (SideControls)
+.cylPair { display: flex; align-items: flex-start; flex: none; }
+.side { position: relative; width: 26px; margin-left: -6px; flex: none; }
+.sideGroup { position: absolute; left: 0; display: flex; flex-direction: column; border-left: 3px solid; padding-left: 2px; border-radius: 2px; }
+.sideBtn { width: 19px; height: 18px; margin: 1px 0; padding: 0; border-radius: 4px; border: 1px solid var(--border); background: var(--control-bg);
+  color: var(--fg-muted); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; font-size: 11px; box-sizing: border-box;
+  &:disabled { opacity: 0.4; cursor: default; }
+  &:hover:not(:disabled) { border-color: var(--accent); color: var(--fg); }
+}
+.pin_on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.pin_stagedOn { background: color-mix(in srgb, var(--accent) 30%, transparent); border: 1.5px dashed var(--accent); color: var(--accent); }
+.pin_stagedOff { background: transparent; border: 1.5px dashed var(--accent); color: var(--fg-muted); text-decoration: line-through; }
+.pin_locked, .pin_locked:disabled { background: var(--fg-muted); border-color: var(--fg-muted); color: var(--app-bg); opacity: 1; cursor: help; }
+.sideOn { background: var(--danger); border-color: var(--danger); color: #fff; }
+.tileCtl { position: absolute; top: 3px; right: 3px; display: flex; gap: 2px; z-index: 3;
+  .sideBtn { margin: 0; width: 18px; height: 17px; }
+  .sideBtn:not(.pin_on):not(.pin_stagedOn):not(.sideOn) { background: rgba(0, 0, 0, 0.35); border-color: transparent; color: #fff; }
+}
+.tile { padding-right: 46px; }

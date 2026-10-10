@@ -295,9 +295,15 @@ export class ModelMapStore {
         || (c.t === 'split' && c.service === b.service && c.name === b.name)))
       return
     }
-    if (b.pinned && b.pinNext !== false) { this.hint = `${b.name.split('/').pop()} is pinned - untick its pin first.`; return }
+    if (b.pinned && b.pinNext !== false) { this.hint = `${b.name.split('/').pop()} is pinned - unpin it first.`; return }
     if (b.split) this.push({ t: 'unsplit', service: b.service, name: b.name })
     else this.push({ t: 'unload', service: b.service, kind: b.kind, name: b.name, gpu: b.gpus[0], clipType: b.clipType })
+  }
+
+  /** Take back a staged unload (or split unload) of this block. */
+  unstageUnload(b: MapBlock): void {
+    this.changes = this.changes.filter((c) => !((c.t === 'unload' && c.service === b.service && c.kind === b.kind && c.name === b.name && b.gpus.includes(c.gpu))
+      || (c.t === 'unsplit' && c.service === b.service && c.name === b.name)))
   }
 
   /** Stretch a text encoder from its card onto a 2nd card of the same service (te_split plugin). */
@@ -335,7 +341,8 @@ export class ModelMapStore {
   }
   stageEvict(cy: CacheCyl, b: CacheBlock): void {
     if (b.staged === 'add') { this.changes = this.changes.filter((c) => !(c.t === 'warm' && c.node === cy.node && c.kind === b.kind && c.name === b.name)); return }
-    if (b.pinned && b.pinNext !== false) { this.hint = `${b.name.split('/').pop()} is pinned in this cache - untick its pin first.`; return }
+    if (b.staged === 'remove') { this.changes = this.changes.filter((c) => !(c.t === 'evict' && c.node === cy.node && c.tier === cy.tier && c.kind === b.kind && c.name === b.name)); return }
+    if (b.pinned && b.pinNext !== false) { this.hint = `${b.name.split('/').pop()} is pinned in this cache - unpin it first.`; return }
     this.push({ t: 'evict', node: cy.node, service: cy.service, kind: b.kind, name: b.name, tier: cy.tier })
   }
   stageCachePin(cy: CacheCyl, b: CacheBlock, pinned: boolean): void {
