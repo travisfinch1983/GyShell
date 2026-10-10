@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""1-second thermal recorder for the px-epyc RTX 5060 Tis (claude1, 2026-10-10, Travis's request).
+
+Records every second, but WRITES a row only while that card is above UTIL_MIN % utilisation, so the log
+holds load periods only: compare how each card's cooling method copes under real work.
+
+ONE long-running nvidia-smi process (-lms 1000), never one process per sample. A per-second cron of
+nvidia-smi is exactly the pile-up pattern that deadlocked a GPU host on 2026-08-17 (every call queues in
+D state behind a stalled card). If the reader goes quiet for STALL_S seconds the recorder logs it to the
+journal and exits (systemd restarts it after RestartSec), without spawning more calls.
+
+Output: /var/log/gpu-thermal/YYYY-MM-DD.csv (one file per UTC day, files older than KEEP_DAYS are deleted)
+Columns: utc, card, cooling, uuid, pci, temp_c, util_pct, power_w, sm_mhz, fan_pct, throttle_hex
+Labels: /etc/gpu-thermal-recorder.json  {"<uuid prefix>": {"card": "...", "cooling": "..."}}
+Report: gpu-thermal-report [YYYY-MM-DD]
+"""
+import json, os, subprocess, sys, threading, time
+from datetime import datetime, timezone
+
+UTIL_MIN = float(os.environ.get("UTIL_MIN", "75"))
+OUT_DIR = os.environ.get("OUT_DIR", "/var/log/gpu-thermal")
+LABELS = os.environ.get("LABELS", "/etc/gpu-thermal-recorder.json")
+STALL_S = 30
+KEEP_DAYS = 60
+FIELDS = "timestamp,uuid,pci.bus_id,name,temperature.gpu,utilization.gpu,power.draw,clocks.sm,fan.speed,clocks_throttle_reasons.active"
+
+
+def labels():
+    try:
+        return json.load(open(LABELS))
+    except Exception as e:
+        print(f"labels unreadable ({e}); using uuid only", file=sys.stderr, flush=True)
+        return {}
+
+
+def label_for(lab, uuid):
+    u = uuid.replace("GPU-", "").lower()
+    for k, v in lab.items():
+        if u.startswith(k.replace("GPU-", "").lower()):
+            return v.get("card", u[:8]), v.get("cooling", "")
+    return u[:8], ""
+
+
+def prune():
+    cutoff = time.time() - KEEP_DAYS * 86400
+    for f in os.listdir(OUT_DIR):
+        p = os.path.join(OUT_DIR, f)
+        if f.endswith(".csv") and os.path.getmtime(p) < cutoff:
+            os.remove(p)
+
+
+def main():
+    os.makedirs(OUT_DIR, exist_ok=True)
+    lab = labels()
+    q = subprocess.run(["nvidia-smi", "--query-gpu=uuid,name", "--format=csv,noheader"], capture_output=True, text=True, timeout=30)
+    uuids = [l.split(",")[0].strip() for l in q.stdout.splitlines() if "5060 Ti" in l]
+    if not uuids:
+        print("no RTX 5060 Ti found", file=sys.stderr); sys.exit(1)
+    print(f"recording {len(uuids)} cards above {UTIL_MIN}% util into {OUT_DIR}", flush=True)
+    p = subprocess.Popen(["nvidia-smi", f"--query-gpu={FIELDS}", "--format=csv,noheader,nounits", "-lms", "1000", "-i", ",".join(uuids)],
+                         stdout=subprocess.PIPE, text=True, bufsize=1)
+    last = [time.time()]
+
+    def watchdog():
+        while True:
+            time.sleep(5)
+            if time.time() - last[0] > STALL_S:
+                print(f"no sample for {STALL_S}s - nvidia-smi stalled? exiting (systemd restarts later)", file=sys.stderr, flush=True)
+                os._exit(3)
+    threading.Thread(target=watchdog, daemon=True).start()
+
+    day, fh, n = None, None, 0
+    for line in p.stdout:
+        last[0] = time.time()
+        parts = [x.strip() for x in line.split(",")]
+        if len(parts) < 10:
+            continue
+        _, uuid, pci, _, temp, util, power, sm, fan, thr = parts[:10]
+        try:
+            if float(util) <= UTIL_MIN:
+                continue
+        except ValueError:
+            continue
+        now = datetime.now(timezone.utc)
+        d = now.strftime("%Y-%m-%d")
+        if d != day:
+            if fh:
+                fh.close()
+            path = os.path.join(OUT_DIR, d + ".csv")
+            new = not os.path.exists(path)
+            fh = open(path, "a", buffering=1)
+            if new:
+                fh.write("utc,card,cooling,uuid,pci,temp_c,util_pct,power_w,sm_mhz,fan_pct,throttle_hex\n")
+            day = d
+            lab = labels()       # pick up label edits daily
+            prune()
+        card, cooling = label_for(lab, uuid)
+        fh.write(",".join([now.strftime("%Y-%m-%dT%H:%M:%S"), card, cooling.replace(",", ";"), uuid, pci.replace("00000000:", ""),
+                           temp, util, power, sm, fan, thr]) + "\n")
+        n += 1
+    print(f"nvidia-smi exited ({p.wait()}) after {n} rows", file=sys.stderr, flush=True)
+    sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,6 @@
+# zram swap for px-epyc (claude1, 2026-10-09, Travis-approved). The host has no disk swap (all NVMe
+# is ZFS; swap on a zvol can deadlock under pressure). This gives ai-epyc (CT176, capped at 160 GB)
+# room for odd spikes: swapped pages are zstd-compressed into the host's spare RAM.
+ALGO=zstd
+SIZE=32768
+PRIORITY=100

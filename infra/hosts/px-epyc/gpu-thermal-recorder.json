@@ -1,0 +1,7 @@
+{
+  "_note": "Labels for gpu-thermal-recorder (uuid prefix -> card + cooling). Cooling per Travis 2026-10-10. Edits are picked up at the next UTC day or a restart of gpu-thermal-recorder.",
+  "335e6d0b": {"card": "5060 Ti #0 (MSI)", "cooling": "40mm server fan at heatsink end, blowing with chassis airflow"},
+  "775cafd5": {"card": "5060 Ti #3 (MSI)", "cooling": "40mm server fan at heatsink end, blowing with chassis airflow"},
+  "a33cd194": {"card": "5060 Ti #1 (MSI)", "cooling": "GPU fan mounted on heatsink"},
+  "ed1da178": {"card": "5060 Ti #2 (PNY)", "cooling": "GPU fans mounted on heatsink; vertical fins"}
+}

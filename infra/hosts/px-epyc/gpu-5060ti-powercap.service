@@ -1,0 +1,17 @@
+[Unit]
+Description=150 W power cap (permanent, 2026-10-08) + 2600 MHz core clock cap (summer heat, 2026-10-10 until the rear-exhaust kits / workshop heat pump - remove the -lgc lines then) on the 4x RTX 5060 Ti
+After=nvidia-persistenced.service systemd-modules-load.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/nvidia-smi -pm 1
+ExecStart=/usr/bin/nvidia-smi -i 00000000:01:00.0 -pl 150
+ExecStart=/usr/bin/nvidia-smi -i 00000000:02:00.0 -pl 150
+ExecStart=/usr/bin/nvidia-smi -i 00000000:22:00.0 -pl 150
+ExecStart=/usr/bin/nvidia-smi -i 00000000:43:00.0 -pl 150
+ExecStart=/usr/bin/nvidia-smi -i 00000000:01:00.0 -lgc 210,2600
+ExecStart=/usr/bin/nvidia-smi -i 00000000:02:00.0 -lgc 210,2600
+ExecStart=/usr/bin/nvidia-smi -i 00000000:22:00.0 -lgc 210,2600
+ExecStart=/usr/bin/nvidia-smi -i 00000000:43:00.0 -lgc 210,2600
+[Install]
+WantedBy=multi-user.target

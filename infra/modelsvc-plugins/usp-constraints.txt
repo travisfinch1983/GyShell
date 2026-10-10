@@ -1,0 +1,2 @@
+torch==2.10.0+cu128
+nvidia-nccl-cu12==2.27.5

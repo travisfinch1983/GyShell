@@ -1,0 +1,13 @@
+[Unit]
+Description=1 s thermal recorder for the RTX 5060 Tis while above 75% util (claude1, 2026-10-10) - /var/log/gpu-thermal, report: gpu-thermal-report
+After=gpu-5060ti-powercap.service nvidia-persistenced.service
+
+[Service]
+ExecStart=/usr/local/sbin/gpu-thermal-recorder
+Restart=always
+# Long gap on purpose: if a card stalls, do not keep re-spawning nvidia-smi into it.
+RestartSec=60
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

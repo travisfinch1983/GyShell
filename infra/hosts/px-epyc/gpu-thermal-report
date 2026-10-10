@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Summarise the 5060 Ti thermal recorder log: per card, under >75% load.
+Usage: gpu-thermal-report [YYYY-MM-DD | all]   (default: today, UTC)"""
+import csv, glob, json, os, sys
+from collections import defaultdict
+from datetime import datetime, timezone
+
+d = sys.argv[1] if len(sys.argv) > 1 else datetime.now(timezone.utc).strftime("%Y-%m-%d")
+files = sorted(glob.glob("/var/log/gpu-thermal/*.csv")) if d == "all" else [f"/var/log/gpu-thermal/{d}.csv"]
+rows = defaultdict(list)
+for f in files:
+    if not os.path.exists(f):
+        continue
+    for r in csv.DictReader(open(f)):
+        rows[r["card"]].append(r)   # by card: cooling labels can be corrected later; show the latest
+if not rows:
+    print(f"no load samples for {d}"); sys.exit(0)
+
+
+def num(r, k):
+    try:
+        return float(r[k])
+    except (ValueError, KeyError):
+        return None
+
+
+print(f"5060 Ti thermals under load (>75% util), {d}; one sample = 1 s\n")
+print(f"{'card':24} {'cooling':34} {'load s':>7} {'avg C':>6} {'p95 C':>6} {'max C':>6} {'>=85C s':>8} {'>=87C s':>8} {'avg W':>6} {'avg MHz':>8} {'max MHz':>8}")
+for card, rs in sorted(rows.items()):
+    cooling = rs[-1]["cooling"]
+    try:   # the CURRENT label wins, so a corrected cooling description applies to past days too
+        u = rs[-1]["uuid"].replace("GPU-", "").lower()
+        for k, v in json.load(open("/etc/gpu-thermal-recorder.json")).items():
+            if isinstance(v, dict) and u.startswith(k.lower()):
+                cooling = v.get("cooling", cooling)
+    except Exception:
+        pass
+    t = sorted(x for x in (num(r, "temp_c") for r in rs) if x is not None)
+    w = [x for x in (num(r, "power_w") for r in rs) if x is not None]
+    mhz = [x for x in (num(r, "sm_mhz") for r in rs) if x is not None]
+    p95 = t[int(0.95 * (len(t) - 1))] if t else 0
+    print(f"{card[:24]:24} {cooling[:34]:34} {len(rs):7d} {sum(t)/len(t):6.1f} {p95:6.0f} {max(t):6.0f} "
+          f"{sum(1 for x in t if x >= 85):8d} {sum(1 for x in t if x >= 87):8d} {sum(w)/max(1,len(w)):6.0f} "
+          f"{sum(mhz)/max(1,len(mhz)):8.0f} {max(mhz) if mhz else 0:8.0f}")
+print("\nNote: compare cards at similar power; a card that ran fewer load seconds saw shorter bursts.")

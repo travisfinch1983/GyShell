@@ -1,0 +1,184 @@
+diff --git a/comfy/ldm/minimax/model.py b/comfy/ldm/minimax/model.py
+index c4b7a68a..0ec5d9e8 100644
+--- a/comfy/ldm/minimax/model.py
++++ b/comfy/ldm/minimax/model.py
+@@ -16,6 +16,7 @@ velocity back, so _forward only ever sees the stream's own latent.
+ 
+ import math
+ 
++import logging
+ import torch
+ import torch.nn as nn
+ 
+@@ -130,6 +131,68 @@ def _video_grid(vt, frame, cursor):
+     return g.reshape(-1, 3)
+ 
+ 
++# --- DIAGNOSTIC ONLY (ported in spirit from LightX2V's h3_finite_check) -------
++# Set H3_FINITE_CHECK=1 to log per-block statistics of the residual stream.
++# Reports the FIRST block that goes non-finite AND the first that COLLAPSES
++# (std -> 0), because a uniform field and a NaN field are different failures and
++# the fp16 output we are chasing is uniform, not NaN.
++import os as _h3_os
++
++_H3_CHECK = _h3_os.environ.get("H3_FINITE_CHECK") == "1"
++# LightX2V-V100 recipe: the residual stream is 1.75x over the fp16 ceiling at block 0
++# and 104x by block 49, so it MUST stay fp32. Only the post-LayerNorm activations
++# (O(1) by construction) are fed to the matmuls in fp16, where the int8 kernels take
++# their compute dtype from the activation dtype. Scaling of the two output
++# projections is added only where measurement shows the products overflow.
++_H3_FP16_CACHE = {}
++
++
++def _h3_fp16():
++    """Is the fp32-residual / scaled-fp16-matmul path wanted here?
++
++    Auto-ON for Volta (sm_70) and nothing else. Volta has no bf16, so ComfyUI
++    falls back to fp32 and leaves ~1.7x on the table; every later arch has
++    native bf16 and needs none of this. H3_V100_FP16=0/1 overrides either way.
++
++    Evaluated LAZILY and cached: touching torch.cuda at import time would
++    initialise CUDA before ComfyUI has chosen its devices.
++    """
++    if "v" in _H3_FP16_CACHE:
++        return _H3_FP16_CACHE["v"]
++    env = _h3_os.environ.get("H3_V100_FP16")
++    if env is not None:
++        v = env == "1"
++    else:
++        v = False
++        try:
++            if torch.cuda.is_available():
++                v = torch.cuda.get_device_capability(0) == (7, 0)
++        except Exception:
++            v = False          # never let detection break a render
++    _H3_FP16_CACHE["v"] = v
++    logging.info("H3 mixed-precision path: %s", "ON (Volta)" if v else "off")
++    return v
++_H3_CDTYPE = torch.float16
++_h3_state = {"nonfinite": None, "collapsed": None, "prev_std": None}
++
++
++def _h3_stat(tag, t):
++    if not _H3_CHECK:
++        return
++    f = t.float()
++    finite = bool(torch.isfinite(f).all())
++    std = float(f.std())
++    amax = float(f.abs().max())
++    if not finite and _h3_state["nonfinite"] is None:
++        _h3_state["nonfinite"] = tag
++        logging.error("H3_FINITE first NON-FINITE at %s", tag)
++    if finite and std < 1e-6 and _h3_state["collapsed"] is None:
++        _h3_state["collapsed"] = tag
++        logging.error("H3_FINITE first COLLAPSE (std=%.3g) at %s", std, tag)
++    logging.info("H3_FINITE %-12s finite=%-5s std=%.6g absmax=%.6g dtype=%s",
++                 tag, finite, std, amax, t.dtype)
++
++
+ class TimeEmbedder(nn.Module):
+     def __init__(self, freq_dim, hidden, out, dtype=None, device=None, operations=None):
+         super().__init__()
+@@ -198,7 +261,13 @@ class Attention(nn.Module):
+         k = AttentionTensorContainer(k.transpose(0, 1).unsqueeze(0))
+         v = AttentionTensorContainer(v.transpose(0, 1).unsqueeze(0))
+         out = optimized_attention(q, k, v, self.heads, preferred_attention=self.comfy_attention, mask=None, skip_reshape=True, transformer_options=transformer_options)
+-        return self.out_proj(out.squeeze(0))
++        out = out.squeeze(0)
++        if _h3_fp16():
++            _h3_stat('attn.pre_out_proj', out)
++            projected = self.out_proj((out.float() / 64.0).to(_H3_CDTYPE))
++            _h3_stat('attn.out', projected)
++            return projected.float() * 64.0
++        return self.out_proj(out)
+ 
+ 
+ class MLP(nn.Module):
+@@ -208,6 +277,14 @@ class MLP(nn.Module):
+         self.fc2 = operations.Linear(ffn, hidden, bias=False, dtype=dtype, device=device)
+ 
+     def forward(self, x):
++        if _h3_fp16():
++            inner = self.fc1(x)
++            _h3_stat('mlp.fc1', inner)
++            gate, up = inner.chunk(2, dim=-1)
++            activated = torch.nn.functional.silu(gate.float()) * up.float()
++            projected = self.fc2((activated / 256.0).to(_H3_CDTYPE))
++            _h3_stat('mlp.out', projected)
++            return projected.float() * 256.0
+         return comfy.ops.linear_input_act(self.fc2, self.fc1(x), "swiglu")
+ 
+ 
+@@ -292,6 +369,13 @@ class DiTBlock(nn.Module):
+     def forward(self, x, t_emb, mod_segments, rope_freqs, transformer_options={}, attention=None):
+         attention = self.attn if attention is None else attention
+         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(t_emb)
++        if _h3_fp16():
++            # x stays fp32 for the whole block; only h crosses into fp16
++            h = _mod_scale_shift(self.norm1(x), shift_msa, scale_msa, mod_segments).to(_H3_CDTYPE)
++            a = self.attn(h, rope_freqs=rope_freqs, transformer_options=transformer_options)
++            x = _mod_gate(x, gate_msa, a.float(), mod_segments)
++            h = _mod_scale_shift(self.norm2(x), shift_mlp, scale_mlp, mod_segments).to(_H3_CDTYPE)
++            return _mod_gate(x, gate_mlp, self.mlp(h).float(), mod_segments)
+         h = _mod_scale_shift(self.norm1(x), shift_msa, scale_msa, mod_segments)
+         x = _mod_gate(x, gate_msa, attention(h, rope_freqs=rope_freqs, transformer_options=transformer_options), mod_segments)
+         h = _mod_scale_shift(self.norm2(x), shift_mlp, scale_mlp, mod_segments)
+@@ -715,10 +799,19 @@ class MiniMaxH3Model(nn.Module):
+         video_embed = self.video_patch_proj(all_video_rows).to(dtype)
+         audio_embed = self.audio_patch_proj(all_audio_rows).to(dtype)
+         text_states = context[0]
++        _h3_stat("ctx_in", text_states)          # straight from the text encoder
+         if text_states.shape[-1] != self.hidden_size:
+-            text_states = self.token_refiner(self.condition_proj(text_states),
++            _proj = self.condition_proj(text_states)
++            _h3_stat("cond_proj", _proj)          # after the projection, before the refiner
++            text_states = self.token_refiner(_proj,
+                                              transformer_options=transformer_options)
++            _h3_stat("refined", text_states)      # after the refiner
+ 
++        _h3_stat("all_video_rows", all_video_rows)
++        _h3_stat("all_audio_rows", all_audio_rows)
++        _h3_stat("video_embed", video_embed)
++        _h3_stat("audio_embed", audio_embed)
++        _h3_stat("text_states", text_states)
+         # segments are contiguous: assemble by slices, embed rows follow segment order
+         h = torch.empty(layout.seq_len, self.hidden_size, dtype=dtype, device=device)
+         voff = aoff = 0
+@@ -733,6 +826,20 @@ class MiniMaxH3Model(nn.Module):
+                 h[a:b] = audio_embed[aoff:aoff + n]
+                 aoff += n
+ 
++        if _H3_CHECK:
++            _cov = torch.zeros(layout.seq_len, dtype=torch.bool, device=device)
++            for _a, _b, _k in layout.segments:
++                _cov[_a:_b] = True
++            _gaps = int((~_cov).sum())
++            logging.error("H3_FINITE coverage written=%d/%d GAPS=%d  (gap rows are uninitialised torch.empty garbage)",
++                          int(_cov.sum()), layout.seq_len, _gaps)
++            if _gaps:
++                _bad = (~_cov).nonzero().flatten()
++                logging.error("H3_FINITE gap rows %s ... nonfinite-in-gaps=%s",
++                              _bad[:8].tolist(),
++                              bool((~torch.isfinite(h[_bad].float())).any()))
++                logging.error("H3_FINITE nonfinite-in-WRITTEN-rows=%s",
++                              bool((~torch.isfinite(h[_cov].float())).any()))
+         t_vals = torch.tensor(unique_t, dtype=torch.float32, device=device)
+         if self.use_adaln_curves:
+             # adaln projections consume interpolated coordinates of the time-embedding curve
+@@ -750,6 +857,8 @@ class MiniMaxH3Model(nn.Module):
+         patches_replace = transformer_options.get("patches_replace", {})
+         blocks_replace = patches_replace.get("dit", {})
+         prefetch_queue = comfy.model_prefetch.make_prefetch_queue(list(self.blocks), device, transformer_options)
++        _h3_stat("pre-blocks", h)
++        _h3_stat("t_emb", t_emb)
+         for i, block in enumerate(self.blocks):
+             comfy.model_prefetch.prefetch_queue_pop(prefetch_queue, device, block, malloc_scope="block")
+             transformer_options["block_index"] = i
+@@ -763,6 +872,7 @@ class MiniMaxH3Model(nn.Module):
+                     {"original_block": block_wrap})["img"]
+             else:
+                 h = block(h, t_emb, mod_segments, rope_freqs, transformer_options=transformer_options)
++            _h3_stat("block%d" % i, h)
+         comfy.model_prefetch.prefetch_queue_pop(prefetch_queue, device, None, malloc_scope="block")
+ 
+         # target streams are single contiguous segments (audio then video, last two)
