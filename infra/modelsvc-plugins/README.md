@@ -27,6 +27,10 @@ itself is reclaimed by the service's idle revocation); first run after idle is ~
 
 ## te_split.py - text encoders held across 2 GPUs
 
+Deployed on BOTH services since 2026-10-10 (ai-gpu 9310, ai-epyc 9312); it does nothing until a split is configured
+(te_split-<port>.json, or staged from the graphical Model Cache & Placement map). Weight placement holds core's
+MM_LOCK (claude2's GPU gate); lock order is always the plugin lock, then MM_LOCK.
+
 Any text encoder (largest block list by bytes: Qwen/Llama `layers`, T5 `block`, ...) loaded once and pipeline-split
 across two cards, balanced by bytes, always resident, outside ComfyUI's model manager. Needs the core hook in
 `serve-teclaim-claude1.patch` (`PluginAPI.claim_te`; merged into claude2's serve.py 2026-10-10). Config

@@ -125,8 +125,8 @@ const GpuCyl: React.FC<{ g: MapGpu; copies: Record<string, number> }> = observer
           <Block key={b.id + (lead ? '' : '|b')} p={p} z={i + 1} top={i === all.length - 1} kind={b.kind}
                  label={short(b.name)} sublabel={`${b.staged === 'add' ? '≈' : ''}${gb(b.gb)} GB${b.split ? ' (split)' : ''}${b.tier && b.tier !== 'hot' && b.tier !== 'staged' ? ` · ${b.tier}` : ''}`}
                  staged={b.staged} pinned={b.pinned} pinNext={b.pinNext}
-                 pinTitle={g.pinSupported ? 'Pin: permanently loaded - never unloaded or offloaded from this card' : 'VRAM pinning needs pin support in the model service (claude2 is adding it)'}
-                 pinDisabled={!g.pinSupported || b.staged === 'add'}
+                 pinTitle={b.plugin ? `Held by the ${b.plugin} plugin - not pinnable` : g.pinSupported ? 'Pin: permanently loaded - never unloaded or offloaded from this card' : "This service's core is too old for VRAM pins"}
+                 pinDisabled={!g.pinSupported || b.staged === 'add' || !!b.plugin}
                  onPin={(v) => store.stagePin(b, v)} onX={() => store.stageUnload(b)}
                  xTitle={b.staged === 'add' ? 'Un-stage this load' : b.split ? 'Unload the split encoder (both cards)' : 'Unload from this card'}
                  copies={b.split ? 0 : copies[`${b.service}|${b.kind}|${b.name}`]}

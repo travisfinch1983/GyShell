@@ -21,6 +21,7 @@ sampling run is accepted contention (it is ~0.2 s).
 """
 import json
 import os
+import sys
 import threading
 import time
 import traceback
@@ -34,6 +35,9 @@ def register(api):
     cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             f"te_split-{getattr(api.args, 'port', 'x')}.json")
     lock = threading.RLock()
+    # core's model-memory lock: weight moves must hold it (the GPU gate makes memory work exclusive across the
+    # process's GPUs - claude2, 2026-10-10). Order is ALWAYS lock -> MM_LOCK.
+    mm_lock = getattr(sys.modules.get('__main__'), 'MM_LOCK', None) or threading.RLock()
     loaded = {}      # (model, clip_type) -> {"clip", "gpus", "cut", "n", "gb", "loaded_at", "encodes", "error"}
 
     def read_cfg():
@@ -113,21 +117,22 @@ def register(api):
         acc, cut = rest, 0
         while cut < len(blocks) and abs((acc + sizes[cut]) - (total - acc - sizes[cut])) < abs(acc - (total - acc)):
             acc += sizes[cut]; cut += 1
-        for g, need in zip(gpus, (acc, total - acc)):       # room first: this service's idle models go to RAM
-            try:
-                api.free_vram(int(g), int(need * 1.1))
-            except Exception:  # noqa: BLE001
-                traceback.print_exc()
-        for i, b in enumerate(blocks):
-            d = devs[0] if i < cut else devs[1]
-            b.to(d)
-            hop(b, d)
-        for m in csm.modules():
-            if id(m) in in_blocks:
-                continue
-            place_tensor(m, devs[0])
-            if m._parameters or m._buffers:
-                hop(m, devs[0])
+        with mm_lock:
+            for g, need in zip(gpus, (acc, total - acc)):   # room first: this service's idle models go to RAM
+                try:
+                    api.free_vram(int(g), int(need * 1.1))
+                except Exception:  # noqa: BLE001
+                    traceback.print_exc()
+            for i, b in enumerate(blocks):
+                d = devs[0] if i < cut else devs[1]
+                b.to(d)
+                hop(b, d)
+            for m in csm.modules():
+                if id(m) in in_blocks:
+                    continue
+                place_tensor(m, devs[0])
+                if m._parameters or m._buffers:
+                    hop(m, devs[0])
         gb = [round(acc / 1e9, 2), round((total - acc) / 1e9, 2)]
         api.log(f"te_split: {model} ({clip_type}) {name}: {len(blocks)} blocks, 0..{cut - 1} on GPU {gpus[0]} ({gb[0]} GB), "
                 f"{cut}..{len(blocks) - 1} on GPU {gpus[1]} ({gb[1]} GB), loaded in {time.time() - t0:.1f}s")

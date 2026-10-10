@@ -137,8 +137,12 @@ export class ModelMapStore {
     }
     return any
   }
+  /** VRAM pins (core, claude2 2026-10-10): every core resident entry carries "pinned". With nothing core-loaded there is
+   *  nothing to read, so assume support unless loaded entries prove an older core (an Apply against one just errors). */
   pinSupported(s: any): boolean {
-    return !!s && ((s.service?.features || []).includes?.('pin') || (s.resident || []).some((r: any) => 'pinned' in r))
+    if (!s) return false
+    const core = (s.resident || []).filter((r: any) => !r.plugin)
+    return core.length === 0 || core.some((r: any) => 'pinned' in r)
   }
 
   // ── the projected picture: live state + staged changes ───────────────────────────────────────
@@ -316,6 +320,7 @@ export class ModelMapStore {
 
   stagePin(b: MapBlock, pinned: boolean): void {
     const s = this.service(b.service)
+    if (b.plugin) { this.hint = `${b.name.split('/').pop()} is held by the ${b.plugin} plugin - VRAM pins cover the service's own copies only.`; return }
     if (!this.pinSupported(s)) { this.hint = 'VRAM pinning needs the pin support in the model service (claude2 is adding it).'; return }
     const i = this.changes.findIndex((c) => c.t === 'pin' && c.service === b.service && c.name === b.name && c.gpu === b.gpus[0])
     if (i >= 0) { this.changes.splice(i, 1); return }
