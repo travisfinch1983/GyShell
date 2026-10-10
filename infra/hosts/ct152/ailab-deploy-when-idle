@@ -1,0 +1,40 @@
+#!/bin/bash
+# One-shot (claude1, 2026-10-10): wait until AI-Lab has no in-flight tasks (the nightly codebase-RAG run), then
+# `ailab-restart --build` to deploy Wiro (6b473cd), verify the route, and report over fleet. Gives up after 10 h.
+LOG=/var/log/ailab-deploy-when-idle.log
+say() { echo "$(date -u +%FT%TZ) $*" >> $LOG; }
+fleet() {   # $1 = text
+  python3 - "$1" <<'PY'
+import json, sys, urllib.request
+body = {"sender": "claude1", "to": ["claude1", "claude2"], "thread_id": "thr-84977436bee4", "kind": "dm", "body": sys.argv[1]}
+try:
+    urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:17900/send", json.dumps(body).encode(), {"Content-Type": "application/json"}), timeout=20)
+except Exception as e:
+    print("fleet send failed:", e)
+PY
+}
+say "waiting for AI-Lab to be idle"
+for i in $(seq 1 120); do
+  n=$(curl -s -m10 http://127.0.0.1:17890/api/notifications/tasks | python3 -c "import json,sys;print(sum(1 for t in json.load(sys.stdin).get('tasks',[]) if t.get('state')=='running'))" 2>/dev/null)
+  if [ "$n" = "0" ]; then
+    say "idle - ailab-restart --build"
+    if ailab-restart --build >> $LOG 2>&1; then
+      sleep 20
+      u=$(curl -s -m20 http://127.0.0.1:17890/api/proxy/imagegen/v1/wiro/usage)
+      say "usage after restart: ${u:0:200}"
+      if echo "$u" | grep -q '"configured":true'; then
+        fleet "[Claude1 auto-deploy] Wiro proxy is LIVE: AI-Lab restarted with --build after the nightly RAG run finished. GET /api/proxy/imagegen/v1/wiro/usage answers (configured). Log: CT152 $LOG"
+      else
+        fleet "[Claude1 auto-deploy] AI-Lab restarted (--build) but /api/proxy/imagegen/v1/wiro/usage did not answer as expected: ${u:0:200}. Log: CT152 $LOG"
+      fi
+    else
+      say "ailab-restart failed"
+      fleet "[Claude1 auto-deploy] ailab-restart --build FAILED while deploying Wiro; AI-Lab state unknown - see CT152 $LOG"
+    fi
+    exit 0
+  fi
+  say "busy ($n running), retry in 5 min"
+  sleep 300
+done
+say "gave up after 10 h"
+fleet "[Claude1 auto-deploy] gave up waiting for AI-Lab to go idle (10 h); Wiro (6b473cd) is NOT deployed yet."
