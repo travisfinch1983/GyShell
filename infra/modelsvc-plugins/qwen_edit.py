@@ -353,7 +353,8 @@ def register(api):
         others = sorted((c for c in infos if fits_lane(c) and c["index"] not in copies and not c.get("busy")), key=lambda c: -free(c))
         if others and free(others[0]) >= unet_gb + WORK_GB:
             c = others[0]
-            return c["index"], f"a fresh copy on GPU {c['index']} ({c.get('name')}, {free(c)} GB free) - the cards holding it are busy or full"
+            return c["index"], (f"a fresh copy on GPU {c['index']} ({c.get('name')}, {free(c)} GB free) - "
+                                + ("the cards holding it are busy or full" if copies else "no card holds it yet"))
         return None, "core placement (every card is busy or full - waiting in line)"
 
     def info(body, query):
