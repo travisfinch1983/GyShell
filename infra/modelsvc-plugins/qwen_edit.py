@@ -327,6 +327,35 @@ def register(api):
             raise RuntimeError(f"no such image: {rel}")
         return Image.open(full)
 
+    WORK_GB = 5.0    # the edit's working memory beside the UNet (1088^2 reference + activations + VAE), measured ~4 GB
+
+    def choose_gpu(unet, lane):
+        """Where an edit runs (Travis, 2026-10-10: "if the model is already loaded onto a GPU, or has space reserved on a
+        GPU, route to that one instead of making room somewhere else"). Never evicts anything:
+          1. a card already holding this UNet that is idle and has room for the working memory
+          2. else the card with the most free VRAM that fits a fresh copy + working memory (loads one there)
+          3. else core placement (queues behind the existing copy) - a busy card waits, it is not cleared."""
+        infos = [api.gpu_info(i) for i in range(len(api.GPUS))]
+        fits_lane = lambda c: not lane or lane == "auto" or lane in str(c.get("name", ""))
+        try:
+            copies = set(core.copies_of(*core.mk("unet", unet)))
+        except Exception:  # noqa: BLE001
+            copies = set()
+        free = lambda c: c.get("free_gb") or 0
+        held = [c for c in infos if c["index"] in copies and fits_lane(c)]
+        for c in sorted(held, key=lambda c: (bool(c.get("busy")), c.get("waiting") or 0, -free(c))):
+            if not c.get("busy") and not c.get("waiting") and free(c) >= WORK_GB:
+                return c["index"], f"its copy on GPU {c['index']} ({c.get('name')}, {free(c)} GB free)"
+        try:
+            unet_gb = os.path.getsize(api.full_path("unet", unet)) / 1e9
+        except Exception:  # noqa: BLE001
+            unet_gb = 8.0
+        others = sorted((c for c in infos if fits_lane(c) and c["index"] not in copies and not c.get("busy")), key=lambda c: -free(c))
+        if others and free(others[0]) >= unet_gb + WORK_GB:
+            c = others[0]
+            return c["index"], f"a fresh copy on GPU {c['index']} ({c.get('name')}, {free(c)} GB free) - the cards holding it are busy or full"
+        return None, "core placement (every card is busy or full - waiting in line)"
+
     def info(body, query):
         unet = (query or {}).get("unet") or DEF_UNET
         resident = None
@@ -386,9 +415,11 @@ def register(api):
                     f"{len(loras)} lora(s), {tuple(images.shape)}")
             return images[0].float().clamp(0, 1).cpu()
 
+        g_pick, why = choose_gpu(unet, str(body.get("lane") or ""))
+        api.log(f"qwen_edit for {who}: running on {why}")
         busy["n"] += 1
         try:
-            res = api.run("unet", unet, go, who=f"qwen_edit:{who}", lane=body.get("lane"))
+            res = api.run("unet", unet, go, gpu=g_pick, who=f"qwen_edit:{who}", lane=None if g_pick is not None else body.get("lane"))
         finally:
             busy["n"] -= 1
         arr = (res.numpy() * 255.0 + 0.5).astype(np.uint8)
