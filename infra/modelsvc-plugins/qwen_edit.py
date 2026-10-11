@@ -29,6 +29,7 @@ import re
 import sys
 import threading
 import time
+import traceback
 import urllib.request
 
 import numpy as np
@@ -390,14 +391,35 @@ def register(api):
         clip = clips[key]
         pixels = torch.from_numpy(np.asarray(img).astype(np.float32) / 255.0)[None]
 
+        def mem(device, tag):   # allocated / reserved on the card at each stage - shows WHICH step a 16 GB card runs out in
+            try:
+                return f"{tag} {torch.cuda.memory_allocated(device) / 1e9:.1f}/{torch.cuda.memory_reserved(device) / 1e9:.1f} GB"
+            except Exception:  # noqa: BLE001
+                return tag
+
         def go(model, device):
+            stages = []
+            try:
+                # no_grad: without it the reference-image VAE encode kept its activations alive for autograd -
+                # +7.3 GB that stayed allocated (8.2 -> 15.5 GB on a 5060 Ti) and OOM'd every 16 GB card (2026-10-11).
+                # (no_grad, not inference_mode: core's note - unloading a quantized model inside inference_mode fails)
+                with torch.no_grad():
+                    return go_inner(model, device, stages)
+            except Exception:
+                api.log(f"qwen_edit for {who} FAILED on GPU {api.GPUS.index(device)} after: {' -> '.join(stages)}\n{traceback.format_exc()[-1500:]}")
+                raise
+
+        def go_inner(model, device, stages):
             g = api.GPUS.index(device)
+            stages.append(mem(device, "start"))
             t0 = time.time()
             vae = api.model("vae", vae_name, gpu=g)      # comfy.sd.VAE, a copy on the run's GPU
+            stages.append(mem(device, "vae ready"))
             out = TextEncodeQwenImage21.execute(clip=clip, prompt=used, negative_prompt="", vae=vae, resolution=resolution,
                                                 images={"image_1": pixels})
             positive, negative, latent = out.args
             t_enc = time.time() - t0
+            stages.append(mem(device, "encoded"))
             # NO explicit MM_LOCK here: this runs inside api.run (the GPU gate's shared compute section). Waiting for
             # MM_LOCK there can deadlock against a load that holds it and waits for compute to drain; core wraps
             # load_models_gpu so the load below steps out of the shared count by itself (claude2, 2026-10-10).
@@ -406,15 +428,17 @@ def register(api):
                 m, _ = comfy.sd.load_lora_for_models(m, None, comfy.utils.load_torch_file(api.full_path("lora", n), safe_load=True), s, 0)
             m.model_options.setdefault("transformer_options", {})["qwen_image21_cache"] = {"device": "auto", "dtype": "default"}
             mm.load_models_gpu([m], force_full_load=True)
+            stages.append(mem(device, "unet+lora loaded"))
             t1 = time.time()
             samples = comfy_nodes.common_ksampler(m, seed, steps, cfg, sampler, scheduler, positive, negative, latent, denoise=1.0)[0]
             t_samp = time.time() - t1
+            stages.append(mem(device, "sampled"))
             with torch.no_grad():
                 images = vae.decode(samples["samples"])
             if images.dim() == 5:      # video-VAE layout [B, T, H, W, C]
                 images = images.reshape(-1, images.shape[-3], images.shape[-2], images.shape[-1])
             api.log(f"qwen_edit for {who} on GPU {g}: encode {t_enc:.1f}s, {steps} steps {t_samp:.1f}s ({t_samp / max(steps, 1):.2f}s/step), "
-                    f"{len(loras)} lora(s), {tuple(images.shape)}")
+                    f"{len(loras)} lora(s), {tuple(images.shape)} | {' -> '.join(stages)}")
             return images[0].float().clamp(0, 1).cpu()
 
         # An explicit gpu = a card the caller reserved for this job (AI-Lab GPU reservations): bound there, no routing.

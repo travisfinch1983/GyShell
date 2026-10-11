@@ -644,10 +644,19 @@ async function reserveGpus(owner, targets, keep, note) {
     } catch (e) { console.warn(`[gpu-reserve] ${id}: could not clear ${x.kind} ${x.name} from GPU ${x.gpu}: ${e.message}`); }
   }
   // 4. keep the core reservation alive while the job runs (its TTL frees the cards if AI-Lab dies)
+  // Core reservations are NOT persisted: a service restart drops them (claude2). A failed touch re-reserves the same
+  // cards, and streams read h.core[service] at each call, so they carry the new id.
   h.timer = setInterval(() => {
     for (const [service, rid] of Object.entries(h.core)) {
       const base = svcBase(service);
-      if (base) svcPost(base, `/reservations/${encodeURIComponent(rid)}/touch`, {}).catch((e) => console.warn(`[gpu-reserve] touch ${rid}: ${e.message}`));
+      if (!base) continue;
+      svcPost(base, `/reservations/${encodeURIComponent(rid)}/touch`, { ttl_s: 600 }).catch(async (e) => {
+        console.warn(`[gpu-reserve] touch ${rid}: ${e.message} - re-reserving`);
+        try {
+          const r = await svcPost(base, '/reservations', { owner: h.owner, gpus: h.targets.filter((t) => t.service === service).map((t) => t.gpu), note: note || h.owner, ttl_s: 600 });
+          if (r.id) { h.core[service] = r.id; resSave(); console.log(`[gpu-reserve] ${h.id}: re-reserved on ${service} as ${r.id}`); }
+        } catch (e2) { console.warn(`[gpu-reserve] ${h.id}: re-reserve on ${service} failed: ${e2.message}`); }
+      });
     }
   }, 60000);
   console.log(`[gpu-reserve] ${id}: reserved ${targets.map((t) => `${t.service}:${t.gpu}`).join(', ')} (${Object.keys(h.core).length ? 'core' : 'SOFT'}); `
@@ -2150,7 +2159,11 @@ export function createImagegenRouter(config) {
 
   // GPUs a job can reserve (every Image Model Service card, its models, who holds it)
   router.get('/watermark/gpus', async (req, res) => {
-    try { res.json({ ok: true, gpus: await reservableGpus() }); } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+    // only cards whose service runs the edit (qwen_edit) - a V100 on 9310 would just fail the stream
+    try {
+      const ok = new Set((await wmServices()).map((x) => x.id));
+      res.json({ ok: true, gpus: (await reservableGpus()).filter((g) => ok.has(g.service)) });
+    } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
   });
 
   router.post('/watermark', express.json(), (req, res) => {
@@ -2202,7 +2215,12 @@ export function createImagegenRouter(config) {
       try {
       await Promise.all(Array.from({ length: nWorkers }, (_, k) => (async () => {
         await new Promise((r) => setTimeout(r, k * 4000));
-        const opt = { upscale, ...(targets.length ? { target: targets[k], reservation: held && held.core[targets[k].service] } : {}) };
+        // NOT via object spread: spreading evaluates a getter once; the id must be read live (re-reserve swaps it)
+        const opt = { upscale };
+        if (targets.length) {
+          opt.target = targets[k];
+          Object.defineProperty(opt, 'reservation', { enumerable: true, get: () => held && held.core[targets[k].service] });
+        }
         while (queue.length && !job.cancel) {
           const rel = queue.shift();
           inFlight.add(rel); job.current = [...inFlight].map((x) => path.basename(x)).join(', ');
