@@ -19,6 +19,7 @@ import {
 } from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import http from 'http';
 import sharp from 'sharp';
 import { spawn, execFile } from 'child_process';
 import { pickForge } from '../../forge-endpoint.js';
@@ -753,6 +754,32 @@ async function wmServices() {
   return probed.filter(Boolean).sort((a, b) => a.rank - b.rank);
 }
 
+/**
+ * POST JSON and wait as long as `timeoutMs` for the answer. NOT fetch(): Node's fetch (undici) drops any request
+ * whose response headers take longer than 300 s ("fetch failed"), whatever AbortSignal says - and an edit queued
+ * behind another stream's run on the Image Model Service routinely does (2026-10-11: 3 of the first 24 images of
+ * a 180-image job lost after their edit had finished, BrokenPipe on the service side).
+ * -> { ok, status, buffer, json() }
+ */
+function longPost(url, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const data = Buffer.from(JSON.stringify(body));
+    const req = http.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': data.length } }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const buffer = Buffer.concat(chunks);
+        resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, buffer,
+                  json: () => JSON.parse(buffer.toString('utf8')) });
+      });
+      res.on('error', reject);
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`no answer from ${new URL(url).host} in ${Math.round(timeoutMs / 60000)} min`)));
+    req.on('error', reject);
+    req.end(data);
+  });
+}
+
 /** One image through the service: -> { png: Buffer (the edit at the model's resolution), prompt, service }. */
 async function wmEdit(rel, prompt, seed, opt = {}) {
   let s;
@@ -768,17 +795,13 @@ async function wmEdit(rel, prompt, seed, opt = {}) {
     s = svcs[0];
   }
   const bind = opt.target ? { gpu: opt.target.gpu, ...(opt.reservation ? { reservation: opt.reservation } : {}) } : {};
-  const r = await fetch(s.base + WM_ROUTE, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    // path is relative to the shared /imagegen root, which every GPU host mounts at the same place
-    body: JSON.stringify({ path: rel, prompt, enhance: true, seed, steps: WM_STEPS, loras: WM_LORAS, who: 'ai-lab:watermark', ...bind }),
-    signal: AbortSignal.timeout(15 * 60 * 1000),
-  });
-  if (!r.ok) {
-    const j = await r.json().catch(() => ({}));
-    throw new Error(`${s.id}: ${j.error || `HTTP ${r.status}`}`);
-  }
-  const j = await r.json();
+  // path is relative to the shared /imagegen root, which every GPU host mounts at the same place
+  const r = await longPost(s.base + WM_ROUTE,
+    { path: rel, prompt, enhance: true, seed, steps: WM_STEPS, loras: WM_LORAS, who: 'ai-lab:watermark', ...bind },
+    30 * 60 * 1000);
+  let j = {};
+  try { j = r.json(); } catch { /* not JSON: handled below */ }
+  if (!r.ok) throw new Error(`${s.id}: ${j.error || `HTTP ${r.status}`}`);
   if (!j.image) throw new Error(`${s.id}: answered without an image`);
   return { png: Buffer.from(j.image, 'base64'), prompt: j.prompt || '', service: s.id };
 }
@@ -805,15 +828,12 @@ async function wmUpscale(png, short, seed, opt = {}) {
     } catch { /* unreachable: next */ }
   }
   if (!base) throw new Error('no Image Model Service offers seedvr2');
-  const r = await fetch(`${base}/seedvr2/upscale`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    // seed sent explicitly: the route documents it as optional but failed without one (2026-10-10)
-    body: JSON.stringify({ image: png.toString('base64'), resolution: short, seed,
-      ...(opt.target ? { gpu: opt.target.gpu, ...(opt.reservation ? { reservation: opt.reservation } : {}) } : {}) }),
-    signal: AbortSignal.timeout(10 * 60 * 1000),
-  });
-  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || `seedvr2 HTTP ${r.status}`); }
-  return Buffer.from(await r.arrayBuffer());
+  // seed sent explicitly: the route documents it as optional but failed without one (2026-10-10). longPost: see wmEdit.
+  const r = await longPost(`${base}/seedvr2/upscale`, { image: png.toString('base64'), resolution: short, seed,
+    ...(opt.target ? { gpu: opt.target.gpu, ...(opt.reservation ? { reservation: opt.reservation } : {}) } : {}) },
+    20 * 60 * 1000);
+  if (!r.ok) { let j = {}; try { j = r.json(); } catch { /* not JSON */ } throw new Error(j.error || `seedvr2 HTTP ${r.status}`); }
+  return r.buffer;
 }
 
 /** How many images a watermark job runs at once: the number of SeedVR2 copies loaded across the Image Model
