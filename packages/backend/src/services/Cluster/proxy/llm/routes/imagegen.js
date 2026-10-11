@@ -2175,7 +2175,9 @@ export function createImagegenRouter(config) {
     const taskId = `watermark-${id}`;
     taskReport({ id: taskId, source: 'watermark', state: 'running', done: 0, total: job.total, label: `Remove watermark · ${label}`, detail: 'queued' });
     wmChain = wmChain.then(async () => {
-      if (job.cancel) { job.state = 'cancelled'; return; }
+      // cancelled while still QUEUED: report it, or its bell task stays 'running' forever - and a running task makes
+      // ailab-restart refuse (2026-10-11: a ghost test job blocked a deploy)
+      if (job.cancel) { job.state = 'cancelled'; job.finished = Date.now(); taskReport({ id: taskId, state: 'done', done: 0, total: job.total, detail: 'cancelled before it started' }); return; }
       job.state = 'running';
       // One image per loaded SeedVR2 copy at a time (Travis, 2026-10-11): since claude2's per-GPU seedvr2 workers,
       // copies on different cards really run in parallel, and qwen_edit routes each edit to an idle card itself.
