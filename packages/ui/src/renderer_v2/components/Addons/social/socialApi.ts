@@ -1,13 +1,22 @@
 /**
- * Social scraper addon API adapter (Instagram + X/Twitter).
+ * Social scraper addon API adapter (Instagram + X/Twitter + RedGIFs + Bluesky).
  *
  * Backend: ONE bundled module on CT152 (/opt/ai-lab/addons/social, systemd ailab-addon-social.service,
  * 127.0.0.1:8097), same-origin proxied under /addons/social (prefix-stripped). Site-scoped routes are
  * /<site>/...; media files and training sets are shared across both sites.
  */
-export type Site = 'instagram' | 'twitter'
+export type Site = 'instagram' | 'twitter' | 'redgifs' | 'bluesky'
 
-export const SITE_LABEL: Record<Site, string> = { instagram: 'Instagram', twitter: 'X / Twitter' }
+export const SITE_LABEL: Record<Site, string> = { instagram: 'Instagram', twitter: 'X / Twitter', redgifs: 'RedGIFs', bluesky: 'Bluesky' }
+
+/** Public profile page of a watched account. */
+export const profileUrl = (site: Site, handle: string) =>
+  site === 'instagram' ? `https://www.instagram.com/${handle}/` : site === 'redgifs' ? `https://www.redgifs.com/users/${handle}`
+    : site === 'bluesky' ? `https://bsky.app/profile/${handle}` : `https://x.com/${handle}`
+
+/** How a site logs in: browser cookies, an optional Bluesky app password, or not at all (RedGIFs uses an
+ *  anonymous API token). Either secret lives in the backend's never-returned `<site>.cookies` store. */
+export const LOGIN_KIND: Record<Site, 'cookies' | 'app_password' | null> = { instagram: 'cookies', twitter: 'cookies', redgifs: null, bluesky: 'app_password' }
 
 const BASE = '/addons/social'
 

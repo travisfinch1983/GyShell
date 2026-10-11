@@ -1,15 +1,15 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { confirmStore } from '../../../stores/confirmStore'
-import { socialApi, SITE_LABEL, type CookieInfo, type Site } from './socialApi'
+import { socialApi, SITE_LABEL, LOGIN_KIND, type CookieInfo, type Site } from './socialApi'
 import styles from '../rule34/Rule34.module.scss'
 
 type Field = { key: string; label: string; hint?: string; kind?: 'bool' }
 
 const SHARED: Field[] = [
-  { key: 'storage_path', label: 'Library folder (both sites)', hint: 'Files land in <folder>/<site>/<handle>/' },
+  { key: 'storage_path', label: 'Library folder (all social sites)', hint: 'Files land in <folder>/<site>/<handle>/' },
   { key: 'poll_interval_h', label: 'Re-sync every (hours, 0 = manual only)' },
   { key: 'first_sync_limit', label: 'Files on an account\'s first sync (0 = whole history)' },
-  { key: 'include_videos', label: 'Also download videos', kind: 'bool' },
+  { key: 'include_videos', label: 'Also download videos', kind: 'bool', hint: 'Off = images only (RedGIFs is mostly video clips)' },
 ]
 const PER_SITE: Record<Site, Field[]> = {
   instagram: [
@@ -20,9 +20,17 @@ const PER_SITE: Record<Site, Field[]> = {
     { key: 'twitter.sleep', label: 'Delay between requests (sec, "2-5" = random)' },
     { key: 'twitter.retweets', label: 'Include retweets', kind: 'bool' },
   ],
+  redgifs: [
+    { key: 'redgifs.sleep', label: 'Delay between requests (sec, "1-2" = random)' },
+  ],
+  bluesky: [
+    { key: 'bluesky.sleep', label: 'Delay between requests (sec, "1-2" = random)' },
+    { key: 'bluesky.reposts', label: 'Include reposts', kind: 'bool' },
+    { key: 'bluesky.fast', label: 'Fast downloads (Bluesky image CDN)', kind: 'bool', hint: 'On: JPEG photos come from cdn.bsky.app at full resolution, ~15x faster (re-encoded, visually identical). Off: byte-exact originals from the author\'s server, throttled to ~90 KB/s.' },
+  ],
 }
 
-const COOKIE_HELP: Record<Site, string> = {
+const COOKIE_HELP: Partial<Record<Site, string>> = {
   instagram: 'Log in to instagram.com in a browser (ideally a spare account), then export its cookies with a '
     + '"cookies.txt" extension and paste the file here - or just paste sessionid=…. Only the cookie values are '
     + 'kept; nothing else from the paste is stored.',
@@ -37,6 +45,8 @@ export const makeSettingsView = (site: Site): React.FC => {
     const [form, setForm] = useState<Record<string, string>>({})
     const [cookies, setCookies] = useState<CookieInfo | null>(null)
     const [paste, setPaste] = useState('')
+    const [bsHandle, setBsHandle] = useState('')
+    const [bsPass, setBsPass] = useState('')
     const [busy, setBusy] = useState(false)
     const [msg, setMsg] = useState('')
 
@@ -60,12 +70,12 @@ export const makeSettingsView = (site: Site): React.FC => {
       } finally { setBusy(false) }
     }
 
-    const saveCookies = async () => {
-      if (!paste.trim()) return
+    const saveCookies = async (text = paste) => {
+      if (!text.trim()) return
       setBusy(true)
       try {
-        const r = await api.saveCookies(paste)
-        if (r?.ok) { setPaste(''); setCookies(r.cookies); flash(r.cookies.missing.length ? `Saved, but still missing ${r.cookies.missing.join(', ')}` : 'Login saved') }
+        const r = await api.saveCookies(text)
+        if (r?.ok) { setPaste(''); setBsPass(''); setCookies(r.cookies); flash(r.cookies.missing.length ? `Saved, but still missing ${r.cookies.missing.join(', ')}` : 'Login saved') }
         else flash(r?.error || 'Could not read any cookies from that')
       } finally { setBusy(false) }
     }
@@ -98,7 +108,30 @@ export const makeSettingsView = (site: Site): React.FC => {
           {msg && <span className={styles.msg}>{msg}</span>}
         </div>
 
-        <div className={styles.card}>
+        {LOGIN_KIND[site] === 'app_password' && (
+          <div className={styles.card}>
+            <div className={styles.cardTitle}>Login (optional)</div>
+            <div className={styles.cardSub}>
+              Most profiles download without a login. Some accounts hide their posts from logged-out viewers - for those,
+              add an <b>app password</b> (bsky.app → Settings → Privacy and security → App passwords). Never your real password:
+              an app password can be revoked on its own and can't change your account. It is stored on the AI-Lab server and never sent back to the browser.
+            </div>
+            <div style={{ marginBottom: 8, fontSize: 12 }}>
+              {cookies?.set
+                ? <span className={styles.ok} style={{ fontWeight: 600 }}>App password stored</span>
+                : <span className={styles.dim}>No login stored - public profiles work.</span>}
+            </div>
+            <div className={styles.headRow}>
+              <input className={styles.input} value={bsHandle} onChange={(e) => setBsHandle(e.target.value)} placeholder="your handle (name.bsky.social)" style={{ minWidth: 200 }} />
+              <input className={styles.input} type="password" value={bsPass} onChange={(e) => setBsPass(e.target.value)} placeholder="app password (xxxx-xxxx-xxxx-xxxx)" style={{ minWidth: 200 }} autoComplete="new-password" />
+              <button className={styles.btnPrimary} disabled={busy || !bsHandle.trim() || !bsPass.trim()}
+                onClick={() => void saveCookies(`handle=${bsHandle.trim().replace(/^@/, '')}; app_password=${bsPass.trim()}`)}>Save login</button>
+              {cookies?.set && <button className={styles.btnDanger} disabled={busy} onClick={clearCookies}>Forget login</button>}
+            </div>
+          </div>
+        )}
+
+        {LOGIN_KIND[site] === 'cookies' && <div className={styles.card}>
           <div className={styles.cardTitle}>Login (browser cookies)</div>
           <div className={styles.cardSub}>
             <b>Easiest:</b> install the <a href="/addons/social/extension.zip" download style={{ color: 'var(--accent)' }}>AI-Lab Login Bridge</a> browser
@@ -122,15 +155,15 @@ export const makeSettingsView = (site: Site): React.FC => {
             placeholder={site === 'instagram' ? 'cookies.txt contents, or sessionid=…' : 'cookies.txt contents, or auth_token=…; ct0=…'}
             style={{ width: '100%', boxSizing: 'border-box', fontFamily: 'var(--font-mono)', resize: 'vertical' }} />
           <div className={styles.headRow} style={{ marginTop: 6 }}>
-            <button className={styles.btnPrimary} disabled={busy || !paste.trim()} onClick={saveCookies}>Save login</button>
+            <button className={styles.btnPrimary} disabled={busy || !paste.trim()} onClick={() => void saveCookies()}>Save login</button>
             {cookies?.set && <button className={styles.btnDanger} disabled={busy} onClick={clearCookies}>Forget login</button>}
           </div>
-        </div>
+        </div>}
 
         <form className={styles.card} onSubmit={save}>
           <div className={styles.cardTitle}>{SITE_LABEL[site]}</div>
           <div className={styles.formGrid} style={{ marginTop: 8 }}>{PER_SITE[site].map(field)}</div>
-          <div className={styles.cardTitle} style={{ marginTop: 6 }}>Shared by Instagram and X</div>
+          <div className={styles.cardTitle} style={{ marginTop: 6 }}>Shared by all the social sites (Instagram, X, RedGIFs, Bluesky)</div>
           <div className={styles.formGrid} style={{ marginTop: 8 }}>{SHARED.map(field)}</div>
           <div className={styles.headRow}>
             <button type="submit" className={styles.btnPrimary} disabled={busy}>{busy ? 'Saving…' : 'Save settings'}</button>

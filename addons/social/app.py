@@ -1,6 +1,6 @@
-"""Social scraper addon: Instagram + X/Twitter accounts -> local library -> training sets.
+"""Social scraper addon: Instagram + X/Twitter + RedGIFs + Bluesky accounts -> local library -> training sets.
 
-One service, both sites. Site-scoped routes live under /{site}/ (site = instagram | twitter); the
+One service, all sites. Site-scoped routes live under /{site}/ (site = instagram | twitter | redgifs | bluesky); the
 Addons tab shows each site as its own addon (registry basePath /addons/social/<site>).
 Downloading is gallery-dl (see worker.py). Login cookies are stored in data/social.db and are never
 returned by any route - /settings reports only which cookie NAMES are present.
@@ -29,9 +29,9 @@ TRAINING_IMAGES_ROOT = os.environ.get("TRAINING_IMAGES_ROOT", "/imagegen/trainin
 BATCHES_ROOT = os.environ.get("TRAINING_BATCHES_ROOT", "/imagegen/_batches")
 THUMB_DIR = os.path.join(db.DATA_DIR, "thumbs")
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")
-PREFIX = {"instagram": "ig", "twitter": "x"}          # training-set filename prefix per site
+PREFIX = {"instagram": "ig", "twitter": "x", "redgifs": "rg", "bluesky": "bsky"}          # training-set filename prefix per site
 LEDGER = ".social-members.json"
-MEMBER_RE = re.compile(r"^(ig|x)_(.+)\.[A-Za-z0-9]+$")
+MEMBER_RE = re.compile(r"^(ig|x|rg|bsky)_(.+)\.[A-Za-z0-9]+$")
 
 app = FastAPI(title="Social scraper")
 
@@ -272,6 +272,8 @@ async def pause(site: str, request: Request):
 SITE_KEYS = {
     "instagram": {"instagram.include", "instagram.sleep"},
     "twitter": {"twitter.sleep", "twitter.retweets"},
+    "redgifs": {"redgifs.sleep"},
+    "bluesky": {"bluesky.sleep", "bluesky.reposts", "bluesky.fast"},
 }
 GLOBAL_KEYS = {"storage_path", "poll_interval_h", "include_videos", "first_sync_limit"}
 

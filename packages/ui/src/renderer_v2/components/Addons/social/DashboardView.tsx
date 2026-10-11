@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { confirmStore } from '../../../stores/confirmStore'
-import { socialApi, SITE_LABEL, type Account, type Site } from './socialApi'
+import { socialApi, SITE_LABEL, profileUrl, type Account, type Site } from './socialApi'
 import styles from '../rule34/Rule34.module.scss'   // shared addon look (same tokens/classes as rule34)
 
 const ago = (t: number | null) => {
@@ -120,7 +120,9 @@ export const makeDashboardView = (site: Site): React.FC => {
             <span className={styles.spacer} />
             <form className={styles.searchBar} onSubmit={add}>
               <input className={styles.searchInput} value={handles} onChange={(e) => setHandles(e.target.value)}
-                placeholder={site === 'instagram' ? '@handle, profile URL, or several separated by spaces' : '@handle or x.com/handle (several OK)'}
+                placeholder={site === 'instagram' ? '@handle, profile URL, or several separated by spaces'
+                  : site === 'redgifs' ? 'username or redgifs.com/users/name (several OK)'
+                  : site === 'bluesky' ? 'name.bsky.social, custom domain, or bsky.app/profile/… (several OK)' : '@handle or x.com/handle (several OK)'}
                 style={{ minWidth: 260 }} />
               <button type="submit" className={styles.btnPrimary} disabled={busy || !handles.trim()}>Add</button>
             </form>
@@ -139,7 +141,7 @@ export const makeDashboardView = (site: Site): React.FC => {
                     return (
                       <tr key={a.id} style={{ opacity: a.enabled ? 1 : 0.5, background: running ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : undefined }}>
                         <td className={styles.mono}>
-                          <a href={site === 'instagram' ? `https://www.instagram.com/${a.handle}/` : `https://x.com/${a.handle}`}
+                          <a href={profileUrl(site, a.handle)}
                             target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>@{a.handle}</a>
                           {!a.complete && <span className={styles.dim} title="The first full pass over this account's history hasn't finished yet"> · history pending</span>}
                         </td>

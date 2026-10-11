@@ -24,29 +24,48 @@ log = logging.getLogger("social.worker")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GDL = os.path.join(HERE, ".venv", "bin", "gallery-dl")
+# Bluesky runs through a wrapper that can fetch JPEGs from the CDN instead of the throttled PDS
+GDL_BLUESKY = [os.path.join(HERE, ".venv", "bin", "python"), os.path.join(HERE, "gdl_bluesky.py")]
 VIDEO_EXTS = {".mp4", ".webm", ".mov", ".m4v"}
 MEDIA_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic"} | VIDEO_EXTS
 ABORT_AFTER = 12        # consecutive already-archived files that end an incremental sync (covers pinned posts)
 FILENAMES = {
     "instagram": "{post_shortcode}_{num}.{extension}",
     "twitter": "{tweet_id}_{num}.{extension}",
+    # gallery posts: every image has its own id, num = position in the gallery
+    "redgifs": "{id}_{num}.{extension}",
+    "bluesky": "{post_id}_{num}.{extension}",
 }
+IMAGE_ONLY_FILTER = "extension in ('jpg', 'jpeg', 'png', 'webp', 'gif')"
 
 
 def account_url(site: str, handle: str) -> str:
     if site == "instagram":
         return f"https://www.instagram.com/{handle}/"
+    if site == "redgifs":
+        return f"https://www.redgifs.com/users/{handle}"
+    if site == "bluesky":
+        return f"https://bsky.app/profile/{handle}/media"
     return f"https://x.com/{handle}/media"
 
 
 def normalize_handle(site: str, raw: str) -> str:
     """'@name', 'name', or a profile URL -> 'name'. Empty string when it isn't a plausible handle."""
     s = (raw or "").strip()
-    m = re.search(r"(?:instagram\.com|twitter\.com|x\.com)/+([^/?#]+)", s, re.I)
+    m = re.search(r"(?:instagram\.com|twitter\.com|x\.com|redgifs\.com/users|bsky\.app/profile)/+([^/?#]+)", s, re.I)
     if m:
         s = m.group(1)
     s = s.lstrip("@").strip()
-    pat = r"^[A-Za-z0-9._]{1,30}$" if site == "instagram" else r"^[A-Za-z0-9_]{1,15}$"
+    if site == "bluesky":
+        # a handle is a domain (name.bsky.social, or a custom one like nasa.gov) or a did:plc id;
+        # a bare "name" means the default name.bsky.social
+        if re.match(r"^did:plc:[a-z2-7]{24}$", s):
+            return s
+        s = s.lower()
+        if "." not in s:
+            s += ".bsky.social"
+        return s if re.match(r"^[a-z0-9]([a-z0-9-]{0,62}\.)+[a-z][a-z0-9-]{0,62}$", s) and len(s) <= 253 else ""
+    pat = {"instagram": r"^[A-Za-z0-9._]{1,30}$", "redgifs": r"^[A-Za-z0-9._-]{1,64}$"}.get(site, r"^[A-Za-z0-9_]{1,15}$")
     return s if re.match(pat, s) else ""
 
 
@@ -82,7 +101,9 @@ def parse_cookies(text: str) -> dict:
     return out
 
 
-REQUIRED_COOKIES = {"instagram": ("sessionid",), "twitter": ("auth_token", "ct0")}
+# redgifs: anonymous API token. bluesky: anonymous works for most profiles; the optional login is an app
+# password kept in the same never-returned store as cookies, as "handle=...; app_password=...".
+REQUIRED_COOKIES = {"instagram": ("sessionid",), "twitter": ("auth_token", "ct0"), "redgifs": (), "bluesky": ()}
 
 
 def _sleep_value(spec: str):
@@ -190,10 +211,20 @@ class SiteRunner:
         if sl is not None:
             ex["sleep-request"] = sl
         cookies = parse_cookies(settings.get(f"{site}.cookies", ""))
-        if cookies:
+        if site == "bluesky":
+            if cookies.get("handle") and cookies.get("app_password"):
+                ex["username"], ex["password"] = cookies["handle"], cookies["app_password"]
+        elif cookies:
             ex["cookies"] = cookies
         if site == "instagram":
             ex["include"] = settings.get("instagram.include") or "posts"
+        elif site == "bluesky":
+            ex["reposts"] = settings.get("bluesky.reposts") == "1"
+        elif site == "redgifs":
+            # RedGIFs is mostly video; "videos" is not a redgifs option, so images-only is a file filter
+            # (type-2 image posts arrive as .jpg, clips as .mp4)
+            if settings.get("include_videos") != "1":
+                ex["image-filter"] = IMAGE_ONLY_FILTER
         else:
             ex["retweets"] = settings.get("twitter.retweets") == "1"
             ex["text-tweets"] = False
@@ -220,7 +251,10 @@ class SiteRunner:
         fd = os.open(cfg_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)   # holds the login cookies
         with os.fdopen(fd, "w") as fh:
             json.dump(cfg, fh)
-        args = [GDL, "--config-ignore", "-c", cfg_path, "-D", target]
+        args = [*(GDL_BLUESKY if site == "bluesky" else [GDL]), "--config-ignore", "-c", cfg_path, "-D", target]
+        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+        if site == "bluesky" and settings.get("bluesky.fast", "1") == "1":
+            env["AILAB_BSKY_CDN"] = "1"
         if full_pass and limit > 0:
             args += ["--range", f"1-{limit}"]
         args.append(account_url(site, handle))
@@ -235,7 +269,7 @@ class SiteRunner:
         try:
             self.proc = await asyncio.create_subprocess_exec(
                 *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"})
+                env=env)
 
             async def read_out():
                 assert self.proc and self.proc.stdout
@@ -293,7 +327,19 @@ class SiteRunner:
                 meta = json.load(fh)
         except Exception:
             pass
-        if self.site == "instagram":
+        if self.site == "bluesky":
+            post_id = meta.get("post_id")
+            author = (meta.get("author") or {}).get("handle") if isinstance(meta.get("author"), dict) else None
+            post_url = f"https://bsky.app/profile/{author}/post/{post_id}" if post_id and author else None
+            caption = meta.get("text") or None
+            posted = _ts(meta.get("date") or meta.get("createdAt"))
+        elif self.site == "redgifs":
+            post_id = meta.get("id")
+            post_url = f"https://www.redgifs.com/watch/{post_id}" if post_id else None
+            tags = meta.get("tags") or []
+            caption = " · ".join(x for x in (meta.get("description") or "", ", ".join(tags)) if x) or None
+            posted = _ts(meta.get("createDate") or meta.get("date"))
+        elif self.site == "instagram":
             post_id = meta.get("post_shortcode") or meta.get("shortcode")
             post_url = meta.get("post_url") or (f"https://www.instagram.com/p/{post_id}/" if post_id else None)
             caption = meta.get("description")

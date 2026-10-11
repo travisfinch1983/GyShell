@@ -1,5 +1,5 @@
 import type React from 'react'
-import { AtSign, Blocks, Camera, Download, ImageDown, ImageUpscale, type LucideIcon } from 'lucide-react'
+import { AtSign, Bird, Blocks, Camera, Download, Film, ImageDown, ImageUpscale, type LucideIcon } from 'lucide-react'
 import { DashboardView } from './upscaler/DashboardView'
 import { BrowseView } from './upscaler/BrowseView'
 import { HistoryView } from './upscaler/HistoryView'
@@ -52,6 +52,8 @@ export const ADDON_ICONS: Record<string, LucideIcon> = {
   r34: ImageDown,
   instagram: Camera,
   twitter: AtSign,
+  redgifs: Film,
+  bluesky: Bird,
   download: Download,
   default: Blocks,
 }
@@ -72,6 +74,12 @@ export const NATIVE_VIEWS: Record<string, React.ComponentType> = {
   'twitter.dashboard': socialDashboard('twitter'),
   'twitter.browser': socialBrowser('twitter'),
   'twitter.settings': socialSettings('twitter'),
+  'redgifs.dashboard': socialDashboard('redgifs'),
+  'redgifs.browser': socialBrowser('redgifs'),
+  'redgifs.settings': socialSettings('redgifs'),
+  'bluesky.dashboard': socialDashboard('bluesky'),
+  'bluesky.browser': socialBrowser('bluesky'),
+  'bluesky.settings': socialSettings('bluesky'),
   'fansly.browser': FanslyBrowserView,
 }
 
@@ -104,7 +112,7 @@ export const ADDONS: AddonManifest[] = [
       { id: 'settings', label: 'Settings', kind: 'native' },
     ],
   },
-  // Instagram + X/Twitter scrapers: ONE bundled module at /opt/ai-lab/addons/social (FastAPI + gallery-dl,
+  // Instagram + X/Twitter + RedGIFs + Bluesky scrapers: ONE bundled module at /opt/ai-lab/addons/social (FastAPI + gallery-dl,
   // systemd ailab-addon-social.service @ :8097), proxied under /addons/social; site routes are /<site>/*.
   {
     id: 'instagram',
@@ -122,6 +130,28 @@ export const ADDONS: AddonManifest[] = [
     label: 'X / Twitter',
     icon: 'twitter',
     basePath: '/addons/social/twitter',
+    views: [
+      { id: 'dashboard', label: 'Dashboard', kind: 'native' },
+      { id: 'browser', label: 'Browser', kind: 'native' },
+      { id: 'settings', label: 'Settings', kind: 'native' },
+    ],
+  },
+  {
+    id: 'redgifs',
+    label: 'RedGIFs',
+    icon: 'redgifs',
+    basePath: '/addons/social/redgifs',
+    views: [
+      { id: 'dashboard', label: 'Dashboard', kind: 'native' },
+      { id: 'browser', label: 'Browser', kind: 'native' },
+      { id: 'settings', label: 'Settings', kind: 'native' },
+    ],
+  },
+  {
+    id: 'bluesky',
+    label: 'Bluesky',
+    icon: 'bluesky',
+    basePath: '/addons/social/bluesky',
     views: [
       { id: 'dashboard', label: 'Dashboard', kind: 'native' },
       { id: 'browser', label: 'Browser', kind: 'native' },

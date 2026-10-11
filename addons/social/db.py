@@ -1,4 +1,4 @@
-"""SQLite state for the social scraper addon (Instagram + X/Twitter).
+"""SQLite state for the social scraper addon (Instagram + X/Twitter + RedGIFs + Bluesky).
 
 Plain sqlite3 behind one lock; the async app calls these through asyncio.to_thread.
 """
@@ -10,7 +10,7 @@ import time
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 DB_PATH = os.path.join(DATA_DIR, "social.db")
-SITES = ("instagram", "twitter")
+SITES = ("instagram", "twitter", "redgifs", "bluesky")
 
 DEFAULTS = {
     "storage_path": "/nas/zpoolalpha/media/social",
@@ -23,6 +23,12 @@ DEFAULTS = {
     "twitter.sleep": "2-5",
     "twitter.retweets": "0",
     "twitter.paused": "0",
+    "redgifs.sleep": "1-2",
+    "redgifs.paused": "0",
+    "bluesky.sleep": "1-2",
+    "bluesky.reposts": "0",
+    "bluesky.fast": "1",             # JPEGs from cdn.bsky.app (see gdl_bluesky.py)
+    "bluesky.paused": "0",
 }
 
 _lock = threading.RLock()
