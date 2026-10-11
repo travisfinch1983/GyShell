@@ -536,6 +536,161 @@ async function mapLimit(items, limit, fn) {
   return out;
 }
 
+// ---- GPU RESERVATIONS FOR BUILT-IN JOBS ------------------------------------------------------
+// Travis, 2026-10-11: a built-in AI-Lab job (watermark removal first) reserves the GPUs it runs on. Reserving
+// unloads whatever the job does not need from those cards - PINNED models included ("built-in AI-Lab processes
+// override everything") - and while it is held nothing else may place work there. On release, pinned models
+// are reloaded first, then everything else that was on the cards. Models the job needs stay loaded.
+// The hard "nobody else" part is the service core's POST /reservations (claude2); until a service answers it,
+// the reservation is SOFT (cards are cleared and the job is bound to them, but other clients could still land).
+// Snapshots are written to disk so a crash / restart mid-job still restores the cards (resumeReservations()).
+const RES_DIR = process.env.AILAB_PROXY_DATA_DIR || '/opt/ai-lab/.gybackend-data';
+const RES_FILE = path.join(RES_DIR, 'gpu-reservations.json');
+const resLive = new Map();     // id -> handle
+
+function imsServiceList() {
+  try {
+    const a = JSON.parse(readFileSync(path.join(RES_DIR, 'active-services.json'), 'utf8'));
+    return Object.values(a.services || {}).filter((s) => s && s.providerId === 'imagegen-models' && s.containerIp && s.port && !s.suspended);
+  } catch (e) { console.warn(`[gpu-reserve] active-services.json unreadable: ${e.message}`); return []; }
+}
+const svcBase = (id) => { const s = imsServiceList().find((x) => x.id === id); return s ? `http://${s.containerIp}:${s.port}` : null; };
+async function svcGet(base, p) {
+  const r = await fetch(base + p, { signal: AbortSignal.timeout(8000) });
+  if (!r.ok) throw new Error(`${p}: HTTP ${r.status}`);
+  return r.json();
+}
+async function svcPost(base, p, body, timeoutMs = 120000) {
+  const r = await fetch(base + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}), signal: AbortSignal.timeout(timeoutMs) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) throw new Error(`${p}: ${j.error || `HTTP ${r.status}`}`);
+  return j;
+}
+function resSave() {
+  try {
+    const out = {};
+    for (const [id, h] of resLive) out[id] = { owner: h.owner, targets: h.targets, snapshot: h.snapshot, core: h.core, at: h.at };
+    writeFileSync(RES_FILE, JSON.stringify(out, null, 2));
+  } catch (e) { console.warn(`[gpu-reserve] could not save ${RES_FILE}: ${e.message}`); }
+}
+function friendlyGpuNames() {
+  const out = {};
+  try {
+    const cfg = JSON.parse(readFileSync(path.join(RES_DIR, 'gpu-config.json'), 'utf8'));
+    for (const v of Object.values(cfg)) if (v && v.uuid && v.friendlyName) out[String(v.uuid).replace(/^GPU-/i, '').toLowerCase()] = v.friendlyName;
+  } catch { /* names are cosmetic */ }
+  return out;
+}
+
+/** Every Image Model Service GPU, for pickers: [{service, node, gpu, name, total_gb, free_gb, busy, models[], reservedBy}] */
+async function reservableGpus() {
+  const names = friendlyGpuNames();
+  const out = [];
+  for (const s of imsServiceList()) {
+    const base = `http://${s.containerIp}:${s.port}`;
+    let m;
+    try { m = await svcGet(base, '/models'); } catch { continue; }
+    const reservations = m.reservations || [];
+    for (const g of (m.service && m.service.gpus) || []) {
+      const on = (m.resident || []).filter((r) => (r.gpus && r.gpus.length ? r.gpus : [r.gpu]).includes(g.index))
+        .map((r) => ({ kind: r.kind, name: r.name, pinned: !!r.pinned, plugin: r.plugin || null }));
+      const res = reservations.find((x) => (x.gpus || []).includes(g.index)) || [...resLive.values()].find((h) => h.targets.some((t) => t.service === s.id && t.gpu === g.index));
+      out.push({ service: s.id, node: s.node, gpu: g.index, name: names[String(g.uuid || '').toLowerCase()] || g.name, total_gb: g.total_gb, free_gb: g.free_gb,
+                 busy: !!g.busy, models: on, reservedBy: res ? (res.owner || res.note || 'a job') : null });
+    }
+  }
+  return out;
+}
+
+/**
+ * Reserve targets [{service, gpu}] for `owner`. keep = [{kind, name}] the job needs (left loaded if already there).
+ * -> handle {id, owner, targets, snapshot, core: {service: reservationId}}
+ */
+async function reserveGpus(owner, targets, keep, note) {
+  const id = `${owner}-${crypto.randomBytes(3).toString('hex')}`;
+  const h = { id, owner, targets, snapshot: [], core: {}, at: Date.now(), timer: null };
+  const bySvc = {};
+  for (const t of targets) (bySvc[t.service] = bySvc[t.service] || []).push(t.gpu);
+  const keepKey = new Set(keep.map((k) => `${k.kind}|${k.name}`));
+  for (const [service, gpus] of Object.entries(bySvc)) {
+    const base = svcBase(service);
+    if (!base) throw new Error(`no running Image Model Service ${service}`);
+    // 1. the hard reservation (core, claude2) - soft if this service does not have it yet
+    try {
+      const r = await svcPost(base, '/reservations', { owner, gpus, note: note || owner, ttl_s: 600 });
+      if (r.id) h.core[service] = r.id;
+    } catch (e) {
+      console.warn(`[gpu-reserve] ${service}: no core reservation (${e.message}) - SOFT reservation: cards cleared + job bound, others not excluded`);
+    }
+    // 2. snapshot what is on each reserved card
+    const m = await svcGet(base, '/models');
+    for (const r of m.resident || []) {
+      const on = (r.gpus && r.gpus.length ? r.gpus : [r.gpu]);
+      if (!on.some((g) => gpus.includes(g))) continue;
+      h.snapshot.push({ service, kind: r.kind, name: r.name, clip_type: r.clip_type || null, gpu: on[0], gpus: on, pinned: !!r.pinned,
+                        plugin: r.plugin || null, keep: keepKey.has(`${r.kind}|${r.name}`) && !r.plugin && on.length === 1 });
+    }
+  }
+  resLive.set(id, h); resSave();
+  // 3. clear: everything the job does not need leaves the reserved cards (pins are lifted first - built-in jobs win)
+  for (const x of h.snapshot) {
+    if (x.keep) continue;
+    const base = svcBase(x.service);
+    const ct = x.clip_type ? { clip_type: x.clip_type } : {};
+    try {
+      if (x.plugin === 'te_split') { await svcPost(base, '/te_split/remove', { model: x.name }); continue; }
+      if (x.pinned) await svcPost(base, '/models/pin', { kind: x.kind, name: x.name, gpu: x.gpu, pinned: false, ...ct });
+      await svcPost(base, '/models/unload', { kind: x.kind, name: x.name, gpu: x.gpu, ...ct, ...(h.core[x.service] ? { reservation: h.core[x.service] } : {}) });
+    } catch (e) { console.warn(`[gpu-reserve] ${id}: could not clear ${x.kind} ${x.name} from GPU ${x.gpu}: ${e.message}`); }
+  }
+  // 4. keep the core reservation alive while the job runs (its TTL frees the cards if AI-Lab dies)
+  h.timer = setInterval(() => {
+    for (const [service, rid] of Object.entries(h.core)) {
+      const base = svcBase(service);
+      if (base) svcPost(base, `/reservations/${encodeURIComponent(rid)}/touch`, {}).catch((e) => console.warn(`[gpu-reserve] touch ${rid}: ${e.message}`));
+    }
+  }, 60000);
+  console.log(`[gpu-reserve] ${id}: reserved ${targets.map((t) => `${t.service}:${t.gpu}`).join(', ')} (${Object.keys(h.core).length ? 'core' : 'SOFT'}); `
+    + `cleared ${h.snapshot.filter((x) => !x.keep).length}, kept ${h.snapshot.filter((x) => x.keep).length}`);
+  return h;
+}
+
+/** Release + restore: pinned models first, then split encoders, then everything else that was on the cards. */
+async function releaseGpus(h) {
+  if (!h) return;
+  if (h.timer) clearInterval(h.timer);
+  for (const [service, rid] of Object.entries(h.core || {})) {
+    const base = svcBase(service);
+    if (base) await svcPost(base, `/reservations/${encodeURIComponent(rid)}/release`, {}).catch((e) => console.warn(`[gpu-reserve] release ${rid}: ${e.message}`));
+  }
+  const back = (h.snapshot || []).filter((x) => !x.keep);
+  const order = [...back.filter((x) => x.pinned), ...back.filter((x) => !x.pinned && x.plugin === 'te_split'), ...back.filter((x) => !x.pinned && x.plugin !== 'te_split')];
+  for (const x of order) {
+    const base = svcBase(x.service);
+    if (!base) continue;
+    const ct = x.clip_type ? { clip_type: x.clip_type } : {};
+    try {
+      if (x.plugin === 'te_split') await svcPost(base, '/te_split', { model: x.name, clip_type: x.clip_type || 'qwen_image', gpus: x.gpus }, 300000);
+      else if (x.plugin) continue;   // other plugin-held copies come back on their own use
+      else if (x.pinned) await svcPost(base, '/models/pin', { kind: x.kind, name: x.name, gpu: x.gpu, pinned: true, ...ct });
+      else await svcPost(base, '/models/load', { kind: x.kind, name: x.name, gpu: x.gpu, ...ct });
+    } catch (e) { console.warn(`[gpu-reserve] ${h.id}: could not restore ${x.kind} ${x.name} on GPU ${x.gpu}: ${e.message}`); }
+  }
+  resLive.delete(h.id); resSave();
+  console.log(`[gpu-reserve] ${h.id}: released; restored ${order.length} model(s) (${order.filter((x) => x.pinned).length} pinned first)`);
+}
+
+/** After a restart: anything still in the snapshot file was never released - release + restore it now. */
+async function resumeReservations() {
+  let saved = {};
+  try { if (existsSync(RES_FILE)) saved = JSON.parse(readFileSync(RES_FILE, 'utf8')); } catch (e) { console.warn(`[gpu-reserve] ${RES_FILE} unreadable: ${e.message}`); }
+  for (const [id, h] of Object.entries(saved)) {
+    console.log(`[gpu-reserve] ${id} was still held at startup - releasing and restoring its cards`);
+    resLive.set(id, { ...h, id, timer: null });
+    await releaseGpus(resLive.get(id)).catch((e) => console.warn(`[gpu-reserve] resume ${id}: ${e.message}`));
+  }
+}
+
 // ---- WATERMARK REMOVAL (native) ---------------------------------------------------
 // Travis, 2026-10-10: a baked-in tool, NOT a ComfyUI workflow - "relying on ComfyUI just adds a weak link".
 // The edit itself (prompt enhancer -> Qwen Image 2.1 edit with the image as reference -> VAE) runs inside an
@@ -551,6 +706,9 @@ const WM_ORIG = '.prewm';
 const WM_ALT = '.wmalt';
 const WM_ROUTE = '/qwen_edit';              // the Image Model Service route that runs the edit
 const WM_STEPS = 35;                         // Travis's workflow: euler / simple, cfg 1, 35 steps
+// The models a watermark stream uses - kept loaded on reserved cards (qwen_edit's defaults + the SeedVR2 restore)
+const WM_KEEP = [{ kind: 'unet', name: 'Qwen_2.1/qwen_image_2.1_int8_convrot.safetensors' }, { kind: 'vae', name: 'Qwen_2.1/qwen_image_2.1_vae_bf16.safetensors' }];
+const WM_SEEDVR2 = { kind: 'seedvr2', name: 'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors' };
 const WM_LORAS = [['Qwen_2.1/Edit-TOOL-Image_Consistency-Edits_That_Dont_Move-V1.0-3364470.safetensors', 1.0]];
 export const WM_DEFAULT_PROMPT = 'Remove every watermark, signature, logo, website address and overlaid text from the image. '
   + 'Fill the vacated areas seamlessly so they match their surroundings. Change nothing else.';
@@ -587,16 +745,24 @@ async function wmServices() {
 }
 
 /** One image through the service: -> { png: Buffer (the edit at the model's resolution), prompt, service }. */
-async function wmEdit(rel, prompt, seed) {
-  const svcs = await wmServices();
-  if (!svcs.length) {
-    throw new Error(`no Image Model Service serves ${WM_ROUTE} yet - the watermark pipeline plugin is not deployed on any imagegen-models service`);
+async function wmEdit(rel, prompt, seed, opt = {}) {
+  let s;
+  if (opt.target) {      // a reserved card: that service, that GPU
+    const base = svcBase(opt.target.service);
+    if (!base) throw new Error(`reserved service ${opt.target.service} is not running`);
+    s = { base, id: opt.target.service };
+  } else {
+    const svcs = await wmServices();
+    if (!svcs.length) {
+      throw new Error(`no Image Model Service serves ${WM_ROUTE} yet - the watermark pipeline plugin is not deployed on any imagegen-models service`);
+    }
+    s = svcs[0];
   }
-  const s = svcs[0];
+  const bind = opt.target ? { gpu: opt.target.gpu, ...(opt.reservation ? { reservation: opt.reservation } : {}) } : {};
   const r = await fetch(s.base + WM_ROUTE, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     // path is relative to the shared /imagegen root, which every GPU host mounts at the same place
-    body: JSON.stringify({ path: rel, prompt, enhance: true, seed, steps: WM_STEPS, loras: WM_LORAS, who: 'ai-lab:watermark' }),
+    body: JSON.stringify({ path: rel, prompt, enhance: true, seed, steps: WM_STEPS, loras: WM_LORAS, who: 'ai-lab:watermark', ...bind }),
     signal: AbortSignal.timeout(15 * 60 * 1000),
   });
   if (!r.ok) {
@@ -615,14 +781,14 @@ const WM_UPSCALE_RATIO = 1.3;     // original's shortest edge / the edit's, abov
 const WM_UPSCALE_MAX = 2160;      // shortest-edge cap for the SeedVR2 pass
 
 /** -> PNG Buffer from SeedVR2 at `short` px shortest edge, on a service offering the seedvr2 kind. */
-async function wmUpscale(png, short, seed) {
+async function wmUpscale(png, short, seed, opt = {}) {
   let svcs = [];
   try {
     const a = JSON.parse(readFileSync(path.join(process.env.AILAB_PROXY_DATA_DIR || '/opt/ai-lab/.gybackend-data', 'active-services.json'), 'utf8'));
     svcs = Object.values(a.services || {}).filter((s) => s && s.providerId === 'imagegen-models' && s.containerIp && s.port && !s.suspended);
   } catch (e) { throw new Error(`active-services.json unreadable: ${e.message}`); }
-  let base = null;
-  for (const s of svcs) {
+  let base = opt.target ? svcBase(opt.target.service) : null;
+  for (const s of (base ? [] : svcs)) {
     try {
       const r = await fetch(`http://${s.containerIp}:${s.port}/models`, { signal: AbortSignal.timeout(3000) });
       const m = r.ok ? await r.json() : null;
@@ -633,7 +799,8 @@ async function wmUpscale(png, short, seed) {
   const r = await fetch(`${base}/seedvr2/upscale`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     // seed sent explicitly: the route documents it as optional but failed without one (2026-10-10)
-    body: JSON.stringify({ image: png.toString('base64'), resolution: short, seed }),
+    body: JSON.stringify({ image: png.toString('base64'), resolution: short, seed,
+      ...(opt.target ? { gpu: opt.target.gpu, ...(opt.reservation ? { reservation: opt.reservation } : {}) } : {}) }),
     signal: AbortSignal.timeout(10 * 60 * 1000),
   });
   if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || `seedvr2 HTTP ${r.status}`); }
@@ -722,16 +889,16 @@ function wmCheck(rel) {
 }
 
 /** Clean one image in place, keeping the undo copies. -> { maskPct, whole, prompt, service } */
-async function wmOne(rel, prompt) {
+async function wmOne(rel, prompt, opt = {}) {
   const file = wmCheck(rel);
   const dir = path.dirname(file), name = path.basename(file);
   const seed = crypto.randomInt(0, 2 ** 31);
-  const ed = await wmEdit(rel, prompt, seed);
+  const ed = await wmEdit(rel, prompt, seed, opt);
   let fill = null, upscaled = false, upscaleError = '';
   const om = await sharp(file).metadata(), em = await sharp(ed.png).metadata();
   const oShort = Math.min(om.width, om.height), eShort = Math.min(em.width, em.height);
-  if (oShort / eShort > WM_UPSCALE_RATIO) {
-    try { fill = await wmUpscale(ed.png, Math.min(oShort, WM_UPSCALE_MAX), seed); upscaled = true; } catch (e) {
+  if (opt.upscale !== false && oShort / eShort > WM_UPSCALE_RATIO) {
+    try { fill = await wmUpscale(ed.png, Math.min(oShort, WM_UPSCALE_MAX), seed, opt); upscaled = true; } catch (e) {
       upscaleError = String(e.message || e);   // not fatal: the paste-back resizes, the region is just softer
       console.warn(`[watermark] ${rel}: SeedVR2 upscale failed, pasting back a resized edit: ${upscaleError}`);
     }
@@ -758,6 +925,8 @@ export function createImagegenRouter(config) {
   // registry isn't wired (tests construct this router bare).
   const taskReport = (config && config.taskReport) || (() => {});
   try { mkdirSync(THUMB_DIR, { recursive: true }); } catch { /* ignore */ }
+  // GPU reservations a previous run never released (crash / restart mid-job): restore those cards now
+  setTimeout(() => { resumeReservations().catch((e) => console.warn(`[gpu-reserve] resume: ${e.message}`)); }, 15000);
 
   // ---- browse a folder ----
   router.get('/browse', async (req, res) => {
@@ -1979,9 +2148,18 @@ export function createImagegenRouter(config) {
     res.json({ ok: true, available: svcs.length > 0, services: svcs.map((s) => s.id), defaultPrompt: WM_DEFAULT_PROMPT });
   });
 
+  // GPUs a job can reserve (every Image Model Service card, its models, who holds it)
+  router.get('/watermark/gpus', async (req, res) => {
+    try { res.json({ ok: true, gpus: await reservableGpus() }); } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+  });
+
   router.post('/watermark', express.json(), (req, res) => {
     const files = (req.body && req.body.files) || [];
     const prompt = String((req.body && req.body.prompt) || '').trim() || WM_DEFAULT_PROMPT;
+    const upscale = !(req.body && req.body.upscale === false);
+    // targets = GPUs to RESERVE for this job, one stream each ([{service, gpu}]); none = automatic routing
+    const targets = Array.isArray(req.body && req.body.targets) ? req.body.targets.map((t) => ({ service: String(t.service || ''), gpu: Number(t.gpu) }))
+      .filter((t) => t.service && Number.isInteger(t.gpu) && t.gpu >= 0) : [];
     if (!Array.isArray(files) || !files.length) return res.status(400).json({ error: 'no files' });
     const rels = [];
     for (const f of files) {
@@ -1992,7 +2170,7 @@ export function createImagegenRouter(config) {
     const id = crypto.randomBytes(6).toString('hex');
     const label = rels.length === 1 ? path.basename(rels[0]) : `${rels.length} images in ${path.dirname(rels[0])}`;
     const job = { id, state: 'queued', total: rels.length, done: 0, cleaned: 0, failed: 0, current: '', errors: [], results: {},
-                  prompt, label, started: Date.now(), cancel: false };
+                  prompt, label, started: Date.now(), cancel: false, upscale, targets };
     wmJobs.set(id, job);
     const taskId = `watermark-${id}`;
     taskReport({ id: taskId, source: 'watermark', state: 'running', done: 0, total: job.total, label: `Remove watermark · ${label}`, detail: 'queued' });
@@ -2004,17 +2182,31 @@ export function createImagegenRouter(config) {
       // Workers start a few seconds apart so each one's card choice sees the previous one already holding its card.
       const queue = [...rels];
       const inFlight = new Set();
-      const nWorkers = Math.max(1, Math.min(queue.length, await wmParallel()));
+      // Reserved cards: one stream per card, bound to it; the cards are cleared first and restored in finally.
+      let held = null;
+      if (targets.length) {
+        taskReport({ id: taskId, done: 0, total: job.total, detail: `reserving ${targets.length} GPU(s)` });
+        try {
+          held = await reserveGpus(`watermark-${id}`, targets, upscale ? [...WM_KEEP, WM_SEEDVR2] : WM_KEEP, `Remove watermark · ${label}`);
+          job.reservation = { id: held.id, soft: !Object.keys(held.core).length, targets };
+        } catch (e) {
+          job.errors.push(`could not reserve the GPUs: ${String(e.message || e)}`);
+          queue.length = 0;
+        }
+      }
+      const nWorkers = targets.length ? targets.length : Math.max(1, Math.min(queue.length, await wmParallel()));
       job.parallel = nWorkers;
-      console.log(`[watermark] job ${id}: ${queue.length} image(s), ${nWorkers} at a time`);
+      console.log(`[watermark] job ${id}: ${queue.length} image(s), ${nWorkers} at a time${targets.length ? ` on reserved ${targets.map((t) => `${t.service}:${t.gpu}`).join(', ')}` : ''}`);
+      try {
       await Promise.all(Array.from({ length: nWorkers }, (_, k) => (async () => {
         await new Promise((r) => setTimeout(r, k * 4000));
+        const opt = { upscale, ...(targets.length ? { target: targets[k], reservation: held && held.core[targets[k].service] } : {}) };
         while (queue.length && !job.cancel) {
           const rel = queue.shift();
           inFlight.add(rel); job.current = [...inFlight].map((x) => path.basename(x)).join(', ');
           taskReport({ id: taskId, done: job.done, total: job.total, detail: job.current });
           try {
-            job.results[rel] = await wmOne(rel, prompt);
+            job.results[rel] = await wmOne(rel, prompt, opt);
             job.cleaned++;
           } catch (e) {
             job.failed++;
@@ -2025,6 +2217,12 @@ export function createImagegenRouter(config) {
           inFlight.delete(rel); job.current = [...inFlight].map((x) => path.basename(x)).join(', ');
         }
       })()));
+      } finally {
+        if (held) {
+          taskReport({ id: taskId, done: job.done, total: job.total, detail: 'releasing the GPUs and restoring their models' });
+          await releaseGpus(held).catch((e) => job.errors.push(`release failed: ${e.message}`));
+        }
+      }
       job.current = '';
       job.state = job.cancel ? 'cancelled' : (job.cleaned === 0 && job.failed > 0 ? 'error' : 'done');
       job.finished = Date.now();

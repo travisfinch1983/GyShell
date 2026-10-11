@@ -55,6 +55,10 @@ export interface IgImage {
   /** Watermark removal history: 'cleaned' = the removal is showing, 'original' = swapped back (⇄ in the editor). */
   wm?: 'cleaned' | 'original'
 }
+export interface WmGpu {
+  service: string; node: string; gpu: number; name: string; total_gb: number; free_gb: number; busy: boolean
+  models: { kind: string; name: string; pinned: boolean; plugin: string | null }[]; reservedBy: string | null
+}
 export interface WmJob {
   id: string; label: string; state: 'queued' | 'running' | 'done' | 'cancelled' | 'error' | 'lost'
   total: number; done: number; cleaned: number; failed: number; current: string; errors: string[]; error?: string
@@ -768,7 +772,11 @@ export class TrainingImagesStore {
   // jobs run server-side, one after another, and report to the bell. Tracked here like caption jobs so the dialog
   // can close at once and the grid refreshes when each job ends.
   async watermarkInfo(): Promise<{ available: boolean; services: string[]; defaultPrompt: string }> { return ig('/watermark/info') }
-  async startWatermark(files: string[], prompt: string): Promise<WmJob> { return (await ig('/watermark', { method: 'POST', body: { files, prompt } })).job }
+  /** targets = GPUs to RESERVE for the job (one stream each); empty = automatic routing. upscale = SeedVR2 restore step. */
+  async startWatermark(files: string[], prompt: string, targets: { service: string; gpu: number }[] = [], upscale = true): Promise<WmJob> {
+    return (await ig('/watermark', { method: 'POST', body: { files, prompt, targets, upscale } })).job
+  }
+  async watermarkGpus(): Promise<WmGpu[]> { return (await ig('/watermark/gpus')).gpus || [] }
   async watermarkStatus(id: string): Promise<WmJob> { return (await ig(`/watermark/status?job=${encodeURIComponent(id)}`)).job }
   async cancelWatermark(id: string): Promise<void> { await ig('/watermark/cancel', { method: 'POST', body: { job: id } }) }
   async swapWatermark(rel: string): Promise<{ showing: 'cleaned' | 'original' }> { return ig('/watermark/swap', { method: 'POST', body: { path: rel } }) }

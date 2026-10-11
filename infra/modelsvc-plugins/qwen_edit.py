@@ -21,6 +21,7 @@ POST /qwen_edit  {path (relative to /imagegen) | image (base64 / data URL), prom
   -> {image: base64 PNG at the model's resolution, prompt: what was sampled with, enhanced, seconds, width, height}
 """
 import base64
+import inspect
 import io
 import json
 import os
@@ -416,11 +417,18 @@ def register(api):
                     f"{len(loras)} lora(s), {tuple(images.shape)}")
             return images[0].float().clamp(0, 1).cpu()
 
-        g_pick, why = choose_gpu(unet, str(body.get("lane") or ""))
+        # An explicit gpu = a card the caller reserved for this job (AI-Lab GPU reservations): bound there, no routing.
+        if body.get("gpu") is not None:
+            g_pick, why = int(body["gpu"]), f"its reserved GPU {int(body['gpu'])}"
+        else:
+            g_pick, why = choose_gpu(unet, str(body.get("lane") or ""))
         api.log(f"qwen_edit for {who}: running on {why}")
+        run_kw = {}
+        if body.get("reservation") and "reservation" in inspect.signature(api.run).parameters:
+            run_kw["reservation"] = body["reservation"]     # core reservations (claude2): owner access to reserved cards
         busy["n"] += 1
         try:
-            res = api.run("unet", unet, go, gpu=g_pick, who=f"qwen_edit:{who}", lane=None if g_pick is not None else body.get("lane"))
+            res = api.run("unet", unet, go, gpu=g_pick, who=f"qwen_edit:{who}", lane=None if g_pick is not None else body.get("lane"), **run_kw)
         finally:
             busy["n"] -= 1
         arr = (res.numpy() * 255.0 + 0.5).astype(np.uint8)
