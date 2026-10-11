@@ -212,12 +212,12 @@ export class HermesAcpBridge extends EventEmitter {
       this.emit('stderr', { agentId, text })
     })
 
-    proc.on('exit', (code) => {
+    proc.on('exit', (code, signal) => {
       this.pendingReload.delete(sessionKey) // a dead session doesn't need a deferred reload
       this.setStatus(sessionKey, 'idle') // a crashed/exited turn is no longer running
       this.sessions.delete(sessionKey)
       if (!session.readyResolved) { try { rejectReady(new Error(`acp-bridge for ${agentId} exited (code ${code}) before ready`)) } catch { /* noop */ } }
-      emitter.emit('exit', code)
+      emitter.emit('exit', code, signal)
       this.emit('sessionExit', { agentId, sessionKey, code })
     })
     proc.on('error', (err) => {
@@ -355,6 +355,44 @@ export class HermesAcpBridge extends EventEmitter {
         + `turn_done cannot be trusted to dispatch the next prompt.`)
       this.reloadSession(sessionKey)
     }, CANCEL_GRACE_MS)
+  }
+
+  /** Notify when this session's PROCESS exits. A respawn (reloadSession, the cancel watchdog's
+   *  recycle, restartSession) creates a NEW emitter, so an observer bound to the old one would
+   *  otherwise sit on a dead channel forever — the chat's "queued for the next turn" wedge.
+   *  Returns an unsubscribe fn; a no-op if there is no live session. */
+  onExit(sessionKey: string, cb: (code: number | null, signal: string | null) => void): () => void {
+    const session = this.sessions.get(sessionKey)
+    if (!session) return () => { /* noop */ }
+    session.emitter.once('exit', cb)
+    return () => session.emitter.off('exit', cb)
+  }
+
+  /** User-requested hard restart of ONE conversation's bridge (chat panel "Restart" button).
+   *  Unlike reloadSession it does not trust the child to honour `close`: a wedged bridge may never
+   *  read stdin, so it escalates close -> SIGTERM (1.5s) -> SIGKILL (6s), waits for the exit, then
+   *  respawns via --resume (persistedSessions is left intact, so the conversation is kept). */
+  async restartSession(sessionKey: string, agentId: string): Promise<{ restarted: boolean; ready: AcpEvent }> {
+    const s = this.sessions.get(sessionKey)
+    let restarted = false
+    if (s && s.proc.exitCode === null && s.proc.signalCode === null) {
+      restarted = true
+      console.warn(`[acp-bridge] ${sessionKey}: manual restart requested (agent=${agentId}, status=${s.status}, `
+        + `last activity ${Math.round((Date.now() - s.lastActivity) / 1000)}s ago) — killing the bridge, will resume via --resume`)
+      this.pendingReload.delete(sessionKey)
+      const exited = new Promise<void>((r) => s.proc.once('exit', () => r()))
+      const alive = () => s.proc.exitCode === null && s.proc.signalCode === null
+      try { s.proc.stdin.write(JSON.stringify({ type: 'close' }) + '\n') } catch { /* stdin may already be gone */ }
+      const t1 = setTimeout(() => { try { if (alive()) s.proc.kill('SIGTERM') } catch { /* gone */ } }, 1500)
+      const t2 = setTimeout(() => {
+        try { if (alive()) { console.warn(`[acp-bridge] ${sessionKey}: bridge ignored SIGTERM — SIGKILL`); s.proc.kill('SIGKILL') } } catch { /* gone */ }
+      }, 6000)
+      await exited
+      clearTimeout(t1); clearTimeout(t2)
+    }
+    const ready = await this.ensureReady(sessionKey, agentId)
+    console.log(`[acp-bridge] ${sessionKey}: ${restarted ? 'restarted' : 'started (no live process to restart)'} — session ${(ready as { session_id?: string }).session_id ?? '?'}`)
+    return { restarted, ready }
   }
 
   /** Subscribe to a session's normalized events. Returns an unsubscribe fn (safe to call any time). */

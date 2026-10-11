@@ -602,6 +602,16 @@ export const hermesApi = {
     await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(agentId)}/cancel?conversationId=${encodeURIComponent(conversationId)}`, {})
   },
 
+  /** POST /session/restart — hard-restart this conversation's bridge process, KEEPING the conversation
+   *  (resumes via --resume). Resolves once the respawned session is ready. For a turn that never ends. */
+  async restartSession(agentId: string, conversationId: string): Promise<{ ok: boolean; restarted?: boolean; error?: string }> {
+    try {
+      return await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(agentId)}/session/restart`, { conversationId }) as { ok: boolean; restarted?: boolean }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  },
+
   /** GET /api/hermes/conversations — server-side conversation registry (cross-device tab list). */
   async conversations(): Promise<Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }>> {
     try { const r = await bridge().request('GET', '/api/hermes/conversations'); return Array.isArray((r as { conversations?: unknown })?.conversations) ? (r as { conversations: Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }> }).conversations : [] } catch { return [] }

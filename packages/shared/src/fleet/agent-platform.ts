@@ -305,5 +305,9 @@ export const hermesStreamEventSchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('fatal'), reason: z.string().optional(), recoverable: z.boolean().optional(), message: z.string().optional(), tb: z.string().optional() }),
   /** Emitted after ACP session/set_model succeeds. */
   z.object({ t: z.literal('model_set'), model_id: z.string().optional() }),
+  /** The conversation's bridge PROCESS exited (manual Restart, stuck-turn recycle, toolset reload,
+   *  crash). Sent by /stream right before it closes: the stream was bound to that process, so the
+   *  client must rebuild from the respawned one or it goes deaf and stays 'busy' forever. */
+  z.object({ t: z.literal('session_restarted'), code: z.number().nullish(), signal: z.string().nullish() }),
 ])
 export type HermesStreamEvent = z.infer<typeof hermesStreamEventSchema>

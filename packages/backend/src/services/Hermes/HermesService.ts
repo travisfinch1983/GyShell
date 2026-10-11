@@ -259,6 +259,15 @@ export class HermesService {
     return this.bridge.onEvent(sessionKey, cb)
   }
 
+  onSessionExit(sessionKey: string, cb: (code: number | null, signal: string | null) => void): () => void {
+    return this.bridge.onExit(sessionKey, cb)
+  }
+
+  /** Hard-restart one conversation's bridge, keeping the conversation (resumes via --resume). */
+  restartSession(agentId: string, sessionKey: string): Promise<{ restarted: boolean; ready: AcpEvent }> {
+    return this.bridge.restartSession(sessionKey, agentId)
+  }
+
   /** End + WIPE a session (kill the backend process, drop its transcript). Used when a
    *  chat tab is closed so a same-agent reopen starts a brand-new conversation. */
   stopSession(sessionKey: string): void {

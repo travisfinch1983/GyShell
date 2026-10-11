@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Mic, MicOff, Pencil, Plus, Radio, RefreshCw, ScanEye, SendHorizonal, Settings2, Square, Trash2, Volume2, VolumeX, Wrench } from 'lucide-react'
+import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Mic, MicOff, Pencil, Plus, Radio, RefreshCw, RotateCcw, ScanEye, SendHorizonal, Settings2, Square, Trash2, Volume2, VolumeX, Wrench } from 'lucide-react'
 import { stopPlayback } from '../../services/TtsPlayback'
 import {
   startPushToTalk, stopPushToTalk,
@@ -13,6 +13,7 @@ import {
 import { useSttHealth } from '../../services/useSttHealth'
 import type { HermesSlashCommand } from '@gyshell/shared'
 import { hermesAgentsStore } from '../../stores/HermesAgentsStore'
+import { confirmStore } from '../../stores/confirmStore'
 import { hermesApi } from '../../stores/hermesApi'
 import { hermesChatStore as chat, type ChatItem } from '../../stores/HermesChatStore'
 import { hermesConversationsStore, type ConvMeta } from '../../stores/hermesConversationsStore'
@@ -386,6 +387,26 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
     try { if (text) localStorage.setItem(draftKey, text); else localStorage.removeItem(draftKey) } catch { /* private mode */ }
   }, [text, draftKey])
 
+  // Restart this conversation's agent process (keeps the conversation): the escape hatch for a turn
+  // that never ends, where Stop does nothing and new messages sit "queued" forever.
+  const [restarting, setRestarting] = useState(false)
+  const [restartMsg, setRestartMsg] = useState('')
+  const restartSession = async () => {
+    if (restarting) return
+    const ok = await confirmStore.confirm({
+      title: 'Restart agent session',
+      message: `Restart ${spec?.displayName ?? agentId}'s session process? The conversation is kept and reloads from the saved history.`
+        + (s.busy ? ' The turn in progress is abandoned (anything it hasn\'t finished saying is lost).' : '')
+        + (s.queue.length ? ` Your ${s.queue.length} queued message${s.queue.length === 1 ? '' : 's'} will send once it is back.` : ''),
+      confirmText: 'Restart',
+    })
+    if (!ok) return
+    setRestarting(true); setRestartMsg('')
+    try { await chat.restart(agentId, conversationId) }
+    catch (e) { setRestartMsg(e instanceof Error ? e.message : String(e)) }
+    finally { setRestarting(false) }
+  }
+
   const send = () => {
     setSlashOpen(false)
     if (editing) { void doRewind('edit'); return }
@@ -425,6 +446,15 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
           </span>
         )}
         <span className={styles.spacer} />
+        {restartMsg && <span className={styles.msgActErr} title={restartMsg}>restart failed: {restartMsg.slice(0, 80)}</span>}
+        <button
+          className={styles.msgActBtn}
+          onClick={() => void restartSession()}
+          disabled={restarting}
+          title="Restart this agent's session process — use when a turn never ends and messages stay queued. The conversation is kept."
+        >
+          <RotateCcw size={12} /> {restarting ? 'restarting…' : 'Restart'}
+        </button>
         {pct !== null && s.usage && (
           <span className={styles.usage} title={`context: ${s.usage.used.toLocaleString()} / ${s.usage.size.toLocaleString()} tokens`}>
             <span className={styles.usageBar}><span className={styles.usageFill} style={{ width: `${pct}%` }} /></span>

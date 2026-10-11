@@ -445,6 +445,21 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     }
   })
 
+  // Hard-restart a conversation's bridge process WITHOUT wiping it (chat panel "Restart"): the fix for
+  // a turn that never ends, where Stop does nothing and every new message sits "queued". Kills the
+  // process (escalating to SIGKILL), respawns it via --resume, and answers once the new one is ready.
+  router.post('/api/hermes/agents/:id/session/restart', json, async (req: Req, res: Res) => {
+    try {
+      const b = (req.body ?? {}) as { conversationId?: unknown }
+      const key = typeof b.conversationId === 'string' ? b.conversationId : req.params.id
+      const r = await hermes.restartSession(req.params.id, key)
+      res.json({ ok: true, restarted: r.restarted, sessionId: (r.ready as { session_id?: string }).session_id ?? null })
+    } catch (e) {
+      console.error(`[hermes] session restart failed for ${req.params.id}:`, e)
+      res.status(500).json({ ok: false, error: String((e as Error).message) })
+    }
+  })
+
   // End + WIPE a conversation's session (called when a chat tab is closed) so a same-agent
   // reopen starts brand new. Idempotent — no-op if nothing's running for that key.
   router.delete('/api/hermes/agents/:id/session', (req: Req, res: Res) => {
@@ -522,6 +537,16 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
     })
     // Detach ONLY the observer on disconnect — the backend-owned session keeps running.
     req.on('close', () => off())
+    // This stream is bound to ONE bridge process. When it exits (Restart button, stuck-cancel
+    // recycle, toolset reload, crash) the respawn gets a new emitter, so tell the client and close:
+    // left open, the pings kept the socket "healthy" while no reply could ever arrive again.
+    const offExit = hermes.onSessionExit(key, (code, signal) => {
+      off()
+      clearInterval(keepAlive)   // declared below; this only runs on a later exit event
+      try { res.write(`data: ${JSON.stringify({ t: 'session_restarted', code, signal })}\n\n`) } catch { /* client gone */ }
+      try { res.end() } catch { /* client gone */ }
+    })
+    req.on('close', () => offExit())
     // SSE keepalive: an IDLE stream (e.g. the user composing a long message with no events
     // flowing) gets silently dropped or half-opened by intermediary proxies (CF tunnel, vite
     // preview) after their idle timeout — the client then sits "connected" receiving nothing

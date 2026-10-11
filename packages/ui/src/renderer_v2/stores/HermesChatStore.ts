@@ -118,6 +118,10 @@ class HermesChatStore {
   private sources = new Map<string, EventSource>()
   private watchdogs = new Map<string, ReturnType<typeof setInterval>>()
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /** conversations mid-rebuild (Restart / process respawn) — collapses overlapping rebuilds */
+  private rebuilding = new Set<string>()
+  /** recent automatic rebuild times per conversation — crash-loop brake */
+  private autoRebuilds = new Map<string, number[]>()
   private agents = new Map<string, string>()
   private nextId = 1
   private restored = new Set<string>()
@@ -126,7 +130,7 @@ class HermesChatStore {
     // The infra maps below are plumbing, not reactive state — exclude them so the liveness
     // watchdog / reconnect callbacks can mutate them without tripping MobX action enforcement.
     makeAutoObservable(this, {
-      sources: false, watchdogs: false, reconnectTimers: false, agents: false, restored: false, nextId: false,
+      sources: false, watchdogs: false, reconnectTimers: false, rebuilding: false, autoRebuilds: false, agents: false, restored: false, nextId: false,
     }, { autoBind: true })
   }
 
@@ -489,6 +493,14 @@ class HermesChatStore {
       case 'model_set':
         console.info('[HermesChatStore] model set ->', ev.model_id)
         break
+      case 'session_restarted': {
+        // The bridge process behind this stream exited; the server closes the stream right after.
+        // Rebuild against the respawned process (deferred: never detach/re-attach mid-reduce).
+        const agentId = this.agents.get(conversationId)
+        chatDebug(`[${cshort(conversationId)}] bridge process exited (code=${ev.code ?? '-'} signal=${ev.signal ?? '-'}) — rebuilding from the respawned session`)
+        if (agentId) setTimeout(() => void this.rebuild(agentId, conversationId, 'auto'), 0)
+        return   // no queue flush here: rebuild re-queues and flushes once the new stream is up
+      }
       default:
         // mode/session-info passthroughs — no rendering yet.
         break
@@ -567,6 +579,65 @@ class HermesChatStore {
    * augments the agent's turn server-side — the displayed message stays clean;
    * the transcript marks carrying turns with a chip (ctxAttached).
    */
+  /** Restart button — hard-restart this conversation's agent process (keeps the conversation), then
+   *  rebuild the view from it. The escape hatch for a turn that never ends: Stop does nothing and
+   *  every new message sits "queued". Queued messages survive and send once the new session is up. */
+  async restart(agentId: string, conversationId: string): Promise<void> {
+    const r = await hermesApi.restartSession(agentId, conversationId)
+    if (!r.ok) throw new Error(r.error || 'restart failed')
+    await this.rebuild(agentId, conversationId, 'manual')
+  }
+
+  /** Throw away the local view, re-restore the transcript from the (respawned) server session, put any
+   *  queued type-ahead back, and drain it. Shared by the Restart button and the stream's
+   *  session_restarted signal; overlapping calls (both fire on a manual restart) collapse to one. */
+  private async rebuild(agentId: string, conversationId: string, why: 'manual' | 'auto'): Promise<void> {
+    if (this.rebuilding.has(conversationId)) return
+    // Crash-loop brake: a session that dies right after every respawn must not spin the UI forever.
+    const now = Date.now()
+    const recent = (this.autoRebuilds.get(conversationId) ?? []).filter((t) => now - t < 60000)
+    if (why === 'auto') {
+      if (recent.length >= 3) {
+        console.error(`[HermesChatStore] ${conversationId}: agent process exited 3x in 60s — not auto-reconnecting again`)
+        runInAction(() => {
+          const s = this.state(conversationId)
+          s.busy = false
+          s.items.push({ id: this.nextId++, ts: now, kind: 'error', text: 'The agent process keeps exiting (3 times in a minute), so auto-reconnect stopped. Check the backend log for acp-bridge errors, then press Restart.' })
+        })
+        return
+      }
+      this.autoRebuilds.set(conversationId, [...recent, now])
+    }
+    this.rebuilding.add(conversationId)
+    try {
+      const s = this.state(conversationId)
+      const pending = s.queue.map((q) => q.text)
+      this.detach(conversationId)
+      runInAction(() => {
+        s.items.splice(0, s.items.length)
+        s.queue.length = 0
+        s.busy = false
+        s.error = null
+        s.lastSeq = 0
+      })
+      this.restored.add(conversationId)
+      await this.restoreThenStream(agentId, conversationId)
+      runInAction(() => {
+        s.items.push({ id: this.nextId++, ts: Date.now(), kind: 'system',
+          text: why === 'manual' ? '↻ agent session restarted — conversation reloaded' : '↻ the agent process restarted — reconnected and reloaded the conversation' })
+        for (const text of pending) {
+          const id = this.nextId++
+          s.items.push({ id, ts: Date.now(), kind: 'user', text, queued: true })
+          s.queue.push({ itemId: id, text })
+        }
+      })
+      if (pending.length) chatDebug(`[${cshort(conversationId)}] rebuild: re-queued ${pending.length} message(s)`)
+      setTimeout(() => this.flushQueue(conversationId), 0)
+    } finally {
+      this.rebuilding.delete(conversationId)
+    }
+  }
+
   /** Stop button — cancel the in-flight turn. Purely a REQUEST to the server; we do NOT optimistically
    *  flip busy — the authoritative idle status arrives back over the stream once the model actually
    *  stops, so the button state always reflects the real backend state. */
