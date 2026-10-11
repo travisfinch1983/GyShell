@@ -3,6 +3,7 @@
   padding: 9px 14px; border-radius: 999px; border: 1px solid #4ea1ff;
   background: #0f1620; color: #fff; font: 600 13px system-ui, sans-serif;
   box-shadow: 0 6px 20px rgba(0,0,0,.45); cursor: pointer;
+  max-width: min(460px, calc(100vw - 36px)); text-align: left; white-space: normal;
 }
 .ailab-track-fab:hover { background: #1b3a5c; }
 .ailab-track-fab.done, .ailab-track-mini.done { border-color: #2ecc71; color: #2ecc71; cursor: default; }

@@ -40,7 +40,13 @@
     btn.classList.toggle('err', state === 'err');
     if (state === 'done') { btn.textContent = mini ? '✓' : `✓ @${handle} tracked in AI-Lab`; btn.title = `@${handle} is tracked by AI-Lab's ${LABEL} scraper`; }
     else if (state === 'busy') { btn.textContent = mini ? '…' : 'Adding…'; }
-    else if (state === 'err') { btn.textContent = mini ? '!' : 'AI-Lab: not added'; btn.title = err || 'failed'; }
+    else if (state === 'err') {
+      // show the reason ON the button - a tooltip-only error read as "it just doesn't work"
+      const why = String(err || 'failed');
+      btn.textContent = mini ? '!' : `AI-Lab: not added - ${why.length > 90 ? why.slice(0, 90) + '…' : why}`;
+      btn.title = `${why}\n(click to retry)`;
+      console.warn('[AI-Lab Login Bridge] track failed:', why);
+    }
     else { btn.textContent = mini ? '+' : `+ Track @${handle} in AI-Lab`; btn.title = `Add @${handle} to AI-Lab's ${LABEL} scraper`; }
   }
 

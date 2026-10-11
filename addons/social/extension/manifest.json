@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI-Lab Login Bridge",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Send your Instagram / X login to AI-Lab's social scrapers, and track profiles with one click. Reads only instagram.com and x.com cookies, and only when you press the button.",
   "permissions": [
     "cookies",
@@ -10,7 +10,8 @@
   "host_permissions": [
     "https://*.instagram.com/*",
     "https://*.x.com/*",
-    "https://*.twitter.com/*"
+    "https://*.twitter.com/*",
+    "http://10.0.0.219/*"
   ],
   "optional_host_permissions": [
     "http://*/*",
