@@ -5,7 +5,7 @@ import styles from './TrainingImages.module.scss'
 
 const PROMPT_KEY = 'aig-wm-prompt'
 const GPUS_KEY = 'aig-wm-gpus'
-const UPSCALE_KEY = 'aig-wm-upscale'
+const UPSCALE_KEY = 'aig-wm-upscale-v2'   // v2: the old key remembered the former default (on)
 const gkey = (g: { service: string; gpu: number }) => `${g.service}#${g.gpu}`
 const shortName = (n: string) => n.split('/').pop()!.replace(/\.(safetensors|gguf|pth|pt)$/i, '')
 
@@ -23,7 +23,8 @@ export const WatermarkModal: React.FC<{ files: string[]; onClose: () => void }> 
   const [msg, setMsg] = useState('')
   const [gpus, setGpus] = useState<WmGpu[]>([])
   const [picked, setPicked] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem(GPUS_KEY) || '[]')) } catch { return new Set() } })
-  const [upscale, setUpscale] = useState(() => { try { return localStorage.getItem(UPSCALE_KEY) !== '0' } catch { return true } })
+  // opt-in: Travis's workflow has no upscaler (and on 16 GB cards SeedVR2 evicts the edit's model every image)
+  const [upscale, setUpscale] = useState(() => { try { return localStorage.getItem(UPSCALE_KEY) === '1' } catch { return false } })
 
   useEffect(() => {
     void (async () => {
@@ -110,7 +111,7 @@ export const WatermarkModal: React.FC<{ files: string[]; onClose: () => void }> 
         </div>
         <label className={styles.chkLine} style={{ marginTop: 6 }}>
           <input type="checkbox" checked={upscale} disabled={busy} onChange={(e) => setUpscale(e.target.checked)} />
-          <span>Restore detail with SeedVR2 <span className={styles.dim}>- the edit comes back at ~1 MP; on bigger originals SeedVR2 upscales it before the repaired areas are pasted back (on the same reserved card)</span></span>
+          <span>Also sharpen repairs with SeedVR2 <span className={styles.dim}>- optional, off by default. Not part of your workflow: the repaired spots are normally a resize of the ~1 MP edit; this upscales them with SeedVR2 instead (slower, and on 16 GB cards it swaps models every image)</span></span>
         </label>
         <div className={styles.msg}>{msg}</div>
         <div className={styles.pkFoot}>

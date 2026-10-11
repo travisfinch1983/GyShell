@@ -2169,7 +2169,9 @@ export function createImagegenRouter(config) {
   router.post('/watermark', express.json(), (req, res) => {
     const files = (req.body && req.body.files) || [];
     const prompt = String((req.body && req.body.prompt) || '').trim() || WM_DEFAULT_PROMPT;
-    const upscale = !(req.body && req.body.upscale === false);
+    // SeedVR2 restore is OPT-IN (Travis, 2026-10-11): his workflow has no upscaler, and on 16 GB cards it evicts the
+    // edit's UNet every image. Off unless the caller asks for it.
+    const upscale = !!(req.body && req.body.upscale === true);
     // targets = GPUs to RESERVE for this job, one stream each ([{service, gpu}]); none = automatic routing
     const targets = Array.isArray(req.body && req.body.targets) ? req.body.targets.map((t) => ({ service: String(t.service || ''), gpu: Number(t.gpu) }))
       .filter((t) => t.service && Number.isInteger(t.gpu) && t.gpu >= 0) : [];

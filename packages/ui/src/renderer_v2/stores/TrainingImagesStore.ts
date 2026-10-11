@@ -773,7 +773,7 @@ export class TrainingImagesStore {
   // can close at once and the grid refreshes when each job ends.
   async watermarkInfo(): Promise<{ available: boolean; services: string[]; defaultPrompt: string }> { return ig('/watermark/info') }
   /** targets = GPUs to RESERVE for the job (one stream each); empty = automatic routing. upscale = SeedVR2 restore step. */
-  async startWatermark(files: string[], prompt: string, targets: { service: string; gpu: number }[] = [], upscale = true): Promise<WmJob> {
+  async startWatermark(files: string[], prompt: string, targets: { service: string; gpu: number }[] = [], upscale = false): Promise<WmJob> {
     return (await ig('/watermark', { method: 'POST', body: { files, prompt, targets, upscale } })).job
   }
   async watermarkGpus(): Promise<WmGpu[]> { return (await ig('/watermark/gpus')).gpus || [] }
