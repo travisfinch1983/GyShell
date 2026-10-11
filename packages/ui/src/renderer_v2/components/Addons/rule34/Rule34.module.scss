@@ -171,10 +171,12 @@
   left: 0;
   right: 0;
   z-index: 100;
-  background: var(--control-bg);
-  border: 1px solid var(--border);
+  /* opaque: --control-bg is a translucent tint, which let the page show through the list (Travis 2026-10-11) */
+  background: var(--panel-bg, var(--app-bg, #0f1620));
+  border: 1px solid var(--border-strong, var(--border));
   border-radius: 0 0 6px 6px;
-  max-height: 180px;
+  box-shadow: var(--shadow, 0 8px 24px rgba(0, 0, 0, 0.45));
+  max-height: 240px;
   overflow-y: auto;
 }
 
