@@ -618,6 +618,10 @@ export class TrainingImagesStore {
   async crop(body: any): Promise<any> { return ig('/crop', { method: 'POST', body }) }
   /** Crop to a NEW file beside the source (<stem>-cropN.ext); the source is untouched. target 0x0 = native pixels. */
   async cropNew(body: any): Promise<{ ok: boolean; name: string; rel: string; w: number; h: number }> { return ig('/crop-new', { method: 'POST', body }) }
+  /** Save a composed canvas (PNG data URL) into folder `dir` as <name>.png (never overwrites: -2, -3…). */
+  async composeSave(dir: string, name: string, data: string): Promise<{ ok: boolean; name: string; rel: string }> {
+    return ig('/compose-save', { method: 'POST', body: { dir, name, data } })
+  }
   async gifInfo(rel: string): Promise<{ frames: number; w: number; h: number; delays: number[] }> { return ig(`/gif-info?path=${encodeURIComponent(rel)}`) }
   async gifExtract(rel: string, frames: number[]): Promise<{ ok: boolean; saved: string[]; errors: string[]; dir: string }> {
     return ig('/gif-extract', { method: 'POST', body: { path: rel, frames } })

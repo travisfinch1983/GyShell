@@ -1333,6 +1333,30 @@ export function createImagegenRouter(config) {
     res.json({ ok: saved.length > 0, saved, errors, dir: path.relative(BASE, dir) });
   });
 
+  // ---- Compose: several images arranged on one canvas (before/after pairs, panels) ----
+  // The layout is rendered in the BROWSER (canvas, same-origin sources so it is not tainted) at
+  // full output resolution and arrives here as one PNG. Saved into `dir` as <name>.png, with -2,
+  // -3... appended rather than ever overwriting an existing file.
+  router.post('/compose-save', express.json({ limit: '96mb' }), (req, res) => {
+    const b = req.body || {};
+    let dir;
+    try { dir = safeResolve(b.dir || ''); } catch { return res.status(400).json({ error: 'bad dir' }); }
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return res.status(404).json({ error: 'not a directory' });
+    const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(String(b.data || ''));
+    if (!m) return res.status(400).json({ error: 'data must be a PNG data URL' });
+    const buf = Buffer.from(m[1], 'base64');
+    if (!buf.length) return res.status(400).json({ error: 'empty image' });
+    const base = String(b.name || 'compose').replace(/\.png$/i, '').replace(/[^A-Za-z0-9._ -]+/g, '_').replace(/^[.\s]+/, '').slice(0, 120) || 'compose';
+    let name = `${base}.png`;
+    for (let k = 2; existsSync(path.join(dir, name)); k++) name = `${base}-${k}.png`;
+    try {
+      writeFileSync(path.join(dir, name), buf);
+      try { chmodSync(path.join(dir, name), 0o664); } catch { /* best effort */ }
+    } catch (e) { return res.status(500).json({ error: String(e.message || e) }); }
+    console.log(`[imagegen] compose-save ${name} (${(buf.length / 1048576).toFixed(1)} MB) -> ${path.relative(BASE, dir) || '.'}`);
+    res.json({ ok: true, name, rel: path.relative(BASE, path.join(dir, name)) });
+  });
+
   // ---- Crop to a NEW file: several crops out of one picture (comic pages, group shots) ----
   // Unlike /crop this never touches the source, so it is allowed in any folder. Output lands
   // beside the source as <stem>-crop<N>.<ext> (GIF sources are written as PNG). target_w/h of

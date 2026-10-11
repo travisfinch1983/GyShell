@@ -6,6 +6,7 @@ import { confirmStore } from '../../stores/confirmStore'
 import { promptStore } from '../../stores/promptStore'
 import { CropEditor } from './CropEditor'
 import { GifFrameModal } from './GifFrameModal'
+import { ComposeEditor } from './ComposeEditor'
 import { AutoCaptionModal } from './AutoCaptionModal'
 import { BlanketTagModal } from './BlanketTagModal'
 import { FindReplaceModal } from './FindReplaceModal'
@@ -873,6 +874,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
   const [lb, setLb] = useState<{ rel: string; name: string; bust?: number } | null>(null)
   const [vid, setVid] = useState<{ rel: string; name: string } | null>(null)
   const [gif, setGif] = useState<{ rel: string; name: string } | null>(null)
+  const [compose, setCompose] = useState<string[] | null>(null)
   const [picker, setPicker] = useState<'move' | 'copy' | null>(null)
   const [merge, setMerge] = useState(false)
   const [crop, setCrop] = useState<{ rel: string; name: string } | null>(null)
@@ -1205,6 +1207,12 @@ export const TrainingImagesPanel: React.FC = observer(() => {
               removed at all. The server enforces the real boundary (model roots refuse by
               name), so the UI no longer second-guesses it. */}
           <button className={styles.btn}
+                  title="Put the selected images on one canvas — side by side, stacked or freely arranged; crop, scale and move each one, then save the result as a NEW image (before/after pairs, panels). The originals are not changed."
+                  onClick={() => {
+                    const rels = store.visibleImages.filter((im) => store.selected.has(imKey(im)) && !im.is_video).map((im) => im.rel)
+                    if (rels.length) setCompose(rels); else store.msg = 'Select one or more images to compose (videos can\'t be composed — grab a frame first).'
+                  }}>🧩 Compose…</button>
+          <button className={styles.btn}
                   title="Download the selected images as their original files (full resolution, original format). With several selected, the browser may ask once to allow multiple downloads."
                   onClick={() => void doDownload()}>⬇ Download</button>
           <button className={styles.btnDanger} onClick={() => void doDelete()}>Delete</button>
@@ -1407,6 +1415,7 @@ export const TrainingImagesPanel: React.FC = observer(() => {
       </div>
 
       {vid && <VideoModal rel={vid.rel} name={vid.name} onClose={() => setVid(null)} />}
+      {compose && <ComposeEditor rels={compose} pool={store.visibleImages} onClose={() => setCompose(null)} onSaved={() => void store.browse(store.cwd)} />}
       {gif && <GifFrameModal key={gif.rel} rel={gif.rel} name={gif.name} onClose={() => setGif(null)}
         onCrop={() => { const g = gif; setGif(null); setCrop(g) }} />}
       {lb && <Lightbox rel={lb.rel} name={lb.name} bust={lb.bust} onClose={() => setLb(null)} />}
