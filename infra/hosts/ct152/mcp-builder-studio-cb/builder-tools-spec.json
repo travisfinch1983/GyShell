@@ -1,0 +1,500 @@
+[
+  {
+    "name": "read_card",
+    "description": "Read the current character card: every field in FULL (name, description, appearance, personality, backstory, scenario, first_message, example_dialogue, creator_notes, system_prompt, post_history_instructions, tags, world), plus every alternate greeting and lorebook entry with its index. If the card is too long to show whole, the longest texts are SHORTENED and marked with the read_field call that returns them whole - set_field / edit_greeting / edit_lorebook_entry REPLACE the entire text, so read the full text first.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build. Pass it on every call."
+        }
+      }
+    }
+  },
+  {
+    "name": "read_field",
+    "description": "Read ONE card text in full, verbatim: a field (description, appearance, personality, backstory, scenario, first_message, example_dialogue, creator_notes, system_prompt, post_history_instructions, name, world), an alternate greeting (field: \"greeting\" + index) or a lorebook entry (field: \"lorebook\" + index). Use it before editing a long text so the edit keeps everything you did not mean to change.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build. Pass it on every call."
+        },
+        "field": {
+          "type": "string",
+          "description": "Field name, or \"greeting\" / \"lorebook\"."
+        },
+        "index": {
+          "type": "number",
+          "description": "0-based index - only for field \"greeting\" or \"lorebook\"."
+        }
+      },
+      "required": [
+        "field"
+      ]
+    }
+  },
+  {
+    "name": "set_field",
+    "description": "Set a top-level card field. field must be one of: name, description, personality, scenario, first_message, example_dialogue, creator_notes, system_prompt, post_history_instructions.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        },
+        "field": {
+          "type": "string",
+          "description": "Field name (name, description, personality, scenario, first_message, example_dialogue, creator_notes, system_prompt, post_history_instructions)."
+        },
+        "value": {
+          "type": "string",
+          "description": "The full text to set for this field."
+        }
+      },
+      "required": [
+        "field",
+        "value"
+      ]
+    }
+  },
+  {
+    "name": "set_extension",
+    "description": "Set an extension field: backstory, appearance, or world (the character's world/pool). Fill backstory + appearance + a rich description so the GM and World Builder can use them.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        },
+        "field": {
+          "type": "string",
+          "description": "One of: backstory, appearance, world."
+        },
+        "value": {
+          "type": "string",
+          "description": "The full text to set."
+        }
+      },
+      "required": [
+        "field",
+        "value"
+      ]
+    }
+  },
+  {
+    "name": "set_tags",
+    "description": "Replace the card's tags with 3-8 short lowercase tags.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "3-8 short lowercase tags."
+        }
+      },
+      "required": [
+        "tags"
+      ]
+    }
+  },
+  {
+    "name": "add_greeting",
+    "description": "Add an alternate opening line (greeting) for the character.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        },
+        "text": {
+          "type": "string",
+          "description": "The alternate greeting text."
+        }
+      },
+      "required": [
+        "text"
+      ]
+    }
+  },
+  {
+    "name": "add_lorebook_entry",
+    "description": "Add an entry to the character's OWN lorebook: keyword-triggered facts the GM injects when relevant (places, factions, items, relationships, or secrets tied to this character).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        },
+        "keys": {
+          "type": "string",
+          "description": "Comma-separated trigger keywords."
+        },
+        "content": {
+          "type": "string",
+          "description": "The fact/lore text injected when a key matches."
+        },
+        "name": {
+          "type": "string",
+          "description": "Optional short name for the entry."
+        }
+      },
+      "required": [
+        "keys",
+        "content"
+      ]
+    }
+  },
+  {
+    "name": "edit_lorebook_entry",
+    "description": "Edit an existing lorebook entry by its index (from read_card).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        },
+        "index": {
+          "type": "number",
+          "description": "0-based index of the entry to edit."
+        },
+        "name": {
+          "type": "string",
+          "description": "New name (optional)."
+        },
+        "keys": {
+          "type": "string",
+          "description": "New comma-separated keys (optional)."
+        },
+        "content": {
+          "type": "string",
+          "description": "New content (optional)."
+        }
+      },
+      "required": [
+        "index"
+      ]
+    }
+  },
+  {
+    "name": "delete_lorebook_entry",
+    "description": "Delete a lorebook entry by its 0-based index.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        },
+        "index": {
+          "type": "number",
+          "description": "0-based index of the entry to delete."
+        }
+      },
+      "required": [
+        "index"
+      ]
+    }
+  },
+  {
+    "name": "set_group",
+    "description": "Assign the character to a named group/folder (only when the user asks).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        },
+        "group": {
+          "type": "string",
+          "description": "The group/folder name."
+        }
+      },
+      "required": [
+        "group"
+      ]
+    }
+  },
+  {
+    "name": "list_source_cards",
+    "description": "BULK MODE: list every source card in the input group with its number, name, and status (done/current/pending).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        }
+      }
+    }
+  },
+  {
+    "name": "load_source_card",
+    "description": "BULK MODE: pull a chosen source card (by number, name, or id) in as the current source to reimagine next. Blanks the workspace for a fresh character.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        },
+        "card": {
+          "type": "string",
+          "description": "The source card's number, name, or id."
+        }
+      },
+      "required": [
+        "card"
+      ]
+    }
+  },
+  {
+    "name": "mark_source_done",
+    "description": "BULK MODE: manually check a source card off as done (by number, name, or id). Does not create or save a character.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        },
+        "card": {
+          "type": "string",
+          "description": "The source card's number, name, or id."
+        }
+      },
+      "required": [
+        "card"
+      ]
+    }
+  },
+  {
+    "name": "mark_source_pending",
+    "description": "BULK MODE: put a source card back in the queue (undo a done mark), by number, name, or id.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        },
+        "card": {
+          "type": "string",
+          "description": "The source card's number, name, or id."
+        }
+      },
+      "required": [
+        "card"
+      ]
+    }
+  },
+  {
+    "name": "list_output_cards",
+    "description": "BULK MODE: list the characters you've already created in the output group (to revisit one).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        }
+      }
+    }
+  },
+  {
+    "name": "load_output_card",
+    "description": "BULK MODE: load a saved output character (by number, name, or id) onto the workspace to EDIT it. Your edits update that existing character; call finish_editing or finalize_character when done. Do NOT create a duplicate.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        },
+        "card": {
+          "type": "string",
+          "description": "The output character's number, name, or id."
+        }
+      },
+      "required": [
+        "card"
+      ]
+    }
+  },
+  {
+    "name": "finish_editing",
+    "description": "BULK MODE: stop editing a loaded output character and return to building new ones (blanks the workspace).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        }
+      }
+    }
+  },
+  {
+    "name": "list_drafts",
+    "description": "BULK MODE: list unfinished DRAFTS (started but not finalized) that can be resumed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        }
+      }
+    }
+  },
+  {
+    "name": "load_draft",
+    "description": "BULK MODE: resume an unfinished draft (by number, name, or id) onto the workspace.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        },
+        "card": {
+          "type": "string",
+          "description": "The draft's number, name, or id."
+        }
+      },
+      "required": [
+        "card"
+      ]
+    }
+  },
+  {
+    "name": "read_world_lore",
+    "description": "Pull the FULL text of any linked-world section or deep-dive entry (don't rely only on the summary; look up canon you need).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        },
+        "query": {
+          "type": "string",
+          "description": "What canon/topic to look up in the linked world."
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "finalize_character",
+    "description": "BULK MODE: save the finished NEW character to the output group AND advance to the next source card. The save happens immediately and synchronously. \u26a0\ufe0f finalize_character MUST BE THE LAST TOOL CALL OF YOUR TURN \u2014 after it, STOP and end your turn. The result tells you the next source (already loaded); build it on your NEXT turn. Do NOT call list_output_cards or re-finalize in the same turn.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id you were given at the start of this build."
+        }
+      }
+    }
+  },
+  {
+    "name": "list_reference_cards",
+    "description": "List the SOURCE characters currently loaded as reference material (a group or set the user picked in the References tab). These are READ-ONLY source cards to build NEW characters FROM \u2014 they are never modified or auto-saved. Returns each card id and name.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id. Pass it on every call."
+        }
+      }
+    }
+  },
+  {
+    "name": "read_reference_card",
+    "description": "Read one loaded reference (source) character card in full, by name or id, so you can draw on it while helping build a new character. Read-only; never changes the working card. Call list_reference_cards first to see what is available.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id."
+        },
+        "id": {
+          "type": "string",
+          "description": "The reference card id or name to read."
+        }
+      }
+    }
+  },
+  {
+    "name": "edit_greeting",
+    "description": "Replace the text of one alternate greeting by its 0-based index.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "index": {
+          "type": "number",
+          "description": "0-based index of the alternate greeting."
+        },
+        "text": {
+          "type": "string",
+          "description": "New greeting text."
+        }
+      }
+    }
+  },
+  {
+    "name": "delete_greeting",
+    "description": "Delete one alternate greeting by its 0-based index.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "index": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  {
+    "name": "view_avatar",
+    "description": "Get a link to the character's avatar image so you can LOOK at it: returns imageUrl - then call vision_analyze with image_url set to it and ask for what you need (species, build, skin, hair, eyes, face, marks, clothing, accessories, art style). Use it whenever the user refers to the avatar/picture, or to build or check appearance details from it. Pass reference to view a loaded reference card's avatar instead.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string",
+          "description": "The builder session id."
+        },
+        "reference": {
+          "type": "string",
+          "description": "Optional: a loaded reference card's name or id - omit to view THIS character's avatar."
+        }
+      }
+    }
+  }
+]

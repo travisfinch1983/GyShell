@@ -1,0 +1,10 @@
+{
+  "name": "mcp-marinara-builder",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server exposing Marinara's character-builder tool bridge to the Hermes character-builder agent",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}
