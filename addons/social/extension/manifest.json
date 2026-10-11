@@ -1,14 +1,42 @@
 {
   "manifest_version": 3,
   "name": "AI-Lab Login Bridge",
-  "version": "1.0.0",
-  "description": "One click: send your Instagram / X login cookies to AI-Lab's social scrapers. Reads ONLY instagram.com and x.com cookies, and only when you press the button.",
-  "permissions": ["cookies", "storage"],
+  "version": "1.1.0",
+  "description": "Send your Instagram / X login to AI-Lab's social scrapers, and track profiles with one click. Reads only instagram.com and x.com cookies, and only when you press the button.",
+  "permissions": [
+    "cookies",
+    "storage"
+  ],
   "host_permissions": [
     "https://*.instagram.com/*",
     "https://*.x.com/*",
     "https://*.twitter.com/*"
   ],
-  "optional_host_permissions": ["http://*/*", "https://*/*"],
-  "action": { "default_title": "AI-Lab Login Bridge", "default_popup": "popup.html" }
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "action": {
+    "default_title": "AI-Lab Login Bridge",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.instagram.com/*",
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
 }

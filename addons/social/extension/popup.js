@@ -42,5 +42,12 @@ async function send(key) {
     say('Could not reach AI-Lab at ' + base + ': ' + e.message, 'err');
   }
 }
+$('save').onclick = async () => {
+  const base = $('base').value.trim().replace(/\/+$/, '');
+  if (!/^https?:\/\/[^/]+$/.test(base)) { say('AI-Lab address must look like http://host:port', 'err'); return; }
+  const granted = await chrome.permissions.request({ origins: [base + '/*'] }).catch(() => false);
+  chrome.storage.local.set({ base });
+  say(granted ? 'Saved - the Track buttons on Instagram / X can now reach ' + base : 'Permission not granted.', granted ? 'ok' : 'err');
+};
 $('ig').onclick = () => send('ig');
 $('x').onclick = () => send('x');
