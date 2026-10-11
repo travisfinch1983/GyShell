@@ -1,0 +1,15 @@
+[Unit]
+Description=AI-Lab Addon: Social scraper (Instagram + X/Twitter)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ai-lab/addons/social
+ExecStart=/opt/ai-lab/addons/social/.venv/bin/uvicorn app:app \
+    --host 127.0.0.1 --port 8097 --log-level info
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
