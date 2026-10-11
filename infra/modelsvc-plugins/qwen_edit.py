@@ -310,6 +310,7 @@ def register(api):
     from comfy_extras.nodes_qwen import TextEncodeQwenImage21
     import nodes as comfy_nodes
     core = sys.modules.get("__main__")
+    patched = {}  # (id(resident unet), gpu, loras) -> the LoRA'd clone, reused across runs (see go_inner)
     clips = {}   # (te, clip_type) -> tokenizer-only RemoteCLIP (cheap to keep; the endpoint is re-resolved on failure)
     busy = {"n": 0}
 
@@ -423,10 +424,19 @@ def register(api):
             # NO explicit MM_LOCK here: this runs inside api.run (the GPU gate's shared compute section). Waiting for
             # MM_LOCK there can deadlock against a load that holds it and waits for compute to drain; core wraps
             # load_models_gpu so the load below steps out of the shared count by itself (claude2, 2026-10-10).
-            m = model.clone()      # the resident copy stays unpatched; this run's LoRAs live on the clone
-            for n, s in loras:
-                m, _ = comfy.sd.load_lora_for_models(m, None, comfy.utils.load_torch_file(api.full_path("lora", n), safe_load=True), s, 0)
-            m.model_options.setdefault("transformer_options", {})["qwen_image21_cache"] = {"device": "auto", "dtype": "default"}
+            # The resident copy stays unpatched; this run's LoRAs live on a clone. The clone is REUSED per (resident copy,
+            # LoRA set): a fresh clone carries fresh patch ids, which made core's no-op load fast path (claude2's GPU gate,
+            # 2026-10-11) take the exclusive slow path every image - so parallel streams on two cards took turns.
+            ck = (id(model), g, tuple(loras))
+            m = patched.get(ck)
+            if m is None:
+                m = model.clone()
+                for n, s in loras:
+                    m, _ = comfy.sd.load_lora_for_models(m, None, comfy.utils.load_torch_file(api.full_path("lora", n), safe_load=True), s, 0)
+                m.model_options.setdefault("transformer_options", {})["qwen_image21_cache"] = {"device": "auto", "dtype": "default"}
+                for k in [k for k in patched if k[1] == g]:      # one cached clone per card
+                    del patched[k]
+                patched[ck] = m
             mm.load_models_gpu([m], force_full_load=True)
             stages.append(mem(device, "unet+lora loaded"))
             t1 = time.time()

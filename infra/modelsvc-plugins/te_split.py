@@ -169,6 +169,13 @@ def register(api):
         entry = next((e for e in read_cfg().get("splits", []) if (e["model"], e.get("clip_type", "qwen_image")) == key), None)
         if entry is None:
             return None
+        # An exact-card pick from the remote nodes (lane "gpu:N" / "gpu:a,b", claude2 2026-10-11) must be honoured: the
+        # claim runs BEFORE placement, so ignoring it silently encoded split on [0,1] whatever card was chosen.
+        lane = str(m.get("lane") or "")
+        if lane.startswith("gpu:"):
+            want = sorted(int(x) for x in lane[4:].split(",") if x.strip().isdigit())
+            if want != sorted(int(g) for g in entry["gpus"]):
+                return None                 # not this split's pair: core places a whole copy on the chosen card(s)
         st = ensure(entry)
         clip = st.get("clip")
         if clip is None:
