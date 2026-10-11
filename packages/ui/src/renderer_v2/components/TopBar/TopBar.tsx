@@ -1,10 +1,11 @@
 import React from 'react'
 import { observer } from 'mobx-react-lite'
-import { Bell, ClipboardCopy, Server, Settings, Square } from 'lucide-react'
+import { Bell, ClipboardCopy, Cpu, Server, Settings, Square } from 'lucide-react'
 import type { AppStore } from '../../stores/AppStore'
 import { aiServicesStore } from '../../stores/AiServicesStore'
 import { notificationsStore } from '../../stores/NotificationsStore'
 import { clipboardStore } from '../../stores/ClipboardStore'
+import { gpuFleetStore } from '../../stores/GpuFleetStore'
 import { NotificationsPanel } from '../Notifications/NotificationsPanel'
 import { isLinux } from '../../platform/platform'
 import './topbar.scss'
@@ -43,6 +44,13 @@ export const TopBar: React.FC<{
           (it used to live in the collapsed model sidebar, too small + easy to
           mis-click into the chat overlay). */}
       <div className="topbar-center">
+      {/* The hidden GPU Fleet bar lives here until it is brought back (Travis: on mobile the bar covered page controls). */}
+      {gpuFleetStore.hidden && (
+        <button className="topbar-services-btn" onClick={() => gpuFleetStore.setHidden(false)} title="Show the GPU Fleet bar again at the bottom of the page">
+          <Cpu size={14} strokeWidth={2} />
+          <span>GPU Fleet</span>
+        </button>
+      )}
       {/* Notifications — immediately LEFT of Services (Travis's spec). Badge colour
           IS the severity scale: yellow=warning, orange=error, red=critical. */}
       <button

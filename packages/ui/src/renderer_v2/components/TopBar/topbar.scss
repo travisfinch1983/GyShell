@@ -127,3 +127,13 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
+
+// Phones: the centred button row was wider than the screen (Notifications clipped, the GPU Fleet button off-screen).
+// Icons only (badges stay), and the row scrolls sideways instead of overflowing both edges.
+@media (max-width: 760px) {
+  .topbar-center {
+    position: static; transform: none; flex: 1; min-width: 0; overflow-x: auto; justify-content: flex-start;
+    scrollbar-width: none; &::-webkit-scrollbar { display: none; }
+  }
+  .topbar-services-btn { padding: 0 9px; flex: none; > span:not([class*='badge']) { display: none; } }
+}

@@ -371,6 +371,34 @@ export const BrowserView: React.FC = () => {
 
   const isVideo = (ext: string | null) => ext === 'mp4' || ext === 'webm'
 
+  // Page controls, shown ABOVE and below the grid (Travis: on mobile the GPU Fleet bar covered the bottom set).
+  const renderPager = (where: 'top' | 'bottom') => (!d || d.total_pages <= 1) ? null : (
+              <div className={styles.pagination} data-where={where}>
+                <button className={styles.btn} disabled={page <= 1} onClick={() => goToPage(1)}>« First</button>
+                <button className={styles.btn} disabled={page <= 1} onClick={() => goToPage(page - 1)}>Prev</button>
+                {(() => {
+                  const tp = d.total_pages
+                  const start = Math.max(1, page - 5)
+                  const end = Math.min(tp, page + 5)
+                  const nums: number[] = []
+                  for (let i = start; i <= end; i++) nums.push(i)
+                  return nums.map((n) => (
+                    <button key={n} className={styles.btn} onClick={() => goToPage(n)}
+                      style={n === page ? { fontWeight: 700, background: 'var(--primary, #3b82f6)', color: '#fff', borderColor: 'var(--primary, #3b82f6)' } : undefined}>{n}</button>
+                  ))
+                })()}
+                <button className={styles.btn} disabled={page >= d.total_pages} onClick={() => goToPage(page + 1)}>Next</button>
+                <button className={styles.btn} disabled={page >= d.total_pages} onClick={() => goToPage(d.total_pages)}>Last »</button>
+                <span className={styles.dim}>{page} / {d.total_pages}</span>
+                <input className={styles.jumpInput} type="number" min={1} max={d.total_pages}
+                  placeholder="Go to…" value={jumpVal}
+                  onChange={(e) => setJumpVal(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') doJump() }} />
+                <button className={styles.btn} onClick={doJump}>Go</button>
+              </div>
+  )
+
+
   return (
     <div className={styles.browserLayout}>
       {/* ── Tag sidebar ── */}
@@ -517,6 +545,7 @@ export const BrowserView: React.FC = () => {
         ) : (
           <>
             <span className={styles.dim}>{d.total.toLocaleString()} posts</span>
+            {renderPager('top')}
             <div className={styles.grid}>
               {d.posts.map((p: any) => (
                 <div key={p.id} className={styles.gridItem} onClick={() => openLightbox(p.id)}
@@ -549,31 +578,7 @@ export const BrowserView: React.FC = () => {
               ))}
             </div>
 
-            {d.total_pages > 1 && (
-              <div className={styles.pagination}>
-                <button className={styles.btn} disabled={page <= 1} onClick={() => goToPage(1)}>« First</button>
-                <button className={styles.btn} disabled={page <= 1} onClick={() => goToPage(page - 1)}>Prev</button>
-                {(() => {
-                  const tp = d.total_pages
-                  const start = Math.max(1, page - 5)
-                  const end = Math.min(tp, page + 5)
-                  const nums: number[] = []
-                  for (let i = start; i <= end; i++) nums.push(i)
-                  return nums.map((n) => (
-                    <button key={n} className={styles.btn} onClick={() => goToPage(n)}
-                      style={n === page ? { fontWeight: 700, background: 'var(--primary, #3b82f6)', color: '#fff', borderColor: 'var(--primary, #3b82f6)' } : undefined}>{n}</button>
-                  ))
-                })()}
-                <button className={styles.btn} disabled={page >= d.total_pages} onClick={() => goToPage(page + 1)}>Next</button>
-                <button className={styles.btn} disabled={page >= d.total_pages} onClick={() => goToPage(d.total_pages)}>Last »</button>
-                <span className={styles.dim}>{page} / {d.total_pages}</span>
-                <input className={styles.jumpInput} type="number" min={1} max={d.total_pages}
-                  placeholder="Go to…" value={jumpVal}
-                  onChange={(e) => setJumpVal(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') doJump() }} />
-                <button className={styles.btn} onClick={doJump}>Go</button>
-              </div>
-            )}
+            {renderPager('bottom')}
           </>
         )}
       </div>

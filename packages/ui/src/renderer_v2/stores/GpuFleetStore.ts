@@ -33,6 +33,8 @@ export interface FleetNode {
 }
 
 const OPEN_KEY = 'ai-lab-gpu-fleet-open'
+/** Bar hidden entirely (Travis: on mobile it covers page controls); a TopBar button brings it back. */
+const HIDDEN_KEY = 'ai-lab-gpu-fleet-hidden'
 const HEIGHT_KEY = 'ai-lab-gpu-fleet-height'
 const ORDER_KEY = 'ai-lab-gpu-fleet-order'
 const MIN_HEIGHT = 120
@@ -55,6 +57,7 @@ function lastPoint(points: Array<{ t: number; v: number | null }> | undefined): 
 
 class GpuFleetStore {
   open = false
+  hidden = false
   // Panel height in px (persisted). null → fall back to the CSS default (46vh).
   heightPx: number | null = null
   nodes: FleetNode[] = []
@@ -73,6 +76,7 @@ class GpuFleetStore {
     makeAutoObservable(this, {}, { autoBind: true })
     try {
       this.open = localStorage.getItem(OPEN_KEY) === '1'
+      this.hidden = localStorage.getItem(HIDDEN_KEY) === '1'
       const h = parseInt(localStorage.getItem(HEIGHT_KEY) || '', 10)
       if (Number.isFinite(h) && h >= MIN_HEIGHT) this.heightPx = h
       try {
@@ -123,6 +127,13 @@ class GpuFleetStore {
       }
       runInAction(() => { this.liveNames = names })
     } catch (e) { console.warn('[GpuFleet] gpu inventory unavailable - falling back to settings names', e) }
+  }
+
+  /** Hide the whole bar (it becomes a GPU Fleet button in the TopBar) / bring it back. */
+  setHidden(v: boolean): void {
+    this.hidden = v
+    if (v) this.open = false
+    try { localStorage.setItem(HIDDEN_KEY, v ? '1' : '0'); localStorage.setItem(OPEN_KEY, this.open ? '1' : '0') } catch { /* ignore */ }
   }
 
   toggle(): void {

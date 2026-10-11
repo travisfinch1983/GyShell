@@ -245,6 +245,9 @@ export const GpuFleetPanel = observer(() => {
     document.body.style.cursor = 'ns-resize'
   }
 
+  // Hidden: the bar is gone entirely (it covered page controls on mobile); the TopBar shows a GPU Fleet button instead.
+  if (s.hidden) return null
+
   return (
     <div
       ref={panelRef}
@@ -260,14 +263,18 @@ export const GpuFleetPanel = observer(() => {
           aria-orientation="horizontal"
         />
       )}
-      <button className={styles.handle} onClick={() => s.toggle()} title="Toggle GPU fleet monitor">
-        <span className={styles.chevron}>{open ? '▼' : '▲'}</span>
-        <span className={styles.handleTitle}>GPU Fleet</span>
-        <span className={styles.handleMeta}>
-          {s.totalGpus} GPU{s.totalGpus !== 1 ? 's' : ''} · {s.avgUtil}% avg
-        </span>
-        {s.error && <span className={styles.handleErr}>⚠ {s.error}</span>}
-      </button>
+      <div className={styles.handleRow}>
+        <button className={styles.handle} onClick={() => s.toggle()} title="Toggle GPU fleet monitor">
+          <span className={styles.chevron}>{open ? '▼' : '▲'}</span>
+          <span className={styles.handleTitle}>GPU Fleet</span>
+          <span className={styles.handleMeta}>
+            {s.totalGpus} GPU{s.totalGpus !== 1 ? 's' : ''} · {s.avgUtil}% avg
+          </span>
+          {s.error && <span className={styles.handleErr}>⚠ {s.error}</span>}
+        </button>
+        <button className={styles.hideBtn} onClick={() => s.setHidden(true)}
+                title="Hide the GPU Fleet bar - it moves to a GPU Fleet button in the top bar, next to Notifications">Hide ✕</button>
+      </div>
       <div className={styles.body}>
         {s.flatGpus.length === 0 && !s.error && (
           <div className={styles.empty}>Waiting for GPU metrics from Prometheus…</div>
