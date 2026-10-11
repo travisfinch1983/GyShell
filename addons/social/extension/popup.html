@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  body { font: 13px system-ui, sans-serif; width: 320px; margin: 0; padding: 12px; background: #0f1620; color: #e8eaed; }
+  h1 { font-size: 14px; margin: 0 0 8px; }
+  label { display: block; font-size: 11px; color: #9aa4b2; margin-bottom: 3px; }
+  input { width: 100%; box-sizing: border-box; padding: 5px 7px; border-radius: 6px; border: 1px solid #2a3442; background: #0b0f14; color: #e8eaed; }
+  button { width: 100%; margin-top: 8px; padding: 7px; border-radius: 6px; border: 1px solid #4ea1ff; background: #1b3a5c; color: #fff; cursor: pointer; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .msg { margin-top: 10px; font-size: 12px; white-space: pre-wrap; }
+  .ok { color: #2ecc71; } .err { color: #ff5c7a; } .dim { color: #9aa4b2; font-size: 11px; margin-top: 10px; }
+</style></head>
+<body>
+  <h1>AI-Lab Login Bridge</h1>
+  <label for="base">AI-Lab address</label>
+  <input id="base" placeholder="http://10.0.0.219:17889">
+  <button id="ig">Send Instagram login</button>
+  <button id="x">Send X / Twitter login</button>
+  <div id="msg" class="msg"></div>
+  <div class="dim">Log in to the site in this browser first. Only that site's cookies are read, and only when you press a button. Nothing is sent anywhere except the AI-Lab address above.</div>
+  <script src="popup.js"></script>
+</body></html>

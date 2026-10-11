@@ -7,12 +7,14 @@ returned by any route - /settings reports only which cookie NAMES are present.
 """
 
 import asyncio
+import io
 import json
 import logging
 import os
 import re
 import shutil
 import time
+import zipfile
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -77,6 +79,21 @@ def _cookie_info(site: str, settings: dict) -> dict:
     need = REQUIRED_COOKIES[site]
     return {"names": names, "required": list(need), "missing": [n for n in need if n not in names],
             "set": bool(names)}
+
+
+EXT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "extension")
+
+
+@app.get("/extension.zip")
+async def extension_zip():
+    """The 'AI-Lab Login Bridge' browser extension (load unpacked): one click sends this browser's
+    instagram.com / x.com cookies to /<site>/api/cookies. It can read no other site's cookies."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name in sorted(os.listdir(EXT_DIR)):
+            z.write(os.path.join(EXT_DIR, name), f"ailab-login-bridge/{name}")
+    return Response(buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": 'attachment; filename="ailab-login-bridge.zip"'})
 
 
 @app.get("/health")

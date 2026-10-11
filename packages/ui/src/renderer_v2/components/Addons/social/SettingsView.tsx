@@ -100,7 +100,12 @@ export const makeSettingsView = (site: Site): React.FC => {
 
         <div className={styles.card}>
           <div className={styles.cardTitle}>Login (browser cookies)</div>
-          <div className={styles.cardSub}>{COOKIE_HELP[site]}</div>
+          <div className={styles.cardSub}>
+            <b>Easiest:</b> install the <a href="/addons/social/extension.zip" download style={{ color: 'var(--accent)' }}>AI-Lab Login Bridge</a> browser
+            extension (unzip, then chrome://extensions → Developer mode → Load unpacked → pick the folder). Log in to the site in that browser,
+            click the extension, press "Send {SITE_LABEL[site]} login". It can only read instagram.com / x.com cookies, and only when you press the button.
+          </div>
+          <div className={styles.cardSub}>Or by hand: {COOKIE_HELP[site]}</div>
           <div style={{ marginBottom: 8, fontSize: 12 }}>
             {cookies?.set ? (
               <>
