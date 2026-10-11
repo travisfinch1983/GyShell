@@ -130,10 +130,12 @@ async def site_log(site: str):
 @app.get("/{site}/browser")
 async def browser(site: str, account: int = Query(default=0), page: int = Query(default=1, ge=1),
                   per_page: int = Query(default=60, ge=1, le=200), sort: str = Query(default="newest"),
-                  videos: bool = Query(default=False), q: str = Query(default="")):
+                  videos: bool = Query(default=False), q: str = Query(default=""), kind: str = Query(default="")):
     if not _site(site):
         return _bad_site()
-    items, total = await asyncio.to_thread(db.browse, site, account or None, page, per_page, sort, videos, q.strip())
+    if kind not in ("", "all", "images", "videos"):
+        kind = ""
+    items, total = await asyncio.to_thread(db.browse, site, account or None, page, per_page, sort, videos, q.strip(), kind)
     for it in items:
         it["key"] = _media_key({"site": site, "rel": it["rel"]})
     return {"items": items, "total": total, "page": page, "per_page": per_page,
@@ -384,15 +386,35 @@ def _make_thumb(src: str, dst: str) -> bool:
         return False
 
 
+def _make_video_thumb(src: str, dst: str) -> bool:
+    """Poster frame for a clip: ffmpeg at 1 s, then 0 s for clips shorter than that."""
+    import subprocess
+    tmp = dst + ".tmp.jpg"
+    for ss in ("1", "0"):
+        try:
+            subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-ss", ss, "-i", src, "-frames:v", "1",
+                            "-vf", "scale='min(420,iw)':-2", "-q:v", "4", tmp], timeout=30, check=True)
+            if os.path.getsize(tmp) > 0:
+                os.replace(tmp, dst)
+                return True
+        except Exception as e:
+            log.warning("video thumb %s @%ss: %s", src, ss, e)
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+    return False
+
+
 @app.get("/file/thumb/{mid}")
 async def file_thumb(mid: int):
     dst = os.path.join(THUMB_DIR, f"{mid}.jpg")
     if not os.path.isfile(dst):
         m = await asyncio.to_thread(db.get_media, mid)
-        if not m or m["is_video"]:
+        if not m:
             return Response(status_code=404)
         src = _path_of(m, await asyncio.to_thread(db.get_setting, "storage_path"))
-        if not await asyncio.to_thread(_make_thumb, src, dst):
+        if not await asyncio.to_thread(_make_video_thumb if m["is_video"] else _make_thumb, src, dst):
             return Response(status_code=404)
     return FileResponse(dst, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=604800"})
 
@@ -510,6 +532,47 @@ async def training_set_create(request: Request):
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
     return {"ok": True, "name": name}
+
+
+@app.post("/api/training-sets/add-frame")
+async def training_set_add_frame(request: Request):
+    """Save one frame grabbed in the browser from a clip (or GIF) into a training set, as
+    <prefix>_<stem>-t<ms>.png. The frame is captured client-side from the <video> element so what
+    lands on disk is exactly the frame that was on screen. No ledger entry: the CLIP is not in the set."""
+    import base64
+    body = await request.json()
+    set_name = _slug_setname(str(body.get("set") or ""))
+    data = str(body.get("data") or "")
+    try:
+        mid = int(body.get("id"))
+        ms = max(0, int(round(float(body.get("time") or 0) * 1000)))
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "id and time must be numbers"}, status_code=400)
+    m_ = re.match(r"^data:image/png;base64,([A-Za-z0-9+/=]+)$", data)
+    if not set_name or not m_:
+        return JSONResponse({"ok": False, "error": "set and a PNG data URL are required"}, status_code=400)
+    m = await asyncio.to_thread(db.get_media, mid)
+    if not m:
+        return JSONResponse({"ok": False, "error": "no such media"}, status_code=404)
+    raw = base64.b64decode(m_.group(1))
+    if not raw:
+        return JSONResponse({"ok": False, "error": "empty image"}, status_code=400)
+    dest_dir = os.path.join(TRAINING_IMAGES_ROOT, set_name)
+    stem = os.path.splitext(os.path.basename(m["rel"]))[0]
+    name = f"{PREFIX[m['site']]}_{stem}-t{ms}.png"
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        with open(os.path.join(dest_dir, name), "wb") as fh:
+            fh.write(raw)
+        try:
+            os.chmod(os.path.join(dest_dir, name), 0o664)
+        except Exception:
+            pass
+    except Exception as e:
+        log.warning("add-frame %s -> %s: %s", mid, set_name, e)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    log.info("frame %s (%d KB) from media %s @%dms -> %s", name, len(raw) // 1024, mid, ms, set_name)
+    return {"ok": True, "set": set_name, "name": name}
 
 
 @app.post("/api/training-sets/add")

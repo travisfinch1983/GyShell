@@ -1013,6 +1013,7 @@ export function createImagegenRouter(config) {
           mtime: Math.round(st.mtimeMs),
           ctime: Math.round(st.ctimeMs),
           birthtime: Math.round(st.birthtimeMs || st.ctimeMs),
+          ...(path.extname(name).toLowerCase() === '.gif' ? { is_gif: true } : {}),
         });
       } else if (isCollageFile(name)) {
         if (!collageFirst || name < collageFirst) collageFirst = name;   // _collage-1.jpg < _collage.jpg
@@ -1251,12 +1252,138 @@ export function createImagegenRouter(config) {
     res.json({ ok: true, name, dir: path.relative(BASE, dir), rel: path.relative(BASE, out) });
   });
 
+  // ---- GIF frames ----
+  // An animated GIF opens in a frame viewer rather than the crop editor (which would only ever
+  // see frame 0). Frames are rendered SERVER-side by libvips, which composites each one against
+  // the frames before it (disposal modes), so a partial-update frame comes out as the full picture
+  // that was on screen -- the same thing a client canvas would show, without the browser's
+  // animated-<img> timing deciding which frame gets captured.
+  const gifFile = (q) => {
+    let file;
+    try { file = safeResolve(q); } catch { return null; }
+    if (path.extname(file).toLowerCase() !== '.gif' || !existsSync(file) || !statSync(file).isFile()) return null;
+    return file;
+  };
+
+  /** GET /gif-info?path= -> { frames, w, h, delays[] (ms per frame) } */
+  router.get('/gif-info', async (req, res) => {
+    const file = gifFile(req.query.path);
+    if (!file) return res.status(404).json({ error: 'not a gif' });
+    try {
+      const m = await sharp(file, { animated: true }).metadata();
+      const frames = m.pages || 1;
+      const h = m.pageHeight || m.height;
+      const delays = Array.isArray(m.delay) ? m.delay.map((d) => (d > 10 ? d : 100)) : Array(frames).fill(100);
+      res.json({ frames, w: m.width, h, delays, loop: m.loop ?? 0 });
+    } catch (e) {
+      console.warn(`[imagegen] gif-info ${path.basename(file)}: ${e.message}`);
+      res.status(500).json({ error: String(e.message || e) });
+    }
+  });
+
+  /** GET /gif-frame?path=&i=&max= -> one composited frame. PNG at full size; webp when max is
+   *  given (filmstrip thumbnails). Frames never change for a given file, so they cache hard. */
+  router.get('/gif-frame', async (req, res) => {
+    const file = gifFile(req.query.path);
+    if (!file) return res.status(404).end();
+    const i = Math.max(0, parseInt(String(req.query.i || '0'), 10) || 0);
+    const max = Math.max(0, Math.min(1024, parseInt(String(req.query.max || '0'), 10) || 0));
+    try {
+      let pipe = sharp(file, { page: i, pages: 1 });
+      if (max) pipe = pipe.resize(max, max, { fit: 'inside', withoutEnlargement: true }).webp({ quality: 78 });
+      else pipe = pipe.png();
+      const buf = await pipe.toBuffer();
+      res.set('Cache-Control', 'private, max-age=86400');
+      res.type(max ? 'image/webp' : 'image/png');
+      res.end(buf);
+    } catch (e) {
+      console.warn(`[imagegen] gif-frame ${path.basename(file)}#${i}: ${e.message}`);
+      res.status(404).end();
+    }
+  });
+
+  /** POST /gif-extract { path, frames: [i, ...] } -> PNGs in screenshots/ beside the GIF, named
+   *  <stem>-f<NNN>.png (frame number, so re-extracting a frame overwrites rather than piles up --
+   *  same folder the video frame grabber uses). */
+  router.post('/gif-extract', express.json(), async (req, res) => {
+    const b = req.body || {};
+    const file = gifFile(b.path);
+    if (!file) return res.status(404).json({ error: 'not a gif' });
+    const frames = [...new Set((Array.isArray(b.frames) ? b.frames : []).map((n) => parseInt(n, 10)).filter((n) => n >= 0))].slice(0, 2000);
+    if (!frames.length) return res.status(400).json({ error: 'no frames given' });
+    let total = 1;
+    try { total = (await sharp(file, { animated: true }).metadata()).pages || 1; } catch (e) {
+      return res.status(500).json({ error: `could not read gif: ${e.message}` });
+    }
+    const dir = path.join(path.dirname(file), 'screenshots');
+    try { mkdirSync(dir, { recursive: true }); chmodSync(dir, 0o777); } catch { /* ignore */ }
+    const stem = path.basename(file).replace(/\.[^.]+$/, '');
+    const pad = String(total).length;
+    const saved = [], errors = [];
+    for (const i of frames) {
+      if (i >= total) { errors.push(`frame ${i}: past the end (${total} frames)`); continue; }
+      const name = `${stem}-f${String(i + 1).padStart(pad, '0')}.png`;
+      try {
+        await sharp(file, { page: i, pages: 1 }).png().toFile(path.join(dir, name));
+        try { chmodSync(path.join(dir, name), 0o664); } catch { /* best effort */ }
+        saved.push(name);
+      } catch (e) { errors.push(`frame ${i}: ${e.message}`); }
+    }
+    console.log(`[imagegen] gif-extract ${path.basename(file)}: ${saved.length} frame(s)${errors.length ? `, ${errors.length} error(s)` : ''}`);
+    res.json({ ok: saved.length > 0, saved, errors, dir: path.relative(BASE, dir) });
+  });
+
+  // ---- Crop to a NEW file: several crops out of one picture (comic pages, group shots) ----
+  // Unlike /crop this never touches the source, so it is allowed in any folder. Output lands
+  // beside the source as <stem>-crop<N>.<ext> (GIF sources are written as PNG). target_w/h of
+  // 0 = keep the crop's own pixels (free-aspect crops).
+  router.post('/crop-new', express.json(), async (req, res) => {
+    const b = req.body || {};
+    let file;
+    try { file = safeResolve(b.path); } catch { return res.status(400).json({ error: 'bad path' }); }
+    if (!existsSync(file) || !statSync(file).isFile() || !isImage(path.basename(file))) {
+      return res.status(404).json({ error: 'no such image' });
+    }
+    try {
+      const meta = await sharp(file).metadata();
+      const W = meta.width, H = meta.pageHeight || meta.height;
+      const left = Math.max(0, Math.round(+b.left || 0)), top = Math.max(0, Math.round(+b.top || 0));
+      const width = Math.min(Math.round(+b.width), W - left), height = Math.min(Math.round(+b.height), H - top);
+      if (!(width > 0 && height > 0)) return res.status(400).json({ error: 'bad crop rect' });
+      let tw = Math.round(+b.target_w || 0), th = Math.round(+b.target_h || 0);
+      let pipe = sharp(file).rotate().extract({ left, top, width, height });
+      if (tw > 0 && th > 0) pipe = pipe.resize(tw, th, { fit: 'fill' });
+      else { tw = width; th = height; }
+      let ext = path.extname(file).toLowerCase();
+      if (ext === '.gif' || ext === '.bmp') ext = '.png';
+      if (ext === '.png') pipe = pipe.png();
+      else if (ext === '.webp') pipe = pipe.webp({ quality: 95 });
+      else pipe = pipe.jpeg({ quality: 95 });
+      const dir = path.dirname(file);
+      const stem = path.basename(file).replace(/\.[^.]+$/, '');
+      const esc = stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      let n = 0;
+      for (const f of readdirSync(dir)) {
+        const mm = new RegExp('^' + esc + '-crop(\\d+)\\.[A-Za-z0-9]+$').exec(f);
+        if (mm) n = Math.max(n, parseInt(mm[1], 10));
+      }
+      const name = `${stem}-crop${n + 1}${ext}`;
+      await pipe.toFile(path.join(dir, name));
+      try { chmodSync(path.join(dir, name), 0o664); } catch { /* best effort */ }
+      console.log(`[imagegen] crop-new ${name} ${width}x${height}@${left},${top} -> ${tw}x${th}`);
+      res.json({ ok: true, name, rel: path.relative(BASE, path.join(dir, name)), w: tw, h: th });
+    } catch (e) {
+      console.warn(`[imagegen] crop-new ${path.basename(file)}: ${e.message}`);
+      res.status(500).json({ error: String(e.message || e) });
+    }
+  });
+
   router.get('/image', async (req, res) => {
     let file;
     try { file = safeResolve(req.query.path); } catch { return res.status(400).end(); }
     if (!existsSync(file) || !statSync(file).isFile()) return res.status(404).end();
     const ext = path.extname(file).toLowerCase();
-    const type = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp'
+    const type = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : ext === '.gif' ? 'image/gif'
       : (ext === '.jpg' || ext === '.jpeg') ? 'image/jpeg' : 'application/octet-stream';
     // Optional downscale: ?maxdim=N caps the longest side (fit inside, no enlargement) and returns
     // webp. Used by the agent view_image tool to keep vision-token / KV cost sane on long runs.

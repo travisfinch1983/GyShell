@@ -71,9 +71,10 @@ export function socialApi(site: Site) {
   return {
     dashboard: () => getJson<any>(`${s}/`),
     log: () => getJson<{ lines: string[] }>(`${s}/log`),
-    browser: (p: { account?: number; page?: number; per_page?: number; sort?: string; videos?: boolean; q?: string }) =>
+    /** kind: 'images' | 'videos' (clips + GIFs) | 'all' */
+    browser: (p: { account?: number; page?: number; per_page?: number; sort?: string; kind?: string; q?: string }) =>
       getJson<any>(`${s}/browser?account=${p.account ?? 0}&page=${p.page ?? 1}&per_page=${p.per_page ?? 60}`
-        + `&sort=${p.sort ?? 'newest'}&videos=${p.videos ? 'true' : 'false'}&q=${encodeURIComponent(p.q ?? '')}`),
+        + `&sort=${p.sort ?? 'newest'}&kind=${p.kind ?? 'all'}&q=${encodeURIComponent(p.q ?? '')}`),
     media: (id: number) => getJson<MediaItem>(`/media/${id}`),
     settings: () => getJson<any>(`${s}/settings`),
 
@@ -94,6 +95,9 @@ export function socialApi(site: Site) {
     trainingSets: () => getJson<{ sets: { name: string; count: number }[] }>('/api/training-sets'),
     createTrainingSet: (name: string) => post('/api/training-sets/create', { name }),
     addToTrainingSet: (set: string, ids: number[]) => post('/api/training-sets/add', { set, ids }),
+    /** One frame grabbed from a clip in the browser (PNG data URL) -> <prefix>_<stem>-t<ms>.png in the set. */
+    addFrameToTrainingSet: (set: string, id: number, data: string, time: number) =>
+      post('/api/training-sets/add-frame', { set, id, data, time }),
     trainingSetMembers: (set: string) => getJson<{ keys: string[] }>(`/api/training-sets/members?set=${encodeURIComponent(set)}`),
     trainingSetMembersAll: () => getJson<{ members: Record<string, string[]> }>('/api/training-sets/members-all'),
   }

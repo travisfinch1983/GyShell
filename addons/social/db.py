@@ -15,7 +15,7 @@ SITES = ("instagram", "twitter", "redgifs", "bluesky")
 DEFAULTS = {
     "storage_path": "/nas/zpoolalpha/media/social",
     "poll_interval_h": "12",
-    "include_videos": "0",
+    "include_videos": "1",          # videos + GIFs (X/Instagram GIFs arrive as .mp4); frames are snapped in the browser
     "first_sync_limit": "0",          # 0 = whole history on an account's first sync
     "instagram.include": "posts",
     "instagram.sleep": "6-12",        # seconds between API requests (gallery-dl sleep-request)
@@ -201,14 +201,18 @@ SORTS = {
 
 
 def browse(site: str, account_id: int | None, page: int, per_page: int, sort: str, videos: bool,
-           q: str = "") -> tuple[list[dict], int]:
+           q: str = "", kind: str = "") -> tuple[list[dict], int]:
+    """kind: "images" | "videos" | "all"; empty = the legacy `videos` flag (False = images only)."""
     where = ["m.site=?"]
     args: list = [site]
     if account_id:
         where.append("m.account_id=?")
         args.append(account_id)
-    if not videos:
+    kind = kind or ("all" if videos else "images")
+    if kind == "images":
         where.append("m.is_video=0")
+    elif kind == "videos":
+        where.append("(m.is_video=1 OR lower(m.rel) LIKE '%.gif')")
     if q:
         where.append("m.caption LIKE ?")
         args.append(f"%{q}%")

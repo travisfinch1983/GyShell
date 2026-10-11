@@ -11,6 +11,8 @@ export const igDownload = (rel: string, isVideo = false) =>
 /** Range-streamed so the <video> element can actually seek. */
 export const igVideo = (rel: string) => `${BASE}/video?path=${encodeURIComponent(rel)}`
 /** ffmpeg poster frame, cached server-side beside the clip in a dot-dir. */
+/** One composited GIF frame: full-size PNG, or a small webp when `max` is given (filmstrip). */
+export const igGifFrame = (rel: string, i: number, max?: number) => `${BASE}/gif-frame?path=${encodeURIComponent(rel)}&i=${i}${max ? `&max=${max}` : ''}`
 export const igVthumb = (rel: string, v?: number) => `${BASE}/vthumb?path=${encodeURIComponent(rel)}${v ? `&v=${v}` : ''}`
 
 async function ig(path: string, opts?: { method?: string; body?: any }): Promise<any> {
@@ -47,6 +49,8 @@ export interface IgImage {
   /** A video rather than a still. Listed in the same grid because it lives in the same
    *  folder and the point is to pull frames OUT of it into that folder. */
   is_video?: boolean
+  /** A .gif: opens in the frame viewer (animated) instead of the crop editor, which only sees frame 0. */
+  is_gif?: boolean
   /** Auto-crop found nothing here; cleared by itself once the image is cropped by hand. */
   needs_review?: boolean
   /** Currently cropped by Auto-crop (not by hand); auto_score = the detection's confidence. */
@@ -228,7 +232,7 @@ export class TrainingImagesStore {
           // it correctly on all 235 videos in aniaspoison, the grid and the open-router both
           // read it, and every one still rendered as a still and opened the crop editor,
           // because it never survived this function. Add new fields HERE too.
-          is_video: !!im.is_video,
+          is_video: !!im.is_video, is_gif: !!im.is_gif,
           // Auto-crop outcomes (yellow / blue borders, AI + ? badges). Dropped here = never shown.
           needs_review: !!im.needs_review, auto_cropped: !!im.auto_cropped,
           auto_score: im.auto_score != null ? im.auto_score : undefined,
@@ -612,6 +616,12 @@ export class TrainingImagesStore {
     return ig('/rating', { method: 'POST', body })
   }
   async crop(body: any): Promise<any> { return ig('/crop', { method: 'POST', body }) }
+  /** Crop to a NEW file beside the source (<stem>-cropN.ext); the source is untouched. target 0x0 = native pixels. */
+  async cropNew(body: any): Promise<{ ok: boolean; name: string; rel: string; w: number; h: number }> { return ig('/crop-new', { method: 'POST', body }) }
+  async gifInfo(rel: string): Promise<{ frames: number; w: number; h: number; delays: number[] }> { return ig(`/gif-info?path=${encodeURIComponent(rel)}`) }
+  async gifExtract(rel: string, frames: number[]): Promise<{ ok: boolean; saved: string[]; errors: string[]; dir: string }> {
+    return ig('/gif-extract', { method: 'POST', body: { path: rel, frames } })
+  }
   // ── Auto-crop (detector in samd on ai-epyc; crops go through the same snapshot/restore path) ──
   async autoCropDetectors(): Promise<{ detectors: Array<{ rel: string; name: string; kind: string }>; default: string | null }> {
     return ig('/auto-crop/detectors')

@@ -9,7 +9,7 @@ const SHARED: Field[] = [
   { key: 'storage_path', label: 'Library folder (all social sites)', hint: 'Files land in <folder>/<site>/<handle>/' },
   { key: 'poll_interval_h', label: 'Re-sync every (hours, 0 = manual only)' },
   { key: 'first_sync_limit', label: 'Files on an account\'s first sync (0 = whole history)' },
-  { key: 'include_videos', label: 'Also download videos', kind: 'bool', hint: 'Off = images only (RedGIFs is mostly video clips)' },
+  { key: 'include_videos', label: 'Download videos + GIFs', kind: 'bool', hint: 'X / Instagram / RedGIFs GIFs arrive as short video files. Open one in the browser and press S to snap a frame into your training set. Off = images only' },
 ]
 const PER_SITE: Record<Site, Field[]> = {
   instagram: [

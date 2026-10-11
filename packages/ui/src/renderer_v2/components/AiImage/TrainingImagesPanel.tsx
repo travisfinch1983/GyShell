@@ -5,6 +5,7 @@ import { trainingImagesStore as store, igThumb, igImage, igVideo, igVthumb, igDo
 import { confirmStore } from '../../stores/confirmStore'
 import { promptStore } from '../../stores/promptStore'
 import { CropEditor } from './CropEditor'
+import { GifFrameModal } from './GifFrameModal'
 import { AutoCaptionModal } from './AutoCaptionModal'
 import { BlanketTagModal } from './BlanketTagModal'
 import { FindReplaceModal } from './FindReplaceModal'
@@ -860,6 +861,7 @@ const Tile: React.FC<{ im: IgImage; i: number; onOpen: () => void }> = observer(
       {im.has_nl_caption && <span className={styles.bdg} title="Has caption (.caption)">❝</span>}
       {!!im.score && <span className={`${styles.bdg} ${styles.bdgScore}`} title={`Rating ${im.score}/10${im.comment ? ' — ' + im.comment : ''}`}>★{im.score}</span>}
       {im.is_video && <span className={styles.bdg} title="Video — open to play and grab frames">▶</span>}
+      {im.is_gif && <span className={styles.bdg} title="GIF — open to play it and extract frames">GIF</span>}
       {/* Videos use the ffmpeg poster endpoint; /thumb is sharp and cannot read a container. */}
       <img loading="lazy" src={im.is_video ? igVthumb(im.rel, im.mtime) : igThumb(im.rel, im.mtime)} alt="" draggable={false} />
       <span className={styles.tileName} title={im.name}>{label}</span>
@@ -870,6 +872,7 @@ const Tile: React.FC<{ im: IgImage; i: number; onOpen: () => void }> = observer(
 export const TrainingImagesPanel: React.FC = observer(() => {
   const [lb, setLb] = useState<{ rel: string; name: string; bust?: number } | null>(null)
   const [vid, setVid] = useState<{ rel: string; name: string } | null>(null)
+  const [gif, setGif] = useState<{ rel: string; name: string } | null>(null)
   const [picker, setPicker] = useState<'move' | 'copy' | null>(null)
   const [merge, setMerge] = useState(false)
   const [crop, setCrop] = useState<{ rel: string; name: string } | null>(null)
@@ -917,8 +920,10 @@ export const TrainingImagesPanel: React.FC = observer(() => {
     store.msg = `Downloading ${items.length} file${items.length > 1 ? 's' : ''}…`
   }
   const openImage = (im: IgImage) => {
-    if (im.is_video) { setCrop(null); setVid({ rel: im.rel, name: im.name }) }
-    else { setVid(null); setCrop({ rel: im.rel, name: im.name }) }
+    // A GIF opens the frame viewer: the crop editor would only ever see its first frame.
+    if (im.is_video) { setCrop(null); setGif(null); setVid({ rel: im.rel, name: im.name }) }
+    else if (im.is_gif) { setCrop(null); setVid(null); setGif({ rel: im.rel, name: im.name }) }
+    else { setVid(null); setGif(null); setCrop({ rel: im.rel, name: im.name }) }
   }
 
   const doDelete = async () => {
@@ -1402,6 +1407,8 @@ export const TrainingImagesPanel: React.FC = observer(() => {
       </div>
 
       {vid && <VideoModal rel={vid.rel} name={vid.name} onClose={() => setVid(null)} />}
+      {gif && <GifFrameModal key={gif.rel} rel={gif.rel} name={gif.name} onClose={() => setGif(null)}
+        onCrop={() => { const g = gif; setGif(null); setCrop(g) }} />}
       {lb && <Lightbox rel={lb.rel} name={lb.name} bust={lb.bust} onClose={() => setLb(null)} />}
       {crop && (() => {
         // key=rel: every image gets a freshly mounted editor — box, tags, rating and
