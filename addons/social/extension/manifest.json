@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "AI-Lab Login Bridge",
-  "version": "1.1.1",
-  "description": "Send your Instagram / X login to AI-Lab's social scrapers, and track profiles with one click. Reads only instagram.com and x.com cookies, and only when you press the button.",
+  "version": "1.2.0",
+  "description": "Send your Instagram / X login to AI-Lab's social scrapers, and track Instagram, X, RedGIFs and Bluesky profiles with one click. Reads only instagram.com and x.com cookies, and only when you press the button.",
   "permissions": [
     "cookies",
     "storage"
@@ -29,7 +29,10 @@
       "matches": [
         "https://www.instagram.com/*",
         "https://x.com/*",
-        "https://twitter.com/*"
+        "https://twitter.com/*",
+        "https://www.redgifs.com/*",
+        "https://redgifs.com/*",
+        "https://bsky.app/*"
       ],
       "js": [
         "content.js"
