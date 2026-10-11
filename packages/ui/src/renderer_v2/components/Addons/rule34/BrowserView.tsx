@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { rule34Api, thumbUrl, fullUrl } from './rule34Api'
 import { confirmStore } from '../../../stores/confirmStore'
 import styles from './Rule34.module.scss'
+import { useRangeSelect, noShiftTextSelect } from '../rangeSelect'
 
 type SidebarSort = 'count' | 'alpha'
 
@@ -308,8 +309,8 @@ export const BrowserView: React.FC = () => {
     try { const r = await rule34Api.trainingSetMembersAll(); setAllMembers(r?.members ?? {}) } catch { /* keep last */ }
   }, [])
   useEffect(() => { void loadAllMembers() }, [loadAllMembers])
-  const toggleSelect = (id: number) =>
-    setSelectedIds((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n })
+  // click = toggle one, shift-click = range from the last clicked tile (same as the training browser)
+  const pick = useRangeSelect<number>(setSelectedIds)
   const handleCreateSet = async () => {
     const name = newSetName.trim()
     if (!name) return
@@ -547,8 +548,9 @@ export const BrowserView: React.FC = () => {
             <span className={styles.dim}>{d.total.toLocaleString()} posts</span>
             {renderPager('top')}
             <div className={styles.grid}>
-              {d.posts.map((p: any) => (
-                <div key={p.id} className={styles.gridItem} onClick={() => openLightbox(p.id)}
+              {d.posts.map((p: any, _i: number, all: any[]) => (
+                <div key={p.id} className={styles.gridItem} onMouseDown={noShiftTextSelect}
+                  onClick={(e) => { if (e.shiftKey) { pick(p.id, all.map((x) => x.id), true); return } openLightbox(p.id) }}
                   style={{
                     ...(selectedIds.has(p.id) ? { outline: '3px solid var(--primary, #3b82f6)', outlineOffset: -3 } : {}),
                   }}>
@@ -569,10 +571,10 @@ export const BrowserView: React.FC = () => {
                       <span title={`Already in ${selectedSet}`} style={{ position: 'absolute', top: 4, right: 4, zIndex: 4, background: '#22c55e', color: '#fff', borderRadius: 4, fontSize: 10, fontWeight: 700, padding: '1px 4px' }}>In set</span>
                     </>
                   )}
-                  <input type="checkbox" checked={selectedIds.has(p.id)}
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => { e.stopPropagation(); toggleSelect(p.id) }}
-                    title="Select for training set"
+                  <input type="checkbox" checked={selectedIds.has(p.id)} onMouseDown={noShiftTextSelect}
+                    onClick={(e) => { e.stopPropagation(); pick(p.id, all.map((x) => x.id), e.shiftKey) }}
+                    onChange={() => { /* handled in onClick (needs shiftKey) */ }}
+                    title="Select for training set - shift-click to select a range"
                     style={{ position: 'absolute', top: 4, left: 4, width: 18, height: 18, cursor: 'pointer', zIndex: 2 }} />
                 </div>
               ))}

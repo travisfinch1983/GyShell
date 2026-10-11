@@ -3,6 +3,7 @@ import { ExternalLink, Trash2 } from 'lucide-react'
 import { confirmStore } from '../../../stores/confirmStore'
 import { socialApi, thumbUrl, fullUrl, type MediaItem, type Site } from './socialApi'
 import styles from '../rule34/Rule34.module.scss'   // shared addon look (grid, pager, lightbox)
+import { useRangeSelect, noShiftTextSelect } from '../rangeSelect'
 
 // ONE training-set selection for both social browsers (and their viewers).
 const SET_KEY = 'social.trainingSet.v1'
@@ -61,8 +62,8 @@ export const makeBrowserView = (site: Site): React.FC => {
       void loadMembers(selectedSet)
     }, [selectedSet, loadMembers])
 
-    const toggleSelect = (id: number) =>
-      setSelected((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n })
+    // click = toggle one, shift-click = range from the last clicked tile (same as the training browser)
+    const pick = useRangeSelect<number>(setSelected)
 
     const createSet = async () => {
       const name = newSetName.trim()
@@ -105,6 +106,7 @@ export const makeBrowserView = (site: Site): React.FC => {
     const totalPages = d?.total_pages || 1
     const goToPage = (n: number) => setPage(Math.min(Math.max(1, n), totalPages))
     const items: MediaItem[] = d?.items ?? []
+    const pageIds = items.filter((i) => !i.is_video).map((i) => i.id)
 
     const openLightbox = async (id: number) => {
       try { setLightbox(await api.media(id)) } catch (e: any) { setTsMsg(String(e?.message || e)) }
@@ -214,7 +216,8 @@ export const makeBrowserView = (site: Site): React.FC => {
                 const inSet = setKeys.has(p.key)
                 const elsewhere = !inSet && (allMembers[p.key]?.length ?? 0) > 0
                 return (
-                  <div key={p.id} className={styles.gridItem} onClick={() => void openLightbox(p.id)}
+                  <div key={p.id} className={styles.gridItem} onMouseDown={noShiftTextSelect}
+                    onClick={(e) => { if (e.shiftKey && !p.is_video) { pick(p.id, pageIds, true); return } void openLightbox(p.id) }}
                     style={selected.has(p.id) ? { outline: '3px solid var(--accent)', outlineOffset: -3 } : undefined}>
                     {p.is_video ? <div style={{ display: 'grid', placeItems: 'center', height: '100%' }} className={styles.dim}>video</div>
                       : <img src={thumbUrl(p.id)} alt={p.post_id} loading="lazy" />}
@@ -232,8 +235,9 @@ export const makeBrowserView = (site: Site): React.FC => {
                       </>
                     )}
                     {!p.is_video && (
-                      <input type="checkbox" checked={selected.has(p.id)} onClick={(e) => e.stopPropagation()}
-                        onChange={() => toggleSelect(p.id)} title="Select"
+                      <input type="checkbox" checked={selected.has(p.id)} onMouseDown={noShiftTextSelect}
+                        onClick={(e) => { e.stopPropagation(); pick(p.id, pageIds, e.shiftKey) }}
+                        onChange={() => { /* handled in onClick (needs shiftKey) */ }} title="Select - shift-click to select a range"
                         style={{ position: 'absolute', top: 4, left: 4, width: 18, height: 18, cursor: 'pointer', zIndex: 2 }} />
                     )}
                   </div>

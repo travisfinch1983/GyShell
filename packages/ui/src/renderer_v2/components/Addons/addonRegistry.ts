@@ -1,5 +1,5 @@
 import type React from 'react'
-import { AtSign, Blocks, Camera, ImageDown, ImageUpscale, type LucideIcon } from 'lucide-react'
+import { AtSign, Blocks, Camera, Download, ImageDown, ImageUpscale, type LucideIcon } from 'lucide-react'
 import { DashboardView } from './upscaler/DashboardView'
 import { BrowseView } from './upscaler/BrowseView'
 import { HistoryView } from './upscaler/HistoryView'
@@ -10,6 +10,7 @@ import { SettingsView as R34SettingsView } from './rule34/SettingsView'
 import { makeDashboardView as socialDashboard } from './social/DashboardView'
 import { makeBrowserView as socialBrowser } from './social/BrowserView'
 import { makeSettingsView as socialSettings } from './social/SettingsView'
+import { BrowserView as FanslyBrowserView } from './fansly/BrowserView'
 
 /**
  * Addon registry — SELF-CONTAINED addon modules as Addons-tab sub-tabs.
@@ -51,6 +52,7 @@ export const ADDON_ICONS: Record<string, LucideIcon> = {
   r34: ImageDown,
   instagram: Camera,
   twitter: AtSign,
+  download: Download,
   default: Blocks,
 }
 
@@ -70,6 +72,7 @@ export const NATIVE_VIEWS: Record<string, React.ComponentType> = {
   'twitter.dashboard': socialDashboard('twitter'),
   'twitter.browser': socialBrowser('twitter'),
   'twitter.settings': socialSettings('twitter'),
+  'fansly.browser': FanslyBrowserView,
 }
 
 export const ADDONS: AddonManifest[] = [
@@ -123,6 +126,19 @@ export const ADDONS: AddonManifest[] = [
       { id: 'dashboard', label: 'Dashboard', kind: 'native' },
       { id: 'browser', label: 'Browser', kind: 'native' },
       { id: 'settings', label: 'Settings', kind: 'native' },
+    ],
+  },
+  // Fansly/Coomer/Kemono scraper: /opt/ai-lab/addons/fansly (ailab-addon-fansly.service @ :8096). Its runtime
+  // manifest (.gybackend-data/addons/fansly.json) still drives the backend proxy at /addons/fansly, so it stays;
+  // AddonsPanel hides the runtime tab for any id compiled here. Scraper = the addon's own page; Browser = native.
+  {
+    id: 'fansly',
+    label: 'Fansly Scraper',
+    icon: 'download',
+    basePath: '/addons/fansly',
+    views: [
+      { id: 'scraper', label: 'Scraper', kind: 'embed', path: '' },
+      { id: 'browser', label: 'Browser', kind: 'native' },
     ],
   },
 ]

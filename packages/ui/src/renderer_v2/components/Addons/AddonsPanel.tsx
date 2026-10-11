@@ -148,7 +148,10 @@ export const AddonsPanel: React.FC = () => {
         return res.json()
       })
       const addons = (Array.isArray(r?.addons) ? r.addons : []) as RuntimeAddon[]
-      const list = addons.filter((a) => a.enabled !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+      // A runtime manifest whose id is also compiled into addonRegistry (fansly) keeps the backend proxy
+      // working but must not show a second, iframe-only tab.
+      const compiled = new Set(ADDONS.map((c) => c.id))
+      const list = addons.filter((a) => a.enabled !== false && !compiled.has(a.id)).sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
       setRuntime(list)
       // best-effort health dots via the same-origin proxy
       for (const a of list) {

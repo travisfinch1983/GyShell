@@ -1287,6 +1287,20 @@ def health():
     return {"ok": True, "addon": "fansly", "services": list(SERVICES)}
 
 
+# Media library (native Browser tab) ────────────────────────────
+
+import logging as _logging
+import library  # noqa: E402
+
+_logging.getLogger("fansly.library").setLevel(_logging.INFO)
+if not _logging.getLogger("fansly.library").handlers:
+    _h = _logging.StreamHandler()
+    _h.setFormatter(_logging.Formatter("%(levelname)s fansly.library: %(message)s"))
+    _logging.getLogger("fansly.library").addHandler(_h)
+library.configure(SERVICES)
+app.include_router(library.router)
+
+
 # Static frontend ───────────────────────────────────────────────
 
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

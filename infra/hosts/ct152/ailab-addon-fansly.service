@@ -1,0 +1,16 @@
+[Unit]
+Description=AI-Lab Addon: Fansly Scraper WebUI proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ai-lab/addons/fansly
+ExecStart=/opt/ai-lab/addons/fansly/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8096 --log-level info --timeout-graceful-shutdown 5
+Restart=on-failure
+RestartSec=5
+# the scraper page holds a live-log SSE stream open; without these a restart waited the full 90 s
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
