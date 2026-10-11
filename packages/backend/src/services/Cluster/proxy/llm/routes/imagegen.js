@@ -640,6 +640,25 @@ async function wmUpscale(png, short, seed) {
   return Buffer.from(await r.arrayBuffer());
 }
 
+/** How many images a watermark job runs at once: the number of SeedVR2 copies loaded across the Image Model
+ *  Services (each is its own worker process on its own card), capped at WM_PARALLEL_MAX; 1 when none is loaded. */
+const WM_PARALLEL_MAX = 4;
+async function wmParallel() {
+  let n = 0;
+  try {
+    const a = JSON.parse(readFileSync(path.join(process.env.AILAB_PROXY_DATA_DIR || '/opt/ai-lab/.gybackend-data', 'active-services.json'), 'utf8'));
+    const svcs = Object.values(a.services || {}).filter((s) => s && s.providerId === 'imagegen-models' && s.containerIp && s.port && !s.suspended);
+    for (const s of svcs) {
+      try {
+        const r = await fetch(`http://${s.containerIp}:${s.port}/models`, { signal: AbortSignal.timeout(3000) });
+        const m = r.ok ? await r.json() : null;
+        n += ((m && m.resident) || []).filter((x) => x.kind === 'seedvr2').length;
+      } catch { /* unreachable: counts as no copies */ }
+    }
+  } catch (e) { console.warn(`[watermark] could not count seedvr2 copies: ${e.message}`); }
+  return Math.max(1, Math.min(n, WM_PARALLEL_MAX));
+}
+
 /** Encode a sharp pipeline in the file's own format (same rules as crop / upscale). */
 function wmEncodeLike(file, pipe) {
   const ext = path.extname(file).toLowerCase();
@@ -1980,20 +1999,32 @@ export function createImagegenRouter(config) {
     wmChain = wmChain.then(async () => {
       if (job.cancel) { job.state = 'cancelled'; return; }
       job.state = 'running';
-      for (const rel of rels) {
-        if (job.cancel) break;
-        job.current = rel;
-        taskReport({ id: taskId, done: job.done, total: job.total, detail: path.basename(rel) });
-        try {
-          job.results[rel] = await wmOne(rel, prompt);
-          job.cleaned++;
-        } catch (e) {
-          job.failed++;
-          job.errors.push(`${path.basename(rel)}: ${String(e.message || e)}`);
-          console.warn(`[watermark] ${rel}: ${e.message || e}`);
+      // One image per loaded SeedVR2 copy at a time (Travis, 2026-10-11): since claude2's per-GPU seedvr2 workers,
+      // copies on different cards really run in parallel, and qwen_edit routes each edit to an idle card itself.
+      // Workers start a few seconds apart so each one's card choice sees the previous one already holding its card.
+      const queue = [...rels];
+      const inFlight = new Set();
+      const nWorkers = Math.max(1, Math.min(queue.length, await wmParallel()));
+      job.parallel = nWorkers;
+      console.log(`[watermark] job ${id}: ${queue.length} image(s), ${nWorkers} at a time`);
+      await Promise.all(Array.from({ length: nWorkers }, (_, k) => (async () => {
+        await new Promise((r) => setTimeout(r, k * 4000));
+        while (queue.length && !job.cancel) {
+          const rel = queue.shift();
+          inFlight.add(rel); job.current = [...inFlight].map((x) => path.basename(x)).join(', ');
+          taskReport({ id: taskId, done: job.done, total: job.total, detail: job.current });
+          try {
+            job.results[rel] = await wmOne(rel, prompt);
+            job.cleaned++;
+          } catch (e) {
+            job.failed++;
+            job.errors.push(`${path.basename(rel)}: ${String(e.message || e)}`);
+            console.warn(`[watermark] ${rel}: ${e.message || e}`);
+          }
+          job.done++;
+          inFlight.delete(rel); job.current = [...inFlight].map((x) => path.basename(x)).join(', ');
         }
-        job.done++;
-      }
+      })()));
       job.current = '';
       job.state = job.cancel ? 'cancelled' : (job.cleaned === 0 && job.failed > 0 ? 'error' : 'done');
       job.finished = Date.now();
