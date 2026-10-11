@@ -111,6 +111,13 @@ const cfg = defineConfig({
         ws: true,
         rewrite: (path) => path.replace(/^\/addons\/rule34/, '') || '/',
       },
+      // Social scraper addon (Instagram + X): ailab-addon-social.service @ 127.0.0.1:8097, prefix-stripped.
+      '/addons/social': {
+        target: process.env.ADDON_SOCIAL_URL || 'http://127.0.0.1:8097',
+        changeOrigin: true,
+        ws: true,
+        rewrite: (path) => path.replace(/^\/addons\/social/, '') || '/',
+      },
       // GENERAL runtime-addon proxy -> AI-Lab backend (:17890), which reverse-proxies /addons/<id>/*
       // to each addon's own service via its manifest, and serves /addons/_shared/theme.css|js. THIS is
       // what makes runtime addons zero-touch: dropping a manifest works with NO vite entry or restart.

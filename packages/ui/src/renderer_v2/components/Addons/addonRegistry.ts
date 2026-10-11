@@ -1,5 +1,5 @@
 import type React from 'react'
-import { Blocks, ImageDown, ImageUpscale, type LucideIcon } from 'lucide-react'
+import { AtSign, Blocks, Camera, ImageDown, ImageUpscale, type LucideIcon } from 'lucide-react'
 import { DashboardView } from './upscaler/DashboardView'
 import { BrowseView } from './upscaler/BrowseView'
 import { HistoryView } from './upscaler/HistoryView'
@@ -7,6 +7,9 @@ import { SyncView } from './upscaler/SyncView'
 import { DashboardView as R34DashboardView } from './rule34/DashboardView'
 import { BrowserView as R34BrowserView } from './rule34/BrowserView'
 import { SettingsView as R34SettingsView } from './rule34/SettingsView'
+import { makeDashboardView as socialDashboard } from './social/DashboardView'
+import { makeBrowserView as socialBrowser } from './social/BrowserView'
+import { makeSettingsView as socialSettings } from './social/SettingsView'
 
 /**
  * Addon registry — SELF-CONTAINED addon modules as Addons-tab sub-tabs.
@@ -46,6 +49,8 @@ export interface AddonManifest {
 export const ADDON_ICONS: Record<string, LucideIcon> = {
   upscale: ImageUpscale,
   r34: ImageDown,
+  instagram: Camera,
+  twitter: AtSign,
   default: Blocks,
 }
 
@@ -58,6 +63,13 @@ export const NATIVE_VIEWS: Record<string, React.ComponentType> = {
   'rule34.dashboard': R34DashboardView,
   'rule34.browser': R34BrowserView,
   'rule34.settings': R34SettingsView,
+  // Instagram + X share ONE backend (addons/social) and one set of view factories, bound per site.
+  'instagram.dashboard': socialDashboard('instagram'),
+  'instagram.browser': socialBrowser('instagram'),
+  'instagram.settings': socialSettings('instagram'),
+  'twitter.dashboard': socialDashboard('twitter'),
+  'twitter.browser': socialBrowser('twitter'),
+  'twitter.settings': socialSettings('twitter'),
 }
 
 export const ADDONS: AddonManifest[] = [
@@ -83,6 +95,30 @@ export const ADDONS: AddonManifest[] = [
     // Bundled module at /opt/ai-lab/addons/rule34 (FastAPI, systemd ailab-addon-rule34.service);
     // JSON API under /addons/rule34/api/* — scrape/download/browse rule34.xxx posts.
     basePath: '/addons/rule34',
+    views: [
+      { id: 'dashboard', label: 'Dashboard', kind: 'native' },
+      { id: 'browser', label: 'Browser', kind: 'native' },
+      { id: 'settings', label: 'Settings', kind: 'native' },
+    ],
+  },
+  // Instagram + X/Twitter scrapers: ONE bundled module at /opt/ai-lab/addons/social (FastAPI + gallery-dl,
+  // systemd ailab-addon-social.service @ :8097), proxied under /addons/social; site routes are /<site>/*.
+  {
+    id: 'instagram',
+    label: 'Instagram',
+    icon: 'instagram',
+    basePath: '/addons/social/instagram',
+    views: [
+      { id: 'dashboard', label: 'Dashboard', kind: 'native' },
+      { id: 'browser', label: 'Browser', kind: 'native' },
+      { id: 'settings', label: 'Settings', kind: 'native' },
+    ],
+  },
+  {
+    id: 'twitter',
+    label: 'X / Twitter',
+    icon: 'twitter',
+    basePath: '/addons/social/twitter',
     views: [
       { id: 'dashboard', label: 'Dashboard', kind: 'native' },
       { id: 'browser', label: 'Browser', kind: 'native' },

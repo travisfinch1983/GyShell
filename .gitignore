@@ -46,3 +46,4 @@ addons/**/*.key
 addons/fansly/settings.json
 addons/fansly/queue-*.json
 addons/rule34/data/
+addons/social/data/
