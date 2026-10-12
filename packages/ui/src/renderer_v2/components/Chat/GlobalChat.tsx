@@ -93,11 +93,25 @@ export const GlobalChat: React.FC<Props> = observer(({ store, visible }) => {
     localStorage.setItem(HERMES_TABS_KEY, JSON.stringify(tabs))
   }
 
-  // Seed the shared store with this browser's tabs (so the full-page Chat tab sees them too), then
-  // reconcile against the server registry.
+  // Reconcile this browser's saved tabs against the server registry, THEN seed the shared store.
+  // Seeding first marked every saved tab local (= "unsent new chat"), which refresh() never drops -
+  // so each conversation the cross-device merge below ever copied in (fleet inboxes, test probes,
+  // deleted chats) stayed in the list forever and it only ever grew (Travis, 2026-10-11). A saved
+  // tab the server no longer lists is dropped; the active tab is kept so the open view never
+  // vanishes. If the list can't be fetched, nothing is pruned.
   useLayoutEffect(() => {
-    hermesTabs.forEach((t) => hermesConversationsStore.ensure(t.cid, t.agentId))
-    void hermesConversationsStore.refresh()
+    void hermesConversationsStore.refresh().then((ok) => {
+      const activeCid = active.startsWith('hermes:') ? active.slice(7) : ''
+      setHermesTabs((prev) => {
+        const kept = ok ? prev.filter((t) => hermesConversationsStore.has(t.cid) || t.cid === activeCid) : prev
+        kept.forEach((t) => hermesConversationsStore.ensure(t.cid, t.agentId))
+        if (kept.length !== prev.length) {
+          console.info(`[GlobalChat] dropped ${prev.length - kept.length} saved chat tab(s) the server no longer lists`)
+          localStorage.setItem(HERMES_TABS_KEY, JSON.stringify(kept))
+        }
+        return kept
+      })
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

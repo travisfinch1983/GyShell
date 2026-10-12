@@ -724,10 +724,15 @@ export class HermesAcpBridge extends EventEmitter {
   }
 
   /** Server-side conversation list (cross-device): every persisted conversation with a known agent,
-   *  newest first. Powers the tab list so conversations follow the user to any browser/device. */
+   *  newest first. Powers the tab list so conversations follow the user to any browser/device.
+   *  NOT listed: an agent's fleet inbox (conversationId === agentId - the bare-key session every
+   *  fleet message lands in) or anything titled from a fleet envelope. Those are agent-to-agent
+   *  traffic; listing them put a new "chat" in Travis's sidebar each time an instance messaged an
+   *  agent (2026-10-11). */
   listConversations(): Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }> {
     return Object.entries(this.persistedSessions)
       .filter(([, m]) => !!m.agentId && !!(m.title && m.title.trim()))
+      .filter(([cid, m]) => cid !== m.agentId && !m.title!.trimStart().startsWith('[fleet message'))
       .map(([conversationId, m]) => ({ conversationId, agentId: m.agentId, title: m.title, lastActive: m.lastActive }))
       .sort((a, b) => b.lastActive - a.lastActive)
   }

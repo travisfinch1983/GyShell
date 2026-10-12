@@ -612,9 +612,14 @@ export const hermesApi = {
     }
   },
 
-  /** GET /api/hermes/conversations — server-side conversation registry (cross-device tab list). */
-  async conversations(): Promise<Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }>> {
-    try { const r = await bridge().request('GET', '/api/hermes/conversations'); return Array.isArray((r as { conversations?: unknown })?.conversations) ? (r as { conversations: Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }> }).conversations : [] } catch { return [] }
+  /** GET /api/hermes/conversations — server-side conversation registry (cross-device tab list).
+   *  null = the request FAILED (not "no conversations") — callers prune local tabs against this
+   *  list, so an outage must never read as "everything was deleted". */
+  async conversations(): Promise<Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }> | null> {
+    try {
+      const r = await bridge().request('GET', '/api/hermes/conversations')
+      return Array.isArray((r as { conversations?: unknown })?.conversations) ? (r as { conversations: Array<{ conversationId: string; agentId: string; title?: string; lastActive: number }> }).conversations : null
+    } catch (err) { console.warn('[hermesApi] conversations list failed:', err); return null }
   },
 
   /** DELETE /session?conversationId — END + WIPE: kills the backend session and

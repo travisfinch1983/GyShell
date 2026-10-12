@@ -21,13 +21,15 @@ class HermesConversationsStore {
 
   /** Reconcile with the server registry: upsert server entries (authoritative), keep local-only
    *  new chats, and drop previously-server entries that vanished (deleted on another panel/device). */
-  async refresh(): Promise<void> {
+  async refresh(): Promise<boolean> {
     const server = await hermesApi.conversations()
+    if (!server) return false   // list unavailable: change nothing rather than drop everything
     runInAction(() => {
       const ids = new Set(server.map((c) => c.conversationId))
       for (const c of server) this.map.set(c.conversationId, { ...c, local: false })
       for (const [id, c] of [...this.map]) if (!ids.has(id) && !c.local) this.map.delete(id)
     })
+    return true
   }
 
   /** Register an already-open conversation (e.g. a GlobalChat tab) so it shows in the other panel too. */
