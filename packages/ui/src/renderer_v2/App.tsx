@@ -32,6 +32,7 @@ import { RoadmapPanel } from './components/Roadmap/RoadmapPanel'
 import { AiServicesPanel } from './components/AiServices/AiServicesPanel'
 import { ServicesDrawer } from './components/AiServices/ServicesDrawer'
 import { GpuFleetPanel } from './components/GpuFleet/GpuFleetPanel'
+import { gpuFleetStore } from './stores/GpuFleetStore'
 import { ModelDownloadsPanel } from './components/ModelDownloads/ModelDownloadsPanel'
 import { LogsPanel } from './components/Logs/LogsPanel'
 import { AiLlmPanel, AiImagePanel, AiTtsSttPanel, AiToolsPanel } from './components/AiModality/AiModalityPanels'
@@ -221,7 +222,7 @@ export const App: React.FC = observer(() => {
 
       <TopBar store={store} servicesOpen={servicesDrawerOpen} onServicesToggle={toggleServicesDrawer} />
 
-      <div className="gyshell-body">
+      <div className={`gyshell-body${gpuFleetStore.hidden ? ' fleet-hidden' : ''}`}>
         <PrimarySidebar
           activeTab={primaryTab}
           onTabChange={handlePrimaryTabChange}

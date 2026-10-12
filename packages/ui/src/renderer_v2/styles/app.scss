@@ -1,5 +1,9 @@
 .gyshell {
+  // 100vh on a phone is the height with the browser toolbar RETRACTED, so the bottom of the app
+  // (chat input, pagers) sat underneath the browser's own bottom bar (Travis, 2026-10-11).
+  // dvh tracks the area actually visible; 100vh stays as the fallback for older browsers.
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
 }
@@ -12,7 +16,12 @@
   // Reserve room for the always-present collapsed GPU Fleet panel handle
   // (position:fixed, bottom:0, ~34px) so bottom controls (settings button,
   // panel footers) aren't hidden behind it.
-  padding-bottom: 40px;
+  padding-bottom: calc(40px + env(safe-area-inset-bottom, 0px));
+
+  // GPU Fleet bar hidden => it isn't rendered at all, so don't reserve its 40px either.
+  &.fleet-hidden {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
 }
 
 .gyshell-agent-rail {
