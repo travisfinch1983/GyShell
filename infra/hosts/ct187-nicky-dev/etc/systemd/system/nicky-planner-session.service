@@ -1,0 +1,17 @@
+[Unit]
+Description=nicky-planner - Fable planner Claude Code headless session (dtach)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=IS_SANDBOX=1
+Environment=HOME=/root
+WorkingDirectory=/root/planner
+ExecStartPre=/bin/rm -f /tmp/nicky-planner.sock
+ExecStart=/usr/bin/dtach -N /tmp/nicky-planner.sock -r winch /root/nicky-planner-launch.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

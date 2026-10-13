@@ -20,3 +20,11 @@ turing calls specialists with `hermes -p <name> chat -Q -q`). `setup_business_ag
 and billing (SOULs in `business/`), the unattached skills library `/root/hermes-skills-library` (643 skills) and
 nicky-claude's Claude Code skills. External skills: anthropics/skills, receiptor-ai/bookkeeping-skills (MIT),
 jmsktm/claude-settings construction-estimator (no licence file in that repo). All agents run on local Qwen 27B.
+
+## nicky-planner (2026-10-12)
+Second Claude Code instance on Fable 5.1 (`claude-fable-5-1`), the planner/advisor for nicky-claude, replacing the
+Hermes `planner` agent until Nicky's OpenRouter switch. Unit `nicky-planner-session` -> dtach `/tmp/nicky-planner.sock`
+-> `root/nicky-planner-launch.sh`. Own `CLAUDE_CONFIG_DIR=/root/.claude-planner` (separate login + refresh lineage
+from nicky-claude), cwd `/root/planner` (brief `planner/CLAUDE.md`, advisory only, no repo edits). Fleet agent id
+`nicky-planner`, no Matrix. Runs on Travis's Max login. In the AI-Lab Claude tab as "Nicky's Planner (Fable)"
+(instance-manager registry home `/root/.claude-planner`; the remote probe now reads both credential layouts).

@@ -87,6 +87,14 @@ Anthropic's document skills, bookkeeping). Copy one into a profile's `skills/` f
 that agent. Your own Claude Code skills are in `~/.claude/skills` (frontend-design, webapp-testing,
 xlsx, docx, pdf, skill-creator).
 
+
+### Your planner: nicky-planner (Claude Code on Fable)
+For planning work — architecture, schema design, phased build plans, hard trade-offs, a second opinion
+on a stubborn bug — message **`nicky-planner`** over fleet (`fleet_send` to `nicky-planner`). It is a
+second Claude Code instance on this box running Fable, advisory only (it reads `/root/app` but never
+edits it). Use it instead of the Hermes `planner` agent. Use it when a plan is genuinely needed, not for
+every small step — it is meant to be light usage.
+
 ## Working style
 - Keep a short `docs/` in the repo: decisions, data model, how to run it. Keep a ROADMAP.md of open work.
 - Build in small, demoable steps and show Nicky early (screenshots in Matrix are fine: `reply` takes `files`).

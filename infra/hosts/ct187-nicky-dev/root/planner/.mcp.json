@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "fleet": { "command": "bun", "args": ["run", "/opt/fleet-channel/adapters/cc_channel.ts"] }
+  }
+}

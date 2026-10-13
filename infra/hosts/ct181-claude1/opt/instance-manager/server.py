@@ -217,7 +217,9 @@ def remote_probe(inst):
     script = (f"S={json.dumps(sock)}; H={json.dumps(home)}; "
               "sockok=0; [ -S \"$S\" ] && pgrep -f \"$S\" >/dev/null && sockok=1; "
               "authed=0; grep -q -E '\"(oauthAccount|primaryApiKey|customApiKeyResponses)\"' \"$H/.claude.json\" 2>/dev/null && authed=1; "
-              "exp=$(python3 -c \"import json;print((json.load(open('$H/.claude/.credentials.json')).get('claudeAiOauth') or {}).get('refreshTokenExpiresAt',''))\" 2>/dev/null); "
+              # both layouts, like _credentials_path: a real HOME, or a CLAUDE_CONFIG_DIR used as home
+              "C=\"$H/.claude/.credentials.json\"; [ -f \"$C\" ] || C=\"$H/.credentials.json\"; "
+              "exp=$(python3 -c \"import json;print((json.load(open('$C')).get('claudeAiOauth') or {}).get('refreshTokenExpiresAt',''))\" 2>/dev/null); "
               f"st=$(systemctl is-active {unit}.service 2>/dev/null); "
               "echo \"$sockok $authed ${exp:-none} ${st:-unknown}\"")
     try:
