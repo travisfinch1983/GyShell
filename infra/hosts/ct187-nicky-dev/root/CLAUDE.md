@@ -36,10 +36,39 @@ orders, progress billing, retainage, taxes) before designing.
 - **Website: https://setincusa.net** (given by Travis 2026-10-12). Use it for branding: logo, colours,
   fonts, photos, services list, company name and contact details. Pull assets into the repo (e.g.
   `/root/app/branding/`) and note what you found here.
-(To be filled in with Nicky: company name, website, services, service area, crew size, how he quotes
-and invoices today, tools he uses now, branding. When you learn something durable about him or the
-business, add it here so it survives restarts. His website can be used for logos, colours and
-graphics for the app.)
+Source: setincusa.net (public site), read 2026-10-12. Confirm details with Nicky.
+- **Company:** Strategic Electrical Technologies, Inc. ("S.E.T. Inc.", setincusa.net), Orange County, CA.
+  CA contractor licence 1016600 (shown on the logo). Phone (714) 916-7327.
+- **Nicky Wilson:** Operations Manager, nwilson@setincusa.net. Also uses setincusa@gmail.com (gave it 2026-10-12).
+- Nicky says he primarily sticks to **commercial** electrical work. Sending more info 2026-10-13.
+- **Work types:** mostly commercial. Building automation/energy management (Delta, Siemens, Schneider,
+  Trane), Title 24 lighting-controls acceptance testing (CALCTP certified; nLight, Wattstopper, Greengate),
+  **public works** (DIR registered: schools, federal buildings, so expect certified payroll/prevailing wage
+  and retainage), VFDs (ABB, Yaskawa, Danfoss), tenant improvements (offices, medical, restaurants, labs),
+  service and repair, design/build, temporary power.
+- **Branding:** round logo saved at `/root/app/docs/brand/logo.png`. Colours: red `#D02027`, black `#040707`,
+  grey `#5B5B5C`, on white.
+- Still unknown: crew size, how he quotes and invoices today, what tools he uses now.
+
+## Nicky's Windows PC (remote access, added 2026-10-12)
+Nicky's office computer is a small Windows mini PC (AMD quad-core, 16 GB RAM, M.2 SSD). You can reach it
+over Travis's private network (headscale/Tailscale) with SSH: **`ssh nicky-pc`** (config in
+`/root/.ssh/config`; it lands in Windows PowerShell as an administrator). Nothing else on Travis's network
+is reachable from here, and the PC cannot reach anything.
+- **Why you have it:** Nicky has nobody local to fix his computer. Known issue: it slowed to a crawl with
+  ~97% RAM used and ~16 GB committed to the page file, while visible processes added up to under 512 MB.
+  If he reports slowness, investigate: commit size per process
+  (`Get-Process | Sort-Object PagedMemorySize64 -Desc | Select -First 15 Name,Id,@{n='CommitMB';e={[int]($_.PagedMemorySize64/1MB)}}`),
+  kernel pools (`Get-Counter '\Memory\Pool Nonpaged Bytes','\Memory\Pool Paged Bytes','\Memory\Committed Bytes'`),
+  driver versions, Event Viewer (System log), uptime. A large non-paged pool usually means a leaking driver
+  (network/Wi-Fi/AMD chipset).
+- **Rules:** look and diagnose freely. **Before changing anything on the PC** (installing/removing
+  software or drivers, changing settings or services, deleting files, rebooting), ask Nicky in Matrix
+  and wait for his yes. Anything big or risky (BIOS, OS reset, disk changes, anything that could stop him
+  working) also needs Travis: message claude1 via fleet and it will check with him.
+- Never copy Nicky's personal files off the PC except into `/root/nicky-files`-style work he asked for.
+- The **Syncthing** folder "For Claude" on his PC syncs one way into `/root/nicky-files` (examples of
+  his bids, invoices, price lists). Treat it as confidential, read-only reference.
 
 ## Your boundaries
 - This container (`nicky-dev`, CT187 on px-epyc, 10.0.0.24) is **yours**: full root, install whatever

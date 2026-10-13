@@ -28,3 +28,12 @@ Hermes `planner` agent until Nicky's OpenRouter switch. Unit `nicky-planner-sess
 from nicky-claude), cwd `/root/planner` (brief `planner/CLAUDE.md`, advisory only, no repo edits). Fleet agent id
 `nicky-planner`, no Matrix. Runs on Travis's Max login. In the AI-Lab Claude tab as "Nicky's Planner (Fable)"
 (instance-manager registry home `/root/.claude-planner`; the remote probe now reads both credential layouts).
+
+## Nicky's Windows PC + tailnet (2026-10-12)
+CT187 joined headscale (VPS 107.173.17.151) as `nicky-dev`, tag `tag:nicky-dev`; tailscaled runs `--tun=userspace-networking`
+(unprivileged CT, no /dev/net/tun), so SSH goes through `ProxyCommand tailscale nc %h %p` (`/root/.ssh/config`, Host `nicky-pc`,
+key `/root/.ssh/nicky-pc`). Nicky's PC joins as `nicky-pc`, tag `tag:nicky-pc`, via `windows-pc/nicky-pc-setup.ps1`
+(admin PowerShell; OpenSSH server, administrators_authorized_keys = nicky-claude's key only, PasswordAuthentication no,
+firewall 22 from 100.64.0.0/10 only). ACL (`racknerd-vps-headscale/etc/headscale/acl.hujson`): tagged nodes get no user
+identity, so no homelab@ or 10.0.0.0/24 access; only nicky-dev -> nicky-pc:22 and homelab@ -> both tags.
+Syncthing on CT187 (`syncthing@root`, GUI 127.0.0.1:8384) receives Nicky's "For Claude" folder into /root/nicky-files.

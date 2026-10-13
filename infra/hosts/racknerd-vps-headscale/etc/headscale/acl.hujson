@@ -1,0 +1,73 @@
+// Headscale ACL policy — deeveeyant tailnet.
+// Written 2026-09-28 during the migration of the control plane to the VPS.
+//
+// 🛑 BE HONEST ABOUT WHAT THIS DOES AND DOES NOT BUY.
+// It does NOT defend against a compromised headscale. An attacker who owns the control
+// plane can create a user, mint a pre-auth key and register a node into whatever group
+// this policy allows — the policy is theirs to rewrite at that point. Anyone reasoning
+// "the ACL contains a server breach" is wrong.
+//
+// What it DOES buy:
+//   1. A compromised DEVICE (phone with malware, stolen laptop) is bounded by these rules
+//      rather than reaching everything by default.
+//   2. Default-deny for any user that is not "homelab". Before this the policy was empty,
+//      which means allow-all between every node on the tailnet.
+//   3. A place to tighten. Today it is deliberately permissive WITHIN homelab because
+//      breaking Travis's remote access is worse than a loose rule; narrow it per-host once
+//      we know what actually needs to talk to what.
+//
+// The real blast-radius control remains: NO node advertises a LAN subnet route, so tailnet
+// access reaches the node machines themselves and not all of 10.0.0.0/24. Keep it that way.
+{
+  // Nicky's devices (added 2026-10-12, claude1, Travis's OK). Tagged nodes carry NO user identity,
+  // so the homelab@ rules (incl. the 10.0.0.0/24 subnet route) do NOT apply to them: they get only
+  // what is granted below. Nicky's PC can initiate nothing; replies are stateful.
+  "tagOwners": {
+    "tag:nicky-pc": ["homelab@"],
+    "tag:nicky-dev": ["homelab@"],
+  },
+  // 🛑 USER SYNTAX: a user MUST be written with a trailing "@" (homelab@).
+  // A bare "homelab" is parsed as a HOST, and headscale refuses to start with
+  //   "host not defined in policy: \"homelab\""
+  // It fails CLOSED rather than running an unenforced policy — good, but it means a
+  // syntax slip here takes the whole control plane down. Validate before restarting.
+  "acls": [
+    {
+      // nicky-claude (CT187) diagnoses/manages Nicky's Windows PC over OpenSSH only.
+      "action": "accept",
+      "src": ["tag:nicky-dev"],
+      "dst": ["tag:nicky-pc:22"],
+    },
+    {
+      // Travis's devices can reach Nicky's PC for remote support (SSH, RDP, anything).
+      "action": "accept",
+      "src": ["homelab@"],
+      "dst": ["tag:nicky-pc:*", "tag:nicky-dev:*"],
+    },
+    {
+      // Node-to-node across the tailnet.
+      "action": "accept",
+      "src": ["homelab@"],
+      "dst": ["homelab@:*"],
+    },
+    {
+      // 🛑 THE LAN SUBNET ROUTE. The "headscale" node advertises 10.0.0.0/24 and that is
+      // how Travis reaches LAN hosts BY IP over the tailnet.
+      // Omitting this broke LAN-by-IP access instantly on 2026-09-28 while the control
+      // plane stayed perfectly healthy — "homelab@:*" means homelab NODES, it does NOT
+      // cover arbitrary IPs reached THROUGH a subnet router. A route being approved in
+      // headscale is not enough; the ACL must also permit the destination CIDR.
+      // Before this policy existed the policy file was empty = allow-all, which is why
+      // subnet routing worked without anyone having to think about it.
+      "action": "accept",
+      "src": ["homelab@"],
+      "dst": ["10.0.0.0/24:*"],
+    },
+    {
+      // Exit-node traffic. "rapidseedbox-nl" advertises 0.0.0.0/0 and ::/0.
+      "action": "accept",
+      "src": ["homelab@"],
+      "dst": ["autogroup:internet:*"],
+    },
+  ],
+}
