@@ -37,3 +37,7 @@ key `/root/.ssh/nicky-pc`). Nicky's PC joins as `nicky-pc`, tag `tag:nicky-pc`, 
 firewall 22 from 100.64.0.0/10 only). ACL (`racknerd-vps-headscale/etc/headscale/acl.hujson`): tagged nodes get no user
 identity, so no homelab@ or 10.0.0.0/24 access; only nicky-dev -> nicky-pc:22 and homelab@ -> both tags.
 Syncthing on CT187 (`syncthing@root`, GUI 127.0.0.1:8384) receives Nicky's "For Claude" folder into /root/nicky-files.
+Syncthing pairing (done 2026-10-12): PC device GYHKEFC (Syncthing v2.1.6, config C:\Users\setin\AppData\Local\Syncthing\config.xml),
+folder id `shsih-5tjgc` = C:\Users\setin\claude, set **sendonly** on the PC and shared with JEQK3DI (CT187) via the PC's local
+REST API over `ssh nicky-pc`; CT187 holds it **receiveonly** at /root/nicky-files. The PC had rejected the first connection as
+"unknown device" (our device wasn't added there); restart syncthing@root to force a quick reconnect after a pairing change.
