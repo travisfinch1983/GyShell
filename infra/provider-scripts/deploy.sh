@@ -40,7 +40,7 @@ if [ "${1:-}" = "--check" ]; then
         exit 1
     fi
     # Compare both directions so we catch repo-is-stale as well as node-is-stale.
-    if diff -r --exclude='*.bak*' "$SRC" "$DEST" > /tmp/provider-drift.$$ 2>&1; then
+    if diff -r --exclude='*.bak*' --exclude='*.pre-*' "$SRC" "$DEST" > /tmp/provider-drift.$$ 2>&1; then
         echo "OK: repo and data dir agree ($(find "$SRC" -name '*.sh' | wc -l) scripts)"
         rm -f /tmp/provider-drift.$$
         exit 0
@@ -52,7 +52,7 @@ if [ "${1:-}" = "--check" ]; then
 fi
 
 mkdir -p "$DEST"
-# --exclude the backups patch scripts leave behind; they are not deliverables.
-rsync -a --exclude='*.bak*' "$SRC"/ "$DEST"/
+# --exclude the backups patch scripts leave behind (*.bak*, *.pre-*); they are not deliverables.
+rsync -a --exclude='*.bak*' --exclude='*.pre-*' "$SRC"/ "$DEST"/
 chmod +x "$DEST"/*.sh "$DEST"/prereqs/*.sh 2>/dev/null || true
 echo "Deployed $(find "$SRC" -name '*.sh' | wc -l) provider scripts -> $DEST"

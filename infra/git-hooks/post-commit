@@ -1,0 +1,8 @@
+#!/bin/bash
+# Auto-deploy provider installers when a commit touches them (installed as .git/hooks/post-commit).
+# Why: twice (08-31, 10-12) an installer fix landed in the repo but deploy.sh was never run, leaving the
+# data-dir copy stale; a provider reinstall would have re-broken TTS. Repo is the source of truth.
+if git diff-tree --no-commit-id --name-only -r HEAD | grep -q '^infra/provider-scripts/'; then
+  /opt/ai-lab/infra/provider-scripts/deploy.sh && /opt/ai-lab/infra/provider-scripts/deploy.sh --check \
+    || echo "post-commit: provider-scripts deploy FAILED — run infra/provider-scripts/deploy.sh by hand" >&2
+fi
