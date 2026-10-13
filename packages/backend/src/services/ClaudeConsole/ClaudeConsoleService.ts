@@ -43,6 +43,9 @@ interface ManagedInstance {
    *  not exposed over GET /instances yet; claude1 asked to add it) */
   consoleSocket?: string
   sock?: string
+  /** remote instances (another container): `user@host` to attach through instead of
+   *  cfg.sshTarget. Set by the instance-manager registry's `host` field. */
+  sshTarget?: string | null
 }
 
 interface ConsoleSession {
@@ -181,7 +184,8 @@ export class ClaudeConsoleService {
           '-o', 'ConnectTimeout=8',
           '-o', 'StrictHostKeyChecking=accept-new',
           '-o', 'ServerAliveInterval=15',
-          this.cfg.sshTarget,
+          // a remote instance names its own host; AI-Lab's key is authorized there too
+          inst.sshTarget && /^[a-z0-9_-]+@[a-z0-9.-]+$/i.test(inst.sshTarget) ? inst.sshTarget : this.cfg.sshTarget,
           attachCommandFor(inst),
         ],
         { name: 'xterm-256color', cols: 80, rows: 24 },
