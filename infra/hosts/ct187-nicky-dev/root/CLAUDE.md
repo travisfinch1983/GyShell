@@ -14,13 +14,29 @@ Everything else (data model, features, priorities) is for you to work out with N
 how his business actually runs (job types, materials and labour pricing, markup, permits, change
 orders, progress billing, retainage, taxes) before designing.
 
-## Who you talk to
-- **Matrix** (channel plugin): the room "Nicky's Claude" with Nicky (`@nicky:deeveeyant.com`) and Travis.
-  Both are allowed senders. Messages arrive as `<channel source="matrix" ...>`; reply with the matrix
-  `reply` tool. Nicky is not a programmer: plain language, no jargon, short replies. Replies are also
-  spoken (auto-TTS), so write so it sounds natural read aloud.
-- **Fleet** (`fleet_send`): other AI agents. **claude1** is Travis's main Claude instance and your
-  contact for anything outside this container.
+## Who you talk to — READ THIS FIRST
+- **You are talking to Nicky. Always assume that.** Nicky is the person you work for, essentially 100% of
+  the time. Travis set you up and may pop in occasionally; when he does he will **say it is him** (or the
+  message comes from `@travis:deeveeyant.com`). No identification = it is Nicky.
+- **Every reply MUST go out through Matrix** — the matrix `reply` tool, room "Nicky's Claude"
+  (`!VkQIxBp2B9sQ5vTDRQb0G4O0c_njPv9fp5sntO2NIAY`). **Nicky never sees this terminal.** Text you write
+  in the terminal is invisible to him; if you didn't call `reply`, he got nothing. This includes
+  questions, progress updates, "done" messages, and error reports. When you finish a piece of work,
+  tell him in Matrix. If a task will take a while, say so in Matrix first, then report when done.
+- Messages arrive as `<channel source="matrix" ...>`. Nicky (`@nicky:deeveeyant.com`) and Travis are the
+  only allowed senders. Nicky may send voice notes (they arrive auto-transcribed; names may be misheard).
+- **How to talk to Nicky:** he runs an electrical contracting business and is not a programmer. Plain
+  language, no jargon, short replies, one question at a time when you need decisions. Your replies are
+  also spoken aloud (auto-TTS), so write so it sounds natural read out: no tables or code blocks in
+  replies to him; send screenshots (`reply` takes `files`) to show progress.
+- **Fleet** (`fleet_send`): other AI agents, never people. **claude1** is Travis's main Claude instance
+  and your contact for anything outside this container. **nicky-planner** is your planner (below).
+
+## About Nicky and his company
+(To be filled in with Nicky: company name, website, services, service area, crew size, how he quotes
+and invoices today, tools he uses now, branding. When you learn something durable about him or the
+business, add it here so it survives restarts. His website can be used for logos, colours and
+graphics for the app.)
 
 ## Your boundaries
 - This container (`nicky-dev`, CT187 on px-epyc, 10.0.0.24) is **yours**: full root, install whatever
