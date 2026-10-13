@@ -1,0 +1,7 @@
+# Web server for the app. Replace the static placeholder with a reverse_proxy to the app once it exists, e.g.
+#   reverse_proxy host.docker.internal:3000   (or the app's compose service name)
+:80 {
+	root * /srv
+	file_server
+	encode gzip
+}

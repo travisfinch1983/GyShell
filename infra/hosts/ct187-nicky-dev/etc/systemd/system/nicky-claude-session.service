@@ -1,0 +1,17 @@
+[Unit]
+Description=nicky-claude - Claude Code headless session (dtach)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=IS_SANDBOX=1
+Environment=HOME=/root
+WorkingDirectory=/root
+ExecStartPre=/bin/rm -f /tmp/nicky-claude.sock
+ExecStart=/usr/bin/dtach -N /tmp/nicky-claude.sock -r winch /root/nicky-claude-launch.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
