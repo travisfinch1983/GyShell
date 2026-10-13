@@ -12,3 +12,11 @@ Created 2026-10-12 by claude1 for Travis: Ubuntu 24.04 LXC, 16 cores / 16 GB / 5
 
 Not in git (secrets): `/opt/stack/.env`, `/root/.claude/channels/matrix/.env`. Matrix bot `@nicky-claude` (vault cred-fc2caf2e), Nicky's account `@nicky` (cred-5c62fd3f), room "Nicky's Claude" with Travis + Nicky.
 Also: fleet agent `nicky-claude` registered in fleetd; AI-Lab Claude tab via instance-manager remote `host` (see ct181-claude1); app repo `claude/nicky-contractor-app` (deploy key).
+
+## Hermes agent team (2026-10-12)
+`root/hermes-import/setup_coding_agents.py` copies the AI-Lab coding team (turing, planner, coder, bug-hunter,
+security, optimizer, mapper: SOUL.md + curated skills, Travis references removed, an "On this box" section added;
+turing calls specialists with `hermes -p <name> chat -Q -q`). `setup_business_agents.py` creates ledger, estimator
+and billing (SOULs in `business/`), the unattached skills library `/root/hermes-skills-library` (643 skills) and
+nicky-claude's Claude Code skills. External skills: anthropics/skills, receiptor-ai/bookkeeping-skills (MIT),
+jmsktm/claude-settings construction-estimator (no licence file in that repo). All agents run on local Qwen 27B.

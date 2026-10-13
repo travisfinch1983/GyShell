@@ -44,8 +44,8 @@ orders, progress billing, retainage, taxes) before designing.
     `http://10.0.0.24:9000/if/flow/initial-setup/` — do it, store the admin password in `/opt/stack/.env`,
     and tell Travis)
   - Caddy `:80` (web server; placeholder page in `/opt/stack/caddy/site`)
-- **Hermes agent** (`hermes`, Nous Research) for building AI agents for Nicky; config `~/.hermes/`.
-  Its models come from Travis's AI-Lab proxy.
+- **Hermes agent** (`hermes`, Nous Research) with a team of helper agents (below); config `~/.hermes/`.
+  Their models come from Travis's AI-Lab proxy.
 - **Local AI** (Travis's AI-Lab proxy, OpenAI-compatible, no key needed on the LAN):
   - chat: `http://10.0.0.219:17890/api/proxy/llm/v1` (good local model: `Qwen3.8-27B-INT8-MM-8_Slot-Think_Preserve-256k`)
   - embeddings: `http://10.0.0.219:17890/api/proxy/embed/v1`
@@ -53,6 +53,39 @@ orders, progress billing, retainage, taxes) before designing.
 - **Git:** `/root/app` is the project repo, pushing to Travis's Gitea (`claude/nicky-contractor-app`)
   with this container's deploy key. Commit and push after every working change.
 - Backups: the whole container (so `/opt/stack/data` and `/root/app` too) goes to Proxmox Backup Server Sat/Tue/Thu at 22:00. Git (Gitea) is your real history; push often.
+
+## Your helper agents (Hermes, on this box)
+A team of Hermes agents runs here on Travis's local models. Use them as reviewers and second
+opinions while you build: one Claude can't see everything, so get audits as you go.
+
+| Agent | Use it for |
+|---|---|
+| `turing` | Orchestrator: give it a bigger coding question and it briefs the specialists itself |
+| `planner` | Architecture and sequencing before you build a feature |
+| `coder` | A second implementation of a tricky piece, or a focused refactor |
+| `bug-hunter` | Root cause of a bug you can't pin down |
+| `security` | Audit auth, input handling, secrets, data exposure; **run it on every feature that touches money, logins or client data** |
+| `optimizer` | Measured performance work |
+| `mapper` | Docs/README accuracy, explaining unfamiliar code |
+| `ledger` | Bookkeeping auditor (test data now; Nicky's books later) |
+| `estimator` | Electrical estimates, bids, quotes, change orders |
+| `billing` | Invoices, progress billing, retainage, receivables and collections drafts |
+
+Call one from your terminal and read the answer from stdout (it starts blind, so give a full brief:
+goal, files, context, what done looks like, what not to touch):
+
+```
+cd /root/app && hermes -p security chat -Q --yolo -q "Audit the invoice API in src/... for ..."
+```
+
+They run one at a time on a shared local model (~15 s for a short answer, longer for big reviews).
+Later their model can be switched to OpenRouter (Nicky is getting API credits): change `model` in
+`/root/.hermes/profiles/<name>/config.yaml`, key in `/root/.hermes/.env`.
+
+More skills: `/root/hermes-skills-library` (643, incl. engineering, finance, project management,
+Anthropic's document skills, bookkeeping). Copy one into a profile's `skills/` folder to give it to
+that agent. Your own Claude Code skills are in `~/.claude/skills` (frontend-design, webapp-testing,
+xlsx, docx, pdf, skill-creator).
 
 ## Working style
 - Keep a short `docs/` in the repo: decisions, data model, how to run it. Keep a ROADMAP.md of open work.
