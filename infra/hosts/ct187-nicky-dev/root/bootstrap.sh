@@ -6,7 +6,7 @@ echo "== $(date) start"
 timedatectl set-timezone America/Phoenix 2>/dev/null || ln -sf /usr/share/zoneinfo/America/Phoenix /etc/localtime
 apt-get update -q
 apt-get -y -q upgrade
-apt-get -y -q install ca-certificates curl gnupg git jq unzip zip build-essential pkg-config dtach tmux htop ncdu rsync \
+apt-get -y -q install ca-certificates curl gnupg git jq unzip zip build-essential pkg-config dtach tmux ffmpeg htop ncdu rsync \
   python3 python3-venv python3-pip pipx python3-dev postgresql-client redis-tools sqlite3 ripgrep fd-find less nano vim locales
 locale-gen en_US.UTF-8 >/dev/null
 # Docker CE + compose plugin

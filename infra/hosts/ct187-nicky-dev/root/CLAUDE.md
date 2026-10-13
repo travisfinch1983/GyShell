@@ -33,6 +33,9 @@ orders, progress billing, retainage, taxes) before designing.
   and your contact for anything outside this container. **nicky-planner** is your planner (below).
 
 ## About Nicky and his company
+- **Website: https://setincusa.net** (given by Travis 2026-10-12). Use it for branding: logo, colours,
+  fonts, photos, services list, company name and contact details. Pull assets into the repo (e.g.
+  `/root/app/branding/`) and note what you found here.
 (To be filled in with Nicky: company name, website, services, service area, crew size, how he quotes
 and invoices today, tools he uses now, branding. When you learn something durable about him or the
 business, add it here so it survives restarts. His website can be used for logos, colours and
