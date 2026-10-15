@@ -1,0 +1,44 @@
+--- a/remote_models.py
++++ b/remote_models.py
+@@ -742,17 +742,18 @@
+     return r
+ 
+ 
+-def _load_lora_for_models(model, clip, lora, strength_model, strength_clip):
++def _load_lora_for_models(model, clip, lora, strength_model, strength_clip, **kw):
++    # **kw: core now passes lora_metadata= (comfy.sd.load_lora_for_models gained it); forward whatever it sends.
+     rm, rc = is_remote_model(model), is_remote_clip(clip)
+     if not rm and not rc:
+-        return _orig_load_lora_for_models(model, clip, lora, strength_model, strength_clip)
++        return _orig_load_lora_for_models(model, clip, lora, strength_model, strength_clip, **kw)
+     path = _lora_paths.get(id(lora))
+     if path is None:
+         raise RuntimeError("AI-Lab remote model: this LoRA loader didn't load its LoRA from a file - use LoraLoader or the AI-Lab LoRA Stack")
+     name = _lora_name(path)
+     m, c = model, clip
+     if (not rm and strength_model) or (clip is not None and not rc and strength_clip):
+-        m, c = _orig_load_lora_for_models(model, clip, lora, 0 if rm else strength_model, 0 if rc else strength_clip)
++        m, c = _orig_load_lora_for_models(model, clip, lora, 0 if rm else strength_model, 0 if rc else strength_clip, **kw)
+     if rm and strength_model:
+         m = add_remote_lora(m, name, strength_model)
+     if rc and strength_clip:
+@@ -760,16 +761,16 @@
+     return m, c
+ 
+ 
+-def _lora_loader(self, model, clip, lora_name, strength_model, strength_clip):
++def _lora_loader(self, model, clip, lora_name, strength_model, strength_clip, *a, **kw):
+     """Core LoraLoader / LoraLoaderModelOnly on a remote model: don't read the LoRA here at all, just name it for the service."""
+     rm, rc = is_remote_model(model), is_remote_clip(clip)
+     if not rm and not rc:
+-        return _orig_lora_loader(self, model, clip, lora_name, strength_model, strength_clip)
++        return _orig_lora_loader(self, model, clip, lora_name, strength_model, strength_clip, *a, **kw)
+     m, c = model, clip
+     local_m = 0 if rm else strength_model
+     local_c = 0 if (rc or clip is None) else strength_clip
+     if local_m or local_c:
+-        m, c = _orig_lora_loader(self, model, clip, lora_name, local_m, local_c)
++        m, c = _orig_lora_loader(self, model, clip, lora_name, local_m, local_c, *a, **kw)
+     if rm and strength_model:
+         m = add_remote_lora(m, lora_name, strength_model)
+     if rc and strength_clip:
