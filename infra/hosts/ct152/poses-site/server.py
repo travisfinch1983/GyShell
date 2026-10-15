@@ -54,10 +54,16 @@ def source_path(p):
     return full
 
 
+def upscaled_path(p):
+    f = os.path.join(LIB, "upscaled_images", f"{p['id']}.png")
+    return f if os.path.isfile(f) else None
+
+
 def files_for(p):
     pid = p["id"]
     cand = {
-        "original": source_path(p) or os.path.join(LIB, "pose_images", p.get("image") or f"{pid}.webp"),
+        # full-size source photo > SeedVR2 upscale of the thumbnail > the 224x284 thumbnail itself
+        "original": source_path(p) or upscaled_path(p) or os.path.join(LIB, "pose_images", p.get("image") or f"{pid}.webp"),
         "thumb": os.path.join(LIB, "pose_images", p.get("image") or f"{pid}.webp"),
         "mannequin": os.path.join(LIB, "mannequin_images", p.get("mannequin") or f"{pid}.png"),
         "overlay": os.path.join(LIB, "skeletons", f"{pid}_overlay.png"),
@@ -72,7 +78,7 @@ def public(p):
         "n": p.get("index"), "id": p["id"], "name": p.get("name", ""), "category": p.get("category") or "custom",
         "view": p.get("view", ""), "prompt": p.get("prompt", ""),
         "views": [k for k in ("original", "mannequin", "overlay", "skeleton") if k in f],
-        "full_original": bool(source_path(p)),
+        "original_kind": "full" if source_path(p) else "upscaled" if upscaled_path(p) else "small",
     }
 
 

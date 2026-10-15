@@ -118,7 +118,7 @@ function openPose(i,keep){
   $('dprompt').textContent=p.prompt?'Pose: '+p.prompt:'';
   $('dcopy').textContent=`Copy "pose #${p.n}"`;
   const v=$('dviews');v.innerHTML='';
-  p.views.forEach(k=>{const b=document.createElement('button');b.className='chip'+(k===view?' on':'');b.textContent=LABEL[k]+(k==='original'&&!p.full_original?' (small)':'');b.onclick=()=>{view=k;openPose(cur,true)};v.appendChild(b)});
+  p.views.forEach(k=>{const b=document.createElement('button');b.className='chip'+(k===view?' on':'');b.textContent=LABEL[k]+(k==='original'&&p.original_kind!=='full'?` (${p.original_kind})`:'');b.onclick=()=>{view=k;openPose(cur,true)};v.appendChild(b)});
   $('dimg').src=`/img/full/${view}/${p.id}.webp`;$('dimg').alt=`Pose ${p.n} ${LABEL[view]||''}`;
   if(!$('dlg').open)$('dlg').showModal();
 }
