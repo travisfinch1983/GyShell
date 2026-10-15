@@ -1,0 +1,13 @@
+[Unit]
+Description=poses.deeveeyant.com - numbered pose library browser (read-only)
+After=network-online.target remote-fs.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/poses-site/server.py
+Environment=PORT=17895
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

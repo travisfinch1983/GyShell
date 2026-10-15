@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pose Library</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%22.9em%22 font-size=%2290%22%3E%F0%9F%A4%B8%3C/text%3E%3C/svg%3E">
+<style>
+:root{--bg:#f6f4f7;--card:#fff;--fg:#222;--muted:#6b6670;--line:#e3dee6;--acc:#d6457f;--acc-fg:#fff;--tile:#ece8ef}
+@media (prefers-color-scheme:dark){:root{--bg:#141216;--card:#1e1b21;--fg:#eee9f1;--muted:#a49dab;--line:#332e38;--acc:#ff6fa6;--acc-fg:#1a0f15;--tile:#26222a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:12px 16px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+h1{font-size:20px;margin:0 12px 0 0}
+.count{color:var(--muted);font-size:13px}
+input[type=search]{flex:1;min-width:160px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--fg);font-size:15px}
+.chips{margin-top:10px;gap:6px}
+button.chip,.seg button{border:1px solid var(--line);background:var(--card);color:var(--fg);padding:6px 11px;border-radius:999px;font-size:13px;cursor:pointer}
+button.chip.on,.seg button.on{background:var(--acc);color:var(--acc-fg);border-color:var(--acc)}
+.seg{display:inline-flex;gap:4px}
+main{padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;cursor:pointer;padding:0;color:inherit;text-align:left;font:inherit}
+.tile:hover{border-color:var(--acc)}
+.tile .img{position:relative;aspect-ratio:224/284;background:var(--tile)}
+.tile img{width:100%;height:100%;object-fit:contain;display:block}
+.num{position:absolute;top:6px;left:6px;background:var(--acc);color:var(--acc-fg);font-weight:700;font-size:17px;padding:2px 9px;border-radius:8px}
+.cap{padding:7px 9px;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.empty{grid-column:1/-1;text-align:center;color:var(--muted);padding:40px}
+dialog{border:none;border-radius:14px;padding:0;background:var(--card);color:var(--fg);width:min(980px,96vw);max-height:94vh}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+.dlg{display:flex;flex-direction:column;max-height:94vh}
+.dhead{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.dhead .big{font-size:24px;font-weight:800;color:var(--acc)}
+.dhead .t{flex:1;min-width:0}
+.dhead .t div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.x{border:none;background:none;color:var(--fg);font-size:26px;cursor:pointer;padding:0 6px}
+.dbody{overflow:auto;padding:12px 14px}
+.views{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.stage{background:var(--tile);border-radius:10px;display:flex;justify-content:center;align-items:center;min-height:300px}
+.stage img{max-width:100%;max-height:68vh;object-fit:contain;display:block}
+.prompt{margin-top:10px;color:var(--muted);font-size:14px}
+.dfoot{display:flex;gap:8px;align-items:center;padding:10px 14px;border-top:1px solid var(--line)}
+.dfoot .sp{flex:1}
+.btn{border:1px solid var(--line);background:var(--card);color:var(--fg);padding:8px 12px;border-radius:10px;cursor:pointer;font-size:14px}
+.btn.acc{background:var(--acc);color:var(--acc-fg);border-color:var(--acc)}
+@media (max-width:520px){main{grid-template-columns:repeat(2,1fr);gap:8px;padding:10px}header{padding:10px}.chips{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;scrollbar-width:none}.chips button{flex:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <h1>Pose Library</h1>
+    <span class="count" id="count"></span>
+    <span class="seg" id="mode" title="What the grid shows">
+      <button data-m="mannequin" class="on">Mannequin</button><button data-m="original">Original</button>
+    </span>
+  </div>
+  <div class="row" style="margin-top:10px"><input type="search" id="q" placeholder="Search number or description (e.g. 42, kneeling, side view)"></div>
+  <div class="row chips" id="cats"></div>
+</header>
+<main id="grid"></main>
+
+<dialog id="dlg"><div class="dlg">
+  <div class="dhead"><span class="big" id="dnum"></span><div class="t"><div id="dname"></div><div class="count" id="dcat"></div></div><button class="x" id="dx" aria-label="Close">×</button></div>
+  <div class="dbody">
+    <div class="views" id="dviews"></div>
+    <div class="stage"><img id="dimg" alt=""></div>
+    <div class="prompt" id="dprompt"></div>
+  </div>
+  <div class="dfoot">
+    <button class="btn" id="dprev">‹ Prev</button><button class="btn" id="dnext">Next ›</button>
+    <span class="sp"></span>
+    <button class="btn acc" id="dcopy">Copy "pose #"</button>
+  </div>
+</div></dialog>
+
+<script>
+const LABEL={original:'Original',mannequin:'Mannequin',overlay:'Skeleton on mannequin',skeleton:'Skeleton'};
+let POSES=[],shown=[],cat='all',cur=-1,view='mannequin';
+let mode=(()=>{try{return localStorage.getItem('poseMode')||'mannequin'}catch{return 'mannequin'}})();
+const $=id=>document.getElementById(id);
+const pad=n=>String(n).padStart(3,'0');
+
+function tileView(p){if(mode==='original')return p.views.includes('original')?'original':'thumb';return p.views.includes('mannequin')?'mannequin':'thumb'}
+
+function render(){
+  const q=$('q').value.trim().toLowerCase();
+  shown=POSES.filter(p=>(cat==='all'||p.category===cat)&&(!q||String(p.n)===q.replace(/^#/,'')||pad(p.n)===q||(p.name+' '+p.prompt+' '+p.category+' '+p.view).toLowerCase().includes(q)));
+  $('count').textContent=`${shown.length} of ${POSES.length} poses`;
+  const g=$('grid');g.innerHTML='';
+  if(!shown.length){g.innerHTML='<div class="empty">No poses match.</div>';return}
+  const frag=document.createDocumentFragment();
+  shown.forEach((p,i)=>{
+    const b=document.createElement('button');b.className='tile';b.type='button';
+    b.innerHTML=`<div class="img"><img loading="lazy" alt="Pose ${p.n}" src="/img/grid/${tileView(p)}/${p.id}.webp"><span class="num">${p.n}</span></div><div class="cap"></div>`;
+    b.querySelector('.cap').textContent=p.prompt||p.name;
+    b.onclick=()=>openPose(i);frag.appendChild(b);
+  });
+  g.appendChild(frag);
+}
+
+function renderCats(){
+  const counts={};POSES.forEach(p=>counts[p.category]=(counts[p.category]||0)+1);
+  const c=$('cats');c.innerHTML='';
+  [['all',POSES.length],...Object.entries(counts).sort((a,b)=>b[1]-a[1])].forEach(([k,n])=>{
+    const b=document.createElement('button');b.className='chip'+(k===cat?' on':'');b.textContent=`${k==='all'?'All':k} (${n})`;
+    b.onclick=()=>{cat=k;renderCats();render()};c.appendChild(b);
+  });
+}
+
+function openPose(i,keep){
+  const p=shown[i];
+  if(!(keep&&i===cur&&p.views.includes(view)))view=p.views.includes(mode)?mode:p.views[0]||'thumb';
+  cur=i;
+  $('dnum').textContent='#'+p.n;$('dname').textContent=p.name;
+  $('dcat').textContent=[p.category,p.view].filter(Boolean).join(' · ');
+  $('dprompt').textContent=p.prompt?'Pose: '+p.prompt:'';
+  $('dcopy').textContent=`Copy "pose #${p.n}"`;
+  const v=$('dviews');v.innerHTML='';
+  p.views.forEach(k=>{const b=document.createElement('button');b.className='chip'+(k===view?' on':'');b.textContent=LABEL[k]+(k==='original'&&!p.full_original?' (small)':'');b.onclick=()=>{view=k;openPose(cur,true)};v.appendChild(b)});
+  $('dimg').src=`/img/full/${view}/${p.id}.webp`;$('dimg').alt=`Pose ${p.n} ${LABEL[view]||''}`;
+  if(!$('dlg').open)$('dlg').showModal();
+}
+function step(d){if(!shown.length)return;openPose((cur+d+shown.length)%shown.length)}
+
+$('dx').onclick=()=>$('dlg').close();
+$('dlg').addEventListener('click',e=>{if(e.target===$('dlg'))$('dlg').close()});
+$('dprev').onclick=()=>step(-1);$('dnext').onclick=()=>step(1);
+document.addEventListener('keydown',e=>{if(!$('dlg').open)return;if(e.key==='ArrowLeft')step(-1);if(e.key==='ArrowRight')step(1)});
+$('dcopy').onclick=async()=>{const t=`pose #${shown[cur].n}`;try{await navigator.clipboard.writeText(t);$('dcopy').textContent='Copied!'}catch{$('dcopy').textContent=t}};
+$('q').addEventListener('input',render);
+document.querySelectorAll('#mode button').forEach(b=>{b.classList.toggle('on',b.dataset.m===mode);b.onclick=()=>{mode=b.dataset.m;try{localStorage.setItem('poseMode',mode)}catch{}document.querySelectorAll('#mode button').forEach(x=>x.classList.toggle('on',x===b));render()}});
+
+fetch('/api/poses').then(r=>r.json()).then(d=>{POSES=d.sort((a,b)=>a.n-b.n);renderCats();render()}).catch(e=>{$('grid').innerHTML='<div class="empty">Could not load poses: '+e+'</div>'});
+</script>
+</body>
+</html>
