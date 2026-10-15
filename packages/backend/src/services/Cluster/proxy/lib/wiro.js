@@ -76,11 +76,20 @@ export function createWiroRoutes(router, { loadSources, dataDir, bufferBody, emi
   }
   const budget = (s) => Number(s.dailyBudgetUsd ?? 25);
 
+  // Wiro leaves debugerror empty when its safety guard blocks a prompt; the reason is only in debugoutput
+  // (e.g. "[BLOCKED] Prompt contains child-related keyword: \"pupils\""). Surface it so callers can rephrase.
+  function failureText(t) {
+    if (!t.pexit || t.pexit === '0') return null;
+    const lines = String(t.debugoutput || '').split('\n').map((l) => l.trim()).filter(Boolean);
+    const hit = lines.filter((l) => /block|violation|policy|error|fail/i.test(l));
+    return (hit.length ? hit : lines.slice(-3)).join(' | ').slice(0, 500) || null;
+  }
+
   function summarize(t) {
     return {
       taskid: t.id, status: t.status, done: DONE.has(t.status),
       failed: DONE.has(t.status) && (t.status === 'task_cancel' || (t.pexit && t.pexit !== '0') || !!t.debugerror),
-      error: t.debugerror || null, totalcost: Number(t.totalcost || 0), elapsedseconds: Number(t.elapsedseconds || 0),
+      error: t.debugerror || failureText(t), totalcost: Number(t.totalcost || 0), elapsedseconds: Number(t.elapsedseconds || 0),
       outputs: (t.outputs || []).map((o) => ({ name: o.name, contenttype: o.contenttype, size: Number(o.size || 0), url: o.url })),
     };
   }
