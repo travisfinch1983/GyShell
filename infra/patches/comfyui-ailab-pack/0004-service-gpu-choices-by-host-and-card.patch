@@ -1,0 +1,215 @@
+--- a/remote_models.py
++++ b/remote_models.py
+@@ -81,7 +81,7 @@
+                       "resident": d.get("resident") or [], "available": d.get("available") or {},
+                       "warm": d.get("warm"), "persist": d.get("persist"), "persist_label": d.get("persist_label"), "ip": ip,
+                       "gpu_names": [g.get("name", "") for g in (svc.get("gpus") or [])],
+-                      "busy": any(r.get("busy") for r in d.get("resident") or []), "label": f"{svc.get('gpu', '?')} @ {svc.get('host', ip)}:{port}"}
++                      "busy": any(r.get("busy") for r in d.get("resident") or []), "label": f"{svc.get('gpu', '?')} @ {svc.get('host', ip)}"}
+     try:   # 1. the AI-Lab proxy catalog: {services:[{host(ip),port,gpu,node_hostname,uds,ok}], models:[{kind,name,loaded,busy,waiting,host,port}]}
+         j = _http_json(proxy + CATALOG_ROUTE)
+         rows = j.get("models") or []
+@@ -120,10 +120,29 @@
+                 v["gpu_names"] = v.get("gpu_names") or [g.get("name", "") for g in ((d.get("service") or {}).get("gpus") or [])]
+             except Exception:  # noqa: BLE001
+                 v["warm"], v["persist"] = {}, {}
++    per_host = {}
++    for v in found.values():
++        per_host[v["host"]] = per_host.get(v["host"], 0) + 1
++    for v in found.values():   # labels name the service by host; the port only tells two services on one host apart
++        if per_host[v["host"]] > 1:
++            v["label"] = f"{v['label']}:{v['port']}"
+     _cat.update(t=time.time(), key=proxy, services=list(found.values()))
+     return _cat["services"]
+ 
+ 
++def match_service(choice, svcs):
++    """A saved service choice -> the service now. Exact label first; then the same GPU @ host with any port (labels saved before
++    2026-10-16 carried the port - a relaunch on another port must not break workflows); then the host alone."""
++    c = str(choice or "").strip()
++    hit = next((s for s in svcs if s["label"] == c), None)
++    if hit or " @ " not in c:
++        return hit
++    gpu, _, hp = c.rpartition(" @ ")
++    host = hp.split(":")[0]
++    return next((s for s in svcs if s["host"] == host and s["label"].split(" @ ")[0] == gpu), None) or \
++        next((s for s in svcs if s["host"] == host), None)
++
++
+ def services(kind, proxy=None):
+     return [s for s in catalog(proxy) if not s["kinds"] or kind in s["kinds"]]
+ 
+@@ -218,29 +237,79 @@
+     return gl
+ 
+ 
+-GPU_RE = re.compile(r" · (\S+:\d+) GPUs? ([\d+]+)$")
++GPU_RE = re.compile(r" · (\S+:\d+) GPUs? ([\d+]+)$")      # labels saved before 2026-10-16: "... · host:port GPU 2"
++GPU_LABEL_RE = re.compile(r"^(.+) · ([A-Za-z0-9_.-]+)$")     # now: "RTX 5060 Ti #1 · ai-epyc" / "RTX 5060 Ti #0 + #1 · ai-epyc"
++UUID_TAG_RE = re.compile(r"\[([0-9a-f]{8})\]$")              # a card AI-Lab has no friendly name for: "RTX 4090 [20a04aa9]"
++
++
++def _gpu_name(g, names):
++    u = str(g.get("uuid") or "").lower().replace("gpu-", "")
++    return names.get(u) or f"{short_gpu(g.get('name', '?'))} [{u[:8]}]"
+ 
+ 
+ def gpu_choices(kind, pairs=False):
+-    """'auto' + every GPU of every service that serves `kind`, by its AI-Lab name ("RTX 5060 Ti #1 · ai-epyc:9312 GPU 2"); with
+-    pairs, also matched pairs of the same GPU type for cfg split ("RTX 5060 Ti #0 + #1 · ai-epyc:9312 GPUs 1+2")."""
++    """'auto' + every GPU of every service that serves `kind`, by AI-Lab's name for the CARD (looked up by UUID) and the host:
++    "RTX 5060 Ti #1 · ai-epyc"; with pairs, also matched pairs of the same GPU type for cfg split ("RTX 5060 Ti #0 + #1 · ai-epyc").
++    No port, no GPU index (Travis 2026-10-16): a service relaunched on another port or with cards added keeps every saved choice."""
+     out = ["auto"]
+     try:
+         names = friendly_names()
+         for s in services(kind):
+-            hp = f"{s['host']}:{s['port']}"
+             gl = [g for g in service_gpus(s) if g.get("name") != "cpu"]
+-            lab = {g["index"]: names.get(str(g.get("uuid") or "").lower().replace("gpu-", "")) or f"{short_gpu(g.get('name', '?'))} (GPU {g['index']})" for g in gl}
+-            out += [f"{lab[g['index']]} · {hp} GPU {g['index']}" for g in gl]
++            lab = {g["index"]: _gpu_name(g, names) for g in gl}
++            out += [f"{lab[g['index']]} · {s['host']}" for g in gl]
+             if pairs:
+                 for i, a in enumerate(gl):
+                     for b in gl[i + 1:]:
+                         if a.get("name") == b.get("name"):
+                             tail = lab[b["index"]].split(" ")[-1] if lab[b["index"]].startswith(lab[a["index"]].rsplit(" ", 1)[0]) else lab[b["index"]]
+-                            out.append(f"{lab[a['index']]} + {tail} · {hp} GPUs {a['index']}+{b['index']}")
++                            out.append(f"{lab[a['index']]} + {tail} · {s['host']}")
+     except Exception:  # noqa: BLE001
+         log.exception("gpu choices")
+-    return out
++    return list(dict.fromkeys(out))
++
++
++def is_gpu_choice(v):
++    v = str(v or "").strip()
++    return bool(v) and v != "auto" and (bool(GPU_RE.search(v)) or bool(GPU_LABEL_RE.match(v))) and not v.startswith(("unix:", "tcp://"))
++
++
++def _gpu_target(choice, proxy=None):
++    """A gpu choice (current or pre-2026-10-16 format) -> (service, [current GPU indices]) or None.
++    Cards are found by AI-Lab name -> UUID, so the label survives port changes, added cards and PCI slot moves."""
++    v = str(choice or "").strip()
++    old = GPU_RE.search(v)
++    if old:
++        names_part, host, port = v[:old.start()], old.group(1).rsplit(":", 1)[0], int(old.group(1).rsplit(":", 1)[1])
++        old_idx = [int(x) for x in old.group(2).split("+")]
++    else:
++        m = GPU_LABEL_RE.match(v)
++        if not m:
++            return None
++        names_part, host, port, old_idx = m.group(1), m.group(2), None, None
++    parts = [p.strip() for p in names_part.split(" + ")]
++    wanted = [parts[0]] + [(parts[0].rsplit(" ", 1)[0] + " " + p) if p.startswith("#") else p for p in parts[1:]]
++    inv = {n: u for u, n in friendly_names(proxy).items()}
++    for refresh in (False, True):
++        cands = [s for s in catalog(proxy, refresh=refresh) if s["host"] == host or s.get("ip") == host]
++        for s in cands:
++            gl = service_gpus(s)
++            idx = []
++            for w in wanted:
++                u = inv.get(w)
++                tag = UUID_TAG_RE.search(w)
++                g = next((g for g in gl if u and str(g.get("uuid") or "").lower().replace("gpu-", "") == u), None) or \
++                    next((g for g in gl if tag and str(g.get("uuid") or "").lower().replace("gpu-", "").startswith(tag.group(1))), None)
++                if g is None:
++                    break
++                idx.append(g["index"])
++            if len(idx) == len(wanted):
++                return s, idx
++        if old_idx is not None:   # an old label whose card has no AI-Lab name: same host:port + index, if that service still exists
++            s = next((s for s in cands if s["port"] == port), None)
++            if s:
++                return s, old_idx
++    return None
+ 
+ 
+ GPU_TIP = ("Run it on exactly these GPUs (AI-Lab's names): overrides service + lane. auto = the service picks. A pair = the two cards a "
+@@ -251,20 +320,18 @@
+     """-> (endpoint, lane). A specific gpu choice: that service, with the cards appended to the endpoint ("...#gpu:1,2") so every
+     call from this model asks for them; else the usual service / lane resolution."""
+     override = override or ""          # a workflow saved before the gpu input existed can load endpoint as null
+-    if GPU_RE.search(override.strip()):  # ...or a gpu choice made while the inputs were in the old order landed in endpoint
+-        gpu, override = (override.strip() if not GPU_RE.search(gpu or "") else gpu), ""
+-    m = GPU_RE.search(gpu or "")
+-    if not m:
++    if is_gpu_choice(override):        # ...or a gpu choice made while the inputs were in the old order landed in endpoint
++        gpu, override = (override.strip() if not is_gpu_choice(gpu) else gpu), ""
++    if not is_gpu_choice(gpu):
+         return resolve(kind, service, override, model, proxy, lane), lane
+-    hp, idx = m.group(1), m.group(2).replace("+", ",")
+-    glane = f"gpu:{idx}"
++    t = _gpu_target(gpu, proxy)
++    if t is None:
++        raise RuntimeError(f"the GPU chosen with the gpu input ({gpu}) isn't on any reachable model service - pick it again")
++    s, idx = t
++    glane = "gpu:" + ",".join(str(i) for i in idx)
+     if override.strip():
+         e = override.strip()
+         return (e if e.startswith(("unix:", "tcp://")) else "tcp://" + e) + "#" + glane, glane
+-    s = next((x for x in catalog(proxy) if f"{x['host']}:{x['port']}" == hp), None) or \
+-        next((x for x in catalog(proxy, refresh=True) if f"{x['host']}:{x['port']}" == hp), None)
+-    if s is None:
+-        raise RuntimeError(f"the model service {hp} (chosen with the gpu input) isn't reachable")
+     return (s["uds"] or s["endpoint"]) + "#" + glane, glane
+ 
+ 
+@@ -278,7 +345,7 @@
+         found = [s for s in catalog(proxy, refresh=True) if not s["kinds"] or kind in s["kinds"]]
+     if lane and lane != "auto":
+         found = [s for s in found if any(lane.lower() in n.lower() for n in s.get("gpu_names") or [])] or found
+-    pick = next((s for s in found if s["label"] == choice), None)
++    pick = match_service(choice, found)
+     if pick is None:
+         def score(s):
+             loaded = any(r.get("kind") == kind and r.get("name") == model for r in s["resident"])
+--- a/model_manager.py
++++ b/model_manager.py
+@@ -44,9 +44,9 @@
+     svcs = rm.catalog(proxy, refresh=True)
+     if not svcs:
+         raise RuntimeError("no AI-Lab model services found")
+-    for s in svcs:
+-        if s["label"] == target:
+-            return s
++    hit = rm.match_service(target, svcs)   # saved labels with an old port still find the service
++    if hit:
++        return hit
+     if kind == "lora":   # LoRAs are cached per host: prefer a local service
+         return next((s for s in svcs if s["local"]), svcs[0])
+     cands = [s for s in svcs if not s["kinds"] or kind in s["kinds"]]
+--- a/__init__.py
++++ b/__init__.py
+@@ -20,6 +20,30 @@
+ from .dress_nodes import NODE_CLASS_MAPPINGS as _dr, NODE_DISPLAY_NAME_MAPPINGS as _drd
+ 
+ NODE_CLASS_MAPPINGS = {**_p, **_b, **_l, **_f, **_r, **_m, **_x, **_pd2, **_dr}
++
++
++def _accept_saved_choices():
++    """Service / gpu / target dropdowns list what is running NOW, and ComfyUI refuses a saved value that is not in the list. Their
++    values are resolved at run time (by host + card UUID - see remote_models.match_service / _gpu_target), so let any value through:
++    a workflow saved before a model-service relaunch (new port, cards added) keeps running. (2026-10-16)"""
++    import inspect
++    for cls in (_r | _x | _m).values():
++        try:
++            req = cls.INPUT_TYPES()
++        except Exception:  # noqa: BLE001
++            continue
++        names = [n for sec in ("required", "optional") for n in (req.get(sec) or {}) if n in ("service", "gpu", "target")]
++        if not names or hasattr(cls, "VALIDATE_INPUTS"):
++            continue
++        params = [inspect.Parameter(n, inspect.Parameter.POSITIONAL_OR_KEYWORD, default=None) for n in names]
++
++        def _v(cls_, *a, **kw):
++            return True
++        _v.__signature__ = inspect.Signature([inspect.Parameter("cls_", inspect.Parameter.POSITIONAL_OR_KEYWORD)] + params)
++        cls.VALIDATE_INPUTS = classmethod(_v)
++
++
++_accept_saved_choices()
+ NODE_DISPLAY_NAME_MAPPINGS = {**_pd, **_bd, **_ld, **_fd, **_rd, **_md, **_xd, **_pd2d, **_drd}
+ WEB_DIRECTORY = "./web"
+ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

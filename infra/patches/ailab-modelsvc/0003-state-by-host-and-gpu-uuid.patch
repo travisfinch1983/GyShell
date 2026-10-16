@@ -1,0 +1,152 @@
+--- a/serve.py
++++ b/serve.py
+@@ -159,6 +159,54 @@
+ GPU_NAMES = [torch.cuda.get_device_name(d) if d.type == "cuda" else "cpu" for d in GPUS]
+ GPU_NAME = GPU_NAMES[0] if len(set(GPU_NAMES)) == 1 and len(GPUS) == 1 else " + ".join(f"{n}" for n in GPU_NAMES) if len(set(GPU_NAMES)) > 1 else f"{len(GPUS)}x {GPU_NAMES[0]}"
+ HOSTNAME = socket.gethostname()
++
++
++# ── GPUs by UUID (Travis 2026-10-16): saved state names cards by UUID, never by index or port, so a relaunch on another port,
++# with cards added/removed, or after a PCI slot move keeps placement rules, VRAM pins and the loaded-model list. State is keyed
++# by HOST (not host:port); entries carry the card's UUID and each service acts only on the cards it has.
++def _norm_uuid(u):
++    u = str(u or "").strip().lower()
++    return u[4:] if u.startswith("gpu-") else u
++
++
++GPU_UUIDS = [_norm_uuid(torch.cuda.get_device_properties(d).uuid) if d.type == "cuda" else None for d in GPUS]
++
++
++def gpu_uuid(i):
++    return GPU_UUIDS[i] if i is not None and 0 <= int(i) < len(GPU_UUIDS) else None
++
++
++def gpu_index(u):
++    u = _norm_uuid(u)
++    return GPU_UUIDS.index(u) if u and u in GPU_UUIDS else None
++
++
++def _state_host(section):
++    """This host's entry of a *_v2 state section (placement_v2 / resident_v2 / vram_pins_v2)."""
++    return (saved_state().get(section) or {}).get(HOSTNAME)
++
++
++def migrate_state():
++    """Once per host: turn the old host:port + GPU-index entries of THIS launch into host + UUID entries."""
++    from modelsvc.tiers import _state_update
++    legacy = f"{HOSTNAME}:{A.port}"
++
++    def go(st):
++        if HOSTNAME not in (st.get("placement_v2") or {}):
++            old = (st.get("placement") or {}).get(legacy) or {}
++            st.setdefault("placement_v2", {})[HOSTNAME] = {k: [u for u in (gpu_uuid(g) for g in v) if u] for k, v in old.items() if v}
++        for sec, src in (("resident_v2", "resident"), ("vram_pins_v2", "vram_pins")):
++            if HOSTNAME not in (st.get(sec) or {}):
++                old = (st.get(src) or {}).get(legacy) or []
++                st.setdefault(sec, {})[HOSTNAME] = [[it[0], it[1], it[2], gpu_uuid(it[3]) if len(it) > 3 and it[3] is not None else None]
++                                                   for it in old if isinstance(it, list) and len(it) >= 3]
++    _state_update(go)
++
++
++def _merge_mine(entries, mine):
++    """Replace this service's entries (cards it has, or no card) in a host list; other services' cards are kept."""
++    have = set(u for u in GPU_UUIDS if u)
++    return [e for e in (entries or []) if e[3] and e[3] not in have] + mine
+ RUN_DIR = "/dev/shm/ailab-modelsvc"
+ os.makedirs(RUN_DIR, exist_ok=True)
+ NAME = f"svc-{A.port}" if not A.kind else f"{A.kind}-{A.port}"
+@@ -690,8 +738,9 @@
+     """{kind: [gpu indices]} for this service (saved on disk, survives restarts). A GPU named in any rule is reserved for
+     the kinds that name it when placing automatically, e.g. {"detector": [3], "sam": [3]} keeps detectors on GPU 3 and
+     diffusion / text-encoder / VAE models off it. An explicit gpu in a request always wins."""
+-    rules = (saved_state().get("placement") or {}).get(f"{HOSTNAME}:{A.port}") or {}
+-    return {k: [int(g) for g in v if 0 <= int(g) < len(GPUS)] for k, v in rules.items() if v}
++    rules = _state_host("placement_v2") or {}   # {kind: [GPU UUID]} - only this service's cards count
++    out = {k: [i for i in (gpu_index(u) for u in v) if i is not None] for k, v in rules.items() if v}
++    return {k: v for k, v in out.items() if v}
+ 
+ 
+ def gpu_cc(g):
+@@ -1028,23 +1077,19 @@
+ PINS_LOCK = threading.Lock()
+ 
+ 
+-def _pins_slot():
+-    return f"{HOSTNAME}:{A.port}"
+-
+-
+ def pins_load():
+     with PINS_LOCK:
+         PINS.clear()
+-        for k in (saved_state().get("vram_pins") or {}).get(_pins_slot()) or []:
+-            if isinstance(k, list) and len(k) == 4:
+-                PINS.add((k[0], k[1], k[2], int(k[3])))
++        for k in _state_host("vram_pins_v2") or []:   # [kind, name, extra, GPU UUID]
++            if isinstance(k, list) and len(k) == 4 and gpu_index(k[3]) is not None:
++                PINS.add((k[0], k[1], k[2], gpu_index(k[3])))
+ 
+ 
+ def pins_save():
+     from modelsvc.tiers import _state_update
+     with PINS_LOCK:
+-        keys = [list(k) for k in sorted(PINS, key=str)]
+-    _state_update(lambda st: st.setdefault("vram_pins", {}).__setitem__(_pins_slot(), keys))
++        mine = [[k[0], k[1], k[2], gpu_uuid(k[3])] for k in sorted(PINS, key=str)]
++    _state_update(lambda st: st.setdefault("vram_pins_v2", {}).__setitem__(HOSTNAME, _merge_mine(st["vram_pins_v2"].get(HOSTNAME), mine)))
+ 
+ 
+ def pinned_ids():
+@@ -1693,16 +1738,27 @@
+     kind, name = body.get("kind"), body.get("name")
+     if path == "/placement":   # {rules: {kind: [gpu]}} - replaces this service's rules ({} clears)
+         from modelsvc.tiers import _state_update
+-        rules = {k: [int(g) for g in v] for k, v in (body.get("rules") or {}).items() if k in FOLDERS and v}
+-        _state_update(lambda st: st.setdefault("placement", {}).__setitem__(f"{HOSTNAME}:{A.port}", rules))
++        # indices in the request are THIS launch's; stored as UUIDs. Replaces this service's cards only (others' rules kept).
++        rules = {k: [gpu_uuid(int(g)) for g in v if gpu_uuid(int(g))] for k, v in (body.get("rules") or {}).items() if k in FOLDERS and v}
++        have = set(u for u in GPU_UUIDS if u)
++
++        def put(st):
++            cur = st.setdefault("placement_v2", {}).get(HOSTNAME) or {}
++            out = {k: [u for u in v if u not in have] for k, v in cur.items()}
++            for k, v in rules.items():
++                out[k] = out.get(k, []) + v
++            st["placement_v2"][HOSTNAME] = {k: v for k, v in out.items() if v}
++        _state_update(put)
+         return {"ok": True, "rules": placement_rules()}
+     if path == "/cache/restore":
+         def run():
+             r = restore_ram(lambda k, n: full_path(n, FOLDERS[k]))
+             if body.get("models", True):   # then reload what this service had loaded before the reboot
+-                for item in saved_state().get("resident", {}).get(f"{HOSTNAME}:{A.port}", []):
++                for item in _state_host("resident_v2") or []:   # [kind, name, extra, GPU UUID]
+                     kind, name, extra = item[:3]
+-                    gpu = item[3] if len(item) > 3 and item[3] is not None and item[3] < len(GPUS) else None
++                    gpu = gpu_index(item[3]) if len(item) > 3 and item[3] else None
++                    if len(item) > 3 and item[3] and gpu is None:
++                        continue   # another service's card
+                     if kind in KINDS:
+                         try:
+                             resident(kind, name, extra, gpu)
+@@ -2041,7 +2097,12 @@
+                        "models": [[r.kind, r.name] for r in list(MODELS.values())]}, f)
+         os.replace(tmp, f"{RUN_DIR}/{NAME}.json")
+     if snapshot:   # NOT at startup: the empty fresh service must not overwrite what /cache/restore should bring back
+-        snapshot_resident(f"{HOSTNAME}:{A.port}", [[r.kind, r.name, r.extra, r.gpu] for r in list(MODELS.values())])
++        from modelsvc.tiers import _state_update
++        mine = [[r.kind, r.name, r.extra, gpu_uuid(r.gpu)] for r in list(MODELS.values())]
++        try:
++            _state_update(lambda st: st.setdefault("resident_v2", {}).__setitem__(HOSTNAME, _merge_mine(st["resident_v2"].get(HOSTNAME), mine)))
++        except Exception as e:  # noqa: BLE001
++            log("state snapshot failed:", e)
+ 
+ 
+ def cleanup():
+@@ -2068,6 +2129,7 @@
+         os._exit(0)
+     signal.signal(signal.SIGTERM, _stop)
+     _load_gguf()
++    migrate_state()
+     load_plugins()
+     _wrap_free_memory()
+     _gate_mm()
