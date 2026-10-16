@@ -6,11 +6,33 @@
     "aud": "85afa0655e1291298cabc2988116a82ac767694c1ed4e0914e69256f827c296a"
   },
   "people": [
-    {"id": "travis", "name": "Travis", "matrix_user": "@travis:deeveeyant.com", "agents": ["cinder"], "admin": true},
-    {"id": "kyla", "name": "Kyla", "matrix_user": "@kyla:deeveeyant.com", "agents": ["kyla-studio"], "restricted": true}
+    {
+      "id": "travis",
+      "name": "Travis",
+      "matrix_user": "@travis:deeveeyant.com",
+      "agents": [
+        "cinder"
+      ],
+      "admin": true
+    },
+    {
+      "id": "kyla",
+      "name": "Kyla",
+      "matrix_user": "@kyla:deeveeyant.com",
+      "agents": [
+        "kyla-studio"
+      ],
+      "restricted": true
+    }
   ],
   "agents": {
-    "cinder": {"label": "Cinder", "room": "!b48iTqY_vnWDV_YED_Ixc9swUHDyP4-gf3evje6qfPQ"},
-    "kyla-studio": {"label": "Kyla's studio agent", "room": "!UNCZSskbqeIt6tFEhksi-VLPEYR3cVr9J4q_yBNBZIw"}
+    "cinder": {
+      "label": "Cinder",
+      "room": "!b48iTqY_vnWDV_YED_Ixc9swUHDyP4-gf3evje6qfPQ"
+    },
+    "kyla-studio": {
+      "label": "Freya",
+      "room": "!UNCZSskbqeIt6tFEhksi-VLPEYR3cVr9J4q_yBNBZIw"
+    }
   }
 }
