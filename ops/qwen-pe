@@ -21,6 +21,21 @@ import argparse, base64, io, json, re, sys, time, urllib.request
 
 API = "http://10.0.0.219:17890/api/proxy/llm/v1/chat/completions"
 MODELS_URL = "http://10.0.0.219:17890/api/proxy/llm/v1/models"
+# The PE checkpoints ship their rewriter instructions next to the weights. WITHOUT them the Heretic
+# builds ramble: T2I answers in chatty markdown, and I2I thinks out loud past 1,500 tokens. WITH them
+# both return one JSON object {"rewritten_prompt", "wh_ratio"[, "ratio_follow"]} and stop
+# (measured 2026-10-16: T2I 11.7 s / 687 tok, I2I 8.2 s / 362 tok on a V100).
+SYSTEM_PROMPTS = {"t2i": "/models/Qwen-Image-2.1-PE/T2I-Heretic/GGUF/system_prompt.txt",
+                  "i2i": "/models/Qwen-Image-2.1-PE/I2I-Heretic/GGUF/system_prompt.txt"}
+
+
+def system_prompt(model_id, want_img):
+    kind = "t2i" if "t2i" in model_id.lower() else "i2i" if "i2i" in model_id.lower() else ("i2i" if want_img else "t2i")
+    try:
+        return open(SYSTEM_PROMPTS[kind]).read()
+    except OSError as e:
+        print(f"warning: no system prompt for {model_id} ({e}); output may not be JSON", file=sys.stderr)
+        return ""
 DEFAULT_MODEL = "qwen-image-2.1-pe-i2i"
 
 
@@ -126,11 +141,14 @@ def img_url(path, max_side=1024):
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-def call(content, seed, model, timeout=240, budget=3000):
-    body = {"model": model, "messages": [{"role": "user", "content": content}], "stream": True, "max_tokens": 8000,
+def call(content, seed, model, sysp="", timeout=240, budget=3000):
+    msgs = ([{"role": "system", "content": sysp}] if sysp else []) + [{"role": "user", "content": content}]
+    body = {"model": model, "messages": msgs, "stream": True, "max_tokens": 8000,
             "temperature": 0.6, "top_p": 0.95, "top_k": 20, "presence_penalty": 1.5, "repeat_penalty": 1.08,
             "seed": seed % (2 ** 31)}
-    req = urllib.request.Request(API, json.dumps(body).encode(), {"Content-Type": "application/json"})
+    # No-fallback: if the PE is down or still loading, fail (503) rather than let the proxy answer
+    # from its external backup model, which would also ship the user's images off the lab.
+    req = urllib.request.Request(API, json.dumps(body).encode(), {"Content-Type": "application/json", "X-AILab-No-Fallback": "1"})
     raw, seen, n, t0 = "", "", 0, time.time()
     with urllib.request.urlopen(req, timeout=timeout) as r:
         for line in r:
@@ -181,15 +199,15 @@ def main():
     err = None
     for attempt in range(2):
         try:
-            x, o = call(content, a.seed + attempt * 7, model)
+            x, o = call(content, a.seed + attempt * 7, model, system_prompt(model, bool(a.image)))
             if x:
                 if a.json:
                     print(json.dumps(o if o is not None else {"text": x}, ensure_ascii=False, indent=1))
                 else:
                     print(x)
-                    for k in ("aspect_ratio", "style"):
-                        if isinstance(o, dict) and isinstance(o.get(k), str):
-                            print(f"{k}: {o[k]}")
+                    for k, label in (("wh_ratio", "aspect_ratio"), ("aspect_ratio", "aspect_ratio"), ("ratio_follow", "ratio_follow"), ("style", "style")):
+                        if isinstance(o, dict) and isinstance(o.get(k), str) and o[k].strip():
+                            print(f"{label}: {o[k]}")
                 return
             err = "the prompt enhancer returned no usable prompt"
         except Exception as e:  # noqa: BLE001
