@@ -40,6 +40,7 @@ const cfg = defineConfig({
       '/gateway': {
         target: 'http://127.0.0.1:17888',
         changeOrigin: true,
+        xfwd: true,   // pass the client address on (backend trusted-source checks)
         ws: true,
         rewrite: (path) => path.replace(/^\/gateway/, '') || '/',
       },
@@ -50,6 +51,7 @@ const cfg = defineConfig({
       '/api': {
         target: 'http://127.0.0.1:17890',
         changeOrigin: true,
+        xfwd: true,   // pass the client address on (backend trusted-source checks)
         ws: true,
         // TTS/RVC synth holds the connection many seconds before the (buffered) audio arrives. Disable the
         // dev-proxy's timeouts and keep the upstream socket alive so slow binary responses aren't reset
@@ -67,6 +69,7 @@ const cfg = defineConfig({
       '/proxlab-api': {
         target: 'http://127.0.0.1:17890',
         changeOrigin: true,
+        xfwd: true,   // pass the client address on (backend trusted-source checks)
         rewrite: (path) => path.replace(/^\/proxlab-api/, '/api/proxy'),
         ws: true, // Support WebSocket for streaming
       },
@@ -80,6 +83,7 @@ const cfg = defineConfig({
       '/grafana': {
         target: process.env.GRAFANA_URL || 'http://10.0.0.105:3000',
         changeOrigin: true,
+        xfwd: true,   // pass the client address on (backend trusted-source checks)
         headers: process.env.GRAFANA_SA_TOKEN
           ? { Authorization: `Bearer ${process.env.GRAFANA_SA_TOKEN}` }
           : {},
@@ -91,6 +95,7 @@ const cfg = defineConfig({
       '/dash': {
         target: 'http://127.0.0.1:8081',
         changeOrigin: true,
+        xfwd: true,   // pass the client address on (backend trusted-source checks)
         ws: true,
         rewrite: (path) => path.replace(/^\/dash/, '') || '/',
       },
@@ -101,6 +106,7 @@ const cfg = defineConfig({
       '/addons/upscaler': {
         target: process.env.ADDON_UPSCALER_URL || 'http://127.0.0.1:8090',
         changeOrigin: true,
+        xfwd: true,   // pass the client address on (backend trusted-source checks)
         ws: true,
         rewrite: (path) => path.replace(/^\/addons\/upscaler/, '') || '/',
       },
@@ -108,6 +114,7 @@ const cfg = defineConfig({
       '/addons/rule34': {
         target: process.env.ADDON_RULE34_URL || 'http://127.0.0.1:8091',
         changeOrigin: true,
+        xfwd: true,   // pass the client address on (backend trusted-source checks)
         ws: true,
         rewrite: (path) => path.replace(/^\/addons\/rule34/, '') || '/',
       },
@@ -115,6 +122,7 @@ const cfg = defineConfig({
       '/addons/social': {
         target: process.env.ADDON_SOCIAL_URL || 'http://127.0.0.1:8097',
         changeOrigin: true,
+        xfwd: true,   // pass the client address on (backend trusted-source checks)
         ws: true,
         rewrite: (path) => path.replace(/^\/addons\/social/, '') || '/',
       },
@@ -126,6 +134,7 @@ const cfg = defineConfig({
       '/addons': {
         target: 'http://127.0.0.1:17890',
         changeOrigin: true,
+        xfwd: true,   // pass the client address on (backend trusted-source checks)
         ws: true,
         timeout: 0,
         proxyTimeout: 0,
@@ -136,6 +145,7 @@ const cfg = defineConfig({
       '/files': {
         target: 'http://127.0.0.1:8082',
         changeOrigin: true,
+        xfwd: true,   // pass the client address on (backend trusted-source checks)
         ws: true,
       },
     },

@@ -8,6 +8,7 @@ import { hermesAgentSpecSchema, providerServiceSchema } from '@gyshell/shared'
 // @ts-expect-error — proxy capability resolver ships as untyped JS (same pattern as the other proxy/*.js imports)
 import { resolveModelCapabilities } from '../Cluster/proxy/model-capabilities.js'
 import type { HermesService } from './HermesService'
+import { requireTrustedSource } from './trustedSources.js'
 import type { AcpEvent } from './HermesAcpBridge'
 import { getGatewayStats, resetGatewayStats } from '../Gateway/gatewayStats'
 
@@ -331,7 +332,7 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
   })
 
   // Fire one turn and return the assembled reply (also streams to any /stream observers).
-  router.post('/api/hermes/agents/:id/prompt', json, async (req: Req, res: Res) => {
+  router.post('/api/hermes/agents/:id/prompt', requireTrustedSource('Agent prompt injection'), json, async (req: Req, res: Res) => {
     const body = (req.body ?? {}) as { text?: unknown; context?: unknown; screenshot?: unknown; images?: unknown; conversationId?: unknown; wait?: unknown }
     const text = String(body.text ?? '')
     if (!text.trim()) return res.status(400).json({ error: 'text required' })
