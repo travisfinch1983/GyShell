@@ -329,6 +329,21 @@ def set_images(base: Path):
     return [p for _, p in sorted(found)]
 
 
+def _squash(s):
+    return re.sub(r"[^a-z0-9]+", "", s.lower())
+
+
+def custom_label(stem, ver):
+    """The name Travis gave a download, or None when the file still carries Civitai's own name.
+    Renamed = the stem differs from every original filename in the .civit.info (ignoring case,
+    spaces and punctuation, which the downloader rewrites). Shown with underscores as spaces and
+    the trailing -<versionId> the downloader appends dropped; repo names are often unreadable."""
+    orig = {_squash(Path(f["name"]).stem) for f in (ver.get("files") or []) if f.get("name")}
+    if not orig or _squash(stem) in orig:
+        return None
+    return re.sub(r"-\d{5,}$", "", stem).replace("_", " ").strip() or None
+
+
 def finetunes(m):
     """One entry per downloaded finetune of a family. A Civitai download leaves <base>.civit.info
     beside its weights; every weights file whose stem is <base> or <base><sep>… (precision variants:
@@ -362,9 +377,11 @@ def finetunes(m):
                     model_id = full.get("id") or civ.get("modelId")
                     version_id = ver.get("id") or civ.get("id")
                     rel_dir = str(dp.relative_to(root))
+                    repo = full.get("name") or (civ.get("model") or {}).get("name") or side.get("model_name")
                     out.append({
                         "id": hashlib.sha1(str(bp).encode()).hexdigest()[:12],
-                        "name": full.get("name") or (civ.get("model") or {}).get("name") or side.get("model_name") or base.replace("_", " "),
+                        "name": custom_label(base, ver) or repo or base.replace("_", " "),
+                        "repo_name": repo or "",
                         "version": ver.get("name") or civ.get("name") or "",
                         "folder": "" if rel_dir == "." else rel_dir,
                         "images": imgs,
@@ -387,7 +404,7 @@ def finetunes(m):
 
 
 def ft_public(f, full=False):
-    d = {k: f[k] for k in ("id", "name", "version", "folder", "base_model", "nsfw")}
+    d = {k: f[k] for k in ("id", "name", "repo_name", "version", "folder", "base_model", "nsfw")}
     d.update(cover=img_url(f["images"][0]) if f["images"] else None, image_count=len(f["images"]), file_count=len(f["files"]))
     if full:
         d.update(images=[img_url(p) for p in f["images"]], files=f["files"], description=f["description"],
@@ -509,8 +526,10 @@ def lora_meta(w: Path):
     model_id = full.get("id") or civ.get("modelId")
     version_id = ver.get("id") or civ.get("id")
     words = ver.get("trainedWords") or civ.get("trainedWords") or side.get("trainedWords") or []
+    repo = full.get("name") or (civ.get("model") or {}).get("name") or side.get("model_name")
     return {
-        "name": full.get("name") or (civ.get("model") or {}).get("name") or side.get("model_name") or w.stem,
+        "name": custom_label(w.stem, ver) or repo or w.stem,
+        "repo_name": repo or "",
         "version": ver.get("name") or civ.get("name") or "",
         "layer": (LAYER_LABEL.get(layer) or layer.title()) if layer else "Other",
         "tags": tags[:20],
@@ -552,7 +571,7 @@ def lora_index(m):
 def api_loras(model: str, req: Request):
     person = who(req)
     al = allowed(person)
-    keep = ("id", "path", "file", "cover", "name", "version", "layer", "trained_words", "nsfw")
+    keep = ("id", "path", "file", "cover", "name", "repo_name", "version", "layer", "trained_words", "nsfw")
     return [{k: x.get(k) for k in keep} for x in lora_index(visible_model(person, model)) if can_see(al, "lora", model, x["id"])]
 
 

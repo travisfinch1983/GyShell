@@ -360,7 +360,7 @@ function ftToggle(f){
 function listedFts(){
   const m=curModel();if(!m)return [];const q=$('qFt').value.trim().toLowerCase();
   const base=(MANAGE||m.base_visible)&&(!q||'base model official'.includes(q))?[BASE]:[];
-  return base.concat(FTS.filter(f=>!q||(f.name+' '+f.version+' '+f.folder).toLowerCase().includes(q)));
+  return base.concat(FTS.filter(f=>!q||(f.name+' '+(f.repo_name||'')+' '+f.version+' '+f.folder).toLowerCase().includes(q)));
 }
 function renderFinetunes(){
   const g=$('gFt');g.innerHTML='';const m=curModel();if(!m)return;
@@ -387,6 +387,7 @@ async function openFinetune(f){
     const d=await api(`/api/models/${curId()}/finetunes/${f.id}`);
     $('ovB').innerHTML=gallery(d.images)+`
       <div class="kv">${d.version?`<b style="display:inline;text-transform:none;letter-spacing:0">${esc(d.version)}</b>`:''} ${d.base_model?`<span class="muted small">· ${esc(d.base_model)}</span>`:''} ${d.creator?`<span class="muted small">· by ${esc(d.creator)}</span>`:''}</div>
+      ${d.repo_name&&d.repo_name!==d.name?`<div class="kv"><b>Civitai name</b><div class="desc">${esc(d.repo_name)}</div></div>`:''}
       ${d.civitai_url?`<div class="kv"><a class="btn sm" href="${esc(d.civitai_url)}" target="_blank" rel="noopener">Open on Civitai ↗</a></div>`:''}
       ${d.description?`<div class="kv"><b>Description</b><div class="desc">${esc(d.description)}</div></div>`:''}
       ${d.version_description?`<div class="kv"><b>This version</b><div class="desc">${esc(d.version_description)}</div></div>`:''}
@@ -441,7 +442,7 @@ function renderLoras(){
 }
 function listedLoras(){
   const q=$('qLora').value.trim().toLowerCase();
-  return LORAS.filter(l=>(loraSelOnly?loraOn(l):(loraLayer==='all'||l.layer===loraLayer))&&(!q||(l.name+' '+(l.version||'')+' '+(l.trained_words||[]).join(' ')+' '+l.file).toLowerCase().includes(q)));
+  return LORAS.filter(l=>(loraSelOnly?loraOn(l):(loraLayer==='all'||l.layer===loraLayer))&&(!q||(l.name+' '+(l.repo_name||'')+' '+(l.version||'')+' '+(l.trained_words||[]).join(' ')+' '+l.file).toLowerCase().includes(q)));
 }
 const loraOn=l=>MANAGE?shown('lora',l.id):S.loras.includes(l.id);
 $('loraAllOn').onclick=()=>setShown(listedLoras().map(l=>['lora',l.id,true]));
@@ -458,6 +459,7 @@ async function openLora(l){
     $('ovB').innerHTML=gallery(d.images)+`
       <div class="kv"><span class="badge layer" style="position:static;display:inline-block">${esc(d.layer)}</span> ${d.version?`<span class="muted small">${esc(d.version)}</span>`:''} ${d.base_model?`<span class="muted small">· ${esc(d.base_model)}</span>`:''} ${d.creator?`<span class="muted small">· by ${esc(d.creator)}</span>`:''}</div>
       ${d.civitai_url?`<div class="kv"><a class="btn sm" href="${esc(d.civitai_url)}" target="_blank" rel="noopener">Open on Civitai ↗</a></div>`:''}
+      ${d.repo_name&&d.repo_name!==d.name?`<div class="kv"><b>Civitai name</b><div class="desc">${esc(d.repo_name)}</div></div>`:''}
       ${d.trained_words&&d.trained_words.length?`<div class="kv"><b>Trigger words</b><div class="words">${d.trained_words.map(w=>`<code>${esc(w)}</code>`).join('')}</div></div>`:''}
       ${d.description?`<div class="kv"><b>Description</b><div class="desc">${esc(d.description)}</div></div>`:''}
       ${d.version_description?`<div class="kv"><b>This version</b><div class="desc">${esc(d.version_description)}</div></div>`:''}
