@@ -72,7 +72,15 @@ export const TagsView: React.FC = () => {
           <tbody>
             {tags.map((t: any) => (
               <tr key={t.id} style={{ opacity: t.enabled ? 1 : 0.5 }}>
-                <td className={styles.mono}>{t.tag_query}</td>
+                <td className={styles.mono}>
+                  {t.tag_query}
+                  {t.tag_query.trim().split(/\s+/).length > 2 && (
+                    <div className={styles.dim} style={{ fontSize: 11, fontFamily: 'inherit' }}
+                      title="Danbooru free accounts can search at most 2 tags, so this tag's danbooru scrape uses only the first two as listed. rule34 and gelbooru use the full query.">
+                      ⓘ Danbooru: first 2 tags only ({t.tag_query.trim().split(/\s+/).slice(0, 2).join(' ')})
+                    </div>
+                  )}
+                </td>
                 <td>{t.total_found.toLocaleString()}</td>
                 <td>{t.total_downloaded.toLocaleString()}</td>
                 <td className={styles.dim}>{t.last_scraped_at ? new Date(t.last_scraped_at).toLocaleString() : '—'}</td>

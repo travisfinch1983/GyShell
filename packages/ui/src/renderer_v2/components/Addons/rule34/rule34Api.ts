@@ -39,9 +39,9 @@ export const fullUrl = (postId: number) => `${BASE}/media/full/${postId}`
 export const rule34Api = {
   // ── view data ──────────────────────────────────────────────────────────────
   dashboard: () => getJson<any>('/?format=json'),
-  browser: (p: { tags?: string; page?: number; per_page?: number; sort?: string; rating?: string }) =>
+  browser: (p: { tags?: string; page?: number; per_page?: number; sort?: string; rating?: string; sites?: string }) =>
     getJson<any>(
-      `/browser?format=json&tags=${p.tags ?? ''}&page=${p.page ?? 1}&per_page=${p.per_page ?? 40}&sort=${p.sort ?? 'newest'}&rating=${p.rating ?? ''}`,
+      `/browser?format=json&tags=${p.tags ?? ''}&page=${p.page ?? 1}&per_page=${p.per_page ?? 40}&sort=${p.sort ?? 'newest'}&rating=${p.rating ?? ''}&sites=${p.sites ?? ''}`,
     ),
   post: (id: number) => getJson<any>(`/browser/post/${id}?format=json`),
   tags: () => getJson<any>('/tags?format=json'),

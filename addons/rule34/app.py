@@ -44,8 +44,14 @@ from db import (
     add_api_key,
     remove_api_key,
     set_api_key_enabled,
+    get_sources_for_md5s,
 )
+from sites import SITES, site_status, danbooru_translate
 from worker import worker
+
+# Settings whose values are SECRETS: never returned by the settings view, and
+# an empty submit never overwrites a stored value (the form round-trips).
+SECRET_SETTINGS = {"danbooru_api_key", "gelbooru_api_key"}
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -87,8 +93,10 @@ async def browser(
     sort: str = Query(default="newest"),
     rating: str = Query(default=None),
     downloaded_only: bool = Query(default=False),
+    sites: str = Query(default=None),
     format: str = Query(default=None),
 ):
+    site_list = [x.strip() for x in (sites or "").split(",") if x.strip() in SITES] or None
     posts, total = await browse_posts(
         tags=tags,
         page=page,
@@ -96,7 +104,15 @@ async def browser(
         sort=sort,
         rating=rating,
         downloaded_only=downloaded_only,
+        sites=site_list,
     )
+    # Badges: every site each image exists on (by md5), regardless of filter —
+    # a deduped card shows ALL its sources; the filter only decides visibility.
+    src_map = await get_sources_for_md5s([p.get("md5") for p in posts if p.get("md5")])
+    for p in posts:
+        p["sources"] = src_map.get(p.get("md5")) or [
+            {"site": p.get("site", "rule34"), "site_post_id": p.get("site_post_id"),
+             "post_id": p["id"], "downloaded": p.get("downloaded")}]
     # Sidebar tags = watched tags (always visible) + tags on THIS page's posts
     # (mirrors rule34.xxx). Each carries its global post_count for display.
     watched_names = await get_watched_tag_names()
@@ -122,6 +138,12 @@ async def browser(
         "total_pages": (total + per_page - 1) // per_page if per_page else 0,
         "sidebar_tags": sidebar_tags,
     }
+    # Danbooru's 2-tag search limit (free accounts): the scraper uses the first
+    # two tags as listed (Travis's rule) — tell the UI when that applies.
+    if tags:
+        _dt, _used, _trunc = danbooru_translate(tags)
+        if _trunc:
+            data["danbooru_tags_used"] = _used
     if format == "json":
         return JSONResponse(data)
     return JSONResponse(data)
@@ -132,6 +154,9 @@ async def post_detail(post_id: int, format: str = Query(default=None)):
     post = await get_post(post_id)
     if not post:
         return JSONResponse({"error": "Post not found"}, status_code=404)
+    if post.get("md5"):
+        src = await get_sources_for_md5s([post["md5"]])
+        post["sources"] = src.get(post["md5"]) or []
     # Viewing a post bumps its still-untyped tags to the front of the typing
     # queue so artist/character labels fill in within seconds.
     untyped = post.get("untyped_tags")
@@ -161,6 +186,10 @@ async def tag_search(q: str = Query(default=""), limit: int = Query(default=20))
 async def settings_view(format: str = Query(default=None)):
     settings = await get_all_settings()
     settings.pop("api_key", None)  # pool is the source of truth for credentials
+    # Secrets never leave the backend; the UI gets a set/unset flag instead.
+    for k in SECRET_SETTINGS:
+        settings[f"{k}_set"] = "1" if (settings.pop(k, "") or "").strip() else "0"
+    settings["site_status"] = site_status
     keys = await list_api_keys()
     enabled = [k for k in keys if k["enabled"]]
     per_key = int(settings.get("rate_limit_requests", "60") or "60")
@@ -433,6 +462,15 @@ async def api_add_to_training_set(request: Request):
 async def api_update_settings(request: Request):
     form = await request.form()
     updates = dict(form)
+    # An empty secret field means "keep what is stored", never "erase" — the
+    # settings form round-trips and the view can't echo the secret back.
+    for k in SECRET_SETTINGS:
+        if k in updates and not str(updates[k]).strip():
+            updates.pop(k)
+    updates.pop("site_status", None)
+    for k in list(updates):
+        if k.endswith("_set"):
+            updates.pop(k)
     if updates:
         await update_settings(updates)
     return JSONResponse({"ok": True})

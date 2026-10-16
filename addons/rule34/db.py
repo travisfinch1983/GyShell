@@ -162,6 +162,49 @@ async def init_db():
             await db.execute("ALTER TABLE posts ADD COLUMN download_attempts INTEGER DEFAULT 0")
         if "next_retry_at" not in pcols:
             await db.execute("ALTER TABLE posts ADD COLUMN next_retry_at INTEGER DEFAULT 0")
+        # ── multi-site migration (2026-10-16) ─────────────────────────────────
+        # posts.id becomes an INTERNAL id. Pre-migration rows ARE rule34 posts
+        # whose internal id equals the site post id, so site_post_id is
+        # backfilled from id; new rows (any site, rule34 included) take fresh
+        # rowids above MAX(id) and carry their site id in site_post_id — the
+        # two id spaces can never collide because explicit ids are never
+        # inserted again. (site, site_post_id) is the natural key.
+        if "site" not in pcols:
+            await db.execute("ALTER TABLE posts ADD COLUMN site TEXT NOT NULL DEFAULT 'rule34'")
+        if "site_post_id" not in pcols:
+            await db.execute("ALTER TABLE posts ADD COLUMN site_post_id INTEGER")
+            await db.execute("UPDATE posts SET site_post_id = id WHERE site_post_id IS NULL")
+        if "md5" not in pcols:
+            # Existing rows have no md5 (the dapi 'hash' was never stored);
+            # upsert backfills it the next time a scrape sees the post. NULL
+            # md5 = "identity unknown", which dedups as itself only.
+            await db.execute("ALTER TABLE posts ADD COLUMN md5 TEXT")
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_posts_site_sid ON posts(site, site_post_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_posts_md5 ON posts(md5)")
+        # One downloaded FILE per md5, whichever site supplied it first. posts
+        # reference it by md5; a cross-posted image downloads once.
+        await db.execute("""CREATE TABLE IF NOT EXISTS media_files (
+            md5 TEXT PRIMARY KEY,
+            local_path TEXT NOT NULL,
+            file_size INTEGER,
+            first_site TEXT,
+            downloaded_at TEXT
+        )""")
+        # Per-(watched tag, site) scrape cursor — each site has its own id
+        # space, so one last_post_id cannot serve three sites. The legacy
+        # watched_tags.last_post_id seeds the rule34 cursor and keeps being
+        # written for it (older UI fields read it).
+        await db.execute("""CREATE TABLE IF NOT EXISTS watched_tag_cursors (
+            watched_tag_id INTEGER NOT NULL REFERENCES watched_tags(id) ON DELETE CASCADE,
+            site TEXT NOT NULL,
+            last_post_id INTEGER DEFAULT 0,
+            last_scraped_at TEXT,
+            PRIMARY KEY (watched_tag_id, site)
+        )""")
+        await db.execute(
+            "INSERT OR IGNORE INTO watched_tag_cursors (watched_tag_id, site, last_post_id, last_scraped_at) "
+            "SELECT id, 'rule34', last_post_id, last_scraped_at FROM watched_tags")
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_tags_untyped ON tags(type_fetched, post_count)"
         )
@@ -308,17 +351,36 @@ async def set_api_key_enabled(key_id: int, enabled: bool):
 
 
 @retry_on_locked
-async def upsert_post(post: dict) -> bool:
-    """Insert or ignore a post. Returns True if newly inserted."""
+async def upsert_post(post: dict) -> tuple[int, bool]:
+    """Insert a post keyed on (site, site_post_id); returns (internal_id, inserted).
+
+    Internal ids are assigned by SQLite (rowid), never taken from the site —
+    pre-migration rule34 rows already occupy their own site-id values and the
+    three sites' id spaces overlap. On an existing row only the volatile facts
+    are refreshed (md5 backfill, url/score) — tags/rating stay as scraped."""
+    site = post.get("site", "rule34")
+    sid = int(post["site_post_id"])
     db = await get_db()
     try:
+        cur = await db.execute(
+            "SELECT id, md5 FROM posts WHERE site = ? AND site_post_id = ?", (site, sid))
+        row = await cur.fetchone()
+        if row:
+            if post.get("md5") and not row["md5"]:
+                await db.execute(
+                    "UPDATE posts SET md5 = ?, file_url = ?, score = ? WHERE id = ?",
+                    (post["md5"], post["file_url"], post.get("score", 0), row["id"]))
+                await db.commit()
+            return row["id"], False
         cursor = await db.execute(
-            """INSERT OR IGNORE INTO posts
-               (id, file_url, preview_url, sample_url, tags, score, rating, source,
-                width, height, file_ext, file_size, created_at, scraped_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO posts
+               (site, site_post_id, md5, file_url, preview_url, sample_url, tags, score,
+                rating, source, width, height, file_ext, file_size, created_at, scraped_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                post["id"],
+                site,
+                sid,
+                post.get("md5"),
                 post["file_url"],
                 post.get("preview_url"),
                 post.get("sample_url"),
@@ -334,9 +396,92 @@ async def upsert_post(post: dict) -> bool:
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
-        inserted = cursor.rowcount > 0
+        internal_id = cursor.lastrowid
         await db.commit()
-        return inserted
+        return internal_id, True
+    finally:
+        await db.close()
+
+
+async def find_media_by_md5(md5: str) -> dict | None:
+    """The already-downloaded file for an md5, or None. Dedup's read side."""
+    if not md5:
+        return None
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM media_files WHERE md5 = ?", (md5,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+@retry_on_locked
+async def record_media_file(md5: str, local_path: str, file_size: int | None, site: str):
+    """Register a downloaded file under its md5 (first writer wins — the bytes
+    are identical by definition, so a second copy is never an improvement)."""
+    if not md5:
+        return
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT OR IGNORE INTO media_files (md5, local_path, file_size, first_site, downloaded_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (md5, local_path, file_size, site, datetime.now(timezone.utc).isoformat()))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def get_sources_for_md5s(md5s: list[str]) -> dict:
+    """{md5: [{site, site_post_id, post_id, downloaded}]} across ALL sites —
+    badges always show every site an image exists on, independent of the
+    browse filter (a deduped image is hidden only when ALL its sites are
+    toggled off, which the filter handles; the badges stay complete)."""
+    out: dict = {}
+    md5s = [m for m in md5s if m]
+    if not md5s:
+        return out
+    db = await get_db()
+    try:
+        CH = 500
+        for i in range(0, len(md5s), CH):
+            chunk = md5s[i:i + CH]
+            ph = ",".join("?" * len(chunk))
+            cur = await db.execute(
+                f"SELECT md5, site, site_post_id, id, downloaded FROM posts WHERE md5 IN ({ph}) "
+                f"ORDER BY site", chunk)
+            for r in await cur.fetchall():
+                out.setdefault(r["md5"], []).append({
+                    "site": r["site"], "site_post_id": r["site_post_id"],
+                    "post_id": r["id"], "downloaded": r["downloaded"]})
+        return out
+    finally:
+        await db.close()
+
+
+async def get_watched_tag_cursors(tag_id: int) -> dict:
+    """{site: last_post_id} for a watched tag (missing site -> 0)."""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT site, last_post_id FROM watched_tag_cursors WHERE watched_tag_id = ?",
+            (tag_id,))
+        return {r["site"]: r["last_post_id"] or 0 for r in await cur.fetchall()}
+    finally:
+        await db.close()
+
+
+@retry_on_locked
+async def update_watched_tag_cursor(tag_id: int, site: str, last_post_id: int):
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT INTO watched_tag_cursors (watched_tag_id, site, last_post_id, last_scraped_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(watched_tag_id, site) DO UPDATE SET "
+            "last_post_id = excluded.last_post_id, last_scraped_at = excluded.last_scraped_at",
+            (tag_id, site, last_post_id, datetime.now(timezone.utc).isoformat()))
+        await db.commit()
     finally:
         await db.close()
 
@@ -655,12 +800,24 @@ async def get_stats() -> dict:
         total = sum(by.values())
         cursor = await db.execute("SELECT COUNT(*) as c FROM tags")
         tag_count = (await cursor.fetchone())["c"]
+        cursor = await db.execute("SELECT site, COUNT(*) AS c FROM posts GROUP BY site")
+        by_site = {r["site"]: r["c"] for r in await cursor.fetchall()}
+        cursor = await db.execute("SELECT COUNT(*) AS c FROM media_files")
+        media_files = (await cursor.fetchone())["c"]
+        # Cross-site duplicates actually collapsed: md5s seen on 2+ sites.
+        cursor = await db.execute(
+            "SELECT COUNT(*) AS c FROM (SELECT md5 FROM posts WHERE md5 IS NOT NULL "
+            "GROUP BY md5 HAVING COUNT(DISTINCT site) > 1)")
+        cross_dupes = (await cursor.fetchone())["c"]
         return {
             "total_posts": total,
             "downloaded": by.get(1, 0),
             "pending": by.get(0, 0),
             "failed": by.get(-1, 0),
             "total_tags": tag_count,
+            "by_site": by_site,
+            "media_files": media_files,
+            "cross_site_dupes": cross_dupes,
         }
     finally:
         await db.close()
@@ -749,8 +906,14 @@ async def browse_posts(
     sort: str = "newest",
     rating: str | None = None,
     downloaded_only: bool = False,
+    sites: list[str] | None = None,
 ) -> tuple[list[dict], int]:
-    """Return paginated posts with optional tag filtering."""
+    """Return paginated posts with optional tag filtering.
+
+    MULTI-SITE: `sites` narrows to those sites' posts; cross-site duplicates
+    (same md5) collapse to ONE representative row per dedup key — an image is
+    hidden only when every site it appears on is filtered out. Posts without
+    an md5 dedup as themselves (site:site_post_id)."""
     db = await get_db()
     try:
         conditions = []
@@ -762,6 +925,11 @@ async def browse_posts(
         if rating:
             conditions.append("p.rating = ?")
             params.append(rating)
+
+        if sites:
+            sph = ",".join("?" * len(sites))
+            conditions.append(f"p.site IN ({sph})")
+            params.extend(sites)
 
         if tags:
             tag_list = [t.strip() for t in tags.split() if t.strip()]
@@ -792,6 +960,16 @@ async def browse_posts(
             "recent_download": "p.scraped_at DESC",
         }.get(sort, "p.id DESC")
 
+        # Cross-site dedup: one row per md5 (rows without an md5 are their own
+        # key). ROW_NUMBER keeps the first row in the requested ORDER, so the
+        # representative is whatever the sort would have shown first.
+        DEDUP_KEY = "COALESCE(p.md5, p.site || ':' || CAST(p.site_post_id AS TEXT))"
+        dedup_ids_sql = (
+            f"SELECT id FROM (SELECT p.id AS id, ROW_NUMBER() OVER "
+            f"(PARTITION BY {DEDUP_KEY} ORDER BY {order}) AS rn "
+            f"FROM posts p {where}) WHERE rn = 1"
+        )
+
         offset = (page - 1) * per_page
         _now = time.monotonic()
 
@@ -799,13 +977,17 @@ async def browse_posts(
             # Tag-filtered: cache the full ordered id list once, then page turns
             # are pure slicing + a 40-row fetch (the tag-match subquery runs only
             # on a cache miss, not on every page).
-            ck = (tags, rating or "", bool(downloaded_only), sort)
+            ck = (tags, rating or "", bool(downloaded_only), sort, tuple(sites or ()))
             c = _BROWSE_IDS.get(ck)
             if c and _now - c[1] < _BROWSE_COUNT_TTL:
                 ids = c[0]
             else:
                 cur = await db.execute(
-                    f"SELECT p.id FROM posts p {where} ORDER BY {order}", params
+                    f"SELECT p.id FROM posts p {where} "
+                    f"AND p.id IN ({dedup_ids_sql}) ORDER BY {order}"
+                    if conditions else
+                    f"SELECT p.id FROM posts p WHERE p.id IN ({dedup_ids_sql}) ORDER BY {order}",
+                    params + params
                 )
                 ids = [r[0] for r in await cur.fetchall()]
                 _BROWSE_IDS[ck] = (ids, _now)
@@ -820,21 +1002,33 @@ async def browse_posts(
             by_id = {r["id"]: dict(r) for r in await cur.fetchall()}
             return [by_id[i] for i in page_ids if i in by_id], total
 
-        # Unfiltered (or rating/downloaded only): index-friendly LIMIT/OFFSET,
-        # with a cached total so page turns skip the COUNT(*).
-        ck = (rating or "", bool(downloaded_only))
-        c = _BROWSE_COUNT.get(ck)
+        # Unfiltered (or rating/downloaded/sites only): the dedup window scan
+        # over ~1M rows must not run on EVERY page turn — cache the ordered,
+        # deduped id list exactly like the tag path and slice it.
+        ck = ("__nofilter__", rating or "", bool(downloaded_only), sort, tuple(sites or ()))
+        c = _BROWSE_IDS.get(ck)
         if c and _now - c[1] < _BROWSE_COUNT_TTL:
-            total = c[0]
+            ids = c[0]
         else:
-            cur = await db.execute(f"SELECT COUNT(*) as c FROM posts p {where}", params)
-            total = (await cur.fetchone())["c"]
-            _BROWSE_COUNT[ck] = (total, _now)
+            cur = await db.execute(
+                f"SELECT id FROM (SELECT p.id AS id, ROW_NUMBER() OVER "
+                f"(PARTITION BY {DEDUP_KEY} ORDER BY {order}) AS rn, "
+                f"p.id AS oid FROM posts p {where}) WHERE rn = 1 ORDER BY oid DESC"
+                if sort == "newest" else
+                f"SELECT p.id FROM posts p WHERE p.id IN ({dedup_ids_sql}) ORDER BY {order}",
+                params if sort == "newest" else params + params,
+            )
+            ids = [r[0] for r in await cur.fetchall()]
+            _BROWSE_IDS[ck] = (ids, _now)
+        total = len(ids)
+        page_ids = ids[offset:offset + per_page]
+        if not page_ids:
+            return [], total
+        iph = ",".join("?" * len(page_ids))
         cur = await db.execute(
-            f"SELECT p.* FROM posts p {where} ORDER BY {order} LIMIT ? OFFSET ?",
-            params + [per_page, offset],
-        )
-        return [dict(r) for r in await cur.fetchall()], total
+            f"SELECT p.* FROM posts p WHERE p.id IN ({iph})", page_ids)
+        by_id = {r["id"]: dict(r) for r in await cur.fetchall()}
+        return [by_id[i] for i in page_ids if i in by_id], total
     finally:
         await db.close()
 

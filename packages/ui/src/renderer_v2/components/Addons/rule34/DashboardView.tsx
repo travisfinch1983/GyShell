@@ -64,6 +64,12 @@ export const DashboardView: React.FC = () => {
             <b className={stats.failed ? styles.err : ''}>{stats.failed}</b><span>failed</span>
           </span>
           <span className={styles.stat}><b>{stats.total_tags}</b><span>tags</span></span>
+          {stats.by_site && Object.keys(stats.by_site).length > 1 && (
+            <span className={styles.stat}>
+              <b>{Object.entries(stats.by_site).map(([s, n]: [string, any]) => `${s}: ${Number(n).toLocaleString()}`).join(' · ')}</b>
+              <span>by site{stats.cross_site_dupes ? ` · ${stats.cross_site_dupes} cross-site dupes merged` : ''}</span>
+            </span>
+          )}
         </div>
         {stats.failed > 0 && (
           <button className={styles.btnDanger} disabled={busy} onClick={() => act(rule34Api.retryFailed)} style={{ marginTop: 8 }}>
@@ -98,6 +104,12 @@ export const DashboardView: React.FC = () => {
                     {t.tag_query}
                     {worker.current_download_tag === t.tag_query && (
                       <span style={{ color: 'var(--primary, #3b82f6)', marginLeft: 6, fontWeight: 600 }}>⬇ downloading</span>
+                    )}
+                    {t.tag_query.trim().split(/\s+/).length > 2 && (
+                      <div className={styles.dim} style={{ fontSize: 11 }}
+                        title="Danbooru free accounts can search at most 2 tags, so this tag's danbooru scrape uses only the first two as listed. rule34 and gelbooru use the full query.">
+                        ⓘ Danbooru: first 2 tags only ({t.tag_query.trim().split(/\s+/).slice(0, 2).join(' ')})
+                      </div>
                     )}
                   </td>
                   <td>{(t.live_total ?? 0).toLocaleString()}</td>

@@ -10,6 +10,27 @@ type BrowseTab = { id: string; tags: string; page: number }
 const TABS_KEY = 'rule34.browseTabs.v1'
 const ACTIVE_KEY = 'rule34.activeTab.v1'
 const SET_KEY = 'rule34.trainingSet.v1'
+const SITES_KEY = 'rule34.sites.v1'
+// Site badges: short label + colour per source site. A deduped image carries
+// one badge per site it exists on and is hidden only when every one of its
+// sites is toggled off (the backend filter works on posts.site, so an image
+// whose only enabled twin is filtered out simply has no visible row).
+const SITE_META: Record<string, { label: string; color: string; title: string }> = {
+  rule34: { label: 'R34', color: '#86b300', title: 'rule34.xxx' },
+  danbooru: { label: 'Dan', color: '#0075f8', title: 'danbooru.donmai.us' },
+  gelbooru: { label: 'Gel', color: '#a24cc8', title: 'gelbooru.com' },
+}
+const ALL_SITES = Object.keys(SITE_META)
+const loadStoredSites = (): Record<string, boolean> => {
+  try {
+    const raw = localStorage.getItem(SITES_KEY)
+    if (raw) {
+      const p = JSON.parse(raw)
+      if (p && typeof p === 'object') return { rule34: p.rule34 !== false, danbooru: p.danbooru !== false, gelbooru: p.gelbooru !== false }
+    }
+  } catch { /* ignore */ }
+  return { rule34: true, danbooru: true, gelbooru: true }
+}
 const MAX_TABS = 50
 const loadStoredTabs = (): BrowseTab[] => {
   try {
@@ -47,6 +68,17 @@ export const BrowserView: React.FC = () => {
   const [jumpVal, setJumpVal] = useState('')
   const [sort, setSort] = useState('newest')
   const [rating, setRating] = useState('')
+  const [siteFilter, setSiteFilter] = useState<Record<string, boolean>>(loadStoredSites)
+  const toggleSite = (site: string) => {
+    setSiteFilter((cur) => {
+      const next = { ...cur, [site]: !cur[site] }
+      // All three off would mean "show nothing" — treat it as a misclick and
+      // bounce back to the one just clicked, which is what the user can see.
+      if (!ALL_SITES.some((x) => next[x])) next[site] = true
+      try { localStorage.setItem(SITES_KEY, JSON.stringify(next)) } catch { /* ignore */ }
+      return next
+    })
+  }
   const [lightbox, setLightbox] = useState<any>(null)
   const [suggestions, setSuggestions] = useState<any[]>([])
   const [showSug, setShowSug] = useState(false)
@@ -99,10 +131,14 @@ export const BrowserView: React.FC = () => {
   useEffect(() => { void loadWatched() }, [loadWatched])
 
   const load = useCallback(async () => {
-    const data = await rule34Api.browser({ tags: activeTags || undefined, page, per_page: 40, sort, rating: rating || undefined })
+    const enabled = ALL_SITES.filter((x) => siteFilter[x])
+    const data = await rule34Api.browser({
+      tags: activeTags || undefined, page, per_page: 40, sort, rating: rating || undefined,
+      sites: enabled.length === ALL_SITES.length ? undefined : enabled.join(','),
+    })
     setD(data)
     setSidebarTags(data.sidebar_tags ?? [])
-  }, [activeTags, page, sort, rating])
+  }, [activeTags, page, sort, rating, siteFilter])
 
   useEffect(() => { void load() }, [load])
 
@@ -504,7 +540,27 @@ export const BrowserView: React.FC = () => {
             <option value="q">Questionable</option>
             <option value="e">Explicit</option>
           </select>
+          {ALL_SITES.map((site) => (
+            <button key={site} type="button"
+              className={styles.btn}
+              onClick={() => { toggleSite(site); setPage(1) }}
+              title={`${siteFilter[site] ? 'Hide' : 'Show'} ${SITE_META[site].title} images`}
+              style={{
+                fontWeight: 700, fontSize: 11, padding: '3px 8px',
+                background: siteFilter[site] ? SITE_META[site].color : 'transparent',
+                color: siteFilter[site] ? '#fff' : 'var(--text-dim, #888)',
+                border: `1px solid ${SITE_META[site].color}`,
+                opacity: siteFilter[site] ? 1 : 0.6,
+              }}>
+              {SITE_META[site].label}
+            </button>
+          ))}
         </form>
+        {d?.danbooru_tags_used && (
+          <div className={styles.dim} style={{ margin: '2px 0', fontSize: 12 }}>
+            ⓘ Danbooru limits searches to 2 tags — its scrapes for this query use only: {d.danbooru_tags_used.join(' ')}
+          </div>
+        )}
 
         {activeTags && (
           <div className={styles.chips}>
@@ -558,6 +614,15 @@ export const BrowserView: React.FC = () => {
                   <div className={styles.gridOverlay}>
                     <span>{p.score}</span>
                     {isVideo(p.file_ext) && <span className={styles.videoBadge}>VID</span>}
+                  </div>
+                  <div style={{ position: 'absolute', bottom: 4, right: 4, display: 'flex', gap: 2, zIndex: 2, pointerEvents: 'none' }}>
+                    {(p.sources ?? [{ site: p.site ?? 'rule34' }]).map((src: any) => (
+                      <span key={src.site} title={`${SITE_META[src.site]?.title ?? src.site} #${src.site_post_id ?? ''}`}
+                        style={{ background: SITE_META[src.site]?.color ?? '#555', color: '#fff', borderRadius: 3,
+                                 fontSize: 9, fontWeight: 700, padding: '1px 4px', lineHeight: '12px' }}>
+                        {SITE_META[src.site]?.label ?? src.site}
+                      </span>
+                    ))}
                   </div>
                   {!setMemberIds.has(p.id) && (allMembers[String(p.id)]?.length ?? 0) > 0 && (
                     <>
@@ -682,6 +747,13 @@ export const BrowserView: React.FC = () => {
                 <span>Score: {lightbox.score}</span>
                 <span>Rating: {lightbox.rating}</span>
                 {lightbox.width && lightbox.height && <span>{lightbox.width}×{lightbox.height}</span>}
+                {(lightbox.sources ?? [{ site: lightbox.site ?? 'rule34', site_post_id: lightbox.site_post_id }]).map((src: any) => (
+                  <span key={src.site} title={SITE_META[src.site]?.title ?? src.site}
+                    style={{ background: SITE_META[src.site]?.color ?? '#555', color: '#fff', borderRadius: 3,
+                             fontSize: 10, fontWeight: 700, padding: '1px 5px' }}>
+                    {SITE_META[src.site]?.label ?? src.site} #{src.site_post_id}
+                  </span>
+                ))}
               </div>
               <div className={styles.lightboxTags}>
                 {(() => {

@@ -21,8 +21,13 @@ from db import (
     backfill_watched_tag_links,
     get_untyped_tags,
     set_tag_type_by_name,
+    find_media_by_md5,
+    record_media_file,
+    get_watched_tag_cursors,
+    update_watched_tag_cursor,
 )
-from scraper import Rule34Client, parse_post
+from scraper import Rule34Client
+from sites import SITES, site_enabled, site_status, DanbooruClient, GelbooruClient, Rule34Adapter
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +40,16 @@ MAX_DOWNLOAD_REQUEUES = 8
 class Worker:
     def __init__(self):
         self.client = Rule34Client()
+        # One client per site behind a unified page iterator; rule34 keeps its
+        # key pool + proxies via the adapter.
+        self.site_clients = {
+            "rule34": Rule34Adapter(self.client),
+            "danbooru": DanbooruClient(),
+            "gelbooru": GelbooruClient(),
+        }
+        # md5s currently downloading — the dedup guard for two posts sharing a
+        # file inside one batch (the second defers; next loop finds the file).
+        self._dl_md5_inflight: set[str] = set()
         self.running = False
         self.paused = False
         self._scrape_task: asyncio.Task | None = None
@@ -67,6 +82,9 @@ class Worker:
             "scrape_progress": self._scrape_progress,
             "tag_status": self._tag_scrape,
             "api_error": self.client.last_api_error,
+            "site_errors": {site: c.last_api_error for site, c in self.site_clients.items()
+                             if c.last_api_error},
+            "site_status": site_status,
             "priority_tag_id": self._priority_tag_id,
             "current_download_tag": self._current_download_tag,
         }
@@ -107,6 +125,12 @@ class Worker:
             except asyncio.CancelledError:
                 pass
         await self.client.close()
+        for site, c in self.site_clients.items():
+            if site != "rule34":
+                try:
+                    await c.close()
+                except Exception:
+                    pass
         logger.info("Worker stopped")
 
     def pause(self):
@@ -118,42 +142,69 @@ class Worker:
         self._current_activity = "idle"
 
     async def scrape_tag_now(self, tag_query: str, tag_id: int, since_id: int = 0):
-        """Run a scrape for a specific tag immediately."""
+        """Scrape one watched tag across EVERY enabled site. Each site keeps its
+        own cursor (watched_tag_cursors) because the id spaces are per-site; the
+        legacy since_id argument seeds a missing rule34 cursor so pre-migration
+        callers behave identically."""
         self._current_activity = f"scraping: {tag_query}"
         self._scraping = True
         self._scrape_progress = ""
-        logger.info(f"Scraping tag: {tag_query} (since_id={since_id})")
-        max_id = since_id
         total_linked = 0
+        per_site: dict = {}
         try:
-            async for page in self.client.iter_post_pages(
-                tag_query, since_id=since_id,
-                on_progress=lambda n: setattr(self, "_scrape_progress", f"{tag_query}: {n:,} scanned"),
-            ):
-                page_ids: list[int] = []
-                for raw in page:
-                    post = parse_post(raw)
-                    if post["id"] is None:
-                        continue
-                    inserted = await upsert_post(post)
-                    if inserted:
-                        await upsert_tags_for_post(post["id"], post["tags"])
-                    page_ids.append(post["id"])
-                    if post["id"] > max_id:
-                        max_id = post["id"]
-                # Link this page incrementally: junction (live counts + download
-                # prioritization) populates progressively and survives interruptions.
-                await link_posts_to_watched_tag(tag_id, page_ids)
-                total_linked += len(page_ids)
-            # Advance last_post_id only on FULL completion (backward pagination: a
-            # mid-scrape advance would skip the un-fetched older pages on resume).
-            await update_watched_tag_progress(tag_id, max_id)
+            cursors = await get_watched_tag_cursors(tag_id)
+            if "rule34" not in cursors and since_id:
+                cursors["rule34"] = since_id
+            for site in SITES:
+                if not self.running:
+                    break
+                if not await site_enabled(site):
+                    continue
+                client = self.site_clients[site]
+                site_since = cursors.get(site, 0)
+                max_id = site_since
+                site_found = 0
+                logger.info(f"Scraping '{tag_query}' on {site} (since_id={site_since})")
+                try:
+                    async for page in client.iter_post_pages(
+                        tag_query, since_id=site_since,
+                        on_progress=lambda n, _s=site: setattr(
+                            self, "_scrape_progress", f"{tag_query} [{_s}]: {n:,} scanned"),
+                    ):
+                        page_ids: list[int] = []
+                        for post in page:
+                            internal_id, inserted = await upsert_post(post)
+                            if inserted:
+                                await upsert_tags_for_post(internal_id, post["tags"])
+                            page_ids.append(internal_id)
+                            if post["site_post_id"] > max_id:
+                                max_id = post["site_post_id"]
+                        # Link incrementally: live counts populate progressively
+                        # and survive interruptions.
+                        await link_posts_to_watched_tag(tag_id, page_ids)
+                        site_found += len(page_ids)
+                    # Advance the cursor only on FULL completion (backward
+                    # pagination: a mid-scrape advance would skip unfetched
+                    # older pages on resume).
+                    await update_watched_tag_cursor(tag_id, site, max_id)
+                    if site == "rule34":
+                        # Legacy column still read by older UI fields.
+                        await update_watched_tag_progress(tag_id, max_id)
+                    err = None
+                    if site_found == 0 and client.last_api_error:
+                        err = client.last_api_error.get("error")
+                    per_site[site] = {"found": site_found, "error": err}
+                    total_linked += site_found
+                except Exception as e:
+                    logger.error(f"Scrape error for '{tag_query}' on {site}: {e}")
+                    per_site[site] = {"found": site_found, "error": str(e)}
+                    total_linked += site_found
             self._scrape_count += 1
-            logger.info(f"Scrape complete for '{tag_query}': {total_linked} posts linked")
-            _err = None
-            if total_linked == 0 and self.client.last_api_error:
-                _err = self.client.last_api_error.get("error")
-            self._tag_scrape[tag_id] = {"found": total_linked, "at": time.time(), "error": _err}
+            logger.info(f"Scrape complete for '{tag_query}': {total_linked} posts linked "
+                        f"({', '.join(str(k) + ':' + str(v['found']) for k, v in per_site.items())})")
+            errs = "; ".join(f"{k}: {v['error']}" for k, v in per_site.items() if v.get("error"))
+            self._tag_scrape[tag_id] = {"found": total_linked, "at": time.time(),
+                                        "error": errs or None, "per_site": per_site}
         except Exception as e:
             logger.error(f"Scrape error for '{tag_query}': {e}")
             self._tag_scrape[tag_id] = {"found": total_linked, "at": time.time(), "error": str(e)}
@@ -294,8 +345,19 @@ class Worker:
                 await asyncio.sleep(30)
 
     async def _download_post(self, post: dict, max_retries: int):
-        """Download a single post's media file."""
+        """Download a single post's media file — ONE file per md5. A post whose
+        md5 is already on disk (any site) is marked downloaded pointing at the
+        existing file: the same image is never fetched twice."""
         storage_path = await get_setting("storage_path") or "/nas/zpoolalpha/media/xxx/rule34"
+        md5 = post.get("md5")
+        if md5:
+            media = await find_media_by_md5(md5)
+            if media and os.path.isfile(os.path.join(storage_path, media["local_path"])):
+                await mark_downloaded(post["id"], media["local_path"])
+                self._download_count += 1
+                return
+            if md5 in self._dl_md5_inflight:
+                return   # its twin is downloading right now; next pass reuses the file
         rating = post.get("rating", "e") or "e"
         ext = post.get("file_ext", "jpg") or "jpg"
         relative_path = f"{rating}/{post['id']}.{ext}"
@@ -304,6 +366,8 @@ class Worker:
         # Skip if already exists on disk
         if os.path.exists(full_path):
             await mark_downloaded(post["id"], relative_path)
+            if md5:
+                await record_media_file(md5, relative_path, post.get("file_size"), post.get("site", "rule34"))
             self._download_count += 1
             return
 
@@ -312,9 +376,17 @@ class Worker:
             await mark_download_failed(post["id"], "no file_url")
             return
 
-        status, detail = await self.client.download_file(url, full_path)
+        if md5:
+            self._dl_md5_inflight.add(md5)
+        try:
+            status, detail = await self.client.download_file(url, full_path)
+        finally:
+            if md5:
+                self._dl_md5_inflight.discard(md5)
         if status == "ok":
             await mark_downloaded(post["id"], relative_path)
+            if md5:
+                await record_media_file(md5, relative_path, post.get("file_size"), post.get("site", "rule34"))
             self._download_count += 1
             return
         if status == "permanent":

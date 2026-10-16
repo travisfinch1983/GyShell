@@ -82,6 +82,60 @@ export const SettingsView: React.FC = () => {
         {msg && <span className={styles.msg}>{msg}</span>}
       </div>
 
+      {/* ── Sites ────────────────────────────────────────────────────────── */}
+      <div className={styles.card}>
+        <div className={styles.cardTitle}>Sites</div>
+        <div className={styles.cardSub}>
+          One scraper, three sources. Tracked tags scrape every enabled site; cross-posted
+          images are stored once (matched by file MD5). Credentials left blank here are read
+          from the AI-Lab vault at runtime — values saved here override the vault and live
+          only in the addon's own database, never in git.
+        </div>
+        {([
+          { site: 'danbooru', title: 'Danbooru', fields: [
+            { key: 'danbooru_login', label: 'Login (username)' },
+            { key: 'danbooru_api_key', label: 'API key', secret: true },
+            { key: 'danbooru_rate_per_min', label: 'Requests/min', ph: '30' },
+          ]},
+          { site: 'gelbooru', title: 'Gelbooru', fields: [
+            { key: 'gelbooru_user_id', label: 'User ID' },
+            { key: 'gelbooru_api_key', label: 'API key', secret: true },
+            { key: 'gelbooru_rate_per_min', label: 'Requests/min', ph: '50' },
+          ]},
+        ] as any[]).map((cfg) => {
+          const enabled = (form[`${cfg.site}_enabled`] ?? '1') !== '0'
+          const st = (form as any).site_status?.[cfg.site]
+          return (
+            <div key={cfg.site} style={{ margin: '8px 0', padding: '8px 10px', border: '1px solid var(--border, #333)', borderRadius: 6 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600 }}>
+                <input type="checkbox" checked={enabled}
+                  onChange={(e) => setForm((f) => ({ ...f, [`${cfg.site}_enabled`]: e.target.checked ? '1' : '0' }))} />
+                {cfg.title}
+                {st && (
+                  <span className={styles.dim} style={{ fontWeight: 400, fontSize: 12 }} title={st.detail}>
+                    — {st.auth}{st.auth === 'anonymous' && st.detail?.includes('REJECTED') ? ' (key rejected!)' : ''}
+                  </span>
+                )}
+              </label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+                {cfg.fields.map((fld: any) => (
+                  <label key={fld.key} className={styles.dim} style={{ fontSize: 12 }}>
+                    {fld.label}
+                    <input className={styles.searchInput} style={{ display: 'block', width: 180 }}
+                      type={fld.secret ? 'password' : 'text'}
+                      value={form[fld.key] ?? ''}
+                      placeholder={fld.secret
+                        ? (form[`${fld.key}_set`] === '1' ? '(stored — blank keeps it)' : '(blank = vault)')
+                        : (fld.ph ?? '(blank = vault)')}
+                      onChange={(e) => setForm((f) => ({ ...f, [fld.key]: e.target.value }))} />
+                  </label>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
       {/* ── API Key Pool ─────────────────────────────────────────────────── */}
       <div className={styles.card}>
         <div className={styles.cardTitle}>API Key Pool</div>
