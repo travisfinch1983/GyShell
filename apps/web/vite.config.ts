@@ -118,6 +118,14 @@ const cfg = defineConfig({
         ws: true,
         rewrite: (path) => path.replace(/^\/addons\/rule34/, '') || '/',
       },
+      // Pixiv scraper addon: ailab-addon-pixiv.service @ 127.0.0.1:8093 (8092 = sftpgo), prefix-stripped.
+      '/addons/pixiv': {
+        target: process.env.ADDON_PIXIV_URL || 'http://127.0.0.1:8093',
+        changeOrigin: true,
+        xfwd: true,   // pass the client address on (backend trusted-source checks)
+        ws: true,
+        rewrite: (path) => path.replace(/^\/addons\/pixiv/, '') || '/',
+      },
       // Social scraper addon (Instagram + X): ailab-addon-social.service @ 127.0.0.1:8097, prefix-stripped.
       '/addons/social': {
         target: process.env.ADDON_SOCIAL_URL || 'http://127.0.0.1:8097',

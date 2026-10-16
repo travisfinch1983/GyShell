@@ -5,6 +5,9 @@ import { BrowseView } from './upscaler/BrowseView'
 import { HistoryView } from './upscaler/HistoryView'
 import { SyncView } from './upscaler/SyncView'
 import { DashboardView as R34DashboardView } from './rule34/DashboardView'
+import { PixivDashboardView } from './pixiv/DashboardView'
+import { PixivBrowserView } from './pixiv/BrowserView'
+import { PixivSettingsView } from './pixiv/SettingsView'
 import { BrowserView as R34BrowserView } from './rule34/BrowserView'
 import { SettingsView as R34SettingsView } from './rule34/SettingsView'
 import { makeDashboardView as socialDashboard } from './social/DashboardView'
@@ -50,6 +53,7 @@ export interface AddonManifest {
 export const ADDON_ICONS: Record<string, LucideIcon> = {
   upscale: ImageUpscale,
   r34: ImageDown,
+  pixiv: Camera,
   instagram: Camera,
   twitter: AtSign,
   redgifs: Film,
@@ -67,6 +71,9 @@ export const NATIVE_VIEWS: Record<string, React.ComponentType> = {
   'rule34.dashboard': R34DashboardView,
   'rule34.browser': R34BrowserView,
   'rule34.settings': R34SettingsView,
+  'pixiv.dashboard': PixivDashboardView,
+  'pixiv.browser': PixivBrowserView,
+  'pixiv.settings': PixivSettingsView,
   // Instagram + X share ONE backend (addons/social) and one set of view factories, bound per site.
   'instagram.dashboard': socialDashboard('instagram'),
   'instagram.browser': socialBrowser('instagram'),
@@ -106,6 +113,19 @@ export const ADDONS: AddonManifest[] = [
     // Bundled module at /opt/ai-lab/addons/rule34 (FastAPI, systemd ailab-addon-rule34.service);
     // JSON API under /addons/rule34/api/* — scrape/download/browse rule34.xxx posts.
     basePath: '/addons/rule34',
+    views: [
+      { id: 'dashboard', label: 'Dashboard', kind: 'native' },
+      { id: 'browser', label: 'Browser', kind: 'native' },
+      { id: 'settings', label: 'Settings', kind: 'native' },
+    ],
+  },
+  {
+    id: 'pixiv',
+    label: 'Pixiv',
+    icon: 'pixiv',
+    // Bundled module at /opt/ai-lab/addons/pixiv (FastAPI, systemd ailab-addon-pixiv.service
+    // @ 127.0.0.1:8093 — 8092 was taken by sftpgo); tag + artist watches, multi-page illusts.
+    basePath: '/addons/pixiv',
     views: [
       { id: 'dashboard', label: 'Dashboard', kind: 'native' },
       { id: 'browser', label: 'Browser', kind: 'native' },

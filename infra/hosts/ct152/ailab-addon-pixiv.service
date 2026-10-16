@@ -1,0 +1,15 @@
+[Unit]
+Description=AI-Lab Addon: Pixiv Scraper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ai-lab/addons/pixiv
+ExecStart=/opt/ai-lab/addons/pixiv/.venv/bin/uvicorn app:app \
+    --host 127.0.0.1 --port 8093 --log-level info
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
