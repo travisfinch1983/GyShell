@@ -1,0 +1,266 @@
+--- a/pe_proxy.py
++++ b/pe_proxy.py
+@@ -7,6 +7,9 @@
+   * STREAMED - after its answer the PE can fall into a repetition loop until max_tokens, so we stop at the first usable prompt
+   * answers come as {"type","text"} JSON (or {object, action, preserved}, or plain text) - the prompt is pulled out of any of them
+   * images stay local: an answer from a different / proxied-external model ("(OR) ...") is refused
++2026-10-16 (Heretic PE router, see pe_common.py): model "auto" picks pe-t2i-heretic / pe-i2i-heretic by whether images are wired
++(the retired id qwen-image-2.1-pe-i2i in saved workflows does the same); the bundled system_prompt.txt is sent when no system_prompt
++is wired; X-AILab-No-Fallback is sent; outputs wh_ratio / ratio_follow from the PE's JSON.
+ """
+ import base64, io, json, re, time, urllib.request
+ 
+@@ -15,9 +18,10 @@
+ 
+ from .prompt_builder import proxy_models
+ from . import ailab_proxy as ap
++from . import pe_common as pc
+ 
+ DEFAULT_API = "http://10.0.0.219:17890/api/proxy/llm/v1/chat/completions"
+-DEFAULT_MODEL = "qwen-image-2.1-pe-i2i"
++DEFAULT_MODEL = pc.AUTO
+ SKIP = {"type", "category", "operation", "kind", "mode", "task", "edit_type", "classification", "object", "target"}
+ 
+ 
+@@ -45,11 +49,16 @@
+ 
+ def pe_pick(raw, final=False):
+     """First usable prompt in a PE answer: after </think>; JSON in any of its shapes (balanced braces), else plain text (final only)."""
++    return pe_pick_obj(raw, final)[0]
++
++
++def pe_pick_obj(raw, final=False):
++    """pe_pick + the JSON object the prompt came from (None for plain text)."""
+     t = raw
+     if "</think>" in t:
+         t = t[t.index("</think>") + 8:]
+     elif "<think>" in t:
+-        return ""  # still reasoning
++        return "", None  # still reasoning
+     a = t.find("{")
+     while a >= 0:
+         d, in_str, esc = 0, False, False
+@@ -66,17 +75,18 @@
+                 d -= 1
+                 if d == 0:
+                     try:
+-                        x = _pick_obj(json.loads(t[a:k + 1]))
++                        o = json.loads(t[a:k + 1])
++                        x = _pick_obj(o)
+                         if x:
+-                            return x
++                            return x, o
+                     except Exception:
+                         pass
+                     break
+         a = t.find("{", a + 1)
+     plain = t.strip()
+     if final and 40 < len(plain) < 3000 and "{" not in plain and not re.match(r"^(the user|let me|so this|i need|okay|first|wait)", plain, re.I):
+-        return plain
+-    return ""
++        return plain, None
++    return "", None
+ 
+ 
+ def _img_to_data_url(img_tensor, max_side):
+@@ -94,18 +104,19 @@
+     def VALIDATE_INPUTS(cls, model):
+         # a saved workflow may name a model that isn't in the list right now (offline / renamed) - the proxy decides at run time
+         return True
+-    RETURN_TYPES = ("STRING", "STRING")
+-    RETURN_NAMES = ("prompt", "raw")
++    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING")
++    RETURN_NAMES = ("prompt", "raw", "wh_ratio", "ratio_follow")
+     FUNCTION = "run"
+ 
+     @classmethod
+     def INPUT_TYPES(cls):
+         # the proxy's models as a dropdown (Travis 2026-10-10: it was a type-the-id text box), the PE first
+-        models = [DEFAULT_MODEL] + [m for m in proxy_models() if m != DEFAULT_MODEL]
++        first = [pc.AUTO, pc.PE_T2I, pc.PE_I2I]
++        models = first + [m for m in proxy_models() if m not in first]
+         return {
+             "required": {
+                 "user_prompt": ("STRING", {"multiline": True, "default": ""}),
+-                "model": (models, {"default": DEFAULT_MODEL, "tooltip": "Any model behind the AI-Lab LLM proxy, called by id. The list refreshes when ComfyUI reloads node definitions (60 s cache)."}),
++                "model": (models, {"default": DEFAULT_MODEL, "tooltip": "auto = the Heretic T2I PE when no image is wired, the I2I PE when one is. Or any model behind the AI-Lab LLM proxy, called by id (list refreshes when ComfyUI reloads node definitions, 60 s cache)."}),
+                 "api_path": ("STRING", {"default": ap.LLM_PATH, "tooltip": "The LLM proxy's chat/completions path. The proxy itself comes from the workflow's AI-Lab Model Manager node."}),
+                 "thinking": ("BOOLEAN", {"default": True, "tooltip": "Thinking mode writes the best prompts (no-think gave junk in tests)"}),
+                 "max_tokens": ("INT", {"default": 8000, "min": 256, "max": 32768}),
+@@ -117,7 +128,7 @@
+                 "on_failure": (["error", "pass user prompt through"], {"default": "error"}),
+             },
+             "optional": {
+-                "system_prompt": ("STRING", {"multiline": True, "forceInput": True}),
++                "system_prompt": ("STRING", {"multiline": True, "forceInput": True, "tooltip": "Unwired: a PE model gets its bundled system_prompt.txt (the Heretic PEs need it)"}),
+                 "image_1": ("IMAGE",), "image_2": ("IMAGE",), "image_3": ("IMAGE",), "image_4": ("IMAGE",),
+                 # Travis 2026-10-10: with no image reaching it the i2i PE thought until max_tokens (8000, ~2.3 min) every call, twice per
+                 # image -> 13 min "spirals". Stop once this many tokens have gone by without a usable prompt.
+@@ -132,8 +143,9 @@
+                 "top_k": 20, "presence_penalty": 1.5, "repeat_penalty": 1.08, "seed": int(seed) % (2 ** 31)}
+         if not thinking:
+             body["chat_template_kwargs"] = {"enable_thinking": False}
+-        req = urllib.request.Request(api_url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+-        raw, found, seen, t0, n = "", "", "", time.time(), 0
++        hdr = {"Content-Type": "application/json", **(pc.NO_FALLBACK if pc.is_pe(model) else {})}
++        req = urllib.request.Request(api_url, data=json.dumps(body).encode(), headers=hdr)
++        raw, found, obj, seen, t0, n = "", "", None, "", time.time(), 0
+         with urllib.request.urlopen(req, timeout=timeout) as r:
+             for line in r:
+                 line = line.decode("utf-8", "ignore").strip()
+@@ -147,23 +159,29 @@
+                 except Exception:
+                     continue
+                 seen = ev.get("model") or seen
+-                if seen and ((seen != model and "pe-i2i" not in seen.lower()) or seen.startswith("(OR)")):
++                if seen and seen != model and (seen.startswith("(") or (pc.is_pe(model) and not (pc.is_pe(seen) or seen.lower().endswith(".gguf")))):
+                     raise RuntimeError(f"prompt enhancer answered by {seen}, not the local {model} - refusing (images stay local)")
+                 delta = (ev.get("choices") or [{}])[0].get("delta") or {}
+                 raw += delta.get("content") or ""
+                 if delta.get("content") or delta.get("reasoning_content"):
+                     n += 1                               # ~1 token per streamed delta (thinking included)
+                 if "}" in raw:
+-                    found = pe_pick(raw)
++                    found, obj = pe_pick_obj(raw)
+                     if found:
+                         break   # stop before the PE's post-answer repetition loop
+                 if time.time() - t0 > timeout or n > think_budget:
+                     break
+-        return found or pe_pick(raw, final=True), raw
++        if not found:
++            found, obj = pe_pick_obj(raw, final=True)
++        return found, raw, obj
+ 
+     def run(self, user_prompt, model, api_path, thinking, max_tokens, temperature, top_p, image_max_side, seed, timeout, on_failure,
+             system_prompt=None, image_1=None, image_2=None, image_3=None, image_4=None, think_budget=3000, ailab_prompt=None):
+         api_url = ap.url(ailab_prompt, api_path)   # the workflow's Model Manager proxy + this path
++        has_img = any(im is not None for im in (image_1, image_2, image_3, image_4))
++        model = pc.resolve(model, has_img)
++        if pc.is_pe(model) and not (system_prompt and system_prompt.strip()):
++            system_prompt = pc.system_prompt(model, has_img)
+         content = []
+         for im in (image_1, image_2, image_3, image_4):
+             if im is not None:
+@@ -176,9 +194,9 @@
+         last_err, raw = None, ""
+         for attempt in range(2):   # one retry with another seed (the PE occasionally answers with only its type label)
+             try:
+-                found, raw = self._call(content, system_prompt, model, api_url, thinking, max_tokens, temperature, top_p, seed + attempt * 7, timeout, think_budget)
++                found, raw, obj = self._call(content, system_prompt, model, api_url, thinking, max_tokens, temperature, top_p, seed + attempt * 7, timeout, think_budget)
+                 if found:
+-                    return (found, raw)
++                    return (found, raw) + pc.ratio_fields(obj)
+                 last_err = "the prompt enhancer returned no usable prompt"
+             except Exception as e:  # noqa: BLE001
+                 last_err = str(e)
+@@ -186,7 +204,7 @@
+                     break
+         if on_failure == "pass user prompt through":
+             print(f"[AI-Lab PE proxy] {last_err} - passing the user prompt through")
+-            return (user_prompt, raw)
++            return (user_prompt, raw, "", "")
+         raise RuntimeError(f"AI-Lab PE proxy: {last_err}")
+ 
+ 
+--- a/prompt_builder.py
++++ b/prompt_builder.py
+@@ -19,6 +19,7 @@
+ from PIL import Image
+ 
+ from . import ailab_proxy as ap
++from . import pe_common as pc
+ 
+ MAX_SECTIONS = 8
+ DEFAULT_API = "http://10.0.0.219:17890/api/proxy/llm/v1/chat/completions"
+@@ -39,7 +40,7 @@
+             _models_cache.update(t=time.time(), list=ids)
+     except Exception as e:  # noqa: BLE001
+         print(f"[AI-Lab Prompt Builder] could not list the proxy's models: {e}")
+-    return _models_cache["list"] or ["qwen-image-2.1-pe-i2i", "Qwen3.8-27B-INT8-MM-8_Slot-Think_Preserve-256k"]
++    return _models_cache["list"] or [pc.PE_T2I, pc.PE_I2I, "Qwen3.8-27B-INT8-MM-8_Slot-Think_Preserve-256k"]
+ 
+ 
+ # ── Qwen-Image Prompt Enhancer answer parsing (same as Builder Studio / ailab_pe_proxy) ──
+@@ -119,6 +120,10 @@
+     """One chat completion through the proxy (streamed). Returns (text after output mode, raw)."""
+     if images and EXTERNAL.match(model) and not s["allow_external_images"]:
+         raise RuntimeError(f"{model} is an external model and this section has images - refusing (images stay local; allow_external_images to permit)")
++    if model in pc.LEGACY:   # retired PE id in a saved workflow -> the Heretic PE that fits (images -> i2i)
++        model = pc.resolve(model, bool(images))
++    if pc.is_pe(model) and not system.strip():   # the Heretic PEs need their bundled system prompt
++        system = pc.system_prompt(model, bool(images))
+     content = [{"type": "image_url", "image_url": {"url": u}} for u in images] + [{"type": "text", "text": user}]
+     msgs = ([{"role": "system", "content": system}] if system.strip() else []) + [{"role": "user", "content": content if images else user}]
+     body = {"model": model, "messages": msgs, "stream": True, "max_tokens": s["max_tokens"], "temperature": s["temperature"], "top_p": s["top_p"],
+@@ -131,7 +136,7 @@
+         # Qwen chat templates read enable_thinking; DeepSeek-style providers read thinking.type (the other one is ignored)
+         body["chat_template_kwargs"] = {"enable_thinking": False}
+         body["thinking"] = {"type": "disabled"}
+-    req = urllib.request.Request(api, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
++    req = urllib.request.Request(api, data=json.dumps(body).encode(), headers={"Content-Type": "application/json", **(pc.NO_FALLBACK if pc.is_pe(model) else {})})
+     raw, seen, t0, pe = "", "", time.time(), s["output_mode"] == "PE prompt"
+     with urllib.request.urlopen(req, timeout=timeout) as r:
+         for line in r:
+--- /dev/null
++++ b/pe_common.py
+@@ -0,0 +1,60 @@
++"""Qwen-Image 2.1 Prompt Enhancer: model ids, bundled system prompts, routing (claude2, 2026-10-16).
++
++Since 2026-10-16 both PE models are Heretic Q4_K_M builds served by ONE llama.cpp router (AI-Lab llama-server-5007, ai-epyc
++5060 Ti #2, at most one loaded; asking for the other swaps it in, ~5 s). The old single id `qwen-image-2.1-pe-i2i` is gone.
++The Heretic builds NEED their bundled system prompts: without them T2I answers in chatty markdown and I2I thinks out loud
++past 1,500 tokens. With them both answer one JSON object and stop:
++  T2I {"rewritten_prompt", "wh_ratio"}    I2I {"rewritten_prompt", "wh_ratio", "ratio_follow"}
++Every PE request sends X-AILab-No-Fallback: 1 - a loading PE then fails fast instead of the proxy's external backup model
++answering (and receiving the images). Reference implementation: ai-lab ops/qwen-pe."""
++import os
++import re
++
++PE_T2I = "qwen-image-2.1-pe-t2i-heretic"
++PE_I2I = "qwen-image-2.1-pe-i2i-heretic"
++AUTO = "auto (t2i without images, i2i with)"
++LEGACY = {"qwen-image-2.1-pe-i2i": None, "qwen-image-2.1-pe-t2i": None}   # retired ids -> picked by images, like AUTO
++SYSTEM_PROMPTS = {"t2i": "/models/Qwen-Image-2.1-PE/T2I-Heretic/GGUF/system_prompt.txt",
++                  "i2i": "/models/Qwen-Image-2.1-PE/I2I-Heretic/GGUF/system_prompt.txt"}
++NO_FALLBACK = {"X-AILab-No-Fallback": "1"}
++_sp_cache = {}
++
++
++def is_pe(model_id):
++    """A local Qwen-Image PE id (or the GGUF path a llama-server reports for one); external '(XX) ...' routes are not."""
++    m = str(model_id or "").lower()
++    return not m.startswith("(") and bool(re.search(r"pe[-_ ]?[ti]2i|[ti]2i[-_ ]?pe", m) or ("qwen-image" in m and "-pe" in m))
++
++
++def resolve(model, has_images):
++    """The id to request: AUTO / a retired id -> by images (i2i when the request carries images)."""
++    m = str(model or "").strip()
++    if not m or m == AUTO or m in LEGACY:
++        return PE_I2I if has_images else PE_T2I
++    return m
++
++
++def kind(model_id, has_images=False):
++    m = str(model_id or "").lower()
++    return "t2i" if "t2i" in m else "i2i" if "i2i" in m else ("i2i" if has_images else "t2i")
++
++
++def system_prompt(model_id, has_images=False):
++    """The bundled system prompt for this PE (cached; re-read when the file changes). '' when unreadable."""
++    p = SYSTEM_PROMPTS[kind(model_id, has_images)]
++    try:
++        mt = os.path.getmtime(p)
++        if _sp_cache.get(p, (None,))[0] != mt:
++            _sp_cache[p] = (mt, open(p, encoding="utf-8").read())
++        return _sp_cache[p][1]
++    except OSError as e:
++        print(f"[AI-Lab PE] no bundled system prompt for {model_id} ({e}) - the Heretic PE may ramble instead of answering JSON")
++        return ""
++
++
++def ratio_fields(obj):
++    """(wh_ratio, ratio_follow) from a parsed PE answer ('' when absent)."""
++    if not isinstance(obj, dict):
++        return "", ""
++    g = lambda k: obj[k].strip() if isinstance(obj.get(k), str) else (str(obj[k]) if obj.get(k) is not None else "")  # noqa: E731
++    return g("wh_ratio") or g("aspect_ratio"), g("ratio_follow")

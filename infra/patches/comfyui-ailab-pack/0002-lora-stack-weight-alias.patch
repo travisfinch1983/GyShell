@@ -1,0 +1,12 @@
+--- a/lora_stack.py
++++ b/lora_stack.py
+@@ -39,7 +39,8 @@
+         for l in loras:
+             if not l.get("enabled", True) or not l.get("name"):
+                 continue
+-            sm, sc = float(l.get("strength_model", 1.0)), float(l.get("strength_clip", 1.0))
++            w = l.get("weight", l.get("strength", 1.0))   # "weight"/"strength" = alias for both strengths
++            sm, sc = float(l.get("strength_model", w)), float(l.get("strength_clip", w))
+             path = folder_paths.get_full_path("loras", l["name"])
+             if not path:
+                 raise RuntimeError(f"AI-Lab LoRA Stack: LoRA not found: {l['name']}")

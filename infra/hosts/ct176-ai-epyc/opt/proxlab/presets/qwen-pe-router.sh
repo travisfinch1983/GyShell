@@ -9,18 +9,38 @@
 # systemd unit and registration). Lives OUTSIDE /opt/proxlab/services because ai.js regenerates
 # everything in there.
 #
-# Model files: the RAM model cache (/model-cache) when present, else the NAS (/models). That is the
-# same fallback the generated launchers use, so automatic cache pruning can never break a load. The
-# preset is rewritten on every start, so a model entering or leaving the cache is picked up on the
-# next restart.
+# Model files (claude2, 2026-10-16): the image model service's cache tiers hold them, UNPINNED, with its
+# normal decayed-LRU scoring (kind "llm", names relative to /models). First existing copy wins:
+#   /model-cache/ailab-modelsvc/llm/<rel>   RAM tier
+#   /disk-cache/ailab-modelsvc/llm/<rel>    persistent disk tier (survives reboots)
+#   /model-cache/<rel>                      the LLM model cacher (legacy - until those entries are uncached)
+#   /models/<rel>                           NAS
+# Copies are made atomically (.part + rename), so an existing file is always complete; pruning only ever
+# drops a tier, never breaks a load. The preset is rewritten on every start, so a model entering or
+# leaving a tier is picked up on the next restart. Each start also reports a use of the three files to
+# the service (POST :9312/cache/warm {kind:llm, use:true}) - that keeps their scores up and re-stages a
+# missing copy (disk first, then RAM). Per-request use is reported by the AI-Lab proxy.
 set -euo pipefail
 
-mc() { local p="$1" c; c="/model-cache/${p#/models/}"; if [ -e "$c" ]; then printf '%s' "$c"; else printf '%s' "$p"; fi; }
+MODELSVC=${MODELSVC:-http://127.0.0.1:9312}
+mc() {
+  local p="$1" r c; r="${p#/models/}"
+  for c in "/model-cache/ailab-modelsvc/llm/$r" "/disk-cache/ailab-modelsvc/llm/$r" "/model-cache/$r"; do
+    if [ -e "$c" ]; then printf '%s' "$c"; return; fi
+  done
+  printf '%s' "$p"
+}
+# count a use + re-stage misses in the background (never blocks or fails the launch)
+warm() { (curl -s -m 900 -X POST -H 'Content-Type: application/json' \
+  -d "{\"kind\":\"llm\",\"name\":\"${1#/models/}\",\"use\":true}" "$MODELSVC/cache/warm" >/dev/null 2>&1 &) ; }
 
 T2I=$(mc /models/Qwen-Image-2.1-PE/T2I-Heretic/GGUF/Q4_K_M/pe_t2i_heretic-Q4_K_M.gguf)
 I2I=$(mc /models/Qwen-Image-2.1-PE/I2I-Heretic/GGUF/Q4_K_M/Qwen-Image-2.1-PE-I2I-Heretic-Q4_K_M.gguf)
 MMPROJ=$(mc /models/Qwen-Image-2.1-PE/I2I-Heretic/GGUF/mmproj/Qwen-Image-2.1-PE-I2I-Heretic-mmproj-F16.gguf)
 for f in "$T2I" "$I2I" "$MMPROJ"; do [ -r "$f" ] || { echo "qwen-pe-router: missing model file $f" >&2; exit 1; }; done
+for f in /models/Qwen-Image-2.1-PE/T2I-Heretic/GGUF/Q4_K_M/pe_t2i_heretic-Q4_K_M.gguf \
+         /models/Qwen-Image-2.1-PE/I2I-Heretic/GGUF/Q4_K_M/Qwen-Image-2.1-PE-I2I-Heretic-Q4_K_M.gguf \
+         /models/Qwen-Image-2.1-PE/I2I-Heretic/GGUF/mmproj/Qwen-Image-2.1-PE-I2I-Heretic-mmproj-F16.gguf; do warm "$f"; done
 
 # Router mode also lists everything in llama.cpp's download cache (~/.cache/llama.cpp: stray
 # DanTagGen GGUFs). Point it at an empty dir so only the two presets are offered.

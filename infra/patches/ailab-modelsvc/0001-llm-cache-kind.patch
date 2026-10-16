@@ -1,0 +1,90 @@
+--- a/serve.py
++++ b/serve.py
+@@ -101,6 +101,13 @@
+ FOLDERS = {"unet": ["diffusion_models"], "te": ["text_encoders"], "vae": ["vae"],
+            # cache-only kinds (warm / evict / pin / restore; never loaded by this service)
+            "lora": ["loras"], "ckpt": ["checkpoints"], "detector": ["ultralytics"], "sam": ["sams"]}
++# llm: GGUFs other servers load (the Qwen-Image PE llama.cpp router, claude1/Travis 2026-10-16); names are relative to /models.
++# Cache-only, never loaded here, never listed (walking the whole NAS share would stall the catalog).
++LLM_ROOT = os.environ.get("AILAB_LLM_ROOT", "/models")
++if os.path.isdir(LLM_ROOT):
++    folder_paths.add_model_folder_path("ailab_llm", LLM_ROOT)
++FOLDERS["llm"] = ["ailab_llm"]
++UNLISTED = {"llm"}
+ # every GPU this service was given (AI-Lab pins them; they appear as cuda:0..N-1). One FIFO queue per GPU.
+ GPUS = [torch.device(f"cuda:{i}") for i in range(torch.cuda.device_count())] or [torch.device("cpu")]
+ DEV = GPUS[0]
+@@ -1537,6 +1544,8 @@
+     avail = {}
+     for k in KINDS:
+         names = []
++        if k in UNLISTED:
++            avail[k] = sorted(e["name"] for e in TIERS[k].entries()); continue
+         for f in FOLDERS[k]:
+             names += [n for n in folder_paths.get_filename_list(f) if n.lower().endswith((".safetensors", ".sft", ".ckpt", ".pt", ".pth", ".gguf"))]
+         ex = PLUGIN_KINDS.get(k, {}).get("exclude")
+@@ -1669,7 +1678,9 @@
+ 
+ def _manage(path, body):
+     """Management API (the AI-Lab Model Cache page and the ComfyUI Model Manager node use it):
+-      POST /cache/warm {kind,name}        copy a cold model into this host's RAM cache (background)
++      POST /cache/warm {kind,name,use?,wait?}  copy a cold model into this host's RAM cache (background; wait = reply when
++                                          done with {path, tier}); use = also count a use (score/last), for files other
++                                          servers load (kind llm: llama.cpp GGUFs) - call it whenever one is requested
+       POST /cache/evict {kind,name,tier}  delete the ram (default) or optane copy
+       POST /cache/pin {kind,name,pinned,tier}  keep / release a copy from eviction
+       POST /cache/quotas {quota_gb:{unet,te,vae,lora}, half_life_h, optane_quota_gb, optane_root}
+@@ -1710,12 +1721,18 @@
+     folders = FOLDERS[kind]
+     if path == "/cache/warm":
+         src = full_path(name, folders)
+-        threading.Thread(target=TIERS[kind].fetch, args=(name, src, False), daemon=True).start()
++        use = bool(body.get("use"))
++        if body.get("wait"):
++            p = TIERS[kind].fetch(name, src, use)
++            return {"ok": True, "path": p, "tier": TIERS[kind].where(name, src)}
++        threading.Thread(target=TIERS[kind].fetch, args=(name, src, use), daemon=True).start()
+         return {"ok": True, "warming": name}
+     if path == "/cache/evict":
+         TIERS[kind].evict(name, body.get("tier", "ram")); return {"ok": True}
+     if path == "/cache/pin":
+         TIERS[kind].pin(name, body.get("pinned", True), body.get("tier", "ram")); return {"ok": True}
++    if path in ("/models/load", "/models/unload") and kind in UNLISTED:
++        raise RuntimeError(f"{kind} files are cache-only here - another server loads them")
+     if path == "/models/load":
+         extra = body.get("clip_type", A.clip_type) if kind == "te" else None
+         g = placement(kind, name, extra, body.get("gpu"))
+--- a/modelsvc/tiers.py
++++ b/modelsvc/tiers.py
+@@ -22,7 +22,10 @@
+ 
+ ROOT = os.environ.get("AILAB_MODELSVC_CACHE", "/model-cache/ailab-modelsvc")
+ CONFIG = os.path.join(ROOT, "config.json")
+-KINDS = ["unet", "te", "vae", "lora", "ckpt", "detector", "sam"]   # ckpt / detector are cache-only unless a plugin serves them
++KINDS = ["unet", "te", "vae", "lora", "ckpt", "detector", "sam", "llm"]   # ckpt / detector / llm are cache-only unless a plugin serves them
++# llm = files another server loads (llama.cpp GGUFs under /models). /models is a CIFS mount INSIDE the container, so the
++# host-side RAM copy can't read it: these are staged into the persistent tier first (a local copy) and RAM is filled from there.
++VIA_PERSIST = {"llm"}
+ def _drive_gb():
+     try:
+         st = os.statvfs(os.path.dirname(ROOT)); return st.f_blocks * st.f_frsize / 1e9
+@@ -31,8 +34,8 @@
+ 
+ 
+ _BIG_RAM = _drive_gb() > 400   # sized by the RAM DRIVE (inside a CT the RAM count shows the host's): px-gpu 512 GB, px-epyc 256 GB
+-DEFAULT_GB = ({"unet": 128, "te": 64, "vae": 16, "lora": 32, "ckpt": 48, "detector": 8, "sam": 8} if _BIG_RAM
+-              else {"unet": 80, "te": 40, "vae": 8, "lora": 24, "ckpt": 24, "detector": 4, "sam": 4})
++DEFAULT_GB = ({"unet": 128, "te": 64, "vae": 16, "lora": 32, "ckpt": 48, "detector": 8, "sam": 8, "llm": 32} if _BIG_RAM
++              else {"unet": 80, "te": 40, "vae": 8, "lora": 24, "ckpt": 24, "detector": 4, "sam": 4, "llm": 16})
+ def _own_mount(path):
+     """True when path is on its own filesystem (a real pmem / disk mount), not a plain folder on the root disk."""
+     try:
+@@ -284,6 +287,8 @@
+         size, mtime = os.path.getsize(src), os.path.getmtime(src)
+         okey = f"{self.kind}/{name}"
+         opt_has = OPTANE.ok() and OPTANE.has(okey, size)
++        if self.kind in VIA_PERSIST and not opt_has and not self.ram.has(name, size) and OPTANE.ok():
++            opt_has = OPTANE.put(okey, src, size, mtime, count_use) is not None   # synchronous: RAM is filled from this copy
+         if self.ram.has(name, size):
+             if count_use:
+                 self.ram.touch(name, size, mtime)
