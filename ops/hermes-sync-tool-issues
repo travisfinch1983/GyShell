@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""hermes-sync-tool-issues [--check] [profile ...]
+
+Stamps the shared "a tool isn't working right? report it to claude1" block into every Hermes agent's
+workspace/AGENTS.md, including the `default` template that new agents are copied from.
+
+The canonical block lives in /root/.hermes/global/tool-issues-block.md (repo copy:
+ai-lab ops/hermes-tool-issues-block.md). It sits between <!-- TOOL-ISSUES:START ... --> and
+<!-- TOOL-ISSUES:END --> markers. An existing block is replaced in place. A missing one is inserted
+just before the file's first "## " heading, so it lands near the top of the manual.
+Each changed file is backed up as AGENTS.md.bak-toolissues-<timestamp>.
+--check reports which profiles are missing or out of date and changes nothing (exit 1 if any).
+"""
+import glob, os, re, shutil, sys, time
+
+BLOCK_FILE = "/root/.hermes/global/tool-issues-block.md"
+PROFILES = "/root/.hermes/profiles"
+RX = re.compile(r"<!-- TOOL-ISSUES:START.*?<!-- TOOL-ISSUES:END -->\n?", re.S)
+
+
+def main():
+    args = sys.argv[1:]
+    check = "--check" in args
+    names = [a for a in args if not a.startswith("--")]
+    block = open(BLOCK_FILE).read().rstrip("\n") + "\n"
+    if not RX.fullmatch(block):
+        sys.exit(f"ERROR {BLOCK_FILE} must be exactly one TOOL-ISSUES:START..END block")
+    paths = [f"{PROFILES}/{n}/workspace/AGENTS.md" for n in names] if names else \
+        sorted(glob.glob(f"{PROFILES}/*/workspace/AGENTS.md"))
+    stamp, stale = time.strftime("%Y%m%d-%H%M%S"), []
+    for p in paths:
+        prof = p.split("/")[-3]
+        if not os.path.isfile(p):
+            print(f"{prof:18s} MISSING AGENTS.md"); stale.append(prof); continue
+        if os.path.islink(p):
+            print(f"{prof:18s} skipped (AGENTS.md is a symlink)"); continue
+        s = open(p).read()
+        if RX.search(s):
+            new = RX.sub(lambda _m: block, s, count=1)
+            action = "replaced"
+        else:
+            m = re.search(r"^## ", s, re.M)
+            i = m.start() if m else len(s)
+            new = s[:i] + block + "\n" + s[i:]
+            action = "inserted"
+        if new == s:
+            print(f"{prof:18s} up to date"); continue
+        stale.append(prof)
+        if check:
+            print(f"{prof:18s} NEEDS UPDATE ({action})"); continue
+        shutil.copy2(p, f"{p}.bak-toolissues-{stamp}")
+        open(p, "w").write(new)
+        print(f"{prof:18s} {action}")
+    if check and stale:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
