@@ -21,6 +21,7 @@ Access is two layers:
      (table `visibility`).
 """
 import asyncio
+import base64
 import hashlib
 import hmac
 import html
@@ -54,6 +55,8 @@ REFS_DIR = Path(os.environ.get("REFS_DIR", "/imagegen/request_refs")).resolve()
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/var/lib/imagine"))
 CACHE_DIR = Path(os.environ.get("CACHE_DIR", "/var/cache/imagine"))
 POSES_URL = os.environ.get("POSES_URL", "http://127.0.0.1:17895")
+AILAB = os.environ.get("AILAB_URL", "http://127.0.0.1:17890")
+VLM_MODEL = os.environ.get("IMAGINE_VLM_MODEL", "Qwen3.8-27B-INT8-MM-8_Slot-Think_Preserve-256k")
 TRUSTED_FILE = os.environ.get("TRUSTED_SOURCES", "/opt/ai-lab/.gybackend-data/trusted-sources.json")
 NPM_PEERS = {"10.0.0.106"}          # Nginx Proxy Manager: the only peer whose X-Real-IP we believe
 BUILTIN_TRUSTED = ["127.0.0.0/8", "10.0.0.219/32", "10.0.0.161/32", "10.0.0.67/32"]
@@ -188,6 +191,10 @@ with db() as _c:
     CREATE TABLE IF NOT EXISTS templates(id TEXT PRIMARY KEY, person TEXT, name TEXT, data TEXT, updated REAL);
     CREATE TABLE IF NOT EXISTS history(id TEXT PRIMARY KEY, person TEXT, agent TEXT, event_id TEXT,
         data TEXT, body TEXT, created REAL);
+    -- Poses uploaded from this page, while AI-Lab's pipeline turns them into library poses.
+    -- state: queued (waiting for a GPU) | mannequin | skeleton | describing | ready | failed
+    CREATE TABLE IF NOT EXISTS pose_uploads(pose_id TEXT PRIMARY KEY, person TEXT, src TEXT, created REAL,
+        state TEXT, detail TEXT, mq_job TEXT, gpu TEXT, updated REAL, ai_prompt TEXT);
     CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, person TEXT, created REAL, ip TEXT);
     -- What a restricted person may see. kind: base (key = family id), ft / lora (key = family/item id)
     CREATE TABLE IF NOT EXISTS visibility(person TEXT, kind TEXT, key TEXT, PRIMARY KEY(person, kind, key));
@@ -564,7 +571,12 @@ async def api_poses(req: Request):
     who(req)
     async with httpx.AsyncClient(timeout=20) as c:
         r = await c.get(f"{POSES_URL}/api/poses")
-    return Response(r.content, r.status_code, media_type="application/json")
+    if r.status_code != 200:
+        return Response(r.content, r.status_code, media_type="application/json")
+    # Uploads still in the pipeline appear in the pose section's upload strip, not the grid.
+    with db() as c:
+        pending = {row["pose_id"] for row in c.execute("SELECT pose_id FROM pose_uploads WHERE state != 'ready'")}
+    return [p for p in r.json() if p.get("id") not in pending and p.get("prompt") != POSE_PLACEHOLDER]
 
 
 @app.get("/poseimg/{size}/{kind}/{pid}.webp")
@@ -603,6 +615,289 @@ def pose_files(pose):
 def load_pose(n):
     lib = load_json(POSE_LIB / "poses.json", [])
     return next((p for p in lib if p.get("index") == n), None)
+
+
+# ── pose uploads → AI-Lab pose pipeline ─────────────────────────────────────────────────────
+# AI-Lab owns the pose library (poses.json) and its pipeline: /poses/add, then a Qwen-Image 2.1
+# "mannequin" worker on a GPU, then OpenPose skeleton detection, which AI-Lab chains on its own
+# after a mannequin finishes. This page only adds the pose, picks a GPU, waits, and then has the
+# VLM write the pose description, which the person can edit afterwards.
+POSE_PLACEHOLDER = "(pose description being written)"
+MQ_MIN_FREE_MB = 15000          # same floor as AI-Lab: int8 model + int8 text encoder
+MQ_HOST_ORDER = ("ai-epyc", "ai-gpu")
+POSE_INSTR = (
+    "You write the pose description for a pose-reference library. The images show ONE body pose "
+    "(a photo or drawing, and/or a grey mannequin in the same pose). Describe ONLY the camera view and the "
+    "body pose, as one comma-separated line in this order: camera view (front / rear / side / three-quarter / "
+    "top-down), camera angle (eye-level / high angle / low angle), the overall position (standing, kneeling, "
+    "lying on back...), then legs, arms and hands, torso, head and gaze. Never mention clothing, hair, "
+    "identity, body type, background, lighting or art style. Examples:\n"
+    "front view, eye-level, standing, feet together, arms relaxed at sides\n"
+    "Rear view, eye-level, standing, legs straight, one arm raised with hand on head, other arm on hip, hips "
+    "tilted to the side, head turned to the right looking over shoulder\n"
+    "Side 3/4 view, eye-level, kneeling, torso leaning forward, propped up on elbows, facing away from viewer\n"
+    "Output the line only, no preamble, no reasoning.")
+
+
+def ailab(method, path, **kw):
+    with httpx.Client(timeout=kw.pop("timeout", 30)) as c:
+        r = c.request(method, f"{AILAB}/api/imagegen{path}", **kw)
+    try:
+        d = r.json()
+    except ValueError:
+        d = {}
+    if r.status_code >= 400:
+        raise RuntimeError(d.get("error") or f"AI-Lab {path}: {r.status_code}")
+    return d
+
+
+def library_pose(pid):
+    return next((p for p in load_json(POSE_LIB / "poses.json", []) if p.get("id") == pid), None)
+
+
+def pick_gpu():
+    """(host, gpu index) with room for the mannequin worker, ai-epyc first; None when all are busy.
+    ai-gpu V100s run it in fp16 (no bf16): verified to produce real mannequins on 2026-10-16."""
+    hosts = ailab("GET", "/poses/mannequin/gpus", timeout=20).get("hosts", {})
+    busy = set()
+    for j in ailab("GET", "/poses/mannequin/jobs").get("jobs", []):
+        if j.get("state") == "running":
+            busy |= {(j["host"], g) for g in j.get("gpus", [])}
+    for h in MQ_HOST_ORDER:
+        info = hosts.get(h) or {}
+        if info.get("disabled"):
+            continue
+        cands = [g for g in info.get("gpus", []) if g["freeMB"] >= MQ_MIN_FREE_MB and not g.get("avoid")
+                 and (h, g["index"]) not in busy]
+        if cands:
+            g = max(cands, key=lambda g: g["freeMB"])
+            return h, g["index"]
+    return None
+
+
+def vlm_describe(paths):
+    content = [{"type": "text", "text": POSE_INSTR}]
+    for p in paths:
+        im = ImageOps.exif_transpose(Image.open(p)).convert("RGB")
+        im.thumbnail((1024, 1024))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=88)
+        content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()}})
+    budget = 600
+    for _ in range(3):
+        body = {"model": VLM_MODEL, "messages": [{"role": "user", "content": content}], "max_tokens": budget,
+                "temperature": 0.2, "chat_template_kwargs": {"enable_thinking": False}}
+        with httpx.Client(timeout=240) as c:
+            r = c.post(f"{AILAB}/api/proxy/llm/v1/chat/completions", json=body)
+        r.raise_for_status()
+        ch = r.json()["choices"][0]
+        text = re.sub(r"(?s)<think>.*?</think>", "", ch["message"].get("content") or "").strip().strip('"').strip()
+        if text and ch.get("finish_reason") != "length":
+            return text.splitlines()[0].strip()
+        budget *= 2
+    raise RuntimeError("the vision model returned no description")
+
+
+def pu_set(pid, **kw):
+    kw["updated"] = time.time()
+    cols = ", ".join(f"{k}=?" for k in kw)
+    with _db_lock, db() as c:
+        c.execute(f"UPDATE pose_uploads SET {cols} WHERE pose_id=?", (*kw.values(), pid))
+
+
+def describe_pose(row):
+    pose = library_pose(row["pose_id"])
+    if not pose:
+        raise RuntimeError("the pose was removed from the library")
+    imgs = [row["src"]]
+    if pose.get("mannequin") and (POSE_LIB / "mannequin_images" / pose["mannequin"]).is_file():
+        imgs.append(str(POSE_LIB / "mannequin_images" / pose["mannequin"]))
+    text = vlm_describe(imgs)
+    cur = library_pose(row["pose_id"]) or {}
+    # Only fill the placeholder: a description typed by hand meanwhile wins.
+    if cur.get("prompt") in (POSE_PLACEHOLDER, "", None):
+        ailab("POST", "/poses/update", json={"id": row["pose_id"], "prompt": text})
+    return text
+
+
+def pose_worker_step():
+    with db() as c:
+        rows = c.execute("SELECT * FROM pose_uploads WHERE state NOT IN ('ready','failed') ORDER BY created").fetchall()
+    for row in rows:
+        pid = row["pose_id"]
+        try:
+            if not library_pose(pid):
+                pu_set(pid, state="failed", detail="removed from the library")
+                continue
+            if row["state"] == "queued":
+                g = pick_gpu()
+                if not g:
+                    pu_set(pid, detail="waiting for a GPU with ~15 GB free")
+                    continue
+                d = ailab("POST", "/poses/mannequin/start", json={
+                    "ids": [pid], "host": g[0], "gpus": [g[1]], "quant": "int8", "te": "int8", "steps": 25, "outpaint": "auto"})
+                pu_set(pid, state="mannequin", mq_job=d["job"]["id"], gpu=f"{g[0]} GPU {g[1]}", detail="starting the mannequin worker")
+                log.info("pose upload %s: mannequin job %s on %s GPU %s", pid, d["job"]["id"], *g)
+            elif row["state"] == "mannequin":
+                try:
+                    j = ailab("GET", f"/poses/mannequin/status?jobId={row['mq_job']}")["job"]
+                except RuntimeError as e:   # AI-Lab restarted: the in-memory job is gone
+                    if "unknown job" not in str(e):
+                        raise
+                    j = {"state": "done" if (library_pose(pid) or {}).get("mannequin") else "lost"}
+                if j["state"] == "running":
+                    w = (j.get("workers") or [{}])[0]
+                    pu_set(pid, detail=w.get("state") or "converting")
+                elif j["state"] == "done" and (j.get("results", {}).get(pid, {}).get("status", "ok") == "ok"):
+                    pu_set(pid, state="skeleton", detail="detecting the OpenPose skeleton")
+                elif j["state"] == "lost":
+                    pu_set(pid, state="queued", mq_job=None, detail="AI-Lab restarted; queued again")
+                else:
+                    err = (j.get("results", {}).get(pid) or {}).get("error") or j.get("error") or j["state"]
+                    pu_set(pid, state="failed", detail=f"mannequin: {err}"[:400])
+            elif row["state"] == "skeleton":
+                p = library_pose(pid) or {}
+                if p.get("skeleton_at") or time.time() - (row["updated"] or 0) > 300:
+                    pu_set(pid, state="describing", detail="writing the pose description")
+            elif row["state"] == "describing":
+                text = describe_pose(row)
+                pu_set(pid, state="ready", detail="", ai_prompt=text)
+                log.info("pose upload %s ready: %s", pid, text)
+        except Exception as e:  # noqa: BLE001
+            log.warning("pose upload %s (%s): %s", pid, row["state"], e)
+            pu_set(pid, detail=f"retrying: {e}"[:400])
+
+
+def pose_worker():
+    while True:
+        try:
+            pose_worker_step()
+        except Exception as e:  # noqa: BLE001
+            log.exception("pose worker: %s", e)
+        time.sleep(8)
+
+
+threading.Thread(target=pose_worker, daemon=True, name="pose-worker").start()
+
+
+def pu_row(r):
+    p = library_pose(r["pose_id"]) or {}
+    return {"pose_id": r["pose_id"], "n": p.get("index"), "state": r["state"], "detail": r["detail"] or "",
+            "gpu": r["gpu"], "created": r["created"], "prompt": p.get("prompt") if p.get("prompt") != POSE_PLACEHOLDER else "",
+            "src_url": img_url(Path(r["src"])), "person": r["person"]}
+
+
+@app.post("/api/poses/upload")
+async def upload_pose(req: Request, files: list[UploadFile] = File(...)):
+    person = who(req)
+    out = []
+    for f in files:
+        data = await f.read()
+        if len(data) > MAX_UPLOAD:
+            raise HTTPException(413, f"{f.filename} is over {MAX_UPLOAD // 2**20} MB")
+        try:
+            im = ImageOps.exif_transpose(Image.open(io.BytesIO(data)))
+        except Exception:
+            raise HTTPException(400, f"{f.filename} is not an image")
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGB")
+        d = REFS_DIR / person["id"] / "poses"
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"{uuid.uuid4().hex[:12]}.png"    # PNG: rotation baked in, HEIC readable by the workers
+        im.save(path, "PNG")
+        try:
+            os.chmod(path, 0o664)
+        except OSError:
+            pass
+        try:
+            r = await asyncio.to_thread(ailab, "POST", "/poses/add", json={
+                "prompt": POSE_PLACEHOLDER, "source_path": str(path.relative_to(IMAGEGEN))})
+        except RuntimeError as e:
+            raise HTTPException(502, f"pose library: {e}")
+        pid = r["pose"]["id"]
+        with _db_lock, db() as c:
+            c.execute("INSERT INTO pose_uploads(pose_id,person,src,created,state,detail,updated) VALUES(?,?,?,?,?,?,?)",
+                      (pid, person["id"], str(path), time.time(), "queued", "waiting for a GPU", time.time()))
+        log.info("pose upload %s by %s -> %s (#%s)", f.filename, person["id"], path, r["pose"].get("index"))
+        out.append(pid)
+    with db() as c:
+        return [pu_row(r) for r in c.execute(f"SELECT * FROM pose_uploads WHERE pose_id IN ({','.join('?' * len(out))})", out)]
+
+
+@app.get("/api/poses/uploads")
+def list_pose_uploads(req: Request):
+    """This person's uploads still in the pipeline, plus ones finished in the last day."""
+    person = who(req)
+    with db() as c:
+        rows = c.execute("SELECT * FROM pose_uploads WHERE person=? AND (state NOT IN ('ready','failed') OR updated > ?) "
+                         "ORDER BY created DESC", (person["id"], time.time() - 86400)).fetchall()
+    return [pu_row(r) for r in rows]
+
+
+def may_edit_pose(person, pid):
+    if person.get("admin"):
+        return True
+    with db() as c:
+        return bool(c.execute("SELECT 1 FROM pose_uploads WHERE pose_id=? AND person=?", (pid, person["id"])).fetchone())
+
+
+@app.get("/api/poses/{pid}/editable")
+def pose_editable(pid: str, req: Request):
+    return {"editable": may_edit_pose(who(req), pid)}
+
+
+@app.post("/api/poses/{pid}/prompt")
+async def set_pose_prompt(pid: str, req: Request):
+    person = who(req)
+    if not may_edit_pose(person, pid):
+        raise HTTPException(403, "Only the person who uploaded this pose (or an admin) can edit it")
+    b = await req.json()
+    try:
+        if b.get("ai"):
+            with db() as c:
+                row = c.execute("SELECT * FROM pose_uploads WHERE pose_id=?", (pid,)).fetchone()
+            p = library_pose(pid) or {}
+            src = row["src"] if row else (str(IMAGEGEN / p["source"]) if p.get("source") else str(POSE_LIB / "pose_images" / p.get("image", "")))
+            imgs = [src] + ([str(POSE_LIB / "mannequin_images" / p["mannequin"])] if p.get("mannequin") else [])
+            return {"suggestion": await asyncio.to_thread(vlm_describe, [i for i in imgs if Path(i).is_file()])}
+        text = re.sub(r"\s+", " ", str(b.get("prompt") or "")).strip()
+        if not text:
+            raise HTTPException(400, "The description can't be empty")
+        await asyncio.to_thread(ailab, "POST", "/poses/update", json={"id": pid, "prompt": text[:1000]})
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    log.info("pose %s description set by %s", pid, person["id"])
+    return {"ok": True, "prompt": text}
+
+
+@app.post("/api/poses/{pid}/retry")
+def retry_pose(pid: str, req: Request):
+    person = who(req)
+    if not may_edit_pose(person, pid):
+        raise HTTPException(403, "not yours")
+    with _db_lock, db() as c:
+        c.execute("UPDATE pose_uploads SET state='queued', detail='queued again', mq_job=NULL, updated=? "
+                  "WHERE pose_id=? AND state='failed'", (time.time(), pid))
+    return {"ok": True}
+
+
+@app.delete("/api/poses/{pid}")
+def delete_pose(pid: str, req: Request):
+    person = who(req)
+    if not may_edit_pose(person, pid):
+        raise HTTPException(403, "Only the person who uploaded this pose (or an admin) can remove it")
+    with db() as c:
+        row = c.execute("SELECT state FROM pose_uploads WHERE pose_id=?", (pid,)).fetchone()
+    if row and row["state"] == "mannequin":
+        raise HTTPException(409, "Its mannequin is being made right now; remove it when that finishes")
+    try:
+        ailab("POST", "/poses/delete", json={"id": pid})
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    with _db_lock, db() as c:
+        c.execute("UPDATE pose_uploads SET state='failed', detail='removed', updated=? WHERE pose_id=?", (time.time(), pid))
+    log.info("pose %s removed by %s", pid, person["id"])
+    return {"ok": True}
 
 
 # ── image files (catalogue previews + reference uploads) ─────────────────────────────────────

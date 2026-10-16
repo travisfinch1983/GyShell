@@ -129,6 +129,14 @@ body.managing #sPose,body.managing #sRefs,body.managing #sReq,body.managing .sen
 .mtools{display:none;gap:6px;flex-wrap:wrap}
 body.managing .mtools{display:flex}
 .who{font-size:13px}
+.ups{display:flex;gap:10px;overflow-x:auto;padding-bottom:4px;margin-bottom:12px}
+.up{flex:0 0 150px;background:var(--tile);border-radius:12px;overflow:hidden;font-size:12.5px}
+.up img{width:100%;height:150px;object-fit:cover;display:block}
+.up .b{padding:6px 8px}
+.up .st{font-weight:600}
+.up .st.ok{color:var(--ok)}.up .st.bad{color:#d0455f}
+.up .d{color:var(--muted);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.up .acts{display:flex;gap:4px;margin-top:5px;flex-wrap:wrap}
 @media (max-width:560px){
   h1{font-size:17px;flex-basis:100%}
   main{padding:0 10px}
@@ -187,9 +195,12 @@ body.managing .mtools{display:flex}
   <section id="sPose"><div class="sh"><span class="num">3</span><h2>Pose</h2><span class="sum" id="sumPose"></span><span class="car">▾</span></div>
     <div class="sb">
       <div class="tools">
+        <div class="row"><button class="btn acc sm" id="upPose">＋ Upload a pose</button><span class="muted small">A photo or drawing; it becomes a mannequin + skeleton with a description you can edit.</span></div>
+        <input type="file" id="filePose" accept="image/*" multiple hidden>
         <input type="search" id="qPose" placeholder="Search number or description (e.g. 42, kneeling)">
         <div class="chips" id="cPose"></div>
       </div>
+      <div class="ups" id="gUps" style="display:none"></div>
       <div class="grid poses" id="gPose"></div>
       <button class="btn more" id="morePose" style="display:none">Show more</button>
     </div></section>
@@ -491,7 +502,59 @@ function openPose(p,list,view){
   $('pPrev').onclick=()=>openPose(list[(i-1+list.length)%list.length],list,view);
   $('pNext').onclick=()=>openPose(list[(i+1)%list.length],list,view);
   $('ovSel').onclick=()=>{selectPose(S.pose===p.n?null:p.n);closeOv()};
+  poseEditor(p);
 }
+// Uploader (or admin) may edit the description; anyone else just reads it.
+async function poseEditor(p){
+  let ed=false;try{ed=(await api(`/api/poses/${p.id}/editable`)).editable}catch{}
+  const kv=$('ovB').querySelector('.kv');if(!ed||!kv||$('ovT').textContent.indexOf(`#${p.n} `)!==0)return;
+  kv.insertAdjacentHTML('afterend',`<div class="kv"><b>Edit description</b><textarea id="pEd" style="min-height:80px">${esc(p.prompt||'')}</textarea>
+    <div class="row" style="margin-top:6px"><button class="btn sm" id="pAi">✨ Rewrite with AI</button><button class="btn sm acc" id="pSave">Save description</button><span class="sp" style="flex:1"></span><button class="btn sm" id="pDel">Remove pose</button></div></div>`);
+  $('pAi').onclick=async()=>{$('pAi').disabled=true;$('pAi').textContent='Writing…';
+    try{const d=await api(`/api/poses/${p.id}/prompt`,{method:'POST',body:JSON.stringify({ai:true})});$('pEd').value=d.suggestion;toast('New suggestion; Save to keep it')}catch(e){toast(e.message,true)}
+    finally{$('pAi').disabled=false;$('pAi').textContent='✨ Rewrite with AI'}};
+  $('pSave').onclick=async()=>{try{const d=await api(`/api/poses/${p.id}/prompt`,{method:'POST',body:JSON.stringify({prompt:$('pEd').value})});p.prompt=d.prompt;toast('Description saved');renderPoses()}catch(e){toast(e.message,true)}};
+  let armed=false;$('pDel').onclick=async()=>{if(!armed){armed=true;$('pDel').textContent='Remove? tap again';setTimeout(()=>{armed=false;const b=$('pDel');if(b)b.textContent='Remove pose'},2500);return}
+    try{await api(`/api/poses/${p.id}`,{method:'DELETE'});closeOv();if(S.pose===p.n)selectPose(null);await loadPoses();loadUploads();toast('Pose removed')}catch(e){toast(e.message,true)}};
+}
+
+// ── pose uploads ──
+const UP_LABEL={queued:'Waiting for a GPU',mannequin:'Making the mannequin',skeleton:'Detecting the skeleton',describing:'Writing the description',ready:'Ready',failed:'Failed'};
+let UPS=[],upT=null;
+async function loadPoses(){POSES=(await api('/api/poses')).sort((a,b)=>a.n-b.n);renderPoseChips();renderPoses()}
+async function loadUploads(){
+  clearTimeout(upT);
+  let list=[];try{list=await api('/api/poses/uploads')}catch{return}
+  const wasBusy=UPS.filter(u=>!['ready','failed'].includes(u.state)).map(u=>u.pose_id);
+  const nowReady=list.filter(u=>u.state==='ready'&&wasBusy.includes(u.pose_id));
+  UPS=list;renderUploads();
+  if(nowReady.length){await loadPoses();toast(`Pose #${nowReady.map(u=>u.n).join(', #')} is ready`)}
+  if(UPS.some(u=>!['ready','failed'].includes(u.state)))upT=setTimeout(loadUploads,6000);
+}
+function renderUploads(){
+  const g=$('gUps');g.style.display=UPS.length?'':'none';g.innerHTML='';
+  UPS.forEach(u=>{const d=document.createElement('div');d.className='up';
+    const cls=u.state==='ready'?' ok':u.state==='failed'?' bad':'';
+    d.innerHTML=`<img src="${img(u.src_url)}" alt=""><div class="b"><div class="st${cls}">${u.n?'#'+u.n+' · ':''}${esc(UP_LABEL[u.state]||u.state)}</div>
+      <div class="d">${esc(u.state==='ready'?u.prompt:u.detail)}</div><div class="acts"></div></div>`;
+    const a=d.querySelector('.acts');
+    const btn=(t,f)=>{const b=document.createElement('button');b.className='btn sm';b.textContent=t;b.onclick=f;a.appendChild(b)};
+    if(u.state==='ready')btn('Open',()=>{const p=POSES.find(x=>x.id===u.pose_id);if(p)openPose(p,[p]);else loadPoses()});
+    if(u.state==='failed'&&u.detail!=='removed'){btn('Retry',async()=>{await api(`/api/poses/${u.pose_id}/retry`,{method:'POST'});loadUploads()});
+      btn('Remove',async()=>{try{await api(`/api/poses/${u.pose_id}`,{method:'DELETE'});loadUploads()}catch(e){toast(e.message,true)}})}
+    if(u.state==='failed'&&u.detail==='removed')return;
+    g.appendChild(d)});
+  if(!g.children.length)g.style.display='none';
+}
+$('upPose').onclick=()=>$('filePose').click();
+$('filePose').onchange=async e=>{
+  const files=[...e.target.files];e.target.value='';if(!files.length)return;
+  const fd=new FormData();files.forEach(f=>fd.append('files',f));
+  $('upPose').disabled=true;$('upPose').textContent='Uploading…';
+  try{const out=await api('/api/poses/upload',{method:'POST',body:fd});toast(`Added pose #${out.map(u=>u.n).join(', #')}. It shows here while it's processed.`);loadUploads()}
+  catch(err){toast('Upload failed: '+err.message,true)}
+  finally{$('upPose').disabled=false;$('upPose').textContent='＋ Upload a pose'}
+};
 
 // ── 4. reference images ──
 function renderRefs(){
@@ -674,7 +737,8 @@ $('mxForm').onsubmit=async e=>{e.preventDefault();const pw=$('mxPw').value;if(!p
   try{MODELS=await api('/api/models')}catch(e){toast('Models: '+e.message,true)}
   if(S.model&&!MODELS.some(m=>m.id===S.model))S.model=null;
   renderModels();loadFinetunes();loadLoras();renderRefs();
-  try{POSES=(await api('/api/poses')).sort((a,b)=>a.n-b.n);renderPoseChips();renderPoses()}catch(e){$('gPose').innerHTML=`<div class="empty">Poses: ${esc(e.message)}</div>`}
+  try{await loadPoses()}catch(e){$('gPose').innerHTML=`<div class="empty">Poses: ${esc(e.message)}</div>`}
+  loadUploads();
   renderSummary();
 })();
 </script>
