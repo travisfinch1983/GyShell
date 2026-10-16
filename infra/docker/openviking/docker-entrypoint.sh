@@ -149,22 +149,37 @@ if want:
     cfg.setdefault("vlm", {})["model"] = want
 json.dump(cfg, open(sys.argv[2], "w"), indent=2)
 PY
-# INHERIT, DON'T START EMPTY (claude1, 2026-10-16). The fingerprint includes the weights PATH, so
-# the SAME model moved or re-quantized (FP8 -> W8A16 on 2026-10-09) got a brand-new EMPTY workspace.
-# Accounts and API keys live in the workspace, so every agent key became "Invalid API Key" for
-# seven days while the health dot stayed green. When a fingerprint is NEW, copy the most recently
-# used real workspace into it instead:
-#   - viking/ (content, sessions, accounts, users.json = the agent API KEYS) and _system/ always;
-#   - vectordb/ only when its model_identity equals the runtime embed model. That is the label
-#     OpenViking itself enforces: if they differ it refuses to boot, so the vectors must be rebuilt
-#     with a re-index. If they match, the vectors are accepted as-is. (Measured FP8 vs W8A16 for the
-#     same text: cosine 0.996, exact self-retrieval 25/25.)
+# INHERIT, DON'T START EMPTY (claude1, 2026-10-16). The fingerprint includes the weights PATH and
+# the model NAME, so a moved, renamed or re-quantized copy of the SAME model got a brand-new EMPTY
+# workspace. Accounts and API keys live in the workspace, so every agent key became "Invalid API Key"
+# for seven days (2026-10-09..16) while the health dot stayed green.
+#
+# Whether the old vectors are still valid is decided by MEASURING, not by comparing names. Every
+# workspace carries _system/embed_canary.json: fixed texts plus the vectors they had. On a NEW
+# fingerprint, the newest real workspace is copied in:
+#   - viking/ (content, sessions, accounts, users.json = the agent API KEYS) and _system/: always;
+#   - vectordb/: when the new model re-embeds the canaries to the same place (mean cos >= 0.98,
+#     min >= 0.97), the index is copied and its model label rewritten to the new name, because
+#     OpenViking refuses to boot on a label mismatch. A genuinely different model fails the canary,
+#     so its vectors are NOT copied and a notification says to re-index. With no canary (older
+#     workspace), it falls back to "same label" only.
 # The source workspace is left untouched (rollback = point back at it).
+# (FP8 vs W8A16 of the same model, measured 2026-10-16: cos 0.996, exact self-retrieval 25/25.)
 if [ "${NEW_WS:-0}" = "1" ]; then
   INHERIT="$(python3 - "$ROOT" "$WS" "$RUNTIME" <<'PY'
-import json, os, re, shutil, sys
+import json, math, os, re, shutil, sys, urllib.request
 root, ws, runtime = sys.argv[1], sys.argv[2], sys.argv[3]
-model = ((json.load(open(runtime)).get("embedding") or {}).get("dense") or {}).get("model") or ""
+dense = (json.load(open(runtime)).get("embedding") or {}).get("dense") or {}
+model = dense.get("model") or ""
+def embed(texts):
+    h = {"Content-Type": "application/json"}
+    if dense.get("api_key"): h["Authorization"] = "Bearer " + dense["api_key"]
+    req = urllib.request.Request(dense["api_base"].rstrip("/") + "/embeddings",
+                                 json.dumps({"model": model, "input": texts}).encode(), h)
+    d = json.load(urllib.request.urlopen(req, timeout=60))
+    return [x["embedding"] for x in sorted(d["data"], key=lambda x: x["index"])]
+def cos(a, b):
+    return sum(x*y for x, y in zip(a, b)) / ((math.sqrt(sum(x*x for x in a)) * math.sqrt(sum(y*y for y in b))) or 1)
 def newest(d):
     t = 0
     for dp, _, fs in os.walk(os.path.join(d, "viking")):
@@ -183,9 +198,10 @@ for n in os.listdir(root):
 if not cands:
     print("none"); sys.exit(0)
 src = max(cands)[1]
+meta_p = os.path.join(src, "vectordb", "context", "collection_meta.json")
 ident = ""
 try:
-    m = re.search(r'model_identity\\?"\s*:\s*\\?"([^"\\]+)', open(os.path.join(src, "vectordb", "context", "collection_meta.json")).read())
+    m = re.search(r'model_identity\\?"\s*:\s*\\?"([^"\\]+)', open(meta_p).read())
     ident = m.group(1) if m else ""
 except OSError:
     pass
@@ -193,12 +209,33 @@ for sub in ("viking", "_system"):
     if os.path.isdir(os.path.join(src, sub)):
         shutil.copytree(os.path.join(src, sub), os.path.join(ws, sub), symlinks=True, dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns("*.pid", "LOCK", "*-shm", "*-wal"))
-vec = "skipped"
-if ident and ident == model and os.path.isdir(os.path.join(src, "vectordb")):
+verdict, why = "skipped", ""
+canary_p = os.path.join(src, "_system", "embed_canary.json")
+if os.path.isfile(canary_p) and os.path.isdir(os.path.join(src, "vectordb")):
+    try:
+        c = json.load(open(canary_p))
+        sims = [cos(a, b) for a, b in zip(c["vectors"], embed(c["texts"]))]
+        mean, mn = sum(sims) / len(sims), min(sims)
+        why = f"canary mean {mean:.4f} min {mn:.4f} vs {c.get('label')}"
+        if mean >= 0.98 and mn >= 0.97:
+            verdict = "copied"
+    except Exception as e:  # noqa: BLE001
+        why = f"canary check failed: {e}"
+elif ident and ident == model:
+    verdict, why = "copied", "same model label (no canary in source)"
+else:
+    why = f"no canary in source and label differs ({ident} vs {model})"
+if verdict == "copied":
     shutil.copytree(os.path.join(src, "vectordb"), os.path.join(ws, "vectordb"), symlinks=True, dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("LOCK"))
-    vec = "copied"
-print(f"{os.path.basename(src)}|{vec}|{ident}|{model}")
+    if ident and ident != model:
+        mp = os.path.join(ws, "vectordb", "context", "collection_meta.json")
+        mj = json.load(open(mp))
+        mj["Description"] = mj["Description"].replace(f'"model": "{ident}"', f'"model": "{model}"').replace(
+            f'"model_identity": "{ident}"', f'"model_identity": "{model}"')
+        json.dump(mj, open(mp, "w"))
+        why += f"; index relabelled {ident} -> {model}"
+print(f"{os.path.basename(src)}|{verdict}|{why}")
 PY
 )" || INHERIT="error"
   case "$INHERIT" in
@@ -211,16 +248,43 @@ PY
       emit_notify critical "OpenViking could not inherit its memory workspace" \
         "Embed fingerprint $FP is new and copying the previous workspace failed. It is running on an EMPTY workspace: every agent memory key will be rejected. Restore the most recent workspace under $ROOT into $WS." ;;
     *)
-      SRCWS="${INHERIT%%|*}"; REST="${INHERIT#*|}"; VEC="${REST%%|*}"
-      echo "openviking: new fingerprint $FP inherited workspace $SRCWS (vectors: $VEC)" >&2
+      SRCWS="${INHERIT%%|*}"; REST="${INHERIT#*|}"; VEC="${REST%%|*}"; WHY="${REST#*|}"
+      echo "openviking: new fingerprint $FP inherited workspace $SRCWS (vectors: $VEC; $WHY)" >&2
       if [ "$VEC" = "copied" ]; then
-        emit_notify warning "OpenViking embed fingerprint changed - memory workspace inherited" \
-          "The embed model's weights path or quant changed (new fingerprint $FP). Accounts, agent keys, memories AND vectors were copied from $SRCWS (same model_identity, so the vectors stay valid). Nothing to do unless recall quality looks off. Source left intact for rollback."
+        emit_notify warning "OpenViking embed model changed - memory workspace inherited, vectors still valid" \
+          "New fingerprint $FP (the embed model's name, path or quant changed). Accounts, agent keys, memories AND vectors were carried over from $SRCWS; the vectors were kept because $WHY. Nothing to do unless recall quality looks off. Source left intact for rollback."
       else
         emit_notify error "OpenViking embed model changed - memories inherited, vectors need a re-index" \
-          "New fingerprint $FP. Accounts, agent keys and memories were copied from $SRCWS, but its vectors belong to a different model label ($REST), so they were NOT copied. Recall finds nothing until a re-index: POST /api/v1/content/reindex {\"uri\":\"viking://user/<agent>\"} per namespace with the root key + X-OpenViking-Account/X-OpenViking-User headers."
+          "New fingerprint $FP. Accounts, agent keys and memories were carried over from $SRCWS, but the old vectors were NOT ($WHY): the new model embeds differently. Recall finds nothing until a re-index: POST /api/v1/content/reindex {\"uri\":\"viking://user/<agent>\",\"wait\":true} per namespace with the root key + X-OpenViking-Account/X-OpenViking-User headers."
       fi ;;
   esac
+fi
+# Seed the compatibility canary for this workspace if it has none (fixed texts + their vectors under
+# the CURRENT model) so the next model change can be measured instead of guessed. Best effort.
+if [ -d "$WS/vectordb" ] && [ ! -f "$WS/_system/embed_canary.json" ] && [ -w "$WS" ]; then
+  python3 - "$WS" "$RUNTIME" <<'PY' || echo "openviking: canary seeding failed (non-fatal)" >&2
+import json, os, sys, time, urllib.request
+ws, runtime = sys.argv[1], sys.argv[2]
+dense = (json.load(open(runtime)).get("embedding") or {}).get("dense") or {}
+texts = ["The user prefers short replies with no bullet points.",
+         "ComfyUI workflow failed because the LoRA strength key was named weight instead of strength_model.",
+         "Kyla wants her face redrawn in anime style rather than pasted on.",
+         "px-gpu hosts eight V100 GPUs; reboot the host through IPMI if a GPU wedges.",
+         "Remember to water the tomato plants every morning before it gets hot.",
+         "def fingerprint(model, root): return sha1(f'{model}|{root}').hexdigest()[:12]",
+         "Zack is jailbreaking a PS5 on firmware 12.70 and loads games over FTP.",
+         "A quiet rainy evening in a cozy cafe, warm light, steam rising from a mug of tea."]
+h = {"Content-Type": "application/json"}
+if dense.get("api_key"): h["Authorization"] = "Bearer " + dense["api_key"]
+req = urllib.request.Request(dense["api_base"].rstrip("/") + "/embeddings",
+                             json.dumps({"model": dense["model"], "input": texts}).encode(), h)
+d = json.load(urllib.request.urlopen(req, timeout=60))
+vecs = [x["embedding"] for x in sorted(d["data"], key=lambda x: x["index"])]
+os.makedirs(os.path.join(ws, "_system"), exist_ok=True)
+json.dump({"label": dense["model"], "served_model": d.get("model"), "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+           "texts": texts, "vectors": vecs}, open(os.path.join(ws, "_system", "embed_canary.json"), "w"))
+print(f"openviking: seeded embed canary ({len(texts)} texts, model {d.get('model')})", file=sys.stderr)
+PY
 fi
 echo "openviking: embed fingerprint $FP -> workspace $WS"
 exec openviking-server --config "$RUNTIME"
