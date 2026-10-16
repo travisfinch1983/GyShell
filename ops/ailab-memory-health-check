@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""ailab-memory-health-check: raise AI-Lab notifications when agent memory silently stops working.
+
+Why this exists (2026-10-16): OpenViking lost its `hermes` account on 2026-10-09. The embed
+weights moved path, the per-fingerprint workspace changed, and it started EMPTY. Every agent's
+memory key then failed with "Invalid API Key" for SEVEN days, and the only trace was WARNING lines
+in logs nobody reads. The health board's OpenViking dot stayed green the whole time, because
+/health only proves the process is up, not that anyone can use it. This checks the parts that
+actually matter, and routes failures through the notification panel (warning and above also
+fleet-DM maintenance-claude).
+
+Checks (every 10 min via ailab-memory-health-check.timer):
+  1. The OpenViking `hermes` account exists (admin API). Missing = every agent key is dead -> CRITICAL.
+  2. Every agent key in the recall map (/opt/mcp-unified-memory/ov_agent_keys.json) authenticates
+     (GET /api/v1/system/status: 200 vs 401). Bad keys -> ERROR, or CRITICAL when 3 or more.
+  3. Every real Hermes agent profile HAS a key in the map and a non-empty OPENVIKING_API_KEY in its
+     .env (that is how kyla-studio was born without one) -> WARNING.
+Cannot-check (OpenViking down, admin creds unreadable) is reported as unknown. It is never
+reported as healthy, and it never clears an alarm. OpenViking being DOWN is the health board's
+job, so this only reports "unknown" for that case.
+Alarms latch per key, re-state after 7 days if still true, and clear (with an info event) only on
+positive evidence.
+"""
+import datetime, json, os, re, subprocess, sys, urllib.error, urllib.request
+
+NOTIFY = os.environ.get("AILAB_NOTIFY_URL", "http://127.0.0.1:17890/api/notifications/emit")
+STATE = os.environ.get("MEMORY_HEALTH_STATE", "/opt/ai-lab/.gybackend-data/memory-health-alarms.json")
+OV_CONF = "/etc/systemd/system/ai-lab.service.d/30-openviking.conf"
+KEYMAP = os.environ.get("OPENVIKING_AGENT_KEYS_FILE", "/opt/mcp-unified-memory/ov_agent_keys.json")
+PROFILES = "/root/.hermes/profiles"
+SKIP_PROFILES = {"default", "main"}   # template + legacy, never chatted with
+REANNOUNCE_S = 7 * 86400
+SOURCE = "memory-health"
+
+
+def ov_admin():
+    env = {}
+    try:
+        for line in open(OV_CONF):
+            m = re.match(r'\s*Environment="?([A-Z_]+)=(.*?)"?\s*$', line)
+            if m:
+                env[m.group(1)] = m.group(2)
+    except OSError:
+        pass
+    url = (env.get("OPENVIKING_ADMIN_URL") or env.get("OPENVIKING_ENDPOINT") or "http://127.0.0.1:1933").rstrip("/")
+    # MEMORY_HEALTH_ACCOUNT exists for testing the lost-account path without touching OpenViking
+    return url, env.get("OPENVIKING_ROOT_API_KEY", ""), os.environ.get("MEMORY_HEALTH_ACCOUNT") or env.get("OPENVIKING_ACCOUNT", "hermes")
+
+
+def get(url, key, timeout=10):
+    req = urllib.request.Request(url, headers={"X-API-Key": key})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except Exception as e:  # noqa: BLE001
+        return None, str(e)
+
+
+def workspace_hint():
+    """The live OpenViking workspace + which workspaces on disk still hold a `hermes` account."""
+    try:
+        logs = subprocess.run(["docker", "logs", "--tail", "400", "ailab-openviking"], capture_output=True, text=True, timeout=20)
+        m = re.findall(r"embed fingerprint (\w+) -> workspace (\S+)", logs.stdout + logs.stderr)
+        live = m[-1][0] if m else "unknown"
+    except Exception:  # noqa: BLE001
+        live = "unknown"
+    root = "/zpoolgamma/docker-volume/ai-lab/openviking"
+    have = []
+    try:
+        for d in sorted(os.listdir(root)):
+            if os.path.isfile(os.path.join(root, d, "viking", "hermes", "_system", "users.json")):
+                have.append(d)
+    except OSError:
+        pass
+    return (f"Live workspace fingerprint: {live}. Workspaces on disk that still hold the hermes account: "
+            f"{', '.join(have) or 'none'} (under {root}). Likely cause: the embed model id or weights path changed, "
+            f"so OpenViking started a fresh workspace. Repair: stop ailab-openviking, back up the live workspace dir, "
+            f"copy the most recent good workspace over it (vectordb is fine if model_identity matches), start it, "
+            f"then re-run this check. See claude1 memory reference_openviking_embedder_rebuild_lock.")
+
+
+def real_profiles():
+    out = []
+    for p in sorted(os.listdir(PROFILES)):
+        if p in SKIP_PROFILES or not os.path.isfile(os.path.join(PROFILES, p, "config.yaml")):
+            continue
+        out.append(p)
+    return out
+
+
+def env_key(profile):
+    try:
+        for line in open(os.path.join(PROFILES, profile, ".env")):
+            if line.startswith("OPENVIKING_API_KEY="):
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        return None
+    return ""
+
+
+def load():
+    try:
+        return json.load(open(STATE)) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def save(m):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = STATE + ".tmp"
+    json.dump(m, open(tmp, "w"), indent=2)
+    os.replace(tmp, STATE)
+
+
+def emit(severity, message, detail):
+    body = json.dumps({"severity": severity, "source": SOURCE, "message": message, "detail": detail}).encode()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(NOTIFY, body, {"Content-Type": "application/json"}), timeout=20) as r:
+            return r.status == 200
+    except Exception as e:  # noqa: BLE001
+        print(f"  NOTIFY FAILED ({e}) - {severity}: {message}", file=sys.stderr)
+        return False
+
+
+def main():
+    alarms, now, dirty = load(), datetime.datetime.now().timestamp(), False
+    findings = {}   # key -> (severity, message, detail); keys absent = checked and fine
+    checked = set()  # keys we could actually evaluate this run (only these may clear)
+
+    url, root, account = ov_admin()
+    st, health = get(f"{url}/health", "", timeout=8)
+    if st != 200:
+        print(f"  OpenViking /health -> {st}: cannot check memory keys this run (the health board owns 'down')")
+        return 0
+    if not root:
+        findings["ov:unknown"] = ("warning", "Memory health check cannot read OpenViking admin credentials",
+                                  f"{OV_CONF} has no OPENVIKING_ROOT_API_KEY, so the hermes account and agent keys can't be verified. Not reported as healthy.")
+    else:
+        checked.add("ov:unknown")
+        st, acc = get(f"{url}/api/v1/admin/accounts", root)
+        if st != 200 or not isinstance(acc, dict):
+            findings["ov:unknown"] = ("warning", "Memory health check could not query OpenViking accounts",
+                                      f"GET /api/v1/admin/accounts -> {st}. Agent memory keys not verified this run.")
+            checked.discard("ov:unknown")
+        else:
+            checked.add("ov:account")
+            names = {a.get("account_id"): a.get("user_count") for a in acc.get("result") or []}
+            if account not in names:
+                findings["ov:account"] = ("critical", f"OpenViking lost the '{account}' account: every agent's long-term memory is failing",
+                                          f"Accounts present: {names}. All agent OpenViking keys belong to '{account}', so every capture and recall "
+                                          f"returns 'Invalid API Key' and new agents can't get a key. " + workspace_hint())
+
+    # per-agent keys (only meaningful when the account exists)
+    if "ov:account" in checked and "ov:account" not in findings:
+        try:
+            keymap = json.load(open(KEYMAP))
+        except Exception as e:  # noqa: BLE001
+            keymap = None
+            findings["ov:keymap"] = ("warning", "Memory health check cannot read the agent key map", f"{KEYMAP}: {e}")
+        if keymap is not None:
+            checked.add("ov:keymap")
+            profiles = real_profiles()
+            bad = []
+            for agent in profiles:
+                k = keymap.get(agent)
+                checked.add(f"ov:nokey:{agent}")
+                if not k or not env_key(agent):
+                    where = [w for w, miss in (("recall map", not k), ("profile .env", not env_key(agent))) if miss]
+                    findings[f"ov:nokey:{agent}"] = ("warning", f"Agent '{agent}' has no OpenViking memory key",
+                                                     f"Missing from: {', '.join(where)}. Its long-term memory capture/recall is off. "
+                                                     f"Usually key provisioning failed at agent creation (check the ai-lab journal for "
+                                                     f"'OpenViking key provisioning FAILED for {agent}').")
+                    continue
+                st, _ = get(f"{url}/api/v1/system/status", k)
+                if st == 200:
+                    checked.add("ov:badkeys")
+                elif st in (401, 403):
+                    checked.add("ov:badkeys")
+                    bad.append(agent)
+                # anything else = cannot check this key this run; draws no conclusion
+            if bad:
+                findings["ov:badkeys"] = ("critical" if len(bad) >= 3 else "error",
+                                          f"{len(bad)} agent OpenViking memory key(s) rejected: {', '.join(bad)}",
+                                          "These agents' long-term memory writes and recalls fail with 'Invalid API Key'. "
+                                          "If many agents are affected at once, the account or workspace was likely reset. " + workspace_hint())
+
+    # latch / clear
+    for key, (sev, msg, detail) in findings.items():
+        prev = alarms.get(key)
+        if prev and now - prev.get("lastNotified", 0) < REANNOUNCE_S and prev.get("severity") == sev:
+            print(f"  latched {key}: {msg}")
+            continue
+        suffix = "" if not prev else (" Unchanged since %s - re-stated because it is still true." %
+                                      datetime.datetime.fromtimestamp(prev["firstSeen"]).strftime("%Y-%m-%d %H:%M"))
+        print(f"  {sev.upper()} {key}: {msg}")
+        emit(sev, msg, detail + suffix)
+        alarms[key] = {"firstSeen": prev.get("firstSeen", now) if prev else now, "lastNotified": now, "severity": sev}
+        dirty = True
+    for key in list(alarms):
+        if key not in findings and key in checked:
+            emit("info", f"Memory health recovered: {key}", "The condition is no longer present (verified this run).")
+            del alarms[key]
+            dirty = True
+    if dirty:
+        save(alarms)
+    if not findings:
+        print("  ok: hermes account present, all agent keys authenticate")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

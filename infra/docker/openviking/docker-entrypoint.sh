@@ -108,6 +108,8 @@ elif [ "$SUBSTITUTED" = "1" ]; then
   mkdir -p "$WS"
 else
   WS="$ROOT/$FP"
+  NEW_WS=0
+  [ -d "$WS" ] || NEW_WS=1
   mkdir -p "$WS"
 fi
 # Also take vlm.model from AI-Lab's Support Models file (role `memory_vlm`) so the model
@@ -147,5 +149,78 @@ if want:
     cfg.setdefault("vlm", {})["model"] = want
 json.dump(cfg, open(sys.argv[2], "w"), indent=2)
 PY
+# INHERIT, DON'T START EMPTY (claude1, 2026-10-16). The fingerprint includes the weights PATH, so
+# the SAME model moved or re-quantized (FP8 -> W8A16 on 2026-10-09) got a brand-new EMPTY workspace.
+# Accounts and API keys live in the workspace, so every agent key became "Invalid API Key" for
+# seven days while the health dot stayed green. When a fingerprint is NEW, copy the most recently
+# used real workspace into it instead:
+#   - viking/ (content, sessions, accounts, users.json = the agent API KEYS) and _system/ always;
+#   - vectordb/ only when its model_identity equals the runtime embed model. That is the label
+#     OpenViking itself enforces: if they differ it refuses to boot, so the vectors must be rebuilt
+#     with a re-index. If they match, the vectors are accepted as-is. (Measured FP8 vs W8A16 for the
+#     same text: cosine 0.996, exact self-retrieval 25/25.)
+# The source workspace is left untouched (rollback = point back at it).
+if [ "${NEW_WS:-0}" = "1" ]; then
+  INHERIT="$(python3 - "$ROOT" "$WS" "$RUNTIME" <<'PY'
+import json, os, re, shutil, sys
+root, ws, runtime = sys.argv[1], sys.argv[2], sys.argv[3]
+model = ((json.load(open(runtime)).get("embedding") or {}).get("dense") or {}).get("model") or ""
+def newest(d):
+    t = 0
+    for dp, _, fs in os.walk(os.path.join(d, "viking")):
+        for f in fs:
+            try: t = max(t, os.path.getmtime(os.path.join(dp, f)))
+            except OSError: pass
+    return t
+cands = []
+for n in os.listdir(root):
+    d = os.path.join(root, n)
+    if d == ws or not os.path.isdir(d) or n.startswith("UNRESOLVED") or "." in n:
+        continue
+    vk = os.path.join(d, "viking")
+    if os.path.isdir(vk) and any(os.path.isfile(os.path.join(vk, a, "_system", "users.json")) for a in os.listdir(vk)):
+        cands.append((newest(d), d))
+if not cands:
+    print("none"); sys.exit(0)
+src = max(cands)[1]
+ident = ""
+try:
+    m = re.search(r'model_identity\\?"\s*:\s*\\?"([^"\\]+)', open(os.path.join(src, "vectordb", "context", "collection_meta.json")).read())
+    ident = m.group(1) if m else ""
+except OSError:
+    pass
+for sub in ("viking", "_system"):
+    if os.path.isdir(os.path.join(src, sub)):
+        shutil.copytree(os.path.join(src, sub), os.path.join(ws, sub), symlinks=True, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("*.pid", "LOCK", "*-shm", "*-wal"))
+vec = "skipped"
+if ident and ident == model and os.path.isdir(os.path.join(src, "vectordb")):
+    shutil.copytree(os.path.join(src, "vectordb"), os.path.join(ws, "vectordb"), symlinks=True, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("LOCK"))
+    vec = "copied"
+print(f"{os.path.basename(src)}|{vec}|{ident}|{model}")
+PY
+)" || INHERIT="error"
+  case "$INHERIT" in
+    none)
+      echo "openviking: new workspace $WS and no earlier workspace to inherit - starting empty (first boot?)" >&2
+      emit_notify warning "OpenViking started a NEW EMPTY memory workspace" \
+        "Embed fingerprint $FP had no workspace and no earlier workspace with accounts was found under $ROOT. If this is not a first install, agent memory keys will fail - restore an old workspace into $WS." ;;
+    error|"")
+      echo "openviking: workspace inheritance FAILED for $WS" >&2
+      emit_notify critical "OpenViking could not inherit its memory workspace" \
+        "Embed fingerprint $FP is new and copying the previous workspace failed. It is running on an EMPTY workspace: every agent memory key will be rejected. Restore the most recent workspace under $ROOT into $WS." ;;
+    *)
+      SRCWS="${INHERIT%%|*}"; REST="${INHERIT#*|}"; VEC="${REST%%|*}"
+      echo "openviking: new fingerprint $FP inherited workspace $SRCWS (vectors: $VEC)" >&2
+      if [ "$VEC" = "copied" ]; then
+        emit_notify warning "OpenViking embed fingerprint changed - memory workspace inherited" \
+          "The embed model's weights path or quant changed (new fingerprint $FP). Accounts, agent keys, memories AND vectors were copied from $SRCWS (same model_identity, so the vectors stay valid). Nothing to do unless recall quality looks off. Source left intact for rollback."
+      else
+        emit_notify error "OpenViking embed model changed - memories inherited, vectors need a re-index" \
+          "New fingerprint $FP. Accounts, agent keys and memories were copied from $SRCWS, but its vectors belong to a different model label ($REST), so they were NOT copied. Recall finds nothing until a re-index: POST /api/v1/content/reindex {\"uri\":\"viking://user/<agent>\"} per namespace with the root key + X-OpenViking-Account/X-OpenViking-User headers."
+      fi ;;
+  esac
+fi
 echo "openviking: embed fingerprint $FP -> workspace $WS"
 exec openviking-server --config "$RUNTIME"

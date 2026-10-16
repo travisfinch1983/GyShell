@@ -1,0 +1,7 @@
+[Unit]
+Description=AI-Lab memory health check (OpenViking account + per-agent memory keys)
+After=docker.service ai-lab.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ailab-memory-health-check
