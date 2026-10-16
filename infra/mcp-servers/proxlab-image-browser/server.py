@@ -73,7 +73,26 @@ def _scope(path: str) -> str:
             return _TI + "/" + p[len(pre) + 1:]
     if p.startswith("imagegen/"):
         p = p[len("imagegen/"):]
+    # Image areas OUTSIDE training_images pass through unscoped, like _batches: Image Request
+    # uploads (request_refs/), the pose library, Seedream output, and each agent's own folder
+    # (/imagegen/<profile>/). Forcing them under training_images 404'd every one (kyla-studio,
+    # 2026-10-16). A same-named folder INSIDE training_images still wins, so no old path changes.
+    head = p.split("/", 1)[0]
+    if head and head in _outside_areas() and not os.path.isdir(os.path.join(_IMAGEGEN_ROOT, _TI, head)):
+        return p
     return f"{_TI}/{p}" if p else _TI
+
+
+_IMAGEGEN_ROOT = os.environ.get("IMAGEGEN_ROOT", "/imagegen")
+_OUTSIDE_FIXED = {"request_refs", "pose_library", "seedream", "outputs", "mannequins", "photo-upscaled"}
+
+
+def _outside_areas():
+    try:
+        profiles = set(os.listdir("/root/.hermes/profiles"))
+    except OSError:
+        profiles = set()
+    return _OUTSIDE_FIXED | {d for d in profiles if os.path.isdir(os.path.join(_IMAGEGEN_ROOT, d))}
 # Longest side served to the agent. Full-res is overkill for rating (some sources are ~9MB)
 # and would blow up vision-token / KV cost on long runs.
 VIEW_MAXDIM = int(os.environ.get("VIEW_MAXDIM", "1280"))

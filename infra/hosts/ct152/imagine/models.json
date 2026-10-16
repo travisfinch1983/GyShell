@@ -71,7 +71,7 @@
   ],
   "description": "Krea 2: a diffusion transformer whose text encoder is the Qwen3-VL vision-language model, so it reads reference images natively. A reference fed to the encoder transfers pose, camera angle, framing and mood while the prompt still decides the subject; the structural edit patch reproduces identity for editing. Natural-language prompts. Local finetunes cover realism, anime and more, and it trains well for LoRAs on the 4090.",
   "best_for": "Photoreal and semi-real images, pose and camera-angle transfer from a reference photo, outfit transfer, and editing an existing image while keeping the person.",
-  "agent_hint": "Krea 2 reference path: TextEncodeKrea2 image1 (vision tokens) for pose/angle; Krea2EditModelPatch for identity/edit; Rebalance pack for up to 4 weighted refs.",
+  "agent_hint": "Krea 2 references go in as vision tokens. NEW image in a pose with someone's face (found working by kyla-studio, 2026-10-16): Krea2EncodeRebalance with image1 = the pose mannequin (image1_tokens high) and image2 = a TIGHT face crop (image2_tokens max), plain text-to-image from EmptySD3LatentImage. Krea2EditModelPatch's source image is the BASE image being EDITED, not an identity channel: a face selfie there just re-renders the selfie, and source + source_b gave corrupted output. Use it only to edit that image. Rebalance takes up to 4 weighted refs.",
   "companions": {
    "te": "Krea-2/qwen3vl_4b_heretic_int8_convrot.safetensors",
    "vae": "Krea-2/qwen_image_vae.safetensors"
