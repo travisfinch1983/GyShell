@@ -12,11 +12,17 @@ the pose library via poses-site (127.0.0.1:17895).
 Data it writes: reference uploads under REFS_DIR, and STATE_DIR (sqlite: refs, templates,
 history; matrix-sessions.json, 0600).
 
-Access: a valid Cloudflare Access JWT (the public hostname), or a LAN/tailnet client on the
-AI-Lab trusted-source list. Both map to a person in config.json, whose Matrix account is used.
+Access is two layers:
+  1. the GATE: a valid Cloudflare Access JWT (the public hostname), or a LAN/tailnet client on the
+     AI-Lab trusted-source list;
+  2. the PERSON: a PIN typed on the page picks who is using it (several people share devices), and a
+     session cookie remembers it. The person's Matrix account is used, and a person marked
+     "restricted" in config.json only sees the families / finetunes / LoRAs an admin ticked for them
+     (table `visibility`).
 """
 import asyncio
 import hashlib
+import hmac
 import html
 import io
 import ipaddress
@@ -73,15 +79,8 @@ CONFIG = load_json(HERE / "config.json", {})
 MODELS = load_json(HERE / "models.json", [])
 
 
-def person_by_email(email):
-    for p in CONFIG.get("people", []):
-        if email and email.lower() in [e.lower() for e in p.get("emails", [])]:
-            return p
-    return None
-
-
-def default_person():
-    return next((p for p in CONFIG.get("people", []) if p.get("lan_default")), None)
+def person_by_id(pid):
+    return next((p for p in CONFIG.get("people", []) if p["id"] == pid), None)
 
 
 # ── auth ─────────────────────────────────────────────────────────────────────────────────────
@@ -129,20 +128,45 @@ def trusted_ip(ip):
         return False
 
 
-def who(req: Request):
-    email = cf_email(req)
-    if email:
-        p = person_by_email(email)
-        if p:
-            return p
-        raise HTTPException(403, f"{email} is not set up for this page")
+def gate(req: Request):
+    """Layer 1: may this device reach the page at all? (Cloudflare Access only lets the people on
+    the app's policy through, so any valid JWT passes.)"""
+    if cf_email(req):
+        return
     ip = client_ip(req)
     if trusted_ip(ip):
-        p = default_person()
-        if p:
-            return p
+        return
     log.warning("refused %s %s (ip %s, no Access identity)", req.method, req.url.path, ip)
     raise HTTPException(403, "Open this page through its Cloudflare address, or from a trusted device")
+
+
+SESSION_COOKIE = "imagine_session"
+SESSION_TTL = 365 * 86400
+
+
+def tok_hash(tok):
+    return hashlib.sha256(tok.encode()).hexdigest()
+
+
+def who(req: Request):
+    """Layer 2: the person whose PIN opened this browser's session."""
+    gate(req)
+    tok = req.cookies.get(SESSION_COOKIE)
+    if tok:
+        with db() as c:
+            r = c.execute("SELECT person, created FROM sessions WHERE token=?", (tok_hash(tok),)).fetchone()
+        if r and time.time() - r["created"] < SESSION_TTL:
+            p = person_by_id(r["person"])
+            if p:
+                return p
+    raise HTTPException(401, "PIN required")
+
+
+def admin(req: Request):
+    p = who(req)
+    if not p.get("admin"):
+        raise HTTPException(403, "admin only")
+    return p
 
 
 # ── state ────────────────────────────────────────────────────────────────────────────────────
@@ -164,9 +188,34 @@ with db() as _c:
     CREATE TABLE IF NOT EXISTS templates(id TEXT PRIMARY KEY, person TEXT, name TEXT, data TEXT, updated REAL);
     CREATE TABLE IF NOT EXISTS history(id TEXT PRIMARY KEY, person TEXT, agent TEXT, event_id TEXT,
         data TEXT, body TEXT, created REAL);
+    CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, person TEXT, created REAL, ip TEXT);
+    -- What a restricted person may see. kind: base (key = family id), ft / lora (key = family/item id)
+    CREATE TABLE IF NOT EXISTS visibility(person TEXT, kind TEXT, key TEXT, PRIMARY KEY(person, kind, key));
     """)
 
 SESS_FILE = STATE_DIR / "matrix-sessions.json"
+PIN_FILE = STATE_DIR / "pins.json"   # {person id: "pbkdf2$<salt hex>$<hash hex>"}, 0600
+
+
+def pin_hash(pin, salt=None):
+    salt = salt or os.urandom(16)
+    return "pbkdf2$" + salt.hex() + "$" + hashlib.pbkdf2_hmac("sha256", pin.encode(), salt, 200_000).hex()
+
+
+def pin_ok(pin, stored):
+    try:
+        _, salt, _h = stored.split("$")
+        return hmac.compare_digest(pin_hash(pin, bytes.fromhex(salt)), stored)
+    except ValueError:
+        return False
+
+
+def save_private(path, obj):
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(obj, f, indent=2)
+    os.replace(tmp, path)
 
 
 def sessions():
@@ -174,11 +223,7 @@ def sessions():
 
 
 def save_sessions(s):
-    tmp = SESS_FILE.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(s, f, indent=2)
-    os.replace(tmp, SESS_FILE)
+    save_private(SESS_FILE, s)
 
 
 # ── images ───────────────────────────────────────────────────────────────────────────────────
@@ -372,38 +417,67 @@ def model_images(m):
     return cached("model:" + m["id"], dirs, scan)
 
 
+# ── what a restricted person may see ────────────────────────────────────────────────────────
+def allowed(person):
+    """None = sees everything; else the set of (kind, key) an admin ticked for them."""
+    if not person.get("restricted"):
+        return None
+    with db() as c:
+        return {(r["kind"], r["key"]) for r in c.execute("SELECT kind, key FROM visibility WHERE person=?", (person["id"],))}
+
+
+def can_see(al, kind, mid, item=None):
+    return al is None or (kind, mid if item is None else f"{mid}/{item}") in al
+
+
+def family_visible(al, mid):
+    """A family shows when anything in it (its base card, a finetune, a LoRA) was ticked."""
+    return al is None or any(k == mid or k.startswith(mid + "/") for _, k in al)
+
+
+def visible_model(person, mid):
+    m = model_by_id(mid)
+    if not family_visible(allowed(person), mid):
+        raise HTTPException(404, "unknown model")
+    return m
+
+
 @app.get("/api/models")
 def api_models(req: Request):
-    who(req)
+    person = who(req)
+    al = allowed(person)
     out = []
     for m in MODELS:
+        if not family_visible(al, m["id"]):
+            continue
         s = model_images(m)
-        fts = finetunes(m)
+        fts = [f for f in finetunes(m) if can_see(al, "ft", m["id"], f["id"])]
         out.append({k: m.get(k) for k in ("id", "name", "family", "edit", "refs", "max_refs", "description", "best_for", "notes")}
                    | {"cover": img_url(s["images"][0]) if s["images"] else None,
-                      "image_count": len(s["images"]), "file_count": len(s["files"]), "finetune_count": len(fts)})
+                      "image_count": len(s["images"]), "file_count": len(s["files"]), "finetune_count": len(fts),
+                      "base_visible": can_see(al, "base", m["id"])})
     return out
 
 
 @app.get("/api/models/{mid}")
 def api_model(mid: str, req: Request):
-    who(req)
-    m = model_by_id(mid)
+    m = visible_model(who(req), mid)
     s = model_images(m)
     return {"images": [img_url(p) for p in s["images"][:400]], "files": s["files"]}
 
 
 @app.get("/api/models/{mid}/finetunes")
 def api_finetunes(mid: str, req: Request):
-    who(req)
-    return [ft_public(f) for f in finetunes(model_by_id(mid))]
+    person = who(req)
+    al = allowed(person)
+    return [ft_public(f) for f in finetunes(visible_model(person, mid)) if can_see(al, "ft", mid, f["id"])]
 
 
 @app.get("/api/models/{mid}/finetunes/{fid}")
 def api_finetune(mid: str, fid: str, req: Request):
-    who(req)
-    f = next((f for f in finetunes(model_by_id(mid)) if f["id"] == fid), None)
-    if not f:
+    person = who(req)
+    f = next((f for f in finetunes(visible_model(person, mid)) if f["id"] == fid), None)
+    if not f or not can_see(allowed(person), "ft", mid, fid):
         raise HTTPException(404, "unknown finetune")
     return ft_public(f, full=True)
 
@@ -469,16 +543,17 @@ def lora_index(m):
 
 @app.get("/api/loras")
 def api_loras(model: str, req: Request):
-    who(req)
+    person = who(req)
+    al = allowed(person)
     keep = ("id", "path", "file", "cover", "name", "version", "layer", "trained_words", "nsfw")
-    return [{k: x.get(k) for k in keep} for x in lora_index(model_by_id(model))]
+    return [{k: x.get(k) for k in keep} for x in lora_index(visible_model(person, model)) if can_see(al, "lora", model, x["id"])]
 
 
 @app.get("/api/loras/{model}/{lid}")
 def api_lora(model: str, lid: str, req: Request):
-    who(req)
-    x = next((x for x in lora_index(model_by_id(model)) if x["id"] == lid), None)
-    if not x:
+    person = who(req)
+    x = next((x for x in lora_index(visible_model(person, model)) if x["id"] == lid), None)
+    if not x or not can_see(allowed(person), "lora", model, lid):
         raise HTTPException(404, "unknown LoRA")
     return x
 
@@ -656,8 +731,111 @@ def me(req: Request):
     person = who(req)
     s = sessions().get(person["matrix_user"])
     agents = [{"id": a, **CONFIG["agents"][a]} for a in person.get("agents", []) if a in CONFIG.get("agents", {})]
-    return {"name": person["name"], "matrix_user": person["matrix_user"], "matrix_ready": bool(s),
+    return {"id": person["id"], "name": person["name"], "admin": bool(person.get("admin")),
+            "restricted": bool(person.get("restricted")),
+            "matrix_user": person["matrix_user"], "matrix_ready": bool(s),
             "matrix_device": (s or {}).get("device_id"), "agents": [{k: a[k] for k in ("id", "label")} for a in agents]}
+
+
+# ── PIN sessions ─────────────────────────────────────────────────────────────────────────────
+_pin_fail = {}          # ip -> [failure times]
+_pin_lock = threading.Lock()
+PIN_MAX_FAILS, PIN_WINDOW = 8, 600
+
+
+@app.post("/api/pin")
+async def pin_login(req: Request):
+    gate(req)
+    ip = client_ip(req) or "?"
+    now = time.time()
+    with _pin_lock:
+        fails = [t for t in _pin_fail.get(ip, []) if now - t < PIN_WINDOW]
+        _pin_fail[ip] = fails
+        if len(fails) >= PIN_MAX_FAILS:
+            raise HTTPException(429, f"Too many wrong PINs. Try again in {int(PIN_WINDOW - (now - fails[0])) // 60 + 1} min.")
+    pin = str((await req.json()).get("pin") or "")
+    pins = load_json(PIN_FILE, {})
+    person = next((p for p in CONFIG.get("people", []) if pins.get(p["id"]) and pin_ok(pin, pins[p["id"]])), None)
+    if not person:
+        with _pin_lock:
+            _pin_fail.setdefault(ip, []).append(now)
+        log.warning("wrong PIN from %s", ip)
+        raise HTTPException(401, "Wrong PIN")
+    tok = uuid.uuid4().hex + uuid.uuid4().hex
+    with _db_lock, db() as c:
+        c.execute("INSERT INTO sessions VALUES(?,?,?,?)", (tok_hash(tok), person["id"], now, ip))
+    log.info("PIN session for %s from %s", person["id"], ip)
+    r = JSONResponse({"ok": True, "name": person["name"]})
+    secure = req.url.scheme == "https" or req.headers.get("x-forwarded-proto") == "https"
+    r.set_cookie(SESSION_COOKIE, tok, max_age=SESSION_TTL, httponly=True, samesite="lax", secure=secure)
+    return r
+
+
+@app.post("/api/logout")
+def logout(req: Request):
+    tok = req.cookies.get(SESSION_COOKIE)
+    if tok:
+        with _db_lock, db() as c:
+            c.execute("DELETE FROM sessions WHERE token=?", (tok_hash(tok),))
+    r = JSONResponse({"ok": True})
+    r.delete_cookie(SESSION_COOKIE)
+    return r
+
+
+# ── admin: PINs and what restricted people see ──────────────────────────────────────────────
+@app.get("/api/admin/people")
+def admin_people(req: Request):
+    admin(req)
+    pins = load_json(PIN_FILE, {})
+    return [{"id": p["id"], "name": p["name"], "restricted": bool(p.get("restricted")), "pin_set": p["id"] in pins}
+            for p in CONFIG.get("people", [])]
+
+
+@app.post("/api/admin/pin")
+async def admin_pin(req: Request):
+    me_ = admin(req)
+    b = await req.json()
+    pid, pin = str(b.get("person") or ""), str(b.get("pin") or "")
+    if not person_by_id(pid):
+        raise HTTPException(400, "unknown person")
+    if not re.fullmatch(r"\d{4,8}", pin):
+        raise HTTPException(400, "A PIN is 4 to 8 digits")
+    pins = load_json(PIN_FILE, {})
+    if any(pin_ok(pin, h) for k, h in pins.items() if k != pid):
+        raise HTTPException(400, "Someone else already uses that PIN")
+    pins[pid] = pin_hash(pin)
+    save_private(PIN_FILE, pins)
+    log.info("PIN for %s set by %s", pid, me_["id"])
+    return {"ok": True}
+
+
+@app.get("/api/admin/visibility")
+def admin_visibility(person: str, req: Request):
+    admin(req)
+    with db() as c:
+        return [f"{r['kind']}:{r['key']}" for r in c.execute("SELECT kind, key FROM visibility WHERE person=?", (person,))]
+
+
+@app.post("/api/admin/visibility")
+async def admin_set_visibility(req: Request):
+    """{person, items: [{kind: base|ft|lora, key, on}]}"""
+    me_ = admin(req)
+    b = await req.json()
+    pid = str(b.get("person") or "")
+    if not person_by_id(pid):
+        raise HTTPException(400, "unknown person")
+    items = b.get("items") or []
+    with _db_lock, db() as c:
+        for it in items:
+            kind, key = it.get("kind"), str(it.get("key") or "")
+            if kind not in ("base", "ft", "lora") or not key:
+                raise HTTPException(400, f"bad item {it}")
+            if it.get("on"):
+                c.execute("INSERT OR IGNORE INTO visibility VALUES(?,?,?)", (pid, kind, key))
+            else:
+                c.execute("DELETE FROM visibility WHERE person=? AND kind=? AND key=?", (pid, kind, key))
+    log.info("visibility for %s: %d change(s) by %s", pid, len(items), me_["id"])
+    return {"ok": True}
 
 
 @app.post("/api/matrix/login")
@@ -725,13 +903,17 @@ async def send(req: Request):
     request_text = str(b.get("request") or "").strip()
     if not request_text:
         raise HTTPException(400, "Describe what you want generated")
-    m = model_by_id(b.get("model")) if b.get("model") else None
-    ft = None
-    if b.get("finetune"):
+    al = allowed(person)
+    m = visible_model(person, b.get("model")) if b.get("model") else None
+    ft, use_base = None, b.get("finetune") == "base"
+    if use_base:
+        if not m or not can_see(al, "base", m["id"]):
+            raise HTTPException(400, "The base model isn't available here")
+    elif b.get("finetune"):
         if not m:
             raise HTTPException(400, "A finetune needs its base model")
         ft = next((f for f in finetunes(m) if f["id"] == b["finetune"]), None)
-        if not ft:
+        if not ft or not can_see(al, "ft", m["id"], ft["id"]):
             raise HTTPException(400, "That finetune is no longer downloaded")
     loras = []
     if b.get("loras"):
@@ -739,7 +921,7 @@ async def send(req: Request):
             raise HTTPException(400, "LoRAs need a model")
         idx = {x["id"]: x for x in lora_index(m)}
         for lid in b["loras"]:
-            if lid not in idx:
+            if lid not in idx or not can_see(al, "lora", m["id"], lid):
                 raise HTTPException(400, f"LoRA {lid} not found")
             loras.append(idx[lid])
     pose = None
@@ -782,6 +964,10 @@ async def send(req: Request):
                 if ft["civitai_url"]:
                     lines.append(f"  civitai: {ft['civitai_url']}")
                 ft_html = f" › {esc(label)}"
+            elif use_base:
+                lines.append(f"FINETUNE: none. Use the official {m['name']} base model itself, not a finetune; "
+                             "which quant / precision is your choice.")
+                ft_html = " › base model"
             else:
                 lines.append(f"FINETUNE: your choice, from {', '.join(str(IMAGEGEN / d) for d in m.get('dirs', []))}")
             parts.append(f"<p><b>Model:</b> {esc(m['name'])}{ft_html}" + (f" <i>({esc(', '.join(caps))})</i>" if caps else "") + "</p>")
@@ -849,7 +1035,7 @@ async def send(req: Request):
 @app.get("/")
 def index(req: Request):
     try:
-        who(req)
+        gate(req)
     except HTTPException as e:
         return Response(f"<h3>{esc(e.detail)}</h3>", e.status_code, media_type="text/html")
     return FileResponse(HERE / "index.html", headers={"Cache-Control": "no-cache"})

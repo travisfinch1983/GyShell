@@ -1,28 +1,16 @@
 {
-  "_comment": "people: who may use the page and which Matrix account their requests are posted as. lan_default = the person a trusted LAN/tailnet device is treated as (no Cloudflare identity there). agents: Matrix DM room of each agent with that person.",
+  "_comment": "people: who may use the page; a PIN (set in the page's Manage > PINs, stored hashed in STATE_DIR/pins.json) picks the person. admin = may manage PINs and what restricted people see. restricted = sees only what an admin ticked. agents: Matrix DM room of each agent with that person; requests are posted as matrix_user.",
   "matrix_homeserver": "https://matrix.deeveeyant.com",
   "cloudflare_access": {
     "team_domain": "deeveeyant.cloudflareaccess.com",
     "aud": "85afa0655e1291298cabc2988116a82ac767694c1ed4e0914e69256f827c296a"
   },
   "people": [
-    {
-      "id": "travis",
-      "name": "Travis",
-      "emails": [
-        "travisfinch1983@gmail.com"
-      ],
-      "matrix_user": "@travis:deeveeyant.com",
-      "agents": [
-        "cinder"
-      ],
-      "lan_default": true
-    }
+    {"id": "travis", "name": "Travis", "matrix_user": "@travis:deeveeyant.com", "agents": ["cinder"], "admin": true},
+    {"id": "kyla", "name": "Kyla", "matrix_user": "@kyla:deeveeyant.com", "agents": ["kyla-studio"], "restricted": true}
   ],
   "agents": {
-    "cinder": {
-      "label": "Cinder",
-      "room": "!b48iTqY_vnWDV_YED_Ixc9swUHDyP4-gf3evje6qfPQ"
-    }
+    "cinder": {"label": "Cinder", "room": "!b48iTqY_vnWDV_YED_Ixc9swUHDyP4-gf3evje6qfPQ"},
+    "kyla-studio": {"label": "Kyla's studio agent", "room": "!UNCZSskbqeIt6tFEhksi-VLPEYR3cVr9J4q_yBNBZIw"}
   }
 }
