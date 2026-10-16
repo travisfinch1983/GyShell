@@ -23,14 +23,17 @@ message from the person's own account. Templates save/load the whole selection.
   quant is your choice`. A specific quant of the base is picked as an ordinary finetune card.
 - Pose uploads ("＋ Upload a pose"): the photo is saved to `/imagegen/request_refs/<person>/poses/`
   and added to the library through AI-Lab `POST /api/imagegen/poses/add` (placeholder prompt). A
-  worker thread here then picks a GPU with >=15 GB free (ai-epyc first, then ai-gpu V100s: fp16
+  worker thread here FIRST has the VLM describe the pose from the photo (the mannequin worker's own
+  prompt never sees a description, so limbs cut off by the frame used to be guessed), passes that
+  description as the job's `extra_prompt` with `outpaint: always`, then picks a GPU with >=15 GB free (ai-epyc first, then ai-gpu V100s: fp16
   verified to give real mannequins 2026-10-16, ~7 min/pose vs ~2 on ai-epyc), starts
   `/poses/mannequin/start`, waits for AI-Lab's chained OpenPose skeleton detection, and has the VLM
   (`IMAGINE_VLM_MODEL`, via the AI-Lab proxy, thinking off) describe the pose from the photo +
   mannequin. The description fills the placeholder only, so a hand edit is never overwritten. Table
   `pose_uploads`; poses still in the pipeline are hidden from the grid. The uploader or an admin can
   edit the description ("✨ Rewrite with AI" suggests, Save writes via `/poses/update`), retry a
-  failure, or remove the pose.
+  failure, remove the pose, or "↻ Re-make mannequin & skeleton" (original photo + current
+  description; the pose stays in the grid with its old mannequin until the new one lands).
 - State (not in git): `/var/lib/imagine/` — imagine.db (refs, templates, history, sessions, visibility), pins.json and
   matrix-sessions.json (0600, per-person Matrix access tokens from the one-time password login;
   the password itself is never stored). Uploads: `/imagegen/request_refs/<person>/<YYYY-MM>/`.

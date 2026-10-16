@@ -200,6 +200,10 @@ with db() as _c:
     CREATE TABLE IF NOT EXISTS visibility(person TEXT, kind TEXT, key TEXT, PRIMARY KEY(person, kind, key));
     """)
 
+with db() as _c:
+    if "mq_started" not in [r[1] for r in _c.execute("PRAGMA table_info(pose_uploads)")]:
+        _c.execute("ALTER TABLE pose_uploads ADD COLUMN mq_started REAL")
+
 SESS_FILE = STATE_DIR / "matrix-sessions.json"
 PIN_FILE = STATE_DIR / "pins.json"   # {person id: "pbkdf2$<salt hex>$<hash hex>"}, 0600
 
@@ -593,9 +597,11 @@ async def api_poses(req: Request):
     if r.status_code != 200:
         return Response(r.content, r.status_code, media_type="application/json")
     # Uploads still in the pipeline appear in the pose section's upload strip, not the grid.
+    # A pose being RE-made keeps showing (with its old mannequin) until the new one lands.
     with db() as c:
         pending = {row["pose_id"] for row in c.execute("SELECT pose_id FROM pose_uploads WHERE state != 'ready'")}
-    return [p for p in r.json() if p.get("id") not in pending and p.get("prompt") != POSE_PLACEHOLDER]
+    return [p for p in r.json() if p.get("prompt") != POSE_PLACEHOLDER
+            and (p.get("id") not in pending or "mannequin" in (p.get("views") or []))]
 
 
 @app.get("/poseimg/{size}/{kind}/{pid}.webp")
@@ -639,8 +645,10 @@ def load_pose(n):
 # ── pose uploads → AI-Lab pose pipeline ─────────────────────────────────────────────────────
 # AI-Lab owns the pose library (poses.json) and its pipeline: /poses/add, then a Qwen-Image 2.1
 # "mannequin" worker on a GPU, then OpenPose skeleton detection, which AI-Lab chains on its own
-# after a mannequin finishes. This page only adds the pose, picks a GPU, waits, and then has the
-# VLM write the pose description, which the person can edit afterwards.
+# after a mannequin finishes. This page adds the pose, has the VLM write the pose description from
+# the photo, then starts the mannequin with that description as guidance (the worker's own prompt
+# only sees the photo, so limbs cut off by the frame were guessed) and outpaint "always", and waits.
+# "Re-make" re-runs mannequin + skeleton from the original photo with the CURRENT description.
 POSE_PLACEHOLDER = "(pose description being written)"
 MQ_MIN_FREE_MB = 15000          # same floor as AI-Lab: int8 model + int8 text encoder
 MQ_HOST_ORDER = ("ai-epyc", "ai-gpu")
@@ -650,7 +658,8 @@ POSE_INSTR = (
     "body pose, as one comma-separated line in this order: camera view (front / rear / side / three-quarter / "
     "top-down), camera angle (eye-level / high angle / low angle), the overall position (standing, kneeling, "
     "lying on back...), then legs, arms and hands, torso, head and gaze. Never mention clothing, hair, "
-    "identity, body type, background, lighting or art style. Examples:\n"
+    "identity, body type, background, lighting or art style. If the frame cuts off part of the body, still "
+    "describe the whole pose, continuing hidden limbs the way the visible ones imply. Examples:\n"
     "front view, eye-level, standing, feet together, arms relaxed at sides\n"
     "Rear view, eye-level, standing, legs straight, one arm raised with hand on head, other arm on hip, hips "
     "tilted to the side, head turned to the right looking over shoulder\n"
@@ -724,14 +733,18 @@ def pu_set(pid, **kw):
         c.execute(f"UPDATE pose_uploads SET {cols} WHERE pose_id=?", (*kw.values(), pid))
 
 
+MQ_OUTPAINT = "always"   # pad every side so a body cut off by the frame gets completed
+MQ_GUIDE = ("Pose description (follow it exactly, especially for any part of the body that is cut off or hidden "
+            "in image 1): {}")
+
+
 def describe_pose(row):
+    """From the original photo only: a mannequin made from a cropped photo can be wrong, and
+    describing that would only repeat its mistake."""
     pose = library_pose(row["pose_id"])
     if not pose:
         raise RuntimeError("the pose was removed from the library")
-    imgs = [row["src"]]
-    if pose.get("mannequin") and (POSE_LIB / "mannequin_images" / pose["mannequin"]).is_file():
-        imgs.append(str(POSE_LIB / "mannequin_images" / pose["mannequin"]))
-    text = vlm_describe(imgs)
+    text = vlm_describe([row["src"]])
     cur = library_pose(row["pose_id"]) or {}
     # Only fill the placeholder: a description typed by hand meanwhile wins.
     if cur.get("prompt") in (POSE_PLACEHOLDER, "", None):
@@ -749,13 +762,20 @@ def pose_worker_step():
                 pu_set(pid, state="failed", detail="removed from the library")
                 continue
             if row["state"] == "queued":
+                prompt = (library_pose(pid) or {}).get("prompt") or ""
+                if prompt in ("", POSE_PLACEHOLDER):
+                    pu_set(pid, detail="writing the pose description")
+                    prompt = describe_pose(row)
+                    pu_set(pid, ai_prompt=prompt)
                 g = pick_gpu()
                 if not g:
                     pu_set(pid, detail="waiting for a GPU with ~15 GB free")
                     continue
                 d = ailab("POST", "/poses/mannequin/start", json={
-                    "ids": [pid], "host": g[0], "gpus": [g[1]], "quant": "int8", "te": "int8", "steps": 25, "outpaint": "auto"})
-                pu_set(pid, state="mannequin", mq_job=d["job"]["id"], gpu=f"{g[0]} GPU {g[1]}", detail="starting the mannequin worker")
+                    "ids": [pid], "host": g[0], "gpus": [g[1]], "quant": "int8", "te": "int8", "steps": 25,
+                    "outpaint": MQ_OUTPAINT, "extra_prompt": MQ_GUIDE.format(prompt)[:1000]})
+                pu_set(pid, state="mannequin", mq_job=d["job"]["id"], gpu=f"{g[0]} GPU {g[1]}", detail="starting the mannequin worker",
+                       mq_started=time.time())
                 log.info("pose upload %s: mannequin job %s on %s GPU %s", pid, d["job"]["id"], *g)
             elif row["state"] == "mannequin":
                 try:
@@ -776,12 +796,16 @@ def pose_worker_step():
                     pu_set(pid, state="failed", detail=f"mannequin: {err}"[:400])
             elif row["state"] == "skeleton":
                 p = library_pose(pid) or {}
-                if p.get("skeleton_at") or time.time() - (row["updated"] or 0) > 300:
-                    pu_set(pid, state="describing", detail="writing the pose description")
-            elif row["state"] == "describing":
-                text = describe_pose(row)
-                pu_set(pid, state="ready", detail="", ai_prompt=text)
-                log.info("pose upload %s ready: %s", pid, text)
+                # A re-make already has an old skeleton: wait for one newer than this mannequin.
+                fresh = (p.get("skeleton_at") or 0) >= (p.get("mannequin_at") or 0) > 0
+                if fresh or time.time() - (row["updated"] or 0) > 300:
+                    pu_set(pid, state="ready", detail="")
+                    log.info("pose upload %s ready: %s", pid, p.get("prompt"))
+            elif row["state"] == "describing":   # rows from before descriptions moved ahead of the mannequin
+                p = library_pose(pid) or {}
+                if p.get("prompt") in ("", POSE_PLACEHOLDER, None):
+                    pu_set(pid, ai_prompt=describe_pose(row))
+                pu_set(pid, state="ready", detail="")
         except Exception as e:  # noqa: BLE001
             log.warning("pose upload %s (%s): %s", pid, row["state"], e)
             pu_set(pid, detail=f"retrying: {e}"[:400])
@@ -850,8 +874,9 @@ def list_pose_uploads(req: Request):
     """This person's uploads still in the pipeline, plus ones finished in the last day."""
     person = who(req)
     with db() as c:
-        rows = c.execute("SELECT * FROM pose_uploads WHERE person=? AND (state NOT IN ('ready','failed') OR updated > ?) "
-                         "ORDER BY created DESC", (person["id"], time.time() - 86400)).fetchall()
+        # Admins also see poses they're re-making for someone else.
+        rows = c.execute("SELECT * FROM pose_uploads WHERE (person=? OR ?) AND (state NOT IN ('ready','failed') OR updated > ?) "
+                         "ORDER BY created DESC", (person["id"], bool(person.get("admin")), time.time() - 86400)).fetchall()
     return [pu_row(r) for r in rows]
 
 
@@ -889,6 +914,39 @@ async def set_pose_prompt(pid: str, req: Request):
         raise HTTPException(502, str(e))
     log.info("pose %s description set by %s", pid, person["id"])
     return {"ok": True, "prompt": text}
+
+
+@app.post("/api/poses/{pid}/remake")
+async def remake_pose(pid: str, req: Request):
+    """Mannequin + skeleton again, from the original photo, guided by the current description
+    (which the body may carry, so an edit and a re-make are one tap)."""
+    person = who(req)
+    if not may_edit_pose(person, pid):
+        raise HTTPException(403, "Only the person who uploaded this pose (or an admin) can re-make it")
+    b = await req.json() if req.headers.get("content-length") not in (None, "0") else {}
+    p = library_pose(pid)
+    if not p:
+        raise HTTPException(404, "no such pose")
+    with db() as c:
+        row = c.execute("SELECT * FROM pose_uploads WHERE pose_id=?", (pid,)).fetchone()
+    if row and row["state"] not in ("ready", "failed"):
+        raise HTTPException(409, "It's already being made")
+    text = re.sub(r"\s+", " ", str(b.get("prompt") or "")).strip()
+    if text and text != p.get("prompt"):
+        await asyncio.to_thread(ailab, "POST", "/poses/update", json={"id": pid, "prompt": text[:1000]})
+    if row:
+        src = row["src"]
+    else:   # a library pose that wasn't uploaded here (admins only): its full source, else the upscale, else the tile
+        cands = ([IMAGEGEN / p["source"]] if p.get("source") else []) + \
+                [POSE_LIB / "upscaled_images" / f"{pid}.png", POSE_LIB / "pose_images" / p.get("image", "")]
+        src = str(next((c for c in cands if c.is_file()), cands[-1]))
+    with _db_lock, db() as c:
+        c.execute("INSERT OR REPLACE INTO pose_uploads(pose_id,person,src,created,state,detail,updated,ai_prompt) "
+                  "VALUES(?,?,?,?,?,?,?,?)", (pid, row["person"] if row else person["id"], src,
+                                               row["created"] if row else time.time(), "queued", "queued to re-make",
+                                               time.time(), row["ai_prompt"] if row else None))
+    log.info("pose %s re-make requested by %s (src %s)", pid, person["id"], src)
+    return {"ok": True}
 
 
 @app.post("/api/poses/{pid}/retry")

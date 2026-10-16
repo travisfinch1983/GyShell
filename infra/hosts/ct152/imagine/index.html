@@ -493,7 +493,8 @@ async function openLora(l){
 // ── 3. poses ──
 let poseCat='all',poseShown=90,poseSelOnly=false;
 const VIEW_LABEL={original:'Original',mannequin:'Mannequin',overlay:'Skeleton on mannequin',skeleton:'Skeleton'};
-function poseThumb(p){return `/poseimg/grid/${p.views.includes('mannequin')?'mannequin':'thumb'}/${p.id}.webp`}
+let POSE_BUST=0; // after a re-make the same URL serves a new mannequin
+function poseThumb(p){return `/poseimg/grid/${p.views.includes('mannequin')?'mannequin':'thumb'}/${p.id}.webp${POSE_BUST?'?v='+POSE_BUST:''}`}
 function renderPoseChips(){
   const counts={};POSES.forEach(p=>counts[p.category]=(counts[p.category]||0)+1);
   const c=$('cPose');c.innerHTML='';
@@ -519,7 +520,7 @@ function openPose(p,list,view){
   view=view&&p.views.includes(view)?view:(p.views.includes('original')?'original':p.views[0]||'thumb');
   const i=list.indexOf(p);
   openOv(`#${p.n} ${p.name||''}`,`<div class="chips" style="margin-bottom:10px">${p.views.map(k=>`<button class="chip${k===view?' on':''}" data-v="${k}">${VIEW_LABEL[k]}${k==='original'&&p.original_kind!=='full'?` (${p.original_kind})`:''}</button>`).join('')}</div>
-    <div class="stage"><img src="/poseimg/full/${view}/${p.id}.webp" alt=""></div>
+    <div class="stage"><img src="/poseimg/full/${view}/${p.id}.webp${POSE_BUST?'?v='+POSE_BUST:''}" alt=""></div>
     <div class="kv"><b>${esc([p.category,p.view].filter(Boolean).join(' · '))}</b><div class="desc">${esc(p.prompt||'')}</div></div>`,
     `<button class="btn" id="pPrev">‹</button><button class="btn" id="pNext">›</button><span class="sp"></span><button class="btn acc" id="ovSel">${S.pose===p.n?'Unselect':'Select pose #'+p.n}</button>`);
   $('ovB').querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>openPose(p,list,b.dataset.v));
@@ -533,7 +534,11 @@ async function poseEditor(p){
   let ed=false;try{ed=(await api(`/api/poses/${p.id}/editable`)).editable}catch{}
   const kv=$('ovB').querySelector('.kv');if(!ed||!kv||$('ovT').textContent.indexOf(`#${p.n} `)!==0)return;
   kv.insertAdjacentHTML('afterend',`<div class="kv"><b>Edit description</b><textarea id="pEd" style="min-height:80px">${esc(p.prompt||'')}</textarea>
-    <div class="row" style="margin-top:6px"><button class="btn sm" id="pAi">✨ Rewrite with AI</button><button class="btn sm acc" id="pSave">Save description</button><span class="sp" style="flex:1"></span><button class="btn sm" id="pDel">Remove pose</button></div></div>`);
+    <div class="row" style="margin-top:6px"><button class="btn sm" id="pAi">✨ Rewrite with AI</button><button class="btn sm acc" id="pSave">Save description</button><span class="sp" style="flex:1"></span><button class="btn sm" id="pDel">Remove pose</button></div>
+    <div class="row" style="margin-top:8px"><button class="btn sm" id="pRemake">↻ Re-make mannequin &amp; skeleton</button><span class="muted small">From the original photo, using the description above.</span></div></div>`);
+  $('pRemake').onclick=async()=>{$('pRemake').disabled=true;
+    try{await api(`/api/poses/${p.id}/remake`,{method:'POST',body:JSON.stringify({prompt:$('pEd').value})});p.prompt=$('pEd').value.trim();closeOv();toast(`Re-making pose #${p.n}; it keeps its old mannequin until the new one is ready`);loadUploads()}
+    catch(e){toast(e.message,true);$('pRemake').disabled=false}};
   $('pAi').onclick=async()=>{$('pAi').disabled=true;$('pAi').textContent='Writing…';
     try{const d=await api(`/api/poses/${p.id}/prompt`,{method:'POST',body:JSON.stringify({ai:true})});$('pEd').value=d.suggestion;toast('New suggestion; Save to keep it')}catch(e){toast(e.message,true)}
     finally{$('pAi').disabled=false;$('pAi').textContent='✨ Rewrite with AI'}};
@@ -543,7 +548,7 @@ async function poseEditor(p){
 }
 
 // ── pose uploads ──
-const UP_LABEL={queued:'Waiting for a GPU',mannequin:'Making the mannequin',skeleton:'Detecting the skeleton',describing:'Writing the description',ready:'Ready',failed:'Failed'};
+const UP_LABEL={queued:'Queued',mannequin:'Making the mannequin',skeleton:'Detecting the skeleton',describing:'Writing the description',ready:'Ready',failed:'Failed'};
 let UPS=[],upT=null;
 async function loadPoses(){POSES=(await api('/api/poses')).sort((a,b)=>a.n-b.n);renderPoseChips();renderPoses()}
 async function loadUploads(){
@@ -552,7 +557,7 @@ async function loadUploads(){
   const wasBusy=UPS.filter(u=>!['ready','failed'].includes(u.state)).map(u=>u.pose_id);
   const nowReady=list.filter(u=>u.state==='ready'&&wasBusy.includes(u.pose_id));
   UPS=list;renderUploads();
-  if(nowReady.length){await loadPoses();toast(`Pose #${nowReady.map(u=>u.n).join(', #')} is ready`)}
+  if(nowReady.length){POSE_BUST=Date.now();await loadPoses();toast(`Pose #${nowReady.map(u=>u.n).join(', #')} is ready`)}
   if(UPS.some(u=>!['ready','failed'].includes(u.state)))upT=setTimeout(loadUploads,6000);
 }
 function renderUploads(){
