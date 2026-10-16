@@ -1543,13 +1543,19 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
     // user's own choices -- surfaced so the UI can warn instead of silently renaming.
     const _autoSuffixes = new Map();
     const _collisions = [];
+    const _primary = (files || []).find((f) => /^(model|diffusion model)$/i.test(String(f.type || ''))) || (files || [])[0];
+    const _primaryKey = _primary ? String(_primary.id != null ? _primary.id : _primary.name) : '';
     const _finalNames = resolveVersionFileNames(files, (f) => {
       const fake = { id: f.id, name: f.name, type: f.type, sizeKB: f.sizeKB || 0, metadata: f.metadata || {}, hashes: {} };
       const r = resolveTargetPath(model, version, fake, cfg, effectiveOverride, userDefined || '');
       lastTypeFolder = r.typeFolder || lastTypeFolder;
       lastFolderPart = r.folderPart || '';
       _dirs.set(String(f.id != null ? f.id : f.name), r.targetDir);
-      if (!baseFileName) baseFileName = r.fileName;
+      // Seed from the MAIN model file. The first file listed is often the VAE or text encoder,
+      // and the Filename box then named all three after it (diffusion model saved as
+      // "V4.0.Qwen_image_vae.safetensors").
+      if (String(f.id != null ? f.id : f.name) === _primaryKey) baseFileName = r.fileName;
+      else if (!baseFileName && !_primaryKey) baseFileName = r.fileName;
       return r.fileName;
     }, effectiveFnOverride, fileOpts, selectedKeys, {
       separator: cfg.separator || '-',
@@ -1941,7 +1947,15 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       const firstFile = (version.files || []).find(f => f.type !== 'Training Data') || version.files?.[0] || { name: 'model.safetensors' };
       const metaVars = resolveVars(model, version, firstFile, cfg);
       if (userDefined) metaVars['$USER_DEFINED'] = userDefined;
-      const metaTypeFolder = metaVars['$TYPE_FOLDER'] || 'other';
+      // The sidecars + example images belong next to the MAIN model file, so take its folder from
+      // the same routing the file itself used (per-file CivitAI type, diffusion-family override,
+      // contextual component). Reading the declared type here sent an Anima checkpoint's info and
+      // previews to checkpoints/Anima while the weights went to diffusion-models/Anima.
+      const _mainFile = (version.files || []).find((f) => /^(model|diffusion model)$/i.test(String(f.type || '')))
+        || firstFile;
+      const metaTypeFolder = resolveTargetPath(model, version, _mainFile, cfg, null, userDefined, extensionOverride, versionComponent).typeFolder
+        || metaVars['$TYPE_FOLDER'] || 'other';
+      metaVars['$TYPE_FOLDER'] = metaTypeFolder;
       const metaTypeCfg = cfg.typeTemplates?.[metaTypeFolder] || {};
       const hasMetaCustomTpl = metaTypeCfg.pathTemplate !== undefined && metaTypeCfg.pathTemplate !== null;
       const metaTpl = hasMetaCustomTpl ? metaTypeCfg.pathTemplate : (cfg.pathTemplate || '');
