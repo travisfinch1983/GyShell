@@ -835,7 +835,9 @@ async def upload_pose(req: Request, files: list[UploadFile] = File(...)):
             raise HTTPException(502, f"pose library: {e}")
         pid = r["pose"]["id"]
         with _db_lock, db() as c:
-            c.execute("INSERT INTO pose_uploads(pose_id,person,src,created,state,detail,updated) VALUES(?,?,?,?,?,?,?)",
+            # AI-Lab gives a removed pose's number to the next new one, so a row for that id may
+            # already exist here (state 'failed', detail 'removed'); the new pose replaces it.
+            c.execute("INSERT OR REPLACE INTO pose_uploads(pose_id,person,src,created,state,detail,updated) VALUES(?,?,?,?,?,?,?)",
                       (pid, person["id"], str(path), time.time(), "queued", "waiting for a GPU", time.time()))
         log.info("pose upload %s by %s -> %s (#%s)", f.filename, person["id"], path, r["pose"].get("index"))
         out.append(pid)
@@ -913,8 +915,8 @@ def delete_pose(pid: str, req: Request):
         ailab("POST", "/poses/delete", json={"id": pid})
     except RuntimeError as e:
         raise HTTPException(502, str(e))
-    with _db_lock, db() as c:
-        c.execute("UPDATE pose_uploads SET state='failed', detail='removed', updated=? WHERE pose_id=?", (time.time(), pid))
+    with _db_lock, db() as c:   # the id gets reused by AI-Lab, so forget it entirely
+        c.execute("DELETE FROM pose_uploads WHERE pose_id=?", (pid,))
     log.info("pose %s removed by %s", pid, person["id"])
     return {"ok": True}
 
