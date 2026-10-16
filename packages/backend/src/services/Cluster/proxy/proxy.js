@@ -966,7 +966,8 @@ export function invalidateModelCache() {
 // decayed-LRU). llama.cpp's router loads them itself, so the model service never sees the use; this
 // reports it, so frequently used files keep their score and stay resident (and a pruned copy is
 // re-staged). Fire-and-forget, at most once a minute per file, and it can never fail or delay a request.
-const PE_CACHE_WARM_URL = process.env.AILAB_PE_CACHE_WARM_URL || 'http://10.0.0.234:9312/cache/warm';
+// Owner discovered by imagegenOwnedLlmBackends(); the env var overrides it for testing.
+const peCacheWarmUrl = () => process.env.AILAB_PE_CACHE_WARM_URL || (_peOwnerBase ? `${_peOwnerBase}/cache/warm` : '');
 const PE_FILES = {
   'qwen-image-2.1-pe-t2i-heretic': ['Qwen-Image-2.1-PE/T2I-Heretic/GGUF/Q4_K_M/pe_t2i_heretic-Q4_K_M.gguf'],
   'qwen-image-2.1-pe-i2i-heretic': ['Qwen-Image-2.1-PE/I2I-Heretic/GGUF/Q4_K_M/Qwen-Image-2.1-PE-I2I-Heretic-Q4_K_M.gguf',
@@ -976,11 +977,13 @@ const _peWarmLast = new Map();
 function notePeModelUse(modelId) {
   const files = PE_FILES[String(modelId || '').replace(/@\d+$/, '')];
   if (!files) return;
+  const url = peCacheWarmUrl();
+  if (!url) return;   // owner not discovered yet (first refresh pending): skip, the next request reports
   const now = Date.now();
   for (const name of files) {
     if (now - (_peWarmLast.get(name) || 0) < 60_000) continue;
     _peWarmLast.set(name, now);
-    fetch(PE_CACHE_WARM_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind: 'llm', name, use: true }), signal: AbortSignal.timeout(5000) })
       .then((r) => { if (!r.ok) console.warn(`[pe-cache-warm] ${name}: HTTP ${r.status}`); })
       .catch((e) => console.warn(`[pe-cache-warm] ${name}: ${e?.message || e}`));
@@ -999,10 +1002,38 @@ async function lookupModelFresh(modelId) {
   return { cache, svc };
 }
 
+// ─── Image Model Service-owned LLM backends (claude1 + claude2, 2026-10-16) ─────────────────
+// The Qwen-Image PE router is supervised by ailab-modelsvc (plugin pe_llm), not registered as an
+// AI-Lab llm service, so it would be invisible here. Each running imagegen-models service is asked
+// for GET /pe/status; a running router becomes a VIRTUAL llm backend at its reported base_url,
+// so discovery follows the service if its port, card or host changes. It also tells the PE
+// cache-warm hook which service to report use to. Best effort: a slow or failed probe just omits it.
+let _peOwnerBase = '';   // http://<ip>:<port> of the imagegen-models service that owns the PE router
+async function imagegenOwnedLlmBackends() {
+  const state = loadActiveServices();
+  const owners = Object.values(state.services).filter((s) => s.providerId === 'imagegen-models' && !s.suspended && s.containerIp && s.port);
+  const out = [];
+  await Promise.all(owners.map(async (svc) => {
+    const base = `http://${svc.containerIp}:${svc.port}`;
+    try {
+      const r = await fetch(`${base}/pe/status`, { signal: AbortSignal.timeout(2500) });
+      if (!r.ok) return;
+      const st = await r.json();
+      if (st?.state !== 'running' || !st?.base_url) return;
+      const u = new URL(st.base_url);
+      _peOwnerBase = base;
+      out.push({ id: `${svc.id}#pe`, providerId: 'llama-server', providerName: 'Image Model Service PE router',
+        node: svc.node, vmid: svc.vmid, containerIp: u.hostname, port: Number(u.port) || 80,
+        proxySlot: svc.proxySlot || 0, slots: 1, ownerServiceId: svc.id, virtual: true });
+    } catch { /* service without the plugin, or down: nothing to add */ }
+  }));
+  return out;
+}
+
 async function refreshModelCache() {
   if (Date.now() - modelCache.updatedAt < MODEL_CACHE_TTL) return modelCache;
 
-  const services = findServicesByType('llm');
+  const services = [...findServicesByType('llm'), ...(await imagegenOwnedLlmBackends())];
   const rawModels = []; // { model, svc } pairs collected from all backends
   const byModel = new Map();
 
