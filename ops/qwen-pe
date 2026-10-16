@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""qwen-pe "plain request" [--image /path.png ...] [--nsfw] [--model ID] [--seed N] [--json] [--list]
+
+Optional helper for Hermes image agents: runs the Qwen-Image 2.1 Prompt Enhancer
+(model id `qwen-image-2.1-pe-i2i`, always loaded on its own GPU behind the AI-Lab LLM proxy)
+and prints a Qwen-Image-ready prompt.
+
+  * text only  -> text-to-image prompt (long, detailed scene paragraph + suggested aspect ratio)
+  * --image    -> edit prompt for Qwen-Image 2.1 edit mode; pass the image(s) being edited in the
+                  same order as images.image_1.. in TextEncodeQwenImage21
+Model choice (automatic, from what the LLM proxy serves right now): text-only prefers a *pe-t2i*
+model, --image prefers *pe-i2i*; --nsfw prefers a "heretic" (uncensored) variant; each falls back
+to whatever Qwen PE model is loaded. --model forces an id; --list shows the PE models available.
+Takes ~20-60 s. Images stay local: an answer from a non-PE / external model is refused.
+Same handling as the ComfyUI node AILabPromptEnhancerProxy (comfyui-ailab-pack/pe_proxy.py):
+streamed, stop at the first usable answer (the PE can loop after answering), one retry.
+Output: the prompt on stdout (plus "aspect_ratio: X" / "style: Y" lines when the PE gives them),
+or the full parsed JSON with --json. Exit 1 + "ERROR ..." on failure.
+"""
+import argparse, base64, io, json, re, sys, time, urllib.request
+
+API = "http://10.0.0.219:17890/api/proxy/llm/v1/chat/completions"
+MODELS_URL = "http://10.0.0.219:17890/api/proxy/llm/v1/models"
+DEFAULT_MODEL = "qwen-image-2.1-pe-i2i"
+
+
+def pe_models():
+    """Qwen-Image PE model ids the proxy serves right now (external '(XX) ...' routes excluded)."""
+    try:
+        with urllib.request.urlopen(MODELS_URL, timeout=10) as r:
+            ids = [m.get("id", "") for m in json.loads(r.read()).get("data", [])]
+    except Exception as e:  # noqa: BLE001
+        print(f"warning: could not list proxy models ({e}); using {DEFAULT_MODEL}", file=sys.stderr)
+        return [DEFAULT_MODEL]
+    return [i for i in ids if not i.startswith("(") and "pe" in i.lower()
+            and re.search(r"[ti]2i", i.lower()) and ("qwen" in i.lower() or "pe-" in i.lower())]
+
+
+def is_pe(model_id):
+    m = (model_id or "").lower()
+    return not m.startswith("(") and bool(re.search(r"pe[-_ ]?[ti]2i|[ti]2i[-_ ]?pe", m) or "qwen-image" in m)
+
+
+def choose(models, want_img, nsfw):
+    kind = "i2i" if want_img else "t2i"
+    def score(i):
+        l = i.lower()
+        return (kind in l) * 2 + (("heretic" in l) == nsfw)
+    return sorted(models, key=score, reverse=True)[0] if models else DEFAULT_MODEL
+SKIP = {"type", "category", "operation", "kind", "mode", "task", "edit_type", "classification", "object", "target"}
+
+
+def ok(v):
+    return isinstance(v, str) and len(v.strip()) > 60 and "[object" not in v
+
+
+def pick_obj(o):
+    if not isinstance(o, dict):
+        return ""
+    a = o.get("action")
+    if isinstance(a, str) and len(a.strip()) > 40:
+        keep = next((v for v in (o.get("preserved"), o.get("context"), o.get("details"), o.get("keep"))
+                     if isinstance(v, str) and len(v.strip()) > 15), None)
+        return a.strip().rstrip(".; ") + "." + (f" Keep unchanged: {keep.strip()}" if keep else "")
+    for k in ("text", "edit", "output", "change", "prompt", "rewritten_prompt", "instruction", "description", "details"):
+        if ok(o.get(k)):
+            return o[k].strip()
+    for v in o.values():
+        x = pick_obj(v) if isinstance(v, dict) else ""
+        if x:
+            return x
+    longest = sorted([v for k, v in o.items() if k not in SKIP and ok(v) and len(v.strip()) > 120], key=len, reverse=True)
+    return longest[0].strip() if longest else ""
+
+
+def first_json(t):
+    """(prompt, obj) from the first balanced JSON object in t that yields a usable prompt."""
+    a = t.find("{")
+    while a >= 0:
+        d, in_str, esc = 0, False, False
+        for k in range(a, len(t)):
+            c = t[k]
+            if in_str:
+                if esc: esc = False
+                elif c == "\\": esc = True
+                elif c == '"': in_str = False
+                continue
+            if c == '"': in_str = True
+            elif c == "{": d += 1
+            elif c == "}":
+                d -= 1
+                if d == 0:
+                    try:
+                        o = json.loads(t[a:k + 1])
+                        x = pick_obj(o)
+                        if x:
+                            return x, o
+                    except Exception:
+                        pass
+                    break
+        a = t.find("{", a + 1)
+    return "", None
+
+
+def pick(raw, final=False):
+    t = raw
+    if "</think>" in t:
+        t = t[t.index("</think>") + 8:]
+    elif "<think>" in t:
+        return "", None
+    x, o = first_json(t)
+    if x:
+        return x, o
+    plain = t.strip()
+    if final and 40 < len(plain) < 3000 and "{" not in plain and not re.match(r"^(the user|let me|so this|i need|okay|first|wait)", plain, re.I):
+        return plain, None
+    return "", None
+
+
+def img_url(path, max_side=1024):
+    from PIL import Image
+    im = Image.open(path).convert("RGB")
+    im.thumbnail((max_side, max_side), Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG", quality=90)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def call(content, seed, model, timeout=240, budget=3000):
+    body = {"model": model, "messages": [{"role": "user", "content": content}], "stream": True, "max_tokens": 8000,
+            "temperature": 0.6, "top_p": 0.95, "top_k": 20, "presence_penalty": 1.5, "repeat_penalty": 1.08,
+            "seed": seed % (2 ** 31)}
+    req = urllib.request.Request(API, json.dumps(body).encode(), {"Content-Type": "application/json"})
+    raw, seen, n, t0 = "", "", 0, time.time()
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        for line in r:
+            line = line.decode("utf-8", "ignore").strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                ev = json.loads(data)
+            except Exception:
+                continue
+            seen = ev.get("model") or seen
+            if seen and seen != model and (seen.startswith("(") or not (is_pe(seen) or seen.lower().endswith(".gguf"))):
+                raise RuntimeError(f"answered by {seen}, not the local prompt enhancer - refusing")
+            delta = (ev.get("choices") or [{}])[0].get("delta") or {}
+            raw += delta.get("content") or ""
+            if delta.get("content") or delta.get("reasoning_content"):
+                n += 1
+            if "}" in raw:
+                x, o = pick(raw)
+                if x:
+                    return x, o
+            if time.time() - t0 > timeout or n > budget:
+                break
+    return pick(raw, final=True)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("request", nargs="?", default="")
+    ap.add_argument("--image", action="append", default=[])
+    ap.add_argument("--seed", type=int, default=int(time.time()))
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--nsfw", action="store_true", help="prefer a heretic (uncensored) PE variant if one is loaded")
+    ap.add_argument("--model", help="force a specific PE model id")
+    ap.add_argument("--list", action="store_true", help="list the PE models the proxy serves and exit")
+    a = ap.parse_args()
+    models = pe_models()
+    if a.list:
+        print("\n".join(models) or "(none)")
+        return
+    model = a.model or choose(models, bool(a.image), a.nsfw)
+    print(f"[qwen-pe] model: {model}", file=sys.stderr)
+    content = [{"type": "image_url", "image_url": {"url": img_url(p)}} for p in a.image]
+    content.append({"type": "text", "text": a.request})
+    err = None
+    for attempt in range(2):
+        try:
+            x, o = call(content, a.seed + attempt * 7, model)
+            if x:
+                if a.json:
+                    print(json.dumps(o if o is not None else {"text": x}, ensure_ascii=False, indent=1))
+                else:
+                    print(x)
+                    for k in ("aspect_ratio", "style"):
+                        if isinstance(o, dict) and isinstance(o.get(k), str):
+                            print(f"{k}: {o[k]}")
+                return
+            err = "the prompt enhancer returned no usable prompt"
+        except Exception as e:  # noqa: BLE001
+            err = str(e)
+            if "refusing" in err:
+                break
+    print(f"ERROR {err}")
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

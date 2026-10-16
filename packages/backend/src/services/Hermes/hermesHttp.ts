@@ -73,7 +73,20 @@ export function createHermesRouter(hermes: HermesService, roadmapFile?: string):
   router.get('/api/hermes/agents/:id', async (req: Req, res: Res) => {
     try {
       const stored = hermes.getSpec(req.params.id)
-      if (stored) return res.json({ spec: stored, source: 'ailab-spec' })
+      if (stored) {
+        // SOUL.md is edited on disk after creation (agents rewrite their own identity block, fixes
+        // land there directly). The stored spec's soul is a creation-time snapshot, and the editor
+        // POSTs back whatever it was shown, so serving the snapshot made every save silently revert
+        // the live persona. The live file wins whenever it exists.
+        let live = ''
+        try { live = await hermes.readSoul(req.params.id) } catch (e) {
+          console.error(`[hermes] ${req.params.id}: could not read live SOUL.md for the editor:`, e)
+        }
+        if (live.trim() && live !== (stored as any).persona?.soul) {
+          return res.json({ spec: { ...stored, persona: { ...((stored as any).persona ?? {}), soul: live } }, source: 'ailab-spec', soulSource: 'live' })
+        }
+        return res.json({ spec: stored, source: 'ailab-spec' })
+      }
       // No AI-Lab spec (OpenClaw-imported agent): reconstruct from the live host profile so
       // the editor shows real values instead of a blank form.
       const live = await hermes.reconstructSpec(req.params.id)

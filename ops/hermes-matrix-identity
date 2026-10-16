@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""hermes-matrix-identity [--profile P] [--name "Display Name"] [--avatar /path/to/image.png] [--room-name "Room"]
+
+Lets a Hermes agent set its OWN Matrix display name and avatar (e.g. at the end of a first-boot
+naming conversation). Uses the bot access token already in the profile's .env, so it can only ever
+act as that agent's bot.
+
+Profile: --profile, else the profile of $HERMES_HOME (set for every gateway-spawned terminal).
+--avatar uploads the image to the homeserver media repo, then sets avatar_url.
+--room-name also renames the agent's rooms (every joined room whose name is the old display name).
+Prints one final line: OK <json> | ERROR <reason>.
+"""
+import argparse, json, mimetypes, os, re, sys, urllib.request, urllib.error, urllib.parse
+
+PROFILES = "/root/.hermes/profiles"
+
+
+def die(msg):
+    print(f"ERROR {msg}")
+    sys.exit(1)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--profile")
+    ap.add_argument("--name")
+    ap.add_argument("--avatar")
+    ap.add_argument("--room-name")
+    a = ap.parse_args()
+    if not (a.name or a.avatar or a.room_name):
+        die("nothing to do: pass --name and/or --avatar and/or --room-name")
+
+    home = f"{PROFILES}/{a.profile}" if a.profile else os.environ.get("HERMES_HOME", "")
+    envp = os.path.join(home, ".env")
+    if not home or not os.path.isfile(envp):
+        die(f"no profile .env (profile={a.profile!r}, HERMES_HOME={os.environ.get('HERMES_HOME')!r})")
+    env = open(envp).read()
+
+    def g(k):
+        m = re.search(rf"^{k}=(\S+)", env, re.M)
+        return m.group(1) if m else None
+
+    hs, tok, uid = g("MATRIX_HOMESERVER"), g("MATRIX_ACCESS_TOKEN"), g("MATRIX_USER_ID")
+    if not (hs and tok and uid):
+        die(f"{envp} has no Matrix credentials")
+
+    def mx(method, path, body=None, raw=None, ctype="application/json"):
+        data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
+        req = urllib.request.Request(hs + path, data, {"Content-Type": ctype, "Authorization": f"Bearer {tok}"},
+                                     method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.status, json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"{}")
+
+    q = urllib.parse.quote(uid)
+    out = {"user_id": uid}
+    st, prof = mx("GET", f"/_matrix/client/v3/profile/{q}")
+    old_name = prof.get("displayname") if st == 200 else None
+
+    if a.name:
+        st, r = mx("PUT", f"/_matrix/client/v3/profile/{q}/displayname", {"displayname": a.name})
+        if st != 200:
+            die(f"displayname failed ({st}): {r}")
+        out["displayname"] = a.name
+
+    if a.avatar:
+        if not os.path.isfile(a.avatar):
+            die(f"avatar file not found: {a.avatar}")
+        ctype = mimetypes.guess_type(a.avatar)[0] or "image/png"
+        if not ctype.startswith("image/"):
+            die(f"avatar is not an image ({ctype})")
+        fn = urllib.parse.quote(os.path.basename(a.avatar))
+        st, r = mx("POST", f"/_matrix/media/v3/upload?filename={fn}", raw=open(a.avatar, "rb").read(), ctype=ctype)
+        if st != 200 or "content_uri" not in r:
+            die(f"avatar upload failed ({st}): {r}")
+        st2, r2 = mx("PUT", f"/_matrix/client/v3/profile/{q}/avatar_url", {"avatar_url": r["content_uri"]})
+        if st2 != 200:
+            die(f"avatar_url failed ({st2}): {r2}")
+        out["avatar_url"] = r["content_uri"]
+
+    if a.room_name:
+        st, jr = mx("GET", "/_matrix/client/v3/joined_rooms")
+        renamed = []
+        for rid in jr.get("joined_rooms", []) if st == 200 else []:
+            rq = urllib.parse.quote(rid)
+            s, n = mx("GET", f"/_matrix/client/v3/rooms/{rq}/state/m.room.name")
+            cur = n.get("name") if s == 200 else None
+            if cur and old_name and cur != old_name and not cur.startswith(old_name):
+                continue
+            s, _ = mx("PUT", f"/_matrix/client/v3/rooms/{rq}/state/m.room.name", {"name": a.room_name})
+            if s == 200:
+                renamed.append(rid)
+        out["rooms_renamed"] = renamed
+
+    print("OK " + json.dumps(out))
+
+
+if __name__ == "__main__":
+    main()
