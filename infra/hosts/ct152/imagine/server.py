@@ -386,6 +386,7 @@ def finetunes(m):
                         "id": hashlib.sha1(str(bp).encode()).hexdigest()[:12],
                         "name": custom_label(base, ver) or repo or base.replace("_", " "),
                         "repo_name": repo or "",
+                        "sidecar": str(bp) + ".civit.info" if ver else None,
                         "version": ver.get("name") or civ.get("name") or "",
                         "folder": "" if rel_dir == "." else rel_dir,
                         "images": imgs,
@@ -1259,6 +1260,48 @@ async def upload_mxc(c, tok, path: Path, max_w=1280):
     return d["content_uri"], im.width, im.height
 
 
+# ── loader names for the AI-Lab remote ComfyUI nodes ────────────────────────────────────────
+# The AILabRemote* nodes take a name relative to the model-type folder (their dropdown value),
+# e.g. unet_name "Krea-2/x.safetensors" for /imagegen/diffusion-models/Krea-2/x.safetensors.
+# Agents went looking for files (and the matching text encoder / VAE) when given absolute paths.
+LOADERS = {"diffusion-models": ("AILabRemoteUNET", "unet_name"), "checkpoints": ("AILabRemoteCheckpoint", "ckpt_name")}
+
+
+def loader_of(path):
+    rel = Path(path).relative_to(IMAGEGEN)
+    node = LOADERS.get(rel.parts[0])
+    return (node[0], node[1], str(Path(*rel.parts[1:]))) if node else (None, None, str(rel))
+
+
+def companions(m, ft=None):
+    """[(label, node, input, name, why)] text encoder + VAE for a UNET-type family. A finetune that
+    ships its own (Anima: <base>.safetensors in text-encoders/<fam>/ and vae/<fam>/) wins over the
+    family default from models.json."""
+    out = []
+    fam = (m.get("companions") or {})
+    weights = [f["path"] for f in ft["files"]] if ft else []
+    if weights and loader_of(weights[0])[0] == "AILabRemoteCheckpoint":
+        return out          # checkpoints carry their own text encoder and VAE
+    for kind, top, node, inp in (("te", "text-encoders", "AILabRemoteCLIP", "clip_name"), ("vae", "vae", "AILabRemoteVAE", "vae_name")):
+        name, why = None, None
+        if ft and weights:
+            sub = Path(weights[0]).parent.name
+            base = Path(weights[0]).stem
+            stems = {Path(w).stem for w in weights} | {base}
+            d = IMAGEGEN / top / sub
+            if d.is_dir():
+                hits = sorted(p.name for p in d.iterdir() if p.suffix in WEIGHT_EXT and any(
+                    p.stem == s or (p.stem.startswith(s) and p.stem[len(s)] in SEP_AFTER_BASE) or
+                    (s.startswith(p.stem) and s[len(p.stem)] in SEP_AFTER_BASE) for s in stems))
+                if hits:
+                    name, why = f"{sub}/{hits[0]}", "ships with this finetune"
+        if not name and fam.get(kind):
+            name, why = fam[kind], "family default"
+        if name:
+            out.append(("text encoder" if kind == "te" else "VAE", node, inp, name, why))
+    return out
+
+
 def esc(s):
     return html.escape(str(s or ""), quote=True)
 
@@ -1271,8 +1314,9 @@ async def send(req: Request):
     if agent_id not in person.get("agents", []) or agent_id not in CONFIG.get("agents", {}):
         raise HTTPException(400, "unknown agent")
     agent = CONFIG["agents"][agent_id]
+    dry = bool(b.get("dry_run"))     # build the message only; nothing is uploaded or posted
     sess = sessions().get(person["matrix_user"])
-    if not sess:
+    if not sess and not dry:
         raise HTTPException(401, "Connect Matrix first")
     request_text = str(b.get("request") or "").strip()
     if not request_text:
@@ -1314,7 +1358,7 @@ async def send(req: Request):
     if m and refs and len(refs) > (m.get("max_refs") or 0):
         raise HTTPException(400, f"{m['name']} takes at most {m['max_refs']} reference images")
 
-    tok = sess["access_token"]
+    tok = (sess or {}).get("access_token")
     lines, parts = [], []
     lines.append("🎨 Image request (sent from the Image Request page)")
     parts.append("<p><b>🎨 Image request</b> <i>(sent from the Image Request page)</i></p>")
@@ -1334,9 +1378,14 @@ async def send(req: Request):
                 label = ft["name"] + (f" ({ft['version']})" if ft["version"] else "")
                 lines.append(f"FINETUNE: {label}")
                 for f in ft["files"]:
-                    lines.append(f"  file: {f['path']}  ({f['size'] / 1e9:.2f} GB)")
+                    node, inp, name = loader_of(f["path"])
+                    lines.append(f"  {node} {inp}: {name}  ({f['size'] / 1e9:.2f} GB)" if node else f"  file: {f['path']}")
                 if len(ft["files"]) > 1:
                     lines.append("  (several files = precision variants of the same finetune; pick what fits the GPU)")
+                for label_, node, inp, name, why in companions(m, ft):
+                    lines.append(f"  {label_}: {node} {inp}: {name}  ({why})")
+                if ft.get("sidecar"):
+                    lines.append(f"  Civitai info (recommended settings): {ft['sidecar']}")
                 if ft["civitai_url"]:
                     lines.append(f"  civitai: {ft['civitai_url']}")
                 ft_html = f" › {esc(label)}"
@@ -1345,9 +1394,18 @@ async def send(req: Request):
             elif use_base:
                 lines.append(f"FINETUNE: none. Use the official {m['name']} base model itself, not a finetune; "
                              "which quant / precision is your choice.")
+                for label_, node, inp, name, why in companions(m):
+                    lines.append(f"  {label_}: {node} {inp}: {name}  ({why})")
                 ft_html = " › base model"
             else:
-                lines.append(f"FINETUNE: your choice, from {', '.join(str(IMAGEGEN / d) for d in m.get('dirs', []))}")
+                subs = []
+                for d in m.get("dirs", []):
+                    node = LOADERS.get(d.split("/")[0])
+                    if node:
+                        subs.append(f"{node[0]} {node[1]} starting with \"{d.split('/', 1)[1]}/\"")
+                lines.append("FINETUNE: your choice: " + "; ".join(subs))
+                for label_, node, inp, name, why in companions(m):
+                    lines.append(f"  {label_}: {node} {inp}: {name}  ({why})")
             parts.append(f"<p><b>Model:</b> {esc(m['name'])}{ft_html}" + (f" <i>({esc(', '.join(caps))})</i>" if caps else "") + "</p>")
         else:
             lines += ["", "MODEL: your choice"]
@@ -1359,7 +1417,7 @@ async def send(req: Request):
             for i, x in enumerate(loras, 1):
                 tw = ", ".join(x.get("trained_words") or [])
                 lines.append(f"  {i}. {x['name']}" + (f" ({x['version']})" if x.get("version") else "") + f" [{x['layer']}]")
-                lines.append(f"     file: {IMAGEGEN / x['path']}")
+                lines.append(f"     lora_name: {Path(x['path']).relative_to('loras')}")
                 if tw:
                     lines.append(f"     trigger words: {tw}")
                 li.append(f"<li>{esc(x['name'])} <i>[{esc(x['layer'])}]</i>" + (f" — <code>{esc(tw)}</code>" if tw else "") + "</li>")
@@ -1376,7 +1434,7 @@ async def send(req: Request):
                 lines.append(f"  {k}: {v}")
             thumb = ""
             src = pf.get("mannequin") or pf.get("thumbnail")
-            if src:
+            if src and not dry:
                 mxc, w, h = await upload_mxc(c, tok, Path(src), 640)
                 thumb = f'<br><img src="{mxc}" alt="pose {pose["index"]}" height="160">'
             parts.append(f"<p><b>Pose:</b> #{pose['index']} {esc(pose.get('prompt') or pose.get('name'))}{thumb}</p>")
@@ -1387,7 +1445,7 @@ async def send(req: Request):
             for i, (row, note) in enumerate(refs, 1):
                 lines.append(f"  {i}. {row['path']}  ({row['w']}x{row['h']})")
                 lines.append(f"     use: {note}" if note else "     use: (no note; infer from the request)")
-                mxc, w, h = await upload_mxc(c, tok, Path(row["path"]))
+                mxc = "mxc://dry-run" if dry else (await upload_mxc(c, tok, Path(row["path"])))[0]
                 li.append(f'<li><img src="{mxc}" alt="reference {i}" height="160"><br>'
                           f'<b>Ref {i}:</b> {esc(note) if note else "<i>no note</i>"}</li>')
             parts.append(f"<p><b>Reference images:</b></p><ol>{''.join(li)}</ol>")
@@ -1398,6 +1456,8 @@ async def send(req: Request):
         body = "\n".join(lines)
         content = {"msgtype": "m.text", "body": body, "format": "org.matrix.custom.html",
                    "formatted_body": "".join(parts), "ai.deeveeyant.image_request": {"version": 1}}
+        if dry:
+            return {"ok": True, "dry_run": True, "body": body}
         txn = uuid.uuid4().hex
         d = await mx(c, "PUT", f"/_matrix/client/v3/rooms/{agent['room']}/send/m.room.message/{txn}", tok, json=content)
     hid = uuid.uuid4().hex[:12]

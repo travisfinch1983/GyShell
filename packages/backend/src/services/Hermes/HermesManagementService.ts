@@ -2003,7 +2003,11 @@ export class HermesManagementService {
    *     resolves '.' to $HOME (/root), and Hermes looks for AGENTS.md in that directory, so
    *     messaging-platform sessions (Matrix/Telegram) never loaded the agent's AGENTS.md.
    *  3. NEW agents only: speech-to-text through the AI-Lab STT proxy (voice notes), which a fresh
-   *     profile has disabled. Derived from the agent's own LLM proxy URL, so it follows the host. */
+   *     profile has disabled. Derived from the agent's own LLM proxy URL, so it follows the host.
+   *  4. NEW agents only: approvals.mode smart + timeout 300, what the older agents (cinder, wren…)
+   *     get from Hermes' built-in default. The clone copies the main config.yaml, which pins
+   *     `manual` / 60 s: on Matrix every terminal/execute_code call then waited for an approval
+   *     tap and was refused after a minute (kyla-studio, 2026-10-16). */
   private async ensureProfileDefaults(agentId: string, created: boolean): Promise<void> {
     if (isTemplateProfile(agentId)) return
     const home = this.profileHome(agentId)
@@ -2037,6 +2041,13 @@ export class HermesManagementService {
       }
     } catch (e) {
       console.error(`[hermes] ${agentId}: could not enable speech-to-text — voice notes will not be transcribed:`, e)
+    }
+    try {
+      for (const [k, v] of [['approvals.mode', 'smart'], ['approvals.timeout', '300']]) {
+        await this.hermes(['-p', agentId, 'config', 'set', k, v])
+      }
+    } catch (e) {
+      console.error(`[hermes] ${agentId}: could not set approvals.mode=smart — every terminal command will wait for a manual approval:`, e)
     }
   }
 
