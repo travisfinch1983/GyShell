@@ -261,6 +261,88 @@ def model_by_id(mid):
     return m
 
 
+WEIGHT_EXT = (".safetensors", ".gguf")
+SEP_AFTER_BASE = "-_.(（ "
+
+
+def set_images(base: Path):
+    """<base>.<ext> and <base>_<N>.<ext> next to a Civitai sidecar, in index order."""
+    d, stem = base.parent, base.name
+    pat = re.compile(re.escape(stem) + r"(?:_(\d+))?(\.(?:jpeg|jpg|png|webp))$", re.I)
+    found = []
+    for p in d.iterdir():
+        mm = pat.fullmatch(p.name)
+        if mm:
+            found.append((int(mm.group(1) or 0), p))
+    return [p for _, p in sorted(found)]
+
+
+def finetunes(m):
+    """One entry per downloaded finetune of a family. A Civitai download leaves <base>.civit.info
+    beside its weights; every weights file whose stem is <base> or <base><sep>… (precision variants:
+    -bf16, -fp8, -INT8 …) belongs to it. Weights with no sidecar become their own entry."""
+    dirs = [IMAGEGEN / d for d in m.get("dirs", [])]
+
+    def scan():
+        out = []
+        for root in dirs:
+            if not root.is_dir():
+                continue
+            for dirpath, dirnames, files in os.walk(root):
+                dirnames[:] = [x for x in dirnames if not x.startswith(".")]
+                dp = Path(dirpath)
+                bases = sorted({f[: -len(".civit.info")] for f in files if f.endswith(".civit.info")}, key=len, reverse=True)
+                groups = {}
+                for w in sorted(f for f in files if f.endswith(WEIGHT_EXT)):
+                    stem = w.rsplit(".", 1)[0]
+                    owner = next((b for b in bases if stem == b or (stem.startswith(b) and stem[len(b)] in SEP_AFTER_BASE)), None)
+                    groups.setdefault(owner or stem, []).append(dp / w)
+                for base, ws in groups.items():
+                    bp = dp / base
+                    full = load_json(str(bp) + ".civit.full.info", {}) or {}
+                    ver = load_json(str(bp) + ".civit.info", {}) or {}
+                    side = load_json(str(bp) + ".metadata.json", {}) or load_json(str(ws[0].with_suffix("")) + ".metadata.json", {}) or {}
+                    civ = side.get("civitai") or {}
+                    imgs = set_images(bp)
+                    if not imgs:
+                        for w in ws:
+                            imgs += previews_for(w)
+                    model_id = full.get("id") or civ.get("modelId")
+                    version_id = ver.get("id") or civ.get("id")
+                    rel_dir = str(dp.relative_to(root))
+                    out.append({
+                        "id": hashlib.sha1(str(bp).encode()).hexdigest()[:12],
+                        "name": full.get("name") or (civ.get("model") or {}).get("name") or side.get("model_name") or base.replace("_", " "),
+                        "version": ver.get("name") or civ.get("name") or "",
+                        "folder": "" if rel_dir == "." else rel_dir,
+                        "images": imgs,
+                        "files": [{"path": str(w), "size": w.stat().st_size} for w in ws],
+                        "description": html_to_text(full.get("description") or side.get("modelDescription") or ""),
+                        "version_description": html_to_text(ver.get("description") or civ.get("description") or ""),
+                        "base_model": ver.get("baseModel") or side.get("base_model") or "",
+                        "creator": (full.get("creator") or {}).get("username") or "",
+                        "civitai_url": (f"https://civitai.com/models/{model_id}" + (f"?modelVersionId={version_id}" if version_id else "")) if model_id else None,
+                        "nsfw": bool(full.get("nsfw")),
+                    })
+        out.sort(key=lambda x: (x["name"].lower(), x["version"].lower()))
+        return out
+    # Walk-based, so key the cache on every directory's mtime under the family roots.
+    all_dirs = []
+    for r in dirs:
+        if r.is_dir():
+            all_dirs += [Path(dp) for dp, dn, _ in os.walk(r) if "/." not in dp]
+    return cached("ft:" + m["id"], all_dirs, scan)
+
+
+def ft_public(f, full=False):
+    d = {k: f[k] for k in ("id", "name", "version", "folder", "base_model", "nsfw")}
+    d.update(cover=img_url(f["images"][0]) if f["images"] else None, image_count=len(f["images"]), file_count=len(f["files"]))
+    if full:
+        d.update(images=[img_url(p) for p in f["images"]], files=f["files"], description=f["description"],
+                 version_description=f["version_description"], creator=f["creator"], civitai_url=f["civitai_url"])
+    return d
+
+
 def model_images(m):
     dirs = [IMAGEGEN / d for d in m.get("dirs", [])]
 
@@ -296,9 +378,10 @@ def api_models(req: Request):
     out = []
     for m in MODELS:
         s = model_images(m)
+        fts = finetunes(m)
         out.append({k: m.get(k) for k in ("id", "name", "family", "edit", "refs", "max_refs", "description", "best_for", "notes")}
                    | {"cover": img_url(s["images"][0]) if s["images"] else None,
-                      "image_count": len(s["images"]), "file_count": len(s["files"])})
+                      "image_count": len(s["images"]), "file_count": len(s["files"]), "finetune_count": len(fts)})
     return out
 
 
@@ -308,6 +391,21 @@ def api_model(mid: str, req: Request):
     m = model_by_id(mid)
     s = model_images(m)
     return {"images": [img_url(p) for p in s["images"][:400]], "files": s["files"]}
+
+
+@app.get("/api/models/{mid}/finetunes")
+def api_finetunes(mid: str, req: Request):
+    who(req)
+    return [ft_public(f) for f in finetunes(model_by_id(mid))]
+
+
+@app.get("/api/models/{mid}/finetunes/{fid}")
+def api_finetune(mid: str, fid: str, req: Request):
+    who(req)
+    f = next((f for f in finetunes(model_by_id(mid)) if f["id"] == fid), None)
+    if not f:
+        raise HTTPException(404, "unknown finetune")
+    return ft_public(f, full=True)
 
 
 # ── LoRAs ────────────────────────────────────────────────────────────────────────────────────
@@ -628,6 +726,13 @@ async def send(req: Request):
     if not request_text:
         raise HTTPException(400, "Describe what you want generated")
     m = model_by_id(b.get("model")) if b.get("model") else None
+    ft = None
+    if b.get("finetune"):
+        if not m:
+            raise HTTPException(400, "A finetune needs its base model")
+        ft = next((f for f in finetunes(m) if f["id"] == b["finetune"]), None)
+        if not ft:
+            raise HTTPException(400, "That finetune is no longer downloaded")
     loras = []
     if b.get("loras"):
         if not m:
@@ -663,11 +768,23 @@ async def send(req: Request):
                 caps.append("edit-capable")
             if m.get("refs"):
                 caps.append(f"takes up to {m['max_refs']} reference images")
-            lines += ["", f"MODEL: {m['name']}" + (f" ({', '.join(caps)})" if caps else ""),
-                      f"  Model folder(s): {', '.join(str(IMAGEGEN / d) for d in m.get('dirs', []))}"]
+            lines += ["", f"BASE MODEL: {m['name']}" + (f" ({', '.join(caps)})" if caps else "")]
             if m.get("agent_hint"):
                 lines.append(f"  Note: {m['agent_hint']}")
-            parts.append(f"<p><b>Model:</b> {esc(m['name'])}" + (f" <i>({esc(', '.join(caps))})</i>" if caps else "") + "</p>")
+            ft_html = ""
+            if ft:
+                label = ft["name"] + (f" ({ft['version']})" if ft["version"] else "")
+                lines.append(f"FINETUNE: {label}")
+                for f in ft["files"]:
+                    lines.append(f"  file: {f['path']}  ({f['size'] / 1e9:.2f} GB)")
+                if len(ft["files"]) > 1:
+                    lines.append("  (several files = precision variants of the same finetune; pick what fits the GPU)")
+                if ft["civitai_url"]:
+                    lines.append(f"  civitai: {ft['civitai_url']}")
+                ft_html = f" › {esc(label)}"
+            else:
+                lines.append(f"FINETUNE: your choice, from {', '.join(str(IMAGEGEN / d) for d in m.get('dirs', []))}")
+            parts.append(f"<p><b>Model:</b> {esc(m['name'])}{ft_html}" + (f" <i>({esc(', '.join(caps))})</i>" if caps else "") + "</p>")
         else:
             lines += ["", "MODEL: your choice"]
             parts.append("<p><b>Model:</b> your choice</p>")

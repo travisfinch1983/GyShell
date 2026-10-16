@@ -105,6 +105,12 @@ textarea{width:100%;min-height:120px;padding:10px 12px;border:1px solid var(--li
 .field{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
 .toast{position:fixed;left:50%;bottom:calc(92px + env(safe-area-inset-bottom));transform:translateX(-50%);background:#222;color:#fff;padding:10px 16px;border-radius:12px;z-index:60;max-width:92vw;font-size:14px;display:none;box-shadow:0 4px 18px rgba(0,0,0,.3)}
 .toast.err{background:#a3243f}
+#ftPanel{margin-top:14px;padding-top:12px;border-top:1px dashed var(--line)}
+.ftHead{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.ftHead .t{flex:1;min-width:0;font-weight:700}
+.card.fam .im::after{content:"";position:absolute;inset:0;pointer-events:none}
+.card.fam.sel{box-shadow:0 0 0 3px var(--acc)}
+.card .more-ft{position:absolute;right:6px;bottom:6px;background:rgba(20,16,24,.78);color:#fff;font-size:11px;font-weight:600;padding:2px 7px;border-radius:7px}
 .agentsel{padding:6px 10px;border-radius:10px;border:1px solid var(--line);background:var(--card)}
 @media (max-width:560px){
   h1{font-size:17px}
@@ -134,7 +140,13 @@ textarea{width:100%;min-height:120px;padding:10px 12px;border:1px solid var(--li
 
 <main>
   <section id="sModel"><div class="sh"><span class="num">1</span><h2>Model</h2><span class="sum" id="sumModel"></span><span class="car">▾</span></div>
-    <div class="sb"><div class="grid big" id="gModel"></div></div></section>
+    <div class="sb"><div class="grid big" id="gModel"></div>
+      <div id="ftPanel" style="display:none">
+        <div class="ftHead"><div class="t" id="ftTitle"></div><button class="btn sm" id="famInfo">About this model</button></div>
+        <div class="tools"><input type="search" id="qFt" placeholder="Search finetunes"></div>
+        <div class="grid big" id="gFt"></div>
+      </div>
+    </div></section>
 
   <section id="sLora"><div class="sh"><span class="num">2</span><h2>LoRAs</h2><span class="sum" id="sumLora"></span><span class="car">▾</span></div>
     <div class="sb">
@@ -229,12 +241,12 @@ function gallery(urls){
 }
 
 // ── card factory ──
-function card({cover,title,sub,badges,selected,dim,onCheck,onOpen,noimg,cls=''}){
+function card({cover,title,sub,badges,selected,dim,onCheck,onOpen,noimg,cls='',noCheck=false,corner=''}){
   const d=document.createElement('div');d.className='card'+(selected?' sel':'')+(dim?' dim':'')+cls;
   d.innerHTML=`<div class="im">${cover?`<img loading="lazy" src="${img(cover)}" alt="">`:`<div class="noimg">${esc(noimg||'No preview')}</div>`}
-    <div class="badges">${badges||''}</div><div class="check" role="checkbox" aria-checked="${!!selected}"><span>${selected?'✓':''}</span></div></div>
+    <div class="badges">${badges||''}</div>${noCheck?'':`<div class="check" role="checkbox" aria-checked="${!!selected}"><span>${selected?'✓':''}</span></div>`}${corner}</div>
     <div class="cap"><div class="t">${esc(title)}</div>${sub?`<div class="s">${esc(sub)}</div>`:''}</div>`;
-  d.querySelector('.check').onclick=e=>{e.stopPropagation();onCheck()};
+  if(!noCheck)d.querySelector('.check').onclick=e=>{e.stopPropagation();onCheck()};
   d.querySelector('.im').onclick=e=>{if(e.target.closest('.check'))return;onOpen()};
   return d;
 }
@@ -242,19 +254,62 @@ function card({cover,title,sub,badges,selected,dim,onCheck,onOpen,noimg,cls=''})
 // ── 1. models ──
 const curModel=()=>MODELS.find(m=>m.id===S.model)||null;
 function modelBadges(m){return (m.edit?'<span class="badge edit">Edit</span>':'')+(m.refs?`<span class="badge ref">Ref ×${m.max_refs}</span>`:'')}
+// Base-model cards open their finetune panel; the checkbox lives on the finetunes.
+let FTS=[];
+const ftLabel=f=>f?f.name+(f.version?` · ${f.version}`:''):'';
 function renderModels(){
   const g=$('gModel');g.innerHTML='';
-  MODELS.forEach(m=>g.appendChild(card({cover:m.cover,title:m.name,sub:m.file_count?`${m.file_count} model file${m.file_count>1?'s':''}`:'not downloaded yet',
-    badges:modelBadges(m),selected:S.model===m.id,dim:S.model&&S.model!==m.id,noimg:m.file_count?'No preview':'Not downloaded yet',
-    onCheck:()=>selectModel(S.model===m.id?null:m.id),onOpen:()=>openModel(m)})));
-  const m=curModel();$('sumModel').textContent=m?m.name:'none';
+  MODELS.forEach(m=>g.appendChild(card({cover:m.cover,title:m.name,
+    sub:m.finetune_count?`${m.finetune_count} finetune${m.finetune_count>1?'s':''}`:'not downloaded yet',
+    badges:modelBadges(m),selected:S.model===m.id,noCheck:true,cls:' fam',noimg:m.finetune_count?'No preview':'Not downloaded yet',
+    corner:S.model===m.id?'<span class="more-ft">▼ finetunes</span>':'',
+    onOpen:()=>selectModel(S.model===m.id?null:m.id)})));
+  const m=curModel();$('sumModel').textContent=m?(m.name+(S.finetuneName?` › ${S.finetuneName}`:'')):'none';
 }
 function selectModel(id){
   const prev=S.model;S.model=id;
-  if(prev!==id){S.loras=[]}
+  if(prev!==id){S.loras=[];S.finetune=null;S.finetuneName=null}
   const m=curModel();
   if(m&&m.refs&&S.refs.length>m.max_refs){S.refs=S.refs.slice(0,m.max_refs);toast(`${m.name} takes ${m.max_refs} references; kept the first ${m.max_refs}`)}
-  save();renderModels();loadLoras();renderRefs();
+  save();renderModels();loadFinetunes();loadLoras();renderRefs();
+  if(id)setTimeout(()=>$('ftPanel').scrollIntoView({behavior:'smooth',block:'start'}),60);
+}
+async function loadFinetunes(){
+  const m=curModel();FTS=[];
+  $('ftPanel').style.display=m?'':'none';
+  if(!m)return;
+  $('ftTitle').textContent=`${m.name} finetunes`;$('gFt').innerHTML='<div class="empty">Loading finetunes…</div>';
+  try{FTS=await api(`/api/models/${m.id}/finetunes`)}catch(e){$('gFt').innerHTML=`<div class="empty">${esc(e.message)}</div>`;return}
+  if(S.finetune&&!FTS.some(f=>f.id===S.finetune)){S.finetune=null;S.finetuneName=null;save()}
+  $('ftTitle').textContent=`${m.name} finetunes (${FTS.length})`;
+  renderFinetunes();
+}
+function renderFinetunes(){
+  const g=$('gFt');g.innerHTML='';const q=$('qFt').value.trim().toLowerCase();
+  const list=FTS.filter(f=>!q||(f.name+' '+f.version+' '+f.folder).toLowerCase().includes(q));
+  if(!list.length){g.innerHTML=`<div class="empty">${FTS.length?'No finetunes match.':'No finetunes downloaded yet.'}</div>`;return}
+  const frag=document.createDocumentFragment();
+  list.forEach(f=>frag.appendChild(card({cover:f.cover,title:f.name,sub:[f.version,f.folder,f.file_count>1?`${f.file_count} files`:''].filter(Boolean).join(' · '),
+    selected:S.finetune===f.id,dim:S.finetune&&S.finetune!==f.id,
+    onCheck:()=>selectFinetune(S.finetune===f.id?null:f),onOpen:()=>openFinetune(f)})));
+  g.appendChild(frag);
+}
+function selectFinetune(f){S.finetune=f?f.id:null;S.finetuneName=f?ftLabel(f):null;save();renderModels();renderFinetunes()}
+let ftT;$('qFt').addEventListener('input',()=>{clearTimeout(ftT);ftT=setTimeout(renderFinetunes,150)});
+$('famInfo').onclick=()=>{const m=curModel();if(m)openModel(m)};
+async function openFinetune(f){
+  const sel=()=>S.finetune===f.id;
+  openOv(ftLabel(f),'<div class="empty">Loading…</div>',`<span class="sp"></span><button class="btn acc" id="ovSel">${sel()?'Unselect':'Select'}</button>`);
+  $('ovSel').onclick=()=>{selectFinetune(sel()?null:f);closeOv()};
+  try{
+    const d=await api(`/api/models/${S.model}/finetunes/${f.id}`);
+    $('ovB').innerHTML=gallery(d.images)+`
+      <div class="kv">${d.version?`<b style="display:inline;text-transform:none;letter-spacing:0">${esc(d.version)}</b>`:''} ${d.base_model?`<span class="muted small">· ${esc(d.base_model)}</span>`:''} ${d.creator?`<span class="muted small">· by ${esc(d.creator)}</span>`:''}</div>
+      ${d.civitai_url?`<div class="kv"><a class="btn sm" href="${esc(d.civitai_url)}" target="_blank" rel="noopener">Open on Civitai ↗</a></div>`:''}
+      ${d.description?`<div class="kv"><b>Description</b><div class="desc">${esc(d.description)}</div></div>`:''}
+      ${d.version_description?`<div class="kv"><b>This version</b><div class="desc">${esc(d.version_description)}</div></div>`:''}
+      <div class="kv"><b>Files</b><div class="desc muted small">${d.files.map(x=>`${esc(x.path.split('/').pop())}  (${(x.size/1e9).toFixed(2)} GB)`).join('\n')}</div></div>`;
+  }catch(e){$('ovB').innerHTML=`<div class="empty">${esc(e.message)}</div>`}
 }
 async function openModel(m){
   openOv(m.name,'<div class="empty">Loading…</div>',`<span class="sp"></span><button class="btn acc" id="ovSel">${S.model===m.id?'Unselect':'Select'}</button>`);
@@ -426,7 +481,7 @@ $('req').addEventListener('input',()=>{S.request=$('req').value;save()});
 function renderSummary(){
   const m=curModel(),p=POSES.find(x=>x.n===S.pose);
   const chips=[];
-  chips.push(m?`Model: ${m.name}`:'Model: agent decides');
+  chips.push(m?`Model: ${m.name}${S.finetuneName?' › '+S.finetuneName:' (any finetune)'}`:'Model: agent decides');
   S.loras.forEach(id=>{const l=loraInfo.get(id);if(l)chips.push(`LoRA: ${l.name}`)});
   if(p)chips.push(`Pose #${p.n}`);
   if(m&&m.refs&&S.refs.length)chips.push(`${S.refs.length} reference image${S.refs.length>1?'s':''}`);
@@ -438,21 +493,21 @@ function renderSummary(){
 }
 $('send').onclick=async()=>{
   const m=curModel();
-  const body={agent:S.agent,model:S.model,loras:S.loras,pose:S.pose,request:S.request,refs:m&&m.refs?S.refs.map(r=>({id:r.id,note:r.note||''})):[]};
+  const body={agent:S.agent,model:S.model,finetune:S.finetune||null,loras:S.loras,pose:S.pose,request:S.request,refs:m&&m.refs?S.refs.map(r=>({id:r.id,note:r.note||''})):[]};
   $('send').disabled=true;$('send').textContent='Sending…';
   try{const d=await api('/api/send',{method:'POST',body:JSON.stringify(body)});toast(`Sent to ${d.agent}. The reply comes in Matrix.`)}
   catch(e){toast('Not sent: '+e.message,true);if(/Matrix/.test(e.message))loadMe()}
   finally{$('send').textContent='Send';renderSummary()}
 };
-$('clearAll').onclick=()=>{S.model=null;S.loras=[];S.pose=null;S.refs=[];S.request='';$('req').value='';save();renderModels();loadLoras();renderPoses();renderRefs()};
+$('clearAll').onclick=()=>{S.model=null;S.finetune=null;S.finetuneName=null;S.loras=[];S.pose=null;S.refs=[];S.request='';$('req').value='';save();renderModels();loadFinetunes();loadLoras();renderPoses();renderRefs()};
 
 // ── templates ──
-function snapshot(){return {agent:S.agent,model:S.model,loras:[...S.loras],lora_names:S.loras.map(id=>(loraInfo.get(id)||{}).name||id),pose:S.pose,refs:S.refs.map(r=>({...r})),request:S.request}}
+function snapshot(){return {agent:S.agent,model:S.model,finetune:S.finetune||null,finetune_name:S.finetuneName||null,loras:[...S.loras],lora_names:S.loras.map(id=>(loraInfo.get(id)||{}).name||id),pose:S.pose,refs:S.refs.map(r=>({...r})),request:S.request}}
 async function applyTemplate(t){
   const d=t.data||{};
   S.agent=(ME&&ME.agents.some(a=>a.id===d.agent))?d.agent:S.agent;$('agent').value=S.agent;
-  S.model=d.model||null;S.pose=d.pose??null;S.refs=(d.refs||[]).map(r=>({...r}));S.request=d.request||'';$('req').value=S.request;
-  S.loras=[];renderModels();await loadLoras();
+  S.model=d.model||null;S.finetune=d.finetune||null;S.finetuneName=d.finetune_name||null;S.pose=d.pose??null;S.refs=(d.refs||[]).map(r=>({...r}));S.request=d.request||'';$('req').value=S.request;
+  S.loras=[];renderModels();await loadFinetunes();await loadLoras();
   const want=d.loras||[];S.loras=want.filter(id=>LORAS.some(l=>l.id===id));
   const missing=want.length-S.loras.length;
   // Reference images may have been removed from the library list; the files themselves stay.
@@ -463,7 +518,7 @@ $('tplBtn').onclick=async()=>{
   openOv('Templates','<div class="empty">Loading…</div>',`<input class="field" id="tplName" placeholder="Template name" style="flex:1"><button class="btn acc" id="tplSave">Save current</button>`);
   const draw=async()=>{
     let list=[];try{list=await api('/api/templates')}catch(e){$('ovB').innerHTML=`<div class="empty">${esc(e.message)}</div>`;return}
-    $('ovB').innerHTML=list.length?list.map(t=>`<div class="tpl"><div class="n">${esc(t.name)}<div class="muted small">${esc([MODELS.find(m=>m.id===t.data.model)?.name||'any model',(t.data.loras||[]).length+' LoRAs',t.data.pose!=null?'pose #'+t.data.pose:'',(t.data.refs||[]).length?(t.data.refs.length+' refs'):''].filter(Boolean).join(' · '))}</div></div>
+    $('ovB').innerHTML=list.length?list.map(t=>`<div class="tpl"><div class="n">${esc(t.name)}<div class="muted small">${esc([(MODELS.find(m=>m.id===t.data.model)?.name||'any model')+(t.data.finetune_name?' › '+t.data.finetune_name:''),(t.data.loras||[]).length+' LoRAs',t.data.pose!=null?'pose #'+t.data.pose:'',(t.data.refs||[]).length?(t.data.refs.length+' refs'):''].filter(Boolean).join(' · '))}</div></div>
       <button class="btn sm acc" data-load="${t.id}">Load</button><button class="btn sm" data-del="${t.id}">🗑</button></div>`).join(''):'<div class="empty">No templates yet. Make your selections, name it below and save.</div>';
     $('ovB').querySelectorAll('[data-load]').forEach(b=>b.onclick=async()=>{const t=list.find(x=>x.id===b.dataset.load);closeOv();await applyTemplate(t)});
     $('ovB').querySelectorAll('[data-del]').forEach(b=>{let armed=false;b.onclick=async()=>{if(!armed){armed=true;b.textContent='Delete?';setTimeout(()=>{armed=false;b.textContent='🗑'},2500);return}await api(`/api/templates/${b.dataset.del}`,{method:'DELETE'});draw()}});
@@ -489,7 +544,7 @@ $('mxForm').onsubmit=async e=>{e.preventDefault();const pw=$('mxPw').value;if(!p
   try{await loadMe()}catch(e){document.querySelector('main').innerHTML=`<div class="empty">${esc(e.message)}</div>`;return}
   try{MODELS=await api('/api/models')}catch(e){toast('Models: '+e.message,true)}
   if(S.model&&!MODELS.some(m=>m.id===S.model))S.model=null;
-  renderModels();loadLoras();renderRefs();
+  renderModels();loadFinetunes();loadLoras();renderRefs();
   try{POSES=(await api('/api/poses')).sort((a,b)=>a.n-b.n);renderPoseChips();renderPoses()}catch(e){$('gPose').innerHTML=`<div class="empty">Poses: ${esc(e.message)}</div>`}
   renderSummary();
 })();
