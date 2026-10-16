@@ -1,0 +1,36 @@
+--- a/serve.py
++++ b/serve.py
+@@ -1873,6 +1873,9 @@
+               "/models/load", "/models/unload", "/models/pin"}
+ 
+ 
++SHUTDOWN_HOOKS = []   # (plugin, fn) - run on SIGTERM before exit
++
++
+ class PluginAPI:
+     """What a plugin's register(api) gets. See PLUGINS.md."""
+     def __init__(self, name):
+@@ -1919,6 +1922,11 @@
+         the same shape core returns), or None to leave that request to core. Called before core's own encode."""
+         TE_CLAIMS.append((self.name, fn))
+ 
++    def add_shutdown(self, fn):
++        """fn() runs when the service is stopped (SIGTERM), before it exits - e.g. kill an out-of-process server the plugin
++        supervises (systemd would otherwise wait out TimeoutStopSec on a child that ignores SIGTERM). Keep it quick."""
++        SHUTDOWN_HOOKS.append((self.name, fn))
++
+     def add_route(self, method, path, fn):
+         """An HTTP route on the service port: fn(body, query) -> dict | (status, dict) | (status, bytes, content_type).
+         body = parsed JSON when the request is JSON, else raw bytes. Core paths can't be overridden."""
+@@ -2051,6 +2059,11 @@
+     os.chmod(UDS, 0o666)
+     atexit.register(cleanup)
+     def _stop(*_):   # systemd stop: remove socket + registry, then leave at once (a normal interpreter exit with live CUDA
++        for _pl, _fn in SHUTDOWN_HOOKS:   # plugins' out-of-process servers first (api.add_shutdown)
++            try:
++                _fn()
++            except Exception as _e:  # noqa: BLE001
++                print("shutdown hook", _pl, _e, flush=True)
+         cleanup()    # threads aborts with "terminate called without an active exception" and systemd marks the unit failed)
+         os._exit(0)
+     signal.signal(signal.SIGTERM, _stop)
