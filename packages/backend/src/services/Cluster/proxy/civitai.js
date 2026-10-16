@@ -172,7 +172,7 @@ const DEFAULT_CONFIG = {
   diffusionBaseModels: [
     'Flux', 'Krea', 'Chroma', 'Flex', 'Lumina',
     'Wan Video', 'Hunyuan', 'LTXV', 'MiniMax',
-    'ZImage', 'HiDream', 'Qwen', 'CogVideo', 'Mochi',
+    'ZImage', 'HiDream', 'Qwen', 'CogVideo', 'Mochi', 'Anima',
   ],
 };
 
@@ -349,6 +349,24 @@ function detectComponentType(versionName, fileName) {
  * LORA stays in loras/, a Flux VAE stays in vae/.  Returns null otherwise so the
  * caller falls through to the declared type unchanged.
  */
+/**
+ * CivitAI labels every FILE with its own role: 'Model', 'Diffusion Model', 'Text Encoder',
+ * 'VAE'. A single version often bundles all three (most Anima checkpoints ship the model,
+ * a `_txt` text encoder and qwen_image_vae together). Routing used to look only at the
+ * version, so the encoder and VAE followed the model into checkpoints/. An explicit
+ * non-'Model' label is authoritative; 'Model' (or no label) defers to the other rules.
+ */
+const FILE_TYPE_FOLDERS = {
+  'vae': 'vae',
+  'text encoder': 'text-encoders',
+  'textencoder': 'text-encoders',
+  'diffusion model': 'diffusion-models',
+};
+function componentFromFileType(file) {
+  const t = String(file?.type || '').trim().toLowerCase();
+  return FILE_TYPE_FOLDERS[t] || null;
+}
+
 function detectDiffusionFamily(baseModel, declaredFolder, cfg) {
   if (declaredFolder !== 'checkpoints') return null;
   const bm = String(baseModel || '').trim().toLowerCase();
@@ -1201,7 +1219,7 @@ function deriveAutoSuffixes(group) {
  * Collisions that remain are reported via `outCollisions` instead of being papered over.
  */
 function resolveVersionFileNames(files, baseNameFor, fnOverride, fileOpts, selectedKeys, opts) {
-  const { autoDisambiguate = true, outAuto = null, outCollisions = null } = opts || {};
+  const { autoDisambiguate = true, outAuto = null, outCollisions = null, dirOf = null } = opts || {};
   // Separator for the typed filename override. Callers pass cfg.separator. Per-TYPE
   // separator overrides (cfg.typeTemplates[type].separator) are not threaded here because
   // the type is only known inside baseNameFor(); every type currently shares the global
@@ -1246,14 +1264,16 @@ function resolveVersionFileNames(files, baseNameFor, fnOverride, fileOpts, selec
   const counts = {};
   for (const f of files || []) {
     if (!isSel(f)) continue;
-    const n = names.get(keyOf(f));
+    // Same name in DIFFERENT folders is not a clash (model / text encoder / VAE of one
+    // version routinely share a name and land in checkpoints/, text-encoders/, vae/).
+    const n = (dirOf ? `${dirOf(keyOf(f)) || ''}/` : '') + names.get(keyOf(f));
     counts[n] = (counts[n] || 0) + 1;
   }
 
   const groups = new Map();
   for (const f of files || []) {
     if (!isSel(f)) continue;
-    const n = names.get(keyOf(f));
+    const n = (dirOf ? `${dirOf(keyOf(f)) || ''}/` : '') + names.get(keyOf(f));
     if (counts[n] > 1) {
       if (!groups.has(n)) groups.set(n, []);
       groups.get(n).push(f);
@@ -1265,7 +1285,8 @@ function resolveVersionFileNames(files, baseNameFor, fnOverride, fileOpts, selec
     if (outAuto) group.forEach((f, i) => outAuto.set(keyOf(f), suffixes[i]));
     if (outCollisions) outCollisions.push(group.map(keyOf));
     if (!autoDisambiguate) continue;                  // report only; never invent
-    const [base, ext] = splitExt(n);
+    // n may carry the destination dir (see dirOf); the name itself is the file's own.
+    const [base, ext] = splitExt(names.get(keyOf(group[0])));
     group.forEach((f, i) => {
       names.set(keyOf(f), suffixes[i] ? `${base}-${suffixes[i]}${ext}` : `${base}${ext}`);
     });
@@ -1278,10 +1299,13 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
     if (userDefined) vars['$USER_DEFINED'] = userDefined;
     if (extensionOverride) vars['$EXTENSION_OVERRIDE'] = extensionOverride;
     // Use contextual component override if provided, else per-file detection
-    const detectedComponent = componentOverride || detectComponentType(version?.name, file?.name);
+    // A file's own CivitAI type beats the version-level guess: a VAE packed inside a
+    // checkpoint version is still a VAE.
+    const detectedComponent = componentFromFileType(file) || componentOverride || detectComponentType(version?.name, file?.name);
     // Component detection wins; family override only rescues a declared "Checkpoint"
     // that is really a single-file DiT (Krea 2, Flux, Wan, ...).
-    const familyFolder = detectDiffusionFamily(version?.baseModel, vars['$TYPE_FOLDER'], cfg);
+    const _aio = /(^|[^a-z])(aio|all.?in.?one)([^a-z]|$)/i.test(`${version?.name || ''} ${file?.name || ''}`);
+    const familyFolder = _aio ? null : detectDiffusionFamily(version?.baseModel, vars['$TYPE_FOLDER'], cfg);
     const typeFolder = detectedComponent || familyFolder || vars['$TYPE_FOLDER'] || 'other';
     vars['$TYPE_FOLDER'] = typeFolder; // update so template uses the correct folder
     const typeCfg = cfg.typeTemplates?.[typeFolder] || {};
@@ -1447,7 +1471,7 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
     const _autoSuffixes = new Map();
     const _collisions = [];
     const _finalNames = resolveVersionFileNames(files, (f) => {
-      const fake = { id: f.id, name: f.name, sizeKB: f.sizeKB || 0, metadata: f.metadata || {}, hashes: {} };
+      const fake = { id: f.id, name: f.name, type: f.type, sizeKB: f.sizeKB || 0, metadata: f.metadata || {}, hashes: {} };
       const r = resolveTargetPath(model, version, fake, cfg, effectiveOverride, userDefined || '');
       lastTypeFolder = r.typeFolder || lastTypeFolder;
       lastFolderPart = r.folderPart || '';
@@ -1459,6 +1483,7 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       autoDisambiguate: autoDisambiguate !== false,
       outAuto: _autoSuffixes,
       outCollisions: _collisions,
+      dirOf: (k) => _dirs.get(k),
     });
 
     for (const file of files) {
@@ -1568,7 +1593,7 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
           _dirs.set(_keyOf(f), r.targetDir);
           return r.fileName;
         };
-        const _sepOpt = { separator: cfg.separator || '-' };
+        const _sepOpt = { separator: cfg.separator || '-', dirOf: (k) => _dirs.get(k) };
         const _namesAll = resolveVersionFileNames(v.files, _mk, fnOverride, null, null, _sepOpt);
         const _namesBare = resolveVersionFileNames(v.files, _mk, fnOverride, null, new Set(), _sepOpt);
 
@@ -1719,7 +1744,7 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       }, fileNameOverride, fileOpts, (Array.isArray(fileIds) && fileIds.length)
         ? new Set(fileIds.map(String))
         : null, { autoDisambiguate: req.body.autoDisambiguate !== false, outCollisions: _dlCollisions,
-                  separator: cfg.separator || '-' });
+                  separator: cfg.separator || '-', dirOf: (k) => _dlDirs.get(k) });
 
       // With auto-disambiguation off the user owns every part of the name, so two selected
       // files CAN now resolve to the same path. Writing both is precisely what corrupted
