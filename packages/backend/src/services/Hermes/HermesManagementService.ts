@@ -1461,8 +1461,9 @@ export class HermesManagementService {
 
   /** Give a newly created agent its Matrix channel via /usr/local/bin/hermes-matrix-provision
    *  (see that script's header). Fire-and-forget; the outcome is a notification either way. */
-  private provisionMatrixInBackground(agentId: string, displayName: string): void {
-    const cmd = `/usr/local/bin/hermes-matrix-provision ${shq(agentId)} --name ${shq(displayName)}`
+  private provisionMatrixInBackground(agentId: string, displayName: string, allow?: string[]): void {
+    const cmd = `/usr/local/bin/hermes-matrix-provision ${shq(agentId)} --name ${shq(displayName)}` +
+      (allow?.length ? ` --allow ${shq(allow.join(','))}` : '')
     void this.ssh(cmd)
       .then((out) => {
         const last = out.trim().split('\n').pop() ?? ''
@@ -1764,7 +1765,8 @@ export class HermesManagementService {
   }
 
   /** Ensure `acp-tool-override` is in the profile's plugins.enabled (idempotent). No-op if already
-   *  listed; appends a plugins block if the key is absent. Plugin files ship with the profile. */
+   *  listed; appends a plugins block if the key is absent. Plugin FILES come from ensureProfileDefaults
+   *  (copied from the default template) — `profile create --clone` does not carry them. */
   private async ensureNativePluginEnabled(agentId: string): Promise<void> {
     const cfg = `${this.profileHome(agentId)}/config.yaml`
     const name = HermesManagementService.NATIVE_PLUGIN
@@ -1989,6 +1991,52 @@ export class HermesManagementService {
         `[agent-provision] ${agentId}: could NOT ensure the \`custom\` provider `
           + `(${(e as Error).message}) — past conversations for this agent may open empty`,
       )
+    }
+  }
+
+  /** Profile settings every agent needs that `hermes profile create --clone` does not give it.
+   *  Found missing while building kyla-studio (2026-10-16). Idempotent; never throws (logs loudly).
+   *  1. acp-tool-override plugin files, copied from the `default` template. Without them the
+   *     native-tools PUT fails on a missing state.json, and the toggles do nothing. state.json
+   *     (the agent's own tool choices) is never overwritten.
+   *  2. terminal.cwd = <profile>/workspace when unset or a placeholder. The gateway otherwise
+   *     resolves '.' to $HOME (/root), and Hermes looks for AGENTS.md in that directory, so
+   *     messaging-platform sessions (Matrix/Telegram) never loaded the agent's AGENTS.md.
+   *  3. NEW agents only: speech-to-text through the AI-Lab STT proxy (voice notes), which a fresh
+   *     profile has disabled. Derived from the agent's own LLM proxy URL, so it follows the host. */
+  private async ensureProfileDefaults(agentId: string, created: boolean): Promise<void> {
+    if (isTemplateProfile(agentId)) return
+    const home = this.profileHome(agentId)
+    const tmpl = `${this.profileHomeBase}/${HermesManagementService.MEMORY_TEMPLATE_PROFILE}/plugins/${HermesManagementService.NATIVE_PLUGIN}`
+    try {
+      await this.ssh(
+        `test -f ${shq(tmpl)}/__init__.py || { echo "missing template ${tmpl}" >&2; exit 3; }; ` +
+          `mkdir -p ${shq(this.nativePluginDir(agentId))} && ` +
+          `cp -f ${shq(tmpl)}/__init__.py ${shq(tmpl)}/plugin.yaml ${shq(this.nativePluginDir(agentId))}/`,
+      )
+      await this.ensureNativePluginEnabled(agentId)
+    } catch (e) {
+      console.error(`[hermes] ${agentId}: could not install the ${HermesManagementService.NATIVE_PLUGIN} plugin — native tool toggles will fail:`, e)
+    }
+    try {
+      const cwd = (await this.hermes(['-p', agentId, 'config', 'get', 'terminal.cwd']).catch(() => '')).trim()
+      if (!cwd || ['.', 'auto', 'cwd', 'None', 'null'].includes(cwd.split('\n').pop()!.trim())) {
+        await this.hermes(['-p', agentId, 'config', 'set', 'terminal.cwd', `${home}/workspace`])
+        console.log(`[hermes] ${agentId}: terminal.cwd -> ${home}/workspace (so gateway sessions load AGENTS.md)`)
+      }
+    } catch (e) {
+      console.error(`[hermes] ${agentId}: could not set terminal.cwd — Matrix/Telegram sessions will NOT load AGENTS.md:`, e)
+    }
+    if (!created) return
+    try {
+      const cfg = await this.readConfigJson(agentId)
+      const llm = String(cfg?.providers?.ailab?.api || `${process.env.AILAB_PROXY_URL || 'http://10.0.0.219:17890'}/api/proxy/llm/v1`)
+      const stt = llm.replace(/\/llm\/v1\/?$/, '/stt/v1')
+      for (const [k, v] of [['stt.enabled', 'true'], ['stt.provider', 'openai'], ['stt.openai.model', 'large-v3-turbo'], ['stt.openai.base_url', stt]]) {
+        await this.hermes(['-p', agentId, 'config', 'set', k, v])
+      }
+    } catch (e) {
+      console.error(`[hermes] ${agentId}: could not enable speech-to-text — voice notes will not be transcribed:`, e)
     }
   }
 
@@ -3390,6 +3438,7 @@ async lintProfileDocs(agentId: string): Promise<{
     // create AND edit, so a new agent can never be born unable to reopen its own history.
     await this.ensureCustomProvider(id)
     await this.ensureCompositeMemory(id)
+    await this.ensureProfileDefaults(id, created)
     // Per-agent OpenViking memory key (isolation): provision/rotate the agent's key, wire it into
     // the profile .env (capture) and the recall key-map (recall). No-op if OV admin creds unset.
     await this.ensureOpenVikingKey(id)
@@ -3447,7 +3496,7 @@ async lintProfileDocs(agentId: string): Promise<{
     // MATRIX_* env and a running gateway — all via the native gateway, never a Hermes patch. Runs in
     // the BACKGROUND (account + gateway start take ~30-60 s) and reports through notifications, so
     // saving a new agent is not slowed down and a Matrix failure never fails the save.
-    if (created && !isTemplateProfile(id)) this.provisionMatrixInBackground(id, spec.displayName ?? id)
+    if (created && !isTemplateProfile(id)) this.provisionMatrixInBackground(id, spec.displayName ?? id, spec.matrixAllow)
     return { created, home, docIssues }
   }
 
@@ -3639,6 +3688,19 @@ async lintProfileDocs(agentId: string): Promise<{
     ].join('; ')).catch((e) => console.warn(`[deleteAgent] gateway cleanup for ${agentId}: ${String((e as Error)?.message ?? e)}`))
     await this.hermes(['profile', 'delete', agentId, '--yes'])
     await this.deleteOpenVikingKey(agentId)
+    // The gateway side outlives the profile otherwise: its tool group and its per-agent
+    // memory/pages/reports servers stay registered (found retiring cinder-kyla, 2026-10-16), so
+    // their tools keep showing up in every catalog. Only REGISTRATIONS go — the memory data stays in
+    // the vector DB, and re-creating the agent re-registers the same namespace.
+    const gw = this.gatewayBase()
+    for (const path of [`tool-groups/agent-${agentId}`, ...['memory', 'pages', 'reports'].map((k) => `servers/${k}-${agentId}`)]) {
+      try {
+        const r = await fetch(`${gw}/api/v0/${path}`, { method: 'DELETE', signal: AbortSignal.timeout(8000) })
+        if (!r.ok && r.status !== 404) console.error(`[deleteAgent] ${agentId}: DELETE ${path} -> HTTP ${r.status}`)
+      } catch (e) {
+        console.error(`[deleteAgent] ${agentId}: DELETE ${path} failed: ${String((e as Error)?.message ?? e)}`)
+      }
+    }
     if (this.cfg.specsFile) {
       const specs = this.loadSpecs()
       if (agentId in specs) {

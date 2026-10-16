@@ -195,6 +195,11 @@ export const hermesAgentSpecSchema = z.object({
       preset: z.string().optional(),
     })
     .optional(),
+  /** Matrix users allowed to talk to this agent, used ONCE when its Matrix channel is created
+   *  (hermes-matrix-provision --allow). The FIRST entry becomes the home room (the DM the
+   *  agent's notices go to); each user gets their OWN encrypted DM. Omitted = Travis only.
+   *  Changing it later does not re-provision. */
+  matrixAllow: z.array(z.string().regex(/^@[a-z0-9._=\/-]+:[a-z0-9.-]+$/)).optional(),
   enabled: z.boolean().default(true),
 })
 export type HermesAgentSpec = z.infer<typeof hermesAgentSpecSchema>

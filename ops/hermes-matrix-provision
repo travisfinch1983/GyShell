@@ -7,7 +7,7 @@ Give a Hermes agent its Matrix channel, using only native Hermes capabilities (e
   1. bot account @<profile>:deeveeyant.com, via the restricted key whose ONLY power is the VPS
      script matrix-bot-provision (it opens token-only sign-ups under a lock, registers, and
      restores the exact previous mode, so approval-mode suspension never hits the bot)
-  2. an ENCRYPTED DM room created by the bot, inviting the allowed users. Hermes does E2EE
+  2. one ENCRYPTED DM room per allowed user, created by the bot (first user's = MATRIX_HOME_ROOM). Hermes does E2EE
      (MATRIX_E2EE_MODE=optional), so unlike the Claude Code channel plugin it can stay encrypted
   3. MATRIX_* block in the profile .env. Any inherited MATRIX_* lines are stripped FIRST:
      `hermes profile create --clone` copies the default profile's .env, and an inherited access
@@ -85,16 +85,21 @@ def main():
 
     # 2. profile + encrypted DM room
     mx("PUT", f"/_matrix/client/v3/profile/{uid}/displayname", tok, {"displayname": name})
-    st, room = mx("POST", "/_matrix/client/v3/createRoom", tok, {
-        "preset": "trusted_private_chat", "is_direct": True, "invite": allow, "name": name,
-        "topic": f"{name} (Hermes agent '{p}')",
-        "initial_state": [{"type": "m.room.encryption", "state_key": "",
-                           "content": {"algorithm": "m.megolm.v1.aes-sha2"}}]})
-    rid = room.get("room_id")
-    if st != 200 or not rid:
-        die(f"createRoom failed ({st}): {room}")
+    # One encrypted DM PER allowed user (a shared room would let them read each other's chats).
+    # The FIRST user's DM is the home room, where the agent's own notices go.
+    rooms = {}
     for u in allow:
-        mx("PUT", f"/_matrix/client/v3/user/{uid}/account_data/m.direct", tok, {u: [rid]})
+        st, room = mx("POST", "/_matrix/client/v3/createRoom", tok, {
+            "preset": "trusted_private_chat", "is_direct": True, "invite": [u], "name": name,
+            "topic": f"{name} (Hermes agent '{p}')",
+            "initial_state": [{"type": "m.room.encryption", "state_key": "",
+                               "content": {"algorithm": "m.megolm.v1.aes-sha2"}}]})
+        if st != 200 or not room.get("room_id"):
+            die(f"createRoom for {u} failed ({st}): {room}")
+        rooms[u] = room["room_id"]
+    rid = rooms[allow[0]]
+    # m.direct is ONE map for all users - a PUT per user would keep only the last one
+    mx("PUT", f"/_matrix/client/v3/user/{uid}/account_data/m.direct", tok, {u: [r] for u, r in rooms.items()})
 
     # 3. .env — strip inherited/old MATRIX_* first, then append ours
     keep = [l for l in env.splitlines() if not re.match(r"\s*#?\s*MATRIX_", l)
@@ -150,13 +155,13 @@ def main():
         body = json.dumps({"name": f"Matrix bot {uid}", "type": "user_pass", "url": HS, "username": uid,
                            "password": acct.get("password", ""), "bearerToken": tok,
                            "notes": f"Hermes agent '{p}' Matrix gateway bot (hermes-matrix-provision). Device {dev}. "
-                                    f"Encrypted DM room {rid}; allowed: {','.join(allow)}."}).encode()
+                                    f"Encrypted DM rooms {rooms} (home {rid}); allowed: {','.join(allow)}."}).encode()
         urllib.request.urlopen(urllib.request.Request(VAULT, data=body, headers={"Content-Type": "application/json"},
                                                       method="POST"), timeout=10).read()
     except Exception as e:
         print(f"warning: vault store failed: {e}", file=sys.stderr)
 
-    print("OK " + json.dumps({"profile": p, "user_id": uid, "room_id": rid, "allowed": allow}))
+    print("OK " + json.dumps({"profile": p, "user_id": uid, "room_id": rid, "rooms": rooms, "allowed": allow}))
 
 
 if __name__ == "__main__":
