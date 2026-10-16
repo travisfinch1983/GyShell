@@ -1,0 +1,80 @@
+[
+  {
+    "id": "pony-xl",
+    "name": "Pony XL",
+    "family": "SDXL",
+    "edit": false,
+    "refs": false,
+    "max_refs": 0,
+    "dirs": ["checkpoints/Pony_XL"],
+    "lora_dirs": ["Pony_XL"],
+    "description": "Pony Diffusion V6 XL and its finetunes: SDXL models trained heavily on booru-tagged art. Prompts are comma-separated tags, led by the score_9, score_8_up, score_7_up quality ladder and a source_ tag (source_anime, source_cartoon, source_furry). Huge LoRA ecosystem, very strong at characters, anatomy and NSFW. Artist names do little; use style LoRAs instead.",
+    "best_for": "Anime, cartoon and furry characters; NSFW; anything where a Pony LoRA already exists for the character, outfit or concept you want.",
+    "agent_hint": "SDXL / Pony: booru tags with the score_ ladder and a source_ tag; pick the checkpoint from the Pony_XL folder."
+  },
+  {
+    "id": "illustrious",
+    "name": "Illustrious",
+    "family": "SDXL",
+    "edit": false,
+    "refs": false,
+    "max_refs": 0,
+    "dirs": ["checkpoints/Illustrious"],
+    "lora_dirs": ["Illustrious"],
+    "description": "Illustrious-XL (OnomaAI) and its community finetunes such as WAI: SDXL trained on Danbooru. Native language is Danbooru tags (spaces, not underscores) with masterpiece / best quality tiers; artist tags work, unlike Pony. The biggest local LoRA library (500+). Sharp, clean anime illustration with strong character knowledge.",
+    "best_for": "Anime and illustration, known characters by name, artist-style mimicry, and the widest choice of style, clothing and concept LoRAs.",
+    "agent_hint": "SDXL / Illustrious: Danbooru tags, quality tags first; pick the checkpoint from the Illustrious folder."
+  },
+  {
+    "id": "anima",
+    "name": "Anima",
+    "family": "Cosmos-Predict2 2B",
+    "edit": false,
+    "refs": false,
+    "max_refs": 0,
+    "dirs": ["diffusion-models/Anima", "checkpoints/Anima"],
+    "lora_dirs": ["Anima"],
+    "description": "Anima (CircleStone Labs × Comfy Org): a new 2B anime/illustration model built on NVIDIA Cosmos-Predict2, with a Qwen3 0.6B text encoder and the Qwen-Image VAE. Trained on Danbooru tags plus natural language, so the best prompts are lowercase booru tags (with spaces) optionally followed by prose. Artists need an @ prefix (@kantoku), weights need higher values than SDXL (1.5–2), and every prompt should carry a safety tag (safe / sensitive / nsfw / explicit).",
+    "best_for": "Modern anime illustration with better prompt following than SDXL: mixing tags with sentences, multi-character scenes, and artist styles via @artist.",
+    "agent_hint": "Anima: needs its own text encoder (text-encoders/Anima) and the Qwen-Image VAE (vae/Anima). Tags lowercase with spaces; include a safety tag."
+  },
+  {
+    "id": "krea-2",
+    "name": "Krea 2",
+    "family": "Krea 2 DiT",
+    "edit": true,
+    "refs": true,
+    "max_refs": 4,
+    "dirs": ["diffusion-models/Krea-2"],
+    "lora_dirs": ["Krea-2", "Krea-2-Edit-Outfit-Transfer"],
+    "description": "Krea 2: a diffusion transformer whose text encoder is the Qwen3-VL vision-language model, so it reads reference images natively. A reference fed to the encoder transfers pose, camera angle, framing and mood while the prompt still decides the subject; the structural edit patch reproduces identity for editing. Natural-language prompts. Local finetunes cover realism, anime and more, and it trains well for LoRAs on the 4090.",
+    "best_for": "Photoreal and semi-real images, pose and camera-angle transfer from a reference photo, outfit transfer, and editing an existing image while keeping the person.",
+    "agent_hint": "Krea 2 reference path: TextEncodeKrea2 image1 (vision tokens) for pose/angle; Krea2EditModelPatch for identity/edit; Rebalance pack for up to 4 weighted refs."
+  },
+  {
+    "id": "qwen-image-2.1",
+    "name": "Qwen Image 2.1",
+    "family": "Qwen-Image",
+    "edit": true,
+    "refs": true,
+    "max_refs": 10,
+    "dirs": ["diffusion-models/Qwen_2.1"],
+    "lora_dirs": ["Qwen_2.1"],
+    "description": "Qwen-Image 2.1: one model that does both text-to-image and image editing, with a Qwen3-VL 8B encoder that also encodes the reference images (up to 10 wired in the templates). Excellent prompt following and text rendering (English and Chinese), multi-reference composition (\"the woman from image 1 wearing the jacket from image 2\"), and the local Heretic prompt enhancers expand short prompts.",
+    "best_for": "Precise edits, combining several reference images, readable text and signage, and complex scenes that must follow a long description exactly.",
+    "agent_hint": "Qwen-Image 2.1: describe each reference's role by number; prompt enhancers qwen-image-2.1-pe-t2i-heretic / -i2i-heretic are available."
+  },
+  {
+    "id": "z-image-turbo",
+    "name": "Z-Image Turbo",
+    "family": "Z-Image",
+    "edit": false,
+    "refs": false,
+    "max_refs": 0,
+    "dirs": ["diffusion-models/Z-Image_Turbo"],
+    "lora_dirs": ["Z-Image_Turbo", "Z-Image_Base"],
+    "description": "Z-Image Turbo (Alibaba Tongyi): a 6B single-stream DiT distilled to about 8 steps, with a Qwen3 4B text encoder. Very fast, strong photorealism and good bilingual text rendering, from plain natural-language prompts. No negative prompt at CFG 1.",
+    "best_for": "Fast photoreal drafts and finals, portraits and everyday scenes, quick iteration when you want many variations.",
+    "agent_hint": "Z-Image Turbo: ~8 steps, CFG 1, natural language; LoRAs trained on Z-Image Base mostly work."
+  }
+]

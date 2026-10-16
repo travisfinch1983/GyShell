@@ -1,0 +1,12 @@
+[Unit]
+Description=Image Request page (pick model/LoRAs/pose/references, send to an image agent over Matrix)
+After=network-online.target poses-site.service
+
+[Service]
+WorkingDirectory=/opt/imagine
+ExecStart=/opt/imagine/.venv/bin/uvicorn server:app --host 0.0.0.0 --port 17896 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

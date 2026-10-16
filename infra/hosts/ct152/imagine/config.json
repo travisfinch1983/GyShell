@@ -1,0 +1,28 @@
+{
+  "_comment": "people: who may use the page and which Matrix account their requests are posted as. lan_default = the person a trusted LAN/tailnet device is treated as (no Cloudflare identity there). agents: Matrix DM room of each agent with that person.",
+  "matrix_homeserver": "https://matrix.deeveeyant.com",
+  "cloudflare_access": {
+    "team_domain": "deeveeyant.cloudflareaccess.com",
+    "aud": "85afa0655e1291298cabc2988116a82ac767694c1ed4e0914e69256f827c296a"
+  },
+  "people": [
+    {
+      "id": "travis",
+      "name": "Travis",
+      "emails": [
+        "travisfinch1983@gmail.com"
+      ],
+      "matrix_user": "@travis:deeveeyant.com",
+      "agents": [
+        "cinder"
+      ],
+      "lan_default": true
+    }
+  ],
+  "agents": {
+    "cinder": {
+      "label": "Cinder",
+      "room": "!b48iTqY_vnWDV_YED_Ixc9swUHDyP4-gf3evje6qfPQ"
+    }
+  }
+}

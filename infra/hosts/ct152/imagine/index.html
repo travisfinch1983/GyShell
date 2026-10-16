@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Image Request</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%22.9em%22 font-size=%2290%22%3E%F0%9F%8E%A8%3C/text%3E%3C/svg%3E">
+<style>
+:root{--bg:#f6f4f7;--card:#fff;--fg:#222;--muted:#6b6670;--line:#e3dee6;--acc:#d6457f;--acc-fg:#fff;--tile:#ece8ef;--ok:#2e9b5f;--warn:#c47a12;--shadow:0 1px 3px rgba(0,0,0,.08)}
+@media (prefers-color-scheme:dark){:root{--bg:#141216;--card:#1e1b21;--fg:#eee9f1;--muted:#a49dab;--line:#332e38;--acc:#ff6fa6;--acc-fg:#1a0f15;--tile:#26222a;--ok:#4cc584;--warn:#e6a23c;--shadow:none}}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding-bottom:calc(84px + env(safe-area-inset-bottom))}
+button,input,textarea,select{font:inherit;color:inherit}
+header{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line);padding:10px 16px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+h1{font-size:19px;margin:0;flex:1;min-width:0}
+.muted{color:var(--muted)}
+.small{font-size:12.5px}
+.btn{border:1px solid var(--line);background:var(--card);padding:8px 13px;border-radius:10px;cursor:pointer;font-size:14px;line-height:1.2}
+.btn.acc{background:var(--acc);color:var(--acc-fg);border-color:var(--acc);font-weight:600}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.sm{padding:5px 10px;font-size:13px}
+.chip{border:1px solid var(--line);background:var(--card);padding:5px 11px;border-radius:999px;font-size:13px;cursor:pointer;white-space:nowrap}
+.chip.on{background:var(--acc);color:var(--acc-fg);border-color:var(--acc)}
+.chips{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px}
+.chips::-webkit-scrollbar{display:none}
+.banner{margin:12px 16px 0;padding:12px 14px;border-radius:12px;background:var(--card);border:1px solid var(--warn)}
+.banner input{padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg);min-width:0;flex:1}
+main{padding:0 16px;max-width:1280px;margin:0 auto}
+section{margin-top:16px;background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+section>.sh{display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer;user-select:none}
+section>.sh h2{font-size:16px;margin:0}
+section>.sh .num{width:24px;height:24px;border-radius:50%;background:var(--acc);color:var(--acc-fg);display:grid;place-items:center;font-size:13px;font-weight:700;flex:none}
+section>.sh .sum{flex:1;min-width:0;text-align:right;color:var(--muted);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+section>.sh .car{color:var(--muted);transition:transform .15s}
+section.closed>.sh .car{transform:rotate(-90deg)}
+section.closed>.sb{display:none}
+.sb{padding:0 14px 14px}
+.tools{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
+.tools input[type=search]{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
+.grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(170px,1fr))}
+.grid.big{grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}
+.grid.poses{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}
+.card{position:relative;background:var(--tile);border:2px solid transparent;border-radius:12px;overflow:hidden;transition:opacity .15s,border-color .15s}
+.card.sel{border-color:var(--acc)}
+.card.dim{opacity:.32}
+.card .im{position:relative;aspect-ratio:3/4;cursor:pointer;background:var(--tile)}
+.grid.poses .card .im{aspect-ratio:224/284}
+.card .im img{width:100%;height:100%;object-fit:cover;display:block}
+.grid.poses .card .im img{object-fit:contain}
+.card .noimg{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font-size:13px;text-align:center;padding:10px}
+.card .cap{padding:7px 9px 8px;background:var(--card)}
+.card .cap .t{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .cap .s{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.badges{position:absolute;top:6px;left:6px;display:flex;flex-wrap:wrap;gap:4px;max-width:calc(100% - 52px);pointer-events:none}
+.badge{background:rgba(20,16,24,.78);color:#fff;font-size:11px;font-weight:600;padding:2px 7px;border-radius:7px;backdrop-filter:blur(3px)}
+.badge.edit{background:rgba(46,155,95,.92)}
+.badge.ref{background:rgba(52,110,210,.92)}
+.badge.layer{background:rgba(214,69,127,.9)}
+.badge.n{background:var(--acc);color:var(--acc-fg);font-size:15px;padding:2px 8px}
+.check{position:absolute;top:4px;right:4px;width:40px;height:40px;display:grid;place-items:center;cursor:pointer;z-index:2}
+.check span{width:26px;height:26px;border-radius:8px;border:2px solid #fff;background:rgba(0,0,0,.35);box-shadow:0 1px 3px rgba(0,0,0,.4);display:grid;place-items:center;color:#fff;font-weight:800;font-size:16px}
+.card.sel .check span{background:var(--acc);border-color:var(--acc);color:var(--acc-fg)}
+.more{display:block;margin:12px auto 0}
+.empty{color:var(--muted);text-align:center;padding:22px 8px}
+.refs{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
+.ref{position:relative;border-radius:10px;overflow:hidden;background:var(--tile);aspect-ratio:1}
+.ref img{width:100%;height:100%;object-fit:cover;cursor:pointer;display:block}
+.ref .x{position:absolute;top:4px;right:4px;width:30px;height:30px;border-radius:50%;border:none;background:rgba(0,0,0,.6);color:#fff;font-size:18px;cursor:pointer}
+.ref .note{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.62);color:#fff;font-size:11.5px;padding:4px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ref .idx{position:absolute;top:5px;left:5px}
+textarea{width:100%;min-height:120px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);resize:vertical}
+.summary{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 0}
+.summary .chip{cursor:default}
+.sendbar{position:fixed;left:0;right:0;bottom:0;z-index:25;background:var(--card);border-top:1px solid var(--line);padding:10px 16px calc(10px + env(safe-area-inset-bottom));display:flex;gap:10px;align-items:center}
+.sendbar .st{flex:1;min-width:0;font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sendbar .btn.acc{padding:11px 22px;font-size:15px}
+/* overlays */
+.ov{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.62);display:none;align-items:flex-end;justify-content:center}
+.ov.open{display:flex}
+.pane{background:var(--card);width:min(980px,100%);max-height:94vh;border-radius:16px 16px 0 0;display:flex;flex-direction:column;overflow:hidden}
+@media (min-width:760px){.ov{align-items:center}.pane{border-radius:16px}}
+.ph{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.ph .t{flex:1;min-width:0;font-weight:700;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ph .x{border:none;background:none;font-size:28px;line-height:1;cursor:pointer;padding:0 4px;color:var(--fg)}
+.pb{overflow:auto;padding:12px 14px;-webkit-overflow-scrolling:touch}
+.pf{display:flex;gap:8px;align-items:center;padding:10px 14px;border-top:1px solid var(--line)}
+.pf .sp{flex:1}
+.gal{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;gap:8px;border-radius:12px;background:var(--tile);scrollbar-width:none}
+.gal::-webkit-scrollbar{display:none}
+.gal .sl{flex:0 0 100%;scroll-snap-align:center;display:flex;justify-content:center;align-items:center;height:min(62vh,640px)}
+.gal .sl img{max-width:100%;max-height:100%;object-fit:contain;display:block}
+.galnav{display:flex;align-items:center;gap:8px;margin:8px 0 2px}
+.galnav .c{flex:1;text-align:center;color:var(--muted);font-size:13px}
+.desc{white-space:pre-wrap;margin:10px 0 0;font-size:14px}
+.kv{margin:10px 0 0;font-size:14px}
+.kv b{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:2px}
+.words{display:flex;flex-wrap:wrap;gap:6px}
+.words code{background:var(--tile);padding:2px 7px;border-radius:6px;font-size:13px}
+.stage{background:var(--tile);border-radius:12px;display:flex;justify-content:center;align-items:center;min-height:260px}
+.stage img{max-width:100%;max-height:62vh;object-fit:contain;display:block}
+.tpl{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line)}
+.tpl .n{flex:1;min-width:0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.field{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
+.toast{position:fixed;left:50%;bottom:calc(92px + env(safe-area-inset-bottom));transform:translateX(-50%);background:#222;color:#fff;padding:10px 16px;border-radius:12px;z-index:60;max-width:92vw;font-size:14px;display:none;box-shadow:0 4px 18px rgba(0,0,0,.3)}
+.toast.err{background:#a3243f}
+.agentsel{padding:6px 10px;border-radius:10px;border:1px solid var(--line);background:var(--card)}
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <h1>🎨 Image Request</h1>
+    <select class="agentsel" id="agent" title="Which agent receives the request"></select>
+    <button class="btn sm" id="tplBtn">Templates</button>
+  </div>
+</header>
+
+<div class="banner" id="mxBanner" style="display:none">
+  <div style="margin-bottom:8px"><b>Connect Matrix once.</b> <span class="muted small">Requests are posted into your chat with the agent as <span id="mxUser"></span>. Your password is used once to create a session for this page and is not stored.</span></div>
+  <form class="row" id="mxForm"><input type="password" id="mxPw" placeholder="Matrix password" autocomplete="current-password"><button class="btn acc" type="submit">Connect</button></form>
+</div>
+
+<main>
+  <section id="sModel"><div class="sh"><span class="num">1</span><h2>Model</h2><span class="sum" id="sumModel"></span><span class="car">▾</span></div>
+    <div class="sb"><div class="grid big" id="gModel"></div></div></section>
+
+  <section id="sLora"><div class="sh"><span class="num">2</span><h2>LoRAs</h2><span class="sum" id="sumLora"></span><span class="car">▾</span></div>
+    <div class="sb">
+      <div class="tools" id="loraTools">
+        <input type="search" id="qLora" placeholder="Search LoRAs (name, trigger word)">
+        <div class="chips" id="cLora"></div>
+      </div>
+      <div class="grid" id="gLora"></div>
+      <button class="btn more" id="moreLora" style="display:none">Show more</button>
+    </div></section>
+
+  <section id="sPose"><div class="sh"><span class="num">3</span><h2>Pose</h2><span class="sum" id="sumPose"></span><span class="car">▾</span></div>
+    <div class="sb">
+      <div class="tools">
+        <input type="search" id="qPose" placeholder="Search number or description (e.g. 42, kneeling)">
+        <div class="chips" id="cPose"></div>
+      </div>
+      <div class="grid poses" id="gPose"></div>
+      <button class="btn more" id="morePose" style="display:none">Show more</button>
+    </div></section>
+
+  <section id="sRefs" style="display:none"><div class="sh"><span class="num">4</span><h2>Reference images</h2><span class="sum" id="sumRefs"></span><span class="car">▾</span></div>
+    <div class="sb">
+      <div class="row" style="margin-bottom:12px">
+        <button class="btn acc" id="pickRefs">Select images</button>
+        <button class="btn" id="libRefs">Previous uploads</button>
+        <span class="muted small" id="refLimit"></span>
+      </div>
+      <input type="file" id="fileRefs" accept="image/*" multiple hidden>
+      <div class="refs" id="gRefs"></div>
+      <div class="muted small" style="margin-top:8px">Tap an image to view it larger and add a note on what it's for.</div>
+    </div></section>
+
+  <section id="sReq"><div class="sh"><span class="num" id="reqNum">4</span><h2>Request</h2><span class="sum" id="sumReq"></span><span class="car">▾</span></div>
+    <div class="sb">
+      <textarea id="req" placeholder="Describe what you want generated…"></textarea>
+      <div class="summary" id="summary"></div>
+      <div class="row" style="margin-top:10px"><button class="btn sm" id="clearAll">Clear all selections</button></div>
+    </div></section>
+</main>
+
+<div class="sendbar"><div class="st" id="sendStatus"></div><button class="btn acc" id="send">Send</button></div>
+
+<div class="ov" id="ov"><div class="pane">
+  <div class="ph"><div class="t" id="ovT"></div><button class="x" id="ovX" aria-label="Close">×</button></div>
+  <div class="pb" id="ovB"></div>
+  <div class="pf" id="ovF"></div>
+</div></div>
+<div class="toast" id="toast"></div>
+<input type="file" id="fileRefs2" hidden>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const LS={get(k,d){try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v)}catch{return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
+async function api(path,opt={}){
+  const r=await fetch(path,{credentials:'same-origin',...opt,headers:{...(opt.body&&!(opt.body instanceof FormData)?{'Content-Type':'application/json'}:{}),...(opt.headers||{})}});
+  let d=null;try{d=await r.json()}catch{}
+  if(!r.ok)throw new Error((d&&d.detail)||`${r.status} ${r.statusText}`);
+  return d;
+}
+function toast(msg,err){const t=$('toast');t.textContent=msg;t.className='toast'+(err?' err':'');t.style.display='block';clearTimeout(toast._t);toast._t=setTimeout(()=>t.style.display='none',err?6000:3200)}
+const img=(u,size='grid')=>u?`${u}${u.includes('?')?'&':'?'}size=${size}`:'';
+
+// ── state ──
+let ME=null,MODELS=[],LORAS=[],POSES=[];
+const S=LS.get('imagineDraft',{model:null,loras:[],pose:null,refs:[],request:'',agent:null});
+S.loras=S.loras||[];S.refs=S.refs||[];
+const loraInfo=new Map(); // id → {name, layer} for the summary, survives model switches
+function save(){LS.set('imagineDraft',S);renderSummary()}
+
+// ── collapsible sections ──
+const closed=LS.get('imagineClosed',{});
+document.querySelectorAll('section').forEach(s=>{
+  if(closed[s.id])s.classList.add('closed');
+  s.querySelector('.sh').onclick=()=>{s.classList.toggle('closed');closed[s.id]=s.classList.contains('closed');LS.set('imagineClosed',closed)};
+});
+
+// ── overlay ──
+function openOv(title,bodyHTML,footHTML=''){$('ovT').textContent=title;$('ovB').innerHTML=bodyHTML;$('ovF').innerHTML=footHTML;$('ovF').style.display=footHTML?'flex':'none';$('ov').classList.add('open');$('ovB').scrollTop=0;document.body.style.overflow='hidden'}
+function closeOv(){$('ov').classList.remove('open');document.body.style.overflow='';if(closeOv.after){const f=closeOv.after;closeOv.after=null;f()}}
+$('ovX').onclick=closeOv;$('ov').addEventListener('click',e=>{if(e.target===$('ov'))closeOv()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('ov').classList.contains('open'))closeOv()});
+
+function gallery(urls){
+  if(!urls.length)return '<div class="stage"><span class="muted">No example images downloaded.</span></div>';
+  const id='g'+Math.random().toString(36).slice(2,8);
+  setTimeout(()=>{const g=$(id);if(!g)return;const c=$(id+'c');const upd=()=>{c.textContent=`${Math.round(g.scrollLeft/g.clientWidth)+1} / ${urls.length}`};g.addEventListener('scroll',()=>requestAnimationFrame(upd));upd();
+    $(id+'p').onclick=()=>g.scrollBy({left:-g.clientWidth,behavior:'smooth'});$(id+'n').onclick=()=>g.scrollBy({left:g.clientWidth,behavior:'smooth'})},0);
+  return `<div class="gal" id="${id}">${urls.map((u,i)=>`<div class="sl"><img loading="${i<2?'eager':'lazy'}" src="${img(u,'full')}" alt=""></div>`).join('')}</div>
+  <div class="galnav"><button class="btn sm" id="${id}p">‹</button><span class="c" id="${id}c"></span><button class="btn sm" id="${id}n">›</button></div>`;
+}
+
+// ── card factory ──
+function card({cover,title,sub,badges,selected,dim,onCheck,onOpen,noimg,cls=''}){
+  const d=document.createElement('div');d.className='card'+(selected?' sel':'')+(dim?' dim':'')+cls;
+  d.innerHTML=`<div class="im">${cover?`<img loading="lazy" src="${img(cover)}" alt="">`:`<div class="noimg">${esc(noimg||'No preview')}</div>`}
+    <div class="badges">${badges||''}</div><div class="check" role="checkbox" aria-checked="${!!selected}"><span>${selected?'✓':''}</span></div></div>
+    <div class="cap"><div class="t">${esc(title)}</div>${sub?`<div class="s">${esc(sub)}</div>`:''}</div>`;
+  d.querySelector('.check').onclick=e=>{e.stopPropagation();onCheck()};
+  d.querySelector('.im').onclick=e=>{if(e.target.closest('.check'))return;onOpen()};
+  return d;
+}
+
+// ── 1. models ──
+const curModel=()=>MODELS.find(m=>m.id===S.model)||null;
+function modelBadges(m){return (m.edit?'<span class="badge edit">Edit</span>':'')+(m.refs?`<span class="badge ref">Ref ×${m.max_refs}</span>`:'')}
+function renderModels(){
+  const g=$('gModel');g.innerHTML='';
+  MODELS.forEach(m=>g.appendChild(card({cover:m.cover,title:m.name,sub:m.file_count?`${m.file_count} model file${m.file_count>1?'s':''}`:'not downloaded yet',
+    badges:modelBadges(m),selected:S.model===m.id,dim:S.model&&S.model!==m.id,noimg:m.file_count?'No preview':'Not downloaded yet',
+    onCheck:()=>selectModel(S.model===m.id?null:m.id),onOpen:()=>openModel(m)})));
+  const m=curModel();$('sumModel').textContent=m?m.name:'none';
+}
+function selectModel(id){
+  const prev=S.model;S.model=id;
+  if(prev!==id){S.loras=[]}
+  const m=curModel();
+  if(m&&m.refs&&S.refs.length>m.max_refs){S.refs=S.refs.slice(0,m.max_refs);toast(`${m.name} takes ${m.max_refs} references; kept the first ${m.max_refs}`)}
+  save();renderModels();loadLoras();renderRefs();
+}
+async function openModel(m){
+  openOv(m.name,'<div class="empty">Loading…</div>',`<span class="sp"></span><button class="btn acc" id="ovSel">${S.model===m.id?'Unselect':'Select'}</button>`);
+  $('ovSel').onclick=()=>{selectModel(S.model===m.id?null:m.id);closeOv()};
+  try{
+    const d=await api(`/api/models/${m.id}`);
+    $('ovB').innerHTML=gallery(d.images)+`<div class="kv">${modelBadges(m).replace(/class="badge/g,'style="position:static;display:inline-block;margin-right:4px" class="badge')}</div>
+      <div class="kv"><b>About</b><div class="desc">${esc(m.description)}</div></div>
+      <div class="kv"><b>Best for</b><div class="desc">${esc(m.best_for)}</div></div>
+      ${m.notes?`<div class="kv"><b>Notes</b><div class="desc">${esc(m.notes)}</div></div>`:''}
+      <div class="kv"><b>Downloaded</b><div class="desc muted small">${d.files.length?d.files.map(esc).join('\n'):'Nothing yet.'}</div></div>`;
+  }catch(e){$('ovB').innerHTML=`<div class="empty">${esc(e.message)}</div>`}
+}
+
+// ── 2. LoRAs ──
+let loraLayer='all',loraShown=60,loraSelOnly=false;
+async function loadLoras(){
+  const m=curModel();LORAS=[];
+  if(!m){renderLoras();return}
+  $('gLora').innerHTML='<div class="empty">Loading LoRAs…</div>';
+  try{LORAS=await api(`/api/loras?model=${m.id}`);LORAS.forEach(l=>loraInfo.set(l.id,{name:l.name,layer:l.layer}))}
+  catch(e){toast('LoRAs: '+e.message,true)}
+  S.loras=S.loras.filter(id=>LORAS.some(l=>l.id===id));save();
+  loraShown=60;renderLoraChips();renderLoras();
+}
+function renderLoraChips(){
+  const counts={};LORAS.forEach(l=>counts[l.layer]=(counts[l.layer]||0)+1);
+  const c=$('cLora');c.innerHTML='';
+  const mk=(k,label)=>{const b=document.createElement('button');b.className='chip'+(loraLayer===k&&!loraSelOnly?' on':'');b.textContent=label;b.onclick=()=>{loraLayer=k;loraSelOnly=false;loraShown=60;renderLoraChips();renderLoras()};c.appendChild(b)};
+  mk('all',`All (${LORAS.length})`);
+  Object.entries(counts).sort((a,b)=>b[1]-a[1]).forEach(([k,n])=>mk(k,`${k} (${n})`));
+  const s=document.createElement('button');s.className='chip'+(loraSelOnly?' on':'');s.textContent=`Selected (${S.loras.length})`;s.onclick=()=>{loraSelOnly=!loraSelOnly;loraShown=60;renderLoraChips();renderLoras()};c.prepend(s);
+}
+function renderLoras(){
+  const m=curModel();const g=$('gLora');g.innerHTML='';$('loraTools').style.display=m?'':'none';
+  $('sumLora').textContent=S.loras.length?`${S.loras.length} selected`:(m?'none':'');
+  if(!m){g.innerHTML='<div class="empty">Pick a model first; LoRAs are filtered to it.</div>';$('moreLora').style.display='none';return}
+  const q=$('qLora').value.trim().toLowerCase();
+  let list=LORAS.filter(l=>(loraSelOnly?S.loras.includes(l.id):(loraLayer==='all'||l.layer===loraLayer))&&(!q||(l.name+' '+(l.version||'')+' '+(l.trained_words||[]).join(' ')+' '+l.file).toLowerCase().includes(q)));
+  if(!list.length){g.innerHTML=`<div class="empty">${LORAS.length?'No LoRAs match.':'No LoRAs downloaded for '+esc(m.name)+' yet.'}</div>`;$('moreLora').style.display='none';return}
+  const frag=document.createDocumentFragment();
+  list.slice(0,loraShown).forEach(l=>{const sel=S.loras.includes(l.id);frag.appendChild(card({cover:l.cover,title:l.name,sub:l.version||l.file,badges:`<span class="badge layer">${esc(l.layer)}</span>`,selected:sel,
+    onCheck:()=>toggleLora(l.id),onOpen:()=>openLora(l)}))});
+  g.appendChild(frag);
+  $('moreLora').style.display=list.length>loraShown?'block':'none';$('moreLora').textContent=`Show more (${list.length-loraShown} left)`;
+}
+function toggleLora(id){const i=S.loras.indexOf(id);if(i>=0)S.loras.splice(i,1);else S.loras.push(id);save();renderLoraChips();renderLoras()}
+$('moreLora').onclick=()=>{loraShown+=60;renderLoras()};
+let qT;$('qLora').addEventListener('input',()=>{clearTimeout(qT);qT=setTimeout(()=>{loraShown=60;renderLoras()},150)});
+async function openLora(l){
+  const sel=()=>S.loras.includes(l.id);
+  openOv(l.name,'<div class="empty">Loading…</div>',`${'<span class="sp"></span>'}<button class="btn acc" id="ovSel">${sel()?'Remove':'Add'}</button>`);
+  $('ovSel').onclick=()=>{toggleLora(l.id);closeOv()};
+  try{
+    const d=await api(`/api/loras/${S.model}/${l.id}`);
+    $('ovB').innerHTML=gallery(d.images)+`
+      <div class="kv"><span class="badge layer" style="position:static;display:inline-block">${esc(d.layer)}</span> ${d.version?`<span class="muted small">${esc(d.version)}</span>`:''} ${d.base_model?`<span class="muted small">· ${esc(d.base_model)}</span>`:''} ${d.creator?`<span class="muted small">· by ${esc(d.creator)}</span>`:''}</div>
+      ${d.civitai_url?`<div class="kv"><a class="btn sm" href="${esc(d.civitai_url)}" target="_blank" rel="noopener">Open on Civitai ↗</a></div>`:''}
+      ${d.trained_words&&d.trained_words.length?`<div class="kv"><b>Trigger words</b><div class="words">${d.trained_words.map(w=>`<code>${esc(w)}</code>`).join('')}</div></div>`:''}
+      ${d.description?`<div class="kv"><b>Description</b><div class="desc">${esc(d.description)}</div></div>`:''}
+      ${d.version_description?`<div class="kv"><b>This version</b><div class="desc">${esc(d.version_description)}</div></div>`:''}
+      ${d.tags&&d.tags.length?`<div class="kv"><b>Tags</b><div class="desc muted small">${esc(d.tags.join(', '))}</div></div>`:''}
+      <div class="kv"><b>File</b><div class="desc muted small">${esc(d.path)}</div></div>`;
+  }catch(e){$('ovB').innerHTML=`<div class="empty">${esc(e.message)}</div>`}
+}
+
+// ── 3. poses ──
+let poseCat='all',poseShown=90,poseSelOnly=false;
+const VIEW_LABEL={original:'Original',mannequin:'Mannequin',overlay:'Skeleton on mannequin',skeleton:'Skeleton'};
+function poseThumb(p){return `/poseimg/grid/${p.views.includes('mannequin')?'mannequin':'thumb'}/${p.id}.webp`}
+function renderPoseChips(){
+  const counts={};POSES.forEach(p=>counts[p.category]=(counts[p.category]||0)+1);
+  const c=$('cPose');c.innerHTML='';
+  const mk=(k,label)=>{const b=document.createElement('button');b.className='chip'+(poseCat===k&&!poseSelOnly?' on':'');b.textContent=label;b.onclick=()=>{poseCat=k;poseSelOnly=false;poseShown=90;renderPoseChips();renderPoses()};c.appendChild(b)};
+  mk('all',`All (${POSES.length})`);Object.entries(counts).sort((a,b)=>b[1]-a[1]).forEach(([k,n])=>mk(k,`${k} (${n})`));
+}
+function renderPoses(){
+  const g=$('gPose');g.innerHTML='';
+  const q=$('qPose').value.trim().toLowerCase().replace(/^#/,'');
+  const list=POSES.filter(p=>(poseCat==='all'||p.category===poseCat)&&(!q||String(p.n)===q||(p.name+' '+p.prompt+' '+p.category+' '+p.view).toLowerCase().includes(q)));
+  const sp=POSES.find(p=>p.n===S.pose);$('sumPose').textContent=sp?`#${sp.n}`:'none';
+  if(!list.length){g.innerHTML='<div class="empty">No poses match.</div>';$('morePose').style.display='none';return}
+  const frag=document.createDocumentFragment();
+  list.slice(0,poseShown).forEach(p=>frag.appendChild(card({cover:poseThumb(p),title:p.prompt||p.name,badges:`<span class="badge n">${p.n}</span>`,
+    selected:S.pose===p.n,dim:S.pose!=null&&S.pose!==p.n,onCheck:()=>selectPose(S.pose===p.n?null:p.n),onOpen:()=>openPose(p,list)})));
+  g.appendChild(frag);
+  $('morePose').style.display=list.length>poseShown?'block':'none';$('morePose').textContent=`Show more (${list.length-poseShown} left)`;
+}
+function selectPose(n){S.pose=n;save();renderPoses()}
+$('morePose').onclick=()=>{poseShown+=90;renderPoses()};
+let pT;$('qPose').addEventListener('input',()=>{clearTimeout(pT);pT=setTimeout(()=>{poseShown=90;renderPoses()},150)});
+function openPose(p,list,view){
+  view=view&&p.views.includes(view)?view:(p.views.includes('original')?'original':p.views[0]||'thumb');
+  const i=list.indexOf(p);
+  openOv(`#${p.n} ${p.name||''}`,`<div class="chips" style="margin-bottom:10px">${p.views.map(k=>`<button class="chip${k===view?' on':''}" data-v="${k}">${VIEW_LABEL[k]}${k==='original'&&p.original_kind!=='full'?` (${p.original_kind})`:''}</button>`).join('')}</div>
+    <div class="stage"><img src="/poseimg/full/${view}/${p.id}.webp" alt=""></div>
+    <div class="kv"><b>${esc([p.category,p.view].filter(Boolean).join(' · '))}</b><div class="desc">${esc(p.prompt||'')}</div></div>`,
+    `<button class="btn" id="pPrev">‹</button><button class="btn" id="pNext">›</button><span class="sp"></span><button class="btn acc" id="ovSel">${S.pose===p.n?'Unselect':'Select pose #'+p.n}</button>`);
+  $('ovB').querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>openPose(p,list,b.dataset.v));
+  $('pPrev').onclick=()=>openPose(list[(i-1+list.length)%list.length],list,view);
+  $('pNext').onclick=()=>openPose(list[(i+1)%list.length],list,view);
+  $('ovSel').onclick=()=>{selectPose(S.pose===p.n?null:p.n);closeOv()};
+}
+
+// ── 4. reference images ──
+function renderRefs(){
+  const m=curModel();const on=!!(m&&m.refs);
+  $('sRefs').style.display=on?'':'none';$('reqNum').textContent=on?'5':'4';
+  if(!on){renderSummary();return}
+  $('refLimit').textContent=`${S.refs.length} / ${m.max_refs}`;
+  $('sumRefs').textContent=S.refs.length?`${S.refs.length} image${S.refs.length>1?'s':''}`:'none';
+  $('pickRefs').disabled=$('libRefs').disabled=S.refs.length>=m.max_refs;
+  const g=$('gRefs');g.innerHTML='';
+  if(!S.refs.length){g.innerHTML='<div class="empty" style="grid-column:1/-1">No reference images yet.</div>'}
+  S.refs.forEach((r,i)=>{const d=document.createElement('div');d.className='ref';
+    d.innerHTML=`<img src="${img(r.url)}" alt=""><span class="badge n idx">${i+1}</span><button class="x" aria-label="Remove">×</button>${r.note?`<div class="note">${esc(r.note)}</div>`:''}`;
+    d.querySelector('img').onclick=()=>openRef(i);
+    d.querySelector('.x').onclick=()=>{S.refs.splice(i,1);save();renderRefs()};
+    g.appendChild(d)});
+  renderSummary();
+}
+function openRef(i){
+  const r=S.refs[i];
+  openOv(`Reference ${i+1}`,`<div class="stage"><img src="${img(r.url,'full')}" alt=""></div>
+    <div class="kv"><b>What is this image for? (optional)</b><textarea id="refNote" style="min-height:90px" placeholder="e.g. use her face and hair; copy this outfit; match this lighting">${esc(r.note||'')}</textarea></div>
+    <div class="muted small" style="margin-top:6px">${esc(r.name||'')} · ${r.w}×${r.h}</div>`,
+    `<button class="btn" id="refDel">Remove</button><span class="sp"></span><button class="btn acc" id="refOk">Done</button>`);
+  const commit=()=>{if(S.refs[i]===r){r.note=$('refNote').value.trim();save();renderRefs()}};
+  closeOv.after=commit;
+  $('refOk').onclick=closeOv;
+  $('refDel').onclick=()=>{closeOv.after=null;S.refs.splice(i,1);save();renderRefs();closeOv()};
+}
+$('pickRefs').onclick=()=>$('fileRefs').click();
+$('fileRefs').onchange=async e=>{
+  const m=curModel();if(!m)return;
+  let files=[...e.target.files];e.target.value='';
+  const room=m.max_refs-S.refs.length;
+  if(files.length>room){toast(`${m.name} takes ${m.max_refs}; adding the first ${room}`);files=files.slice(0,room)}
+  if(!files.length)return;
+  const fd=new FormData();files.forEach(f=>fd.append('files',f));
+  $('pickRefs').disabled=true;$('pickRefs').textContent='Uploading…';
+  try{const out=await api('/api/refs',{method:'POST',body:fd});out.forEach(r=>S.refs.push({...r,note:''}));save();toast(`Uploaded ${out.length}`)}
+  catch(err){toast('Upload failed: '+err.message,true)}
+  finally{$('pickRefs').textContent='Select images';renderRefs()}
+};
+$('libRefs').onclick=async()=>{
+  const m=curModel();if(!m)return;
+  openOv('Previous uploads','<div class="empty">Loading…</div>',`<span class="muted small" id="libCount"></span><span class="sp"></span><button class="btn acc" id="libAdd" disabled>Add</button>`);
+  let lib=[];try{lib=await api('/api/refs')}catch(e){$('ovB').innerHTML=`<div class="empty">${esc(e.message)}</div>`;return}
+  const have=new Set(S.refs.map(r=>r.id));const pick=[];const room=m.max_refs-S.refs.length;
+  const draw=()=>{
+    $('ovB').innerHTML=lib.length?'<div class="refs" id="libG"></div>':'<div class="empty">Nothing uploaded yet.</div>';
+    const g=$('libG');if(!g)return;
+    lib.forEach(r=>{const d=document.createElement('div');d.className='ref';const on=pick.includes(r.id),had=have.has(r.id);
+      d.style.outline=on?'3px solid var(--acc)':'';d.style.opacity=had?'.35':'';
+      d.innerHTML=`<img loading="lazy" src="${img(r.url)}" alt="">${on?`<span class="badge n idx">${pick.indexOf(r.id)+1}</span>`:''}<button class="x" title="Remove from this list">🗑</button>`;
+      d.querySelector('img').onclick=()=>{if(had)return;const k=pick.indexOf(r.id);if(k>=0)pick.splice(k,1);else if(pick.length<room)pick.push(r.id);else toast(`Room for ${room} more`);draw()};
+      d.querySelector('.x').onclick=async e=>{e.stopPropagation();try{await api(`/api/refs/${r.id}`,{method:'DELETE'});lib=lib.filter(x=>x.id!==r.id);const k=pick.indexOf(r.id);if(k>=0)pick.splice(k,1);draw()}catch(err){toast(err.message,true)}};
+      g.appendChild(d)});
+    $('libCount').textContent=`${pick.length} picked · room for ${room}`;$('libAdd').disabled=!pick.length;$('libAdd').textContent=pick.length?`Add ${pick.length}`:'Add';
+  };
+  draw();
+  $('libAdd').onclick=()=>{pick.forEach(id=>{const r=lib.find(x=>x.id===id);if(r)S.refs.push({...r,note:''})});save();renderRefs();closeOv()};
+};
+
+// ── 5. request + summary + send ──
+$('req').value=S.request||'';
+$('req').addEventListener('input',()=>{S.request=$('req').value;save()});
+function renderSummary(){
+  const m=curModel(),p=POSES.find(x=>x.n===S.pose);
+  const chips=[];
+  chips.push(m?`Model: ${m.name}`:'Model: agent decides');
+  S.loras.forEach(id=>{const l=loraInfo.get(id);if(l)chips.push(`LoRA: ${l.name}`)});
+  if(p)chips.push(`Pose #${p.n}`);
+  if(m&&m.refs&&S.refs.length)chips.push(`${S.refs.length} reference image${S.refs.length>1?'s':''}`);
+  $('summary').innerHTML=chips.map(c=>`<span class="chip">${esc(c)}</span>`).join('');
+  $('sumReq').textContent=S.request?S.request.slice(0,40):'';
+  const ag=ME&&ME.agents.find(a=>a.id===S.agent);
+  $('sendStatus').textContent=!ME?'':!ME.matrix_ready?'Connect Matrix to send':`To ${ag?ag.label:'?'} · ${chips.length} item${chips.length>1?'s':''}`;
+  $('send').disabled=!ME||!ME.matrix_ready||!S.request.trim();
+}
+$('send').onclick=async()=>{
+  const m=curModel();
+  const body={agent:S.agent,model:S.model,loras:S.loras,pose:S.pose,request:S.request,refs:m&&m.refs?S.refs.map(r=>({id:r.id,note:r.note||''})):[]};
+  $('send').disabled=true;$('send').textContent='Sending…';
+  try{const d=await api('/api/send',{method:'POST',body:JSON.stringify(body)});toast(`Sent to ${d.agent}. The reply comes in Matrix.`)}
+  catch(e){toast('Not sent: '+e.message,true);if(/Matrix/.test(e.message))loadMe()}
+  finally{$('send').textContent='Send';renderSummary()}
+};
+$('clearAll').onclick=()=>{S.model=null;S.loras=[];S.pose=null;S.refs=[];S.request='';$('req').value='';save();renderModels();loadLoras();renderPoses();renderRefs()};
+
+// ── templates ──
+function snapshot(){return {agent:S.agent,model:S.model,loras:[...S.loras],lora_names:S.loras.map(id=>(loraInfo.get(id)||{}).name||id),pose:S.pose,refs:S.refs.map(r=>({...r})),request:S.request}}
+async function applyTemplate(t){
+  const d=t.data||{};
+  S.agent=(ME&&ME.agents.some(a=>a.id===d.agent))?d.agent:S.agent;$('agent').value=S.agent;
+  S.model=d.model||null;S.pose=d.pose??null;S.refs=(d.refs||[]).map(r=>({...r}));S.request=d.request||'';$('req').value=S.request;
+  S.loras=[];renderModels();await loadLoras();
+  const want=d.loras||[];S.loras=want.filter(id=>LORAS.some(l=>l.id===id));
+  const missing=want.length-S.loras.length;
+  // Reference images may have been removed from the library list; the files themselves stay.
+  save();renderLoraChips();renderLoras();renderPoses();renderRefs();
+  toast(`Loaded "${t.name}"`+(missing?` (${missing} LoRA${missing>1?'s':''} no longer downloaded)`:''));
+}
+$('tplBtn').onclick=async()=>{
+  openOv('Templates','<div class="empty">Loading…</div>',`<input class="field" id="tplName" placeholder="Template name" style="flex:1"><button class="btn acc" id="tplSave">Save current</button>`);
+  const draw=async()=>{
+    let list=[];try{list=await api('/api/templates')}catch(e){$('ovB').innerHTML=`<div class="empty">${esc(e.message)}</div>`;return}
+    $('ovB').innerHTML=list.length?list.map(t=>`<div class="tpl"><div class="n">${esc(t.name)}<div class="muted small">${esc([MODELS.find(m=>m.id===t.data.model)?.name||'any model',(t.data.loras||[]).length+' LoRAs',t.data.pose!=null?'pose #'+t.data.pose:'',(t.data.refs||[]).length?(t.data.refs.length+' refs'):''].filter(Boolean).join(' · '))}</div></div>
+      <button class="btn sm acc" data-load="${t.id}">Load</button><button class="btn sm" data-del="${t.id}">🗑</button></div>`).join(''):'<div class="empty">No templates yet. Make your selections, name it below and save.</div>';
+    $('ovB').querySelectorAll('[data-load]').forEach(b=>b.onclick=async()=>{const t=list.find(x=>x.id===b.dataset.load);closeOv();await applyTemplate(t)});
+    $('ovB').querySelectorAll('[data-del]').forEach(b=>{let armed=false;b.onclick=async()=>{if(!armed){armed=true;b.textContent='Delete?';setTimeout(()=>{armed=false;b.textContent='🗑'},2500);return}await api(`/api/templates/${b.dataset.del}`,{method:'DELETE'});draw()}});
+  };
+  $('tplSave').onclick=async()=>{const name=$('tplName').value.trim();if(!name){toast('Name it first',true);return}
+    try{const r=await api('/api/templates',{method:'POST',body:JSON.stringify({name,data:snapshot()})});toast(r.replaced?`Updated "${name}"`:`Saved "${name}"`);$('tplName').value='';draw()}catch(e){toast(e.message,true)}};
+  draw();
+};
+
+// ── Matrix + boot ──
+async function loadMe(){
+  ME=await api('/api/me');
+  $('mxBanner').style.display=ME.matrix_ready?'none':'';$('mxUser').textContent=ME.matrix_user;
+  const sel=$('agent');sel.innerHTML=ME.agents.map(a=>`<option value="${a.id}">${esc(a.label)}</option>`).join('');
+  if(!ME.agents.some(a=>a.id===S.agent))S.agent=ME.agents[0]?.id||null;sel.value=S.agent;sel.onchange=()=>{S.agent=sel.value;save()};
+  renderSummary();
+}
+$('mxForm').onsubmit=async e=>{e.preventDefault();const pw=$('mxPw').value;if(!pw)return;
+  try{await api('/api/matrix/login',{method:'POST',body:JSON.stringify({password:pw})});$('mxPw').value='';toast('Matrix connected');await loadMe()}
+  catch(err){toast('Matrix: '+err.message,true)}};
+
+(async()=>{
+  try{await loadMe()}catch(e){document.querySelector('main').innerHTML=`<div class="empty">${esc(e.message)}</div>`;return}
+  try{MODELS=await api('/api/models')}catch(e){toast('Models: '+e.message,true)}
+  if(S.model&&!MODELS.some(m=>m.id===S.model))S.model=null;
+  renderModels();loadLoras();renderRefs();
+  try{POSES=(await api('/api/poses')).sort((a,b)=>a.n-b.n);renderPoseChips();renderPoses()}catch(e){$('gPose').innerHTML=`<div class="empty">Poses: ${esc(e.message)}</div>`}
+  renderSummary();
+})();
+</script>
+</body>
+</html>
