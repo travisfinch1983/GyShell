@@ -1,0 +1,11 @@
+[Unit]
+Description=Claude Code fleet login expiry check — warn BEFORE a refresh token dies
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/claude-token-check
+# A monitor that fails silently is the bug it exists to prevent; keep failures in the journal.
+StandardOutput=journal
+StandardError=journal

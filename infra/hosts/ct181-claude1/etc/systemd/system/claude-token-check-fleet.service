@@ -1,0 +1,6 @@
+[Unit]
+Description=Refresh fleetd login state for Claude instances (no panel notices)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/claude-token-check --fleet-only
