@@ -1014,7 +1014,9 @@ export class ModelDownloadsStore {
         creatorName: m.creator?.username || '',
         primaryTag: (m.tags || [])[0] || '',
         tags: m.tags || [],
-        files: (v.files || []).map((f: any) => ({ id: f.id, name: f.name, sizeKB: f.sizeKB, metadata: f.metadata })),
+        // `type` (Model / Text Encoder / VAE / Diffusion Model) decides each file's folder on the
+        // server; without it a bundled encoder + VAE followed the model and "collided" with it.
+        files: (v.files || []).map((f: any) => ({ id: f.id, name: f.name, type: f.type, sizeKB: f.sizeKB, metadata: f.metadata })),
         fileOpts: this.fileOptsPayload(vid),
         // The preview must disambiguate over exactly the files that will be written.
         // Without this the server counted every file in the version, so ticking one of
