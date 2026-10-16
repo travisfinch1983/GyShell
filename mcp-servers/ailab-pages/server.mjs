@@ -288,8 +288,37 @@ function addJournalTools(mcp, author) {
     async ({ query, limit }) => {
       const r = await api('GET', `/api/journal-search${q({ q: query, limit })}`)
       const hits = r.results?.results ?? r.results ?? []
-      if (!Array.isArray(hits) || !hits.length) return text('(no similar journal entries)')
-      return text(hits.map((h) => `- ${String(h.text ?? h.document ?? JSON.stringify(h)).replace(/\n+/g, ' ').slice(0, 300)}`).join('\n'))
+      // An unindexed entry is invisible to THIS tool while still in journal_read, and
+      // a semantic miss returns plausible other entries, not an error — so a thin or
+      // empty result over an incomplete index reads as "I never logged that", the
+      // exact wrong conclusion (j-mtui4had-qn85). The warning must therefore ride on
+      // the empty result too, where it matters most.
+      const missing = Array.isArray(r.unindexed) ? r.unindexed : []
+      const warn = missing.length
+        ? `\n\n⚠ INDEX INCOMPLETE: ${missing.length} entr${missing.length === 1 ? 'y is' : 'ies are'} saved but NOT semantically searchable ` +
+          `(${missing.slice(0, 6).map((u) => u.id).join(', ')}${missing.length > 6 ? ', …' : ''}) — ` +
+          `a miss here does NOT mean it was never logged. journal_read still sees them; journal_reindex re-files them.`
+        : ''
+      if (!Array.isArray(hits) || !hits.length) return text(`(no similar journal entries)${warn}`)
+      return text(hits.map((h) => `- ${String(h.text ?? h.document ?? JSON.stringify(h)).replace(/\n+/g, ' ').slice(0, 300)}`).join('\n') + warn)
+    },
+  )
+
+  mcp.tool(
+    'journal_reindex',
+    'Re-file entries into the semantic index WITHOUT touching their content — the recovery lever for entries that saved while the embedding backend was down (journal_search warns when any exist). With an id, reindexes that entry; without, retries every entry whose last index attempt failed.',
+    { id: z.string().optional().describe('one entry; omit to retry all currently-unindexed entries') },
+    async ({ id }) => {
+      if (id) {
+        const r = await api('POST', `/api/journal/${enc(id)}/reindex`)
+        return text(r.indexed
+          ? `${id} indexed — semantic search sees it again.`
+          : `${id} STILL not indexed: ${r.indexError ?? 'unknown error'}. The entry is safe; retry once the embedding backend is reachable.`)
+      }
+      const r = await api('POST', '/api/journal/reindex')
+      if (!r.attempted) return text('nothing to reindex — no entry has a failed index on record.')
+      const fails = (r.failed ?? []).map((f) => `${f.id} (${f.error})`).join(', ')
+      return text(`reindexed ${r.indexed}/${r.attempted}.` + (fails ? ` Still failing: ${fails}.` : ''))
     },
   )
 

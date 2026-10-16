@@ -37,7 +37,18 @@ export type NotifyFn = (input: {
   severity: 'info' | 'warning' | 'error'; source: string; message: string; detail?: string
 }) => unknown
 
-export function createJournalRouter(dataDir: string, notify?: NotifyFn): express.Router {
+export interface JournalRouterDeps {
+  /** Override the vectoriser (specs). Default: reportsRag.indexJournalEntry. */
+  indexEntry?: (entry: JournalEntry) => Promise<void>
+  /** Override semantic search (specs). Default: reportsRag.searchJournal. */
+  searchJournal?: (q: string, limit: number) => Promise<unknown>
+  /** Retry backoff schedule; one in-process retry per slot. */
+  retryDelaysMs?: number[]
+  /** Delay before the startup sweep that re-queues persisted failures. */
+  startupSweepDelayMs?: number
+}
+
+export function createJournalRouter(dataDir: string, notify?: NotifyFn, deps?: JournalRouterDeps): express.Router {
   const router = express.Router()
   const json = express.json({ limit: '1mb' })
   const file = path.join(dataDir, 'journal.json')
@@ -177,25 +188,108 @@ export function createJournalRouter(dataDir: string, notify?: NotifyFn): express
    * unsearchable journal would look identical to an empty one. That is the same
    * shape of invisibility as the rename that orphaned the notes.
    */
+  const doIndex = deps?.indexEntry ?? (async (entry: JournalEntry) => {
+    const { indexJournalEntry } = await import('./reportsRag')
+    await indexJournalEntry(entry)
+  })
+
+  /** An entry whose LATEST index attempt failed. Entries from before state
+   *  tracking carry neither field; their absence is "not tracked", never
+   *  "unindexed", so they are deliberately not matched here. */
+  const needsIndex = (e: JournalEntry): boolean =>
+    !!e.indexError && (!e.indexedAt || e.indexedAt < e.indexError.at)
+
+  /** Re-load → apply ONLY index-state fields → save. The index attempt awaits a
+   *  network call, and a content write can land in that window; writing the
+   *  whole stale entry back would silently erase it. */
+  const persistIndexState = (id: string, apply: (e: JournalEntry) => void): void => {
+    const fresh = load()
+    const e = fresh.find((x) => x.id === id)
+    if (!e) return
+    apply(e)
+    save(fresh)
+  }
+
+  /**
+   * Retry with backoff — the dependency being down is transient by nature
+   * (j-mtui4had-qn85 failed because the embed backends came up 40 seconds
+   * AFTER the attempt). One warning per failure EPISODE, not per attempt:
+   * the first failure notifies, retries log to console, recovery notifies.
+   * Bounded per process; the persisted state plus the startup sweep carry
+   * an outage longer than the schedule across the next restart, and the
+   * journal_search warning + reindex affordance cover the gap between.
+   */
+  const RETRY_DELAYS_MS = deps?.retryDelaysMs ?? [30_000, 120_000, 600_000, 1_800_000, 3_600_000]
+  const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const processAttempts = new Map<string, number>()
+  const scheduleRetry = (id: string): void => {
+    if (retryTimers.has(id)) return
+    const n = processAttempts.get(id) ?? 0
+    if (n >= RETRY_DELAYS_MS.length) return   // exhausted this process; sweep re-arms after restart
+    processAttempts.set(id, n + 1)
+    const t = setTimeout(() => {
+      retryTimers.delete(id)
+      const entry = load().find((e) => e.id === id)
+      if (entry && needsIndex(entry)) void index(entry)
+    }, RETRY_DELAYS_MS[n])
+    ;(t as { unref?: () => void }).unref?.()
+    retryTimers.set(id, t)
+  }
+
   const index = async (entry: JournalEntry): Promise<{ indexed: boolean; indexError?: string }> => {
+    const priorAttempts = entry.indexError?.attempts ?? 0
     try {
-      const { indexJournalEntry } = await import('./reportsRag')
-      await indexJournalEntry(entry)
+      await doIndex(entry)
+      const recovered = priorAttempts > 0
+      const at = stamp()
+      entry.indexedAt = at
+      delete entry.indexError
+      persistIndexState(entry.id, (e) => { e.indexedAt = at; delete e.indexError })
+      processAttempts.delete(entry.id)
+      if (recovered) {
+        console.log(`[journal] ${entry.id} indexed after ${priorAttempts} failed attempt(s)`)
+        notify?.({
+          severity: 'info', source: 'journal-rag',
+          message: `Journal entry ${entry.id} indexed after ${priorAttempts} failed attempt(s)`,
+          detail: `"${entry.issue}" now reaches semantic search. Positive evidence, not a timeout: the store accepted the vector.`,
+        })
+      }
       return { indexed: true }
     } catch (e) {
       const indexError = (e as Error).message
-      console.warn(`[journal] ${entry.id} saved but NOT indexed:`, indexError)
-      notify?.({
-        severity: 'warning', source: 'journal-rag',
-        message: `Journal entry ${entry.id} saved but not indexed`,
-        detail: `"${entry.issue}" did not reach the ${process.env.AILAB_JOURNAL_COLLECTION || 'ailab_journal'} collection: ${indexError}. ` +
-          `The entry is safe and readable; semantic search will not find it until it is re-indexed.`,
-      })
+      const state = { at: stamp(), error: indexError.slice(0, 500), attempts: priorAttempts + 1 }
+      entry.indexError = state
+      persistIndexState(entry.id, (x) => { x.indexError = state })
+      if (state.attempts === 1) {
+        console.warn(`[journal] ${entry.id} saved but NOT indexed:`, indexError)
+        notify?.({
+          severity: 'warning', source: 'journal-rag',
+          message: `Journal entry ${entry.id} saved but not indexed`,
+          detail: `"${entry.issue}" did not reach the ${process.env.AILAB_JOURNAL_COLLECTION || 'ailab_journal'} collection: ${indexError}. ` +
+            `The entry is safe and readable; semantic search will not find it until it is re-indexed. ` +
+            `Retrying with backoff; journal_search warns while it is missing, and journal_reindex forces a retry.`,
+        })
+      } else {
+        console.warn(`[journal] ${entry.id} re-index attempt ${state.attempts} failed:`, indexError)
+      }
+      scheduleRetry(entry.id)
       return { indexed: false, indexError }
     }
   }
 
   migrateNotes()
+
+  // Startup sweep: failures persisted by a previous process get retried, so an
+  // outage longer than one process's backoff schedule still converges. Delayed,
+  // because the likeliest moment for this code to run is right after the same
+  // reboot that took the embed backends down.
+  const sweepT = setTimeout(() => {
+    const pending = load().filter(needsIndex)
+    if (!pending.length) return
+    console.log(`[journal] startup sweep: ${pending.length} entr${pending.length === 1 ? 'y' : 'ies'} saved but not indexed — retrying`)
+    for (const e of pending) void index(e)
+  }, deps?.startupSweepDelayMs ?? 20_000)
+  ;(sweepT as { unref?: () => void }).unref?.()
 
   /** Newest first; ?status= and ?q= narrow it. The log is for looking things up. */
   router.get('/api/journal', (req: Req, res: Res) => {
@@ -236,10 +330,49 @@ export function createJournalRouter(dataDir: string, notify?: NotifyFn): express
   router.get('/api/journal-search', async (req: Req, res: Res) => {
     const q = String(req.query.q ?? '').trim()
     if (!q) return fail(res, 400, 'q is required')
+    // The unindexed list rides on EVERY search response: semantic search does not
+    // error on a missing entry — it returns a page of other, plausible entries —
+    // so an incomplete index is indistinguishable from "never logged" unless the
+    // response itself says what is missing.
+    const unindexed = load().filter(needsIndex)
+      .map((e) => ({ id: e.id, issue: e.issue, failedAt: e.indexError!.at, attempts: e.indexError!.attempts }))
     try {
-      const { searchJournal } = await import('./reportsRag')
-      res.json({ ok: true, results: await searchJournal(q, Number(req.query.limit) || 10) })
+      const doSearch = deps?.searchJournal ?? (async (qq: string, lim: number) => {
+        const { searchJournal } = await import('./reportsRag')
+        return searchJournal(qq, lim)
+      })
+      res.json({ ok: true, results: await doSearch(q, Number(req.query.limit) || 10), ...(unindexed.length ? { unindexed } : {}) })
     } catch (e) { fail(res, 502, `journal search unavailable: ${(e as Error).message}`) }
+  })
+
+  /**
+   * Reindex WITHOUT mutation — the recovery lever. The only lever before this
+   * was journal_append, which mutates the record to fix its metadata. By id for
+   * one entry (allowed even without a recorded failure, e.g. after a collection
+   * wipe); bare for every entry whose last attempt failed; ?all=1 for the whole
+   * journal.
+   */
+  router.post('/api/journal/reindex', async (req: Req, res: Res) => {
+    try {
+      const entries = load()
+      const targets = String(req.query.all ?? '') === '1' ? entries : entries.filter(needsIndex)
+      const results = { attempted: targets.length, indexed: 0, failed: [] as Array<{ id: string; error: string }> }
+      for (const e of targets) {
+        const r = await index(e)
+        if (r.indexed) results.indexed++
+        else results.failed.push({ id: e.id, error: r.indexError ?? 'unknown' })
+      }
+      res.json({ ok: true, ...results })
+    } catch (e) { fail(res, 500, String((e as Error).message)) }
+  })
+
+  router.post('/api/journal/:id/reindex', async (req: Req, res: Res) => {
+    try {
+      const entry = load().find((e) => e.id === req.params.id)
+      if (!entry) return fail(res, 404, `no journal entry ${req.params.id}`)
+      const idx = await index(entry)
+      res.json({ ok: true, id: entry.id, ...idx })
+    } catch (e) { fail(res, 500, String((e as Error).message)) }
   })
 
   router.get('/api/journal/:id', (req: Req, res: Res) => {

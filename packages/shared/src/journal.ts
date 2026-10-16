@@ -111,6 +111,25 @@ export const journalEntrySchema = z.object({
   excludedFromCounts: z.string().max(300).optional(),
   /** Every prior body, kept — editable without being rewritable-in-secret. */
   revisions: z.array(journalRevisionSchema).default([]),
+  /**
+   * INDEX STATE — when this entry's latest content last reached the vector
+   * collection. An unindexed entry is invisible to journal_search while still
+   * present in journal_read, and semantic search does not error on it — it
+   * returns a page of other, plausible entries, so the failure presents as
+   * "I guess I never logged that" (j-mtui4had-qn85: entry saved during a
+   * px-epyc reboot window, embed backends answered 40s AFTER the attempt).
+   * Tracking the state per entry is what makes retry, the search warning and
+   * the reindex affordance possible. Absent on entries filed before this
+   * existed — absence means "not tracked", never "unindexed".
+   */
+  indexedAt: z.string().optional(),
+  /** The LATEST index failure, present only while the entry needs re-indexing
+   *  (cleared on success). attempts counts failures across restarts. */
+  indexError: z.object({
+    at: z.string(),
+    error: z.string().max(500),
+    attempts: z.number().int().positive(),
+  }).optional(),
 })
 export type JournalEntry = z.infer<typeof journalEntrySchema>
 
