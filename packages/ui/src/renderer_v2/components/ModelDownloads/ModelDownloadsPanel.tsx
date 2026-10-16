@@ -667,16 +667,38 @@ const ReviewBrowser: React.FC = observer(() => {
                 })}
               </div>
 
-              {(v.images || []).length > 0 && (
-                <div className={styles.fileSection}>
-                  <div className={styles.sectionLabel}>Preview Images</div>
-                  <div className={styles.revImages}>
-                    {(v.images || []).slice(0, 12).map((img: any, i: number) => (
-                      <img key={i} className={styles.revImg} src={img.url} alt="" loading="lazy" referrerPolicy="no-referrer" />
-                    ))}
+              {(() => {
+                // What a download will save (model card first, gallery fill), from the backend's
+                // own selection; falls back to the model card while loading or on error.
+                const pv = store.civPreviewImages.get(v.id)
+                const ready = pv && typeof pv === 'object'
+                const imgs: any[] = ready ? pv.images : (v.images || []).slice(0, 12).map((i: any) => ({ ...i, from: 'model-card' }))
+                if (!imgs.length) return null
+                const fromGallery = ready ? imgs.filter((i) => i.from === 'gallery').length : 0
+                return (
+                  <div className={styles.fileSection}>
+                    <div className={styles.sectionLabel}>
+                      Preview Images
+                      <span className={styles.note} style={{ marginLeft: 8, fontWeight: 400 }}>
+                        {pv === 'loading' ? 'checking the gallery…'
+                          : ready ? `${imgs.length} will be saved: ${imgs.length - fromGallery} example${imgs.length - fromGallery === 1 ? '' : 's'}${fromGallery ? ` + ${fromGallery} from the user gallery` : ''}`
+                          : pv === 'error' ? 'gallery unavailable — showing examples only' : ''}
+                      </span>
+                    </div>
+                    <div className={styles.revImages}>
+                      {imgs.map((img: any, i: number) => (
+                        img.type === 'video'
+                          ? <video key={i} className={styles.revImg} src={img.url} muted loop playsInline autoPlay
+                              style={img.from === 'gallery' ? { outline: '2px dashed var(--accent, #d6457f)', outlineOffset: -2 } : undefined}
+                              title={img.from === 'gallery' ? 'From the user gallery' : 'Example image'} />
+                          : <img key={i} className={styles.revImg} src={img.url} alt="" loading="lazy" referrerPolicy="no-referrer"
+                              style={img.from === 'gallery' ? { outline: '2px dashed var(--accent, #d6457f)', outlineOffset: -2 } : undefined}
+                              title={img.from === 'gallery' ? 'From the user gallery' : 'Example image'} />
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
+                )
+              })()}
 
               {/* Both boxes are per-version and pre-filled from what the template resolves to, so
                   the values are visible and editable in place rather than hidden behind a

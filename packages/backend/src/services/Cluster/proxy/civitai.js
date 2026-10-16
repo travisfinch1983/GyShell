@@ -312,6 +312,53 @@ function saveConfig(cfg) {
   writeJsonAtomic(CONFIG_PATH, cfg);
 }
 
+// ─── Example-image selection ───────────────────────────────────────────────
+// Civitai serves the SAME image under different URLs in the version's model-card list and in
+// the /images gallery (same UUID path segment, different filename: ".../<uuid>/original=true/
+// 141593346.mp4" vs ".../<uuid>/original=true/<uuid>.mp4"), so de-duplicating by URL never
+// matched and a showcase image could be saved twice. Key on the UUID instead.
+function civImageKey(img) {
+  const u = String(img?.url || '');
+  const m = u.match(/\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\//i);
+  return m ? m[1].toLowerCase() : (img?.id != null ? `id:${img.id}` : u);
+}
+
+/**
+ * The images the downloader saves for a version, in order, per cfg.imageSource:
+ * 'model-card' | 'gallery' | 'model-card-first' (fill from gallery) | 'gallery-first'.
+ * Returns { images, modelCard, gallery } where each image carries `_from`.
+ */
+async function selectVersionImages(version, cfg, headers) {
+  const imageCount = cfg.imageCount || 10;
+  const imageSource = cfg.imageSource || 'model-card-first';
+  const modelCard = (version?.images || []).filter((i) => i.url).map((i) => ({ ...i, _from: 'model-card' }));
+  let gallery = [];
+  if (imageSource !== 'model-card') {
+    // Over-fetch: gallery entries that duplicate model-card images are dropped below, and a
+    // limit of exactly imageCount then fell short of filling the remainder.
+    const limit = Math.min(100, imageCount + modelCard.length + 10);
+    try {
+      const r = await fetch(`https://civitai.com/api/v1/images?modelVersionId=${version.id}&limit=${limit}&nsfw=true`, { headers });
+      if (r.ok) gallery = ((await r.json()).items || []).filter((i) => i.url).map((i) => ({ ...i, _from: 'gallery' }));
+      else console.warn(`[civitai] gallery fetch for version ${version.id}: HTTP ${r.status}`);
+    } catch (e) {
+      console.warn(`[civitai] gallery fetch for version ${version.id} failed: ${e?.message || e}`);
+    }
+  }
+  const primary = (imageSource === 'gallery' || imageSource === 'gallery-first') ? gallery : modelCard;
+  const secondary = imageSource === 'model-card-first' ? gallery : imageSource === 'gallery-first' ? modelCard : [];
+  const seen = new Set();
+  const images = [];
+  for (const img of [...primary, ...secondary]) {
+    if (images.length >= imageCount) break;
+    const k = civImageKey(img);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    images.push(img);
+  }
+  return { images, modelCard, gallery };
+}
+
 // ─── Component Type Detection ───────────────────────────────────────────────
 // Detect if a version's files are actually a sub-component (VAE, text encoder, etc.)
 // rather than the model type declared by the CivitAI repo.
@@ -1343,6 +1390,32 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
     return { targetDir, fileName, typeFolder, folderPart };
   }
 
+  // ─── GET /preview-images?versionId= — the images a download of this version will save ──
+  router.get('/preview-images', async (req, res) => {
+    const versionId = String(req.query.versionId || '');
+    if (!/^\d+$/.test(versionId)) return res.status(400).json({ error: 'versionId required' });
+    const cfg = loadConfig();
+    const headers = {};
+    const tok = getCivitaiToken();
+    if (tok) headers['Authorization'] = `Bearer ${tok}`;
+    try {
+      const vr = await fetch(`https://civitai.com/api/v1/model-versions/${versionId}`, { headers });
+      if (!vr.ok) return res.status(502).json({ error: `CivitAI API: ${vr.status}` });
+      const version = await vr.json();
+      const sel = await selectVersionImages(version, cfg, headers);
+      res.json({
+        imageSource: cfg.imageSource || 'model-card-first',
+        imageCount: cfg.imageCount || 10,
+        modelCardCount: sel.modelCard.length,
+        galleryCount: sel.gallery.length,
+        images: sel.images.map((i) => ({ url: i.url, type: i.type || 'image', from: i._from, nsfwLevel: i.nsfwLevel })),
+      });
+    } catch (e) {
+      console.warn(`[civitai] preview-images ${versionId} failed: ${e?.message || e}`);
+      res.status(502).json({ error: String(e?.message || e) });
+    }
+  });
+
   // ─── POST /check-conflicts — Check for existing files before download ──
   router.post('/check-conflicts', async (req, res) => {
     const { modelId, versionId } = req.body;
@@ -1947,41 +2020,11 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
           // Model card images (from version data)
           const modelCardImages = versionImages.filter(i => i.url);
 
-          // Gallery images (from images API — includes NSFW)
-          let galleryImages = [];
-          try {
-            const imgResp = await fetch(
-              `https://civitai.com/api/v1/images?modelVersionId=${version.id}&limit=${imageCount}&nsfw=true`,
-              { headers }
-            );
-            if (imgResp.ok) {
-              const imgData = await imgResp.json();
-              galleryImages = (imgData.items || []).filter(i => i.url);
-            }
-          } catch {}
-
-          // Build final image list based on source preference
-          if (imageSource === 'model-card' || imageSource === 'model-card-first') {
-            allImages = [...modelCardImages];
-            if (imageSource === 'model-card-first' && allImages.length < imageCount) {
-              // Fill remaining from gallery, avoiding duplicates
-              const mcUrls = new Set(allImages.map(i => i.url));
-              for (const gi of galleryImages) {
-                if (allImages.length >= imageCount) break;
-                if (!mcUrls.has(gi.url)) allImages.push(gi);
-              }
-            }
-          } else if (imageSource === 'gallery' || imageSource === 'gallery-first') {
-            allImages = [...galleryImages];
-            if (imageSource === 'gallery-first' && allImages.length < imageCount) {
-              const gUrls = new Set(allImages.map(i => i.url));
-              for (const mi of modelCardImages) {
-                if (allImages.length >= imageCount) break;
-                if (!gUrls.has(mi.url)) allImages.push(mi);
-              }
-            }
-          }
-
+          // Model card first / gallery fill etc. — shared with GET /preview-images so the
+          // downloader's preview strip shows exactly the images that will be saved.
+          const _sel = await selectVersionImages(version, cfg, headers);
+          allImages = _sel.images;
+          const galleryImages = _sel.gallery;
           // Cap at imageCount
           allImages = allImages.slice(0, imageCount);
           console.log(`[civitai] Images: ${allImages.length} to download (source=${imageSource}, modelCard=${modelCardImages.length}, gallery=${galleryImages.length})`);

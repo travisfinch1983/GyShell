@@ -110,6 +110,9 @@ export class ModelDownloadsStore {
   // Groups of file ids that resolve to the SAME name. Non-empty means the user cleared the
   // discriminators; the preview warns rather than the server silently renaming behind them.
   civVerCollisions = new Map<number, string[][]>()
+  // GET /api/civitai/preview-images per version: the images a download will actually save
+  // (model card first, gallery fill, per the Image settings). 'error' = show the model card only.
+  civPreviewImages = new Map<number, { images: any[]; modelCardCount: number; galleryCount: number; imageSource: string; imageCount: number } | 'loading' | 'error'>()
   civQueue: any[] = [] // /api/civitai/queue — items sent from the browser extension's "Review" button
   civQueueItemId: string | null = null // the queue item currently loaded into the browser
   civQueueIndex = 0 // position in the review queue (navigated with prev/next arrows)
@@ -796,6 +799,7 @@ export class ModelDownloadsStore {
     this.civVerFiles.clear()
     this.civFileOpts.clear()
     this.civVerCollisions.clear()
+    this.civPreviewImages.clear()
   }
 
   /** View a version. Viewing is separate from selecting it for download (ProxLab: badge vs checkbox). */
@@ -997,12 +1001,28 @@ export class ModelDownloadsStore {
     // Map values are observed by reference; re-set so mobx sees the mutation.
     if (this.civSelVersionId != null) this.civVerFiles.set(this.civSelVersionId, s)
   }
+  async loadPreviewImages(vid: number): Promise<void> {
+    if (this.civPreviewImages.has(vid)) return
+    this.civPreviewImages.set(vid, 'loading')
+    try {
+      const r = (await this.cluster().request('GET', `/api/civitai/preview-images?versionId=${vid}`)) as any
+      runInAction(() => this.civPreviewImages.set(vid, {
+        images: Array.isArray(r?.images) ? r.images : [], modelCardCount: r?.modelCardCount ?? 0,
+        galleryCount: r?.galleryCount ?? 0, imageSource: r?.imageSource ?? '', imageCount: r?.imageCount ?? 0,
+      }))
+    } catch (e) {
+      console.warn('[civitai] preview images failed', vid, e)
+      runInAction(() => this.civPreviewImages.set(vid, 'error'))
+    }
+  }
+
   async resolveReviewPath(): Promise<void> {
     const m = this.civModel
     const v = this.civCurrentVersion
     if (!m || !v) return
     const vid: number = v.id
     const seeded = this.civVerSeeded.has(vid)
+    void this.loadPreviewImages(vid)
     try {
       const r = (await this.cluster().request('POST', '/api/civitai/resolve-paths', {
         modelId: String(m.id),

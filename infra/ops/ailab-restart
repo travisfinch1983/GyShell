@@ -46,13 +46,30 @@ def api(path, body=None, timeout=15):
         return json.loads(r.read() or b"{}")
 
 
+# Sources whose work SURVIVES a backend restart: launched detached (setsid) on another host,
+# with the backend only watching files. Restarting is invisible to them.
+# Everything else is assumed to die with the backend — a new job type is then safe by default
+# rather than silently waved through.
+DETACHED_SOURCES = ("lora-", "lora:")
+
+
+def _survives(task):
+    src = str(task.get("source") or "")
+    return any(src.startswith(p) for p in DETACHED_SOURCES)
+
+
 def running_tasks():
-    """In-flight work a restart would KILL. None = could not read (NOT 'nothing running')."""
+    """In-flight work, split into what a restart would KILL and what it would not.
+
+    Returns (killed, survives) or None when the registry could not be read — which is
+    CANNOT-CHECK, not 'nothing running'.
+    """
     try:
         st = api("/api/notifications/tasks", timeout=8)
     except Exception:
         return None
-    return [t for t in (st.get("tasks") or []) if t.get("state") == "running"]
+    live = [t for t in (st.get("tasks") or []) if t.get("state") == "running"]
+    return ([t for t in live if not _survives(t)], [t for t in live if _survives(t)])
 
 
 def set_routing(suspended, reason):
@@ -140,14 +157,24 @@ def main():
             print("            work is in flight. That is CANNOT-CHECK, not 'nothing running'.")
             print("            Re-run with --force if you know it is safe.")
             return 4
-        if tasks:
-            print("  REFUSING: %d task(s) in flight — a restart KILLS them." % len(tasks))
-            for t in tasks[:10]:
-                tot, dn = t.get("total") or 0, t.get("done") or 0
-                prog = ("%d/%d" % (dn, tot)) if tot else (("%s%%" % t.get("percent")) if t.get("percent") is not None else "running")
-                print("    - [%s] %s  %s" % (t.get("source", "?"), (t.get("label") or t.get("id", "?"))[:60], prog))
-            if len(tasks) > 10:
-                print("    ... and %d more" % (len(tasks) - 10))
+        killed, survives = tasks
+
+        def _line(t):
+            tot, dn = t.get("total") or 0, t.get("done") or 0
+            prog = ("%d/%d" % (dn, tot)) if tot else (("%s%%" % t.get("percent")) if t.get("percent") is not None else "running")
+            return "    - [%s] %s  %s" % (t.get("source", "?"), (t.get("label") or t.get("id", "?"))[:60], prog)
+
+        # Detached work is NAMED, not silently ignored: the operator should know it is out there
+        # even though the restart cannot hurt it.
+        for t in survives[:10]:
+            print("  (unaffected, runs detached on another host)")
+            print(_line(t))
+        if killed:
+            print("  REFUSING: %d task(s) in flight — a restart KILLS them." % len(killed))
+            for t in killed[:10]:
+                print(_line(t))
+            if len(killed) > 10:
+                print("    ... and %d more" % (len(killed) - 10))
             print("            These do NOT resume: the jobs are in-memory and their workers are")
             print("            children of the backend. Wait for them, or --force to kill them.")
             return 4
