@@ -961,6 +961,32 @@ export function invalidateModelCache() {
 // for up to 30 s AFTER it was serving. That was measured: llama-server ready at +2.6 s, first routed
 // request at +31 s. On a miss, rebuild once (rate-limited) and look again before declaring the
 // model unreachable. A model that is really down still gets its 503; it just costs one refresh.
+// ─── Qwen-Image PE cache warmth (claude1 + claude2, 2026-10-16) ─────────────────────────────
+// The PE GGUFs live in the image model service's RAM+disk cache tiers (kind 'llm', unpinned,
+// decayed-LRU). llama.cpp's router loads them itself, so the model service never sees the use; this
+// reports it, so frequently used files keep their score and stay resident (and a pruned copy is
+// re-staged). Fire-and-forget, at most once a minute per file, and it can never fail or delay a request.
+const PE_CACHE_WARM_URL = process.env.AILAB_PE_CACHE_WARM_URL || 'http://10.0.0.234:9312/cache/warm';
+const PE_FILES = {
+  'qwen-image-2.1-pe-t2i-heretic': ['Qwen-Image-2.1-PE/T2I-Heretic/GGUF/Q4_K_M/pe_t2i_heretic-Q4_K_M.gguf'],
+  'qwen-image-2.1-pe-i2i-heretic': ['Qwen-Image-2.1-PE/I2I-Heretic/GGUF/Q4_K_M/Qwen-Image-2.1-PE-I2I-Heretic-Q4_K_M.gguf',
+    'Qwen-Image-2.1-PE/I2I-Heretic/GGUF/mmproj/Qwen-Image-2.1-PE-I2I-Heretic-mmproj-F16.gguf'],
+};
+const _peWarmLast = new Map();
+function notePeModelUse(modelId) {
+  const files = PE_FILES[String(modelId || '').replace(/@\d+$/, '')];
+  if (!files) return;
+  const now = Date.now();
+  for (const name of files) {
+    if (now - (_peWarmLast.get(name) || 0) < 60_000) continue;
+    _peWarmLast.set(name, now);
+    fetch(PE_CACHE_WARM_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'llm', name, use: true }), signal: AbortSignal.timeout(5000) })
+      .then((r) => { if (!r.ok) console.warn(`[pe-cache-warm] ${name}: HTTP ${r.status}`); })
+      .catch((e) => console.warn(`[pe-cache-warm] ${name}: ${e?.message || e}`));
+  }
+}
+
 const MISS_REFRESH_MIN_MS = 2_000;
 async function lookupModelFresh(modelId) {
   let cache = await refreshModelCache();
@@ -1449,6 +1475,7 @@ async function handleModelRouting(req, res, path) {
 
   let svc = null;
   if (modelId) {
+    notePeModelUse(modelId);
     svc = (await lookupModelFresh(modelId)).svc;
   }
 
@@ -1534,6 +1561,7 @@ async function handleChatWithTools(req, res) {
 
   let svc = null;
   if (parsed.model) {
+    notePeModelUse(parsed.model);
     const cache = await refreshModelCache();
     // External model source (tag-prefixed, e.g. "[DS] deepseek-v4-pro"): forward to its
     // upstream API with the tag stripped + key injected. Local routing untouched below.
