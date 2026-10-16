@@ -476,7 +476,7 @@ def api_models(req: Request):
             continue
         s = model_images(m)
         fts = [f for f in finetunes(m) if can_see(al, "ft", m["id"], f["id"])]
-        out.append({k: m.get(k) for k in ("id", "name", "family", "edit", "refs", "max_refs", "description", "best_for", "notes")}
+        out.append({k: m.get(k) for k in ("id", "name", "family", "edit", "refs", "max_refs", "description", "best_for", "notes", "cloud", "paid")}
                    | {"cover": img_url(s["images"][0]) if s["images"] else None,
                       "image_count": len(s["images"]), "file_count": len(s["files"]), "finetune_count": len(fts),
                       "base_visible": can_see(al, "base", m["id"])})
@@ -1233,6 +1233,8 @@ async def send(req: Request):
             raise HTTPException(400, "That finetune is no longer downloaded")
     loras = []
     if b.get("loras"):
+        if m and m.get("cloud"):
+            raise HTTPException(400, f"{m['name']} doesn't take LoRAs")
         if not m:
             raise HTTPException(400, "LoRAs need a model")
         idx = {x["id"]: x for x in lora_index(m)}
@@ -1280,6 +1282,8 @@ async def send(req: Request):
                 if ft["civitai_url"]:
                     lines.append(f"  civitai: {ft['civitai_url']}")
                 ft_html = f" › {esc(label)}"
+            elif m.get("cloud"):
+                lines.append("FINETUNE: none (cloud model, no local files, finetunes or LoRAs)")
             elif use_base:
                 lines.append(f"FINETUNE: none. Use the official {m['name']} base model itself, not a finetune; "
                              "which quant / precision is your choice.")

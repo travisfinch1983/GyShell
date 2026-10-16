@@ -49,6 +49,7 @@ section.closed>.sb{display:none}
 .grid.poses .card .im{aspect-ratio:224/284}
 .card .im img{width:100%;height:100%;object-fit:cover;display:block}
 .grid.poses .card .im img{object-fit:contain}
+.card.cloud .noimg{font-size:38px;background:linear-gradient(140deg,#4f7fd9,#9a5fd6 60%,#d6457f);color:#fff}
 .card .noimg{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font-size:13px;text-align:center;padding:10px}
 .card .cap{padding:7px 9px 8px;background:var(--card)}
 .card .cap .t{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -56,7 +57,7 @@ section.closed>.sb{display:none}
 .badges{position:absolute;top:6px;left:6px;display:flex;flex-wrap:wrap;align-items:flex-start;gap:4px;max-width:calc(100% - 52px);pointer-events:none}
 .badge{line-height:1.35;white-space:nowrap;background:rgba(20,16,24,.78);color:#fff;font-size:11px;font-weight:600;padding:2px 7px;border-radius:7px;backdrop-filter:blur(3px)}
 .badge.edit{background:rgba(46,155,95,.92)}
-.badge.ref{background:rgba(52,110,210,.92)}
+.badge.refn{background:rgba(52,110,210,.92)}
 .badge.layer{background:rgba(214,69,127,.9)}
 .badge.n{background:var(--acc);color:var(--acc-fg);font-size:15px;padding:2px 8px}
 .check{position:absolute;top:4px;right:4px;width:40px;height:40px;display:grid;place-items:center;cursor:pointer;z-index:2}
@@ -113,6 +114,7 @@ textarea{width:100%;min-height:120px;padding:10px 12px;border:1px solid var(--li
 .card .more-ft{position:absolute;right:6px;bottom:6px;background:rgba(20,16,24,.78);color:#fff;font-size:11px;font-weight:600;padding:2px 7px;border-radius:7px}
 .agentsel{padding:6px 10px;border-radius:10px;border:1px solid var(--line);background:var(--card)}
 .card.basecard .im{background:linear-gradient(135deg,var(--tile),var(--card))}
+.badge.paid{background:rgba(46,155,95,.95);font-size:13px;padding:1px 8px}
 .badge.base{background:rgba(196,122,18,.95)}
 #pinScreen{position:fixed;inset:0;z-index:80;background:var(--bg);display:none;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px}
 #pinScreen.open{display:flex}
@@ -312,7 +314,7 @@ function card({cover,title,sub,badges,selected,dim,onCheck,onOpen,noimg,cls='',n
 
 // ── 1. models ──
 const curModel=()=>MODELS.find(m=>m.id===curId())||null;
-function modelBadges(m){return (m.edit?'<span class="badge edit">Edit</span>':'')+(m.refs?`<span class="badge ref">Ref ×${m.max_refs}</span>`:'')}
+function modelBadges(m){return (m.paid?'<span class="badge paid" title="Costs money per image">$</span>':'')+(m.edit?'<span class="badge edit">Edit</span>':'')+(m.refs?`<span class="badge refn">Ref ×${m.max_refs}</span>`:'')}
 // Base-model cards open their finetune panel; the checkbox lives on the finetunes.
 let FTS=[];
 const ftLabel=f=>f?f.name+(f.version?` · ${f.version}`:''):'';
@@ -322,12 +324,25 @@ function renderModels(){
   MODELS.forEach(m=>{
     let sub=m.finetune_count?`${m.finetune_count} finetune${m.finetune_count>1?'s':''}`:'not downloaded yet';
     if(MANAGE){const n=[...MANAGE.keys].filter(k=>k===`base:${m.id}`||k.split(':')[1].startsWith(m.id+'/')).length;sub=n?`${n} item${n>1?'s':''} shown to ${MANAGE.name}`:`hidden from ${MANAGE.name}`}
+    if(m.cloud){ // no finetunes or LoRAs: the card itself is the choice
+      const on=MANAGE?MANAGE.keys.has(`base:${m.id}`):S.model===m.id;
+      if(MANAGE)sub=on?`shown to ${MANAGE.name}`:`hidden from ${MANAGE.name}`;else sub='Cloud · paid per image';
+      g.appendChild(card({cover:m.cover,title:m.name,sub,badges:modelBadges(m),selected:on,cls:' fam cloud',noimg:'☁',
+        dim:MANAGE?!on:(S.model&&!on),
+        onCheck:()=>MANAGE?setCloudShown(m,!on):selectModel(on?null:m.id),onOpen:()=>openModel(m)}));
+      return;
+    }
     g.appendChild(card({cover:m.cover,title:m.name,sub,
     badges:modelBadges(m),selected:cur===m.id,noCheck:true,cls:' fam',noimg:m.finetune_count?'No preview':'Not downloaded yet',
     dim:MANAGE&&!sub.includes('shown')&&cur!==m.id,
     corner:cur===m.id?'<span class="more-ft">▼ finetunes</span>':'',
     onOpen:()=>selectModel(cur===m.id?null:m.id)}))});
   const m=curModel();$('sumModel').textContent=MANAGE?'':m?(m.name+(S.finetuneName?` › ${S.finetuneName}`:'')):'none';
+}
+async function setCloudShown(m,on){
+  try{await api('/api/admin/visibility',{method:'POST',body:JSON.stringify({person:MANAGE.person,items:[{kind:'base',key:m.id,on}]})});
+    on?MANAGE.keys.add(`base:${m.id}`):MANAGE.keys.delete(`base:${m.id}`)}catch(e){toast(e.message,true)}
+  renderModels();
 }
 function selectModel(id){
   if(MANAGE){MANAGE.model=id;renderModels();loadFinetunes();loadLoras();if(id)setTimeout(()=>$('ftPanel').scrollIntoView({behavior:'smooth',block:'start'}),60);return}
@@ -336,12 +351,12 @@ function selectModel(id){
   const m=curModel();
   if(m&&m.refs&&S.refs.length>m.max_refs){S.refs=S.refs.slice(0,m.max_refs);toast(`${m.name} takes ${m.max_refs} references; kept the first ${m.max_refs}`)}
   save();renderModels();loadFinetunes();loadLoras();renderRefs();
-  if(id)setTimeout(()=>$('ftPanel').scrollIntoView({behavior:'smooth',block:'start'}),60);
+  if(id&&!curModel()?.cloud)setTimeout(()=>$('ftPanel').scrollIntoView({behavior:'smooth',block:'start'}),60);
 }
 async function loadFinetunes(){
   const m=curModel();FTS=[];
-  $('ftPanel').style.display=m?'':'none';
-  if(!m)return;
+  $('ftPanel').style.display=m&&!m.cloud?'':'none';
+  if(!m||m.cloud)return;
   $('ftTitle').textContent=`${m.name} finetunes`;$('gFt').innerHTML='<div class="empty">Loading finetunes…</div>';
   try{FTS=await api(`/api/models/${m.id}/finetunes`)}catch(e){$('gFt').innerHTML=`<div class="empty">${esc(e.message)}</div>`;return}
   if(!MANAGE&&S.finetune&&S.finetune!=='base'&&!FTS.some(f=>f.id===S.finetune)){S.finetune=null;S.finetuneName=null;save()}
@@ -395,16 +410,22 @@ async function openFinetune(f){
   }catch(e){$('ovB').innerHTML=`<div class="empty">${esc(e.message)}</div>`}
 }
 async function openModel(m){
+  if(m.cloud){
+    const on=MANAGE?MANAGE.keys.has(`base:${m.id}`):S.model===m.id;
+    openOv(m.name,'<div class="empty">Loading…</div>',`<span class="sp"></span><button class="btn acc" id="ovSel">${MANAGE?selLabel(on):on?'Unselect':'Use '+esc(m.name)}</button>`);
+    $('ovSel').onclick=()=>{MANAGE?setCloudShown(m,!on):selectModel(on?null:m.id);closeOv()};
+  }else{
   const canBase=MANAGE||m.base_visible;
   openOv(m.name,'<div class="empty">Loading…</div>',canBase?`<span class="sp"></span><button class="btn acc" id="ovSel">${MANAGE?selLabel(ftOn(BASE)):ftOn(BASE)?'Unselect base model':'Use the base model'}</button>`:'');
   if(canBase)$('ovSel').onclick=()=>{ftToggle(BASE);closeOv()};
+  }
   try{
     const d=await api(`/api/models/${m.id}`);
     $('ovB').innerHTML=gallery(d.images)+`<div class="kv">${modelBadges(m).replace(/class="badge/g,'style="position:static;display:inline-block;margin-right:4px" class="badge')}</div>
       <div class="kv"><b>About</b><div class="desc">${esc(m.description)}</div></div>
       <div class="kv"><b>Best for</b><div class="desc">${esc(m.best_for)}</div></div>
       ${m.notes?`<div class="kv"><b>Notes</b><div class="desc">${esc(m.notes)}</div></div>`:''}
-      <div class="kv"><b>Downloaded</b><div class="desc muted small">${d.files.length?d.files.map(esc).join('\n'):'Nothing yet.'}</div></div>`;
+      ${m.cloud?'':`<div class="kv"><b>Downloaded</b><div class="desc muted small">${d.files.length?d.files.map(esc).join('\n'):'Nothing yet.'}</div></div>`}`;
   }catch(e){$('ovB').innerHTML=`<div class="empty">${esc(e.message)}</div>`}
 }
 
@@ -412,7 +433,7 @@ async function openModel(m){
 let loraLayer='all',loraShown=60,loraSelOnly=false;
 async function loadLoras(){
   const m=curModel();LORAS=[];
-  if(!m){renderLoras();return}
+  if(!m||m.cloud){renderLoras();return}
   $('gLora').innerHTML='<div class="empty">Loading LoRAs…</div>';
   try{LORAS=await api(`/api/loras?model=${m.id}`);LORAS.forEach(l=>loraInfo.set(l.id,{name:l.name,layer:l.layer}))}
   catch(e){toast('LoRAs: '+e.message,true)}
@@ -431,6 +452,7 @@ function renderLoras(){
   const m=curModel();const g=$('gLora');g.innerHTML='';$('loraTools').style.display=m?'':'none';
   $('sumLora').textContent=MANAGE?'':S.loras.length?`${S.loras.length} selected`:(m?'none':'');
   if(!m){g.innerHTML='<div class="empty">Pick a model first; LoRAs are filtered to it.</div>';$('moreLora').style.display='none';return}
+  if(m.cloud){$('loraTools').style.display='none';$('sumLora').textContent='';g.innerHTML=`<div class="empty">${esc(m.name)} is a cloud model and doesn't use LoRAs.</div>`;$('moreLora').style.display='none';return}
   const q=$('qLora').value.trim().toLowerCase();
   const list=listedLoras();
   if(!list.length){g.innerHTML=`<div class="empty">${LORAS.length?'No LoRAs match.':'No LoRAs downloaded for '+esc(m.name)+' yet.'}</div>`;$('moreLora').style.display='none';return}
@@ -624,7 +646,7 @@ $('req').addEventListener('input',()=>{S.request=$('req').value;save()});
 function renderSummary(){
   const m=curModel(),p=POSES.find(x=>x.n===S.pose);
   const chips=[];
-  chips.push(m?`Model: ${m.name}${S.finetuneName?' › '+S.finetuneName:' (any finetune)'}`:'Model: agent decides');
+  chips.push(m?`Model: ${m.name}${m.cloud?' ($ per image)':S.finetuneName?' › '+S.finetuneName:' (any finetune)'}`:'Model: agent decides');
   S.loras.forEach(id=>{const l=loraInfo.get(id);if(l)chips.push(`LoRA: ${l.name}`)});
   if(p)chips.push(`Pose #${p.n}`);
   if(m&&m.refs&&S.refs.length)chips.push(`${S.refs.length} reference image${S.refs.length>1?'s':''}`);
