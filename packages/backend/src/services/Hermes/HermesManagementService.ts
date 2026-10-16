@@ -2348,6 +2348,10 @@ export class HermesManagementService {
    *  after the group is healthy again. That is invisible from the group alone, so compare the
    *  group against the agent's own last registration and look for a give-up AFTER it. */
   async getToolHealth(agentId: string): Promise<{
+    /** MCP protocol built-ins counted BY NAME in the registration enumeration; null = legacy log without one (comparison fell back to the ±allowance). */
+    builtinsCounted: number | null
+    /** registeredTools − builtinsCounted: the agent's actual group-tool count, exact. */
+    servedGroupTools: number | null
     groupTools: number; registeredTools: number | null; gaveUp: boolean
     parkedServers: number; parkedNames: string[]; gatewayActive: boolean; healthy: boolean
     /** Did we actually READ the agent's registration? False when the log holds no
@@ -2410,7 +2414,7 @@ export class HermesManagementService {
     // `</dev/null` is load-bearing: given no file arguments at all, grep reads stdin and the probe
     // hangs rather than failing (verified: `sleep 8 | timeout 4 grep x` exits 124).
     const raw = await this.ssh(
-      `rot=$(ls -1v ${shq(log)}.[0-9]* 2>/dev/null | tac | tr '\\n' ' '); grep -ahE 'registered [0-9]+ tool\\(s\\) from|reconnection attempts, giving up|parking until a reconnect' $rot ${shq(log)} </dev/null 2>/dev/null | tail -n 20 || true`,
+      `rot=$(ls -1v ${shq(log)}.[0-9]* 2>/dev/null | tac | tr '\\n' ' '); grep -ahE 'registered [0-9]+ tool\\(s\\)( from|:)|reconnection attempts, giving up|parking until a reconnect' $rot ${shq(log)} </dev/null 2>/dev/null | tail -n 40 || true`,
     ).catch(() => '')
     let registeredTools: number | null = null
     let gaveUp = false
@@ -2421,9 +2425,29 @@ export class HermesManagementService {
     // lets a reader match against known-dead shims — a count cannot (m-c).
     let parkedNames: string[] = []
     let pendingNames: string[] = []
+    // Built-ins are COUNTED BY NAME from the per-server enumeration line
+    // ("MCP server 'x' (HTTP): registered N tool(s): a, b, …"), which ends with the
+    // protocol built-ins as named entries (mcp__<server>__list_resources etc.).
+    // Like park lines, enumeration lines precede their summary in boot order.
+    const MCP_BUILTINS = new Set(['list_resources', 'read_resource', 'list_prompts', 'get_prompt'])
+    let pendingBuiltins: number | null = null
+    let builtinsCounted: number | null = null
     for (const line of raw.split('\n')) {
       const park = line.match(/MCP server '([^']+)' failed initial connection.*parking/)
       if (park) { pendingNames.push(park[1]); continue }
+      // Per-server enumeration: count the MCP protocol built-ins by NAME. A built-in is
+      // mcp__<server>__<builtin> — exactly three '__' segments — never a group tool
+      // (those carry a toolset segment: mcp__<server>__<toolset>__<tool>).
+      const enumLine = line.match(/registered \d+ tool\(s\): (.+)$/)
+      if (enumLine) {
+        const named = enumLine[1].split(',').map((t) => t.trim()).filter(Boolean)
+        const b = named.filter((t) => {
+          const parts = t.split('__')
+          return parts.length === 3 && parts[0] === 'mcp' && MCP_BUILTINS.has(parts[2])
+        }).length
+        pendingBuiltins = (pendingBuiltins ?? 0) + b
+        continue
+      }
       // "registered N tool(s) from M server(s) (K failed)" — the failed count is
       // the cheap, structured signal that servers PARKED (permanent until a
       // reconnect); matching the parking prose alone missed it for months.
@@ -2432,6 +2456,7 @@ export class HermesManagementService {
         registeredTools = parseInt(m[1], 10); parkedServers = m[2] ? parseInt(m[2], 10) : 0; gaveUp = false
         registeredAt = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/)?.[1] ?? ''
         parkedNames = pendingNames; pendingNames = []
+        builtinsCounted = pendingBuiltins; pendingBuiltins = null
         continue
       }
       if (/reconnection attempts, giving up/.test(line)) gaveUp = true
@@ -2450,8 +2475,18 @@ export class HermesManagementService {
     // The agent's registration count includes MCP protocol built-ins (list_resources,
     // read_resource, list_prompts, get_prompt) on top of the group's tools, so compare with
     // that allowance rather than demanding equality.
+    // 🛑 THE +4 ALLOWANCE WAS A FUZZ: any shortfall smaller than the fuzz was absorbed
+    // silently (loom served 74 of 77 and read healthy — maintenance-claude, j-mtu8il6t-l9cm).
+    // Tool groups grow by exactly such increments, so the gap was invisible by construction.
+    // The built-ins are counted BY NAME from the enumeration line, making the comparison
+    // EXACT: (registered − named built-ins) must EQUAL the group. The allowance survives
+    // only as a fallback for a legacy log whose enumeration line is missing, and the
+    // detail says so — an approximate check must not read like an exact one.
     const PROTOCOL_EXTRAS = 4
-    const matches = registeredTools !== null && registeredTools >= groupTools && registeredTools <= groupTools + PROTOCOL_EXTRAS
+    const servedGroupTools = registeredTools !== null && builtinsCounted !== null ? registeredTools - builtinsCounted : null
+    const matches = registeredTools !== null && (servedGroupTools !== null
+      ? servedGroupTools === groupTools
+      : registeredTools >= groupTools && registeredTools <= groupTools + PROTOCOL_EXTRAS)
     // Stranded vs pending: a stale registration with a LATER gateway restart is
     // already remedied — Hermes registers lazily, so the refreshed set loads on
     // the agent's next turn. Prescribing "reconnect" there restarts a live
@@ -2476,7 +2511,9 @@ export class HermesManagementService {
     // sees: printing raw 58-vs-60 sent triage hunting two missing tools when
     // the real shortfall was the entire six-tool reports set (the 4 built-ins
     // netted against it). State the estimated real gap.
-    const realGap = registeredTools === null ? 0 : Math.max(0, groupTools - Math.max(0, registeredTools - PROTOCOL_EXTRAS))
+    const realGap = registeredTools === null ? 0
+      : servedGroupTools !== null ? Math.max(0, groupTools - servedGroupTools)
+        : Math.max(0, groupTools - Math.max(0, registeredTools - PROTOCOL_EXTRAS))
     // ONE remedy owner per message (m-c's catch: the pending fragment said
     // "do NOT reconnect" while the parked note said "reconnect" — a reader
     // following the message does both). When servers are parked, the parked
@@ -2492,11 +2529,17 @@ export class HermesManagementService {
       : registeredTools === null
         ? 'Tool health UNKNOWN: no registration line in the agent log (rotated, truncated, or never registered), so the served tool set cannot be compared with the group. This is not a clean bill of health — it is an unread check.' + parkedNote
         : matches
-          ? `Serving ${registeredTools} tools for a group of ${groupTools}.` + parkedNote
+          ? (servedGroupTools !== null
+            ? `Serving ${servedGroupTools} group tools (+${builtinsCounted} MCP built-ins = ${registeredTools} registered) for a group of ${groupTools} — exact match.`
+            : `Serving ${registeredTools} tools for a group of ${groupTools} (legacy log without a tool enumeration — count checked within the +${PROTOCOL_EXTRAS} built-in allowance, not exactly).`) + parkedNote
           : pending
-            ? `Registration is ~${realGap} tool(s) short of the group, but the gateway was already reconnected at ${gatewayRestartedAt} (after that registration) — the refreshed set loads on the agent's NEXT TURN.${parkedServers > 0 && !parkedStale ? '' : ' No action needed; do NOT reconnect again.'}` + parkedNote
-            : `Group has ${groupTools} tools but the agent last registered ${registeredTools} — and that count includes up to ${PROTOCOL_EXTRAS} MCP protocol built-ins, so the real shortfall is ~${realGap} tool(s), not ${Math.max(0, groupTools - registeredTools)}.${parkedServers > 0 ? '' : ' Reconnect to resync.'}` + parkedNote
-    return { groupTools, registeredTools, gaveUp, parkedServers, parkedNames, parkedStale, gatewayActive, healthy, known, pending, gatewayRestartedAt, detail }
+            ? `Registration is ${servedGroupTools !== null ? `exactly ${Math.abs(groupTools - servedGroupTools)}` : `~${realGap}`} tool(s) ${servedGroupTools !== null && servedGroupTools > groupTools ? 'over' : 'short of'} the group, but the gateway was already reconnected at ${gatewayRestartedAt} (after that registration) — the refreshed set loads on the agent's NEXT TURN.${parkedServers > 0 && !parkedStale ? '' : ' No action needed; do NOT reconnect again.'}` + parkedNote
+            : servedGroupTools !== null
+              ? (servedGroupTools < groupTools
+                ? `Group has ${groupTools} tools but the agent serves ${servedGroupTools} (${registeredTools} registered incl. ${builtinsCounted} MCP built-ins counted by name) — EXACTLY ${realGap} tool(s) missing.${parkedServers > 0 ? '' : ' Reconnect to resync.'}`
+                : `Agent serves ${servedGroupTools} group tools but the group now has only ${groupTools} — ${servedGroupTools - groupTools} tool(s) were removed from the group since this registration; the served set is stale.${parkedServers > 0 ? '' : ' Reconnect to resync.'}`) + parkedNote
+              : `Group has ${groupTools} tools but the agent last registered ${registeredTools} — and that count includes up to ${PROTOCOL_EXTRAS} MCP protocol built-ins (legacy log without a tool enumeration), so the real shortfall is ~${realGap} tool(s), not ${Math.max(0, groupTools - registeredTools)}.${parkedServers > 0 ? '' : ' Reconnect to resync.'}` + parkedNote
+    return { groupTools, registeredTools, builtinsCounted, servedGroupTools, gaveUp, parkedServers, parkedNames, parkedStale, gatewayActive, healthy, known, pending, gatewayRestartedAt, detail }
   }
 
   /** Restart the agent's messaging gateway so it re-reads config and reconnects its MCP link.

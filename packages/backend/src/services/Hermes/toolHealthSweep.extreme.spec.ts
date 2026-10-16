@@ -420,6 +420,62 @@ async function main(): Promise<void> {
     'a tier returning to the served list clears on POSITIVE evidence and says so')
   delete process.env.HERMES_TOOL_ALARMS_FILE
 
+
+  // ── EXACT tool count: the +4 fuzz no longer hides a shortfall smaller than 4 ──
+  // Real case (j-mtu8il6t-l9cm): loom served 74 of a 77-tool group, and 78 registered
+  // (incl. 4 built-ins) passed `>= 77 && <= 81`. These cases drive the REAL
+  // getToolHealth parser: ssh returns a synthetic agent.log slice, fetch a synthetic
+  // tool group. The built-ins are counted BY NAME and the comparison is exact.
+  const GROUP5 = ['a__x', 'a__y', 'a__z', 'a__w', 'a__v']
+  const exactFetchOrig = globalThis.fetch
+  globalThis.fetch = (async (url: any) => String(url).includes('/api/v0/tool-groups/')
+    ? ({ ok: true, status: 200, json: async () => ({ included_tools: GROUP5 }) } as any)
+    : exactFetchOrig(url)) as any
+  const ENUM_SHORT = "2026-10-16 04:00:00,000 INFO tools.mcp_tool: MCP server 'ai-lab' (HTTP): registered 8 tool(s): mcp__ai_lab__fleet__fleet_send, mcp__ai_lab__fleet__fleet_read, mcp__ai_lab__time__convert_time, mcp__ai_lab__time__get_current_time, mcp__ai_lab__list_resources, mcp__ai_lab__read_resource, mcp__ai_lab__list_prompts, mcp__ai_lab__get_prompt"
+  const SUMMARY8 = '2026-10-16 04:00:00,000 INFO tools.mcp_tool: MCP: registered 8 tool(s) from 1 server(s)'
+  const svcExact: any = new HermesManagementService({ user: 'spec', notify: (e: any) => emitted.push(e) } as any)
+  let fakeLog = `${ENUM_SHORT}\n${SUMMARY8}`
+  svcExact.ssh = async (cmd: string) => cmd.includes('systemctl show')
+    ? 'ActiveState=active\nActiveEnterTimestamp=Thu 2026-10-16 03:00:00 UTC'
+    : fakeLog
+
+  // 1. one tool short INSIDE the old fuzz (8 registered − 4 built-ins = 4 ≠ 5) must alarm
+  const h1 = await svcExact.getToolHealth('xi')
+  ok(h1.known === true && h1.builtinsCounted === 4 && h1.servedGroupTools === 4,
+    'built-ins are counted by name from the enumeration (4), served group tools = 4')
+  ok(h1.healthy === false && h1.detail.includes('EXACTLY 1 tool(s) missing'),
+    'a 1-tool shortfall (invisible to the old +4 allowance) reads UNHEALTHY with the exact gap')
+  svcExact.listAgentsStrict = async () => ['xi']
+  const bx = emitted.length
+  await svcExact.sweepToolHealth()
+  ok(emitted.length === bx + 1 && emitted[bx].severity === 'warning' && emitted[bx].message.includes("'xi'"),
+    'and the sweep ALARMS on it — the case the fuzz used to swallow')
+
+  // 2. exact match is healthy and clears the latch (positive evidence, unchanged semantics)
+  fakeLog = ENUM_SHORT.replace('registered 8 tool(s): ', 'registered 9 tool(s): mcp__ai_lab__fleet__fleet_x, ').replace(/^.*MCP server/, "2026-10-16 04:10:00,000 INFO tools.mcp_tool: MCP server") + '\n' + SUMMARY8.replace('registered 8', 'registered 9').replace('04:00:00,000', '04:10:00,000')
+  const h2 = await svcExact.getToolHealth('xi')
+  ok(h2.servedGroupTools === 5 && h2.healthy === true && h2.detail.includes('exact match'),
+    '5 group tools + 4 named built-ins = 9 registered reads healthy as an EXACT match')
+  const bx2 = emitted.length
+  await svcExact.sweepToolHealth()
+  ok(emitted.length === bx2 + 1 && emitted[bx2].severity === 'info' && emitted[bx2].message.includes('recovered'),
+    'recovery info fires — latch semantics untouched')
+
+  // 3. a legacy log with NO enumeration line falls back to the allowance and SAYS so
+  fakeLog = SUMMARY8
+  const h3 = await svcExact.getToolHealth('xi')
+  ok(h3.builtinsCounted === null && h3.servedGroupTools === null && h3.healthy === true,
+    'no enumeration line: falls back to the ±4 allowance rather than inventing an exact count')
+  ok(h3.detail.includes('allowance'),
+    'and the detail admits the check was approximate — an approximate pass must not read exact')
+
+  // 4. over-serving: 6 group tools against a group of 5 is a STALE SET, not a pass
+  fakeLog = ENUM_SHORT.replace('registered 8 tool(s): ', 'registered 10 tool(s): mcp__ai_lab__fleet__fleet_x, mcp__ai_lab__fleet__fleet_y, ') + '\n' + SUMMARY8.replace('registered 8', 'registered 10')
+  const h4 = await svcExact.getToolHealth('xi')
+  ok(h4.servedGroupTools === 6 && h4.healthy === false && h4.detail.includes('removed from the group'),
+    'serving MORE group tools than the group has reads as a stale set (old check passed +4 over)')
+  globalThis.fetch = exactFetchOrig
+
   console.log(`\n${n} assertions passed`)
   process.exit(0)
 }
