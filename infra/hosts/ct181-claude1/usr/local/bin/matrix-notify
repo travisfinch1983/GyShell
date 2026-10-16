@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""matrix-notify "message"   (or: echo "message" | matrix-notify)
+
+Sends a plain-text Matrix message to Travis in claude1's DM room, posted by the @claude1 bot. This
+replaces the old Telegram notices (Telegram retired for everything except Optimus, 2026-10-16).
+
+Credentials come from claude1's Matrix channel config: /root/.claude/channels/matrix/.env
+(MATRIX_HOMESERVER_URL, MATRIX_ACCESS_TOKEN, MATRIX_ROOM_IDS; the first room is used). Override the
+file with MATRIX_NOTIFY_ENV and the room with MATRIX_NOTIFY_ROOM.
+claude1's channel plugin ignores messages from its own bot, so a notice never loops back into the
+session as input.
+Exit 0 on success. On failure: exit 1, with the reason on stderr. Callers decide whether that's fatal.
+"""
+import json, os, sys, time, urllib.parse, urllib.request, uuid
+
+ENV = os.environ.get("MATRIX_NOTIFY_ENV", "/root/.claude/channels/matrix/.env")
+
+
+def main():
+    text = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else sys.stdin.read()
+    text = text.strip()
+    if not text:
+        print("matrix-notify: empty message", file=sys.stderr); return 1
+    try:
+        env = dict(l.strip().split("=", 1) for l in open(ENV) if "=" in l and not l.lstrip().startswith("#"))
+    except Exception as e:  # noqa: BLE001
+        print(f"matrix-notify: cannot read {ENV}: {e}", file=sys.stderr); return 1
+    hs, tok = env.get("MATRIX_HOMESERVER_URL", "").rstrip("/"), env.get("MATRIX_ACCESS_TOKEN", "")
+    room = os.environ.get("MATRIX_NOTIFY_ROOM") or env.get("MATRIX_ROOM_IDS", "").split(",")[0].strip()
+    if not (hs and tok and room):
+        print(f"matrix-notify: {ENV} lacks MATRIX_HOMESERVER_URL / MATRIX_ACCESS_TOKEN / MATRIX_ROOM_IDS", file=sys.stderr); return 1
+    url = f"{hs}/_matrix/client/v3/rooms/{urllib.parse.quote(room)}/send/m.room.message/{uuid.uuid4().hex}"
+    body = json.dumps({"msgtype": "m.text", "body": text[:30000]}).encode()
+    err = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, body, {"Content-Type": "application/json", "Authorization": f"Bearer {tok}"}, method="PUT")
+            with urllib.request.urlopen(req, timeout=20) as r:
+                if r.status == 200:
+                    return 0
+        except Exception as e:  # noqa: BLE001
+            err = e
+            time.sleep(2 * (attempt + 1))
+            continue
+    print(f"matrix-notify: send failed: {err}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

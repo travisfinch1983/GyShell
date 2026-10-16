@@ -1,0 +1,116 @@
+#!/bin/bash
+# Nightly commit+push of claude1's memory to private Gitea claude/claude1-memory.
+#
+# Design notes (earned 2026-08-25/26):
+#  - A secret committed here is expensive to remove: editing the file does NOT
+#    help, it takes a history rewrite + refs/original + reflog expire + gc, then a
+#    force re-push. So the scan is a HARD GATE — on a new match we do not commit at all.
+#  - MEMORY.md over ~24.4KB is silently TRUNCATED at load, so later entries never
+#    reach me. That's a correctness bug, not cosmetics: warn loudly, but don't block
+#    the commit (losing the work would be worse).
+#  - Quiet on success. A nightly job that always notifies gets ignored.
+set -uo pipefail
+
+REPO=/root/.claude/projects/-root/memory
+ALLOW=/etc/memory-git-sync/allowlist.sha256
+SCAN=/usr/local/bin/memory-secret-scan.py
+LOG=/var/log/memory-git-sync.log
+INBOX=/var/lib/fleet-forwarder/inbox/claude1.jsonl
+# The load cap is ~24985B; warning AT the cap is useless — truncation has already
+# happened and entries past it never reached me. Warn at 80% so there is runway.
+MEMORY_MD_CAP=24985
+MEMORY_MD_WARN=19988
+
+log(){ echo "$(date -Is) $*" >> "$LOG"; echo "$*"; }
+
+notify(){ # $1 = message; goes to Travis AND my own inbox
+  local msg="$1"
+  # Matrix DM (claude1 bot -> Travis). Telegram retired 2026-10-16.
+  /usr/local/bin/matrix-notify "$msg" >/dev/null 2>>"$LOG" || log "WARN matrix-notify failed (notice still in inbox)"
+  if [ -d "$(dirname "$INBOX")" ]; then
+    python3 -c "
+import json,sys,time
+open('$INBOX','a').write(json.dumps({'from':'memory-git-sync','ts':time.strftime('%Y-%m-%dT%H:%M:%S'),
+ 'busSeq':None,'body':sys.argv[1],'read':False})+'\n')" "$msg" 2>/dev/null || true
+  fi
+}
+
+cd "$REPO" || { log "FATAL: repo missing"; exit 1; }
+
+# --allow-current: mark every current credential-shaped match as benign
+if [ "${1:-}" = "--allow-current" ]; then
+  mkdir -p "$(dirname "$ALLOW")"
+  python3 - "$REPO" "$ALLOW" <<'PY'
+import sys, importlib.util
+spec = importlib.util.spec_from_file_location("s", "/usr/local/bin/memory-secret-scan.py")
+m = spec.loader.load_module() if False else importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+root, allow = sys.argv[1], sys.argv[2]
+found = m.scan(root)
+have = m.load_allow()
+new = {h for _, _, h, _ in found} - have
+with open(allow, "a") as fh:
+    for _, _, h, _ in found:
+        if h in new:
+            fh.write(f"{h}  # allowlisted by --allow-current\n"); new.discard(h)
+print(f"allowlisted {len(found)} match(es)")
+PY
+  chmod 600 "$ALLOW"; exit 0
+fi
+
+# 1. nothing changed -> silent success
+if [ -z "$(git status --porcelain)" ]; then
+  log "no changes"; exit 0
+fi
+
+CHANGED=$(git status --porcelain | wc -l)
+
+# 2. HARD GATE: no new secrets
+if ! OUT=$("$SCAN" "$REPO" 2>&1); then
+  log "BLOCKED by secret scan"
+  notify "🛑 memory-git-sync BLOCKED — a new credential-shaped string appeared in memory. NOT committed, NOT pushed.
+
+$OUT
+
+Fix the file, or if benign run:  memory-git-sync --allow-current"
+  exit 2
+fi
+
+# 3. MEMORY.md size (warn, do not block)
+SZ=$(stat -c %s MEMORY.md 2>/dev/null || echo 0)
+PCT=$(( SZ * 100 / MEMORY_MD_CAP ))
+WARN=""
+if [ "$SZ" -ge "$MEMORY_MD_CAP" ]; then
+  WARN="🛑 MEMORY.md is ${SZ}B (${PCT}% of the ${MEMORY_MD_CAP}B cap) — it is ALREADY being SILENTLY TRUNCATED at load; entries past the cut are not reaching me. Condense into topic indexes NOW."
+  log "$WARN"
+elif [ "$SZ" -ge "$MEMORY_MD_WARN" ]; then
+  ROOM=$(( (MEMORY_MD_CAP - SZ) / 218 ))
+  WARN="⚠ MEMORY.md is ${SZ}B (${PCT}% of cap) — room for about ${ROOM} more entries before it truncates silently. Push new detail into a TOPIC INDEX rather than adding index lines."
+  log "$WARN"
+fi
+
+# 4. commit
+SUMMARY=$(git status --porcelain | awk '{print $1" "$2}' | head -12)
+git add -A
+if ! git commit -q -m "nightly: memory sync $(date +%Y-%m-%d)
+
+${CHANGED} file(s) changed.
+${SUMMARY}
+${WARN}
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" 2>>"$LOG"; then
+  log "commit failed"; notify "🛑 memory-git-sync: commit FAILED (see $LOG)"; exit 1
+fi
+SHA=$(git rev-parse --short HEAD)
+
+# 5. push
+if ! git push -q origin master 2>>"$LOG"; then
+  log "push failed (commit $SHA is local)"
+  notify "🛑 memory-git-sync: committed $SHA but PUSH FAILED. Gitea 10.0.0.146:3000 reachable? Commit is safe locally."
+  exit 1
+fi
+
+log "pushed $SHA ($CHANGED files)"
+[ -n "$WARN" ] && notify "memory-git-sync: pushed $SHA ($CHANGED files).
+$WARN"
+exit 0
