@@ -956,6 +956,23 @@ export function invalidateModelCache() {
  * The @N suffix uses a 1-based occurrence counter (not the raw slot number)
  * so clients see a clean sequence regardless of slot gaps.
  */
+// A MISS must not be answered from a stale map (claude1, 2026-10-16). The map is rebuilt at most
+// every 30 s, so a model that just came up (a hot-swap, a restart, a resume) stayed "not reachable"
+// for up to 30 s AFTER it was serving. That was measured: llama-server ready at +2.6 s, first routed
+// request at +31 s. On a miss, rebuild once (rate-limited) and look again before declaring the
+// model unreachable. A model that is really down still gets its 503; it just costs one refresh.
+const MISS_REFRESH_MIN_MS = 2_000;
+async function lookupModelFresh(modelId) {
+  let cache = await refreshModelCache();
+  let svc = cache.byModel.get(modelId) || null;
+  if (!svc && Date.now() - modelCache.updatedAt > MISS_REFRESH_MIN_MS) {
+    modelCache.updatedAt = 0;
+    cache = await refreshModelCache();
+    svc = cache.byModel.get(modelId) || null;
+  }
+  return { cache, svc };
+}
+
 async function refreshModelCache() {
   if (Date.now() - modelCache.updatedAt < MODEL_CACHE_TTL) return modelCache;
 
@@ -1329,6 +1346,44 @@ function unknownModelResponse(res, name) {
   });
 }
 
+// ─── Where the backup must NEVER apply (claude1, 2026-10-16) ────────────────────────────────
+// Found benchmarking the Qwen-Image prompt enhancers: while a PE model reloaded (~28 s from the
+// NAS), its requests, reference IMAGES included, were answered by the external backup
+// (deepseek-flash). That's a privacy leak for agents that send users' photos, and the answer is
+// useless anyway, because a chat model doesn't speak the PE format. The backup still covers chat
+// agents; these three cases opt out and get the normal 503 instead:
+//   1. the request carries image content and the backup is EXTERNAL: images stay local, always;
+//   2. the model matches support-models fallback_model.exclude (glob list). The default covers the
+//      Qwen-Image prompt enhancers;
+//   3. the caller sends `X-AILab-No-Fallback: 1` (qwen-pe and the ComfyUI PE node do).
+const DEFAULT_FALLBACK_EXCLUDE = ['qwen-image-*-pe-*']
+function fallbackExcludePatterns() {
+  try {
+    const raw = JSON.parse(readFileSync(SUPPORT_MODELS_FILE, 'utf-8'))
+    const ex = raw?.fallback_model?.exclude
+    if (Array.isArray(ex)) return ex.map(String)
+  } catch {}
+  return DEFAULT_FALLBACK_EXCLUDE
+}
+function globMatch(pat, name) {
+  const rx = new RegExp('^' + String(pat).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i')
+  return rx.test(String(name || ''))
+}
+function requestHasImage(parsed) {
+  const msgs = Array.isArray(parsed?.messages) ? parsed.messages : []
+  return msgs.some((m) => Array.isArray(m?.content) && m.content.some((c) => c && (c.type === 'image_url' || c.type === 'input_image' || c.type === 'image')))
+}
+/** Why the backup must not be used for this request, or '' when it may. */
+function fallbackBlockedReason(req, modelId, parsed, fbKind) {
+  const h = String(req?.headers?.['x-ailab-no-fallback'] || '').toLowerCase()
+  if (h === '1' || h === 'true' || h === 'yes') return 'caller sent X-AILab-No-Fallback'
+  const bare = String(modelId || '').replace(/@\d+$/, '')
+  const pat = fallbackExcludePatterns().find((p) => globMatch(p, bare))
+  if (pat) return `model matches fallback_model.exclude '${pat}'`
+  if (fbKind === 'external' && requestHasImage(parsed)) return 'request contains images and the backup is an external API (images never leave the lab)'
+  return ''
+}
+
 /** Resolve the configured backup to something reachable, or null. Never returns the model that
  *  was just found unreachable (that would loop), and never guesses at a substitute. */
 function resolveFallbackTarget(cache, requestedModel) {
@@ -1394,8 +1449,7 @@ async function handleModelRouting(req, res, path) {
 
   let svc = null;
   if (modelId) {
-    const cache = await refreshModelCache();
-    svc = cache.byModel.get(modelId) || null;
+    svc = (await lookupModelFresh(modelId)).svc;
   }
 
   // Fall back to slot 1
@@ -1412,10 +1466,19 @@ async function handleModelRouting(req, res, path) {
     const cache = await refreshModelCache();
     if (!isKnownModelName(cache, modelId)) return unknownModelResponse(res, modelId);
     const fb = resolveFallbackTarget(cache, modelId);
+    let parsed = null;
+    if (fb) { try { parsed = JSON.parse(body.toString()); } catch {} }
+    const blocked = fb ? fallbackBlockedReason(req, modelId, parsed, fb.kind) : '';
+    if (fb && blocked) {
+      console.warn(`[proxy] '${modelId}' unreachable — backup '${fb.model}' NOT used: ${blocked}`);
+      return res.status(503).json({
+        error: `Model '${modelId}' is not reachable (offline or still loading). The backup model was deliberately not used: ${blocked}.`,
+        hint: 'Retry shortly if the model is loading, or launch it.',
+        requestedModel: modelId, retryable: true,
+      });
+    }
     if (fb) {
       markFallback(res, modelId, fb.model, req);
-      let parsed = null;
-      try { parsed = JSON.parse(body.toString()); } catch {}
       if (parsed) {
         parsed.model = fb.kind === 'external' ? fb.ext.upstreamModel : fb.model.replace(/@\d+$/, '');
         if (fb.kind === 'external') return forwardToExternalSource(res, fb.ext.source, fb.ext.upstreamModel, parsed);
@@ -1479,6 +1542,7 @@ async function handleChatWithTools(req, res) {
       return forwardToExternalSource(res, ext.source, ext.upstreamModel, parsed);
     }
     svc = cache.byModel.get(parsed.model) || null;
+    if (!svc) svc = (await lookupModelFresh(parsed.model)).svc;   // fresh look before "unreachable"
     if (svc && parsed.model.includes("@")) {
       parsed.model = parsed.model.replace(/@\d+$/, "");
     }
@@ -1493,6 +1557,15 @@ async function handleChatWithTools(req, res) {
     const cache2 = await refreshModelCache();
     if (!isKnownModelName(cache2, parsed.model)) return unknownModelResponse(res, parsed.model);
     const fb = resolveFallbackTarget(cache2, parsed.model);
+    const blocked = fb ? fallbackBlockedReason(req, parsed.model, parsed, fb.kind) : '';
+    if (fb && blocked) {
+      console.warn(`[proxy] '${parsed.model}' unreachable — backup '${fb.model}' NOT used: ${blocked}`);
+      return res.status(503).json({
+        error: `Model '${parsed.model}' is not reachable (offline or still loading). The backup model was deliberately not used: ${blocked}.`,
+        hint: 'Retry shortly if the model is loading, or launch it.',
+        requestedModel: parsed.model, retryable: true,
+      });
+    }
     if (fb) {
       markFallback(res, parsed.model, fb.model, req);
       if (fb.kind === 'external') {
