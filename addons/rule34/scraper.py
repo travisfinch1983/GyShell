@@ -18,6 +18,29 @@ API_BASE = "https://api.rule34.xxx/index.php"
 MAX_429_RETRIES = 5
 
 
+# Image hosts that refuse hotlinks: without their own site as Referer they 302
+# to an HTML "hotlink" page (gelbooru: img*.gelbooru.com -> gelbooru.com/hotlink.php),
+# which used to be saved to disk as if it were the image.
+_HOTLINK_REFERERS = {
+    "gelbooru.com": "https://gelbooru.com/",
+}
+
+
+def media_headers(url: str) -> dict:
+    """Extra request headers needed to fetch a media URL (thumb, sample or file)."""
+    host = (urlparse(url).hostname or "").lower()
+    for domain, referer in _HOTLINK_REFERERS.items():
+        if host == domain or host.endswith("." + domain):
+            return {"Referer": referer}
+    return {}
+
+
+def is_html_response(resp: httpx.Response) -> bool:
+    """True when a media fetch came back as a web page instead of media."""
+    return resp.headers.get("content-type", "").split(";")[0].strip().lower() in (
+        "text/html", "application/xhtml+xml")
+
+
 def _rm_partial(path: str) -> None:
     """Remove a partial/failed download file, ignoring errors."""
     if path and os.path.exists(path):
@@ -335,7 +358,7 @@ class Rule34Client:
             await self._rate_limit()
             try:
                 os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-                async with client.stream("GET", url) as resp:
+                async with client.stream("GET", url, headers=media_headers(url)) as resp:
                     if resp.status_code == 429:
                         last_detail = "HTTP 429 (rate limited)"
                         wait = min(2.0 * (2 ** attempt), 30.0)
@@ -346,6 +369,9 @@ class Rule34Client:
                         await asyncio.sleep(wait)
                         continue
                     resp.raise_for_status()
+                    if is_html_response(resp):
+                        # A hotlink/challenge page, not the file. Don't save it.
+                        return ("transient", f"got an HTML page instead of media (final URL {resp.url})")
                     rate_bps = float(await get_setting("download_bandwidth_limit_kbps") or "0") * 1024.0
                     with open(dest_path, "wb") as f:
                         async for chunk in resp.aiter_bytes(chunk_size=65536):

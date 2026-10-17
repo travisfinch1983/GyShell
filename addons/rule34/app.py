@@ -48,6 +48,7 @@ from db import (
 )
 from sites import SITES, site_status, danbooru_translate
 from worker import worker
+from scraper import media_headers, is_html_response
 
 # Settings whose values are SECRETS: never returned by the settings view, and
 # an empty submit never overwrites a stored value (the form round-trips).
@@ -545,6 +546,16 @@ async def api_retry_failed():
 # --- Media routes ---
 
 
+def _is_html_file(path: str) -> bool:
+    """A saved "image" that is really a web page (old hotlink-page downloads)."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(512).lstrip().lower()
+    except OSError:
+        return False
+    return head.startswith((b"<!doctype html", b"<html", b"<head"))
+
+
 @app.get("/media/thumb/{post_id}")
 async def media_thumb(post_id: int):
     post = await get_post(post_id)
@@ -556,8 +567,11 @@ async def media_thumb(post_id: int):
     # Proxy the thumbnail from rule34
     async with httpx.AsyncClient(follow_redirects=True) as client:
         try:
-            resp = await client.get(preview_url)
+            resp = await client.get(preview_url, headers=media_headers(preview_url))
             resp.raise_for_status()
+            if is_html_response(resp):
+                logger.warning(f"thumb {post_id}: got an HTML page from {resp.url}")
+                return Response(status_code=502)
             content_type = resp.headers.get("content-type", "image/jpeg")
             return Response(content=resp.content, media_type=content_type)
         except Exception:
@@ -573,10 +587,17 @@ async def media_full(post_id: int):
     local_path = post.get("local_path")
     if post.get("downloaded") == 1 and local_path:
         full_path = os.path.join(storage_path, local_path)
-        if os.path.isfile(full_path) and os.path.getsize(full_path) > 0:
+        if os.path.isfile(full_path) and os.path.getsize(full_path) > 0 and not _is_html_file(full_path):
             return FileResponse(full_path)
-        # Marked downloaded but the file is gone/empty — re-queue it and fall
-        # through to serving the original from rule34 so the viewer isn't broken.
+        # Marked downloaded but the file is gone/empty/an HTML page — re-queue it
+        # and fall through to serving the original so the viewer isn't broken.
+        # The worker skips files that already exist, so a bad file must go first.
+        if os.path.isfile(full_path) and _is_html_file(full_path):
+            logger.warning(f"full {post_id}: {local_path} is an HTML page, removing and re-queueing")
+            try:
+                os.remove(full_path)
+            except OSError as e:
+                logger.warning(f"full {post_id}: could not remove {full_path}: {e}")
         try:
             await mark_for_redownload(post_id)
         except Exception:
@@ -588,10 +609,14 @@ async def media_full(post_id: int):
         return Response(status_code=404)
     client = httpx.AsyncClient(follow_redirects=True, timeout=60)
     try:
-        req = client.build_request("GET", remote)
+        req = client.build_request("GET", remote, headers=media_headers(remote))
         resp = await client.send(req, stream=True)
         resp.raise_for_status()
-    except Exception:
+        if is_html_response(resp):
+            await resp.aclose()
+            raise ValueError(f"got an HTML page from {resp.url}")
+    except Exception as e:
+        logger.warning(f"full {post_id}: remote fetch failed: {e}")
         await client.aclose()
         return Response(status_code=502)
     media_type = resp.headers.get("content-type", "image/jpeg")
