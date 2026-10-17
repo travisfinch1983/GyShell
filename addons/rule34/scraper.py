@@ -35,6 +35,11 @@ def media_headers(url: str) -> dict:
     return {}
 
 
+def _is_gelbooru(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return host == "gelbooru.com" or host.endswith(".gelbooru.com")
+
+
 def is_html_response(resp: httpx.Response) -> bool:
     """True when a media fetch came back as a web page instead of media."""
     return resp.headers.get("content-type", "").split(";")[0].strip().lower() in (
@@ -154,6 +159,13 @@ class Rule34Client:
         self._clients: dict[str, httpx.AsyncClient] = {}
         self._last_request_time: float = 0
         self.last_api_error: dict | None = None
+        # gelbooru's image CDN answers false 404s once one client pulls hard
+        # (12 concurrent downloads did it; the same URLs were 200 once idle), so
+        # its downloads get their own small concurrency cap, pacing and a cooldown.
+        self._gb_sem: asyncio.Semaphore | None = None
+        self._gb_sem_size = 0
+        self._gb_last = 0.0
+        self._gb_cooldown_until = 0.0
 
     def _client_for(self, proxy: str = "") -> httpx.AsyncClient:
         c = self._clients.get(proxy)
@@ -340,7 +352,35 @@ class Rule34Client:
             logger.warning(f"tag type fetch failed for '{name}': {e}")
             return None
 
+    async def _gelbooru_slot(self) -> asyncio.Semaphore:
+        size = max(1, int(await get_setting("gelbooru_download_concurrency") or "2"))
+        if self._gb_sem is None or size != self._gb_sem_size:
+            self._gb_sem, self._gb_sem_size = asyncio.Semaphore(size), size
+        return self._gb_sem
+
+    async def _gelbooru_pace(self):
+        loop = asyncio.get_event_loop()
+        wait = self._gb_cooldown_until - loop.time()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        rps = float(await get_setting("gelbooru_download_rps") or "2")
+        gap = (1.0 / rps) - (loop.time() - self._gb_last) if rps > 0 else 0
+        if gap > 0:
+            await asyncio.sleep(gap)
+        self._gb_last = loop.time()
+
     async def download_file(self, url: str, dest_path: str) -> tuple[str, str]:
+        if _is_gelbooru(url):
+            async with await self._gelbooru_slot():
+                await self._gelbooru_pace()
+                status, detail = await self._download_file(url, dest_path)
+                if "404" in detail:
+                    cool = float(await get_setting("gelbooru_404_cooldown_sec") or "30")
+                    self._gb_cooldown_until = asyncio.get_event_loop().time() + cool
+                return status, detail
+        return await self._download_file(url, dest_path)
+
+    async def _download_file(self, url: str, dest_path: str) -> tuple[str, str]:
         """Download a file from URL to dest_path.
 
         Returns (status, detail):
@@ -359,6 +399,16 @@ class Rule34Client:
             try:
                 os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                 async with client.stream("GET", url, headers=media_headers(url)) as resp:
+                    if resp.status_code >= 400 or is_html_response(resp):
+                        # Read the (small) error/HTML body first: closing a response
+                        # with an unread body makes httpx DROP the connection instead
+                        # of returning it to the pool, so every failed download cost a
+                        # new TLS connection plus a DNS lookup (enough to trip the LAN
+                        # resolver's per-client rate limit and take CT152's DNS down).
+                        try:
+                            await resp.aread()
+                        except Exception:
+                            pass
                     if resp.status_code == 429:
                         last_detail = "HTTP 429 (rate limited)"
                         wait = min(2.0 * (2 ** attempt), 30.0)
@@ -368,6 +418,11 @@ class Rule34Client:
                         )
                         await asyncio.sleep(wait)
                         continue
+                    if resp.status_code == 404 and _is_gelbooru(url):
+                        # gelbooru's CDN answers 404 for files that exist when it is
+                        # being hit hard (2961 false 404s on 2026-10-17, all 200 later).
+                        # Retry with backoff; the requeue cap still ends real 404s.
+                        return ("transient", "HTTP 404 from gelbooru (often false; retrying)")
                     resp.raise_for_status()
                     if is_html_response(resp):
                         # A hotlink/challenge page, not the file. Don't save it.

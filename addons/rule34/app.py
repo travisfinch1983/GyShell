@@ -55,7 +55,24 @@ from scraper import media_headers, is_html_response
 SECRET_SETTINGS = {"danbooru_api_key", "gelbooru_api_key"}
 
 logging.basicConfig(level=logging.INFO)
+# httpx/httpcore log every request URL at INFO, and booru API URLs carry
+# api_key/user_id query params, so those went to journald in the clear.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+# One pooled client for the thumb/full proxies. A client per request meant a new
+# TCP+TLS connection and a DNS lookup for every thumbnail in the grid.
+_media_client: httpx.AsyncClient | None = None
+
+
+def media_client() -> httpx.AsyncClient:
+    global _media_client
+    if _media_client is None or _media_client.is_closed:
+        _media_client = httpx.AsyncClient(
+            follow_redirects=True, timeout=httpx.Timeout(60.0, connect=10.0),
+            limits=httpx.Limits(max_connections=32, max_keepalive_connections=16))
+    return _media_client
 
 
 @asynccontextmanager
@@ -523,6 +540,7 @@ async def api_worker_pause(request: Request):
         worker.pause()
     else:
         worker.resume()
+    await update_settings({"worker_paused": "1" if worker.paused else "0"})
     return JSONResponse({"ok": True, "paused": worker.paused})
 
 
@@ -565,7 +583,8 @@ async def media_thumb(post_id: int):
     if not preview_url:
         return Response(status_code=404)
     # Proxy the thumbnail from rule34
-    async with httpx.AsyncClient(follow_redirects=True) as client:
+    if True:
+        client = media_client()
         try:
             resp = await client.get(preview_url, headers=media_headers(preview_url))
             resp.raise_for_status()
@@ -574,7 +593,8 @@ async def media_thumb(post_id: int):
                 return Response(status_code=502)
             content_type = resp.headers.get("content-type", "image/jpeg")
             return Response(content=resp.content, media_type=content_type)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"thumb {post_id}: fetch failed: {e}")
             return Response(status_code=502)
 
 
@@ -607,17 +627,17 @@ async def media_full(post_id: int):
     remote = post.get("file_url") or post.get("sample_url")
     if not remote:
         return Response(status_code=404)
-    client = httpx.AsyncClient(follow_redirects=True, timeout=60)
+    client = media_client()
     try:
         req = client.build_request("GET", remote, headers=media_headers(remote))
         resp = await client.send(req, stream=True)
         resp.raise_for_status()
         if is_html_response(resp):
+            await resp.aread()
             await resp.aclose()
             raise ValueError(f"got an HTML page from {resp.url}")
     except Exception as e:
         logger.warning(f"full {post_id}: remote fetch failed: {e}")
-        await client.aclose()
         return Response(status_code=502)
     media_type = resp.headers.get("content-type", "image/jpeg")
 
@@ -627,6 +647,5 @@ async def media_full(post_id: int):
                 yield chunk
         finally:
             await resp.aclose()
-            await client.aclose()
 
     return StreamingResponse(_body(), media_type=media_type)

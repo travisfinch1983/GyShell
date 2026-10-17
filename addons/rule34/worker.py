@@ -91,6 +91,11 @@ class Worker:
 
     async def start(self):
         self.running = True
+        # A pause must survive a restart: it is used to stop a worker that is
+        # hurting something (2026-10-17: knocking out CT152's DNS).
+        if (await get_setting("worker_paused")) == "1":
+            self.pause()
+            logger.info("Worker starting PAUSED (worker_paused=1)")
         self._scrape_task = asyncio.create_task(self._scrape_loop())
         self._download_task = asyncio.create_task(self._download_loop())
         self._agg_task = asyncio.create_task(self._agg_refresh_loop())
