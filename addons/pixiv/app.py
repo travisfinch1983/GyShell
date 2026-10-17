@@ -19,6 +19,11 @@ from pixiv_client import status as auth_status
 from worker import worker
 
 logging.basicConfig(level=logging.INFO)
+# httpx logs every request URL at INFO. On the rule34 addon that flooded
+# journald (~20k lines/hour) and wrote booru api_keys into the log; pixiv
+# URLs carry no secrets (auth rides a header) but the flood is the same.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # The refresh token is a SECRET: the view returns a set/unset flag and an
@@ -179,14 +184,36 @@ async def api_retry_failed():
 
 # ── media (pximg needs the Referer, so the browser can't load it directly) ───
 
+_media_client: httpx.AsyncClient | None = None
+
+
+def media_client() -> httpx.AsyncClient:
+    """One pooled client for all pximg proxying. A client per request meant a
+    new TLS connection (and a DNS lookup) per image — the pattern that let the
+    rule34 addon trip the LAN resolver's per-client rate limit and take down
+    CT152's DNS. keepalive_expiry outlives gaps between page loads."""
+    global _media_client
+    if _media_client is None or _media_client.is_closed:
+        _media_client = httpx.AsyncClient(
+            follow_redirects=True, timeout=httpx.Timeout(60.0, connect=10.0),
+            headers=PXIMG_HEADERS,
+            limits=httpx.Limits(max_connections=16, max_keepalive_connections=8,
+                                keepalive_expiry=60.0))
+    return _media_client
+
+
 async def _proxy_stream(url: str):
-    client = httpx.AsyncClient(follow_redirects=True, timeout=60, headers=PXIMG_HEADERS)
+    client = media_client()
     try:
         req = client.build_request("GET", url)
         resp = await client.send(req, stream=True)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            # Read the small error body: closing an unread streamed response
+            # makes httpx drop the connection instead of pooling it.
+            await resp.aread()
+            await resp.aclose()
+            return None
     except Exception:
-        await client.aclose()
         return None
 
     async def body():
@@ -195,7 +222,6 @@ async def _proxy_stream(url: str):
                 yield chunk
         finally:
             await resp.aclose()
-            await client.aclose()
 
     return StreamingResponse(body(), media_type=resp.headers.get("content-type", "image/jpeg"))
 
