@@ -17,8 +17,13 @@ Claude Code --stdio--> mcp_cheatengine.py --TCP--> socat :9876 --tailnet--> ce_t
   so the run_command/shell_execute tools stay disabled.
 - **Forwarder:** CT110 `ce-mcp-forward.service` (copy in `infra/hosts/ct110-headscale/`). claude1 isn't on
   the tailnet, so CT110 (a tailnet node) relays. If legion's tailnet IP changes, edit that unit.
-- **Windows side:** run `setup-ce-relay.ps1` (v2, safe to re-run) from an admin PowerShell. Each session: load
-  `ce_mcp_bridge.lua` in CE (File > Execute Script), then start the "CE MCP relay" desktop shortcut.
+- **Windows side:** run `setup-ce-relay.ps1` (v2, safe to re-run) from an admin PowerShell. Each session:
+  attach CE to the game, open the Lua Engine (Ctrl+Alt+L) and Execute
+  `dofile([[C:\cheatengine-mcp-bridge\MCP_Server\ce_mcp_bridge.lua]])` (Travis's CE has no File > Execute Script,
+  and **File > Open on the .lua attaches CE to the FILE instead of the game**), wait for `MCP Server Listening`,
+  then start the "CE MCP relay" desktop shortcut.
+- **Diagnose:** `python C:\cheatengine-mcp-bridge\MCP_Server\ce_tcp_relay.py --selftest` pings CE locally, no network.
+  No pipe (Errno 2) = the bridge isn't loaded. Verified end to end 2026-10-18: ping 0.175 s over the tailnet.
 - Latency: legion reaches CT110 through DERP relay "sea" (~70 ms per round trip), so call-heavy scans are slowish.
 
 ## Security

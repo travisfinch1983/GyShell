@@ -12,6 +12,7 @@ restrict who can reach the port with Windows Firewall.
 from __future__ import annotations
 
 import argparse
+import json
 import socket
 import socketserver
 import struct
@@ -73,7 +74,45 @@ def open_pipe(attempts: int = 20):
             last = exc
             time.sleep(0.25)
     raise ConnectionError(
-        f"Could not open {PIPE_NAME}: {last}. Is ce_mcp_bridge.lua loaded in Cheat Engine?")
+        f"Could not open {PIPE_NAME}: {last}. Either ce_mcp_bridge.lua isn't loaded in Cheat Engine, "
+        "or another connection still holds the pipe (the bridge serves one client at a time).")
+
+
+def exchange(pipe, req_header: bytes, req_body: bytes):
+    """One request/response round trip on the pipe. Header and body are written as two
+    writes, exactly like upstream, in case the pipe is in message mode."""
+    method = "?"
+    try:
+        method = json.loads(req_body).get("method", "?")
+    except ValueError:
+        pass
+    t0 = time.time()
+    pipe.write(req_header)
+    pipe.write(req_body)
+    log(f"-> {method} ({len(req_body)} bytes) sent to Cheat Engine, waiting for reply...")
+    resp_header = read_pipe_exact(pipe, 4)
+    resp_len = struct.unpack("<I", resp_header)[0]
+    validate_frame_size(resp_len, "response")
+    resp_body = read_pipe_exact(pipe, resp_len)
+    log(f"<- {method} reply {resp_len} bytes in {time.time() - t0:.2f}s")
+    return resp_header, resp_body
+
+
+def selftest() -> int:
+    """Talk to Cheat Engine locally (no network): open the pipe and send one ping."""
+    try:
+        import win32file  # noqa: F401
+        log("pywin32 import: OK (not needed by this relay)")
+    except Exception as exc:
+        log(f"pywin32 import fails (not needed by this relay): {exc!r}")
+    log(f"Opening {PIPE_NAME} ...")
+    pipe = open_pipe()
+    log("Pipe opened. Sending ping (if this hangs, Cheat Engine isn't answering: check its Lua window).")
+    body = json.dumps({"jsonrpc": "2.0", "method": "ping", "params": {}, "id": 1}).encode()
+    _, resp = exchange(pipe, struct.pack("<I", len(body)), body)
+    log(f"Reply: {resp[:300]!r}")
+    pipe.close()
+    return 0
 
 
 class RelayHandler(socketserver.BaseRequestHandler):
@@ -88,6 +127,7 @@ class RelayHandler(socketserver.BaseRequestHandler):
         log(f"TCP client connected: {peer}")
         try:
             self.pipe = open_pipe()
+            log(f"{peer}: Cheat Engine pipe opened")
             while True:
                 req_header = read_socket_exact(self.request, 4)
                 if req_header is None:
@@ -98,12 +138,7 @@ class RelayHandler(socketserver.BaseRequestHandler):
                 if req_body is None:
                     raise ConnectionError("TCP client disconnected before request body.")
 
-                self.pipe.write(req_header + req_body)
-
-                resp_header = read_pipe_exact(self.pipe, 4)
-                resp_len = struct.unpack("<I", resp_header)[0]
-                validate_frame_size(resp_len, "response")
-                resp_body = read_pipe_exact(self.pipe, resp_len)
+                resp_header, resp_body = exchange(self.pipe, req_header, req_body)
                 self.request.sendall(resp_header + resp_body)
         except (ConnectionError, OSError) as exc:
             log(f"Connection ended for {peer}: {exc}")
@@ -128,12 +163,16 @@ def main() -> int:
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--pipe", default=PIPE_NAME)
+    parser.add_argument("--selftest", action="store_true", help="ping Cheat Engine locally and exit")
     args = parser.parse_args()
     PIPE_NAME = args.pipe
 
     if sys.platform != "win32":
         log("This relay must run on Windows (it opens a Windows named pipe).")
         return 1
+
+    if args.selftest:
+        return selftest()
 
     log(f"Listening on {args.host}:{args.port}; forwarding to {PIPE_NAME}")
     with RelayServer((args.host, args.port), RelayHandler) as server:
