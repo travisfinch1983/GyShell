@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { Bot, FileText, Plus, Save, Undo2, UserRound, X } from 'lucide-react'
+import { Bot, CheckSquare, FileText, Plus, Save, Square, Undo2, UserRound, X } from 'lucide-react'
 import { hermesAgentsStore as store } from '../../stores/HermesAgentsStore'
 import { hermesApi } from '../../stores/hermesApi'
 import { AgentEditor } from './AgentEditor'
+import { AgentBulkEditor } from './AgentBulkEditor'
 import { AgentDocs, InlineDocEditor } from './AgentDocs'
 import styles from './Agents.module.scss'
 
@@ -252,6 +253,10 @@ const DocTemplatesView: React.FC = () => {
  */
 export const AgentsSettings: React.FC = observer(() => {
   const [active, setActive] = useState<string>(NEW)
+  // Bulk edit (Travis 2026-10-18): Ctrl/Cmd/Shift-click badges, or "Select multiple" mode,
+  // builds a selection; 2+ selected agents open the bulk Model & behavior editor.
+  const [multi, setMulti] = useState<string[]>([])
+  const [multiMode, setMultiMode] = useState(false)
 
   useEffect(() => {
     void store.refresh().then(() => {
@@ -265,24 +270,60 @@ export const AgentsSettings: React.FC = observer(() => {
     setActive(visibleAgents[0] ?? NEW)
   }
 
+  const bulk = multi.length >= 2
+  const onBadge = (id: string, e: React.MouseEvent) => {
+    if (multiMode || e.ctrlKey || e.metaKey || e.shiftKey) {
+      e.preventDefault()
+      // Ctrl/Shift-click extends from the agent you're looking at; "Select multiple" mode
+      // starts from an empty selection.
+      const base = multi.length ? multi : !multiMode && visibleAgents.includes(active) ? [active] : []
+      const next = base.includes(id) ? base.filter((x) => x !== id) : [...base, id]
+      setMulti(next)
+      // Down to one agent: that's just the normal single editor again.
+      if (next.length === 1) setActive(next[0])
+      return
+    }
+    setMulti([])
+    setActive(id)
+  }
+  const leaveMulti = () => { setMulti([]); setMultiMode(false) }
+
   return (
     <div className={styles.settingsBody}>
       <div className={styles.tabs}>
-        <button className={`${styles.tab} ${active === TEMPLATES ? styles.tabActive : ''}`} onClick={() => setActive(TEMPLATES)}>
+        <button className={`${styles.tab} ${active === TEMPLATES && !bulk ? styles.tabActive : ''}`} onClick={() => { leaveMulti(); setActive(TEMPLATES) }}>
           <FileText size={13} /> Agent Defaults
         </button>
         <span className={styles.tabDivider} />
-        {visibleAgents.map((id) => (
-          <button key={id} className={`${styles.tab} ${active === id ? styles.tabActive : ''}`} onClick={() => setActive(id)}>
-            <Bot size={13} /> {store.specs.get(id)?.displayName ?? id}
-          </button>
-        ))}
-        <button className={`${styles.tab} ${active === NEW ? styles.tabActive : ''}`} onClick={() => setActive(NEW)}>
+        {visibleAgents.map((id) => {
+          const picked = multiMode || bulk ? multi.includes(id) : active === id
+          return (
+            <button
+              key={id}
+              className={`${styles.tab} ${picked ? styles.tabActive : ''}`}
+              title="Ctrl/Shift-click to select several agents and bulk-edit their Model & behavior settings"
+              onClick={(e) => onBadge(id, e)}
+            >
+              {multiMode ? (picked ? <CheckSquare size={13} /> : <Square size={13} />) : <Bot size={13} />} {store.specs.get(id)?.displayName ?? id}
+            </button>
+          )
+        })}
+        <button className={`${styles.tab} ${active === NEW && !bulk ? styles.tabActive : ''}`} onClick={() => { leaveMulti(); setActive(NEW) }}>
           <Plus size={13} /> New agent
+        </button>
+        <span className={styles.tabDivider} />
+        <button
+          className={`${styles.tab} ${multiMode ? styles.tabActive : ''}`}
+          title="Pick several agents to bulk-edit their Model & behavior settings (or Ctrl/Shift-click badges)"
+          onClick={() => (multiMode ? leaveMulti() : setMultiMode(true))}
+        >
+          <CheckSquare size={13} /> {multiMode ? `Done selecting${multi.length ? ` (${multi.length})` : ''}` : 'Select multiple'}
         </button>
       </div>
       {store.error && <div className={styles.errorBar}>{store.error}</div>}
-      {active === TEMPLATES ? (
+      {bulk ? (
+        <AgentBulkEditor agentIds={multi} onClearSelection={leaveMulti} />
+      ) : active === TEMPLATES ? (
         <DocTemplatesView />
       ) : active === NEW ? (
         <AgentEditor key={NEW} onSaved={(id) => setActive(id)} />
