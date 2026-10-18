@@ -5,16 +5,21 @@ Upstream: https://github.com/miscusi-peek/cheatengine-mcp-bridge, pinned at comm
 `infra/patches/cheatengine-mcp-bridge/ce_tcp_relay.py` (plain-Python pipe I/O, no pywin32).
 
 ```
-claude1 (CT181)                    CT110 headscale (10.0.0.67)             legion (Travis's PC, tailnet 100.64.0.2)
-Claude Code --stdio--> mcp_cheatengine.py --TCP--> socat :9876 --tailnet--> ce_tcp_relay.py :9876 --pipe--> ce_mcp_bridge.lua (in CE)
-/opt/cheatengine-mcp (venv)        ce-mcp-forward.service                  C:\cheatengine-mcp-bridge
-                                   (accepts 10.0.0.161 only)
+CT152 MCPJungle (10.0.0.219)       CT110 headscale (10.0.0.67)             legion (Travis's PC, tailnet 100.64.0.2)
+server `cheatengine` (stdio) --TCP--> socat :9876 --tailnet--> ce_tcp_relay.py :9876 --pipe--> ce_mcp_bridge.lua (in CE)
+/opt/mcp-cheatengine (venv)        ce-mcp-forward.service                  C:\cheatengine-mcp-bridge
+                                   (accepts 10.0.0.219 only)
 ```
 
-- **claude1 side:** `/opt/cheatengine-mcp/` (venv, mcp 1.30 + upstream `MCP_Server/`). Registered in Claude Code
-  (user scope) as `cheatengine`: `CE_MCP_TRANSPORT=tcp`, `CE_MCP_HOST=ce-pc.internal`, `CE_MCP_PORT=9876`.
-  `ce-pc.internal` is a Technitium A record → 10.0.0.67 (the forwarder). `CE_MCP_ALLOW_SHELL` is NOT set,
-  so the run_command/shell_execute tools stay disabled.
+- **Gateway side (2026-10-18):** MCPJungle server `cheatengine` on CT152, spawning
+  `/opt/mcp-cheatengine/venv/bin/python /opt/mcp-cheatengine/MCP_Server/mcp_cheatengine.py` (stateless) with
+  `CE_MCP_TRANSPORT=tcp`, `CE_MCP_HOST=ce-pc.internal`, `CE_MCP_PORT=9876`. `ce-pc.internal` is a Technitium A
+  record → 10.0.0.67 (the forwarder). `CE_MCP_ALLOW_SHELL` is NOT set (run_command/shell_execute disabled).
+- **Who gets it:** Turing (Travis's primary coding agent). `agent-turing` holds a curated 50 of the 175 tools
+  (process/modules, value scans incl. persistent scans, memory read/write, pointer chains + rescan, AOB/signatures,
+  disassembly, structure dissect, data breakpoints, cheat-table records, auto_assemble). Left out: evaluate_lua,
+  shell/file/process-creation, DLL injection, kernel/DBVM, keyboard/mouse. Add more by name to the group
+  (`PUT /api/v0/tool-groups/agent-turing`), then `POST :17890/api/hermes/agents/turing/tool-reconnect`.
 - **Forwarder:** CT110 `ce-mcp-forward.service` (copy in `infra/hosts/ct110-headscale/`). claude1 isn't on
   the tailnet, so CT110 (a tailnet node) relays. If legion's tailnet IP changes, edit that unit.
 - **Windows side:** run `setup-ce-relay.ps1` (v2, safe to re-run) from an admin PowerShell. Each session:
@@ -29,7 +34,7 @@ Claude Code --stdio--> mcp_cheatengine.py --TCP--> socat :9876 --tailnet--> ce_t
 ## Security
 The relay has no authentication, and the Lua bridge serves every command (evaluate_lua,
 run_command) to any connecting client. The `CE_MCP_ALLOW_SHELL` gate only exists in the Python MCP
-server. Access control is layered: socat on CT110 accepts only 10.0.0.161, and Windows Firewall on
+server. Access control is layered: socat on CT110 accepts only 10.0.0.219 (the gateway), and Windows Firewall on
 legion allows only 100.64.0.3 (CT110's tailnet IP) and BLOCKS every other address (block rules
 override any broad "allow python.exe" rule from Windows' first-run prompt). Only run the relay while
 you're using it.
