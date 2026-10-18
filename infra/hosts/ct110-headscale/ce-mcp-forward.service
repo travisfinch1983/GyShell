@@ -1,0 +1,12 @@
+[Unit]
+Description=Cheat Engine MCP forward: LAN 10.0.0.67:9876 (claude1 only) -> legion 100.64.0.2:9876 over the tailnet
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/socat TCP4-LISTEN:9876,bind=10.0.0.67,reuseaddr,fork,range=10.0.0.161/32 TCP4:100.64.0.2:9876,connect-timeout=10
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

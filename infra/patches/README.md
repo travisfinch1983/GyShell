@@ -25,3 +25,4 @@ Related, tracked elsewhere in this repo:
   CUDA-13 torch, which has no Volta support, out of the ailab-modelsvc env).
 - `infra/hosts/px-epyc/` - host-level files (5060 Ti clock cap, thermal recorder, zram swap).
 - Fleet adapter changes go to its own repo (`/opt/fleet-channel`, origin on gitea).
+| cheatengine-mcp-bridge | `cheatengine-mcp-bridge/ce_tcp_relay.py` (whole-file replacement) | miscusi-peek/cheatengine-mcp-bridge `6bd7ce9` `MCP_Server/ce_tcp_relay.py` | legion (Travis's Windows PC) `C:\cheatengine-mcp-bridge\MCP_Server\ce_tcp_relay.py`, written by `infra/mcp/cheatengine/setup-ce-relay.ps1` | Upstream relay imports pywin32, which failed to load on legion; this opens the named pipe with plain Python file I/O (same framing) and uses a threading server so a reconnect isn't blocked by a stale client. claude1, 2026-10-18. |
