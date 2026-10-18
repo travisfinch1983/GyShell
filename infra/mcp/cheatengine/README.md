@@ -27,6 +27,9 @@ server `cheatengine` (stdio) --TCP--> socat :9876 --tailnet--> ce_tcp_relay.py :
   `dofile([[C:\cheatengine-mcp-bridge\MCP_Server\ce_mcp_bridge.lua]])` (Travis's CE has no File > Execute Script,
   and **File > Open on the .lua attaches CE to the FILE instead of the game**), wait for `MCP Server Listening`,
   then start the "CE MCP relay" desktop shortcut.
+- **Load the bridge ONCE per Cheat Engine run.** Unpatched, a second load leaves two bridges answering the same pipe
+  with separate state (scans "not found", results split). The reload-safe patch (infra/patches) stops the old copy;
+  if in doubt, restart CE. Test: create_persistent_scan then get_results a few times — alternating errors = two copies.
 - **Diagnose:** `python C:\cheatengine-mcp-bridge\MCP_Server\ce_tcp_relay.py --selftest` pings CE locally, no network.
   No pipe (Errno 2) = the bridge isn't loaded. Verified end to end 2026-10-18: ping 0.175 s over the tailnet.
 - Latency: legion reaches CT110 through DERP relay "sea" (~70 ms per round trip), so call-heavy scans are slowish.

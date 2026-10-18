@@ -1,0 +1,23 @@
+--- a/MCP_Server/ce_mcp_bridge.lua	2026-10-18 07:30:27.312618276 +0000
++++ b/MCP_Server/ce_mcp_bridge.lua	2026-10-18 07:30:27.325618519 +0000
+@@ -5,6 +5,20 @@
+ local PIPE_NAME = "CE_MCP_Bridge_v99"
+ local VERSION = "12.0.0"
+ 
++-- Reload safety (local patch, AI-Lab 2026-10-18): every load of this script creates a NEW
++-- `local serverState` and redefines the global Start/StopMCPBridge, so loading it twice left
++-- the first copy's worker thread running on the same pipe name with its own state. Clients
++-- that open a connection per call then alternated between the copies ("Scan 'x' not found"
++-- right after create_persistent_scan succeeded). Stop the previous copy, using ITS Stop
++-- function (a closure over its own state), before this copy defines its own.
++do
++    local prevStop = rawget(_G, "StopMCPBridge")
++    if type(prevStop) == "function" then
++        print("[MCP] Stopping the previously loaded bridge instance before starting this one")
++        pcall(prevStop)
++    end
++end
++
+ -- Global State
+ local serverState = {
+     running = false,
