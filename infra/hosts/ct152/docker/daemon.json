@@ -1,0 +1,4 @@
+{
+  "data-root": "/zpoolgamma/docker-volume/ai-lab-docker",
+  "dns": ["172.17.0.1", "10.0.0.3"]
+}
