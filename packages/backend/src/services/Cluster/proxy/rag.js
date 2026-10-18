@@ -470,11 +470,11 @@ async function runRagUpdate(collection) {
   // no disk, and fails on exactly the class that killed us: unreachable,
   // unauthorized, or deleted upstream.
   //
-  // ⚠ DELIBERATE RESIDUAL WINDOW (claude1's TOCTOU review): delete still
-  // precedes clone, so a repo that passes preflight and then dies seconds
-  // later (network reset mid-clone, disk-full, remote vanishing) still loses
-  // the collection until checkpoint/resume or the next successful run. This
-  // is a narrowing, not a closure, and it is CHOSEN: the closing fix is
+  // ⚠ RESIDUAL WINDOW (claude1's TOCTOU review, narrowed 2026-10-18): the
+  // clone now completes BEFORE the drop (below), so network/clone failures no
+  // longer empty a collection. What remains is the indexing phase itself —
+  // an embedder/vector-DB failure after the drop leaves a partial collection
+  // until checkpoint/resume or the next successful run. The closing fix is
   // stage-and-swap (index into <col>__staging, atomically repoint on
   // success), which needs a rename/alias primitive the vector proxy does not
   // have across its four backends — qdrant has aliases, milvus/weaviate/
@@ -498,6 +498,24 @@ async function runRagUpdate(collection) {
   // Diagnostic, not a gate: a correct index of a stale branch is invisible otherwise.
   await checkBranchDrift(colName, entry.repo_url, branch);
 
+  // CLONE FIRST, DROP SECOND (2026-10-18, m-c alert mvdom1y4-6). The drop used to precede the clone,
+  // so a clone that timed out on slow GitHub left codebase_proxmenux EMPTY. Now the full clone must
+  // finish before anything is deleted; any clone failure leaves yesterday's index serving.
+  const cloneDir = `/tmp/codebase-rag-${Date.now()}`;
+  ragJob.phase = 'cloning';
+  ragJob.detail = 'Cloning repository (before touching existing vectors)...';
+  try {
+    await cloneRepoGuarded(entry.repo_url, cloneDir, branch, colName);
+  } catch (e) {
+    if (e?.cancelled) { console.warn(`[rag-update] '${colName}': cancelled during clone — vectors untouched`); return; }
+    console.warn(`[rag-update] '${colName}': clone failed (${e.message}) — refresh SKIPPED, existing vectors preserved`);
+    void emitNotification('warning', 'codebase-rag',
+      'A codebase-RAG refresh was skipped — the clone failed',
+      `Collection '${colName}': cloning ${entry.repo_url} failed (${e.message}). Nothing was deleted: `
+      + `search keeps serving the last successful index. The next nightly run retries.`);
+    return;
+  }
+
   // Drop the old vectors (all backends), then re-index over a clean collection.
   //
   // 🛑 THIS BUDGET MUST EXCEED THE PROXY'S OWN INNER BUDGET, and it did not.
@@ -512,10 +530,19 @@ async function runRagUpdate(collection) {
   // 660s = the 600s inner budget plus margin. The outer budget must ALWAYS exceed the inner
   // one; when it did not (60s outer vs 120s inner) the caller killed a drop that was still
   // legitimately running, which is how a half-applied state gets manufactured.
-  const delResp = await fetch(`http://127.0.0.1:${selfPort}/api/proxy/vector/all/collections/${colName}`, {
-    method: 'DELETE',
-    signal: AbortSignal.timeout(660000),
-  });
+  let delResp;
+  try {
+    delResp = await fetch(`http://127.0.0.1:${selfPort}/api/proxy/vector/all/collections/${colName}`, {
+      method: 'DELETE',
+      signal: AbortSignal.timeout(660000),
+    });
+    if (!delResp.ok && delResp.status !== 404) {
+      throw new Error(`vector delete returned ${delResp.status} — refusing to re-index over stale chunks`);
+    }
+  } catch (e) {
+    await exec(MCPJUNGLE_HOST, `rm -rf "${cloneDir}"`, { timeout: 30000 }).catch(() => {});
+    throw e;
+  }
   // 🛑 THE STATUS ALONE IS A LIE. vector-proxy's /all handler ALWAYS returns 200 with a
   // per-backend `results` array, whatever failed inside it — so `delResp.ok` can never be
   // false and the guard below was UNREACHABLE. Discarding the body threw away the only
@@ -529,9 +556,6 @@ async function runRagUpdate(collection) {
   const delFailed = Array.isArray(delBody?.results)
     ? delBody.results.filter((r) => !r?.ok)
     : [];
-  if (!delResp.ok && delResp.status !== 404) {
-    throw new Error(`vector delete returned ${delResp.status} — refusing to re-index over stale chunks`);
-  }
   // 🛑 DELIBERATELY DO NOT THROW HERE, and the reason is not obvious.
   // The drop is PER-BACKEND. Throwing would abort before re-indexing, which leaves every
   // backend that DID drop cleanly empty and unrebuilt — strictly worse than the bug, since
@@ -552,7 +576,7 @@ async function runRagUpdate(collection) {
   }
 
   console.log(`[rag-update] Refreshing '${colName}' from ${entry.repo_url}${branch ? ` (${branch})` : ''}`);
-  await runRagIndexing(entry.repo_url, colName, entry.description || '', branch);
+  await runRagIndexing(entry.repo_url, colName, entry.description || '', branch, false, { preClonedDir: cloneDir });
   // runRagIndexing reports failure via ragJob.error, not by throwing.
   if (ragJob.error) {
     throw new Error(`re-index failed after vector delete: ${ragJob.error}. `
@@ -739,8 +763,85 @@ async function listCheckpoints() {
   }).filter(Boolean);
 }
 
-/** Run the full indexing pipeline asynchronously (streaming — no full accumulation) */
-async function runRagIndexing(url, collection, description, branch, resume = false) {
+// ── Clone with a STALL guard, not a wall-clock cap ──
+// The clone used to get a flat 120s. On 2026-10-18 GitHub was crawling LAN-wide (~300-400 KB/s),
+// ProxMenux (~2 GB) could not finish in 120s, and because the nightly refresh had already dropped
+// the vectors the collection was left EMPTY (maintenance-claude alert mvdom1y4-6). A slow clone that
+// is still moving is not a failure. So the clone runs detached on the host and is killed only when
+// it stops making progress (bytes on disk + progress log unchanged for RAG_CLONE_STALL_S), with a
+// generous absolute ceiling so a trickle can never hold the queue forever.
+const RAG_CLONE_STALL_S = Number(process.env.AILAB_RAG_CLONE_STALL_S || 180);
+const RAG_CLONE_MAX_S = Number(process.env.AILAB_RAG_CLONE_MAX_S || 7200);
+const RAG_CLONE_POLL_MS = 10000;
+
+/** Clone `url` into `dir` on MCPJUNGLE_HOST. Resolves when the clone succeeds; throws (after killing
+ *  the clone and removing `dir`) on git failure, a stall, the absolute ceiling, or a user cancel. */
+async function cloneRepoGuarded(url, dir, branch, label) {
+  const branchArg = branch ? `--branch ${branch}` : '';
+  const log = `${dir}.clone.log`, rcFile = `${dir}.clone.rc`;
+  // setsid: the clone leads its own process group, so a stall kill takes git AND its children
+  // (git-remote-https, index-pack). $! is that group's id.
+  const start = await exec(MCPJUNGLE_HOST,
+    `rm -rf "${dir}" "${log}" "${rcFile}"; `
+    + `setsid sh -c 'GIT_TERMINAL_PROMPT=0 git clone --progress --depth 1 ${branchArg} "${url}" "${dir}" >"${log}" 2>&1; echo $? >"${rcFile}"' `
+    + `</dev/null >/dev/null 2>&1 & echo "__PID__$!"`,
+    { timeout: 15000 });
+  const pid = Number((/__PID__(\d+)/.exec(start.stdout || '') || [])[1]);
+  if (!pid) throw new Error(`clone did not start: ${(start.stdout || '') + (start.stderr || '')}`.slice(0, 300));
+
+  const killClone = async (why) => {
+    console.warn(`[rag] ${label}: killing clone (pgid ${pid}): ${why}`);
+    await exec(MCPJUNGLE_HOST, `kill -TERM -- -${pid} 2>/dev/null; sleep 2; kill -KILL -- -${pid} 2>/dev/null; rm -rf "${dir}"`,
+      { timeout: 20000 }).catch((e) => console.warn(`[rag] ${label}: clone kill failed: ${e.message}`));
+  };
+  const t0 = Date.now();
+  let lastSig = '', lastMoveAt = Date.now();
+  try {
+    for (;;) {
+      await new Promise((r) => setTimeout(r, RAG_CLONE_POLL_MS));
+      if (ragCancelRequested) { await killClone('cancelled by user'); throw new RagCancelled(); }
+      const st = await exec(MCPJUNGLE_HOST,
+        `cat "${rcFile}" 2>/dev/null || echo RUNNING; du -sb "${dir}" 2>/dev/null | cut -f1; stat -c %s "${log}" 2>/dev/null; tail -c 300 "${log}" 2>/dev/null | tr '\\r' '\\n' | tail -1`,
+        { timeout: 30000 });
+      const lines = (st.stdout || '').split('\n');
+      const rc = lines[0].trim();
+      if (rc !== 'RUNNING') {
+        const tail = await exec(MCPJUNGLE_HOST, `tail -c 400 "${log}"; rm -f "${log}" "${rcFile}"`, { timeout: 10000 })
+          .then((r) => r.stdout || '').catch(() => '');
+        if (rc === '0') {
+          console.log(`[rag] ${label}: cloned in ${Math.round((Date.now() - t0) / 1000)}s`);
+          return;
+        }
+        await exec(MCPJUNGLE_HOST, `rm -rf "${dir}"`, { timeout: 30000 }).catch(() => {});
+        throw new Error(`Failed to clone repository (git exit ${rc}): ${tail.slice(-300)}`);
+      }
+      const sig = `${lines[1] || ''}/${lines[2] || ''}`;
+      if (sig !== lastSig) { lastSig = sig; lastMoveAt = Date.now(); }
+      const mb = (Number(lines[1]) || 0) / 1048576;
+      ragJob.detail = `Cloning repository... ${mb.toFixed(0)} MB (${Math.round((Date.now() - t0) / 1000)}s) ${(lines[3] || '').trim().slice(0, 80)}`;
+      if (Date.now() - lastMoveAt > RAG_CLONE_STALL_S * 1000) {
+        await killClone(`no progress for ${RAG_CLONE_STALL_S}s`);
+        throw new Error(`clone stalled: no progress for ${RAG_CLONE_STALL_S}s at ${mb.toFixed(0)} MB (AILAB_RAG_CLONE_STALL_S)`);
+      }
+      if (Date.now() - t0 > RAG_CLONE_MAX_S * 1000) {
+        await killClone(`exceeded ${RAG_CLONE_MAX_S}s ceiling`);
+        throw new Error(`clone still running after ${RAG_CLONE_MAX_S}s at ${mb.toFixed(0)} MB (AILAB_RAG_CLONE_MAX_S)`);
+      }
+    }
+  } catch (e) {
+    // exec() itself failing (ssh/host hiccup) mid-poll must not orphan a running clone.
+    if (!e?.cancelled && !/^(Failed to clone|clone stalled|clone still running)/.test(e?.message || '')) {
+      await killClone(`poll error: ${e?.message || e}`);
+    }
+    throw e;
+  }
+}
+
+/** Run the full indexing pipeline asynchronously (streaming — no full accumulation).
+ *  opts.preClonedDir: a finished clone to index instead of cloning here (runRagUpdate clones
+ *  BEFORE dropping vectors, so a failed clone never empties a collection). Ownership of the dir
+ *  passes to this function — it is moved/removed exactly like a clone made here. */
+async function runRagIndexing(url, collection, description, branch, resume = false, opts = {}) {
   void emitDebug('rag', `${resume ? 'resuming' : 'starting'} index of ${collection || url}`
     + `${branch ? ` (branch ${branch})` : ''} from ${url}`);
   const colName = sanitizeCollectionName(collection);
@@ -758,12 +859,17 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
   if (resume) {
     checkpoint = await readCheckpoint(colName);
     if (!checkpoint) {
-      ragJob.phase = 'error';
-      ragJob.error = 'No checkpoint found for this collection.';
-      ragJob.detail = ragJob.error;
-      ragJob.active = false;
-      return;
+      // A failure BEFORE the first checkpoint (clone timeout, empty scan) leaves nothing to resume, yet
+      // the auto-retry queues resume:true. Erroring here made every such retry a no-op, so a collection
+      // emptied by a failed refresh stayed empty (codebase_proxmenux / marinara_engine, 2026-10-18).
+      // Nothing to resume = start fresh.
+      console.warn(`[rag] ${colName}: resume requested but no checkpoint exists - indexing from scratch`);
+      resume = false;
+      ragJob.phase = 'cloning';
+      ragJob.detail = 'No checkpoint - indexing from scratch...';
     }
+  }
+  if (resume) {
     console.log(`[rag] Resuming ${url} as ${colName} — ${checkpoint.completedFiles?.length || 0} files already done`);
   } else {
     console.log(`[rag] Indexing ${url} as ${colName}`);
@@ -771,15 +877,12 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
 
   let tmpDir = '';
   try {
-    // ── Phase 1: Clone via SSH on MCPJungle ──
-    tmpDir = `/tmp/codebase-rag-${Date.now()}`;
-    const branchArg = branch ? `--branch ${branch}` : '';
-    const cloneResult = await exec(MCPJUNGLE_HOST,
-      `git clone --depth 1 ${branchArg} "${url}" "${tmpDir}" 2>&1 && echo "__CLONE_OK__"`,
-      { timeout: 120000 });
-    const cloneOut = (cloneResult.stdout || '') + (cloneResult.stderr || '');
-    if (!cloneOut.includes('__CLONE_OK__')) {
-      throw new Error(`Failed to clone repository: ${cloneOut.slice(0, 300)}`);
+    // ── Phase 1: Clone via SSH on MCPJungle (stall-guarded; skipped when the caller pre-cloned) ──
+    if (opts.preClonedDir) {
+      tmpDir = opts.preClonedDir;
+    } else {
+      tmpDir = `/tmp/codebase-rag-${Date.now()}`;
+      await cloneRepoGuarded(url, tmpDir, branch, colName);
     }
     ragJob.progress = 10;
     ragJob.detail = 'Repository cloned. Scanning files...';
@@ -1847,9 +1950,13 @@ app.post('/api/ai/rag/update-all', async (req, res) => {
       'cat /opt/mcp-codebase-rag/data/collections.json 2>/dev/null || echo "[]"',
       { timeout: 10000 });
     const manifest = JSON.parse(manifestResult.stdout || '[]');
+    // Optional body.collections: refresh only these (same replace semantics as the nightly run).
+    const only = Array.isArray(req.body?.collections) && req.body.collections.length
+      ? new Set(req.body.collections.map(String)) : null;
     let queued = 0;
     for (const col of manifest) {
       if (!col.repo_url) continue;
+      if (only && !only.has(col.name)) continue;
       ragQueue.push({ type: 'update', collection: col.name });
       queued++;
     }
