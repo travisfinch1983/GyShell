@@ -22,7 +22,17 @@ Rollback: set Forwarders empty + protocol Udp (back to recursion). Pre-change JS
 settings and forwarder zones are on claude1 (CT181) in /root/technitium-backups/ (not committed:
 the settings dump may hold secrets).
 
-## Rate limits (context)
-Per-client 600 qpm (/32) and 6000 qpm per /24, bypass list empty. Exceeding it blocks that client's
-ALL DNS: this took CT152 (AI-Lab) offline on 2026-10-17 (report maintenance-ct152-dns-ratelimit-20261017).
-CT152 now runs a local dnsmasq cache for the host and its Docker containers (see ../ct152/dnsmasq).
+## Rate limits
+Per-client 600 qpm (/32) and 6000 qpm per /24. Exceeding a limit blocks that client's (or that
+whole /24's) DNS: this took CT152 (AI-Lab) offline on 2026-10-17 (report
+maintenance-ct152-dns-ratelimit-20261017). CT152 now runs a local dnsmasq cache for the host and its
+Docker containers (see ../ct152/dnsmasq).
+
+**Bypass list (2026-10-18):** the 3 Proxmox hosts + every server guest in the cluster inventory
+(67 addresses; desktops/phones/IoT and the Win11Pro VM 10.0.0.201 are NOT exempt). Add new server
+guests here when they are created.
+
+Caveat (read from the Technitium source, DnsServer.cs IsQpmLimitBypassed / StatsManager
+GetLatestClientSubnetStats): the bypass list only skips the check for the querying client. The /24
+subnet total still COUNTS exempt servers' queries, so a runaway server can push 10.0.0.0/24 past
+6000 qpm and get every NON-exempt device on the LAN blocked.
