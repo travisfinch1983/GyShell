@@ -674,14 +674,14 @@ export const BrowserView: React.FC = () => {
             >
               {isVideo(lightbox.file_ext) ? (
                 <video
-                  src={lightbox.downloaded === 1 ? fullUrl(lightbox.id) : lightbox.file_url}
+                  src={fullUrl(lightbox.id)}
                   controls
                   autoPlay
                   style={{ maxWidth: '100%', maxHeight: '100%' }}
                 />
               ) : (
                 <img
-                  src={lightbox.downloaded === 1 ? fullUrl(lightbox.id) : (lightbox.sample_url || lightbox.file_url)}
+                  src={fullUrl(lightbox.id)}
                   alt={`#${lightbox.id}`}
                   draggable={false}
                   style={actualSize ? {

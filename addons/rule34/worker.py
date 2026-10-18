@@ -22,6 +22,7 @@ from db import (
     get_untyped_tags,
     set_tag_type_by_name,
     find_media_by_md5,
+    forget_media_file,
     record_media_file,
     get_watched_tag_cursors,
     update_watched_tag_cursor,
@@ -361,6 +362,10 @@ class Worker:
                 await mark_downloaded(post["id"], media["local_path"])
                 self._download_count += 1
                 return
+            if media:
+                # The file it names is gone — drop the row, or record_media_file
+                # (first writer wins) keeps pointing every twin at a missing file.
+                await forget_media_file(md5)
             if md5 in self._dl_md5_inflight:
                 return   # its twin is downloading right now; next pass reuses the file
         rating = post.get("rating", "e") or "e"

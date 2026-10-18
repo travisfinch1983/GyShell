@@ -1073,3 +1073,16 @@ async def search_tags(query: str, limit: int = 20) -> list[dict]:
         return [dict(row) for row in rows]
     finally:
         await db.close()
+
+
+@retry_on_locked
+async def forget_media_file(md5: str):
+    """Drop an md5's media_files row whose file no longer exists on disk."""
+    if not md5:
+        return
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM media_files WHERE md5 = ?", (md5,))
+        await db.commit()
+    finally:
+        await db.close()

@@ -71,6 +71,8 @@ def media_client() -> httpx.AsyncClient:
     if _media_client is None or _media_client.is_closed:
         _media_client = httpx.AsyncClient(
             follow_redirects=True, timeout=httpx.Timeout(60.0, connect=10.0),
+            # Danbooru's CDN 403s httpx's default UA (and bare browser UAs).
+            headers={"User-Agent": "AI-Lab-Booru-Scraper/1.0"},
             limits=httpx.Limits(max_connections=32, max_keepalive_connections=16))
     return _media_client
 
@@ -599,7 +601,7 @@ async def media_thumb(post_id: int):
 
 
 @app.get("/media/full/{post_id}")
-async def media_full(post_id: int):
+async def media_full(post_id: int, request: Request):
     post = await get_post(post_id)
     if not post:
         return Response(status_code=404)
@@ -629,7 +631,11 @@ async def media_full(post_id: int):
         return Response(status_code=404)
     client = media_client()
     try:
-        req = client.build_request("GET", remote, headers=media_headers(remote))
+        headers = dict(media_headers(remote))
+        # Pass Range through so videos that aren't downloaded yet can still seek.
+        if request.headers.get("range"):
+            headers["Range"] = request.headers["range"]
+        req = client.build_request("GET", remote, headers=headers)
         resp = await client.send(req, stream=True)
         resp.raise_for_status()
         if is_html_response(resp):
@@ -648,4 +654,7 @@ async def media_full(post_id: int):
         finally:
             await resp.aclose()
 
-    return StreamingResponse(_body(), media_type=media_type)
+    passthrough = {k: resp.headers[k] for k in ("content-length", "content-range", "accept-ranges")
+                   if k in resp.headers}
+    return StreamingResponse(_body(), status_code=resp.status_code, media_type=media_type,
+                             headers=passthrough)
