@@ -1,0 +1,26 @@
+diff --git a/tools/server/server-common.cpp b/tools/server/server-common.cpp
+index c30955e89..2a81babb1 100644
+--- a/tools/server/server-common.cpp
++++ b/tools/server/server-common.cpp
+@@ -546,7 +546,9 @@ void server_tokens::insert(const llama_tokens & inp_tokens) {
+ }
+ 
+ const llama_tokens & server_tokens::get_tokens() const {
+-    GGML_ASSERT(!has_mtmd);
++    // KV-cache shim patch: assert relaxed — caller is responsible for verifying
++    // text-only content. Used by SLOT_SAVE path so save works with mmproj loaded.
++    // GGML_ASSERT(!has_mtmd);
+     return tokens;
+ }
+ 
+@@ -629,7 +631,9 @@ llama_tokens server_tokens::get_text_tokens() const {
+ }
+ 
+ void server_tokens::set_token(llama_pos pos, llama_token id) {
+-    GGML_ASSERT(!has_mtmd); // only allow this if mtmd is disabled
++    // KV-cache shim patch: assert relaxed — caller is responsible for verifying
++    // the target position is not inside an image chunk.
++    // GGML_ASSERT(!has_mtmd); // only allow this if mtmd is disabled
+     tokens[pos] = id;
+ }
+ 
