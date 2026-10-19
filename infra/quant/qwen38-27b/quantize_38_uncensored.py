@@ -80,6 +80,16 @@ def main():
     for k in mtp:
         idx["weight_map"][k] = "model_mtp.safetensors"
     json.dump(idx, open(ip, "w"), indent=2)
+    # 🛑 llmcompressor writes the ignore list as EXPANDED module names, and the MTP modules did not
+    # exist in the model it quantized (transformers drops mtp.*), so no mtp name lands in it. vLLM
+    # then treats the grafted BF16 head as INT8-quantized and drafts garbage: 0% acceptance
+    # (2026-08-15 and again 2026-10-19). Production's public quant carries these regexes; so must ours.
+    cp = os.path.join(OUT, "config.json")
+    cfg = json.load(open(cp))
+    for pat in ("re:^mtp.*", "re:.*mtp.*"):
+        if pat not in cfg["quantization_config"]["ignore"]:
+            cfg["quantization_config"]["ignore"].append(pat)
+    json.dump(cfg, open(cp, "w"), indent=2)
     print(f"      {len(mtp)} mtp tensors indexed", flush=True)
 
     print("[6/6] verify against production layout", flush=True)
