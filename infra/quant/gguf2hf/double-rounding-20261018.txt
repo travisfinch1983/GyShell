@@ -1,0 +1,8 @@
+tensor                                                      rms W      e_q8  e_single  e_double dbl/sgl
+layers.0.mlp.down_proj.weight                           1.063e-02 6.044e-05 7.098e-05 8.565e-05   1.207
+layers.10.mlp.up_proj.weight                            1.080e-02 6.107e-05 7.061e-05 8.581e-05   1.215
+layers.20.linear_attn.in_proj_qkv.weight                1.624e-02 9.221e-05 1.088e-04 1.313e-04   1.207
+layers.31.self_attn.o_proj.weight                       1.573e-02 8.948e-05 1.053e-04 1.272e-04   1.208
+layers.40.linear_attn.out_proj.weight                   1.537e-02 8.765e-05 1.034e-04 1.248e-04   1.207
+layers.63.mlp.gate_proj.weight                          1.365e-02 7.851e-05 9.350e-05 1.123e-04   1.201
+mean double/single RMS error ratio: 1.207  (sqrt(2)=1.414 if independent and equal)

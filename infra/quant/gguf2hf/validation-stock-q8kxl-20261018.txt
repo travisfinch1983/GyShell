@@ -1,0 +1,42 @@
+tensor kind                                                type    n   max rel  mean abs   min cos blk err/max
+embed_tokens.weight                                        Q8_0    1  3.70e-03  5.52e-05  0.999984    0.007353
+layers.N.input_layernorm.weight                            F32    64  1.30e-07  3.49e-11  1.000000         nan
+layers.N.linear_attn.A_log                                 F32    48  0.00e+00  0.00e+00  1.000000         nan
+layers.N.linear_attn.convNd.weight                         F32    48  0.00e+00  0.00e+00  1.000000         nan
+layers.N.linear_attn.dt_bias                               F32    48  0.00e+00  0.00e+00  1.000000         nan
+layers.N.linear_attn.in_proj_a.weight                      Q8_0   48  4.76e-03  1.18e-04  0.999976    0.007353
+layers.N.linear_attn.in_proj_b.weight                      Q8_0   48  4.44e-03  9.99e-05  0.999975    0.007353
+layers.N.linear_attn.in_proj_qkv.weight                    Q8_0   48  5.18e-03  7.72e-05  0.999983    0.007353
+layers.N.linear_attn.in_proj_z.weight                      Q8_0   48  4.52e-03  7.28e-05  0.999983    0.007353
+layers.N.linear_attn.norm.weight                           F32    48  0.00e+00  0.00e+00  1.000000         nan
+layers.N.linear_attn.out_proj.weight                       Q8_0   48  5.78e-03  7.35e-05  0.999983    0.007353
+layers.N.mlp.down_proj.weight                              Q8_0   64  4.42e-03  5.53e-05  0.999982    0.007353
+layers.N.mlp.gate_proj.weight                              Q8_0   64  5.62e-03  6.04e-05  0.999983    0.007353
+layers.N.mlp.up_proj.weight                                Q8_0   64  4.49e-03  5.78e-05  0.999983    0.007353
+layers.N.post_attention_layernorm.weight                   F32    64  7.95e-08  1.96e-11  1.000000         nan
+layers.N.self_attn.k_norm.weight                           F32    16  0.00e+00  0.00e+00  1.000000         nan
+layers.N.self_attn.k_proj.weight                           BF16   16  0.00e+00  0.00e+00  1.000000         nan
+layers.N.self_attn.o_proj.weight                           Q8_0   16  5.43e-03  8.69e-05  0.999981    0.007353
+layers.N.self_attn.q_norm.weight                           F32    16  0.00e+00  0.00e+00  1.000000         nan
+layers.N.self_attn.q_proj.weight                           BF16   16  0.00e+00  0.00e+00  1.000000         nan
+layers.N.self_attn.v_proj.weight                           BF16   16  0.00e+00  0.00e+00  1.000000         nan
+lm_head.weight                                             BF16    1  0.00e+00  0.00e+00  1.000000         nan
+mtp.fc.weight                                              BF16    1  0.00e+00  0.00e+00  1.000000         nan
+mtp.layers.N.input_layernorm.weight                        F32     1  0.00e+00  0.00e+00  1.000000         nan
+mtp.layers.N.mlp.down_proj.weight                          Q8_0    1  3.87e-03  5.74e-05  0.999982    0.007353
+mtp.layers.N.mlp.gate_proj.weight                          Q8_0    1  4.21e-03  5.45e-05  0.999984    0.007353
+mtp.layers.N.mlp.up_proj.weight                            Q8_0    1  4.03e-03  5.99e-05  0.999984    0.007353
+mtp.layers.N.post_attention_layernorm.weight               F32     1  0.00e+00  0.00e+00  1.000000         nan
+mtp.layers.N.self_attn.k_norm.weight                       F32     1  0.00e+00  0.00e+00  1.000000         nan
+mtp.layers.N.self_attn.k_proj.weight                       BF16    1  0.00e+00  0.00e+00  1.000000         nan
+mtp.layers.N.self_attn.o_proj.weight                       Q8_0    1  4.03e-03  9.11e-05  0.999981    0.007353
+mtp.layers.N.self_attn.q_norm.weight                       F32     1  0.00e+00  0.00e+00  1.000000         nan
+mtp.layers.N.self_attn.q_proj.weight                       BF16    1  0.00e+00  0.00e+00  1.000000         nan
+mtp.layers.N.self_attn.v_proj.weight                       BF16    1  0.00e+00  0.00e+00  1.000000         nan
+mtp.norm.weight                                            F32     1  0.00e+00  0.00e+00  1.000000         nan
+mtp.pre_fc_norm_embedding.weight                           F32     1  0.00e+00  0.00e+00  1.000000         nan
+mtp.pre_fc_norm_hidden.weight                              F32     1  0.00e+00  0.00e+00  1.000000         nan
+norm.weight                                                F32     1  0.00e+00  0.00e+00  1.000000         nan
+
+FAILURES: 0
+VALIDATION PASS
