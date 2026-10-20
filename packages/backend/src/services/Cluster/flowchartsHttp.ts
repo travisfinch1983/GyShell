@@ -48,7 +48,26 @@ export function createFlowchartsRouter(dataDir: string): express.Router {
     try {
       ensure()
       const body = (req.body ?? {}) as Record<string, unknown>
-      const chart = { ...body, id, updatedAt: new Date().toISOString() }
+      // Optimistic concurrency: `baseUpdatedAt` = the version this editor last loaded/saved
+      // (null = "I am creating a new diagram"). A mismatch means another tab, window or
+      // agent wrote it since — refuse instead of silently overwriting their work (a
+      // second Flowchart tab once clobbered a finished wiring diagram, 2026-10-19).
+      // Absent = legacy/agent writer, unchecked.
+      const { baseUpdatedAt, ...rest } = body
+      if (baseUpdatedAt !== undefined) {
+        let cur: string | null = null
+        if (existsSync(file(id))) {
+          try { cur = (JSON.parse(readFileSync(file(id), 'utf8')).updatedAt as string) ?? null } catch { cur = null }
+          if (cur === null) cur = 'unknown'
+        }
+        if ((baseUpdatedAt ?? null) !== cur) {
+          return res.status(409).json({
+            error: `conflict: diagram '${id}' changed since this editor loaded it (stored ${cur ?? 'absent'}, editor ${baseUpdatedAt ?? 'new'})`,
+            current: cur,
+          })
+        }
+      }
+      const chart = { ...rest, id, updatedAt: new Date().toISOString() }
       writeFileSync(file(id), JSON.stringify(chart, null, 2))
       res.json({ ok: true, chart })
     } catch (e) { res.status(500).json({ error: String((e as Error).message) }) }

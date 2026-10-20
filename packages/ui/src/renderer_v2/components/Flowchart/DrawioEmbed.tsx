@@ -30,6 +30,12 @@ export function DrawioEmbed({ xml, reloadKey, onSave, onAutoSave, onExport, onRe
   const xmlRef = useRef(xml)
   xmlRef.current = xml
   const readyRef = useRef(false)
+  // 🛑 The listener below is registered once (empty deps). Calling the props directly
+  // froze the FIRST render's onSave/onAutoSave — whose closures held the chart id the
+  // panel mounted with — so after New/Open every save still went to the original
+  // diagram and silently overwrote it (2026-10-19). Always go through this ref.
+  const cbRef = useRef({ onSave, onAutoSave, onExport, onReady })
+  cbRef.current = { onSave, onAutoSave, onExport, onReady }
 
   const post = (action: Record<string, unknown>) => {
     iframeRef.current?.contentWindow?.postMessage(JSON.stringify(action), '*')
@@ -56,16 +62,16 @@ export function DrawioEmbed({ xml, reloadKey, onSave, onAutoSave, onExport, onRe
         case 'init':
           readyRef.current = true
           post({ action: 'load', xml: xmlRef.current || '', autosave: 1 })
-          onReady?.()
+          cbRef.current.onReady?.()
           break
         case 'save':
-          if (typeof msg.xml === 'string') onSave?.(msg.xml)
+          if (typeof msg.xml === 'string') cbRef.current.onSave?.(msg.xml)
           break
         case 'autosave':
-          if (typeof msg.xml === 'string') onAutoSave?.(msg.xml)
+          if (typeof msg.xml === 'string') cbRef.current.onAutoSave?.(msg.xml)
           break
         case 'export':
-          if (typeof msg.data === 'string') onExport?.(msg.data, msg.format || '')
+          if (typeof msg.data === 'string') cbRef.current.onExport?.(msg.data, msg.format || '')
           break
         default:
           break

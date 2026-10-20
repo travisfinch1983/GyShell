@@ -30,8 +30,11 @@ const api = {
     if (!r?.chart) throw new Error(`no chart '${id}' in the response`)
     return r.chart
   },
-  async save(c: Chart): Promise<void> {
-    await bridge()?.request('PUT', `/api/flowcharts/${encodeURIComponent(c.id)}`, c)
+  /** `baseUpdatedAt` = the stored version this editor is editing (null = new diagram).
+   *  The server answers 409 if someone else wrote it since. Returns the new version. */
+  async save(c: Chart & { baseUpdatedAt: string | null }): Promise<string | null> {
+    const r = await bridge()?.request('PUT', `/api/flowcharts/${encodeURIComponent(c.id)}`, c)
+    return (r?.chart?.updatedAt as string) ?? null
   },
   async remove(id: string): Promise<void> {
     await bridge()?.request('DELETE', `/api/flowcharts/${encodeURIComponent(id)}`)
@@ -41,12 +44,29 @@ const api = {
 const DRAFT_KEY = 'ai-lab-flowchart-draft'
 let _c = 0
 const nid = () => `n${Date.now().toString(36)}${(_c++).toString(36)}`
+/** Chart ids currently open in a mounted panel. The draft is ONE shared localStorage key, so a
+ *  second Flowchart tab used to restore the first tab's chart id and autosave over it. */
+const liveIds = new Map<string, number>()
+const isConflict = (e: unknown) => /\b409\b|conflict:/.test(String((e as Error)?.message ?? e))
 
 export function FlowchartPanel() {
-  const draft = (() => { try { return JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null') } catch { return null } })()
-  const [chartId, setChartId] = useState<string>(draft?.id || nid())
-  const [name, setName] = useState<string>(draft?.name || 'Untitled')
-  const [xml, setXml] = useState<string>(draft?.xml || '')
+  // Restore the draft ONLY if no other mounted panel already has that chart open; otherwise
+  // this is a second tab and it starts blank on a fresh id.
+  const [init] = useState(() => {
+    let d: any = null
+    try { d = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null') } catch { d = null }
+    if (d?.id && liveIds.has(d.id)) d = null
+    return d
+  })
+  const [chartId, setChartId] = useState<string>(init?.id || nid())
+  const [name, setName] = useState<string>(init?.name || 'Untitled')
+  const [xml, setXml] = useState<string>(init?.xml || '')
+  // Refs, not closures: saves can fire from a debounce timer or the draw.io iframe long after
+  // the render that created them. `baseRef` = stored version this editor is editing.
+  const idRef = useRef(chartId); idRef.current = chartId
+  const nameRef = useRef(name); nameRef.current = name
+  const baseRef = useRef<string | null>(init?.id ? (init.base ?? undefined) ?? null : null)
+  const legacyDraft = useRef<boolean>(!!init?.id && init.base === undefined)
   const [reloadKey, setReloadKey] = useState(0)
   const [saved, setSaved] = useState<Array<{ id: string; name: string; updatedAt?: string }>>([])
   const [showLoad, setShowLoad] = useState(false)
@@ -58,20 +78,44 @@ export function FlowchartPanel() {
   const handleRef = useRef<DrawioHandle | null>(null)
   const curXml = useRef(xml); curXml.current = xml
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingSave = useRef<(() => void) | null>(null)
+
+  useEffect(() => {
+    liveIds.set(chartId, (liveIds.get(chartId) ?? 0) + 1)
+    return () => { const n = (liveIds.get(chartId) ?? 1) - 1; if (n <= 0) liveIds.delete(chartId); else liveIds.set(chartId, n) }
+  }, [chartId])
 
   // Local draft autosave so a browser refresh never loses in-progress work.
   useEffect(() => {
-    const t = setTimeout(() => { try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ id: chartId, name, xml })) } catch { /* ignore */ } }, 500)
+    const t = setTimeout(() => { try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ id: chartId, name, xml, base: baseRef.current })) } catch (e) { console.warn('[flowchart] draft autosave failed', e) } }, 500)
     return () => clearTimeout(t)
   }, [chartId, name, xml])
 
   const flash = (m: string) => { setStatus(m); setTimeout(() => setStatus(''), 1600) }
 
-  const storeSave = useCallback(async (x: string) => {
+  /** Persist `x` as chart `id` (default: the open chart). The id is bound when the save is
+   *  SCHEDULED, so a debounced save can never land on a diagram opened afterwards. */
+  const storeSave = useCallback(async (x: string, id: string = idRef.current) => {
+    if (legacyDraft.current && id === idRef.current) {
+      // A draft from before version tracking: we don't know which stored version it was
+      // edited from, so we must not overwrite blindly. Learn the current version only if the
+      // stored content IS this draft's starting point — otherwise refuse (conflict).
+      try {
+        const cur = await api.load(id)
+        baseRef.current = cur.xml === x ? (cur.updatedAt ?? null) : '__unknown__'
+      } catch { baseRef.current = null }
+      legacyDraft.current = false
+    }
+    const base = id === idRef.current ? baseRef.current : undefined
     try {
-      await api.save({ id: chartId, name: name.trim() || 'Untitled', xml: x, updatedAt: new Date().toISOString() })
+      const v = await api.save({ id, name: nameRef.current.trim() || 'Untitled', xml: x, baseUpdatedAt: base ?? null })
+      if (idRef.current === id) baseRef.current = v
       setSaveError(null)
     } catch (e) {
+      if (isConflict(e)) {
+        setSaveError('NOT SAVED — this diagram was changed elsewhere (another tab, window or agent). Your edits are safe here: use "Save copy", or Open it again to see the stored version.')
+        throw e
+      }
       // The local draft still has the work (localStorage autosave above), so
       // nothing is lost yet — but the SERVER copy is stale and staying quiet
       // about that is how a session of edits evaporates on the next reload
@@ -79,14 +123,23 @@ export function FlowchartPanel() {
       setSaveError(`not saving to server — ${String((e as Error)?.message ?? e)}`)
       throw e
     }
-  }, [chartId, name])
+  }, [])
 
   // draw.io autosave stream: keep the working xml + debounce-persist to the shared store.
   const onAutoSave = useCallback((x: string) => {
     setXml(x)
     if (saveTimer.current) clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => { storeSave(x).catch(() => { /* surfaced via saveError */ }) }, 1500)
+    const id = idRef.current
+    const run = () => { saveTimer.current = null; pendingSave.current = null; storeSave(x, id).catch(() => { /* surfaced via saveError */ }) }
+    pendingSave.current = run
+    saveTimer.current = setTimeout(run, 1500)
   }, [storeSave])
+  /** Before switching diagrams: write the last <1.5s of edits to the diagram they belong to. */
+  const flushPending = useCallback(() => {
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    const run = pendingSave.current
+    if (run) run()
+  }, [])
 
   // Explicit Save (draw.io toolbar Save button, or our Save button) persists immediately.
   const onSave = useCallback(async (x: string) => {
@@ -99,7 +152,19 @@ export function FlowchartPanel() {
   }, [storeSave])
   const doSave = useCallback(async () => { await onSave(curXml.current) }, [onSave])
 
-  const doNew = useCallback(() => { setChartId(nid()); setName('Untitled'); setXml(''); setReloadKey((k) => k + 1) }, [])
+  const doNew = useCallback(() => {
+    flushPending()
+    const id = nid(); idRef.current = id; baseRef.current = null; legacyDraft.current = false
+    setChartId(id); setName('Untitled'); setXml(''); setSaveError(null); setReloadKey((k) => k + 1)
+  }, [flushPending])
+  /** Fork the current canvas to a NEW diagram — the way out of a save conflict. */
+  const doSaveCopy = useCallback(async () => {
+    flushPending()
+    const id = nid(); idRef.current = id; baseRef.current = null; legacyDraft.current = false
+    const n = `${nameRef.current.trim() || 'Untitled'} (copy)`; nameRef.current = n
+    setChartId(id); setName(n)
+    await onSave(curXml.current)
+  }, [flushPending, onSave])
   const openLoad = useCallback(async () => {
     setListError(null)
     try { setSaved(await api.list()) } catch (e) {
@@ -110,13 +175,15 @@ export function FlowchartPanel() {
   }, [])
   const doLoad = useCallback(async (id: string) => {
     try {
+      flushPending()
       const c = await api.load(id)
+      idRef.current = c.id; baseRef.current = c.updatedAt ?? null; legacyDraft.current = false; setSaveError(null)
       setChartId(c.id); setName(c.name || 'Untitled'); setXml(c.xml || ''); setReloadKey((k) => k + 1); setShowLoad(false)
     } catch (e) {
       // A click that does nothing is indistinguishable from a broken button.
       setListError(`could not open '${id}' — ${String((e as Error)?.message ?? e)}`)
     }
-  }, [])
+  }, [flushPending])
 
   const exportAs = useCallback((format: 'xmlpng' | 'xmlsvg') => handleRef.current?.export(format), [])
   const onExport = useCallback((data: string, format: string) => {
@@ -131,6 +198,7 @@ export function FlowchartPanel() {
       <div className={styles.toolbar}>
         <input className={styles.nameInput} value={name} onChange={(e) => setName(e.target.value)} placeholder="Diagram name" />
         <button className={styles.btn} onClick={doSave} title="Save to the shared server store"><Save size={13} /> Save</button>
+        <button className={styles.btn} onClick={doSaveCopy} title="Save the current canvas as a new diagram"><FilePlus2 size={13} /> Save copy</button>
         <button className={styles.btn} onClick={openLoad} title="Open a saved diagram"><FolderOpen size={13} /> Open</button>
         <button className={styles.btn} onClick={doNew} title="New blank diagram"><FilePlus2 size={13} /> New</button>
         <span className={styles.sep} />
