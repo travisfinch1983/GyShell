@@ -1,0 +1,47 @@
+#!/usr/sbin/nft -f
+# CT196 "sitemap" (SiteMap + Whiteboard + claude-dhb-enterprise) egress fence — claude1, 2026-10-22.
+#
+# WHY: the enterprise Claude account's context may be collected by Blattner. Nothing in that
+# container may reach Travis's homelab except the few services listed below. Enforced HERE on the
+# Proxmox host (bridge family, matched on the CT's veth), so root inside the container cannot undo it.
+#
+# Allowed from CT196 (10.0.0.153):
+#   10.0.0.219 tcp 8099  group-gate allow-list proxy (curated MCP group, STT/TTS, LLM proxy)
+#   10.0.0.219 tcp 9847  memory service — source-IP PINNED to namespace dhb-enterprise
+#   10.0.0.219 tcp 17900 fleetd (talk to claude1)
+#   (Gitea is NOT direct: git goes through the 8099 gate, Blattner repos only — Gitea has public lab repos)
+#   10.0.0.69  tcp 6333  dhb-qdrant (Blattner vector store)
+#   10.0.0.235 tcp 5010  embedding service
+#   public internet (incl. Cloudflare-tunnelled *.deeveeyant.com via public DNS)
+# Everything else private (RFC1918, CGNAT/tailnet, IPv6) is dropped. Replies to connections the lab
+# opens TO the container (Cloudflare tunnel, instance-manager SSH) pass via conntrack.
+# Apply: nft -f /etc/sitemap-ct196-egress.nft   (sitemap-ct196-egress.service does this at boot)
+
+table bridge sitemap_ct196
+delete table bridge sitemap_ct196
+
+table bridge sitemap_ct196 {
+	set lab_allow {
+		type ipv4_addr . inet_proto . inet_service
+		elements = {
+			10.0.0.219 . tcp . 8099,
+			10.0.0.219 . tcp . 9847,
+			10.0.0.219 . tcp . 17900,
+			10.0.0.69 . tcp . 6333,
+			10.0.0.235 . tcp . 5010,
+		}
+	}
+
+	chain forward {
+		type filter hook forward priority -10; policy accept;
+		iifname != "veth196i0" accept
+		ether type arp accept
+		ether type ip6 counter drop comment "no IPv6 out of CT196"
+		ct state established,related accept
+		ip daddr . ip protocol . th dport @lab_allow accept
+		# NOTE: limit is a MATCH condition — keep it on the log-only rule, never on the drop rule
+		ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } limit rate 6/minute log prefix "ct196-egress-deny "
+		ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } counter drop
+		accept
+	}
+}

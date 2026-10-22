@@ -1,11 +1,13 @@
 [Unit]
-Description=MCP group gate: exposes ONLY the sitemap-enterprise MCPJungle tool group on :8099 (for isolated CT196)
+Description=MCP group gate: allow-list proxy (sitemap tool group, STT/TTS, LLM) on :8099 (for isolated CT196)
 After=network-online.target
 
 [Service]
-ExecStart=/opt/mcp-unified-memory/.venv/bin/python /opt/ai-lab-mcp/group-gate.py 8099 sitemap-enterprise
+ExecStart=/opt/mcp-unified-memory/.venv/bin/python /opt/ai-lab-mcp/group-gate.py 8099
 Restart=always
 RestartSec=3
+# open SSE streams otherwise hold a graceful stop for minutes
+TimeoutStopSec=5
 
 [Install]
 WantedBy=multi-user.target

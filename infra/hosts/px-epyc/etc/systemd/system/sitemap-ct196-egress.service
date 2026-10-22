@@ -1,0 +1,14 @@
+[Unit]
+Description=Egress fence for CT196 sitemap (claude-dhb-enterprise isolation) - see /etc/sitemap-ct196-egress.nft
+Before=pve-guests.service
+After=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/sbin/modprobe nf_conntrack_bridge
+ExecStart=/usr/sbin/nft -f /etc/sitemap-ct196-egress.nft
+ExecStop=/usr/sbin/nft delete table bridge sitemap_ct196
+
+[Install]
+WantedBy=multi-user.target
