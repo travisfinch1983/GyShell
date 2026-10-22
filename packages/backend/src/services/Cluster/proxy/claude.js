@@ -55,10 +55,13 @@ export function createClaudeRouter({ exec, keyPath }) {
   // days in that folder are pruned on each upload.
   const CONSOLE_SSH = process.env.CLAUDE_CONSOLE_SSH_TARGET || 'root@10.0.0.161'
   const IMG_EXT = /\.(png|jpe?g|webp|gif|bmp)$/i
-  const sshPipe = (cmd, input) => new Promise((resolve) => {
+  // a remote instance (another container) names its own host in the registry's sshTarget — same
+  // rule as ClaudeConsoleService, so uploads land on the box the console is attached to.
+  const targetFor = (inst) => (inst?.sshTarget && /^[a-z0-9_-]+@[a-z0-9.-]+$/i.test(inst.sshTarget) ? inst.sshTarget : CONSOLE_SSH)
+  const sshPipe = (target, cmd, input) => new Promise((resolve) => {
     const args = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=10']
     if (keyPath) args.push('-i', keyPath)
-    const child = spawn('ssh', [...args, CONSOLE_SSH, cmd], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn('ssh', [...args, target, cmd], { stdio: ['pipe', 'pipe', 'pipe'] })
     let out = '', err = ''
     child.stdout.on('data', (d) => { out += d })
     child.stderr.on('data', (d) => { err += d })
@@ -83,7 +86,8 @@ export function createClaudeRouter({ exec, keyPath }) {
     // home from passwd (root -> /root); folder private to that user
     const dirCmd = `h=$(getent passwd ${q(user)} | cut -d: -f6); [ -n "$h" ] || exit 3; d="$h/claude-uploads"; ` +
       `install -d -m 700 -o ${q(user)} -g "$(id -gn ${q(user)})" "$d" && find "$d" -type f -mtime +14 -delete 2>/dev/null; echo "$d"`
-    const dr = await sshPipe(dirCmd)
+    const target = targetFor(inst)
+    const dr = await sshPipe(target, dirCmd)
     const dir = dr.out.trim().split('\n').pop()
     if (dr.code !== 0 || !dir) return res.status(500).json({ error: `could not prepare the upload folder (${dr.code}): ${dr.err.trim().slice(0, 200)}` })
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
@@ -96,12 +100,12 @@ export function createClaudeRouter({ exec, keyPath }) {
       try { buf = Buffer.from(String(f.dataB64 || ''), 'base64') } catch { buf = null }
       if (!buf || !buf.length) { errors.push(`${base}: empty`); continue }
       const dest = `${dir}/${stamp}-${i + 1}-${clean}`
-      const w = await sshPipe(`umask 077; cat > ${q(dest)} && chown ${q(user)}: ${q(dest)}`, buf)
+      const w = await sshPipe(target, `umask 077; cat > ${q(dest)} && chown ${q(user)}: ${q(dest)}`, buf)
       if (w.code !== 0) { errors.push(`${base}: write failed (${w.code}) ${w.err.trim().slice(0, 120)}`); continue }
       paths.push(dest)
     }
     if (!paths.length) return res.status(400).json({ error: errors.join('; ') || 'nothing written' })
-    console.log(`[claude] ${paths.length} image(s) -> ${id} (${user}) in ${dir}${errors.length ? `; ${errors.length} skipped` : ''}`)
+    console.log(`[claude] ${paths.length} image(s) -> ${id} (${user}@${target.split('@').pop()}) in ${dir}${errors.length ? `; ${errors.length} skipped` : ''}`)
     res.json({ ok: true, paths, errors })
   })
 
