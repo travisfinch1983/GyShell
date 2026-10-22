@@ -1,5 +1,5 @@
---- /opt/mcp-document-rag/server.mjs.bak-documents-20261022	2026-10-22 22:48:36.265505480 +0000
-+++ /opt/mcp-document-rag/server.mjs	2026-10-22 22:48:36.278505735 +0000
+--- a/server.mjs
++++ b/server.mjs
 @@ -120,15 +120,21 @@
    const q = String(query || '').trim();
    return (!/\s/.test(q) || /\d|_|[a-z][A-Z]|\w[.\-]\w/.test(q)) ? 2 : 1;
