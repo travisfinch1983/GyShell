@@ -28,6 +28,7 @@ RULES = [
     ("/api/proxy/stt/v1/audio/transcriptions", "exact", AILAB),       # matrix plugin voice notes
     ("/api/proxy/multi-tts/v1/audio/speech", "exact", AILAB),          # matrix plugin voice replies
     ("/api/proxy/llm/v1/", "prefix", AILAB),                           # SiteMap photo validation (VLM)
+    ("/api/proxy/embed/v1/", "prefix", AILAB),                         # SiteMap RAG embeddings (Qwen3-VL-Embedding-8B, 4096-d)
     # git smart-HTTP for the Blattner repos ONLY (Gitea has public lab repos; no direct access)
     ("/claude/sitemap.git/", "prefix", GITEA),
     ("/claude/sitemap-infra.git/", "prefix", GITEA),
