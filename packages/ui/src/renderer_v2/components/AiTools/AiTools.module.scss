@@ -192,3 +192,21 @@
 .modalFoot { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-top: 1px solid var(--border); background: var(--panel-bg-2, var(--app-bg)); }
 
 .error { margin: 8px 0; padding: 8px 10px; border-radius: 6px; font-size: 12px; color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+
+/* Document RAG: titled documents + collection window (2026-10-22) */
+.stagedList { display: flex; flex-direction: column; gap: 6px; max-height: 340px; overflow-y: auto; }
+.stagedDoc { display: flex; flex-direction: column; gap: 5px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+.stagedHead { display: flex; align-items: center; gap: 8px; }
+.docMetaGrid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 5px; @media (max-width: 640px) { grid-template-columns: 1fr; } }
+.docMetaGrid .wide { grid-column: 1 / -1; }
+.inputSm { height: 26px; padding: 0 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--control-bg); color: var(--fg); font-size: 12px; min-width: 0; &:focus { border-color: var(--accent); outline: none; } }
+.replaceTag { font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 9px; color: var(--warning, #d8a657); background: color-mix(in srgb, var(--warning, #d8a657) 14%, transparent); white-space: nowrap; }
+.targetHint { font-size: 11px; color: var(--fg-faint); margin: -2px 0 4px; }
+.clickRow { cursor: pointer; &:hover td { background: color-mix(in srgb, var(--accent) 7%, transparent); } }
+.modalWide { max-width: min(980px, 100%); }
+.modalBody { padding: 12px 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.docTitle { font-weight: 600; color: var(--fg); }
+.docSub { font-size: 11px; color: var(--fg-faint); margin-top: 2px; }
+.typeChip { display: inline-block; font-size: 10px; padding: 1px 7px; border-radius: 9px; background: var(--control-bg); border: 1px solid var(--border); color: var(--fg-muted); white-space: nowrap; }
+.editBox { display: flex; flex-direction: column; gap: 5px; }
+.docTableWrap { overflow-x: auto; }

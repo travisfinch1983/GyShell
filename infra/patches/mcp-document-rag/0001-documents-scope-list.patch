@@ -1,0 +1,159 @@
+--- /opt/mcp-document-rag/server.mjs.bak-documents-20261022	2026-10-22 22:48:36.265505480 +0000
++++ /opt/mcp-document-rag/server.mjs	2026-10-22 22:48:36.278505735 +0000
+@@ -120,15 +120,21 @@
+   const q = String(query || '').trim();
+   return (!/\s/.test(q) || /\d|_|[a-z][A-Z]|\w[.\-]\w/.test(q)) ? 2 : 1;
+ }
+-async function keywordSearch(collection, query, topK) {
++async function keywordSearch(collection, query, topK, scope = null) {
+   const resp = await fetch(`${PROXLAB_URL}/api/proxy/vector/all/collections/${collection}/keyword-search`, {
+     method: 'POST', headers: { 'Content-Type': 'application/json' },
+-    body: JSON.stringify({ query, topK, filter: NOT_PAGE_IMG }),
++    body: JSON.stringify({ query, topK, filter: withScope(NOT_PAGE_IMG, scope) }),
+     signal: AbortSignal.timeout(30000),
+   });
+   return resp.json();
+ }
+ 
++/** AND a document scope ({must:[...]}) into a lane filter. */
++function withScope(filter, scope) {
++  if (!scope) return filter;
++  return { ...filter, must: [...(filter.must || []), ...(scope.must || [])] };
++}
++// collections: [{ name, display_name, scope? }]; scope narrows that collection to some documents.
+ async function searchFused(collections, query, topK) {
+   const vector = (await embedTexts([query]))[0];
+   const lists = [];
+@@ -136,12 +142,12 @@
+     const tag = (r) => r.results.map((it) => ({ ...it, collection: col.display_name || col.name }));
+     for (const filter of [NOT_PAGE_IMG, IS_PAGE_IMG]) {
+       try {
+-        const r = await searchCollection(col.name, query, topK, filter, vector);
++        const r = await searchCollection(col.name, query, topK, withScope(filter, col.scope), vector);
+         if (r.results?.length) lists.push(tag(r));
+       } catch { /* one collection failing must not sink the whole search */ }
+     }
+     try {
+-      const k = await keywordSearch(col.name, query, topK);
++      const k = await keywordSearch(col.name, query, topK, col.scope);
+       if (k.results?.length) lists.push(Object.assign(tag(k), { weight: kwWeight(query) }));
+     } catch { /* keyword lane is additive */ }
+   }
+@@ -165,6 +171,28 @@
+   return resp.json();
+ }
+ 
++// ── Documents (2026-10-22): each collection holds titled documents (doc_id/doc_title/doc_type) ──
++// A collection indexed before documents existed has no list yet; the AI-Lab backend builds it on
++// first request (and stamps the points with doc_ids), so ask it rather than guessing from files.
++async function documentsOf(entry) {
++  if (Array.isArray(entry.documents)) return entry.documents;
++  try {
++    const r = await fetch(`${PROXLAB_URL}/api/ai/docrag/collections/${entry.name}/documents`, { signal: AbortSignal.timeout(120000) });
++    if (r.ok) return (await r.json()).documents || [];
++  } catch {}
++  return [];
++}
++const norm = (x) => String(x || '').toLowerCase();
++function matchDocs(docs, document, docType) {
++  return docs.filter((d) => {
++    if (docType && !norm(d.doc_type).includes(norm(docType))) return false;
++    if (!document) return true;
++    const q = norm(document);
++    return d.doc_id === document || norm(d.title).includes(q) || norm(d.file_name).includes(q);
++  });
++}
++const docScope = (docs) => ({ must: [{ key: 'doc_id', match: { any: docs.map((d) => d.doc_id) } }] });
++
+ // ── MCP Server ──────────────────────────────────────────────────────────────
+ const server = new McpServer({
+   name: 'document-rag',
+@@ -179,24 +207,37 @@
+     query: z.string().describe('Search query (natural language)'),
+     collection: z.string().optional().describe('Specific collection to search (without docs_ prefix). Omit to search all.'),
+     k: z.number().optional().describe('Number of results to return (default: 10)'),
++    document: z.string().optional().describe('Limit the search to documents whose TITLE or file name contains this text (case-insensitive), or an exact doc_id. Use list_documents to see titles.'),
++    doc_type: z.string().optional().describe('Limit the search to documents of this type, e.g. "Blueprint", "Contract", "Report" (substring match).'),
+   },
+-  async ({ query, collection, k }) => {
++  async ({ query, collection, k, document, doc_type }) => {
+     const topK = k || 10;
+ 
+     try {
+       let results;
++      const manifest = loadManifest();
++      let cols;
+       if (collection) {
+         const colName = collectionName(collection);
+-        results = { results: await searchFused([{ name: colName, display_name: colName }], query, topK) };
++        cols = [manifest.find((m) => m.name === colName) || { name: colName, display_name: colName }];
+       } else {
+-        // Search all document collections
+-        const manifest = loadManifest();
+         if (manifest.length === 0) {
+-          return { content: [{ type: 'text', text: 'No document collections indexed yet. Upload documents via the ProxLab Document RAG tab.' }] };
++          return { content: [{ type: 'text', text: 'No document collections indexed yet. Upload documents via the AI-Lab Document RAG tab.' }] };
+         }
+-
+-        results = { results: await searchFused(manifest, query, topK) };
++        cols = manifest;
+       }
++      if (document || doc_type) {
++        const scoped = [];
++        for (const c of cols) {
++          const hit = matchDocs(await documentsOf(c), document, doc_type);
++          if (hit.length) scoped.push({ ...c, scope: docScope(hit) });
++        }
++        if (!scoped.length) {
++          return { content: [{ type: 'text', text: `No document matches${document ? ` "${document}"` : ''}${doc_type ? ` of type "${doc_type}"` : ''}${collection ? ` in ${collection}` : ''}. Use list_documents to see the titles.` }] };
++        }
++        cols = scoped;
++      }
++      results = { results: await searchFused(cols, query, topK) };
+ 
+       const items = results.results || [];
+       const formatted = items.map((r, i) => {
+@@ -213,8 +254,11 @@
+         const col = r.collection || parsedMeta.collection || '';
+ 
+         const pageStr = pageNum ? ` (page ${pageNum})` : '';
++        const title = parsedMeta.doc_title || meta.doc_title;
++        const dtype = parsedMeta.doc_type || meta.doc_type;
++        const docLine = title ? `Document: ${title}${dtype ? ` [${dtype}]` : ''}${parsedMeta.doc_id ? ` (doc_id ${parsedMeta.doc_id})` : ''}\n` : '';
+         return `--- Result ${i + 1} (score: ${score.toFixed(4)}) ---
+-File: ${fileName}${pageStr}${fileType ? ` [${fileType}]` : ''}${col ? ` (${col})` : ''}${pageImg ? `
++${docLine}File: ${fileName}${pageStr}${fileType ? ` [${fileType}]` : ''}${col ? ` (${col})` : ''}${pageImg ? `
+ Page image (view the diagram): ${PAGE_IMG_BASE}${pageImg}` : ''}
+ 
+ ${r.text || ''}`;
+@@ -237,7 +281,29 @@
+     if (manifest.length === 0) {
+       return { content: [{ type: 'text', text: 'No document collections indexed yet.' }] };
+     }
+-    return { content: [{ type: 'text', text: JSON.stringify(manifest, null, 2) }] };
++    const summary = manifest.map(({ documents, ...rest }) => ({ ...rest, ...(Array.isArray(documents) ? { document_count: documents.length } : {}) }));
++    return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) + '\n\nUse list_documents(collection) to see the titled documents inside a collection.' }] };
++  },
++);
++
++// ─── Tool: list_documents ───────────────────────────────────────────────────
++server.tool(
++  'list_documents',
++  'List the documents inside a collection: title, type, description, file name, size of index. Use a title (or part of it) as search_docs `document` to search just that document.',
++  {
++    collection: z.string().describe('Collection name (without docs_ prefix)'),
++    doc_type: z.string().optional().describe('Only documents of this type (substring match)'),
++  },
++  async ({ collection, doc_type }) => {
++    const colName = collectionName(collection);
++    const entry = loadManifest().find((m) => m.name === colName);
++    if (!entry) return { content: [{ type: 'text', text: `Collection "${collection}" not found. Use list_doc_collections.` }] };
++    const docs = matchDocs(await documentsOf(entry), null, doc_type);
++    if (!docs.length) return { content: [{ type: 'text', text: 'No documents.' }] };
++    const lines = docs
++      .sort((a, b) => String(a.title).localeCompare(String(b.title), undefined, { numeric: true }))
++      .map((d) => `- ${d.title}${d.doc_type ? ` [${d.doc_type}]` : ''} - ${d.file_name}; ${d.chunks || 0} chunks${d.page_images ? `, ${d.page_images} page images` : ''}; doc_id ${d.doc_id}${d.description ? `\n    ${d.description}` : ''}`);
++    return { content: [{ type: 'text', text: `${entry.display_name || entry.name}${entry.description ? ` - ${entry.description}` : ''}\n${docs.length} document(s):\n${lines.join('\n')}` }] };
+   },
+ );
+ 

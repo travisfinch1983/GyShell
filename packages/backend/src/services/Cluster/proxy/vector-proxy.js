@@ -682,6 +682,72 @@ export function createVectorProxyRouter() {
     res.status(anyFailed ? 207 : 200).json({ collection: req.params.name, results });
   });
 
+  // ── Point-level maintenance by payload filter (document RAG: per-document replace/delete/edit) ──
+  // QDRANT ONLY, and it says so: milvus/weaviate/chromadb are excludeFromAll today, and an
+  // eligible backend that cannot apply the operation is reported per-backend as ok:false rather
+  // than silently skipped (a skipped delete would leave that store serving a removed document).
+  // Every operation is mirrored onto the BM25 companion (<name>__kw) so keyword search agrees.
+  const qdrantPointsOp = async (name, op, body) => {
+    const results = [];
+    for (const db of getEligibleDbs()) {
+      if (db.type !== 'qdrant') { results.push({ db: db.name, ok: false, error: `${op} by filter not supported on ${db.type}` }); continue; }
+      const url = `http://${db.host}:${db.port}`;
+      const qCol = await resolveCollection('qdrant', name);
+      const targets = [qCol, ...(KW_PREFIXES.test(qCol) && !qCol.endsWith(KW_SUFFIX) ? [qCol + KW_SUFFIX] : [])];
+      for (const t of targets) {
+        try {
+          const r = await fetch(`${url}/collections/${t}/points/${op}?wait=true`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body), signal: AbortSignal.timeout(60000),
+          });
+          // A companion that was never built (404) is not a failure of the operation.
+          if (r.status === 404 && t !== qCol) { results.push({ db: db.name, target: t, ok: true, note: 'no companion' }); continue; }
+          results.push({ db: db.name, target: t, ok: r.ok, ...(r.ok ? {} : { error: `HTTP ${r.status}: ${(await r.text().catch(() => '')).slice(0, 200)}` }) });
+        } catch (e) { results.push({ db: db.name, target: t, ok: false, error: e.message }); }
+      }
+    }
+    return results;
+  };
+  const validFilter = (f) => f && typeof f === 'object' && (Array.isArray(f.must) || Array.isArray(f.should) || Array.isArray(f.must_not));
+  // POST /all/collections/:name/delete-points { filter }  — never accepts an empty filter (= wipe)
+  router.post('/all/collections/:name/delete-points', jsonParser(), async (req, res) => {
+    const filter = req.body?.filter;
+    if (!validFilter(filter)) return res.status(400).json({ error: 'a non-empty qdrant filter is required' });
+    const results = await qdrantPointsOp(req.params.name, 'delete', { filter });
+    res.status(results.some((r) => !r.ok) ? 207 : 200).json({ collection: req.params.name, results });
+  });
+  // POST /all/collections/:name/set-payload { filter, payload }  — merges keys into matching points
+  router.post('/all/collections/:name/set-payload', jsonParser(), async (req, res) => {
+    const { filter, payload } = req.body || {};
+    if (!validFilter(filter)) return res.status(400).json({ error: 'a non-empty qdrant filter is required' });
+    if (!payload || typeof payload !== 'object' || !Object.keys(payload).length) return res.status(400).json({ error: 'payload is required' });
+    const results = await qdrantPointsOp(req.params.name, 'payload', { filter, payload });
+    res.status(results.some((r) => !r.ok) ? 207 : 200).json({ collection: req.params.name, results });
+  });
+  // POST /all/collections/:name/scroll { filter?, keys?: [...], limit?, offset? } -> { points:[{id,payload}], next }
+  // Payload is restricted to `keys` (default file_name/file_type/doc_id) so a 25k-point walk stays small.
+  router.post('/all/collections/:name/scroll', jsonParser(), async (req, res) => {
+    const db = getEligibleDbs().find((d) => d.type === 'qdrant');
+    if (!db) return res.status(503).json({ error: 'no qdrant backend' });
+    const { filter, keys, limit = 1000, offset } = req.body || {};
+    try {
+      const qCol = await resolveCollection('qdrant', req.params.name);
+      const r = await fetch(`http://${db.host}:${db.port}/collections/${qCol}/points/scroll`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          limit: Math.min(Number(limit) || 1000, 5000), with_vector: false,
+          with_payload: Array.isArray(keys) && keys.length ? keys : ['file_name', 'file_type', 'doc_id'],
+          ...(validFilter(filter) ? { filter } : {}), ...(offset != null ? { offset } : {}),
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (r.status === 404) return res.status(404).json({ error: 'collection not found' });
+      const d = await r.json();
+      if (!r.ok) return res.status(502).json({ error: d?.status?.error || `HTTP ${r.status}` });
+      res.json({ points: (d.result?.points || []).map((p) => ({ id: p.id, payload: p.payload || {} })), next: d.result?.next_page_offset ?? null });
+    } catch (e) { res.status(502).json({ error: String(e.message || e) }); }
+  });
+
   // POST /api/proxy/vector/all/collections/:name/upsert — Upsert vectors to all eligible DBs
   // Body: { points: [{ id, vector, metadata }] }
   // Or with auto-vectorize: { documents: [{ id, text, metadata }] }

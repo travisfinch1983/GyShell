@@ -220,6 +220,14 @@ export function registerRagRoutes(app, { exec, selfPort }) {
     }
   })
 
+/** The user-supplied per-document fields an upload may carry (anything else is ignored). */
+function docFileMeta(f) {
+  const str = (v, n) => (typeof v === 'string' ? v.slice(0, n) : undefined);
+  const out = { title: str(f?.title, 200), description: str(f?.description, 2000), doc_type: str(f?.doc_type, 60) };
+  if (typeof f?.replaceDocId === 'string' && /^[a-f0-9]{6,24}$/.test(f.replaceDocId)) out.replaceDocId = f.replaceDocId;
+  return out;
+}
+
 // ─── Document RAG: browse the AI-Lab container's filesystem + index in place ──
 // The backend runs INSIDE CT152 where the NAS pools are mounted, so it lists and reads
 // files directly — no upload round-trip from the user's machine.
@@ -252,12 +260,15 @@ app.get('/api/ai/docrag/browse', async (req, res) => {
 // Index files that already live on the container (selected via /docrag/browse). Reads them
 // in place; keepSource:true so the shared cleanup never unlinks the user's real files.
 app.post('/api/ai/docrag/index-paths', express.json({ limit: '2mb' }), async (req, res) => {
+  // paths: ["/nas/a.pdf", ...] or [{ path, title?, description?, doc_type?, replaceDocId? }, ...]
   const { collection, description, paths, pageImages } = req.body || {};
   if (!collection || !Array.isArray(paths) || !paths.length) return res.status(400).json({ error: 'collection and paths are required' });
   if (docRagJob.active) return res.status(409).json({ error: 'A document indexing job is already running.' });
   const files = [];
-  for (const p of paths) {
-    try { const s = await stat(p); if (s.isFile()) files.push({ path: p, originalname: basename(p) }); } catch {}
+  for (const item of paths) {
+    const p = typeof item === 'string' ? item : item?.path;
+    if (typeof p !== 'string') continue;
+    try { const s = await stat(p); if (s.isFile()) files.push({ path: p, originalname: basename(p), keep: true, ...(typeof item === 'object' ? docFileMeta(item) : {}) }); } catch {}
   }
   if (!files.length) return res.status(400).json({ error: 'none of the given paths are readable files on the container' });
   runDocRagIndexing(files, collection, description, { keepSource: true, pageImages: pageImages !== false });
@@ -1370,7 +1381,7 @@ function docRagStatus() {
   return {
     active: docRagJob.active, phase: docRagJob.phase, progress: docRagJob.progress,
     detail: docRagJob.detail, result: docRagJob.result, error: docRagJob.error,
-    collection: docRagJob.collection, fileCount: docRagJob.fileCount,
+    collection: docRagJob.collection, colName: docRagJob.colName || '', fileCount: docRagJob.fileCount,
   };
 }
 
@@ -1538,8 +1549,121 @@ async function embedFetch(url, init = {}) {
   }
 }
 
+// ── Documents inside a collection (2026-10-22) ──────────────────────────────
+// A collection holds many DOCUMENTS (prints, contracts, reports...). Each has a stable doc_id plus
+// a title / description / type the user gives it, and every point carries them as payload
+// (doc_id, doc_rev, doc_title, doc_description, doc_type) so search can be scoped to a document.
+// The manifest entry keeps the per-document list; its totals are DERIVED from that list, never
+// overwritten by whichever batch ran last (they used to be - a 1-file add made a 20-file
+// collection read "1 file").
+// SAFETY: adding to or replacing inside an existing collection NEVER drops the collection. A new
+// version is written under a fresh doc_rev and the old rev is deleted only after the new one
+// stored something; a failed file deletes only its own partial rev. (Before this, any job failure
+// auto-dropped the WHOLE collection - including every document added by earlier jobs.)
+let docManifestChain = Promise.resolve();
+function readDocManifest() {
+  try { const m = JSON.parse(readFileSync(DOC_RAG_MANIFEST, 'utf-8')); return Array.isArray(m) ? m : []; } catch { return []; }
+}
+/** Serialised read-modify-write (atomic rename) so concurrent edits cannot lose each other. */
+function updateDocManifest(fn) {
+  const run = docManifestChain.then(() => {
+    const m = readDocManifest();
+    const out = fn(m) || m;
+    mkdirSync(dirname(DOC_RAG_MANIFEST), { recursive: true });
+    const tmp = `${DOC_RAG_MANIFEST}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(out, null, 2));
+    renameSync(tmp, DOC_RAG_MANIFEST);
+    return out;
+  });
+  docManifestChain = run.catch((e) => console.warn(`[docrag] manifest write failed: ${e.message}`));
+  return run;
+}
+function recomputeDocEntry(e) {
+  const docs = Array.isArray(e.documents) ? e.documents : [];
+  e.files_indexed = docs.length;
+  e.chunks_created = docs.reduce((a, d) => a + (d.chunks || 0) + (d.page_images || 0), 0);
+  const ft = {};
+  for (const d of docs) { const k = d.file_kind || 'other'; ft[k] = (ft[k] || 0) + 1; }
+  e.file_types = ft;
+  return e;
+}
+const docColFromParam = (raw) => (String(raw).startsWith('docs_') ? String(raw) : sanitizeDocCollectionName(String(raw)));
+const newDocId = () => randomBytes(6).toString('hex');
+const stripExt = (n) => String(n).replace(/\.[A-Za-z0-9]{1,5}$/, '');
+const fileKindOf = (name) => { const ext = extname(String(name)).toLowerCase(); return IMAGE_EXTS.has(ext) ? 'image' : (ext.replace('.', '') || 'other'); };
+const docIdFilter = (docId) => ({ must: [{ key: 'doc_id', match: { value: docId } }] });
+
+async function vectorOp(colName, op, body) {
+  const r = await fetch(`http://127.0.0.1:${selfPort}/api/proxy/vector/all/collections/${colName}/${op}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(90000),
+  });
+  const d = await r.json().catch(() => ({}));
+  const failed = (d.results || []).filter((x) => !x.ok);
+  if (!r.ok && r.status !== 207) throw new Error(`${op} HTTP ${r.status}: ${d.error || ''}`);
+  if (failed.length) throw new Error(`${op} failed on ${failed.map((x) => `${x.target || x.db}: ${x.error}`).join('; ')}`);
+  return d;
+}
+async function scrollAllPoints(colName, keys) {
+  const out = []; let offset = null;
+  for (let guard = 0; guard < 500; guard++) {
+    const r = await fetch(`http://127.0.0.1:${selfPort}/api/proxy/vector/all/collections/${colName}/scroll`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keys, limit: 2000, ...(offset != null ? { offset } : {}) }), signal: AbortSignal.timeout(60000),
+    });
+    if (r.status === 404) return out;
+    const d = await r.json();
+    if (!r.ok) throw new Error(`scroll ${colName}: ${d.error || r.status}`);
+    out.push(...(d.points || []));
+    if (d.next == null) return out;
+    offset = d.next;
+  }
+  throw new Error(`scroll ${colName}: too many pages`);
+}
+/** Collections indexed before documents existed: build the list from the points themselves and
+ *  stamp each file's points with a doc_id so they can be replaced/removed/filtered like new ones. */
+async function ensureDocList(colName) {
+  const have = readDocManifest().find((c) => c.name === colName);
+  if (have && Array.isArray(have.documents)) return have;
+  const pts = await scrollAllPoints(colName, ['file_name', 'file_type', 'doc_id']);
+  const byFile = new Map();
+  for (const p of pts) {
+    const fn = p.payload?.file_name || '(unknown)';
+    const g = byFile.get(fn) || { file_name: fn, chunks: 0, page_images: 0, doc_id: p.payload?.doc_id || null };
+    if (p.payload?.file_type === 'pdf_page_image') g.page_images++; else g.chunks++;
+    if (!g.doc_id && p.payload?.doc_id) g.doc_id = p.payload.doc_id;
+    byFile.set(fn, g);
+  }
+  const now = new Date().toISOString();
+  const docs = [];
+  for (const g of byFile.values()) {
+    const docId = g.doc_id || newDocId();
+    if (!g.doc_id) {
+      await vectorOp(colName, 'set-payload', {
+        filter: { must: [{ key: 'file_name', match: { value: g.file_name } }] },
+        payload: { doc_id: docId, doc_rev: 'legacy', doc_title: stripExt(g.file_name), doc_description: '', doc_type: '' },
+      });
+    }
+    docs.push({ doc_id: docId, rev: 'legacy', file_name: g.file_name, title: stripExt(g.file_name), description: '', doc_type: '',
+      file_kind: fileKindOf(g.file_name), chunks: g.chunks, page_images: g.page_images, size: null, indexed_at: have?.indexed_at || now });
+  }
+  console.log(`[docrag] ${colName}: built document list from ${pts.length} points -> ${docs.length} documents`);
+  const m = await updateDocManifest((m) => {
+    let e = m.find((c) => c.name === colName);
+    if (!e) { e = { name: colName, display_name: colName.replace(/^docs_/, ''), description: '', embed_model: effEmbedModel(), indexed_at: now }; m.push(e); }
+    e.documents = docs;
+    recomputeDocEntry(e);
+    return m;
+  });
+  return m.find((c) => c.name === colName);
+}
+
+/**
+ * files: [{ path, originalname, title?, description?, doc_type?, replaceDocId? }]
+ * A file whose name matches a document already in the collection REPLACES that document (no
+ * side-by-side duplicates); replaceDocId replaces a specific document whatever the new file is called.
+ */
 async function runDocRagIndexing(files, collection, description, opts = {}) {
-  const colName = sanitizeDocCollectionName(collection);
+  const colName = readDocManifest().some((c) => c.name === collection) ? collection : sanitizeDocCollectionName(collection);
   const port = selfPort;
   docRagJob.active = true;
   docRagJob.phase = 'processing';
@@ -1548,11 +1672,21 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
   docRagJob.result = null;
   docRagJob.error = null;
   docRagJob.collection = collection;
+  docRagJob.colName = colName;
   docRagJob.fileCount = files.length;
-  console.log(`[docrag] Indexing ${files.length} files as ${colName}`);
+  console.log(`[docrag] Indexing ${files.length} files into ${colName}`);
 
+  let existed = !!readDocManifest().find((c) => c.name === colName);
+  let currentRev = null;   // the rev being written right now (cleaned up if the job dies mid-file)
+  let currentDoc = null;
+  const succeeded = [];
   try {
-    // Create collection in all vector DBs
+    if (!existed) {
+      try {
+        const c = await (await fetch(`http://127.0.0.1:${port}/api/proxy/vector/all/collections/${colName}/count`, { signal: AbortSignal.timeout(10000) })).json();
+        existed = (c.maxCount || 0) > 0;
+      } catch {}
+    }
     try {
       await fetch(`http://127.0.0.1:${port}/api/proxy/vector/all/collections`, {
         method: 'POST',
@@ -1563,6 +1697,21 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
     } catch (e) {
       console.warn(`[docrag] Collection create warning: ${e.message}`);
     }
+    if (existed) {
+      docRagJob.detail = 'Reading the collection\'s document list...';
+      await ensureDocList(colName);
+    }
+    await updateDocManifest((m) => {
+      let e = m.find((c) => c.name === colName);
+      if (!e) {
+        e = { name: colName, display_name: collection, description: description || '', embed_model: effEmbedModel(),
+          created_at: new Date().toISOString(), indexed_at: new Date().toISOString(), documents: [] };
+        m.push(e);
+      } else if (description && String(description).trim()) e.description = String(description).trim();
+      if (!Array.isArray(e.documents)) e.documents = [];
+      recomputeDocEntry(e);
+      return m;
+    });
 
     const EMBED_BATCH = 16;
     const pageImages = opts.pageImages !== false;
@@ -1570,28 +1719,35 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
     let pageImageCount = 0;
     const skipped = [];
     let embedErrors = 0;
-    const fileTypes = {};
     let filesProcessed = 0;
 
     for (const file of files) {
       const origName = file.originalname;
       const ext = extname(origName).toLowerCase();
-      const typeKey = IMAGE_EXTS.has(ext) ? 'image' : ext.replace('.', '');
-      fileTypes[typeKey] = (fileTypes[typeKey] || 0) + 1;
+      const typeKey = fileKindOf(origName);
+      const curDocs = readDocManifest().find((c) => c.name === colName)?.documents || [];
+      const prev = file.replaceDocId ? curDocs.find((d) => d.doc_id === file.replaceDocId) : curDocs.find((d) => d.file_name === origName);
+      if (file.replaceDocId && !prev) { skipped.push(`${origName} (the document to replace no longer exists)`); filesProcessed++; continue; }
+      const docId = prev?.doc_id || newDocId();
+      const rev = randomBytes(4).toString('hex');
+      const pick = (v, fallback) => (typeof v === 'string' && v.trim() ? v.trim() : fallback);
+      const title = pick(file.title, prev?.title || stripExt(origName));
+      const docDescription = pick(file.description, prev?.description || '');
+      const docType = pick(file.doc_type, prev?.doc_type || '');
+      const docMeta = { doc_id: docId, doc_rev: rev, doc_title: title, doc_description: docDescription, doc_type: docType };
+      // Title/type go into what is EMBEDDED (not the stored text), so "the civil grading plan" lands on that print.
+      const embedHeader = `[${docType ? docType + ': ' : ''}${title}]\n`;
+      currentRev = rev; currentDoc = docId;
+      let fileChunks = [], storedText = 0, storedImage = 0, filePages = 0;
 
       try {
         const contents = await extractDocContent(file.path, origName);
-
-        // Collect chunks for this file
-        const fileChunks = [];
         for (const part of contents) {
           if (part.isImage) {
-            // Image — embed via multimodal messages format (one at a time)
             const imgBuffer = await readFileAsync(file.path);
             const b64 = imgBuffer.toString('base64');
             const mimeMap = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp' };
             const mime = mimeMap[ext] || 'image/png';
-
             try {
               const embedResp = await embedFetch(`http://127.0.0.1:${port}/api/proxy/embed/v1/embeddings`, {
                 method: 'POST',
@@ -1603,24 +1759,16 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
                   ] }],
                   encoding_format: 'float',
                 }),
-                signal: AbortSignal.timeout(120000),
               });
               if (embedResp.ok) {
-                const embedData = await embedResp.json();
-                const vector = embedData.data?.[0]?.embedding;
+                const vector = (await embedResp.json()).data?.[0]?.embedding;
                 if (vector?.length) {
-                  const point = {
-                    id: `${colName}::${origName}::img::0`,
+                  const n = await upsertDocPoints(port, colName, [{
+                    id: `${colName}::${docId}::${rev}::img::0`,
                     vector,
-                    metadata: { text: `[image: ${origName}]`, file_name: origName, file_type: 'image', collection: colName },
-                  };
-                  await fetch(`http://127.0.0.1:${port}/api/proxy/vector/all/collections/${colName}/upsert`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ points: [point] }),
-                    signal: AbortSignal.timeout(60000),
-                  }).then(r => r.text().catch(() => ''));
-                  upsertedCount++;
+                    metadata: { text: `[image: ${title}]${docDescription ? ' ' + docDescription : ''}`, file_name: origName, file_type: 'image', collection: colName, ...docMeta },
+                  }]);
+                  storedImage += n; upsertedCount += n;
                 }
               } else {
                 console.warn(`[docrag] Image embed failed for ${origName}: HTTP ${embedResp.status}`);
@@ -1629,62 +1777,53 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
               console.warn(`[docrag] Image embed error for ${origName}: ${e.message}`);
             }
           } else {
-            // Text content — chunk it
             const extra = part.page_number != null ? { page_number: part.page_number } : {};
-            const chunks = chunkDocText(part.text, origName, typeKey, extra);
-            fileChunks.push(...chunks);
+            fileChunks.push(...chunkDocText(part.text, origName, typeKey, extra));
           }
         }
 
-        // Embed text chunks in batches
         for (let j = 0; j < fileChunks.length; j += EMBED_BATCH) {
           const batch = fileChunks.slice(j, j + EMBED_BATCH);
           try {
-            const truncated = batch.map(c => embedSafeText(c.text));
+            const truncated = batch.map(c => embedSafeText(embedHeader + c.text));
             const embedResp = await embedFetch(`http://127.0.0.1:${port}/api/proxy/embed/v1/embeddings`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ model: effEmbedModel(), input: truncated }),
-              signal: AbortSignal.timeout(120000),
             });
-
             if (!embedResp.ok) {
               embedErrors++;
               if (embedErrors >= 5) throw new Error(`Embedding model returned ${embedResp.status} on 5 consecutive batches`);
               continue;
             }
             embedErrors = 0;
-            const embedData = await embedResp.json();
-            const embeddings = (embedData.data || []).map(d => d.embedding);
-
+            const embeddings = ((await embedResp.json()).data || []).map(d => d.embedding);
             if (!embeddings.length || !embeddings[0]?.length) {
               embedErrors++;
               if (embedErrors >= 5) throw new Error('Empty vectors on 5 consecutive batches');
               continue;
             }
-
             const points = batch.map((c, idx) => ({
-              id: `${colName}::${c.file_name}::${c.page_number != null ? 'p' + c.page_number : 'c'}::${c.chunk_index}`,
+              id: `${colName}::${docId}::${rev}::${c.page_number != null ? 'p' + c.page_number : 'c'}::${c.chunk_index}`,
               vector: embeddings[idx],
-              metadata: { text: stripLoneSurrogates(c.text), file_name: c.file_name, file_type: c.file_type, page_number: c.page_number || null, chunk_index: c.chunk_index, collection: colName },
+              metadata: { text: stripLoneSurrogates(c.text), file_name: c.file_name, file_type: c.file_type, page_number: c.page_number || null, chunk_index: c.chunk_index, collection: colName, ...docMeta },
             }));
-
-            upsertedCount += await upsertDocPoints(port, colName, points);
+            const n = await upsertDocPoints(port, colName, points);
+            storedText += n; upsertedCount += n;
           } catch (e) {
             if (e.message.includes('consecutive batches')) throw e;
             console.warn(`[docrag] Embed/upsert batch failed: ${e.message}`);
           }
+          docRagJob.detail = `Processing: ${filesProcessed}/${files.length} files - ${title}: ${Math.min(j + EMBED_BATCH, fileChunks.length)}/${fileChunks.length} chunks`;
         }
 
-        // Page images: every PDF page, including ones with no text layer at all.
-        let filePages = 0;
         if (pageImages && ext === '.pdf') {
           let pages = [];
           try { pages = await renderPdfPages(file.path, docPagesDir(colName, origName)); }
           catch (e) { console.warn(`[docrag] page render failed for ${origName}: ${e.message}`); }
           const textByPage = new Map(contents.filter((c) => c.page_number != null).map((c) => [c.page_number, c.text || '']));
           for (const pg of pages) {
-            docRagJob.detail = `Processing: ${filesProcessed}/${files.length} files - ${origName} page image ${pg.page}/${pages.length}`;
+            docRagJob.detail = `Processing: ${filesProcessed}/${files.length} files - ${title} page image ${pg.page}/${pages.length}`;
             try {
               const b64 = (await readFileAsync(pg.path)).toString('base64');
               const er = await embedFetch(`http://127.0.0.1:${port}/api/proxy/embed/v1/embeddings`, {
@@ -1692,19 +1831,17 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
                 body: JSON.stringify({ model: effEmbedModel(), messages: [{ role: 'user', content: [
                   { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } },
                 ] }], encoding_format: 'float' }),
-                signal: AbortSignal.timeout(180000),
               });
               if (!er.ok) { console.warn(`[docrag] page ${pg.page} of ${origName}: embed HTTP ${er.status}`); continue; }
               const vector = (await er.json()).data?.[0]?.embedding;
               if (!vector?.length) continue;
               const pageText = stripLoneSurrogates((textByPage.get(pg.page) || '').replace(/\s+/g, ' ').trim());
               const stored = await upsertDocPoints(port, colName, [{
-                id: `${colName}::${origName}::pimg::${pg.page}`,
+                id: `${colName}::${docId}::${rev}::pimg::${pg.page}`,
                 vector,
                 metadata: {
-                  // The text is what a search hit SHOWS: say it is a page image, carry the page's words.
-                  text: `[page image: ${origName} p.${pg.page}]${pageText ? ' ' + pageText.slice(0, 600) : ' (no text layer - diagram/scan)'}`,
-                  file_name: origName, file_type: 'pdf_page_image', page_number: pg.page, collection: colName,
+                  text: `[page image: ${title} p.${pg.page}]${pageText ? ' ' + pageText.slice(0, 600) : ' (no text layer - diagram/scan)'}`,
+                  file_name: origName, file_type: 'pdf_page_image', page_number: pg.page, collection: colName, ...docMeta,
                   page_image: `/api/ai/docrag/page-image?collection=${encodeURIComponent(colName)}&file=${encodeURIComponent(origName)}&page=${pg.page}`,
                 },
               }]);
@@ -1714,12 +1851,44 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
             }
           }
         }
-        if (!fileChunks.length && !filePages && !contents.some((c) => c.isImage)) skipped.push(origName);
       } catch (e) {
         if (e.message.includes('consecutive batches')) throw e;
         console.warn(`[docrag] Error processing ${origName}: ${e.message}`);
         skipped.push(`${origName} (${String(e.message).slice(0, 80)})`);
       }
+
+      const storedAll = storedText + storedImage + filePages;
+      if (storedAll > 0) {
+        // New version is in: now (and only now) retire the previous version's points.
+        if (prev) {
+          try { await vectorOp(colName, 'delete-points', { filter: { must: [{ key: 'doc_id', match: { value: docId } }], must_not: [{ key: 'doc_rev', match: { value: rev } }] } }); }
+          catch (e) { console.warn(`[docrag] ${colName}/${docId}: old version cleanup failed: ${e.message}`); skipped.push(`${origName} (new version indexed, but removing the old version failed: ${e.message.slice(0, 80)})`); }
+          if (prev.file_name !== origName && !curDocs.some((d) => d.doc_id !== docId && d.file_name === prev.file_name)) {
+            try { rmSync(docPagesDir(colName, prev.file_name), { recursive: true, force: true }); } catch {}
+          }
+        }
+        let size = null; try { size = statSyncFs(file.path).size; } catch {}
+        const docEntry = {
+          doc_id: docId, rev, file_name: origName, title, description: docDescription, doc_type: docType, file_kind: typeKey,
+          chunks: storedText + storedImage, page_images: filePages, size, indexed_at: new Date().toISOString(),
+          created_at: prev?.created_at || prev?.indexed_at || new Date().toISOString(), version: (prev?.version || 1) + (prev ? 1 : 0),
+        };
+        await updateDocManifest((m) => {
+          const e = m.find((c) => c.name === colName);
+          if (!e) return m;
+          e.documents = [...(e.documents || []).filter((d) => d.doc_id !== docId), docEntry];
+          e.indexed_at = docEntry.indexed_at;
+          e.embed_model = effEmbedModel();
+          recomputeDocEntry(e);
+          return m;
+        });
+        succeeded.push({ doc_id: docId, title, replaced: !!prev });
+      } else {
+        if (!skipped.some((x) => x.startsWith(origName))) skipped.push(`${origName} (no text or images could be extracted)`);
+        // Drop any partial points of this rev; the previous version (if any) is untouched.
+        try { await vectorOp(colName, 'delete-points', { filter: { must: [{ key: 'doc_rev', match: { value: rev } }] } }); } catch {}
+      }
+      currentRev = null; currentDoc = null;
 
       filesProcessed++;
       const pct = 10 + Math.round((filesProcessed / files.length) * 80);
@@ -1727,38 +1896,19 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
       docRagJob.detail = `Processing: ${filesProcessed}/${files.length} files, ${upsertedCount} chunks indexed`;
     }
 
-    if (upsertedCount === 0) {
-      throw new Error('No content could be extracted and embedded from the uploaded files.');
+    if (!succeeded.length) {
+      throw new Error(`Nothing could be indexed${skipped.length ? `: ${skipped.slice(0, 3).join(', ')}` : ''}`);
     }
-
-    // Update manifest on MCPJungle
-    docRagJob.progress = 95;
-    docRagJob.detail = 'Updating collection manifest...';
-    const manifestData = {
-      name: colName, display_name: collection, description: description || '',
-      embed_model: effEmbedModel(), files_indexed: filesProcessed, chunks_created: upsertedCount, file_types: fileTypes,
-      indexed_at: new Date().toISOString(),
-    };
-    const manifestB64 = Buffer.from(JSON.stringify(manifestData)).toString('base64');
-    await exec(MCPJUNGLE_HOST,
-      `mkdir -p /opt/mcp-document-rag/data && node -e "
-        const fs = require('fs'), p = '${DOC_RAG_MANIFEST}';
-        let m = []; try { m = JSON.parse(fs.readFileSync(p,'utf-8')); } catch {}
-        const entry = JSON.parse(Buffer.from('${manifestB64}','base64').toString());
-        const idx = m.findIndex(c => c.name === entry.name);
-        if (idx >= 0) m[idx] = entry; else m.push(entry);
-        fs.writeFileSync(p, JSON.stringify(m, null, 2));
-        console.log('manifest updated');
-      "`, { timeout: 10000 }).catch(e => console.warn(`[docrag] Manifest update failed: ${e.message}`));
 
     docRagJob.phase = 'done';
     docRagJob.progress = 100;
-    docRagJob.detail = `Indexed ${filesProcessed - skipped.length} files (${upsertedCount} chunks`
+    const replacedN = succeeded.filter((x) => x.replaced).length;
+    docRagJob.detail = `Indexed ${succeeded.length} document${succeeded.length === 1 ? '' : 's'}${replacedN ? ` (${replacedN} replaced)` : ''} (${upsertedCount} chunks`
       + `${pageImageCount ? `, incl. ${pageImageCount} page images` : ''})`
       + `${skipped.length ? `; skipped ${skipped.length}: ${skipped.slice(0, 3).join(', ')}${skipped.length > 3 ? '…' : ''}` : ''}`;
     docRagJob.result = {
-      collection: colName, files_indexed: filesProcessed - skipped.length,
-      chunks_created: upsertedCount, page_images: pageImageCount, file_types: fileTypes, skipped,
+      collection: colName, files_indexed: succeeded.length, documents: succeeded,
+      chunks_created: upsertedCount, page_images: pageImageCount, skipped,
     };
   } catch (e) {
     docRagJob.phase = 'error';
@@ -1766,22 +1916,25 @@ async function runDocRagIndexing(files, collection, description, opts = {}) {
     docRagJob.error = e.message;
     docRagJob.detail = `Error: ${e.message}`;
     console.warn(`[docrag] Indexing failed for ${colName}: ${e.message}`);
-    // Auto-drop partial collection
-    try {
-      await fetch(`http://127.0.0.1:${selfPort}/api/proxy/vector/all/collections/${colName}`, {
-        method: 'DELETE', signal: AbortSignal.timeout(30000),
-      }).then(r => r.text().catch(() => ''));
-    } catch {}
-    try {
-      await exec(MCPJUNGLE_HOST,
-        `node -e "const fs=require('fs'),p='${DOC_RAG_MANIFEST}';let m=[];try{m=JSON.parse(fs.readFileSync(p,'utf-8'))}catch{}m=m.filter(c=>c.name!=='${colName}');fs.writeFileSync(p,JSON.stringify(m,null,2))"`,
-        { timeout: 10000 });
-    } catch {}
+    if (currentRev) {
+      try { await vectorOp(colName, 'delete-points', { filter: { must: [{ key: 'doc_rev', match: { value: currentRev } }] } }); }
+      catch (e2) { console.warn(`[docrag] ${colName}: partial cleanup of ${currentDoc}@${currentRev} failed: ${e2.message}`); }
+    }
+    // Only a collection THIS job created, and that ended up with nothing in it, is removed.
+    if (!existed && !succeeded.length) {
+      try {
+        await fetch(`http://127.0.0.1:${selfPort}/api/proxy/vector/all/collections/${colName}`, {
+          method: 'DELETE', signal: AbortSignal.timeout(30000),
+        }).then(r => r.text().catch(() => ''));
+      } catch {}
+      try { await updateDocManifest((m) => m.filter((c) => c.name !== colName)); } catch {}
+    }
   } finally {
     docRagJob.active = false;
-    // Clean up temp uploaded files — but NEVER server-browsed source files (keepSource).
-    if (!opts.keepSource) for (const file of files) {
-      try { await rmAsync(file.path, { force: true }); } catch {}
+    for (const file of files) {
+      if (opts.keepSource || file.keep) continue;   // never unlink a user's real file browsed on the container
+      // rmAsync was never defined: the ReferenceError was swallowed and temp uploads were never removed.
+      try { rmSync(file.path, { force: true }); } catch (e) { console.warn(`[docrag] temp cleanup ${file.path}: ${e.message}`); }
     }
   }
 }
@@ -1849,9 +2002,14 @@ app.post('/api/ai/docrag/staging/:session/index', express.json({ limit: '2mb' })
     const p = join(dir, stagedName(parseInt(f.idx, 10), f.name));
     const got = existsSync(p) ? statSyncFs(p).size : -1;
     if (got !== Number(f.size)) bad.push(`${f.name} (${got < 0 ? 'missing' : `${got} of ${f.size} bytes`})`);
-    else ready.push({ path: p, originalname: String(f.name) });
+    else ready.push({ path: p, originalname: String(f.name), ...docFileMeta(f) });
   }
   if (bad.length) return res.status(400).json({ error: `incomplete upload: ${bad.slice(0, 5).join(', ')}${bad.length > 5 ? ` and ${bad.length - 5} more` : ''}` });
+  for (const item of Array.isArray(req.body?.serverFiles) ? req.body.serverFiles : []) {
+    const sp = typeof item === 'string' ? item : item?.path;
+    if (typeof sp !== 'string') continue;
+    try { if (statSyncFs(sp).isFile()) ready.push({ path: sp, originalname: basename(sp), keep: true, ...(typeof item === 'object' ? docFileMeta(item) : {}) }); } catch {}
+  }
   console.log(`[docrag] staged upload ${req.params.session}: ${ready.length} files ready`);
   Promise.resolve(runDocRagIndexing(ready, collection, description, { pageImages: req.body?.pageImages !== false }))
     .finally(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
@@ -1920,6 +2078,80 @@ app.delete('/api/ai/docrag/collections/:name', async (req, res) => {
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
+});
+
+// ── Documents in a collection: list / edit / delete (replace = upload with replaceDocId) ──
+const docBusy = (colName) => docRagJob.active && docRagJob.colName === colName;
+app.get('/api/ai/docrag/collections/:name/documents', async (req, res) => {
+  const raw = String(req.params.name || '');
+  if (!/^[A-Za-z0-9_-]+$/.test(raw)) return res.status(400).json({ error: 'bad collection name' });
+  const colName = docColFromParam(raw);
+  try {
+    if (!readDocManifest().some((c) => c.name === colName)) return res.status(404).json({ error: `no collection ${colName}` });
+    // A legacy backfill stamps payloads; never race it against an indexing job on the same collection.
+    const e = readDocManifest().find((c) => c.name === colName);
+    if (!Array.isArray(e?.documents) && docBusy(colName)) return res.status(409).json({ error: 'this collection is being indexed - try again when it finishes' });
+    const entry = await ensureDocList(colName);
+    res.json({ ...entry, documents: [...(entry.documents || [])].sort((a, b) => String(a.title).localeCompare(String(b.title), undefined, { numeric: true })), busy: docBusy(colName) });
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+app.patch('/api/ai/docrag/collections/:name', express.json(), async (req, res) => {
+  const colName = docColFromParam(req.params.name);
+  const d = typeof req.body?.description === 'string' ? req.body.description.slice(0, 2000) : null;
+  if (d == null) return res.status(400).json({ error: 'description is required' });
+  let found = false;
+  await updateDocManifest((m) => { const e = m.find((c) => c.name === colName); if (e) { e.description = d.trim(); found = true; } return m; });
+  if (!found) return res.status(404).json({ error: `no collection ${colName}` });
+  res.json({ ok: true });
+});
+app.patch('/api/ai/docrag/collections/:name/documents/:docId', express.json(), async (req, res) => {
+  const colName = docColFromParam(req.params.name);
+  const docId = String(req.params.docId || '');
+  if (docBusy(colName)) return res.status(409).json({ error: 'this collection is being indexed - try again when it finishes' });
+  const m = docFileMeta(req.body || {});
+  const patch = {};
+  if (m.title !== undefined) { if (!m.title.trim()) return res.status(400).json({ error: 'title cannot be empty' }); patch.title = m.title.trim(); }
+  if (m.description !== undefined) patch.description = m.description.trim();
+  if (m.doc_type !== undefined) patch.doc_type = m.doc_type.trim();
+  if (!Object.keys(patch).length) return res.status(400).json({ error: 'nothing to change (title, description, doc_type)' });
+  try {
+    const entry = await ensureDocList(colName);
+    if (!entry.documents.some((x) => x.doc_id === docId)) return res.status(404).json({ error: 'no such document' });
+    const payload = {};
+    if (patch.title !== undefined) payload.doc_title = patch.title;
+    if (patch.description !== undefined) payload.doc_description = patch.description;
+    if (patch.doc_type !== undefined) payload.doc_type = patch.doc_type;
+    await vectorOp(colName, 'set-payload', { filter: docIdFilter(docId), payload });
+    await updateDocManifest((mm) => {
+      const e = mm.find((c) => c.name === colName);
+      const doc = e?.documents?.find((x) => x.doc_id === docId);
+      if (doc) Object.assign(doc, patch, { edited_at: new Date().toISOString() });
+      return mm;
+    });
+    res.json({ ok: true, doc_id: docId, ...patch });
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+app.delete('/api/ai/docrag/collections/:name/documents/:docId', async (req, res) => {
+  const colName = docColFromParam(req.params.name);
+  const docId = String(req.params.docId || '');
+  if (docBusy(colName)) return res.status(409).json({ error: 'this collection is being indexed - try again when it finishes' });
+  try {
+    const entry = await ensureDocList(colName);
+    const doc = entry.documents.find((x) => x.doc_id === docId);
+    if (!doc) return res.status(404).json({ error: 'no such document' });
+    // Vectors first: if that fails the document stays listed (and searchable) rather than becoming a ghost.
+    await vectorOp(colName, 'delete-points', { filter: docIdFilter(docId) });
+    if (!entry.documents.some((x) => x.doc_id !== docId && x.file_name === doc.file_name)) {
+      try { rmSync(docPagesDir(colName, doc.file_name), { recursive: true, force: true }); } catch {}
+    }
+    await updateDocManifest((mm) => {
+      const e = mm.find((c) => c.name === colName);
+      if (e) { e.documents = (e.documents || []).filter((x) => x.doc_id !== docId); recomputeDocEntry(e); }
+      return mm;
+    });
+    console.log(`[docrag] ${colName}: deleted document ${docId} (${doc.title})`);
+    res.json({ ok: true, deleted: docId, title: doc.title });
+  } catch (e) { res.status(502).json({ error: e.message }); }
 });
 
 app.get('/api/ai/docrag/collections/:name/stats', async (req, res) => {
