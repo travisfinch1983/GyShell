@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { Download, Mic, MicOff, NotebookPen, Plus, Radio, RefreshCw, Trash2 } from 'lucide-react'
+import { Download, FileSpreadsheet, Mic, MicOff, NotebookPen, Plus, Radio, RefreshCw, Table2, Trash2 } from 'lucide-react'
 import {
   startPushToTalk, stopPushToTalk,
   startHandsFree, stopHandsFree,
@@ -7,6 +7,7 @@ import {
   type SttState,
 } from '../../services/SttCapture'
 import { useSttHealth } from '../../services/useSttHealth'
+import { NoteGridEditor, type GridData } from './NoteGridEditor'
 
 /**
  * Notes — a dictation notepad.
@@ -21,9 +22,15 @@ import { useSttHealth } from '../../services/useSttHealth'
  *    writers can never race for the same note.
  *  - Nothing is swallowed. A failed save says so in the header instead of leaving the note
  *    looking saved.
+ *
+ * GRID notes (NoteGridEditor) share the same list, autosave and flush path; they carry a
+ * `grid` instead of a `body`, and dictation is disabled on them (append is text-only).
  */
 
-interface Item { id: string; title: string; updatedAt: string; chars: number; preview: string }
+type Kind = 'text' | 'grid'
+interface Item { id: string; kind?: Kind; title: string; updatedAt: string; chars: number; preview: string; rows?: number; cols?: number }
+
+const blankGrid = (): GridData => ({ rows: [['', '', ''], ['', '', ''], ['', '', '']], header: true })
 
 const api = async (method: string, path: string, body?: unknown): Promise<any> => {
   const res = await fetch(path, {
@@ -47,12 +54,16 @@ export const NotesPanel: React.FC = () => {
   const [current, setCurrent] = useState<string>('')
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
+  const [kind, setKind] = useState<Kind>('text')
+  const [grid, setGrid] = useState<GridData>(blankGrid)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
   const [sttState, setSttState] = useState<SttState>('idle')
 
   const stt = useSttHealth()
   const bodyRef = useRef('')
+  const kindRef = useRef<Kind>('text')
+  const gridRef = useRef<GridData>(grid)
   const titleRef = useRef('')
   const currentRef = useRef('')
   const dirtyRef = useRef(false)
@@ -62,6 +73,8 @@ export const NotesPanel: React.FC = () => {
   // Refs shadow the state because the save path is called from timers and STT callbacks,
   // which close over whatever was current when they were registered.
   bodyRef.current = body
+  kindRef.current = kind
+  gridRef.current = grid
   titleRef.current = title
   currentRef.current = current
 
@@ -82,7 +95,9 @@ export const NotesPanel: React.FC = () => {
     if (!id || !dirtyRef.current) return
     try {
       setStatus('saving…')
-      await api('PUT', `/api/notes/${encodeURIComponent(id)}`, { title: titleRef.current, body: bodyRef.current })
+      await api('PUT', `/api/notes/${encodeURIComponent(id)}`, kindRef.current === 'grid'
+        ? { kind: 'grid', title: titleRef.current, grid: gridRef.current }
+        : { title: titleRef.current, body: bodyRef.current })
       dirtyRef.current = false
       setStatus(`saved ${new Date().toLocaleTimeString()}`)
       setError('')
@@ -119,28 +134,36 @@ export const NotesPanel: React.FC = () => {
       setCurrent(id); currentRef.current = id
       setTitle(d?.title ?? id); titleRef.current = d?.title ?? id
       setBody(d?.body ?? ''); bodyRef.current = d?.body ?? ''
+      const k: Kind = d?.kind === 'grid' ? 'grid' : 'text'
+      setKind(k); kindRef.current = k
+      const g: GridData = d?.grid ?? blankGrid()
+      setGrid(g); gridRef.current = g
       dirtyRef.current = false
       setStatus('')
       setError('')
     } catch (e: any) { setError(`Could not open "${id}": ${e?.message ?? e}`) }
   }, [flush])
 
-  const create = useCallback(async () => {
+  const create = useCallback(async (k: Kind = 'text') => {
     await flush()
     // Timestamp id, free-text title. The filename is the identity, so renaming the title
     // later never moves the file and an open editor can't lose track of what it is editing.
-    const id = `note-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`
-    const name = `Note ${new Date().toLocaleString()}`
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const id = `${k === 'grid' ? 'grid' : 'note'}-${stamp}`
+    const name = `${k === 'grid' ? 'Table' : 'Note'} ${new Date().toLocaleString()}`
+    const g = blankGrid()
     try {
-      await api('PUT', `/api/notes/${encodeURIComponent(id)}`, { title: name, body: '' })
+      await api('PUT', `/api/notes/${encodeURIComponent(id)}`, k === 'grid' ? { kind: 'grid', title: name, grid: g } : { title: name, body: '' })
       setCurrent(id); currentRef.current = id
       setTitle(name); titleRef.current = name
       setBody(''); bodyRef.current = ''
+      setKind(k); kindRef.current = k
+      setGrid(g); gridRef.current = g
       dirtyRef.current = false
-      setStatus('new note')
+      setStatus(k === 'grid' ? 'new table' : 'new note')
       setError('')
       await refresh()
-      areaRef.current?.focus()
+      if (k === 'text') areaRef.current?.focus()
     } catch (e: any) { setError(`Could not create a note: ${e?.message ?? e}`) }
   }, [flush, refresh])
 
@@ -163,6 +186,7 @@ export const NotesPanel: React.FC = () => {
   const appendSpoken = useCallback(async (text: string) => {
     const id = currentRef.current
     if (!id) { setError('Dictation had nowhere to go — open or create a note first.'); return }
+    if (kindRef.current === 'grid') { setError(`Dictation only goes into text notes — this is a table, so "${text.slice(0, 60)}" was not saved.`); return }
     await flush()
     try {
       const d = await api('POST', `/api/notes/${encodeURIComponent(id)}/append`, { text })
@@ -180,6 +204,7 @@ export const NotesPanel: React.FC = () => {
   /** Push-to-talk drops text into the box for review — it does not commit on its own. */
   const insertSpoken = useCallback((text: string) => {
     if (!currentRef.current) { setError('Dictation had nowhere to go — open or create a note first.'); return }
+    if (kindRef.current === 'grid') { setError(`Dictation only goes into text notes — this is a table, so "${text.slice(0, 60)}" was not saved.`); return }
     const prev = bodyRef.current
     const sep = !prev ? '' : /\s$/.test(prev) ? '' : ' '
     const next = prev + sep + text
@@ -222,13 +247,14 @@ export const NotesPanel: React.FC = () => {
       {/* ── note list ─────────────────────────────────────────────── */}
       <div style={{ width: 230, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <div style={{ display: 'flex', gap: 6, padding: 8, borderBottom: '1px solid var(--border)' }}>
-          <button style={{ ...hot, flex: 1, justifyContent: 'center' }} onClick={() => void create()}><Plus size={13} /> New note</button>
+          <button style={{ ...hot, flex: 1, justifyContent: 'center' }} onClick={() => void create('text')} title="New text note (dictation works here)"><Plus size={13} /> Note</button>
+          <button style={{ ...hot, flex: 1, justifyContent: 'center' }} onClick={() => void create('grid')} title="New table / grid note — paste tables from Excel, Sheets, web pages, markdown or CSV"><Table2 size={13} /> Table</button>
           <button style={btn} onClick={() => void refresh()} title="Refresh the list"><RefreshCw size={12} /></button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
           {items.length === 0 && (
             <div style={{ padding: 12, fontSize: 11.5, color: 'var(--fg-faint)' }}>
-              No notes yet. “New note”, then press the mic.
+              No notes yet. “Note” for text (then press the mic), “Table” for a grid.
             </div>
           )}
           {items.map((n) => (
@@ -241,6 +267,7 @@ export const NotesPanel: React.FC = () => {
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {n.kind === 'grid' && <Table2 size={12} style={{ flexShrink: 0, color: 'var(--fg-faint)' }} />}
                 <span style={{ flex: 1, fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.title}</span>
                 <button
                   style={{ background: 'none', border: 0, color: 'var(--fg-faint)', cursor: 'pointer', padding: 2 }}
@@ -249,7 +276,7 @@ export const NotesPanel: React.FC = () => {
                 ><Trash2 size={11} /></button>
               </div>
               <div style={{ fontSize: 10.5, color: 'var(--fg-faint)', marginTop: 2 }}>
-                {new Date(n.updatedAt).toLocaleString()} · {n.chars} chars
+                {new Date(n.updatedAt).toLocaleString()} · {n.kind === 'grid' ? `${n.rows ?? 0} × ${n.cols ?? 0}` : `${n.chars} chars`}
               </div>
               {n.preview && (
                 <div style={{ fontSize: 10.5, color: 'var(--fg-muted)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -264,7 +291,7 @@ export const NotesPanel: React.FC = () => {
       {/* ── editor ────────────────────────────────────────────────── */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
-          <NotebookPen size={15} />
+          {kind === 'grid' ? <FileSpreadsheet size={15} /> : <NotebookPen size={15} />}
           <input
             value={title}
             disabled={!current}
@@ -276,6 +303,7 @@ export const NotesPanel: React.FC = () => {
             }}
           />
 
+          {kind === 'text' && <>
           <button
             style={recording ? hot : btn}
             disabled={!current || !stt.ok || transcribing || handsFree}
@@ -302,13 +330,14 @@ export const NotesPanel: React.FC = () => {
             <Radio size={13} />
             {speaking ? 'Listening — hearing you' : handsFree ? 'Listening…' : 'Always listen'}
           </button>
+          </>}
 
           {current && (
             <a
-              href={`/api/notes/${encodeURIComponent(current)}/file.txt`}
+              href={`/api/notes/${encodeURIComponent(current)}/${kind === 'grid' ? 'file.csv' : 'file.txt'}`}
               style={{ ...btn, textDecoration: 'none' }}
-              title="Download this note as plain text"
-            ><Download size={12} /></a>
+              title={kind === 'grid' ? 'Download this table as CSV (opens in Excel / Sheets)' : 'Download this note as plain text'}
+            ><Download size={12} />{kind === 'grid' ? ' CSV' : ''}</a>
           )}
 
           <span style={{ fontSize: 11, color: 'var(--fg-faint)', minWidth: 90, textAlign: 'right' }}>{status}</span>
@@ -327,6 +356,15 @@ export const NotesPanel: React.FC = () => {
           </div>
         )}
 
+        {kind === 'grid' && current ? (
+          <NoteGridEditor
+            key={current}
+            grid={grid}
+            onChange={(g) => { setGrid(g); gridRef.current = g; touch() }}
+            onBlur={() => void flush()}
+            onStatus={(m) => setStatus(m)}
+          />
+        ) : (
         <textarea
           ref={areaRef}
           value={body}
@@ -340,6 +378,7 @@ export const NotesPanel: React.FC = () => {
             fontFamily: 'inherit',
           }}
         />
+        )}
       </div>
     </div>
   )

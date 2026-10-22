@@ -17,13 +17,69 @@ type Res = express.Response
  * never lose track of what it is editing.
  */
 
+/**
+ * Two kinds of note share one store. A TEXT note is free text (dictation lands here). A GRID
+ * note is a plain table — rows of string cells — for information that is already tabular and
+ * gets mangled when flattened into prose. Files written before grids existed have no `kind`
+ * and are text notes; that default is what keeps every old note readable.
+ */
+type NoteKind = 'text' | 'grid'
+
+interface Grid {
+  /** rows[r][c]; every row is padded to the same width on save. */
+  rows: string[][]
+  /** Optional per-column pixel widths, set by dragging a column edge in the editor. */
+  colWidths?: number[]
+  /** Treat row 0 as a header (bold, kept out of sorting). */
+  header?: boolean
+}
+
 interface Note {
   id: string
+  kind: NoteKind
   title: string
   body: string
+  grid?: Grid
   createdAt: string
   updatedAt: string
 }
+
+const MAX_ROWS = 5000
+const MAX_COLS = 200
+
+/** Validate a client grid and normalise it to a rectangle. Returns an error string on bad input. */
+function normaliseGrid(g: any): Grid | string {
+  if (!g || typeof g !== 'object' || !Array.isArray(g.rows)) return 'grid.rows must be an array of rows'
+  if (g.rows.length > MAX_ROWS) return `grid has ${g.rows.length} rows (max ${MAX_ROWS})`
+  let width = 0
+  for (const [i, r] of g.rows.entries()) {
+    if (!Array.isArray(r)) return `grid.rows[${i}] is not an array`
+    if (r.length > MAX_COLS) return `grid.rows[${i}] has ${r.length} cells (max ${MAX_COLS})`
+    width = Math.max(width, r.length)
+  }
+  width = Math.max(width, 1)
+  const rows = (g.rows.length ? g.rows : [[]]).map((r: any[]) => {
+    const out = r.map((c) => (c == null ? '' : String(c)))
+    while (out.length < width) out.push('')
+    return out
+  })
+  const grid: Grid = { rows, header: g.header !== false }
+  if (Array.isArray(g.colWidths)) {
+    grid.colWidths = g.colWidths.slice(0, width).map((w: any) => {
+      const n = Number(w)
+      return Number.isFinite(n) ? Math.min(Math.max(Math.round(n), 40), 1200) : 140
+    })
+  }
+  return grid
+}
+
+/** Flatten a grid to text for the list preview and the char count. */
+const gridText = (g: Grid | undefined): string =>
+  (g?.rows ?? []).map((r) => r.join('\t')).join('\n')
+
+/** RFC 4180 CSV — quote any cell holding a comma, quote or newline. */
+const toCsv = (g: Grid): string =>
+  g.rows.map((r) => r.map((c) => (/[",\r\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c)).join(',')).join('\r\n') + '\r\n'
 
 export function createNotesRouter(dataDir: string): express.Router {
   const router = express.Router()
@@ -64,10 +120,19 @@ export function createNotesRouter(dataDir: string): express.Router {
     if (!existsSync(f)) return null
     try {
       const raw = JSON.parse(readFileSync(f, 'utf8'))
+      const kind: NoteKind = raw.kind === 'grid' ? 'grid' : 'text'
+      let grid: Grid | undefined
+      if (kind === 'grid') {
+        const g = normaliseGrid(raw.grid ?? { rows: [[]] })
+        if (typeof g === 'string') throw new Error(`stored grid is invalid: ${g}`)
+        grid = g
+      }
       return {
         id,
+        kind,
         title: typeof raw.title === 'string' ? raw.title : id,
         body: typeof raw.body === 'string' ? raw.body : '',
+        ...(grid ? { grid } : {}),
         createdAt: raw.createdAt ?? new Date(statSync(f).birthtimeMs || Date.now()).toISOString(),
         updatedAt: raw.updatedAt ?? statSync(f).mtime.toISOString(),
       }
@@ -88,12 +153,16 @@ export function createNotesRouter(dataDir: string): express.Router {
         const id = f.slice(0, -5)
         const n = readNote(id)
         if (!n) return null
+        const text = n.kind === 'grid' ? gridText(n.grid) : n.body
         return {
           id,
+          kind: n.kind,
           title: n.title,
           updatedAt: n.updatedAt,
-          chars: n.body.length,
-          preview: n.body.replace(/\s+/g, ' ').trim().slice(0, 140),
+          chars: text.length,
+          ...(n.kind === 'grid' && n.grid ? { rows: n.grid.rows.length, cols: n.grid.rows[0]?.length ?? 0 } : {}),
+          preview: (n.kind === 'grid' ? (n.grid?.rows ?? []).slice(0, 3).map((r) => r.filter(Boolean).join(' | ')).join(' · ') : text)
+            .replace(/\s+/g, ' ').trim().slice(0, 140),
         }
       })
       .filter(Boolean)
@@ -109,30 +178,46 @@ export function createNotesRouter(dataDir: string): express.Router {
     res.json(n)
   })
 
-  /** Whole-note save (the editor's autosave). Creates on first write. */
+  /**
+   * Whole-note save (the editor's autosave). Creates on first write.
+   * Text notes send `body`; grid notes send `grid`. A note never changes kind once created —
+   * a stale text editor PUTting `body` onto a grid would otherwise silently erase the table.
+   */
   router.put('/api/notes/:id', json, async (req: Req, res: Res) => {
     const bad = badId(req.params.id)
     if (bad) return res.status(400).json({ error: bad })
-    const body = (req.body ?? {}).body
-    const title = (req.body ?? {}).title
-    if (typeof body !== 'string') return res.status(400).json({ error: 'body must be a string' })
+    const { body, title, grid: rawGrid, kind: rawKind } = req.body ?? {}
+    const wantKind: NoteKind = rawKind === 'grid' || rawGrid !== undefined ? 'grid' : 'text'
+    let grid: Grid | undefined
+    if (wantKind === 'grid') {
+      const g = normaliseGrid(rawGrid ?? { rows: [['', '', ''], ['', '', ''], ['', '', '']] })
+      if (typeof g === 'string') return res.status(400).json({ error: g })
+      grid = g
+    } else if (typeof body !== 'string') {
+      return res.status(400).json({ error: 'body must be a string' })
+    }
     try {
       const saved = await serialize(req.params.id, async () => {
         ensure()
         const existing = readNote(req.params.id)
+        if (existing && existing.kind !== wantKind) {
+          throw Object.assign(new Error(`"${req.params.id}" is a ${existing.kind} note; refusing to overwrite it as ${wantKind}`), { status: 409 })
+        }
         const note: Note = {
           id: req.params.id,
+          kind: wantKind,
           title: typeof title === 'string' && title.trim() ? title.trim() : existing?.title ?? req.params.id,
-          body,
+          body: wantKind === 'text' ? body : '',
+          ...(grid ? { grid } : {}),
           createdAt: existing?.createdAt ?? new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         }
         writeFileSync(fileFor(req.params.id), JSON.stringify(note, null, 2), 'utf8')
         return note
       })
-      res.json({ ok: true, ...saved, chars: saved.body.length })
+      res.json({ ok: true, ...saved, chars: saved.kind === 'grid' ? gridText(saved.grid).length : saved.body.length })
     } catch (e) {
-      res.status(500).json({ error: String((e as Error).message) })
+      res.status((e as any)?.status ?? 500).json({ error: String((e as Error).message) })
     }
   })
 
@@ -154,11 +239,15 @@ export function createNotesRouter(dataDir: string): express.Router {
       const saved = await serialize(req.params.id, async () => {
         ensure()
         const existing = readNote(req.params.id)
+        if (existing?.kind === 'grid') {
+          throw Object.assign(new Error(`"${req.params.id}" is a grid note; dictation can only append to text notes`), { status: 409 })
+        }
         const prev = existing?.body ?? ''
         // Join with a space mid-paragraph; respect a trailing newline the author left.
         const sep = !prev ? '' : /\s$/.test(prev) ? '' : ' '
         const note: Note = {
           id: req.params.id,
+          kind: 'text',
           title: existing?.title ?? req.params.id,
           body: prev + sep + text.trim(),
           createdAt: existing?.createdAt ?? new Date().toISOString(),
@@ -169,7 +258,7 @@ export function createNotesRouter(dataDir: string): express.Router {
       })
       res.json({ ok: true, id: saved.id, body: saved.body, updatedAt: saved.updatedAt, chars: saved.body.length })
     } catch (e) {
-      res.status(500).json({ error: String((e as Error).message) })
+      res.status((e as any)?.status ?? 500).json({ error: String((e as Error).message) })
     }
   })
 
@@ -183,7 +272,22 @@ export function createNotesRouter(dataDir: string): express.Router {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8')
     res.setHeader('Content-Disposition', `attachment; filename="${safe}.txt"`)
     res.setHeader('Cache-Control', 'no-store')
-    res.end(`${n.title}\n\n${n.body}\n`)
+    res.end(`${n.title}\n\n${n.kind === 'grid' ? gridText(n.grid) : n.body}\n`)
+  })
+
+  /** CSV download of a grid note — opens straight into Excel / LibreOffice / Sheets. */
+  router.get('/api/notes/:id/file.csv', (req: Req, res: Res) => {
+    const bad = badId(req.params.id)
+    if (bad) return res.status(400).json({ error: bad })
+    const n = readNote(req.params.id)
+    if (!n) return res.status(404).json({ error: `no note named "${req.params.id}"` })
+    if (n.kind !== 'grid' || !n.grid) return res.status(400).json({ error: `"${n.id}" is a text note; use file.txt` })
+    const safe = n.title.replace(/[^A-Za-z0-9._ -]/g, '_').trim() || n.id
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+    res.setHeader('Content-Disposition', `attachment; filename="${safe}.csv"`)
+    res.setHeader('Cache-Control', 'no-store')
+    // BOM so Excel reads UTF-8 instead of guessing a codepage.
+    res.end('\ufeff' + toCsv(n.grid))
   })
 
   router.delete('/api/notes/:id', (req: Req, res: Res) => {
