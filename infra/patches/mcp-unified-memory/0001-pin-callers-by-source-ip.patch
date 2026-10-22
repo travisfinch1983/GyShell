@@ -1,0 +1,225 @@
+From 1b80cb3e1827c9b0da8896ac84e87bcf4cd93417 Mon Sep 17 00:00:00 2001
+From: claude1 <claude1@ailab.local>
+Date: Thu, 22 Oct 2026 18:57:25 +0000
+Subject: [PATCH] feat(namespaces): pin callers by source IP
+ (MEMORY_PINNED_SOURCES)
+
+A pinned caller is forced into its namespace regardless of user_id / path,
+its custom collections are prefixed <ns>__, collection_list is filtered, and the
+OpenViking lane (shared key) is skipped. For the isolated claude-dhb-enterprise
+container (10.0.0.153 -> dhb-enterprise).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ mcp_unified_memory/server.py | 76 +++++++++++++++++++++++++++++-------
+ 1 file changed, 62 insertions(+), 14 deletions(-)
+
+diff --git a/mcp_unified_memory/server.py b/mcp_unified_memory/server.py
+index dd0d0b0..8c9dbf5 100644
+--- a/mcp_unified_memory/server.py
++++ b/mcp_unified_memory/server.py
+@@ -87,6 +87,44 @@ _CALLER_USER: "contextvars.ContextVar[str]" = contextvars.ContextVar("memory_cal
+ 
+ def _current_user() -> str:
+     return _CALLER_USER.get() or HIPPOCAMPAI_USER
++
++
++# ── Pinned callers (2026-10-22, claude-dhb-enterprise isolation) ───────────────
++# MEMORY_PINNED_SOURCES="10.0.0.153=dhb-enterprise[,ip=ns...]". A request whose TCP
++# source IP is listed is FORCED into that namespace: an explicit user_id argument,
++# the /u/<name>/ path and the REST body's user_id are all ignored. Custom collections
++# are transparently prefixed "<ns>__" and collection_list only shows that prefix.
++# The OpenViking lane is skipped entirely for pinned callers because it searches with
++# a shared key and would return other namespaces' content.
++# Why: the enterprise (Blattner) instance must never read Travis's homelab memories,
++# and user_id alone is caller-chosen, so it isolates nothing.
++_PINNED_USER: "contextvars.ContextVar[str]" = contextvars.ContextVar("memory_pinned_user", default="")
++
++
++def _pinned_sources() -> dict:
++    out = {}
++    for pair in (os.environ.get("MEMORY_PINNED_SOURCES") or "").split(","):
++        if "=" in pair:
++            ip, ns = pair.split("=", 1)
++            if ip.strip() and ns.strip():
++                out[ip.strip()] = ns.strip()
++    return out
++
++
++_PINNED_MAP = _pinned_sources()
++
++
++def _uid(user_id: str = "") -> str:
++    """Effective namespace: a pinned caller's namespace beats anything it asked for."""
++    return _PINNED_USER.get() or user_id or _current_user()
++
++
++def _coll(name: str) -> str:
++    ns = _PINNED_USER.get()
++    if not ns:
++        return name
++    prefix = f"{ns}__"
++    return name if name.startswith(prefix) else prefix + name
+ RERANKER_URL = os.environ.get("RERANKER_URL", f"{PROXLAB_URL}/api/proxy/rerank/v2/rerank")
+ EMBED_URL = os.environ.get("EMBED_URL", f"{PROXLAB_URL}/api/proxy/embed/v1/embeddings")
+ EMBED_MODEL = os.environ.get("EMBED_MODEL", "Qwen3-VL-Embedding-8B")
+@@ -641,7 +679,7 @@ def write_to_hippocampai(text: str, mem_type: str, importance: float, tags: list
+     try:
+         payload = {
+             "text": text,
+-            "user_id": user_id or _current_user(),
++            "user_id": _uid(user_id),
+             "type": mem_type,
+             "importance": importance,
+         }
+@@ -698,7 +736,7 @@ def recall_from_hippocampai(query: str, k: int, user_id: str) -> list:
+             # rerank=false: skip hippo's local cross-encoder rerank (7-10s on CPU) and take its
+             # raw top-k candidates (~80ms). Redundant here anyway — the consensus is reranked with
+             # Nemotron below. Turns hippo from the slowest lane into the fastest.
+-            json={"query": query, "user_id": user_id or _current_user(), "k": k, "rerank": False},
++            json={"query": query, "user_id": _uid(user_id), "k": k, "rerank": False},
+             timeout=HIPPO_RECALL_TIMEOUT,
+         )
+         resp.raise_for_status()
+@@ -790,7 +828,7 @@ def search_openviking(query: str, k: int, user_id: str) -> list:
+     abstract}. Any shape mismatch is caught and the lane contributes nothing,
+     never breaking the overall recall.
+     """
+-    if not openviking_enabled():
++    if _PINNED_USER.get() or not openviking_enabled():
+         return []
+     client = get_client()
+     try:
+@@ -1037,7 +1075,7 @@ def consensus_recall(query: str, k: int, user_id: str) -> list:
+     # collection across callers; every write stamps user_id in the payload,
+     # so drop hits owned by OTHER namespaces here. Legacy entries without a
+     # user_id belong to the historical shared default ("claude").
+-    resolved_user = user_id or _current_user()
++    resolved_user = _uid(user_id)
+     if query_vector:
+         client = get_client()
+         for db in VECTOR_DBS:
+@@ -1169,7 +1207,7 @@ def _remember_impl(
+         "type": type,
+         "importance": importance,
+         "tags": tag_list,
+-        "user_id": user_id or _current_user(),
++        "user_id": _uid(user_id),
+         "memory_id": memory_id,
+         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+     }
+@@ -1241,7 +1279,7 @@ def recall(
+ 
+ def _recall_impl(query: str, k: int = 10, user_id: str = "") -> list:
+     """Core recall logic shared by the MCP `recall` tool and the REST facade."""
+-    results = consensus_recall(query, min(k, 50), user_id or _current_user())
++    results = consensus_recall(query, min(k, 50), _uid(user_id))
+     output = []
+     for i, r in enumerate(results):
+         output.append({
+@@ -1282,7 +1320,7 @@ def memory_search(
+                    always know more exists (nothing is silently cut).
+         user_id: User namespace (default: your own).
+     """
+-    results = consensus_recall(query, min(k, 50), user_id or _current_user())
++    results = consensus_recall(query, min(k, 50), _uid(user_id))
+     output = []
+     for i, r in enumerate(results):
+         full = r.get("text", "") or ""
+@@ -1319,7 +1357,7 @@ def search_memories(
+         limit: Max results (default 20, max 100).
+     """
+     client = get_client()
+-    payload = {"user_id": user_id or _current_user(), "limit": min(limit, 100)}
++    payload = {"user_id": _uid(user_id), "limit": min(limit, 100)}
+     if type_filter:
+         payload["filters"] = {"type": type_filter}
+     try:
+@@ -1351,7 +1389,7 @@ def delete_memory(memory_id: str, user_id: str = "") -> str:
+     try:
+         resp = client.request(
+             "DELETE", f"{HIPPOCAMPAI_URL}/v1/memories:delete",
+-            json={"memory_id": memory_id, "user_id": user_id or _current_user()},
++            json={"memory_id": memory_id, "user_id": _uid(user_id)},
+             timeout=10.0,
+         )
+         resp.raise_for_status()
+@@ -1435,7 +1473,7 @@ def extract_facts(conversation: str, user_id: str = "") -> str:
+     try:
+         resp = client.post(
+             f"{HIPPOCAMPAI_URL}/v1/memories:extract",
+-            json={"conversation": conversation, "user_id": user_id or _current_user()},
++            json={"conversation": conversation, "user_id": _uid(user_id)},
+             timeout=60.0,
+         )
+         resp.raise_for_status()
+@@ -1449,7 +1487,7 @@ def extract_facts(conversation: str, user_id: str = "") -> str:
+                     vecs = vectorize([text])
+                     if vecs:
+                         payload = {"text": text, "type": m.get("type", "fact"),
+-                                   "importance": m.get("importance", 5), "user_id": user_id or _current_user()}
++                                   "importance": m.get("importance", 5), "user_id": _uid(user_id)}
+                         write_to_all_dbs(m.get("id", str(uuid.uuid4())), vecs[0], payload)
+ 
+             return json.dumps([
+@@ -1523,6 +1561,7 @@ def collection_store(
+         doc_id: Optional document ID for deduplication.
+         metadata: Optional JSON metadata string.
+     """
++    collection = _coll(collection)
+     _create_collection_if_needed(collection)
+ 
+     doc_id = doc_id or str(uuid.uuid4())
+@@ -1582,6 +1621,7 @@ def collection_search(
+         query: Search query text.
+         k: Number of results (default 10).
+     """
++    collection = _coll(collection)
+     vecs = vectorize([query])
+     if not vecs:
+         return json.dumps({"error": "Failed to vectorize query"})
+@@ -1646,6 +1686,11 @@ def collection_list() -> str:
+         except Exception:
+             per_db[db["name"]] = []
+ 
++    ns = _PINNED_USER.get()
++    if ns:
++        keep = lambda c: str(c).startswith(f"{ns}__")
++        all_collections = {c for c in all_collections if keep(c)}
++        per_db = {k: [c for c in v if keep(c)] for k, v in per_db.items()}
+     return json.dumps({
+         "collections": sorted(all_collections),
+         "per_db": per_db,
+@@ -1718,7 +1763,7 @@ def run_http(port: int) -> None:
+             payload = json.loads((await _read_body(receive)) or b"{}")
+         except Exception:
+             return await _send_json(send, {"error": "invalid JSON body"}, 400)
+-        uid = payload.get("user_id") or _CALLER_USER.get() or ""
++        uid = _PINNED_USER.get() or payload.get("user_id") or _CALLER_USER.get() or ""
+         if path == "/rest/recall":
+             out = _recall_impl(payload.get("query", ""), int(payload.get("k", 10) or 10), uid)
+             return await _send_json(send, {"results": out})
+@@ -1733,15 +1778,18 @@ def run_http(port: int) -> None:
+     async def routed(scope, receive, send):
+         if scope["type"] == "http":
+             path = scope.get("path", "")
++            client_ip = (scope.get("client") or ("", 0))[0]
++            pinned = _PINNED_MAP.get(client_ip, "")
++            _PINNED_USER.set(pinned)
+             m = path_re.match(path)
+             if m:
+-                _CALLER_USER.set(m.group(1))
++                _CALLER_USER.set(pinned or m.group(1))
+                 path = m.group(2)
+                 scope = dict(scope)
+                 scope["path"] = path
+                 scope["raw_path"] = path.encode()
+             else:
+-                _CALLER_USER.set("")
++                _CALLER_USER.set(pinned)
+             if path.startswith("/rest/"):
+                 return await _rest(path, receive, send)
+         await app(scope, receive, send)
+-- 
+2.47.3
+
