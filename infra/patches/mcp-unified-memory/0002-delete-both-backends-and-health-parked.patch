@@ -1,0 +1,197 @@
+From d04be703cf252e4b91943a619c0a418f7436fcbc Mon Sep 17 00:00:00 2001
+From: claude1 <claude1@ailab.local>
+Date: Thu, 22 Oct 2026 20:45:53 +0000
+Subject: [PATCH] fix(delete): remove BOTH copies; record hippo's real id;
+ tombstones; health shows parked backends
+
+remember() returns our id, but HippocampAI stores under its own; delete_memory asked hippo
+for an id it never had (404) and never touched Qdrant, so deleted memories stayed live in both.
+- hippo writes now record hippo's id on the Qdrant copy (payload.hippo_id)
+- delete_memory accepts either id, deletes the Qdrant point(s) and every matching hippo copy
+  (recorded id, or exact-text lookup for pre-fix memories), within the caller's namespace only,
+  and reports per backend
+- deleted ids are tombstoned so a queued WAL hippo write cannot resurrect them
+- memory_health: parked backends (not in VECTOR_DBS) listed separately from live WAL state
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ mcp_unified_memory/server.py | 136 ++++++++++++++++++++++++++++++-----
+ 1 file changed, 119 insertions(+), 17 deletions(-)
+
+diff --git a/mcp_unified_memory/server.py b/mcp_unified_memory/server.py
+index 8c9dbf5..db6c80d 100644
+--- a/mcp_unified_memory/server.py
++++ b/mcp_unified_memory/server.py
+@@ -693,8 +693,52 @@ def write_to_hippocampai(text: str, mem_type: str, importance: float, tags: list
+         return None
+ 
+ 
++# ── Delete support (2026-10-22) ──────────────────────────────────────────────
++# HippocampAI assigns its OWN id on write; `remember` returns ours (the Qdrant/WAL id). Before this,
++# delete_memory(<returned id>) asked hippo for an id it never had (404, read as "already gone") and
++# never touched Qdrant, so "deleted" memories stayed live in both. Now: the hippo id is recorded on
++# the Qdrant copy as payload.hippo_id once hippo absorbs the write, delete fans out to every backend,
++# and deleted ids are tombstoned so a still-queued WAL hippo write cannot resurrect them.
++def _tombstone_file():
++    return wal.wal_dir / "tombstones.json"
++
++
++_tomb_lock = threading.Lock()
++
++
++def _tombstones() -> set:
++    try:
++        return set(json.loads(_tombstone_file().read_text()))
++    except Exception:
++        return set()
++
++
++def _add_tombstones(ids) -> None:
++    with _tomb_lock:
++        cur = _tombstones() | {i for i in ids if i}
++        _tombstone_file().write_text(json.dumps(sorted(cur)))
++
++
++def _record_hippo_id(memory_id: str, hippo_id: str) -> None:
++    client = get_client()
++    for db in VECTOR_DBS:
++        if db["type"] != "qdrant":
++            continue
++        try:
++            client.post(
++                f"http://{db['host']}:{db['port']}/collections/{qdrant_collection(db)}/points/payload",
++                json={"payload": {"hippo_id": hippo_id}, "points": [stable_point_id(memory_id)]},
++                timeout=10.0,
++            )
++        except Exception as e:  # noqa: BLE001 — never fail a write over the id map
++            print(f"[unified-memory] could not record hippo_id {hippo_id} for {memory_id}: {e}")
++
++
+ def _hippo_write_from_payload(payload: dict) -> bool:
+-    """Attempt one HippocampAI write from a WAL payload. True on success."""
++    """Attempt one HippocampAI write from a WAL payload. True on success (or if tombstoned)."""
++    mid = payload.get("memory_id", "")
++    if mid and mid in _tombstones():
++        return True  # deleted before hippo absorbed it — mark applied, never write it
+     r = write_to_hippocampai(
+         payload.get("text", ""),
+         payload.get("type", "fact"),
+@@ -702,6 +746,8 @@ def _hippo_write_from_payload(payload: dict) -> bool:
+         payload.get("tags", []) or [],
+         payload.get("user_id", ""),
+     )
++    if r and mid and isinstance(r, dict) and r.get("id"):
++        _record_hippo_id(mid, r["id"])
+     return bool(r)
+ 
+ 
+@@ -1376,26 +1422,77 @@ def search_memories(
+ 
+ @mcp.tool()
+ def delete_memory(memory_id: str, user_id: str = "") -> str:
+-    """Delete a memory from HippocampAI by ID.
++    """Delete a memory from EVERY backend (Qdrant + HippocampAI) and say what happened in each.
+ 
+-    Note: This only deletes from HippocampAI. Vector DB copies remain
+-    but will be naturally excluded from future results as they age out.
++    Accepts either id: the one `remember` returned, or a hippocampai id shown by `recall`.
++    Only deletes within your own namespace. A success here is still not proof the FACT is gone
++    (the same text can exist as separate memories) — re-run the recall to confirm.
+ 
+     Args:
+-        memory_id: The UUID of the memory to delete.
+-        user_id: User namespace (default: "claude").
++        memory_id: The memory id (from remember or recall).
++        user_id: User namespace (default: your own).
+     """
++    ns = _uid(user_id)
+     client = get_client()
+-    try:
+-        resp = client.request(
+-            "DELETE", f"{HIPPOCAMPAI_URL}/v1/memories:delete",
+-            json={"memory_id": memory_id, "user_id": _uid(user_id)},
+-            timeout=10.0,
+-        )
+-        resp.raise_for_status()
+-        return json.dumps({"deleted": True, "memory_id": memory_id})
+-    except Exception as e:
+-        return json.dumps({"error": str(e)})
++    out = {"memory_id": memory_id, "namespace": ns, "qdrant": {}, "hippocampai": {}}
++    hippo_ids, texts, tomb = {memory_id}, set(), {memory_id}
++
++    for db in VECTOR_DBS:
++        if db["type"] != "qdrant":
++            continue
++        base = f"http://{db['host']}:{db['port']}/collections/{qdrant_collection(db)}"
++        flt = {"should": [{"key": k, "match": {"value": memory_id}} for k in ("memory_id", "_memory_id", "hippo_id")]}
++        try:
++            r = client.post(f"{base}/points/scroll", json={"filter": flt, "limit": 50, "with_payload": True,
++                                                         "with_vector": False}, timeout=10.0)
++            r.raise_for_status()
++            pts = [p for p in r.json()["result"]["points"]
++                   if ((p.get("payload") or {}).get("user_id") or HIPPOCAMPAI_USER) == ns]
++            for p in pts:
++                pl = p.get("payload") or {}
++                if pl.get("hippo_id"):
++                    hippo_ids.add(pl["hippo_id"])
++                if pl.get("text"):
++                    texts.add(pl["text"])
++                tomb.update(v for v in (pl.get("memory_id"), pl.get("_memory_id")) if v)
++            if pts:
++                d = client.post(f"{base}/points/delete?wait=true", json={"points": [p["id"] for p in pts]}, timeout=10.0)
++                out["qdrant"][db["name"]] = f"deleted {len(pts)}" if d.status_code < 400 else f"error HTTP {d.status_code}"
++            else:
++                out["qdrant"][db["name"]] = "not found"
++        except Exception as e:  # noqa: BLE001
++            out["qdrant"][db["name"]] = f"error {e}"
++
++    # Copies written before hippo ids were recorded: find them by exact text in this namespace.
++    for t in texts:
++        try:
++            r = client.post(f"{HIPPOCAMPAI_URL}/v1/memories:recall",
++                            json={"query": t, "user_id": ns, "k": 10, "rerank": False}, timeout=HIPPO_RECALL_TIMEOUT)
++            r.raise_for_status()
++            data = r.json()
++            for item in (data if isinstance(data, list) else data.get("results", [])):
++                mem = item.get("memory", item) if isinstance(item, dict) else {}
++                if isinstance(mem, dict) and mem.get("id") and (mem.get("text") or "").strip() == t.strip():
++                    hippo_ids.add(mem["id"])
++        except Exception as e:  # noqa: BLE001
++            out["hippocampai"]["_text_lookup"] = f"error {e}"
++
++    for hid in sorted(hippo_ids):
++        try:
++            resp = client.request("DELETE", f"{HIPPOCAMPAI_URL}/v1/memories:delete",
++                                  json={"memory_id": hid, "user_id": ns}, timeout=10.0)
++            out["hippocampai"][hid] = ("deleted" if resp.status_code < 300 else
++                                       "not found" if resp.status_code == 404 else f"error HTTP {resp.status_code}")
++        except Exception as e:  # noqa: BLE001
++            out["hippocampai"][hid] = f"error {e}"
++
++    _add_tombstones(tomb)
++    out["deleted"] = (any(str(v).startswith("deleted") for v in out["qdrant"].values())
++                      or any(v == "deleted" for v in out["hippocampai"].values()))
++    if not out["deleted"]:
++        out["error"] = f"nothing with this id in any backend for namespace '{ns}'"
++    out["verify"] = "re-run the recall that surfaced it; identical text stored separately has its own id"
++    return json.dumps(out, indent=2)
+ 
+ 
+ @mcp.tool()
+@@ -1449,7 +1546,12 @@ def memory_health() -> str:
+     state = wal.get_db_state()
+     pending_counts = {db["name"]: len(wal.get_pending(db["name"])) for db in VECTOR_DBS}
+     pending_counts["hippocampai"] = len(wal.get_pending("hippocampai"))
+-    health["wal"] = {"pending_syncs": pending_counts, "db_state": state}
++    # Backends no longer in VECTOR_DBS keep a frozen WAL position in the state file; show them as
++    # PARKED instead of mixing them into db_state, where they read like an 18-day-stale live lane.
++    live = set(pending_counts)
++    health["wal"] = {"pending_syncs": pending_counts,
++                     "db_state": {k: v for k, v in state.items() if k in live},
++                     "parked_backends": {k: v for k, v in state.items() if k not in live}}
+ 
+     healthy_count = sum(1 for v in health.values() if isinstance(v, dict) and v.get("healthy"))
+     total = len([v for v in health.values() if isinstance(v, dict) and "healthy" in v])
+-- 
+2.47.3
+
