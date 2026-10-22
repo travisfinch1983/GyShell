@@ -1,0 +1,29 @@
+# tattoolikeaross.com — Zack's portfolio (Flask/gunicorn container on 127.0.0.1:5051).
+# Cloudflare proxies both names (SSL mode Full). Certs are Let's Encrypt via DNS-01 (certbot +
+# dns-cloudflare, auto-renew by certbot.timer; deploy hook copies them into /etc/caddy/certs).
+{
+	auto_https disable_certs
+	email travisfinch1983@gmail.com
+}
+
+tattoolikeaross.com {
+	tls /etc/caddy/certs/tattoolikeaross.com.crt /etc/caddy/certs/tattoolikeaross.com.key
+	encode gzip zstd
+	reverse_proxy 127.0.0.1:5051 {
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Host tattoolikeaross.com
+	}
+}
+
+www.tattoolikeaross.com {
+	tls /etc/caddy/certs/tattoolikeaross.com.crt /etc/caddy/certs/tattoolikeaross.com.key
+	redir https://tattoolikeaross.com{uri} permanent
+}
+
+# Tailscale DERP relay for the headscale tailnet (derper.service on :3340).
+# 🛑 DNS for this name must stay grey-cloud: Cloudflare strips the Upgrade header DERP needs.
+# Cert via certbot dns-cloudflare (/root/.secrets/cloudflare-deeveeyant.ini) + the deploy hook.
+derp-ca.deeveeyant.com {
+	tls /etc/caddy/certs/derp-ca.deeveeyant.com.crt /etc/caddy/certs/derp-ca.deeveeyant.com.key
+	reverse_proxy 127.0.0.1:3340
+}

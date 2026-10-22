@@ -1,0 +1,16 @@
+# Self-hosted DERP relay on the Canada OVH VPS (derper.service, behind Caddy). Added 2026-10-22.
+# ipv4/ipv6 are pinned because the tailnet split-DNS sends *.deeveeyant.com to the homelab
+# internal proxy (10.0.0.106), which would break relay connections that resolve the name.
+regions:
+  998:
+    regionid: 998
+    regioncode: canada
+    regionname: Canada VPS (self-hosted)
+    nodes:
+      - name: 998a
+        regionid: 998
+        hostname: derp-ca.deeveeyant.com
+        ipv4: 148.113.254.97
+        ipv6: "2607:5300:205:200::c344"
+        stunport: 3478
+        derpport: 443

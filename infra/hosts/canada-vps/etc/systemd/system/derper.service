@@ -1,0 +1,21 @@
+[Unit]
+Description=Tailscale DERP relay (derp-ca.deeveeyant.com) for the headscale tailnet
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+# Plain HTTP on :3340 (nftables default-drop keeps it off the internet); Caddy terminates TLS on :443 and passes the DERP Upgrade through.
+# STUN answers directly on udp/3478. -verify-clients = only nodes known to the local
+# tailscaled (our tailnet) may use the relay.
+ExecStart=/usr/local/bin/derper -a :3340 -http-port -1 -stun-port 3478 -hostname derp-ca.deeveeyant.com -c /var/lib/derper/derper.key -verify-clients
+DynamicUser=yes
+StateDirectory=derper
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
