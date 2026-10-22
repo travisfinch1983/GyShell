@@ -1,0 +1,16 @@
+{
+  "name": "sitemap-enterprise",
+  "description": "claude-dhb-enterprise (Blattner/SiteMap, CT196). Deliberately tiny: NO memory, shell, vault, cluster, browser or fetch tools (those can reach the homelab). Off-box work goes to claude1 via fleet.",
+  "included_tools": [
+    "ailab-roadmap__roadmap_get",
+    "ailab-roadmap__roadmap_add_node",
+    "ailab-roadmap__roadmap_edit_node",
+    "ailab-roadmap__roadmap_set_done",
+    "ailab-roadmap__roadmap_move_node",
+    "ailab-roadmap__roadmap_set_meta",
+    "ailab-clipboard__clipboard_post",
+    "time__get_current_time",
+    "time__convert_time",
+    "sequential-thinking__sequentialthinking"
+  ]
+}
