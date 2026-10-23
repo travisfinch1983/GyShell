@@ -37,7 +37,10 @@ TAIL_BYTES = 400_000
 
 TS = r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
 RE_FAIL = re.compile(TS + r".*\[Telegram\] Telegram (?:network error \(attempt|polling reconnect failed)")
-RE_OK = re.compile(TS + r".*\[Telegram\] Telegram polling restarted after network error")
+# Recovery evidence: the adapter's own in-process restart line, OR a fresh connect (a gateway
+# restart logs "Connected to Telegram (polling mode)" and never the restart line, so without
+# this a restarted agent stayed latched DOWN -- optimus, 2026-10-23).
+RE_OK = re.compile(TS + r".*\[Telegram\] (?:Telegram polling restarted after network error|Connected to Telegram \(polling mode\))")
 RE_ANY = re.compile(r"\[Telegram\]")
 
 
