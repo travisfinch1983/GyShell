@@ -1,0 +1,48 @@
+--- a/server.mjs	2026-10-23 02:33:17.619090452 +0000
++++ b/server.mjs	2026-10-23 02:33:17.632090707 +0000
+@@ -54,7 +54,16 @@
+ const MANIFEST_FILE = join(DATA_DIR, 'collections.json');
+ 
+ // ── Manifest helpers ────────────────────────────────────────────────────────
++// Scoped instance (e.g. document-rag-dhb for the fenced enterprise CT196): DOCRAG_ALLOW_PREFIX limits
++// EVERY tool to collections whose internal name starts with it (comma-separated list allowed), and
++// DOCRAG_READONLY=1 drops the delete tool. Unset = the full lab server, unchanged.
++const ALLOW_PREFIXES = String(process.env.DOCRAG_ALLOW_PREFIX || '').split(',').map((x) => x.trim()).filter(Boolean);
++const READONLY = process.env.DOCRAG_READONLY === '1';
++const allowedCol = (colName) => !ALLOW_PREFIXES.length || ALLOW_PREFIXES.some((pre) => String(colName).startsWith(pre));
+ function loadManifest() {
++  return loadManifestAll().filter((m) => allowedCol(m.name));
++}
++function loadManifestAll() {
+   try {
+     if (existsSync(MANIFEST_FILE)) return JSON.parse(readFileSync(MANIFEST_FILE, 'utf-8'));
+   } catch {}
+@@ -219,6 +228,9 @@
+       let cols;
+       if (collection) {
+         const colName = collectionName(collection);
++        if (!allowedCol(colName)) {
++          return { content: [{ type: 'text', text: `Collection "${collection}" not found. Use list_doc_collections.` }] };
++        }
+         cols = [manifest.find((m) => m.name === colName) || { name: colName, display_name: colName }];
+       } else {
+         if (manifest.length === 0) {
+@@ -308,7 +320,7 @@
+ );
+ 
+ // ─── Tool: delete_doc_collection ────────────────────────────────────────────
+-server.tool(
++if (!READONLY) server.tool(
+   'delete_doc_collection',
+   'Delete an indexed document collection from all vector DBs',
+   {
+@@ -318,7 +330,8 @@
+     const colName = collectionName(collection);
+     try {
+       const result = await deleteCollection(colName);
+-      const manifest = loadManifest();
++      if (!allowedCol(colName)) throw new Error(`collection "${collection}" not found`);
++      const manifest = loadManifestAll();
+       const filtered = manifest.filter(m => m.name !== colName);
+       saveManifest(filtered);
+       return { content: [{ type: 'text', text: JSON.stringify({ deleted: colName, vector_db_results: result }, null, 2) }] };

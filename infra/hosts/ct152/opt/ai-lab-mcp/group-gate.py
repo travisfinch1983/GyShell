@@ -8,6 +8,7 @@ both and may only reach this port, which forwards an explicit list of paths and 
 Usage: python group-gate.py <listen_port>
 Created 2026-10-22 by claude1.
 """
+import re
 import sys
 
 import httpx
@@ -29,12 +30,19 @@ RULES = [
     ("/api/proxy/multi-tts/v1/audio/speech", "exact", AILAB),          # matrix plugin voice replies
     ("/api/proxy/llm/v1/", "prefix", AILAB),                           # SiteMap photo validation (VLM)
     ("/api/proxy/embed/v1/", "prefix", AILAB),                         # SiteMap RAG embeddings (Qwen3-VL-Embedding-8B, 4096-d)
+    ("/api/ai/docrag/page-image", "exact", AILAB),                     # document-rag-dhb page-image links; GET + docs_dhb_* only (QUERY_RULES)
     # git smart-HTTP for the Blattner repos ONLY (Gitea has public lab repos; no direct access)
     ("/claude/sitemap.git/", "prefix", GITEA),
     ("/claude/sitemap-infra.git/", "prefix", GITEA),
     ("/claude/whiteboard.git/", "prefix", GITEA),
     ("/claude/workspace.git/", "prefix", GITEA),
 ]
+# Paths whose QUERY must also pass: page images are served for any collection, so the gate pins
+# them to the dhb_* collections that document-rag-dhb exposes (GET only).
+QUERY_RULES = {
+    "/api/ai/docrag/page-image": lambda req: req.method == "GET"
+        and re.fullmatch(r"docs_dhb_[a-z0-9_]+", req.query_params.get("collection", "")) is not None,
+}
 HOP = {"host", "content-length", "connection", "keep-alive", "transfer-encoding", "upgrade"}
 clients = {u: httpx.AsyncClient(base_url=u, timeout=httpx.Timeout(None, connect=10.0)) for u in {MCPJUNGLE, AILAB, GITEA}}
 
@@ -49,7 +57,8 @@ def route_for(path: str):
 async def proxy(request: Request):
     path = request.url.path
     up = route_for(path)
-    if not up or ".." in path:
+    qrule = QUERY_RULES.get(path)
+    if not up or ".." in path or (qrule and not qrule(request)):
         print(f"[group-gate] DENIED {request.client.host if request.client else '?'} {request.method} {path}", flush=True)
         return PlainTextResponse("forbidden: not on the sitemap allow-list\n", status_code=403)
     client = clients[up]
