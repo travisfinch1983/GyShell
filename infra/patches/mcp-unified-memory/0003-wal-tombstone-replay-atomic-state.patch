@@ -1,0 +1,78 @@
+From 36252b824cdbddc7127b8f4379a69ee44753f530 Mon Sep 17 00:00:00 2001
+From: root <root@ai-lab.deeveeyant.com>
+Date: Fri, 23 Oct 2026 02:47:14 +0000
+Subject: [PATCH] fix(wal): replay never resurrects tombstoned memories;
+ db_state writes locked + atomic
+
+sync_pending's vector lane now retires tombstoned entries without writing (hippo lane already did).
+mark_applied was an unlocked read-modify-write via write_text: a concurrent reader saw the
+truncated file, fell back to {} and wrote back only its own key - the qdrant cursor was wiped,
+the replay restarted at the July WAL head and was re-upserting deleted memories (725fb124).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ mcp_unified_memory/server.py | 27 +++++++++++++++++++++++----
+ 1 file changed, 23 insertions(+), 4 deletions(-)
+
+diff --git a/mcp_unified_memory/server.py b/mcp_unified_memory/server.py
+index db6c80d..026be88 100644
+--- a/mcp_unified_memory/server.py
++++ b/mcp_unified_memory/server.py
+@@ -263,6 +263,8 @@ class WriteAheadLog:
+         self.wal_dir.mkdir(parents=True, exist_ok=True)
+         self.wal_file = self.wal_dir / "wal.jsonl"
+         self.state_file = self.wal_dir / "db_state.json"
++        # mark_applied runs on request threads, the async hippo thread and the sync worker at once.
++        self._state_lock = threading.Lock()
+ 
+     def append(self, entry: dict) -> int:
+         """Append a write entry and return the WAL ID."""
+@@ -286,10 +288,19 @@ class WriteAheadLog:
+         return {}
+ 
+     def mark_applied(self, db_name: str, wal_id: int):
+-        """Mark a WAL entry as applied to a DB."""
+-        state = self.get_db_state()
+-        state[db_name] = max(state.get(db_name, 0), wal_id)
+-        self.state_file.write_text(json.dumps(state))
++        """Mark a WAL entry as applied to a DB.
++
++        🛑 This used to be an unlocked read-modify-write with write_text (truncate, then write):
++        a concurrent reader caught the empty file, fell back to {}, and wrote back ONLY its own
++        key, wiping every other cursor. 2026-10-23 the qdrant cursor vanished that way, the
++        replay restarted at the oldest WAL entry (July) and was resurrecting tombstoned memories.
++        Now serialised and atomic (temp file + os.replace), so a reader never sees a partial file."""
++        with self._state_lock:
++            state = self.get_db_state()
++            state[db_name] = max(state.get(db_name, 0), wal_id)
++            tmp = self.state_file.with_name(self.state_file.name + ".tmp")
++            tmp.write_text(json.dumps(state))
++            os.replace(tmp, self.state_file)
+ 
+     def get_pending(self, db_name: str) -> list:
+         """Get all WAL entries not yet applied to a DB."""
+@@ -1161,6 +1172,7 @@ def sync_pending(include_hippo: bool = True, batch: int = SYNC_BATCH):
+     hippo backlog never makes a store slow. The backlog drains over time."""
+     client = get_client()
+     synced = 0
++    tombs = _tombstones()
+     for db in VECTOR_DBS:
+         pending = wal.get_pending(db["name"])
+         if not pending:
+@@ -1171,6 +1183,13 @@ def sync_pending(include_hippo: bool = True, batch: int = SYNC_BATCH):
+         for entry in pending[:batch]:
+             if entry.get("op") != "upsert":
+                 continue
++            # A deleted memory must never be resurrected by a replay (the hippo lane has the
++            # same guard in _hippo_write_from_payload): retire the WAL entry without writing.
++            mid = entry.get("memory_id") or entry.get("payload", {}).get("memory_id", "")
++            if mid and mid in tombs:
++                wal.mark_applied(db["name"], entry["_wal_id"])
++                print(f"[unified-memory] WAL replay skipped tombstoned {mid} for {db['name']}")
++                continue
+             # Re-vectorize the text (we don't store vectors in the WAL)
+             text = entry.get("payload", {}).get("text", "")
+             if not text:
+-- 
+2.47.3
+
