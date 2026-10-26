@@ -23,6 +23,7 @@ import { Router } from 'express';
 import * as fsForState from 'fs';
 import { loadJsonState, emitNotification } from './lib/notify.js';
 import { createWiroRoutes } from './lib/wiro.js';
+import { joinRestParam } from './lib/rest-path.js';
 import http from 'http';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
@@ -918,12 +919,7 @@ function proxyRequest(req, res, targetHost, targetPort, targetPath) {
   req.pipe(proxyReq);
 }
 
-/**
- * Join Express 5 wildcard params (array of segments) into a path string.
- */
-function joinRestParam(rest) {
-  return Array.isArray(rest) ? rest.join('/') : rest;
-}
+// joinRestParam (re-encodes the decoded wildcard segments) lives in ./lib/rest-path.js — it has a spec.
 
 // ─── Model → Service Cache (for universal routing) ─────────────────────
 
