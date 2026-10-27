@@ -138,6 +138,9 @@ const DEFAULT_CHECKS: HealthCheckConfig[] = [
   { id: 'mcpjungle', label: 'MCPJungle gateway', kind: 'http', target: 'http://127.0.0.1:8080/api/v0/servers', expect: '2xx3xx', downSeverity: 'critical' },
   { id: 'fleetd', label: 'fleetd (fleet messaging)', kind: 'http', target: 'http://127.0.0.1:17900/health', expect: '2xx3xx', downSeverity: 'error' },
   { id: 'qdrant', label: 'Qdrant', kind: 'http', target: 'http://127.0.0.1:6333/readyz', expect: '2xx3xx', downSeverity: 'error' },
+  // Security is ON, so an unauthenticated GET answers 401 — that IS the healthy answer
+  // (a 200 would mean auth got switched off). Added 2026-10-27 with the container.
+  { id: 'elasticsearch', label: 'Elasticsearch', kind: 'http', target: 'http://127.0.0.1:9200/', expect: [401], downSeverity: 'error' },
   { id: 'weaviate', label: 'Weaviate', kind: 'http', target: 'http://127.0.0.1:8087/v1/.well-known/ready', expect: '2xx3xx', downSeverity: 'error' },
   { id: 'chroma', label: 'ChromaDB', kind: 'http', target: 'http://127.0.0.1:8000/api/v2/heartbeat', expect: '2xx3xx', downSeverity: 'error' },
   { id: 'hippocampai', label: 'HippocampAI memory', kind: 'http', target: 'http://127.0.0.1:8010/healthz', expect: '2xx3xx', downSeverity: 'error' },
