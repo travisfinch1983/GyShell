@@ -1,0 +1,5 @@
+# Nextcloud tuning (claude1 2026-10-27, after CT200 went to 6 cores / 8 GB)
+[mysqld]
+innodb_buffer_pool_size = 1G
+transaction_isolation = READ-COMMITTED
+binlog_format = ROW
