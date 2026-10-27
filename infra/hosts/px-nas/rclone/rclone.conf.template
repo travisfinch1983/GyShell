@@ -1,0 +1,13 @@
+# px-nas host: /root/.config/rclone/rclone.conf (mode 600). REDACTED TEMPLATE - real values in vault cred-42bf5066.
+[pcloud]
+type = pcloud
+hostname = api.pcloud.com          # US region (eapi.pcloud.com rejects this account token)
+token = <vault cred-42bf5066 bearerToken>
+
+[pcloud-crypt]
+type = crypt
+remote = pcloud:NextcloudMirror
+filename_encryption = standard
+directory_name_encryption = true
+password = <rclone obscure of vault password>
+password2 = <rclone obscure of vault tokenSecret>
