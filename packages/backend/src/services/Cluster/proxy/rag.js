@@ -373,14 +373,22 @@ function ragStatus() {
  *  checkpoint runRagIndexing wrote, so /api/ai/rag/resume can finish it.
  */
 /**
- * Days of divergence before a drifting collection is worth a notification. A feature branch that
- * is a day ahead of default is normal; two months is the ai-lab incident. 7 is a judgement call,
- * not a measurement -- it is low enough to have caught SillyTavern (10 days) and ai-lab (69).
+ * Days the indexed branch must trail a development branch before it is worth a notification. A
+ * judgement call, not a measurement -- low enough to have caught SillyTavern (10 days) and ai-lab (69).
  */
 const BRANCH_DRIFT_WARN_DAYS = Number(process.env.AILAB_RAG_BRANCH_DRIFT_DAYS || 7);
+/**
+ * Commits a branch must be AHEAD of the indexed one to count as "where development lives".
+ * Newest-commit-on-any-branch fired on every pushed work branch (maintenance-claude, 2026-10-27:
+ * 4 open alerts). A work branch is a handful of commits; the ai-lab incident was 424 (647 by
+ * 10-27). 50 sits between them -- also a judgement call.
+ */
+const BRANCH_DRIFT_MIN_AHEAD = Number(process.env.AILAB_RAG_BRANCH_DRIFT_MIN_AHEAD || 50);
+/** Bound on per-branch ahead-count API calls per check (newest candidates first). */
+const BRANCH_DRIFT_MAX_PROBES = 10;
 
 /**
- * Warn when a collection is faithfully indexing a branch the repo has moved on from.
+ * Warn when a collection is faithfully indexing a branch the repo's development has moved off.
  *
  * WHY THIS EXISTS (2026-09-24): codebase_ai_lab indexes branch "default", which resolves to main,
  * which had not moved since 2026-07-17 while all work happened on claude1/chat-rework -- 424
@@ -393,6 +401,20 @@ const BRANCH_DRIFT_WARN_DAYS = Number(process.env.AILAB_RAG_BRANCH_DRIFT_DAYS ||
  * 🛑 ASK THE HOST WHAT "default" RESOLVES TO -- never assume main/master. Of 23 collections, 22
  * use branch:"default", and SillyTavern's default branch is `release`. A heuristic that guesses
  * main/master gets that one wrong, which is the same assumption error this check is about.
+ *
+ * WHAT COUNTS AS DRIFT (reworked 2026-10-27). The first version compared against the newest
+ * commit on ANY branch, so every pushed feature branch looked like "development moved". A branch
+ * now counts only when it is >= BRANCH_DRIFT_WARN_DAYS newer AND either
+ *   - it is the repo's DEFAULT branch while the collection is pinned elsewhere, or
+ *   - it is >= BRANCH_DRIFT_MIN_AHEAD commits ahead of the indexed branch (counted by the host).
+ * Gitea PULL MIRRORS are skipped outright: they replay an upstream we do not develop in (the
+ * hermes-agent mirror carries ~2,800 upstream branches, 79-commit feature branches among them),
+ * which is the same reasoning that already exempts the github-hosted upstreams below.
+ *
+ * The notification's message holds only stable facts (collection, indexed branch, development
+ * branch) so the backend's identical-while-unacked dedup folds a standing condition into ONE row;
+ * the day/commit counts change every run and live in `detail`. The old message carried the day
+ * count and spawned a fresh row every night.
  *
  * Diagnostic only: never throws, never blocks the refresh. A refresh that works must not be taken
  * down by the thing watching it.
@@ -416,15 +438,25 @@ async function checkBranchDrift(colName, repoUrl, requestedBranch) {
       return;
     }
     const info = await infoResp.json();
-    // The resolved name, NOT the literal "default" the manifest stores.
-    const indexed = requestedBranch || info.default_branch;
-    const brResp = await fetch(`${api}/branches`, { signal: AbortSignal.timeout(20000) });
-    if (!brResp.ok) {
-      void emitDebug('rag-branch-drift', `'${colName}': branches API returned ${brResp.status} - drift not checked`);
+    if (info.mirror) {
+      void emitDebug('rag-branch-drift', `'${colName}': ${owner}/${repo} is a pull mirror of an upstream - drift not checked`);
       return;
     }
-    const branches = await brResp.json();
-    if (!Array.isArray(branches) || branches.length === 0) {
+    // The resolved name, NOT the literal "default" the manifest stores.
+    const indexed = requestedBranch || info.default_branch;
+    const branches = [];
+    for (let page = 1; page <= 10; page++) {
+      const brResp = await fetch(`${api}/branches?limit=50&page=${page}`, { signal: AbortSignal.timeout(20000) });
+      if (!brResp.ok) {
+        void emitDebug('rag-branch-drift', `'${colName}': branches API returned ${brResp.status} - drift not checked`);
+        return;
+      }
+      const chunk = await brResp.json();
+      if (!Array.isArray(chunk) || chunk.length === 0) break;
+      branches.push(...chunk);
+      if (chunk.length < 50) break;
+    }
+    if (branches.length === 0) {
       void emitDebug('rag-branch-drift', `'${colName}': branches API returned nothing usable - drift not checked`);
       return;
     }
@@ -434,18 +466,48 @@ async function checkBranchDrift(colName, repoUrl, requestedBranch) {
       console.warn(`[rag-branch-drift] '${colName}': indexed branch '${indexed}' is NOT in the repo's branch list`);
       return;
     }
-    const newest = branches.reduce((a, b) => (at(b) > at(a) ? b : a), branches[0]);
-    if (newest.name === indexed) return;                       // indexing the newest - nothing to say
-    const days = Math.floor((at(newest) - at(mine)) / 86400000);
-    if (days < BRANCH_DRIFT_WARN_DAYS) return;
+    const daysAhead = (b) => Math.floor((at(b) - at(mine)) / 86400000);
+    const candidates = branches
+      .filter((b) => b.name !== indexed && daysAhead(b) >= BRANCH_DRIFT_WARN_DAYS)
+      .sort((a, b) => at(b) - at(a));
+    if (candidates.length === 0) return;                       // nothing meaningfully newer
+
+    // Commits on `branch` that are not on the indexed branch, as counted by the host.
+    const aheadCount = async (branch) => {
+      const q = `sha=${encodeURIComponent(branch)}&not=${encodeURIComponent(indexed)}&limit=1&stat=false&verification=false&files=false`;
+      const r = await fetch(`${api}/commits?${q}`, { signal: AbortSignal.timeout(20000) });
+      if (!r.ok) throw new Error(`commits API ${r.status} for '${branch}'`);
+      const n = Number(r.headers.get('x-total-count'));
+      if (!Number.isFinite(n)) throw new Error(`no X-Total-Count for '${branch}'`);
+      return n;
+    };
+
+    let hit = null;
+    const def = requestedBranch && candidates.find((b) => b.name === info.default_branch);
+    if (def) hit = { branch: def, why: 'the repo default branch', ahead: await aheadCount(def.name).catch(() => null) };
+    let probed = 0;
+    for (const b of candidates) {
+      if (hit) break;
+      if (probed >= BRANCH_DRIFT_MAX_PROBES) {
+        void emitDebug('rag-branch-drift', `'${colName}': ${candidates.length} newer branches, probed the newest ${probed} - none >= ${BRANCH_DRIFT_MIN_AHEAD} commits ahead`);
+        break;
+      }
+      probed++;
+      const n = await aheadCount(b.name);
+      if (n >= BRANCH_DRIFT_MIN_AHEAD) hit = { branch: b, why: `${n} commits ahead`, ahead: n };
+    }
+    if (!hit) return;                                          // only work branches are newer
+
+    const days = daysAhead(hit.branch);
     const how = requestedBranch ? `pinned to '${indexed}'` : `on "default" (= '${indexed}')`;
-    console.warn(`[rag-branch-drift] '${colName}': ${how}, which is ${days}d behind '${newest.name}'`);
+    console.warn(`[rag-branch-drift] '${colName}': ${how}, ${days}d behind '${hit.branch.name}' (${hit.why})`);
     void emitNotification('warning', 'codebase-rag',
-      `Codebase-RAG '${colName}' is indexing a branch that is ${days} days stale`,
+      `Codebase-RAG '${colName}' indexes '${indexed}' but development is on '${hit.branch.name}'`,
       `The collection is ${how}, last commit ${new Date(at(mine)).toISOString().slice(0, 10)}. `
-      + `The repo's newest branch '${newest.name}' is ${days} days ahead (${new Date(at(newest)).toISOString().slice(0, 10)}). `
+      + `'${hit.branch.name}' is ${hit.why}${hit.ahead != null && !/commits ahead/.test(hit.why) ? ` (${hit.ahead} commits ahead)` : ''}, `
+      + `last commit ${new Date(at(hit.branch)).toISOString().slice(0, 10)} -- ${days} days newer. `
       + `The index is CORRECT for what it was told to index -- nothing is broken -- but every agent searching `
-      + `'${colName}' is reading code that old. Either repoint the collection at '${newest.name}' or merge that branch.`);
+      + `'${colName}' is reading code that old. Either repoint the collection at '${hit.branch.name}' or merge that branch.`);
   } catch (e) {
     console.warn(`[rag-branch-drift] '${colName}': drift check failed (${e?.message || e}) - refresh continues`);
   }
