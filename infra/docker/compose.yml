@@ -34,6 +34,51 @@ services:
       timeout: 5s
       retries: 3
 
+  elasticsearch:
+    # Keyword (BM25) + vector search for AI-Lab and its clients: Nextcloud
+    # full-text search, the Nextcloud image-search fork, hybrid code/doc RAG.
+    # Pinned to the 8.x line on purpose: Nextcloud 33's fulltextsearch_elasticsearch
+    # is built against the ES 8 client. Single node, no cluster.
+    # Security is ON (unlike qdrant): the full-text index holds document CONTENTS.
+    # Password in /opt/ai-lab-secrets/elasticsearch/.env (vault copy); give each
+    # client its own API key rather than the elastic superuser.
+    image: elasticsearch:8.19.22
+    container_name: ailab-elasticsearch
+    restart: unless-stopped
+    ports:
+      - "9200:9200"
+    environment:
+      discovery.type: single-node
+      cluster.name: ailab
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"      # LAN-only, like the other backends
+      xpack.security.transport.ssl.enabled: "false" # single node: no transport peers
+      xpack.ml.enabled: "false"                     # ML nodes need a paid licence; saves RAM
+      action.destructive_requires_name: "true"      # no wildcard index deletes
+      ES_JAVA_OPTS: "-Xms4g -Xmx4g"
+    env_file:
+      - /opt/ai-lab-secrets/elasticsearch/.env      # ELASTIC_PASSWORD
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      memlock:
+        soft: -1
+        hard: -1
+    deploy:
+      resources:
+        limits:
+          memory: 8G      # 4G heap + off-heap headroom
+    volumes:
+      # Runs as uid 1000 gid 0: the dir is 1000:0, mode 2770.
+      - /zpoolgamma/docker-volume/ai-lab/elasticsearch:/usr/share/elasticsearch/data
+    healthcheck:
+      # Unauthenticated probe: 401 means the node is up and security is enforcing.
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9200/ | grep -q 401"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
   weaviate:
     # Pinned to what CT187 was running. Env replicated FAITHFULLY from
     # /etc/default/weaviate — in particular ENABLE_MODULES must stay, because 2 of
