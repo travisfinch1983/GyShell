@@ -72,6 +72,18 @@ def running_tasks():
     return ([t for t in live if not _survives(t)], [t for t in live if _survives(t)])
 
 
+def queued_rag_jobs():
+    """Codebase-RAG runs WAITING in the backend's in-memory queue. A restart drops them silently:
+    the task registry only lists the RUNNING job, so between two queued jobs (a 500 ms gap) the
+    old check saw 'nothing in flight' and would have restarted over a 5-job queue (2026-10-27).
+    Returns a list, or None when the status could not be read (CANNOT-CHECK)."""
+    try:
+        st = api("/api/ai/rag/index/status", timeout=8)
+    except Exception:
+        return None
+    return list(st.get("queue") or [])
+
+
 def set_routing(suspended, reason):
     try:
         api("/api/notifications/routing", {"suspended": suspended, "reason": reason})
@@ -177,6 +189,18 @@ def main():
                 print("    ... and %d more" % (len(killed) - 10))
             print("            These do NOT resume: the jobs are in-memory and their workers are")
             print("            children of the backend. Wait for them, or --force to kill them.")
+            return 4
+        queued = queued_rag_jobs()
+        if queued is None:
+            print("  REFUSING: could not read the codebase-RAG queue (/api/ai/rag/index/status), so I")
+            print("            cannot tell whether index runs are waiting. CANNOT-CHECK, not 'empty'.")
+            print("            Re-run with --force if you know it is safe.")
+            return 4
+        if queued:
+            print("  REFUSING: %d codebase-RAG run(s) queued — a restart DROPS them (in-memory queue)." % len(queued))
+            for q in queued[:10]:
+                print("    - [%s] %s" % (q.get("type", "?"), q.get("collection", "?")))
+            print("            Wait for the queue to drain, or --force to drop them.")
             return 4
 
     if a.build:
