@@ -114,22 +114,28 @@
 
 .entryHead {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   padding: 6px 8px 0 10px;
   min-width: 0;
 }
 
 .entryTitle {
+  // Titles carry instructions ("run this on X, paste the result back"), so wrap
+  // them in full instead of ellipsizing.
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 12px;
   font-weight: 600;
+  line-height: 1.35;
   color: var(--fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .entryMeta {
+  flex-shrink: 0;
+  line-height: 1.5;
   font-size: 11px;
   color: var(--fg-faint, var(--fg-muted));
   white-space: nowrap;
