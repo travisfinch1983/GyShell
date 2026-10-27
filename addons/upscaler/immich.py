@@ -31,6 +31,21 @@ class Immich:
         r.raise_for_status()
         return r.json()
 
+    async def server_major(self) -> int:
+        """Immich major version, cached for the life of this client.
+
+        v3 REMOVED deviceId/deviceAssetId from uploads while v2 REQUIRES them, so
+        upload_asset needs to know which side of that line the server is on. On a
+        failed lookup assume v3+ (the current release line) rather than v2.
+        """
+        if getattr(self, "_major", None) is None:
+            try:
+                self._major = int((await self.server_version()).get("major") or 3)
+            except Exception as e:
+                log.warning(f"server_version failed, assuming Immich v3+: {e}")
+                return 3
+        return self._major
+
     async def me(self) -> dict:
         r = await self.client.get("/api/users/me")
         r.raise_for_status()
@@ -146,7 +161,12 @@ class Immich:
         with_stacked: bool = False,
     ) -> dict:
         """POST /api/search/metadata. Returns the assets sub-object directly."""
-        body: dict = {"page": page, "size": size, "withExif": with_exif, "withStacked": with_stacked}
+        # visibility is explicit: Immich v3 changed the OMITTED default from "timeline" to
+        # "any visibility", which would pull archived and hidden assets (e.g. the video
+        # half of live photos) into the upscale queue and the tag sync. "timeline" keeps
+        # the v2 behaviour and is accepted by both v2 and v3 (deprecated in v3.2, not removed).
+        body: dict = {"page": page, "size": size, "withExif": with_exif, "withStacked": with_stacked,
+                      "visibility": "timeline"}
         if tag_ids:
             body["tagIds"] = tag_ids
         if album_ids:
@@ -205,11 +225,13 @@ class Immich:
         with open(src, "rb") as f:
             files = {"assetData": (src.name, f, "application/octet-stream")}
             data = {
-                "deviceAssetId": device_asset_id,
-                "deviceId": device_id,
                 "fileCreatedAt": file_created_at,
                 "fileModifiedAt": file_modified_at,
             }
+            if await self.server_major() < 3:
+                # Required by v2, removed in v3.
+                data["deviceAssetId"] = device_asset_id
+                data["deviceId"] = device_id
             r = await self.client.post(
                 "/api/assets",
                 files=files,
