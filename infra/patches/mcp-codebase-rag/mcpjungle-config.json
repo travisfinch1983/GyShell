@@ -1,0 +1,13 @@
+{
+  "name": "codebase-rag",
+  "transport": "stdio",
+  "description": "Index git repos and search code semantically across vector DBs. Tools: index_repo, search_code, list_collections, delete_collection, collection_stats.",
+  "command": "node",
+  "args": ["/opt/mcp-codebase-rag/server.mjs"],
+  "env": {
+    "PROXLAB_URL": "http://10.0.0.219:17890",
+    "EMBED_MODEL": "Qwen3-VL-Embedding-8B",
+    "EMBED_DIM": "4096"
+  },
+  "session_mode": "stateless"
+}

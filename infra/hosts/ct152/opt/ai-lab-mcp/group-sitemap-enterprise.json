@@ -1,6 +1,6 @@
 {
   "name": "sitemap-enterprise",
-  "description": "claude-dhb-enterprise (Blattner/SiteMap, CT196). Deliberately tiny (+ read-only document RAG scoped to dhb_* collections): NO memory, shell, vault, cluster, browser or fetch tools (those can reach the homelab). Off-box work goes to claude1 via fleet.",
+  "description": "claude-dhb-enterprise (Blattner/SiteMap, CT196). Deliberately tiny (+ read-only document RAG scoped to dhb_* collections, + read-only codebase RAG minus private homelab repos): NO memory, shell, vault, cluster, browser or fetch tools (those can reach the homelab). Off-box work goes to claude1 via fleet.",
   "included_tools": [
     "ailab-roadmap__roadmap_get",
     "ailab-roadmap__roadmap_add_node",
@@ -15,6 +15,9 @@
     "document-rag-dhb__search_docs",
     "document-rag-dhb__list_documents",
     "document-rag-dhb__list_doc_collections",
-    "document-rag-dhb__doc_collection_stats"
+    "document-rag-dhb__doc_collection_stats",
+    "codebase-rag-dhb__search_code",
+    "codebase-rag-dhb__list_collections",
+    "codebase-rag-dhb__collection_stats"
   ]
 }

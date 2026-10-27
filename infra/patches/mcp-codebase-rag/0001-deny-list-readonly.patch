@@ -1,0 +1,67 @@
+--- a/server.mjs
++++ b/server.mjs
+@@ -122,7 +122,16 @@
+ ]);
+ 
+ // ── Manifest helpers ────────────────────────────────────────────────────────
++// Scoped instance (e.g. codebase-rag-dhb for the fenced enterprise CT196): CODERAG_DENY hides the listed
++// internal collection names (comma-separated, e.g. codebase_ai_lab) from EVERY tool, and CODERAG_READONLY=1
++// drops index_repo + delete_collection. Unset = the full lab server, unchanged.
++const DENY = new Set(String(process.env.CODERAG_DENY || '').split(',').map((x) => x.trim()).filter(Boolean));
++const READONLY = process.env.CODERAG_READONLY === '1';
++const allowedCol = (colName) => !DENY.has(String(colName));
+ function loadManifest() {
++  return loadManifestAll().filter((m) => allowedCol(m.name));
++}
++function loadManifestAll() {
+   try {
+     if (existsSync(MANIFEST_FILE)) return JSON.parse(readFileSync(MANIFEST_FILE, 'utf-8'));
+   } catch {}
+@@ -332,7 +341,7 @@
+ });
+ 
+ // ─── Tool: index_repo ───────────────────────────────────────────────────────
+-server.tool(
++if (!READONLY) server.tool(
+   'index_repo',
+   'Clone a git repo and index all code files into a named vector collection for semantic search',
+   {
+@@ -432,7 +441,7 @@
+       }
+ 
+       // 6. Update manifest
+-      const manifest = loadManifest();
++      const manifest = loadManifestAll(); // unfiltered: a write must keep entries a scoped instance hides
+       const existing = manifest.findIndex(m => m.name === colName);
+       const entry = {
+         name: colName,
+@@ -497,6 +506,9 @@
+       let results;
+       if (collection) {
+         const colName = collectionName(collection);
++        if (!allowedCol(colName)) {
++          return { content: [{ type: 'text', text: `Collection "${collection}" not found. Use list_collections to see available collections.` }] };
++        }
+         results = { results: await searchFused([{ name: colName, display_name: colName }], query, topK) };
+       } else {
+         // Search all codebase collections
+@@ -569,7 +581,7 @@
+ );
+ 
+ // ─── Tool: delete_collection ────────────────────────────────────────────────
+-server.tool(
++if (!READONLY) server.tool(
+   'delete_collection',
+   'Delete an indexed codebase collection from all vector DBs',
+   {
+@@ -581,8 +593,8 @@
+     try {
+       const result = await deleteCollection(colName);
+ 
+-      // Remove from manifest
+-      const manifest = loadManifest();
++      // Remove from manifest (the UNFILTERED one, or a scoped instance would drop hidden entries)
++      const manifest = loadManifestAll();
+       const filtered = manifest.filter(m => m.name !== colName);
+       saveManifest(filtered);
+ 
