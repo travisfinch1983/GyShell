@@ -3,12 +3,13 @@
   "transport": "stdio",
   "description": "READ-ONLY codebase RAG for the fenced claude-dhb-enterprise instance: every indexed repo except the private homelab ones listed in CODERAG_DENY. Tools: search_code, list_collections, collection_stats (no index/delete).",
   "command": "node",
-  "args": ["/opt/mcp-codebase-rag/server.mjs"],
+  "args": [
+    "/opt/mcp-codebase-rag/server.mjs"
+  ],
   "env": {
     "PROXLAB_URL": "http://10.0.0.219:17890",
     "EMBED_MODEL": "Qwen3-VL-Embedding-8B",
     "EMBED_DIM": "4096",
-    "CODERAG_DENY": "codebase_ai_lab",
     "CODERAG_READONLY": "1"
   },
   "session_mode": "stateless"
