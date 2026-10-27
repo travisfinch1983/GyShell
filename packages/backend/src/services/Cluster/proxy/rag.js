@@ -300,8 +300,19 @@ const ragJob = {
   url: '',
 };
 
-// ── RAG Queue (FIFO) ��─
-const ragQueue = [];  // { type: 'index'|'update', url, collection, description, branch }
+// ── RAG Queue ──
+// FIFO, except that a run someone ASKED for jumps the scheduled ones: Travis queued the SiteMap repo
+// for the enterprise instance on 2026-10-27 and it landed behind five nightly refreshes (hours).
+// Order: interrupted-run resumes and earlier manual requests stay ahead (FIFO among themselves),
+// then the new manual request, then scheduled 'update' runs. The RUNNING job is never preempted.
+const ragQueue = [];  // { type: 'index'|'update', url, collection, description, branch, manual?, resume? }
+function enqueueManual(item) {
+  const at = ragQueue.findIndex((q) => !q.manual && !q.resume);
+  const entry = { ...item, manual: true };
+  if (at === -1) ragQueue.push(entry); else ragQueue.splice(at, 0, entry);
+  return (at === -1 ? ragQueue.length : at + 1);   // 1-based position
+}
+const queueView = () => ragQueue.map((q) => ({ type: q.type, collection: q.collection, url: q.url, manual: !!q.manual, resume: !!q.resume }));
 // Set by POST /rag/index/cancel (Travis, 2026-10-10: a misfired daily update ran for hours during the day
 // and the only way to stop it was killing the backend). The indexer checks it between batches; the
 // checkpoint is kept so the next scheduled run resumes, and a cancel never triggers the auto-retry.
@@ -344,7 +355,7 @@ function ragStatus() {
     error: ragJob.error,
     collection: ragJob.collection,
     url: ragJob.url,
-    queue: ragQueue.map(q => ({ type: q.type, collection: q.collection, url: q.url })),
+    queue: queueView(),
     queueLength: ragQueue.length,
   };
 }
@@ -1298,9 +1309,11 @@ app.post('/api/ai/rag/index', (req, res) => {
   const { url, collection, description, branch } = req.body || {};
   if (!url || !collection) return res.status(400).json({ error: 'url and collection are required' });
   if (ragJob.active) {
-    // Queue it instead of rejecting
-    ragQueue.push({ type: 'index', url, collection, description, branch });
-    return res.json({ queued: true, collection, url, position: ragQueue.length });
+    // Queue it instead of rejecting -- ahead of scheduled refreshes (enqueueManual).
+    const position = enqueueManual({ type: 'index', url, collection, description, branch });
+    console.log(`[rag-queue] manual index ${collection} queued at position ${position}/${ragQueue.length}`);
+    void emitDebug('rag', `manual index ${collection} queued at position ${position} of ${ragQueue.length} (ahead of scheduled updates)`);
+    return res.json({ queued: true, collection, url, position });
   }
   runRagIndexing(url, collection, description, branch);
   res.json({ started: true, collection, url });
@@ -2233,7 +2246,23 @@ app.get('/api/ai/docrag/collections/:name/stats', async (req, res) => {
 
 // ── RAG Queue status ──
 app.get('/api/ai/rag/queue', (req, res) => {
-  res.json({ queue: ragQueue.map(q => ({ type: q.type, collection: q.collection, url: q.url })), length: ragQueue.length });
+  res.json({ queue: queueView(), length: ragQueue.length });
+});
+
+// POST /api/ai/rag/queue/promote { collection } - move a QUEUED run to the front (next after the
+// running job). Matches the display name or the codebase_ name. Does not preempt the running job.
+app.post('/api/ai/rag/queue/promote', (req, res) => {
+  const want = String(req.body?.collection || '');
+  if (!want) return res.status(400).json({ error: 'collection is required' });
+  const norm = (c) => String(c || '').replace(/^codebase_/, '');
+  const i = ragQueue.findIndex((q) => norm(q.collection) === norm(want));
+  if (i === -1) return res.status(404).json({ error: `'${want}' is not in the queue`, queue: queueView() });
+  const [item] = ragQueue.splice(i, 1);
+  item.manual = true;
+  ragQueue.unshift(item);
+  console.log(`[rag-queue] promoted ${item.collection} from position ${i + 1} to 1`);
+  void emitDebug('rag', `promoted ${item.collection} from queue position ${i + 1} to next`);
+  res.json({ ok: true, promoted: item.collection, from: i + 1, queue: queueView() });
 });
 
 // ── Update-all: re-index every collection that has a repo_url ──
