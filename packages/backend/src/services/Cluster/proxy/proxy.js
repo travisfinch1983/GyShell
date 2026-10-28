@@ -820,7 +820,11 @@ function findServicesByType(type) {
   const state = loadActiveServices();
   return Object.values(state.services)
     .filter((svc) => classifyService(svc) === type && svc.containerIp && svc.port)
-    .sort((a, b) => (a.proxySlot || 999) - (b.proxySlot || 999));
+    // poolPriority first (lower = preferred, default 0): a standby copy must not win the
+    // "first service of this type" fallback that model-less requests take. Without this the
+    // V100 rerank standby (slot 4) kept serving every request that omitted `model`.
+    .sort((a, b) => ((Number(a.poolPriority) || 0) - (Number(b.poolPriority) || 0))
+      || ((a.proxySlot || 999) - (b.proxySlot || 999)));
 }
 
 /**
@@ -2156,6 +2160,7 @@ export function createProxyRouter(sshService) {
       if (!svc) {
         const { svc: fallback } = findServiceOrExternal('rerank');
         svc = fallback;
+        if (svc) console.log(`[rerank] ${modelId ? `unknown model '${String(modelId).slice(0, 60)}'` : 'no model field'} from ${req.ip || req.socket?.remoteAddress} ua=${String(req.headers['user-agent'] || '-').slice(0, 40)} -> fallback ${svc.containerIp}:${svc.port}`);
       }
       if (!svc) return res.status(503).json({ error: 'No active reranker service', hint: 'Add a reranker model or external reranker service' });
 
