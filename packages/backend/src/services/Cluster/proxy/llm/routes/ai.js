@@ -580,6 +580,17 @@ function getNextPort() {
 }
 
 /**
+ * GPU pool modes (ai-config.json pools["<node>:<pci>"].mode):
+ *   'ai-pool'  - the node's agent container only; any other container holding it blocks the sync.
+ *   'shared'   - the agent container AND ordinary containers (e.g. Frigate on the px-nas 5060).
+ *                Other holders are not a conflict; `reserveMB` is their footprint, subtracted
+ *                from the card before placement (gpu-specs getClusterGpus).
+ *   'reserved' - not AI.
+ */
+export const AGENT_POOL_MODES = new Set(['ai-pool', 'shared']);
+const isAgentPoolMode = (mode) => AGENT_POOL_MODES.has(mode);
+
+/**
  * Auto-sync AI Pool GPUs to agent containers when conflicts are cleared.
  *
  * For each node that has an AI agent designated:
@@ -612,18 +623,22 @@ export async function checkAndAutoSync({ pveApi, hookscriptDeploy }) {
     if (!agent.vmid) continue;
     const vmidStr = String(agent.vmid);
 
-    // 1. Collect AI Pool GPU PCI IDs for this node
+    // 1. Collect this node's agent-eligible GPUs (ai-pool + shared)
     const expectedGpus = [];
+    const exclusiveGpus = [];
     for (const [key, val] of Object.entries(pools)) {
-      if (val.mode !== 'ai-pool') continue;
+      if (!isAgentPoolMode(val.mode)) continue;
       const [gpuNode, ...pciParts] = key.split(':');
-      if (gpuNode === node) expectedGpus.push(pciParts.join(':'));
+      if (gpuNode !== node) continue;
+      expectedGpus.push(pciParts.join(':'));
+      if (val.mode === 'ai-pool') exclusiveGpus.push(pciParts.join(':'));
     }
     if (expectedGpus.length === 0) continue;
 
-    // 2. Check for conflicts — non-agent containers on this node with AI Pool GPUs
+    // 2. Check for conflicts — non-agent containers on this node holding an EXCLUSIVE (ai-pool)
+    //    GPU. Holders of a 'shared' GPU are expected co-tenants, not conflicts.
     const assignments = loadGpuAssignments();
-    const expectedSet = new Set(expectedGpus);
+    const expectedSet = new Set(exclusiveGpus);
     let hasConflict = false;
 
     for (const [vmid, assign] of Object.entries(assignments)) {
@@ -736,7 +751,10 @@ export function createAiRouter(config, gpuMonitor, pveApi, sshService, hookscrip
 
     // Validate pool modes
     for (const [key, val] of Object.entries(pools)) {
-      if (val.mode !== 'ai-pool' && val.mode !== 'reserved') {
+      if (val.reserveMB != null && !(Number.isFinite(Number(val.reserveMB)) && Number(val.reserveMB) >= 0)) {
+        return res.status(400).json({ error: `Invalid reserveMB "${val.reserveMB}" for ${key}` });
+      }
+      if (!isAgentPoolMode(val.mode) && val.mode !== 'reserved') {
         return res.status(400).json({ error: `Invalid mode "${val.mode}" for ${key}` });
       }
     }
@@ -744,12 +762,13 @@ export function createAiRouter(config, gpuMonitor, pveApi, sshService, hookscrip
     const cfg = loadAiConfig();
     const oldPools = cfg.pools || {};
 
-    // Detect GPUs removed from AI Pool → auto-remove from agent containers
+    // Detect GPUs no longer agent-eligible → auto-remove from agent containers
+    // (ai-pool <-> shared keeps the card on the agent)
     const removedFromPool = []; // [{ node, pciId }]
     for (const [key, oldVal] of Object.entries(oldPools)) {
-      if (oldVal.mode === 'ai-pool') {
+      if (isAgentPoolMode(oldVal.mode)) {
         const newVal = pools[key];
-        if (!newVal || newVal.mode !== 'ai-pool') {
+        if (!newVal || !isAgentPoolMode(newVal.mode)) {
           // This GPU was in AI Pool but is no longer
           const colonIdx = key.indexOf(':');
           const node = key.substring(0, colonIdx);
@@ -810,7 +829,7 @@ export function createAiRouter(config, gpuMonitor, pveApi, sshService, hookscrip
       // Compute needsSync: compare current pool GPUs vs deployed assignments
       const poolGpus = [];
       for (const [key, val] of Object.entries(cfg.pools || {})) {
-        if (val.mode !== 'ai-pool') continue;
+        if (!isAgentPoolMode(val.mode)) continue;
         const [gpuNode, ...pciParts] = key.split(':');
         if (gpuNode === node) poolGpus.push(pciParts.join(':'));
       }
@@ -955,10 +974,10 @@ export function createAiRouter(config, gpuMonitor, pveApi, sshService, hookscrip
       return res.status(400).json({ error: `No agent designated for node ${node}` });
     }
 
-    // Collect AI Pool GPU PCI IDs for this node
+    // Collect agent-eligible (ai-pool + shared) GPU PCI IDs for this node
     const aiGpus = [];
     for (const [key, val] of Object.entries(cfg.pools || {})) {
-      if (val.mode !== 'ai-pool') continue;
+      if (!isAgentPoolMode(val.mode)) continue;
       const [gpuNode, ...pciParts] = key.split(':');
       if (gpuNode === node) {
         aiGpus.push(pciParts.join(':'));
@@ -5493,7 +5512,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
 
       // Filter to AI Pool GPUs only if requested
       if (poolOnly) {
-        clusterGpus = clusterGpus.filter(g => g.poolMode === 'ai-pool');
+        clusterGpus = clusterGpus.filter(g => isAgentPoolMode(g.poolMode));
       }
 
       // Find placements

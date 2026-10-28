@@ -23,7 +23,7 @@ const PoolView: React.FC = observer(() => (
           <div className={styles.poolGrid}>
             {pool.length === 0 && <div className={styles.poolEmpty}>no GPUs configured</div>}
             {pool.map((g) => (
-              <div key={g.pci} className={`${styles.poolGpu} ${g.mode === 'ai-pool' ? styles.aiPool : styles.reserved}`} title={g.pci}>
+              <div key={g.pci} className={`${styles.poolGpu} ${g.mode === 'ai-pool' ? styles.aiPool : g.mode === 'shared' ? styles.sharedPool : styles.reserved}`} title={g.pci}>
                 <span className={styles.poolPci}>{g.pci}</span>
                 <span className={styles.poolMode}>{g.mode}</span>
               </div>

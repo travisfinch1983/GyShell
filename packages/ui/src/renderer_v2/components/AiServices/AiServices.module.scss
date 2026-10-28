@@ -44,6 +44,8 @@
 .poolGpu { display: flex; flex-direction: column; gap: 1px; padding: 5px 9px; border-radius: 6px; border: 1px solid var(--border); }
 .aiPool { background: color-mix(in srgb, var(--success) 14%, transparent); border-color: color-mix(in srgb, var(--success) 40%, transparent); }
 .reserved { background: var(--control-bg); }
+/* 'shared': the agent AND ordinary containers (e.g. Frigate) use the card */
+.sharedPool { background: color-mix(in srgb, var(--warning) 14%, transparent); border-color: color-mix(in srgb, var(--warning) 40%, transparent); }
 .poolPci { font-size: 10px; font-family: var(--font-mono); color: var(--fg); }
 .poolMode { font-size: 9px; text-transform: uppercase; color: var(--fg-faint); }
 .poolEmpty { font-size: 12px; color: var(--fg-faint); }

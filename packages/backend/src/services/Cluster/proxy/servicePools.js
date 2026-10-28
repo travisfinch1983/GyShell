@@ -152,7 +152,7 @@ export async function refreshPool(type, findServicesByType) {
  * - a BARE id round-robins across every healthy instance serving it
  * - returns { svc, baseId } so the caller can rewrite the body back to the undecorated id
  */
-export function pickInstance(type, cache, requestedId) {
+export function pickInstance(type, cache, requestedId, { skip = null } = {}) {
   if (!requestedId) return { svc: null, baseId: null }
 
   const decorated = /@\d+$/.test(requestedId)
@@ -164,9 +164,18 @@ export function pickInstance(type, cache, requestedId) {
   const pool = cache.pools.get(requestedId)
   if (!pool || !pool.length) return { svc: null, baseId: null }
 
-  const healthy = pool.filter((s) => !isBenched(s))
-  const usable = healthy.length ? healthy : pool // all benched -> try anyway rather than 503
-  const ck = `${type}:${requestedId}`
+  // `skip` = ip:port keys the caller can't use right now (e.g. a reranker at its in-flight cap).
+  const open = skip ? pool.filter((s) => !skip.has(`${s.containerIp}:${s.port}`)) : pool
+  if (!open.length) return { svc: null, baseId: null }
+  const healthy = open.filter((s) => !isBenched(s))
+  let usable = healthy.length ? healthy : open // all benched -> try anyway rather than 503
+  // Priority tiers: lowest `poolPriority` (default 0) takes ALL the traffic; a higher tier is a
+  // fallback, used only when every lower-tier instance is benched or skipped. Lets a slow copy
+  // (the V100 reranker) stand by behind a fast one (the px-nas 5060) instead of taking 1/N.
+  const prio = (s) => Number(s.poolPriority) || 0
+  const best = Math.min(...usable.map(prio))
+  usable = usable.filter((s) => prio(s) === best)
+  const ck = `${type}:${requestedId}:${best}`
   const next = (cursors.get(ck) || 0) % usable.length
   cursors.set(ck, next + 1)
   return { svc: usable[next], baseId: requestedId, poolSize: usable.length }

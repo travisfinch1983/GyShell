@@ -64,6 +64,26 @@ const GPU_MODELS = {
     notes:          'Fastest single-GPU consumer card. No NVLink.',
   },
 
+  'RTX 5060 8GB': {
+    model:          'GeForce RTX 5060 8GB',
+    matchPatterns:  ['RTX 5060'],
+    excludePatterns: ['RTX 5060 Ti', 'RTX 5060Ti'],   // 'RTX 5060' is a substring of the Ti's name
+    arch:           'Blackwell',
+    vramMB:         8192,
+    busWidth:       128,           // GDDR7
+    memBandwidthGBs: 448,
+    fp16TFLOPS:     38.0,         // estimated
+    fp32TFLOPS:     19.2,         // estimated
+    nvlink:         false,
+    nvlinkBandwidthGBs: 0,
+    cudaCores:      3840,
+    tensorCores:    120,
+    smCount:        30,
+    generation:     'consumer',
+    provider:       'nvidia',
+    notes:          'Blackwell consumer, 8 GB. px-nas card, shared with Frigate (pool mode "shared").',
+  },
+
   'RTX 5060 Ti 16GB': {
     model:          'GeForce RTX 5060 Ti 16GB',
     matchPatterns:  ['RTX 5060 Ti', 'RTX 5060Ti'],
@@ -197,6 +217,11 @@ function matchGpuSpec(friendlyName, productName, deviceName, liveVramMB) {
       const patterns = Array.isArray(spec.matchPatterns) && spec.matchPatterns.length > 0
         ? spec.matchPatterns
         : [spec.model || ''];
+      const excluded = (spec.excludePatterns || []).some((x) => {
+        const nx = normalizeGpuName(x);
+        return norm.includes(nx) || normNoSpace.includes(nx.replace(/ /g, ''));
+      });
+      if (excluded) continue;
       for (const p of patterns) {
         const np = normalizeGpuName(p);
         if (norm.includes(np) || normNoSpace.includes(np.replace(/ /g, ''))) {
@@ -259,6 +284,10 @@ export function getClusterGpus(inventory, gpuConfig, aiConfig, vramUsage = null)
       const friendlyName = cfg.friendlyName || gpu.productName || gpu.device || 'Unknown';
       const spec = matchGpuSpec(cfg.friendlyName, gpu.productName, gpu.device, gpu.memTotal);
       const poolMode = pools[configKey]?.mode || null;
+      // A 'shared' card also serves ordinary containers (e.g. Frigate on the px-nas 5060). Live
+      // usage isn't polled (gpu-monitor's poller is off), so their footprint is a configured
+      // reserve, taken off the top before any placement sees the card.
+      const coTenantReserveMB = poolMode === 'shared' ? Math.max(0, Number(pools[configKey]?.reserveMB) || 0) : 0;
 
       const totalVram = spec?.vramMB || 0;
       const usage = vramUsage?.get(`${nodeName}:${gpu.pciId}`);
@@ -271,7 +300,8 @@ export function getClusterGpus(inventory, gpuConfig, aiConfig, vramUsage = null)
         spec,
         poolMode,
         vramMB: totalVram,
-        availableVramMB: usage ? usage.availableMB : totalVram,
+        availableVramMB: Math.max(0, (usage ? usage.availableMB : totalVram) - coTenantReserveMB),
+        coTenantReserveMB,
         liveUsedMB: usage?.liveUsedMB || 0,
         reservedMB: usage?.reservedMB || 0,
         provider: spec?.provider || 'unknown',

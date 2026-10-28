@@ -2148,10 +2148,10 @@ export function createProxyRouter(sshService) {
       let modelId = null;
       try { modelId = JSON.parse(body.toString()).model; } catch {}
 
-      let svc = null, baseId = null;
+      let svc = null, baseId = null, rerankPool = null;
       if (modelId) {
-        const cache = await refreshPool('rerank', findServicesByType);
-        ({ svc, baseId } = pickInstance('rerank', cache, modelId));
+        rerankPool = await refreshPool('rerank', findServicesByType);
+        ({ svc, baseId } = pickInstance('rerank', rerankPool, modelId));
       }
       if (!svc) {
         const { svc: fallback } = findServiceOrExternal('rerank');
@@ -2204,9 +2204,21 @@ export function createProxyRouter(sshService) {
           }
         }
       } catch {}
-      const key = `${svc.containerIp}:${svc.port}`;
+      let key = `${svc.containerIp}:${svc.port}`;
       const cap = Number(process.env.RERANK_MAX_INFLIGHT || 3);
-      const cur = rerankInflight.get(key) || 0;
+      let cur = rerankInflight.get(key) || 0;
+      // Preferred instance saturated -> spill to the next one serving the same model (e.g. the
+      // V100 standby behind the 5060) before refusing.
+      if (cur >= cap && rerankPool && baseId) {
+        const full = new Set([...rerankInflight].filter(([, n]) => n >= cap).map(([k]) => k));
+        const alt = pickInstance('rerank', rerankPool, baseId, { skip: full }).svc;
+        if (alt) {
+          console.log(`[rerank] ${key} at cap (${cur}/${cap}) - spilling to ${alt.containerIp}:${alt.port}`);
+          svc = alt;
+          key = `${svc.containerIp}:${svc.port}`;
+          cur = rerankInflight.get(key) || 0;
+        }
+      }
       let ndocs = 0; try { ndocs = (JSON.parse(out.toString()).documents || []).length; } catch {}
       const who = `${req.ip || req.socket?.remoteAddress} ua=${String(req.headers['user-agent'] || '-').slice(0, 40)}`;
       if (trimmed && trimmed.total > trimmed.kept) console.log(`[rerank] trimmed ${trimmed.total} -> ${trimmed.kept} docs from ${who}`);

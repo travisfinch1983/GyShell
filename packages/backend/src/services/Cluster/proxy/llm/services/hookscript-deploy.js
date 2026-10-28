@@ -371,11 +371,18 @@ do_pre_start() {
 
     # Write entries to conf between markers
     if [ -n "$CONF_LINES" ]; then
+        local BLK_TMP=$(mktemp) NEW_TMP=$(mktemp)
         {
             echo "$MARKER_START"
             echo -e "$CONF_LINES"
             echo "$MARKER_END"
-        } >> "$CONF"
+        } > "$BLK_TMP"
+        # Insert BEFORE the first [section] ([pve:pending], snapshots). Appending put the block
+        # inside that section, so PVE treated it as pending/snapshot data, not the live config
+        # (seen on CT198 px-nas, 2026-10-28).
+        awk -v blk="$BLK_TMP" '!done && /^\\[/ { while ((getline l < blk) > 0) print l; done = 1 } { print } END { if (!done) while ((getline l < blk) > 0) print l }' "$CONF" > "$NEW_TMP" && cat "$NEW_TMP" > "$CONF" \\
+          || { proxlab_err "CT $VMID: block insert failed -- appending instead"; cat "$BLK_TMP" >> "$CONF"; }
+        rm -f "$BLK_TMP" "$NEW_TMP"
         proxlab_ok "CT $VMID: GPU config written ($DEV_INDEX device entries)"
     fi
     [ -n "$MISSING" ] && proxlab_err "CT $VMID: GPU(s) NOT present on this host:$MISSING -- the container starts without them"
@@ -477,11 +484,18 @@ do_pre_start() {
     done
 
     if [ -n "$CONF_LINES" ]; then
+        local BLK_TMP=$(mktemp) NEW_TMP=$(mktemp)
         {
             echo "$MARKER_START"
             echo -e "$CONF_LINES"
             echo "$MARKER_END"
-        } >> "$CONF"
+        } > "$BLK_TMP"
+        # Insert BEFORE the first [section] ([pve:pending], snapshots). Appending put the block
+        # inside that section, so PVE treated it as pending/snapshot data, not the live config
+        # (seen on CT198 px-nas, 2026-10-28).
+        awk -v blk="$BLK_TMP" '!done && /^\\[/ { while ((getline l < blk) > 0) print l; done = 1 } { print } END { if (!done) while ((getline l < blk) > 0) print l }' "$CONF" > "$NEW_TMP" && cat "$NEW_TMP" > "$CONF" \\
+          || { proxlab_err "CT $VMID: block insert failed -- appending instead"; cat "$BLK_TMP" >> "$CONF"; }
+        rm -f "$BLK_TMP" "$NEW_TMP"
     fi
 }
 
@@ -533,13 +547,16 @@ exit 0
    * Generate per-container vars file content.
    * Includes GPU vars and shared folder mount vars.
    */
-  generateContainerVars(vmid, assignment, inventory, gpuConfig) {
+  generateContainerVars(vmid, assignment, inventory, gpuConfig, ownerNode = null) {
     const { mountStyle, gpus } = assignment;
 
-    // Build PCI → GPU info lookup from inventory
+    // Build PCI → GPU info lookup from inventory. PCI addresses repeat across nodes
+    // (pbs:0000:c1:00.0 and px-nas:0000:c1:00.0 both exist), so the container's own node wins;
+    // a PCI-only lookup used to pick whichever node was iterated last (wrong NAME/UUID vars).
     const gpuInfoMap = {};
     for (const [nodeName, nodeInfo] of Object.entries(inventory)) {
       for (const gpu of nodeInfo.allGpus) {
+        if (gpuInfoMap[gpu.pciId] && nodeName !== ownerNode) continue;
         gpuInfoMap[gpu.pciId] = {
           ...gpu,
           node: nodeName,
@@ -783,7 +800,7 @@ exit 0
 
     const inventory = this.gpuMonitor.getInventory();
     const gpuConfig = this.gpuMonitor.getConfig();
-    const content = this.generateContainerVars(vmid, assignment, inventory, gpuConfig);
+    const content = this.generateContainerVars(vmid, assignment, inventory, gpuConfig, node.node);
 
     await this.sshWriteFile(node.ip, `${this.snippetsBase}/proxlab-vars/${vmid}.sh`, content, '644');
     return { action: 'written', path: `proxlab-vars/${vmid}.sh` };
