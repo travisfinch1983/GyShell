@@ -87,6 +87,44 @@ _CALLER_USER: "contextvars.ContextVar[str]" = contextvars.ContextVar("memory_cal
 
 def _current_user() -> str:
     return _CALLER_USER.get() or HIPPOCAMPAI_USER
+
+
+# ── Pinned callers (2026-10-22, claude-dhb-enterprise isolation) ───────────────
+# MEMORY_PINNED_SOURCES="10.0.0.153=dhb-enterprise[,ip=ns...]". A request whose TCP
+# source IP is listed is FORCED into that namespace: an explicit user_id argument,
+# the /u/<name>/ path and the REST body's user_id are all ignored. Custom collections
+# are transparently prefixed "<ns>__" and collection_list only shows that prefix.
+# The OpenViking lane is skipped entirely for pinned callers because it searches with
+# a shared key and would return other namespaces' content.
+# Why: the enterprise (Blattner) instance must never read Travis's homelab memories,
+# and user_id alone is caller-chosen, so it isolates nothing.
+_PINNED_USER: "contextvars.ContextVar[str]" = contextvars.ContextVar("memory_pinned_user", default="")
+
+
+def _pinned_sources() -> dict:
+    out = {}
+    for pair in (os.environ.get("MEMORY_PINNED_SOURCES") or "").split(","):
+        if "=" in pair:
+            ip, ns = pair.split("=", 1)
+            if ip.strip() and ns.strip():
+                out[ip.strip()] = ns.strip()
+    return out
+
+
+_PINNED_MAP = _pinned_sources()
+
+
+def _uid(user_id: str = "") -> str:
+    """Effective namespace: a pinned caller's namespace beats anything it asked for."""
+    return _PINNED_USER.get() or user_id or _current_user()
+
+
+def _coll(name: str) -> str:
+    ns = _PINNED_USER.get()
+    if not ns:
+        return name
+    prefix = f"{ns}__"
+    return name if name.startswith(prefix) else prefix + name
 RERANKER_URL = os.environ.get("RERANKER_URL", f"{PROXLAB_URL}/api/proxy/rerank/v2/rerank")
 EMBED_URL = os.environ.get("EMBED_URL", f"{PROXLAB_URL}/api/proxy/embed/v1/embeddings")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "Qwen3-VL-Embedding-8B")
@@ -164,6 +202,14 @@ VECTOR_DBS = [
      "host": os.environ.get("CHROMA_HOST", "127.0.0.1"),
      "port": int(os.environ.get("CHROMA_PORT", "8000"))},
 ]
+# Which of the above are live. 2026-10-06: Travis consolidated onto Qdrant alone (weaviate kept
+# read-only as a fallback for a week, chromadb retired), so the unit sets VECTOR_DBS=qdrant.
+# Unset = all three, the historical behaviour.
+_ENABLED = [x.strip() for x in os.environ.get("VECTOR_DBS", "").split(",") if x.strip()]
+if _ENABLED:
+    VECTOR_DBS = [db for db in VECTOR_DBS if db["name"] in _ENABLED]
+    if not VECTOR_DBS:
+        raise SystemExit(f"VECTOR_DBS={_ENABLED} matches no known backend (qdrant, weaviate, chromadb)")
 
 # ─── HippocampAI async-write tuning ──────────────────────────────────────────
 # HippocampAI is a direct-write (non-WAL) backend that fails ~1-in-4. We never
@@ -191,7 +237,7 @@ mcp = FastMCP(
     "unified-memory",
     instructions=(
         "Unified RAG memory with multi-vector-DB consensus search. "
-        "Writes are replicated across Qdrant, Milvus, Weaviate, ChromaDB, and HippocampAI. "
+        "Writes go to the configured vector DB(s) (Qdrant) and HippocampAI. "
         "Recalls use consensus search with Reciprocal Rank Fusion and cross-encoder reranking. "
         "Use 'remember' to store facts and 'recall' to retrieve them."
     ),
@@ -217,6 +263,8 @@ class WriteAheadLog:
         self.wal_dir.mkdir(parents=True, exist_ok=True)
         self.wal_file = self.wal_dir / "wal.jsonl"
         self.state_file = self.wal_dir / "db_state.json"
+        # mark_applied runs on request threads, the async hippo thread and the sync worker at once.
+        self._state_lock = threading.Lock()
 
     def append(self, entry: dict) -> int:
         """Append a write entry and return the WAL ID."""
@@ -240,10 +288,19 @@ class WriteAheadLog:
         return {}
 
     def mark_applied(self, db_name: str, wal_id: int):
-        """Mark a WAL entry as applied to a DB."""
-        state = self.get_db_state()
-        state[db_name] = max(state.get(db_name, 0), wal_id)
-        self.state_file.write_text(json.dumps(state))
+        """Mark a WAL entry as applied to a DB.
+
+        🛑 This used to be an unlocked read-modify-write with write_text (truncate, then write):
+        a concurrent reader caught the empty file, fell back to {}, and wrote back ONLY its own
+        key, wiping every other cursor. 2026-10-23 the qdrant cursor vanished that way, the
+        replay restarted at the oldest WAL entry (July) and was resurrecting tombstoned memories.
+        Now serialised and atomic (temp file + os.replace), so a reader never sees a partial file."""
+        with self._state_lock:
+            state = self.get_db_state()
+            state[db_name] = max(state.get(db_name, 0), wal_id)
+            tmp = self.state_file.with_name(self.state_file.name + ".tmp")
+            tmp.write_text(json.dumps(state))
+            os.replace(tmp, self.state_file)
 
     def get_pending(self, db_name: str) -> list:
         """Get all WAL entries not yet applied to a DB."""
@@ -633,7 +690,7 @@ def write_to_hippocampai(text: str, mem_type: str, importance: float, tags: list
     try:
         payload = {
             "text": text,
-            "user_id": user_id or _current_user(),
+            "user_id": _uid(user_id),
             "type": mem_type,
             "importance": importance,
         }
@@ -647,8 +704,52 @@ def write_to_hippocampai(text: str, mem_type: str, importance: float, tags: list
         return None
 
 
+# ── Delete support (2026-10-22) ──────────────────────────────────────────────
+# HippocampAI assigns its OWN id on write; `remember` returns ours (the Qdrant/WAL id). Before this,
+# delete_memory(<returned id>) asked hippo for an id it never had (404, read as "already gone") and
+# never touched Qdrant, so "deleted" memories stayed live in both. Now: the hippo id is recorded on
+# the Qdrant copy as payload.hippo_id once hippo absorbs the write, delete fans out to every backend,
+# and deleted ids are tombstoned so a still-queued WAL hippo write cannot resurrect them.
+def _tombstone_file():
+    return wal.wal_dir / "tombstones.json"
+
+
+_tomb_lock = threading.Lock()
+
+
+def _tombstones() -> set:
+    try:
+        return set(json.loads(_tombstone_file().read_text()))
+    except Exception:
+        return set()
+
+
+def _add_tombstones(ids) -> None:
+    with _tomb_lock:
+        cur = _tombstones() | {i for i in ids if i}
+        _tombstone_file().write_text(json.dumps(sorted(cur)))
+
+
+def _record_hippo_id(memory_id: str, hippo_id: str) -> None:
+    client = get_client()
+    for db in VECTOR_DBS:
+        if db["type"] != "qdrant":
+            continue
+        try:
+            client.post(
+                f"http://{db['host']}:{db['port']}/collections/{qdrant_collection(db)}/points/payload",
+                json={"payload": {"hippo_id": hippo_id}, "points": [stable_point_id(memory_id)]},
+                timeout=10.0,
+            )
+        except Exception as e:  # noqa: BLE001 — never fail a write over the id map
+            print(f"[unified-memory] could not record hippo_id {hippo_id} for {memory_id}: {e}")
+
+
 def _hippo_write_from_payload(payload: dict) -> bool:
-    """Attempt one HippocampAI write from a WAL payload. True on success."""
+    """Attempt one HippocampAI write from a WAL payload. True on success (or if tombstoned)."""
+    mid = payload.get("memory_id", "")
+    if mid and mid in _tombstones():
+        return True  # deleted before hippo absorbed it — mark applied, never write it
     r = write_to_hippocampai(
         payload.get("text", ""),
         payload.get("type", "fact"),
@@ -656,6 +757,8 @@ def _hippo_write_from_payload(payload: dict) -> bool:
         payload.get("tags", []) or [],
         payload.get("user_id", ""),
     )
+    if r and mid and isinstance(r, dict) and r.get("id"):
+        _record_hippo_id(mid, r["id"])
     return bool(r)
 
 
@@ -690,7 +793,7 @@ def recall_from_hippocampai(query: str, k: int, user_id: str) -> list:
             # rerank=false: skip hippo's local cross-encoder rerank (7-10s on CPU) and take its
             # raw top-k candidates (~80ms). Redundant here anyway — the consensus is reranked with
             # Nemotron below. Turns hippo from the slowest lane into the fastest.
-            json={"query": query, "user_id": user_id or _current_user(), "k": k, "rerank": False},
+            json={"query": query, "user_id": _uid(user_id), "k": k, "rerank": False},
             timeout=HIPPO_RECALL_TIMEOUT,
         )
         resp.raise_for_status()
@@ -782,7 +885,7 @@ def search_openviking(query: str, k: int, user_id: str) -> list:
     abstract}. Any shape mismatch is caught and the lane contributes nothing,
     never breaking the overall recall.
     """
-    if not openviking_enabled():
+    if _PINNED_USER.get() or not openviking_enabled():
         return []
     client = get_client()
     try:
@@ -954,7 +1057,14 @@ def rerank(query: str, results: list) -> list:
     if len(results) <= 1:
         return results
 
-    documents = [r.get("text", "") for r in results if r.get("text")]
+    # Bounded: only the head of the fused list goes to the cross-encoder, each passage truncated.
+    # Cost is quadratic in passage length - 71 full memories took 30 s on the V100 reranker
+    # (2026-10-06) and every recall timed out. RERANK_MAX_DOCS / RERANK_MAX_CHARS tune it.
+    max_docs = int(os.environ.get("RERANK_MAX_DOCS", "32"))
+    max_chars = int(os.environ.get("RERANK_MAX_CHARS", "1500"))
+    text_all = [r for r in results if r.get("text")]
+    head, tail = text_all[:max_docs], text_all[max_docs:]
+    documents = [r["text"][:max_chars] for r in head]
     if not documents:
         return results
 
@@ -966,12 +1076,22 @@ def rerank(query: str, results: list) -> list:
             json={"model": cfg["rerank_model"], "query": query, "documents": documents},
             timeout=15.0,
         )
+        if resp.status_code == 503 and "busy" in resp.text[:200]:
+            # The proxy's in-flight cap ({"error":"reranker busy","inflight":3,"cap":3}) is
+            # BACKPRESSURE, not an outage: the reranker is alive and drains on its own. Latched
+            # under its own subject so it never fires the "reranker is down" alarm (2026-10-28).
+            _degraded("reranker-busy", False,
+                      "Recall reranker is saturated — some recalls served in raw RRF order",
+                      f"{resp.text[:200]} from {cfg['rerank_url']}. The reranker is ALIVE; the proxy "
+                      "is shedding load at its in-flight cap. Self-clearing. Usual cause: a bulk "
+                      "re-index sharing the reranker's GPU (V100 #7 also hosts the embedder).")
+            return results
         if resp.status_code != 200:
             # This branch was FULLY silent — not even a print — while returning
             # the un-reranked order as if nothing happened.
             _degraded("reranker", False,
                       "Recall reranker is down — results served in raw RRF order",
-                      f"HTTP {resp.status_code} from {cfg['rerank_url']}. Every recall in the fleet "
+                      f"HTTP {resp.status_code} ({resp.text[:160]!r}) from {cfg['rerank_url']}. Every recall in the fleet "
                       "is degraded to fused-but-unreranked order; answers look normal, just worse. "
                       "The reranker has died unnoticed before (10.0.0.140 decommission).")
             return results
@@ -980,12 +1100,12 @@ def rerank(query: str, results: list) -> list:
         score_map = {r["index"]: r["relevance_score"] for r in reranked}
 
         # Map scores back to results
-        text_results = [r for r in results if r.get("text")]
-        for i, r in enumerate(text_results):
+        for i, r in enumerate(head):
             r["reranker_score"] = score_map.get(i, 0)
 
         _degraded("reranker", True)
-        return sorted(text_results, key=lambda x: x.get("reranker_score", 0), reverse=True)
+        _degraded("reranker-busy", True)
+        return sorted(head, key=lambda x: x.get("reranker_score", 0), reverse=True) + tail
     except Exception as e:
         print(f"[unified-memory] Reranking failed: {e}")
         _degraded("reranker", False,
@@ -1023,7 +1143,7 @@ def consensus_recall(query: str, k: int, user_id: str) -> list:
     # collection across callers; every write stamps user_id in the payload,
     # so drop hits owned by OTHER namespaces here. Legacy entries without a
     # user_id belong to the historical shared default ("claude").
-    resolved_user = user_id or _current_user()
+    resolved_user = _uid(user_id)
     if query_vector:
         client = get_client()
         for db in VECTOR_DBS:
@@ -1063,6 +1183,7 @@ def sync_pending(include_hippo: bool = True, batch: int = SYNC_BATCH):
     hippo backlog never makes a store slow. The backlog drains over time."""
     client = get_client()
     synced = 0
+    tombs = _tombstones()
     for db in VECTOR_DBS:
         pending = wal.get_pending(db["name"])
         if not pending:
@@ -1072,6 +1193,13 @@ def sync_pending(include_hippo: bool = True, batch: int = SYNC_BATCH):
             continue
         for entry in pending[:batch]:
             if entry.get("op") != "upsert":
+                continue
+            # A deleted memory must never be resurrected by a replay (the hippo lane has the
+            # same guard in _hippo_write_from_payload): retire the WAL entry without writing.
+            mid = entry.get("memory_id") or entry.get("payload", {}).get("memory_id", "")
+            if mid and mid in tombs:
+                wal.mark_applied(db["name"], entry["_wal_id"])
+                print(f"[unified-memory] WAL replay skipped tombstoned {mid} for {db['name']}")
                 continue
             # Re-vectorize the text (we don't store vectors in the WAL)
             text = entry.get("payload", {}).get("text", "")
@@ -1155,7 +1283,7 @@ def _remember_impl(
         "type": type,
         "importance": importance,
         "tags": tag_list,
-        "user_id": user_id or _current_user(),
+        "user_id": _uid(user_id),
         "memory_id": memory_id,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -1227,7 +1355,7 @@ def recall(
 
 def _recall_impl(query: str, k: int = 10, user_id: str = "") -> list:
     """Core recall logic shared by the MCP `recall` tool and the REST facade."""
-    results = consensus_recall(query, min(k, 50), user_id or _current_user())
+    results = consensus_recall(query, min(k, 50), _uid(user_id))
     output = []
     for i, r in enumerate(results):
         output.append({
@@ -1268,7 +1396,7 @@ def memory_search(
                    always know more exists (nothing is silently cut).
         user_id: User namespace (default: your own).
     """
-    results = consensus_recall(query, min(k, 50), user_id or _current_user())
+    results = consensus_recall(query, min(k, 50), _uid(user_id))
     output = []
     for i, r in enumerate(results):
         full = r.get("text", "") or ""
@@ -1305,7 +1433,7 @@ def search_memories(
         limit: Max results (default 20, max 100).
     """
     client = get_client()
-    payload = {"user_id": user_id or _current_user(), "limit": min(limit, 100)}
+    payload = {"user_id": _uid(user_id), "limit": min(limit, 100)}
     if type_filter:
         payload["filters"] = {"type": type_filter}
     try:
@@ -1324,26 +1452,77 @@ def search_memories(
 
 @mcp.tool()
 def delete_memory(memory_id: str, user_id: str = "") -> str:
-    """Delete a memory from HippocampAI by ID.
+    """Delete a memory from EVERY backend (Qdrant + HippocampAI) and say what happened in each.
 
-    Note: This only deletes from HippocampAI. Vector DB copies remain
-    but will be naturally excluded from future results as they age out.
+    Accepts either id: the one `remember` returned, or a hippocampai id shown by `recall`.
+    Only deletes within your own namespace. A success here is still not proof the FACT is gone
+    (the same text can exist as separate memories) — re-run the recall to confirm.
 
     Args:
-        memory_id: The UUID of the memory to delete.
-        user_id: User namespace (default: "claude").
+        memory_id: The memory id (from remember or recall).
+        user_id: User namespace (default: your own).
     """
+    ns = _uid(user_id)
     client = get_client()
-    try:
-        resp = client.request(
-            "DELETE", f"{HIPPOCAMPAI_URL}/v1/memories:delete",
-            json={"memory_id": memory_id, "user_id": user_id or _current_user()},
-            timeout=10.0,
-        )
-        resp.raise_for_status()
-        return json.dumps({"deleted": True, "memory_id": memory_id})
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+    out = {"memory_id": memory_id, "namespace": ns, "qdrant": {}, "hippocampai": {}}
+    hippo_ids, texts, tomb = {memory_id}, set(), {memory_id}
+
+    for db in VECTOR_DBS:
+        if db["type"] != "qdrant":
+            continue
+        base = f"http://{db['host']}:{db['port']}/collections/{qdrant_collection(db)}"
+        flt = {"should": [{"key": k, "match": {"value": memory_id}} for k in ("memory_id", "_memory_id", "hippo_id")]}
+        try:
+            r = client.post(f"{base}/points/scroll", json={"filter": flt, "limit": 50, "with_payload": True,
+                                                         "with_vector": False}, timeout=10.0)
+            r.raise_for_status()
+            pts = [p for p in r.json()["result"]["points"]
+                   if ((p.get("payload") or {}).get("user_id") or HIPPOCAMPAI_USER) == ns]
+            for p in pts:
+                pl = p.get("payload") or {}
+                if pl.get("hippo_id"):
+                    hippo_ids.add(pl["hippo_id"])
+                if pl.get("text"):
+                    texts.add(pl["text"])
+                tomb.update(v for v in (pl.get("memory_id"), pl.get("_memory_id")) if v)
+            if pts:
+                d = client.post(f"{base}/points/delete?wait=true", json={"points": [p["id"] for p in pts]}, timeout=10.0)
+                out["qdrant"][db["name"]] = f"deleted {len(pts)}" if d.status_code < 400 else f"error HTTP {d.status_code}"
+            else:
+                out["qdrant"][db["name"]] = "not found"
+        except Exception as e:  # noqa: BLE001
+            out["qdrant"][db["name"]] = f"error {e}"
+
+    # Copies written before hippo ids were recorded: find them by exact text in this namespace.
+    for t in texts:
+        try:
+            r = client.post(f"{HIPPOCAMPAI_URL}/v1/memories:recall",
+                            json={"query": t, "user_id": ns, "k": 10, "rerank": False}, timeout=HIPPO_RECALL_TIMEOUT)
+            r.raise_for_status()
+            data = r.json()
+            for item in (data if isinstance(data, list) else data.get("results", [])):
+                mem = item.get("memory", item) if isinstance(item, dict) else {}
+                if isinstance(mem, dict) and mem.get("id") and (mem.get("text") or "").strip() == t.strip():
+                    hippo_ids.add(mem["id"])
+        except Exception as e:  # noqa: BLE001
+            out["hippocampai"]["_text_lookup"] = f"error {e}"
+
+    for hid in sorted(hippo_ids):
+        try:
+            resp = client.request("DELETE", f"{HIPPOCAMPAI_URL}/v1/memories:delete",
+                                  json={"memory_id": hid, "user_id": ns}, timeout=10.0)
+            out["hippocampai"][hid] = ("deleted" if resp.status_code < 300 else
+                                       "not found" if resp.status_code == 404 else f"error HTTP {resp.status_code}")
+        except Exception as e:  # noqa: BLE001
+            out["hippocampai"][hid] = f"error {e}"
+
+    _add_tombstones(tomb)
+    out["deleted"] = (any(str(v).startswith("deleted") for v in out["qdrant"].values())
+                      or any(v == "deleted" for v in out["hippocampai"].values()))
+    if not out["deleted"]:
+        out["error"] = f"nothing with this id in any backend for namespace '{ns}'"
+    out["verify"] = "re-run the recall that surfaced it; identical text stored separately has its own id"
+    return json.dumps(out, indent=2)
 
 
 @mcp.tool()
@@ -1397,7 +1576,12 @@ def memory_health() -> str:
     state = wal.get_db_state()
     pending_counts = {db["name"]: len(wal.get_pending(db["name"])) for db in VECTOR_DBS}
     pending_counts["hippocampai"] = len(wal.get_pending("hippocampai"))
-    health["wal"] = {"pending_syncs": pending_counts, "db_state": state}
+    # Backends no longer in VECTOR_DBS keep a frozen WAL position in the state file; show them as
+    # PARKED instead of mixing them into db_state, where they read like an 18-day-stale live lane.
+    live = set(pending_counts)
+    health["wal"] = {"pending_syncs": pending_counts,
+                     "db_state": {k: v for k, v in state.items() if k in live},
+                     "parked_backends": {k: v for k, v in state.items() if k not in live}}
 
     healthy_count = sum(1 for v in health.values() if isinstance(v, dict) and v.get("healthy"))
     total = len([v for v in health.values() if isinstance(v, dict) and "healthy" in v])
@@ -1421,7 +1605,7 @@ def extract_facts(conversation: str, user_id: str = "") -> str:
     try:
         resp = client.post(
             f"{HIPPOCAMPAI_URL}/v1/memories:extract",
-            json={"conversation": conversation, "user_id": user_id or _current_user()},
+            json={"conversation": conversation, "user_id": _uid(user_id)},
             timeout=60.0,
         )
         resp.raise_for_status()
@@ -1435,7 +1619,7 @@ def extract_facts(conversation: str, user_id: str = "") -> str:
                     vecs = vectorize([text])
                     if vecs:
                         payload = {"text": text, "type": m.get("type", "fact"),
-                                   "importance": m.get("importance", 5), "user_id": user_id or _current_user()}
+                                   "importance": m.get("importance", 5), "user_id": _uid(user_id)}
                         write_to_all_dbs(m.get("id", str(uuid.uuid4())), vecs[0], payload)
 
             return json.dumps([
@@ -1509,6 +1693,7 @@ def collection_store(
         doc_id: Optional document ID for deduplication.
         metadata: Optional JSON metadata string.
     """
+    collection = _coll(collection)
     _create_collection_if_needed(collection)
 
     doc_id = doc_id or str(uuid.uuid4())
@@ -1568,6 +1753,7 @@ def collection_search(
         query: Search query text.
         k: Number of results (default 10).
     """
+    collection = _coll(collection)
     vecs = vectorize([query])
     if not vecs:
         return json.dumps({"error": "Failed to vectorize query"})
@@ -1632,6 +1818,11 @@ def collection_list() -> str:
         except Exception:
             per_db[db["name"]] = []
 
+    ns = _PINNED_USER.get()
+    if ns:
+        keep = lambda c: str(c).startswith(f"{ns}__")
+        all_collections = {c for c in all_collections if keep(c)}
+        per_db = {k: [c for c in v if keep(c)] for k, v in per_db.items()}
     return json.dumps({
         "collections": sorted(all_collections),
         "per_db": per_db,
@@ -1704,7 +1895,7 @@ def run_http(port: int) -> None:
             payload = json.loads((await _read_body(receive)) or b"{}")
         except Exception:
             return await _send_json(send, {"error": "invalid JSON body"}, 400)
-        uid = payload.get("user_id") or _CALLER_USER.get() or ""
+        uid = _PINNED_USER.get() or payload.get("user_id") or _CALLER_USER.get() or ""
         if path == "/rest/recall":
             out = _recall_impl(payload.get("query", ""), int(payload.get("k", 10) or 10), uid)
             return await _send_json(send, {"results": out})
@@ -1719,15 +1910,18 @@ def run_http(port: int) -> None:
     async def routed(scope, receive, send):
         if scope["type"] == "http":
             path = scope.get("path", "")
+            client_ip = (scope.get("client") or ("", 0))[0]
+            pinned = _PINNED_MAP.get(client_ip, "")
+            _PINNED_USER.set(pinned)
             m = path_re.match(path)
             if m:
-                _CALLER_USER.set(m.group(1))
+                _CALLER_USER.set(pinned or m.group(1))
                 path = m.group(2)
                 scope = dict(scope)
                 scope["path"] = path
                 scope["raw_path"] = path.encode()
             else:
-                _CALLER_USER.set("")
+                _CALLER_USER.set(pinned)
             if path.startswith("/rest/"):
                 return await _rest(path, receive, send)
         await app(scope, receive, send)
