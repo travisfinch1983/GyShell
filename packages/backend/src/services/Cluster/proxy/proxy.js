@@ -2177,12 +2177,22 @@ export function createProxyRouter(sshService) {
       // Only the first RERANK_MAX_DOCS documents (callers send them best-first) are scored, each cut
       // to RERANK_MAX_CHARS; the rest come back BELOW every scored one, in their original order, so
       // a caller still receives an entry for every index it sent.
+      // The QUERY is paired with every document, so its length multiplies across the whole batch:
+      // 8 docs took 0.58 s with a 100-char query, 15.4 s at 8000 chars, >120 s at 30000 (V100 #7,
+      // 2026-10-28). Long recall queries from HippocampAI backlogged the reranker that day, so the
+      // query is capped too (RERANK_MAX_QUERY_CHARS).
       let trimmed = null;
       try {
         const parsed = JSON.parse(out.toString());
         const docs = Array.isArray(parsed.documents) ? parsed.documents : null;
         const maxDocs = Number(process.env.RERANK_MAX_DOCS || 32);
         const maxChars = Number(process.env.RERANK_MAX_CHARS || 1500);
+        const maxQuery = Number(process.env.RERANK_MAX_QUERY_CHARS || 1500);
+        if (typeof parsed.query === 'string' && parsed.query.length > maxQuery) {
+          console.warn(`[rerank] query cut ${parsed.query.length} -> ${maxQuery} chars from ${req.ip || req.socket?.remoteAddress} ua=${String(req.headers['user-agent'] || '-').slice(0, 40)}`);
+          parsed.query = parsed.query.slice(0, maxQuery);
+          out = Buffer.from(JSON.stringify(parsed));
+        }
         if (docs) {
           const cut = (d) => (typeof d === 'string' && d.length > maxChars ? d.slice(0, maxChars) : d);
           const needCut = docs.length > maxDocs || docs.some((d) => typeof d === 'string' && d.length > maxChars);
