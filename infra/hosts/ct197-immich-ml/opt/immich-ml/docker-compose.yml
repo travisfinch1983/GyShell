@@ -1,0 +1,15 @@
+# Remote Immich ML server for Immich CT123 (px-nas). Keep the tag == CT123 Immich version.
+services:
+  immich-machine-learning:
+    container_name: immich_machine_learning
+    image: ghcr.io/immich-app/immich-machine-learning:v3.3.5-openvino
+    restart: unless-stopped
+    ports: ["3003:3003"]
+    environment:
+      MACHINE_LEARNING_MODEL_REVISION: v2
+      MACHINE_LEARNING_MODEL_TTL: "600"
+    devices: ["/dev/dri:/dev/dri"]
+    device_cgroup_rules: ["c 189:* rmw"]
+    volumes:
+      - /opt/immich-ml/cache:/cache
+      - /dev/bus/usb:/dev/bus/usb
