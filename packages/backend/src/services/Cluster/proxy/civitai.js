@@ -2058,7 +2058,46 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
           }
           console.log(`[civitai] Downloaded ${downloaded}/${allImages.length} images`);
 
+          // ComfyUI tooling (LoRA Stack, rgthree, Lora Manager) finds previews and info by the
+          // WEIGHT FILE's stem: <stem>.jpeg, <stem>_N.jpeg, <stem>.civit.info. The set above is
+          // named after the version (metaBaseName), but a version that ships several files gets
+          // -fp16 / -bf16 / -r64 ... suffixes, so those files had no previews or info. Copy the
+          // whole set under every downloaded weight file's own stem, in that file's own folder.
+          // /imagegen is deduplicated, so the copies cost no space.
+          const extraDirs = new Set();
+          try {
+            const WEIGHT_EXT = /\.(safetensors|sft|ckpt|pt|pth|bin|gguf|onnx)$/i;
+            // Exactly the set written above: the three info files plus <base>.ext / <base>_N.ext.
+            const isSidecar = (n) => {
+              if (!n.startsWith(metaBaseName)) return false;
+              const rest = n.substring(metaBaseName.length);
+              if (rest === '.civit.full.info' || rest === '.civit.info' || rest === '.json') return true;
+              const m = rest.match(/^(_\d+)?\.(jpeg|mp4)$/);
+              return !!m;
+            };
+            const srcSet = readdirSync(metaDir).filter(isSidecar);
+            const seen = new Set([`${metaDir}/${metaBaseName}`]);
+            for (const q of queued) {
+              if (q.type !== 'model' || !q.fileName || !q.targetDir || !WEIGHT_EXT.test(q.fileName)) continue;
+              const stem = q.fileName.replace(/\.[^.]+$/, '');
+              const key = `${q.targetDir}/${stem}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              mkdirSync(q.targetDir, { recursive: true });
+              let n = 0;
+              for (const src of srcSet) {
+                const dst = `${q.targetDir}/${stem}${src.substring(metaBaseName.length)}`;
+                if (existsSync(dst)) continue;
+                try { copyFileSync(`${metaDir}/${src}`, dst); n++; }
+                catch (err) { console.error(`[civitai] sidecar copy ${src} -> ${dst} failed: ${err.message}`); }
+              }
+              if (q.targetDir !== metaDir) extraDirs.add(q.targetDir);
+              console.log(`[civitai] Mirrored ${n}/${srcSet.length} sidecars for ${stem}`);
+            }
+          } catch (err) { console.error('[civitai] Per-file sidecar mirroring failed:', err.message); }
+
           fixPermissions(metaDir, sshService);
+          for (const d of extraDirs) fixPermissions(d, sshService);
           console.log(`[civitai] Background metadata/images complete for ${model.name}`);
         } catch (err) {
           console.error('[civitai] Background download error:', err.message);
