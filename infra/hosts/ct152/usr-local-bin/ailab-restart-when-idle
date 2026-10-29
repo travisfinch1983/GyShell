@@ -1,8 +1,0 @@
-#!/bin/bash
-# Retry ailab-restart every 5 min until no tasks are in flight (max 12 h).
-reason="${1:-deferred restart}"
-for i in $(seq 1 144); do
-  out=$(ailab-restart --reason "$reason" 2>&1); echo "$(date -Is) $out" | tail -3
-  echo "$out" | grep -q REFUSING || exit 0
-  sleep 300
-done
