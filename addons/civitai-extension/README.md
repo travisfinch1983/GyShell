@@ -5,7 +5,7 @@ Chrome MV3 extension, load unpacked. Successor of ProxLab's `civitai-downloader`
 ## What it does
 - **Download** button on CivitAI model pages: a small dialog with the name pre-filled from
   AI-Lab's filename template (`POST /api/civitai/check-conflicts` → `templateName`). Only a name
-  you change is sent as `extensionOverride`; an untouched box downloads under the template name.
+  you change is sent as `fileNameOverride`; an untouched box downloads under the template name.
 - **Review** button (or the toolbar icon): opens a side panel that frames AI-Lab's own Review
   screen, `<webUrl>/?embed=civitai-review`, and keeps it on the model in the active tab.
   Version and file selection, the Folder/Filename boxes and the live name preview are AI-Lab's,

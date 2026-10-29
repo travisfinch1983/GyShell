@@ -129,7 +129,9 @@
     if (btn) { btn.disabled = true; btn.textContent = '⌛ Sending...'; }
     try {
       const body = { modelId: parsed.modelId, versionId: parsed.versionId, pageUrl: location.href };
-      if (nameOverride) body.extensionOverride = nameOverride;
+      // A real rename. (v1 sent extensionOverride, which only fills an unused template
+      // variable on the server, so the typed name never named the file.)
+      if (nameOverride) body.fileNameOverride = nameOverride;
       const resp = await fetch(`${apiUrl}/api/civitai/download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

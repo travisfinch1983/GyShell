@@ -1460,9 +1460,11 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       // box was changed, so an untouched quick download is not recorded as a manual rename.
       const _main = (version.files || []).find((f) => /^(model|diffusion model)$/i.test(String(f.type || '')))
         || (version.files || []).find((f) => f.type !== 'Training Data');
-      const templateName = _main
+      const _hFn = lookupHistoryOverride(modelId, version.id);
+      const _remembered = (_hFn?.fileNameOverride && String(_hFn.versionId) === String(version.id)) ? _hFn.fileNameOverride : '';
+      const templateName = _remembered || (_main
         ? String(resolveTargetPath(model, version, _main, cfg, effectiveOverride, '').fileName || '').replace(/\.[^.]+$/, '')
-        : '';
+        : '');
       res.json({
         conflicts,
         templateName,
@@ -1808,6 +1810,23 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
           : null;
       }
 
+      // The filename gets the same rule as the folder, so a download lands under the name the
+      // Review preview showed (resolve-paths reads this version's remembered name too):
+      //   fileNameOverride present -> as sent ('' = template)
+      //   extensionOverride        -> the browser extension's typed name. It used to fill only
+      //                               $EXTENSION_OVERRIDE, which no template uses, so the typed
+      //                               name never named anything yet was recorded as a rename.
+      //   neither                  -> this version's remembered override from history
+      let effectiveFn;
+      if (Object.prototype.hasOwnProperty.call(req.body, 'fileNameOverride')) {
+        effectiveFn = fileNameOverride || null;
+      } else if (extensionOverride) {
+        effectiveFn = extensionOverride;
+      } else {
+        const hFn = lookupHistoryOverride(modelId, version.id);
+        effectiveFn = (hFn?.fileNameOverride && String(hFn.versionId) === String(version.id)) ? hFn.fileNameOverride : null;
+      }
+
       // Contextual component detection across all versions
       const contextComponents = detectComponentsInContext(model.modelVersions || []);
       const versionComponent = contextComponents[String(version.id)] || null;
@@ -1829,7 +1848,7 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
         const r = resolveTargetPath(model, version, f, cfg, effectiveOverride, userDefined, extensionOverride, versionComponent);
         _dlDirs.set(String(f.id != null ? f.id : f.name), r.targetDir);
         return r.fileName;
-      }, fileNameOverride, fileOpts, (Array.isArray(fileIds) && fileIds.length)
+      }, effectiveFn, fileOpts, (Array.isArray(fileIds) && fileIds.length)
         ? new Set(fileIds.map(String))
         : null, { autoDisambiguate: req.body.autoDisambiguate !== false, outCollisions: _dlCollisions,
                   separator: cfg.separator || '-', dirOf: (k) => _dlDirs.get(k) });
@@ -1986,14 +2005,14 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       // Sanitised exactly like the model filename. Missing this made the sidecars stop
       // sharing the model's base name the moment the model name was cleaned, and
       // moveModelFamily() matches on that base name — the previews would be left behind.
-      if (fileNameOverride) metaBaseName = sanitizeNameOverride(fileNameOverride, metaSep);
+      if (effectiveFn) metaBaseName = sanitizeNameOverride(effectiveFn, metaSep);
       const metaDir = `${basePath}/${metaTypeFolder}/${metaFolder}`;
 
       const modelType = model.type || 'Unknown';
       addToHistory(model, version, 'proxlab', {
         pathOverride: effectiveOverride,
         targetDir: metaDir,
-        fileNameOverride: fileNameOverride || extensionOverride || null,
+        fileNameOverride: effectiveFn,
         // Only the files this download actually wrote, under the names it used. Previously
         // every file in the version was recorded, all under one re-derived name.
         downloadedFiles: queued
