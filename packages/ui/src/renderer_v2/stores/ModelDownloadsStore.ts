@@ -93,6 +93,12 @@ export class ModelDownloadsStore {
   civVerFolder = new Map<number, string>() // versionId → pathOverride (relative folder)
   civVerFilename = new Map<number, string>() // versionId → fileNameOverride (base name, no extension)
   civVerSeeded = new Set<number>() // versions whose boxes have been pre-filled from the resolver
+  // What the resolver pre-filled the Folder / Filename boxes with. A box still holding its seed
+  // was not edited, so the download must NOT send it as an override: that recorded every
+  // reviewed download as a "custom filename" (1739 of 2337 history rows by 2026-10-29), and the
+  // template builder then never applied to them again.
+  civVerSeedFolder = new Map<number, string>()
+  civVerSeedFilename = new Map<number, string>()
   civVerSelected = new Set<number>() // versions ticked for download
   // versionId → selected CivitAI FILE IDs (scoped per version).
   // 🛑 Was a Set of file NAMES. One version routinely ships several files with the same
@@ -795,6 +801,8 @@ export class ModelDownloadsStore {
     this.civVerFolder.clear()
     this.civVerFilename.clear()
     this.civVerSeeded.clear()
+    this.civVerSeedFolder.clear()
+    this.civVerSeedFilename.clear()
     this.civVerSelected.clear()
     this.civVerFiles.clear()
     this.civFileOpts.clear()
@@ -1065,6 +1073,8 @@ export class ModelDownloadsStore {
           const seedName = String(r?.fileNameOverride || '')
             || String((r?.baseFileName ?? '')).replace(/\.[^.]+$/, '')
           this.civVerFilename.set(vid, seedName)
+          this.civVerSeedFolder.set(vid, String(r?.folderPart ?? ''))
+          this.civVerSeedFilename.set(vid, seedName)
           // Seed the per-file suffix boxes with the server's discriminators (derived from
           // what differs in the upstream names -- 'r128', 'r64'), so the number that used to
           // be appended invisibly is now an ordinary editable value.
@@ -1143,8 +1153,11 @@ export class ModelDownloadsStore {
       }
       const folder = this.civVerFolder.get(vid)
       const fname = this.civVerFilename.get(vid)
-      if (folder !== undefined) body.pathOverride = folder
-      if (fname) body.fileNameOverride = fname
+      // Only edited boxes become overrides. An untouched box is omitted, and the server then
+      // resolves from the template (or this version's own remembered override) exactly as the
+      // preview did, without stamping the result into history as a manual rename.
+      if (folder !== undefined && folder !== this.civVerSeedFolder.get(vid)) body.pathOverride = folder
+      if (fname && fname !== this.civVerSeedFilename.get(vid)) body.fileNameOverride = fname
       // Send the tick state. Until now the body carried only modelId/versionId, so the
       // checkboxes were decorative and the backend downloaded EVERY file in the version.
       // Omitted when nothing is explicitly deselected, so "download the lot" still works.

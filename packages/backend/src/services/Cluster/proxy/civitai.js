@@ -2126,7 +2126,7 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
 
   /** POST /queue/add — Add item to processing queue (from browser extension "Send to Review") */
   router.post('/queue/add', async (req, res) => {
-    const { modelId, versionId, pageUrl, extensionOverride, fileNameOverride: reqFnOverride } = req.body;
+    const { modelId, versionId, pageUrl } = req.body;
     if (!modelId) return res.status(400).json({ error: 'modelId required' });
 
     const q = loadQueue();
@@ -2178,8 +2178,11 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       addedAt: new Date().toISOString(),
       modelData,
       userDefined: '',
-      extensionOverride: extensionOverride || reqFnOverride
-        || ((histOverride?.fileNameOverride && String(histOverride.versionId) === String(versionId))
+      // The name typed into the extension's dialog is for its Download button only. A review
+      // item starts from the template name (or this version's own remembered override), so the
+      // filename template builder applies; taking the typed name here froze it as a manual
+      // rename. extensionOverride / reqFnOverride are still accepted in the body and ignored.
+      extensionOverride: ((histOverride?.fileNameOverride && String(histOverride.versionId) === String(versionId))
           ? histOverride.fileNameOverride : null),
       pathOverride: effectiveOverride,
       conflicts: conflicts.length > 0 ? conflicts : null,
