@@ -146,11 +146,20 @@ async function verifyGatewayLive(): Promise<void> {
   probePromise = (async () => {
     try {
       if (!connected) { void connectOnce(); return }
+      const sentAt = Date.now()
       try {
         await client.request('gateway:ping', {}, LIVE_PROBE_TIMEOUT_MS)
         lastContactAt = Date.now()
       } catch {
-        forceReconnect('did not answer')
+        // Frames arriving while we waited prove the socket works; the pong was just queued
+        // behind big responses. Tearing it down here was what turned a busy link into
+        // "Socket Disconnected" + a reconnect loop that only a page refresh broke.
+        if (client.lastInboundAt > sentAt) {
+          lastContactAt = client.lastInboundAt
+          console.warn('[gyshell-web] gateway slow to answer a ping but still delivering data — keeping the socket')
+        } else {
+          forceReconnect('did not answer')
+        }
       }
     } finally {
       probing = false

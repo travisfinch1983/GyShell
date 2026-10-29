@@ -84,7 +84,7 @@ export const CivitaiReviewEmbed: React.FC = observer(() => {
 
   return (
     <div style={{ height: '100vh', overflow: 'auto', background: 'var(--app-bg)', color: 'var(--fg)', padding: 10, boxSizing: 'border-box' }}>
-      <ReviewBrowser />
+      <ReviewBrowser showSaveForReview />
       <ConfirmHost />
     </div>
   )

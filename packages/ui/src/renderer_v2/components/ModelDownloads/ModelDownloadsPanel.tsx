@@ -120,7 +120,7 @@ const QueueColumn: React.FC<{ source: 'hf' | 'civ'; title: string; items: DLItem
       <div className={styles.qColHead}>
         <span>{title}</span>
         <span className={styles.qCount}>{active.length} active</span>
-        {done.length > 0 && <button className={styles.linkBtn} onClick={() => void store.clearCompleted(source)}>clear {done.length} done</button>}
+        {done.length > 0 && <button className={styles.linkBtn} onClick={() => void store.clearCompleted(source)}>clear {source === 'hf' ? store.hfDoneTotal : store.civDoneTotal} done</button>}
       </div>
       <div className={styles.schedRow}>
         <span className={`${styles.schedDot} ${running ? styles.schedOn : styles.schedOff}`} title={running ? 'Downloads allowed now' : 'Paused / outside schedule'} />
@@ -133,6 +133,9 @@ const QueueColumn: React.FC<{ source: 'hf' | 'civ'; title: string; items: DLItem
       {active.length === 0 && done.length === 0 && <div className={styles.empty}>No downloads.</div>}
       {active.map((i) => <QueueItem key={i.id} source={source} item={i} />)}
       {done.map((i) => <QueueItem key={i.id} source={source} item={i} />)}
+      {(source === 'hf' ? store.hfDoneTotal : store.civDoneTotal) > done.length && (
+        <div className={styles.empty}>Showing the newest {done.length} of {source === 'hf' ? store.hfDoneTotal : store.civDoneTotal} completed. Full record: History.</div>
+      )}
     </div>
   )
 })
@@ -549,7 +552,7 @@ function kb(n?: number): string {
 }
 
 // Exported for the browser extension's side panel (CivitaiReviewEmbed), which shows only this.
-export const ReviewBrowser: React.FC = observer(() => {
+export const ReviewBrowser: React.FC<{ showSaveForReview?: boolean }> = observer(({ showSaveForReview = false }) => {
   const m = store.civModel
   const v = store.civCurrentVersion
   return (
@@ -716,11 +719,21 @@ export const ReviewBrowser: React.FC = observer(() => {
                     : 'No versions ticked — the version you are viewing will be downloaded'}
                 </span>
                 <div className={styles.spacer} />
+                {showSaveForReview && (
+                  <button className={styles.btn} disabled={store.busy} title="Put this model in AI-Lab's review queue to name and download later" onClick={() => void store.saveForReview()}>
+                    <Clock size={13} /> Save for Review
+                  </button>
+                )}
                 <button className={styles.btnPrimary} disabled={store.busy} onClick={() => void store.reviewDownload()}>
                   {store.busy ? <Loader2 size={13} className={styles.spin} /> : <Download size={13} />}
                   {store.selectedVersionIds.length > 1 ? ` Download ${store.selectedVersionIds.length} Versions` : ' Download Version'}
                 </button>
               </div>
+              {store.reviewNotice && (
+                <div className={store.reviewNotice.kind === 'err' ? styles.errorBar : styles.note} style={store.reviewNotice.kind === 'ok' ? { color: 'var(--accent)', fontWeight: 600, marginTop: 6 } : { marginTop: 6 }}>
+                  {store.reviewNotice.kind === 'ok' ? <Check size={12} /> : null} {store.reviewNotice.text}
+                </div>
+              )}
             </>
           )}
         </>

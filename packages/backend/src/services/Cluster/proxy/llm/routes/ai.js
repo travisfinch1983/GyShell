@@ -43,6 +43,7 @@ import { LlmMetricsPoller } from '../services/metrics-poller.js';
 // Single source of truth for service type — see the note on classifyService in proxy.js.
 // (proxy.js does not import this module, so there is no cycle.)
 import { classifyService as classifyServiceShared } from '../../proxy.js';
+import { trimDoneDownloads } from '../../download-trim.js';
 
 // Per-provider VRAM reservation strategy:
 //   null  = static LLM — trust live nvidia-smi (no hot-swap, VRAM won't change mid-run)
@@ -7873,7 +7874,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
         const { token, _lastPollTime, _lastPollSize, ...rest } = d;
         return rest;
       });
-      res.json({ downloads: safe });
+      res.json(trimDoneDownloads(safe, req.query.doneLimit));
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

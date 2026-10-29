@@ -47,6 +47,8 @@ export class GatewayClient {
   private pending = new Map<string, PendingRequest>()
   private manualClose = false
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  /** When the current socket last delivered ANY frame (RPC reply or pushed event). */
+  lastInboundAt = 0
 
   private listeners: {
     [K in keyof GatewayClientEventMap]: Set<GatewayClientEventMap[K]>
@@ -145,6 +147,7 @@ export class GatewayClient {
 
       socket.onmessage = (event) => {
         if (!isCurrent()) return
+        this.lastInboundAt = Date.now()
         void this.handleIncoming(event.data)
       }
     })
@@ -178,7 +181,12 @@ export class GatewayClient {
         this.emit('status', 'disconnected', `heartbeat: readyState=${s.readyState}`)
         return
       }
+      const sentAt = Date.now()
       this.request('gateway:ping', {}, HEARTBEAT_TIMEOUT_MS).catch(() => {
+        // A late pong on a socket that kept delivering frames is a BUSY link, not a dead one:
+        // the reply was queued behind large responses (a 1-2 MB downloads poll on Wi-Fi).
+        // Closing it killed every request in flight ("Socket Disconnected") for nothing.
+        if (this.lastInboundAt > sentAt) return
         try { s.close() } catch { /* noop */ }
       })
     }, HEARTBEAT_INTERVAL_MS)

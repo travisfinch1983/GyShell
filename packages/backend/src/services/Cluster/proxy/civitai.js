@@ -14,6 +14,7 @@ import { join, basename } from 'path';
 import { spawn } from 'child_process';
 import { execSync } from 'child_process';
 import { loadScheduler, saveScheduler, isDownloadAllowed } from './download-scheduler.js';
+import { trimDoneDownloads } from './download-trim.js';
 const DATA_DIR = process.env.AILAB_PROXY_DATA_DIR || (process.cwd() + '/data');
 
 const CONFIG_PATH = join(DATA_DIR, 'civitai-config.json');
@@ -2566,7 +2567,7 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       return out;
     });
 
-    res.json({ downloads: enriched });
+    res.json(trimDoneDownloads(enriched, req.query.doneLimit));
   });
 
   /** DELETE /downloads/:id — Cancel or remove a download */

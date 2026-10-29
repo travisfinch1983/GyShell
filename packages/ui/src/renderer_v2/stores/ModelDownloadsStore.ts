@@ -42,6 +42,9 @@ interface HFAnalysis {
 
 const CATEGORIES = ['image-gen', 'llm', 'tts'] as const
 
+const DONE_LIMIT = 50
+const IDLE_POLL_MS = 15000
+
 export class ModelDownloadsStore {
   subTab: DLSubTab = 'queue'
 
@@ -100,6 +103,9 @@ export class ModelDownloadsStore {
   // Bumped after every successful Review download, so an embedder (the browser extension's
   // side panel) can react without reaching into the request loop.
   reviewDownloadSeq = 0
+  // One-line confirmation under the Review buttons ("Sent to the downloader: ..."). Without it
+  // the extension's side panel looked unchanged after Download, so it read as "did nothing".
+  reviewNotice: { kind: 'ok' | 'err'; text: string } | null = null
   lastReviewDownload: { modelName: string; versions: string[] } | null = null
   civVerSeedFolder = new Map<number, string>()
   civVerSeedFilename = new Map<number, string>()
@@ -144,6 +150,10 @@ export class ModelDownloadsStore {
   // queue
   hfDownloads: DLItem[] = []
   civDownloads: DLItem[] = []
+  // How many completed downloads each source holds. The poll only carries the newest
+  // DONE_LIMIT of them (see loadDownloads), so the list length is not the total.
+  hfDoneTotal = 0
+  civDoneTotal = 0
   busy = false
 
   // download scheduler (per source: mode auto/manual, manualState running/paused, schedule[7][24])
@@ -154,7 +164,7 @@ export class ModelDownloadsStore {
   renamerDetails: Record<string, any> = {} // modelId → {currentDir, locatedFiles, newDir, moves}
   renamerLoading = false
 
-  private poll: ReturnType<typeof setInterval> | null = null
+  private poll: ReturnType<typeof setTimeout> | null = null
 
   constructor() {
     makeAutoObservable(this)
@@ -775,6 +785,7 @@ export class ModelDownloadsStore {
     }
     this.civModelLoading = true
     this.civModelError = null
+    this.reviewNotice = null
     runInAction(() => { this.civQueueItemId = queueItemId ?? null })
     try {
       const api = (window as any).gyshell?.civitai
@@ -798,6 +809,33 @@ export class ModelDownloadsStore {
       runInAction(() => { this.civModelError = e instanceof Error ? e.message : String(e) })
     } finally {
       runInAction(() => { this.civModelLoading = false })
+    }
+  }
+  /**
+   * Put the model on screen into the review queue untouched, to name and download later.
+   * Only modelId / versionId / pageUrl go over: the queue item starts from the template
+   * name when it is opened, exactly like one added from the queue's own button.
+   */
+  async saveForReview(): Promise<void> {
+    const m = this.civModel
+    if (!m) return
+    const vid = this.civSelVersionId
+    this.busy = true
+    try {
+      const r = (await this.cluster().request('POST', '/api/civitai/queue/add', {
+        modelId: String(m.id),
+        versionId: vid != null ? String(vid) : null,
+        pageUrl: `https://civitai.com/models/${m.id}${vid != null ? `?modelVersionId=${vid}` : ''}`,
+      })) as any
+      if (r && r.ok === false) throw new Error(r.error || 'queue/add failed')
+      runInAction(() => { this.reviewNotice = { kind: 'ok', text: `Saved to the review queue: ${m.name || m.id}` } })
+      // Refresh the queue only where it is shown (the AI-Lab tab). The extension's panel has
+      // none loaded, and loading it there would add the queue navigator to the panel.
+      if (this.civQueue.length) void this.loadCivQueue()
+    } catch (e) {
+      runInAction(() => { this.reviewNotice = { kind: 'err', text: `Could not save for review: ${e instanceof Error ? e.message : String(e)}` } })
+    } finally {
+      runInAction(() => { this.busy = false })
     }
   }
   /** Clear all per-version review state. Called whenever a different model is loaded. */
@@ -1192,6 +1230,7 @@ export class ModelDownloadsStore {
       runInAction(() => {
         this.lastReviewDownload = { modelName: String(m.name || m.id), versions: requests.map((r) => r.label) }
         this.reviewDownloadSeq++
+        this.reviewNotice = { kind: 'ok', text: `Sent to the downloader: ${m.name || m.id} (${requests.map((r) => r.label).join(', ')})` }
       })
       if (fromQueueId) {
         // Other queue rows for the SAME model whose version we just downloaded are now
@@ -1220,14 +1259,26 @@ export class ModelDownloadsStore {
   // ── queue ──
   async loadDownloads(): Promise<void> {
     const api = this.cluster()
+    // Only the newest DONE_LIMIT completed rows. The full lists were ~2 MB together (1000+
+    // finished downloads) and this runs every few seconds; that traffic queued the gateway's
+    // ping reply long enough for the web shim to declare the socket dead and tear it down
+    // mid-request -- the "Socket Disconnected" that needed a page refresh.
+    const q = `?doneLimit=${DONE_LIMIT}`
     const [hf, civ] = await Promise.all([
-      api.request('GET', '/api/ai/hf/downloads').catch(() => ({ downloads: [] })),
-      api.request('GET', '/api/civitai/downloads').catch(() => ({ downloads: [] })),
+      api.request('GET', `/api/ai/hf/downloads${q}`).catch(() => ({ downloads: [] })),
+      api.request('GET', `/api/civitai/downloads${q}`).catch(() => ({ downloads: [] })),
     ])
     runInAction(() => {
       this.hfDownloads = ((hf as any)?.downloads ?? []) as DLItem[]
       this.civDownloads = ((civ as any)?.downloads ?? []) as DLItem[]
+      this.hfDoneTotal = Number((hf as any)?.doneTotal ?? this.hfDownloads.filter((d) => d.status === 'complete').length)
+      this.civDoneTotal = Number((civ as any)?.doneTotal ?? this.civDownloads.filter((d) => d.status === 'complete').length)
     })
+  }
+  /** True while anything is queued or transferring, so the poll needs to be quick. */
+  get anyDownloadActive(): boolean {
+    const live = (d: DLItem) => d.status !== 'complete' && d.status !== 'failed' && d.status !== 'cancelled' && d.status !== 'stopped'
+    return this.hfDownloads.some(live) || this.civDownloads.some(live)
   }
   async action(source: 'hf' | 'civ', id: string, act: 'stop' | 'force' | 'cancel'): Promise<void> {
     const api = this.cluster()
@@ -1251,14 +1302,23 @@ export class ModelDownloadsStore {
     }
   }
 
+  // Every `intervalMs` while a download is live, otherwise every IDLE_POLL_MS. A chained
+  // timeout rather than setInterval, so a slow poll never overlaps the next one.
+  private polling = false
   startPolling(intervalMs = 3000): void {
-    void this.loadDownloads()
-    if (this.poll) return
-    this.poll = setInterval(() => void this.loadDownloads(), intervalMs)
+    if (this.polling) { void this.loadDownloads(); return }
+    this.polling = true
+    const tick = async () => {
+      try { await this.loadDownloads() } catch (e) { console.warn('[downloads] poll failed:', e) }
+      if (!this.polling) return
+      this.poll = setTimeout(() => void tick(), this.anyDownloadActive ? intervalMs : IDLE_POLL_MS) as any
+    }
+    void tick()
   }
   stopPolling(): void {
+    this.polling = false
     if (this.poll) {
-      clearInterval(this.poll)
+      clearTimeout(this.poll as any)
       this.poll = null
     }
   }
