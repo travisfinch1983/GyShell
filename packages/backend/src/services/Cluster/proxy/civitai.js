@@ -1132,6 +1132,115 @@ export function fixPermissions(targetDir, _sshService) {
   } catch {}
 }
 
+function isEarlyAccessRefusal(message) {
+  return /early access/i.test(String(message || ''));
+}
+function versionIdFromDlUrl(url) {
+  const m = String(url || '').match(/\/api\/download\/models\/(\d+)/);
+  return m ? m[1] : null;
+}
+
+/**
+ * Re-try every 'early_access' download: a one-byte ranged GET on its real download URL (the
+ * API's availability / earlyAccessEndsAt fields come back null for these, so asking for the
+ * file is the only reliable test).
+ *   2xx                     -> released: back to 'pending', the queue starts it
+ *   4xx saying Early Access -> still waiting; lastCheckedAt updated
+ *   any other 4xx           -> no longer early access but still refused (e.g. the creator
+ *                              disabled downloads): 'failed' with CivitAI's own message
+ * Network errors leave the item untouched for the next round.
+ */
+let _eaCheckRunning = false;
+async function checkEarlyAccess() {
+  if (_eaCheckRunning) return { skipped: true };
+  _eaCheckRunning = true;
+  const summary = { checked: 0, released: [], stillWaiting: [], refused: [], errors: [] };
+  try {
+    const waiting = loadDownloads().downloads.filter((d) => d.status === 'early_access');
+    // Probe each VERSION once; a version can have several files queued.
+    const verdicts = new Map();
+    for (const dl of waiting) {
+      const vid = versionIdFromDlUrl(dl.dlUrl) || dl.dlUrl;
+      if (verdicts.has(vid)) continue;
+      let v;
+      try {
+        const resp = await fetch(withCivitaiToken(dl.dlUrl), { headers: { Range: 'bytes=0-0', 'User-Agent': 'curl/8.14.1' }, redirect: 'follow', signal: AbortSignal.timeout(20000) });
+        let body = '';
+        if (resp.ok) { try { await resp.body?.cancel(); } catch {} }
+        else { try { body = (await resp.text()).slice(0, 400); } catch {} }
+        let msg = '', json = false;
+        try { msg = JSON.parse(body).message || ''; json = true; } catch { msg = body; }
+        // Only CivitAI's own JSON refusal may fail an item. Anything else (a Cloudflare
+        // challenge page, a 5xx) is inconclusive and leaves it waiting for the next round.
+        v = resp.ok ? { kind: 'released' }
+          : isEarlyAccessRefusal(body) ? { kind: 'waiting', msg: msg || 'Early Access' }
+          : (json && resp.status >= 400 && resp.status < 500)
+            ? { kind: 'refused', msg: `CivitAI refused this file (HTTP ${resp.status}): ${msg || resp.statusText}` }
+            : { kind: 'error', msg: `HTTP ${resp.status} (inconclusive)` };
+      } catch (e) {
+        v = { kind: 'error', msg: e?.message || String(e) };
+      }
+      verdicts.set(vid, v);
+      summary.checked++;
+    }
+    // Apply against a FRESH manifest: the fetches above took time and the reconciler writes too.
+    const manifest = loadDownloads();
+    const now = new Date().toISOString();
+    for (const dl of manifest.downloads) {
+      if (dl.status !== 'early_access') continue;
+      const v = verdicts.get(versionIdFromDlUrl(dl.dlUrl) || dl.dlUrl);
+      if (!v) continue;
+      dl.earlyAccess = { ...(dl.earlyAccess || {}), lastCheckedAt: now };
+      if (v.kind === 'released') {
+        dl.status = 'pending'; dl._retries = 0; dl._deadChecks = 0; dl.error = null; dl.progress = 0;
+        dl.earlyAccess.releasedAt = now;
+        summary.released.push(dl.fileName);
+        console.log(`[civitai-dl] EARLY ACCESS ENDED: ${dl.fileName} — requeued`);
+      } else if (v.kind === 'waiting') {
+        dl.earlyAccess.lastResult = v.msg;
+        summary.stillWaiting.push(dl.fileName);
+      } else if (v.kind === 'refused') {
+        dl.status = 'failed'; dl.error = v.msg;
+        summary.refused.push(dl.fileName);
+        console.log(`[civitai-dl] EARLY ACCESS -> REFUSED: ${dl.fileName} — ${v.msg}`);
+      } else {
+        dl.earlyAccess.lastResult = `check failed: ${v.msg}`;
+        summary.errors.push(`${dl.fileName}: ${v.msg}`);
+      }
+    }
+    saveDownloads(manifest);
+    if (summary.released.length) processPendingDownloads();
+    console.log(`[civitai] early-access check: ${summary.checked} version(s); released ${summary.released.length}, waiting ${summary.stillWaiting.length}, refused ${summary.refused.length}, errors ${summary.errors.length}`);
+  } catch (e) {
+    console.error('[civitai] early-access check failed:', e?.message || e);
+    summary.errors.push(String(e?.message || e));
+  } finally {
+    _eaCheckRunning = false;
+  }
+  return summary;
+}
+
+/** Items that failed as early access before 'early_access' existed are parked too. */
+function migrateEarlyAccessFailures() {
+  try {
+    const manifest = loadDownloads();
+    let n = 0;
+    for (const dl of manifest.downloads) {
+      if (dl.status === 'failed' && isEarlyAccessRefusal(dl.error)) {
+        dl.status = 'early_access';
+        dl.earlyAccess = { since: dl.startedAt || new Date().toISOString(), lastCheckedAt: null, lastResult: dl.error };
+        dl.error = null;
+        n++;
+      }
+    }
+    if (n) { saveDownloads(manifest); console.log(`[civitai] parked ${n} earlier early-access failure(s)`); }
+  } catch (e) {
+    console.error('[civitai] early-access migration failed:', e?.message || e);
+  }
+}
+
+const EARLY_ACCESS_CHECK_MS = 3 * 60 * 60 * 1000;
+
 export function createCivitaiRouter(config, sshService) {
   const router = Router();
 
@@ -2486,6 +2595,22 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
           // "the creator disabled downloads on this file" into a generic timeout-shaped
           // error, and the real reason was on disk the whole time.
           const why = diagnoseDownloadFailure(dl);
+          if (why && why.permanent && isEarlyAccessRefusal(why.message)) {
+            // Not a failure: the version is paid early access and becomes free later. Park it
+            // in 'early_access'; checkEarlyAccess() retries it on a timer and requeues it the
+            // moment the file downloads.
+            killDownloadProcs(dl);
+            dl.status = 'early_access';
+            dl.pid = null;
+            dl.scope = null;
+            dl.progress = 0;
+            dl.error = null;
+            dl.earlyAccess = { since: new Date().toISOString(), lastCheckedAt: null, lastResult: why.message || 'Early Access' };
+            try { const p = dl.targetFile + '.part'; if (existsSync(p) && statSync(p).size < 8192) unlinkSync(p); } catch {}
+            console.log(`[civitai-dl] EARLY ACCESS: ${dl.fileName} — parked until released`);
+            changed = true;
+            continue;
+          }
           if (why && why.permanent) {
             killDownloadProcs(dl);
             dl.status = 'failed';
@@ -2560,6 +2685,20 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
     globalThis.__civReconcileTimer = setInterval(() => { reconcileCivDownloads(); }, 5000);
     if (globalThis.__civReconcileTimer.unref) globalThis.__civReconcileTimer.unref();
   }
+
+  if (!globalThis.__civEarlyAccessTimer) {
+    migrateEarlyAccessFailures();
+    // First check a minute after start (not during the restart rush), then every 3 h.
+    const first = setTimeout(() => { void checkEarlyAccess(); }, 60 * 1000);
+    if (first.unref) first.unref();
+    globalThis.__civEarlyAccessTimer = setInterval(() => { void checkEarlyAccess(); }, EARLY_ACCESS_CHECK_MS);
+    if (globalThis.__civEarlyAccessTimer.unref) globalThis.__civEarlyAccessTimer.unref();
+  }
+
+  /** POST /downloads/check-early-access — run the early-access check now ("Check now"). */
+  router.post('/downloads/check-early-access', async (req, res) => {
+    res.json(await checkEarlyAccess());
+  });
 
   router.get('/downloads', (req, res) => {
     const manifest = reconcileCivDownloads();

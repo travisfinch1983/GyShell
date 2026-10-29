@@ -1277,7 +1277,7 @@ export class ModelDownloadsStore {
   }
   /** True while anything is queued or transferring, so the poll needs to be quick. */
   get anyDownloadActive(): boolean {
-    const live = (d: DLItem) => d.status !== 'complete' && d.status !== 'failed' && d.status !== 'cancelled' && d.status !== 'stopped'
+    const live = (d: DLItem) => d.status !== 'complete' && d.status !== 'failed' && d.status !== 'cancelled' && d.status !== 'stopped' && d.status !== 'early_access'
     return this.hfDownloads.some(live) || this.civDownloads.some(live)
   }
   async action(source: 'hf' | 'civ', id: string, act: 'stop' | 'force' | 'cancel'): Promise<void> {
@@ -1289,6 +1289,27 @@ export class ModelDownloadsStore {
       await this.loadDownloads()
     } catch {
       /* ignore */
+    }
+  }
+  earlyAccessChecking = false
+  earlyAccessResult: string | null = null
+  /** "Check now" on the Early access section: the same check the backend runs every 3 h. */
+  async checkEarlyAccess(): Promise<void> {
+    this.earlyAccessChecking = true
+    this.earlyAccessResult = null
+    try {
+      const r = (await this.cluster().request('POST', '/api/civitai/downloads/check-early-access', {})) as any
+      const parts: string[] = []
+      if (r?.released?.length) parts.push(`${r.released.length} released and queued`)
+      if (r?.stillWaiting?.length) parts.push(`${r.stillWaiting.length} still in early access`)
+      if (r?.refused?.length) parts.push(`${r.refused.length} now refused (see Failed)`)
+      if (r?.errors?.length) parts.push(`${r.errors.length} could not be checked`)
+      runInAction(() => { this.earlyAccessResult = r?.skipped ? 'A check is already running.' : (parts.join(' · ') || 'Nothing to check.') })
+      await this.loadDownloads()
+    } catch (e) {
+      runInAction(() => { this.earlyAccessResult = `Check failed: ${e instanceof Error ? e.message : String(e)}` })
+    } finally {
+      runInAction(() => { this.earlyAccessChecking = false })
     }
   }
   async clearCompleted(source: 'hf' | 'civ'): Promise<void> {

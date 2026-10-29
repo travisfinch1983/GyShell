@@ -99,12 +99,26 @@ const QueueItem: React.FC<{ source: 'hf' | 'civ'; item: DLItem }> = observer(({ 
         <button className={`${styles.qAct} ${styles.danger}`} title="Cancel / remove" onClick={() => void store.action(source, item.id, 'cancel')}><X size={12} /></button>
       </div>
       {item.error && <div className={styles.qErrFull}>{item.error}</div>}
+      {st === 'early_access' && (() => {
+        const ea = (item as any).earlyAccess || {}
+        const vid = String((item as any).dlUrl || '').match(/\/api\/download\/models\/(\d+)/)?.[1]
+        const when = (t?: string) => (t ? new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'not yet')
+        return (
+          <div className={styles.note}>
+            Waiting since {when(ea.since)} · last checked {when(ea.lastCheckedAt)}
+            {vid && <> · <a className={styles.openLink} href={`https://civitai.com/model-versions/${vid}`} target="_blank" rel="noreferrer"><ExternalLink size={11} /> CivitAI</a></>}
+          </div>
+        )
+      })()}
     </div>
   )
 })
 
 const QueueColumn: React.FC<{ source: 'hf' | 'civ'; title: string; items: DLItem[]; onSchedule: () => void }> = observer(({ source, title, items, onSchedule }) => {
-  const active = items.filter((i) => i.status !== 'complete')
+  // Early access is a wait, not a failure: CivitAI releases the file later, and the backend
+  // re-checks every 3 h and requeues it automatically. Kept out of the active list.
+  const early = items.filter((i) => i.status === 'early_access')
+  const active = items.filter((i) => i.status !== 'complete' && i.status !== 'early_access')
   // Completed downloads are history, so newest first. `items` arrives in the order the
   // downloader pushed them, which is right for `active` (a queue — next to run on top) but
   // buried the download you just finished at the bottom of the completed list.
@@ -132,6 +146,20 @@ const QueueColumn: React.FC<{ source: 'hf' | 'civ'; title: string; items: DLItem
       </div>
       {active.length === 0 && done.length === 0 && <div className={styles.empty}>No downloads.</div>}
       {active.map((i) => <QueueItem key={i.id} source={source} item={i} />)}
+      {early.length > 0 && (
+        <div className={styles.fileSection}>
+          <div className={styles.sectionLabel} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span>Early access ({early.length})</span>
+            <span className={styles.note} style={{ fontWeight: 400 }}>checked every 3 h, downloads start by themselves once released</span>
+            <div className={styles.spacer} />
+            <button className={styles.btnSm} disabled={store.earlyAccessChecking} onClick={() => void store.checkEarlyAccess()}>
+              {store.earlyAccessChecking ? <Loader2 size={12} className={styles.spin} /> : <RefreshCw size={12} />} Check now
+            </button>
+          </div>
+          {store.earlyAccessResult && <div className={styles.note}>{store.earlyAccessResult}</div>}
+          {early.map((i) => <QueueItem key={i.id} source={source} item={i} />)}
+        </div>
+      )}
       {done.map((i) => <QueueItem key={i.id} source={source} item={i} />)}
       {(source === 'hf' ? store.hfDoneTotal : store.civDoneTotal) > done.length && (
         <div className={styles.empty}>Showing the newest {done.length} of {source === 'hf' ? store.hfDoneTotal : store.civDoneTotal} completed. Full record: History.</div>
