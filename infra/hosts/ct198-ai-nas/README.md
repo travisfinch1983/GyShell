@@ -29,3 +29,8 @@ using the same card.
 `/mnt/pve/px-data` on px-nas was an empty local dir while the real px-data storage is
 `/mnt/zpoolalpha/pxdata`; AI-Lab writes hookscript vars to `/mnt/pve/px-data/snippets`, so they
 landed nowhere. It is now a symlink to `/mnt/zpoolalpha/pxdata`.
+
+## Monitoring
+Prometheus scrapes `10.0.0.48:5013` (job `inference`) since 2026-10-29. That needs the
+`inference-sd@ct160` forced-command key (`command="ss -Hltn"`) in `/root/.ssh/authorized_keys`;
+see `infra/hosts/ct160-prometheus/README.md`.
