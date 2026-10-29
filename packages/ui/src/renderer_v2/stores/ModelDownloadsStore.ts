@@ -97,6 +97,10 @@ export class ModelDownloadsStore {
   // was not edited, so the download must NOT send it as an override: that recorded every
   // reviewed download as a "custom filename" (1739 of 2337 history rows by 2026-10-29), and the
   // template builder then never applied to them again.
+  // Bumped after every successful Review download, so an embedder (the browser extension's
+  // side panel) can react without reaching into the request loop.
+  reviewDownloadSeq = 0
+  lastReviewDownload: { modelName: string; versions: string[] } | null = null
   civVerSeedFolder = new Map<number, string>()
   civVerSeedFilename = new Map<number, string>()
   civVerSelected = new Set<number>() // versions ticked for download
@@ -1185,6 +1189,10 @@ export class ModelDownloadsStore {
       // if this came from the review queue, clear out the item the button was pressed
       // for — captured above, NOT whatever is on screen now.
       await Promise.all([this.loadDownloads(), this.loadHistories()])
+      runInAction(() => {
+        this.lastReviewDownload = { modelName: String(m.name || m.id), versions: requests.map((r) => r.label) }
+        this.reviewDownloadSeq++
+      })
       if (fromQueueId) {
         // Other queue rows for the SAME model whose version we just downloaded are now
         // redundant. POST /queue/add pushes unconditionally with no dedupe, so a model

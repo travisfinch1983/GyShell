@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "CivitAI to AI-Lab",
+  "version": "2.0.0",
+  "description": "Download CivitAI models through AI-Lab, or review them in a side panel running AI-Lab's own Review screen. Supports civitai.com and civitai.red.",
+  "permissions": ["storage", "sidePanel"],
+  "host_permissions": [
+    "https://civitai.com/*",
+    "https://civitai.red/*",
+    "http://*/api/civitai/*",
+    "https://*/api/civitai/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://civitai.com/*", "https://civitai.red/*"],
+      "js": ["settings.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "side_panel": { "default_path": "sidepanel.html" },
+  "action": { "default_title": "Open the AI-Lab Review panel" },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "icons": { "48": "icon48.png", "128": "icon128.png" }
+}

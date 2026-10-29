@@ -548,7 +548,8 @@ function kb(n?: number): string {
   return gb(n * 1024)
 }
 
-const ReviewBrowser: React.FC = observer(() => {
+// Exported for the browser extension's side panel (CivitaiReviewEmbed), which shows only this.
+export const ReviewBrowser: React.FC = observer(() => {
   const m = store.civModel
   const v = store.civCurrentVersion
   return (

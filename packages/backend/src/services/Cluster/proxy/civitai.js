@@ -1455,8 +1455,17 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       if (!targetDir) return res.json({ conflicts: [], historyOverride: effectiveOverride });
 
       const conflicts = checkExistingFiles(targetDir, fileNames);
+      // The template's name for the main file, without extension. The browser extension's
+      // Download dialog pre-fills its name box with it and only sends an override when the
+      // box was changed, so an untouched quick download is not recorded as a manual rename.
+      const _main = (version.files || []).find((f) => /^(model|diffusion model)$/i.test(String(f.type || '')))
+        || (version.files || []).find((f) => f.type !== 'Training Data');
+      const templateName = _main
+        ? String(resolveTargetPath(model, version, _main, cfg, effectiveOverride, '').fileName || '').replace(/\.[^.]+$/, '')
+        : '';
       res.json({
         conflicts,
+        templateName,
         targetDir,
         historyOverride: effectiveOverride,
         modelName: model.name,

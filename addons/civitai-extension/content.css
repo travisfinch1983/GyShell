@@ -1,0 +1,179 @@
+#ailab-btn-container {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  z-index: 99999;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.ailab-btn {
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  border: none;
+  border-radius: 10px 0 0 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: -2px 2px 12px rgba(0, 0, 0, 0.3);
+  writing-mode: horizontal-tb;
+}
+
+.ailab-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+
+.ailab-btn:active {
+  transform: translateY(0);
+}
+
+.ailab-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+  transform: none;
+}
+
+.ailab-btn-download {
+  background: linear-gradient(135deg, #059669, #10b981);
+}
+.ailab-btn-download:hover {
+  background: linear-gradient(135deg, #047857, #059669);
+}
+
+.ailab-btn-review {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+}
+.ailab-btn-review:hover {
+  background: linear-gradient(135deg, #5558e6, #7c4fea);
+}
+
+.ailab-btn-cancel {
+  background: linear-gradient(135deg, #6b7280, #9ca3af);
+}
+.ailab-btn-cancel:hover {
+  background: linear-gradient(135deg, #4b5563, #6b7280);
+}
+
+/* Confirmation dialog */
+.ailab-confirm {
+  position: fixed;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  z-index: 100000;
+  background: #1a1a2e;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 12px;
+  padding: 14px 16px;
+  width: 320px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  animation: ailab-confirm-in 0.2s ease;
+}
+
+.ailab-confirm-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #e2e8f0;
+  margin-bottom: 10px;
+}
+
+.ailab-confirm-label {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-bottom: 4px;
+}
+
+.ailab-confirm-input {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: monospace;
+  background: rgba(0,0,0,0.4);
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 6px;
+  color: #e2e8f0;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.ailab-confirm-input:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99,102,241,0.2);
+}
+
+.ailab-confirm-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.ailab-confirm-buttons .ailab-btn {
+  flex: 1;
+  justify-content: center;
+  border-radius: 8px;
+  padding: 8px 12px;
+  box-shadow: none;
+}
+
+.ailab-confirm-download {
+  background: linear-gradient(135deg, #059669, #10b981);
+}
+.ailab-confirm-review {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+}
+
+@keyframes ailab-confirm-in {
+  from { opacity: 0; transform: translateY(-50%) translateX(20px); }
+  to { opacity: 1; transform: translateY(-50%) translateX(0); }
+}
+
+/* Toast */
+.ailab-toast {
+  position: fixed;
+  top: 50%;
+  right: 80px;
+  transform: translateY(-50%);
+  z-index: 100001;
+  padding: 12px 20px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  animation: ailab-toast-in 0.3s ease;
+  max-width: 350px;
+}
+
+.ailab-toast-success {
+  background: linear-gradient(135deg, #059669, #10b981);
+}
+
+.ailab-toast-error {
+  background: linear-gradient(135deg, #dc2626, #ef4444);
+}
+
+.ailab-toast-warning {
+  background: linear-gradient(135deg, #d97706, #f59e0b);
+}
+
+@keyframes ailab-toast-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.ailab-confirm-note {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 6px;
+  min-height: 14px;
+}
