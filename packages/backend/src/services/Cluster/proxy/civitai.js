@@ -1992,7 +1992,12 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       const metaCaseMode = metaTypeCfg.caseMode || cfg.caseMode || 'standard';
       const metaPath = applyTemplate(metaTpl, metaVars, metaSep, metaCaseMode);
       const metaLastSlash = metaPath.lastIndexOf('/');
-      let metaFolder = metaLastSlash >= 0 ? metaPath.substring(0, metaLastSlash) : metaPath;
+      // A template with no '/' (workflows: `$MODEL_FILE_NAME$EXTENSION`) is a bare FILE name, so
+      // the folder part is empty. This used to take the whole name as the folder, which created a
+      // DIRECTORY called `<name>.json` exactly where the workflow file goes: curl's
+      // `mv X.json.part X.json` then moved the .part INTO that directory, the reconciler never saw
+      // a file, retried 5x and gave up with "keeps dying immediately" (Oct 7-8; .part leftovers).
+      let metaFolder = metaLastSlash >= 0 ? metaPath.substring(0, metaLastSlash) : '';
       if (effectiveOverride) {
         let overrideFolderPart = effectiveOverride.replace(/\/+$/, '');
         overrideFolderPart = overrideFolderPart.replace(/^\/[^/]+\/[^/]+\//, '');
@@ -2001,13 +2006,13 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
         }
         metaFolder = overrideFolderPart;
       }
-      let metaBaseName = metaLastSlash >= 0 ? metaPath.substring(metaLastSlash + 1) : 'model';
+      let metaBaseName = metaLastSlash >= 0 ? metaPath.substring(metaLastSlash + 1) : (metaPath || 'model');
       metaBaseName = metaBaseName.replace(/\$EXTENSION/g, '').replace(/\.[^.]+$/, '').replace(/\.$/, '');
       // Sanitised exactly like the model filename. Missing this made the sidecars stop
       // sharing the model's base name the moment the model name was cleaned, and
       // moveModelFamily() matches on that base name — the previews would be left behind.
       if (effectiveFn) metaBaseName = sanitizeNameOverride(effectiveFn, metaSep);
-      const metaDir = `${basePath}/${metaTypeFolder}/${metaFolder}`;
+      const metaDir = `${basePath}/${metaTypeFolder}/${metaFolder}`.replace(/\/+$/, '');
 
       const modelType = model.type || 'Unknown';
       addToHistory(model, version, 'proxlab', {
@@ -2033,6 +2038,9 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
         files: queued,
       });
 
+      const skipJsonSidecar = metaTypeFolder === 'workflows'
+        || queued.some((q) => q.type === 'model' && /\.json$/i.test(String(q.fileName || '')));
+
       // ── Background: metadata + images (non-blocking) ──
       (async () => {
         try {
@@ -2047,7 +2055,10 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
               // <basename>.json path that ui_extra_networks.find_info() looks for.
               // Lets SDNext display description, trigger words, tags, version
               // info on the network browser cards.
-              writeFileSync(`${metaDir}/${metaBaseName}.json`, JSON.stringify(model, null, 2));
+              // Not when the version's own files are JSON (workflows, or a LoRA shipping its
+              // workflow): `<base>.json` is then the WORKFLOW's name, and whichever write landed
+              // last won -- a metadata dump overwrote the workflow, or the reverse.
+              if (!skipJsonSidecar) writeFileSync(`${metaDir}/${metaBaseName}.json`, JSON.stringify(model, null, 2));
             } catch (err) { console.error('[civitai] Metadata write failed:', err.message); }
           }
 
@@ -2100,7 +2111,8 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
             const isSidecar = (n) => {
               if (!n.startsWith(metaBaseName)) return false;
               const rest = n.substring(metaBaseName.length);
-              if (rest === '.civit.full.info' || rest === '.civit.info' || rest === '.json') return true;
+              if (rest === '.civit.full.info' || rest === '.civit.info') return true;
+              if (rest === '.json') return !skipJsonSidecar;
               const m = rest.match(/^(_\d+)?\.(jpeg|mp4)$/);
               return !!m;
             };
@@ -2109,18 +2121,20 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
             for (const q of queued) {
               if (q.type !== 'model' || !q.fileName || !q.targetDir || !WEIGHT_EXT.test(q.fileName)) continue;
               const stem = q.fileName.replace(/\.[^.]+$/, '');
-              const key = `${q.targetDir}/${stem}`;
+              // A slash-less template leaves targetDir with a trailing '/', metaDir without.
+              const qDir = String(q.targetDir).replace(/\/+$/, '');
+              const key = `${qDir}/${stem}`;
               if (seen.has(key)) continue;
               seen.add(key);
-              mkdirSync(q.targetDir, { recursive: true });
+              mkdirSync(qDir, { recursive: true });
               let n = 0;
               for (const src of srcSet) {
-                const dst = `${q.targetDir}/${stem}${src.substring(metaBaseName.length)}`;
+                const dst = `${qDir}/${stem}${src.substring(metaBaseName.length)}`;
                 if (existsSync(dst)) continue;
                 try { copyFileSync(`${metaDir}/${src}`, dst); n++; }
                 catch (err) { console.error(`[civitai] sidecar copy ${src} -> ${dst} failed: ${err.message}`); }
               }
-              if (q.targetDir !== metaDir) extraDirs.add(q.targetDir);
+              if (qDir !== metaDir) extraDirs.add(qDir);
               console.log(`[civitai] Mirrored ${n}/${srcSet.length} sidecars for ${stem}`);
             }
           } catch (err) { console.error('[civitai] Per-file sidecar mirroring failed:', err.message); }
