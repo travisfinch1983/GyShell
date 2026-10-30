@@ -1,0 +1,24 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>AMT Console</title>
+<style>
+  html,body{margin:0;height:100%;background:#111;color:#ddd;font:13px system-ui,sans-serif}
+  #bar{padding:6px 10px;background:#222;display:flex;gap:10px;align-items:center}
+  #screen{position:absolute;top:34px;bottom:0;left:0;right:0}
+  button{background:#333;color:#ddd;border:1px solid #555;padding:3px 8px;cursor:pointer}
+</style></head>
+<body>
+<div id="bar"><b>esp32-net (Intel AMT)</b><span id="status">connecting…</span><button id="cad">Ctrl+Alt+Del</button></div>
+<div id="screen"></div>
+<script type="module">
+import RFB from './core/rfb.js';
+const status = document.getElementById('status');
+const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/kvm';
+const rfb = new RFB(document.getElementById('screen'), url);
+rfb.scaleViewport = true;
+rfb.addEventListener('connect', () => status.textContent = 'connected');
+rfb.addEventListener('disconnect', (e) => status.textContent = 'disconnected' + (e.detail.clean ? '' : ' (error)'));
+rfb.addEventListener('desktopname', (e) => status.textContent = 'connected: ' + e.detail.name);
+document.getElementById('cad').onclick = () => rfb.sendCtrlAltDel();
+window.rfb = rfb;
+</script>
+</body></html>
