@@ -16,6 +16,10 @@ import zlib from 'node:zlib';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
+// Intel AMT's RLE (encoding 16) tiles ride one zlib stream per session; pako (vendored with noVNC)
+// gives a synchronous streaming inflate that keeps the window across tiles.
+import { inflateInit2, inflate as pakoInflate } from '../../../../vendor/novnc-1.7.0/vendor/pako/lib/zlib/inflate.js';
+import ZStream from '../../../../vendor/novnc-1.7.0/vendor/pako/lib/zlib/zstream.js';
 
 const DATA_DIR = process.env.AILAB_PROXY_DATA_DIR || '/opt/ai-lab/.gybackend-data';
 const TARGETS_FILE = path.join(DATA_DIR, 'consoles.json');
@@ -119,7 +123,11 @@ function fix(u){try{var x=new URL(u,location.href);if(x.host!==location.host||x.
 var o=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){arguments[1]=fix(String(u));return o.apply(this,arguments)};
 if(window.fetch){var f=window.fetch;window.fetch=function(i,n){return f.call(this,typeof i==='string'?fix(i):i,n)}}
 var WS=window.WebSocket;function S(u,p){var x=new URL(u,location.href);if(x.host===location.host&&x.pathname.indexOf('/api/consoles/')!==0)x.pathname=W+(x.pathname==='/'?'':x.pathname);x.protocol=location.protocol==='https:'?'wss:':'ws:';return p===undefined?new WS(x.toString()):new WS(x.toString(),p)}
-S.prototype=WS.prototype;S.CONNECTING=0;S.OPEN=1;S.CLOSING=2;S.CLOSED=3;window.WebSocket=S;})();</script>`;
+S.prototype=WS.prototype;S.CONNECTING=0;S.OPEN=1;S.CLOSING=2;S.CLOSED=3;window.WebSocket=S;
+document.addEventListener('mousedown',function(){try{window.focus()}catch(e){}},true);
+// Switching machines tears this frame down; end the KVM session cleanly first, or AMI MegaRAC keeps the master
+// slot reserved for a "reconnect" and every later session comes up view-only (partial access).
+window.addEventListener('pagehide',function(){try{if(window._video&&window._video.stop)window._video.stop()}catch(e){}});})();</script>`;
 }
 
 // The MegaRAC viewer expects sessionStorage the main UI fills at login (CSRF "garc", feature list, KVM rights).
@@ -271,6 +279,8 @@ function makeRfbTranslator(t, note, toBrowser, toAmt) {
     }
   };
   buildLut();
+  const inflateTile = makeTileInflater();
+  const toRgbx = (pix) => { const out = Buffer.allocUnsafe(pix.length * 4); for (let i = 0; i < pix.length; i++) out.writeUInt32LE(lut[pix[i]], 4 * i); return out; };
   const convert = (px) => {
     const n = px.length >> 1, out = Buffer.allocUnsafe(n * 4);
     for (let i = 0; i < n; i++) out.writeUInt32LE(lut[px[2 * i] | (px[2 * i + 1] << 8)], 4 * i);
@@ -309,6 +319,13 @@ function makeRfbTranslator(t, note, toBrowser, toAmt) {
         if (sAcc.length < 12) break;
         const w = sAcc.readUInt16BE(4), h = sAcc.readUInt16BE(6), enc = sAcc.readInt32BE(8);
         if (enc === 0) { const need = 12 + w * h * 2; if (sAcc.length < need) break; out.push(sAcc.subarray(0, 12)); out.push(convert(sAcc.subarray(12, need))); sAcc = sAcc.subarray(need); }
+        else if (enc === 16) {
+          if (sAcc.length < 16) break;
+          const need = 16 + sAcc.readUInt32BE(12); if (sAcc.length < need) break;
+          const tile = decodeAmtTile(inflateTile(sAcc.subarray(16, need)), w, h);
+          const hdr = Buffer.from(sAcc.subarray(0, 12)); hdr.writeInt32BE(0, 8); // hand the browser plain Raw
+          out.push(hdr); out.push(toRgbx(tile)); sAcc = sAcc.subarray(need);
+        }
         else if (enc === -223) { out.push(sAcc.subarray(0, 12)); sAcc = sAcc.subarray(12); }
         else throw new Error('AMT sent an encoding that was not requested: ' + enc);
         if (--rects === 0) sStage = 'msg';
@@ -337,7 +354,8 @@ function makeRfbTranslator(t, note, toBrowser, toAmt) {
       }
       if (ty === 2) {
         if (cAcc.length < 4) break; const n = 4 + 4 * cAcc.readUInt16BE(2); if (cAcc.length < n) break;
-        out.push(Buffer.from([2, 0, 0, 2, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0x21])); cAcc = cAcc.subarray(n); continue;
+        // RLE (16) first: a text console compresses ~100x vs Raw, which matters over the trailer's uplink.
+        out.push(Buffer.from([2, 0, 0, 3, 0, 0, 0, 16, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0x21])); cAcc = cAcc.subarray(n); continue;
       }
       const fixed = { 3: 10, 4: 8, 5: 6 }[ty];
       if (fixed) { if (cAcc.length < fixed) break; out.push(cAcc.subarray(0, fixed)); cAcc = cAcc.subarray(fixed); continue; }
@@ -348,6 +366,49 @@ function makeRfbTranslator(t, note, toBrowser, toAmt) {
     if (cAcc.length) cAcc = Buffer.from(cAcc);
   };
   return { fromAmt, fromBrowser };
+}
+
+function makeTileInflater() {
+  const strm = new ZStream();
+  // AMT 15 sends a zlib-WRAPPED stream (first tile starts 78 9c), not raw deflate as MeshCommander's -15 suggests.
+  if (inflateInit2(strm, 15) !== 0) throw new Error('inflateInit2 failed');
+  const outBuf = new Uint8Array(256 * 1024);
+  return (input) => {
+    strm.input = input; strm.next_in = 0; strm.avail_in = input.length;
+    const parts = [];
+    do {
+      strm.output = outBuf; strm.next_out = 0; strm.avail_out = outBuf.length;
+      const ret = pakoInflate(strm, 2 /* Z_SYNC_FLUSH */);
+      if (ret < 0 && ret !== -5 /* Z_BUF_ERROR = no progress possible, fine */) throw new Error(`AMT RLE inflate error ${ret} (len ${input.length}, head ${Buffer.from(input.subarray(0, 12)).toString('hex')})`);
+      if (strm.next_out) parts.push(Buffer.from(outBuf.subarray(0, strm.next_out)));
+      if (ret === -5) break;
+    } while (strm.avail_in > 0 || strm.avail_out === 0);
+    return Buffer.concat(parts);
+  };
+}
+
+// One AMT RLE tile (<= 64x64) of RGB565 pixels -> Uint16Array of w*h pixels.
+function decodeAmtTile(d, w, h) {
+  const n = w * h, px = new Uint16Array(n);
+  let p = 0, i = 0;
+  const sub = d[p++];
+  const rd16 = () => { const v = d[p] | (d[p + 1] << 8); p += 2; return v; };
+  const runLen = () => { let r = 1, b; do { b = d[p++]; r += b; } while (b === 255 && p < d.length); return r; };
+  if (sub === 0) { for (; i < n; i++) px[i] = rd16(); }
+  else if (sub === 1) { px.fill(rd16()); }
+  else if (sub >= 2 && sub <= 16) {
+    const pal = []; for (let k = 0; k < sub; k++) pal.push(rd16());
+    const br = sub === 2 ? 1 : sub <= 4 ? 2 : 4, bm = (1 << br) - 1;
+    while (i < n && p < d.length) { const v = d[p++]; for (let b = 8 - br; b >= 0 && i < n; b -= br) px[i++] = pal[(v >> b) & bm]; }
+  } else if (sub === 128) {
+    while (i < n && p < d.length) { const c = rd16(); const r = runLen(); px.fill(c, i, Math.min(n, i + r)); i += r; }
+  } else if (sub > 129) {
+    const pal = []; for (let k = 0; k < sub - 128; k++) pal.push(rd16());
+    while (i < n && p < d.length) { const idx = d[p++]; const c = pal[idx & 127]; const r = idx > 127 ? runLen() : 1; px.fill(c, i, Math.min(n, i + r)); i += r; }
+  } else {
+    throw new Error('unsupported AMT RLE subencoding ' + sub);
+  }
+  return px;
 }
 
 function amtPage(t) {
@@ -500,12 +561,13 @@ async function relayAmt(t, ws, note) {
     try { ws.close(1011, e.message.slice(0, 120)); } catch { /* already gone */ }
     return;
   }
-  let closed = false;
-  const end = (why) => { if (closed) return; closed = true; note('closed: ' + why); try { sock.destroy(); } catch { /* gone */ } try { ws.close(); } catch { /* gone */ } };
-  const tr = makeRfbTranslator(t, note, (b) => { if (ws.readyState === 1) ws.send(b); }, (b) => sock.write(b));
+  let closed = false, amtB = 0, webB = 0;
+  const end = (why) => { if (closed) return; closed = true; note(`closed: ${why} (from AMT ${amtB}B, to browser ${webB}B)`); try { sock.destroy(); } catch { /* gone */ } try { ws.close(); } catch { /* gone */ } };
+  const tr = makeRfbTranslator(t, note, (b) => { webB += b.length; if (ws.readyState === 1) ws.send(b); }, (b) => sock.write(b));
   const guard = (fn) => (d) => { try { fn(Buffer.from(d)); } catch (e) { end('protocol: ' + e.message); } };
   ws.off('message', queue);
-  const fromBrowser = guard(tr.fromBrowser), fromAmt = guard(tr.fromAmt);
+  const fromBrowser = guard(tr.fromBrowser), fromAmtRaw = guard(tr.fromAmt);
+  const fromAmt = (d) => { amtB += d.length; fromAmtRaw(d); };
   ws.on('message', fromBrowser);
   sock.on('data', fromAmt);
   if (rest.length) fromAmt(rest);
@@ -529,11 +591,16 @@ async function relayBmc(t, ws, upstreamPath, protoHeader, note) {
   const up = new WebSocket(`wss://${t.host}${upstreamPath}`, protocols, { rejectUnauthorized: false, perMessageDeflate: false, origin: `https://${t.host}`, headers });
   up.binaryType = 'nodebuffer';
   let closed = false;
-  const end = (why) => { if (closed) return; closed = true; note('closed: ' + why); try { ws.close(); } catch { /* gone */ } try { up.close(); } catch { /* gone */ } };
+  const end = (why) => { if (closed) return; closed = true; note(`closed: ${why} (browser->bmc ${upN} msgs/${upB}B, bmc->browser ${downN} msgs/${downB}B)`); try { ws.close(); } catch { /* gone */ } try { up.close(); } catch { /* gone */ } };
   ws.off('message', queue);
-  ws.on('message', (d, isBinary) => { if (up.readyState === 1) up.send(d, { binary: isBinary }); else pending.push([d, isBinary]); });
+  let upN = 0, upB = 0, downN = 0, downB = 0;
+  ws.on('message', (d, isBinary) => {
+    upN++; upB += d.length;
+    if (process.env.CONSOLES_TRACE && upN <= 400 && !(d.length === 10 && d[0] === 3)) note(`web> ${isBinary ? 'bin' : 'txt'} ${d.length}B ${Buffer.from(d).subarray(0, 24).toString(isBinary ? 'hex' : 'latin1')}`);
+    if (up.readyState === 1) up.send(d, { binary: isBinary }); else pending.push([d, isBinary]);
+  });
   up.on('open', () => { note('BMC websocket open'); for (const [d, b] of pending) up.send(d, { binary: b }); pending.length = 0; });
-  up.on('message', (d, isBinary) => { if (ws.readyState === 1) ws.send(d, { binary: isBinary }); });
+  up.on('message', (d, isBinary) => { downN++; downB += d.length; if (ws.readyState === 1) ws.send(d, { binary: isBinary }); });
   up.on('unexpected-response', (_q, r) => end(`BMC refused the websocket (HTTP ${r.statusCode})`));
   up.on('close', (c) => end('bmc ' + c));
   up.on('error', (e) => end('bmc error ' + e.message));

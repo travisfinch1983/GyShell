@@ -47,6 +47,7 @@ export const ConsolesPanel: React.FC = () => {
   useEffect(() => { void load() }, [load])
 
   const select = (id: string) => {
+    if (id === selected) return // re-clicking (or Enter on the still-focused list button) must not reload the console
     setSelected(id)
     setFrameKey((k) => k + 1)
     try { localStorage.setItem('ai-lab-console-selected', id) } catch { /* storage unavailable */ }
@@ -70,6 +71,12 @@ export const ConsolesPanel: React.FC = () => {
     }
   }
 
+  // The viewers preventDefault() their mousedown, which stops a click from moving keyboard focus into
+  // the iframe — keys then land on this page (Enter re-"clicked" the list button and reloaded px-gpu).
+  // Hand focus to the console whenever the pointer is over it or it finishes loading.
+  const focusFrame = () => {
+    try { frameRef.current?.focus(); frameRef.current?.contentWindow?.focus() } catch { /* frame not ready */ }
+  }
   const sendCad = () => frameRef.current?.contentWindow?.postMessage('ctrl-alt-del', window.location.origin)
   const pw = target ? power[target.id] : undefined
 
@@ -85,7 +92,7 @@ export const ConsolesPanel: React.FC = () => {
       <div className={styles.body}>
         <div className={styles.list}>
           {targets.map((t) => (
-            <button key={t.id} className={`${styles.row} ${t.id === selected ? styles.rowSel : ''}`} onClick={() => select(t.id)}>
+            <button key={t.id} className={`${styles.row} ${t.id === selected ? styles.rowSel : ''}`} onClick={(e) => { e.currentTarget.blur(); select(t.id) }}>
               <span className={styles.rowName}>{t.name}</span>
               <span className={styles.rowMeta}>{KIND_LABEL[t.kind] || t.kind} · {t.host}</span>
             </button>
@@ -120,6 +127,9 @@ export const ConsolesPanel: React.FC = () => {
                 // No allow-top-navigation: BMC viewers do top.location = logout on timeouts.
                 sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock allow-downloads"
                 allow="clipboard-read; clipboard-write; fullscreen"
+                onLoad={focusFrame}
+                onMouseEnter={focusFrame}
+                onMouseDown={focusFrame}
               />
             </>
           )}
