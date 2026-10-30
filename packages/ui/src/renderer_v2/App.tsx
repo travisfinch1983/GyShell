@@ -97,6 +97,8 @@ export const App: React.FC = observer(() => {
         'terminal'
       // 2026-07-14: the 'monitor' primary tab became 'roadmap' — migrate
       // persisted positions so old tabs don't land on a nonexistent id.
+      // 2026-10-30: the Services tab is hidden from the sidebar — don't restore onto it.
+      if (stored === 'services') return 'home' as PrimaryTab
       return (stored === 'monitor' ? 'roadmap' : stored) as PrimaryTab
     }
   )

@@ -7,7 +7,6 @@ import {
   FolderOpen,
   Map as MapIcon,
   Server,
-  Radar,
   Package,
   Radio,
   BrainCircuit,
@@ -48,7 +47,8 @@ const TABS: TabDef[] = [
   { id: 'fleet',     label: 'Fleet Feed', Icon: Radio },
   { id: 'addons',    label: 'Addons',    Icon: Blocks },
   { id: 'cluster',   label: 'Cluster',   Icon: Server },
-  { id: 'services',  label: 'Services',  Icon: Radar },
+  // Hidden 2026-10-30 (Travis): the Services tab isn't built out enough to be useful yet. Restore this line to bring it back.
+  // { id: 'services',  label: 'Services',  Icon: Radar },
   { id: 'ai-services', label: 'AI Metrics', Icon: BrainCircuit },
   { id: 'ai-llm', label: 'AI · LLM', Icon: Bot },
   { id: 'ai-image', label: 'AI · Image Gen', Icon: ImageIcon },
