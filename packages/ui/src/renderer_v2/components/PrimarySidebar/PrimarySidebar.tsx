@@ -13,6 +13,7 @@ import {
   Bot,
   MessageSquare,
   Blocks,
+  MonitorPlay,
   Image as ImageIcon,
   AudioLines,
   Download,
@@ -31,7 +32,7 @@ import {
 import { uiPrefsStore } from '../../stores/uiPrefsStore'
 import styles from './PrimarySidebar.module.scss'
 
-export type PrimaryTab = 'home' | 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'svg' | 'pages' | 'files' | 'logs' | 'roadmap' | 'fleet' | 'addons' | 'chat'
+export type PrimaryTab = 'home' | 'terminal' | 'claude' | 'cluster' | 'services' | 'ai-services' | 'ai-llm' | 'ai-image' | 'ai-tts-stt' | 'ai-tools' | 'helper-scripts' | 'model-downloads' | 'flowchart' | 'svg' | 'pages' | 'files' | 'logs' | 'roadmap' | 'fleet' | 'addons' | 'chat' | 'consoles'
 
 interface TabDef {
   id: PrimaryTab
@@ -47,6 +48,7 @@ const TABS: TabDef[] = [
   { id: 'fleet',     label: 'Fleet Feed', Icon: Radio },
   { id: 'addons',    label: 'Addons',    Icon: Blocks },
   { id: 'cluster',   label: 'Cluster',   Icon: Server },
+  { id: 'consoles',  label: 'Consoles',  Icon: MonitorPlay },
   // Hidden 2026-10-30 (Travis): the Services tab isn't built out enough to be useful yet. Restore this line to bring it back.
   // { id: 'services',  label: 'Services',  Icon: Radar },
   { id: 'ai-services', label: 'AI Metrics', Icon: BrainCircuit },

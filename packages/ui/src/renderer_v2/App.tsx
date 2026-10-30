@@ -35,6 +35,7 @@ import { GpuFleetPanel } from './components/GpuFleet/GpuFleetPanel'
 import { gpuFleetStore } from './stores/GpuFleetStore'
 import { ModelDownloadsPanel } from './components/ModelDownloads/ModelDownloadsPanel'
 import { LogsPanel } from './components/Logs/LogsPanel'
+import { ConsolesPanel } from './components/Consoles/ConsolesPanel'
 import { AiLlmPanel, AiImagePanel, AiTtsSttPanel, AiToolsPanel } from './components/AiModality/AiModalityPanels'
 import { ClaudePanel } from './components/Claude/ClaudePanel'
 import { liveConsoleStore } from './stores/LiveConsoleStore'
@@ -327,6 +328,12 @@ export const App: React.FC = observer(() => {
           {primaryTab === 'model-downloads' && (
             <ErrorBoundary label="The model-downloads tab">
               <ModelDownloadsPanel />
+            </ErrorBoundary>
+          )}
+
+          {primaryTab === 'consoles' && (
+            <ErrorBoundary label="The consoles tab">
+              <ConsolesPanel />
             </ErrorBoundary>
           )}
 

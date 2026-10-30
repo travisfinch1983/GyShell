@@ -340,6 +340,9 @@ export class UniversalProxyService {
     // @ts-expect-error — JS router: reverse proxy to the native Transmute file-converter service (:3313)
     const { createTransmuteRouter } = await import('./proxy/transmute.js')
     app.use('/api/transmute', createTransmuteRouter())
+    // @ts-expect-error — JS router: remote KVM consoles (Intel AMT relay + BMC HTML5 iKVM proxy), see proxy/consoles.js
+    const { createConsolesRouter, attachConsolesUpgrade } = await import('./proxy/consoles.js')
+    app.use('/api/consoles', createConsolesRouter())
     // @ts-expect-error — JS router: runtime addon registry + reverse-proxy (drop-in addons, no rebuild)
     const { createAddonsRouter, createAddonsProxyRouter, attachAddonsUpgrade } = await import('./proxy/addons.js')
     app.use('/api/addons', createAddonsRouter())          // GET list of registered addons (runtime)
@@ -413,6 +416,7 @@ export class UniversalProxyService {
 
     this.server = http.createServer(app)
     attachAddonsUpgrade(this.server) // addon WebSocket reverse-proxy (/addons/<id>/*)
+    attachConsolesUpgrade(this.server) // console KVM streams (/api/consoles/<id>/ws)
     // Native xterm.js console bridge (/api/claude/console/:id) — single-writer dtach attach
     // over SSH; replaces the ttyd terminals once verified (ailab-native-console.md).
     const { ClaudeConsoleService } = await import('../ClaudeConsole/ClaudeConsoleService')
