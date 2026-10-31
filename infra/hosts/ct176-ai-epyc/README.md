@@ -3,6 +3,7 @@
 | File | Why | Deployed |
 |---|---|---|
 | `opt/conda/envs/faster-whisper/lib/python3.12/site-packages/sitecustomize.py` | faster-whisper's CTranslate2 needs cuBLAS 12 + cuDNN 9 from its pip `nvidia-*` packages (`/usr/local/cuda` is 13.3). Preloaded per-env. **Replaces** the earlier `/etc/ld.so.conf.d/faster-whisper-cuda.conf` (REMOVED 2026-10-12): being global, it fed this env's cuDNN 9.24 to chatterbox TTS (cuDNN 9.20) -> `CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH`, every TTS request 500'd. Never put a per-env lib dir in ld.so.conf.d. Same step is now in `infra/provider-scripts/providers/faster-whisper.sh`. | 2026-10-12 |
+| `etc/systemd/system/ailab-imagegen-models-9310.service.d/10-memory-ramlru.conf` | imagegen-models-9310 memory limits (MemoryHigh=88G, MemoryMax=100G) + `AILAB_MODELSVC_RAM_BUDGET_GB=64` for the serve.py RAM budget (see `infra/patches/ailab-modelsvc/0004-ram-budget-lru-eviction.patch`). A drop-in because ai.js regenerates the unit file and `/opt/proxlab/services/*.sh` on relaunch. After the 2026-10-31 memcg OOM. Apply: copy, `systemctl daemon-reload`, restart via AI-Lab. | 2026-10-31 |
 
 ## Qwen-Image PE router: RETIRED 2026-10-16 (same day)
 The hand-launched router service llama-server-5007 (`opt/proxlab/presets/qwen-pe-router.sh`, now deleted from

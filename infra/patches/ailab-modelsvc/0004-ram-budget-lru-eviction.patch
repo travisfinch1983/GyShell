@@ -1,0 +1,294 @@
+--- a/serve.py	2026-10-16 07:06:53.567825464 +0000
++++ b/serve.py	2026-10-31 05:00:31.383080633 +0000
+@@ -696,6 +696,10 @@
+                 traceback.print_exc()
+         TIERS[self.kind].hold(self.name, -1)
+         self.base = self.active = None
++        # a ckpt also holds its text encoder + VAE (and a clip-LoRA clone): drop them too, or an unload frees only the UNet
++        for a in ("clip", "vae", "clip_active"):
++            if hasattr(self, a):
++                setattr(self, a, None)
+ 
+     def vram_split(self):
+         """(GB in VRAM, GB offloaded to RAM) as ComfyUI's model manager has it, or (None, None) when it doesn't manage this model."""
+@@ -1252,6 +1256,7 @@
+     with MODELS_LOCK:
+         r = MODELS.get(key)
+         if r is not None:
++            r.last = time.time()   # RAM budget: a copy someone just looked up is in use, never the LRU victim
+             return r
+         lk = CREATING.setdefault(key, threading.Lock())
+     # build OUTSIDE MODELS_LOCK: Resident() loads under MM(gpu) (the GPU gate), and a thread that is computing may need MODELS_LOCK;
+@@ -1264,6 +1269,8 @@
+             with MODELS_LOCK:
+                 MODELS[key] = r
+             registry_write()
++            RAM_KICK.set()
++    r.last = time.time()
+     with MODELS_LOCK:
+         CREATING.pop(key, None)
+     return r
+@@ -1289,6 +1296,197 @@
+     log(f"unloaded {kind} {name} from GPU {keys[0][3]}")
+ 
+ 
++# ── RAM budget + LRU eviction (claude1 2026-10-31, maintenance-claude work order j-mvvx4d47-6ba4) ─────────────────────────────
++# A copy ComfyUI's memory manager moves out of VRAM to make room stays in THIS process's RAM (anon, partly page-locked) until
++# something unloads it - and nothing did: only POST /models/unload removed a copy. 15 days of loads (38 copies) grew the
++# process to 136 GB anon RSS and the CT's 160 GiB memcg OOM-killed it (2026-10-31 04:43Z; the watchdog then restarted
++# llama / comfyui / rvc too). The tiers.py quotas are a different thing: they cap the model FILE caches (RAM drive tmpfs,
++# charged to the host; disk tier), not the weights a loaded copy holds in process memory.
++# Now: when the process's anon RSS is over AILAB_MODELSVC_RAM_BUDGET_GB, the least-recently-used IDLE copies that hold
++# weights in RAM are unloaded (references dropped + gc + ComfyUI's cleanup, so the memory is really freed; the FILE stays in
++# the RAM / disk cache tiers, so a reload takes seconds) until it is under 90 % of the budget. Never evicted: pinned copies,
++# copies in a run / mid-step, copies on a GPU whose queue slot is held or waited for (a running or queued request), copies
++# used in the last AILAB_MODELSVC_RAM_MIN_IDLE_S seconds, plugin kinds (their RAM isn't measurable from here).
++RAM_BUDGET_GB = float(os.environ.get("AILAB_MODELSVC_RAM_BUDGET_GB", "64"))        # 0 = no budget
++RAM_MIN_IDLE_S = float(os.environ.get("AILAB_MODELSVC_RAM_MIN_IDLE_S", "300"))
++RAM_CHECK_S = float(os.environ.get("AILAB_MODELSVC_RAM_CHECK_S", "60"))
++RAM_LOW = 0.90                         # once over the budget, evict down to 90 % of it (hysteresis: no one-copy-a-minute churn)
++RAM_KINDS = ("unet", "te", "vae", "ckpt")
++RAM_KICK = threading.Event()           # set after a new copy loads: check now, not at the next period
++RAM_LOCK = threading.Lock()            # one enforcement pass at a time
++RAM_STATS = {"evictions": 0, "freed_gb": 0.0, "last_check": None, "last_eviction": None, "last_stuck": None, "recent": collections.deque(maxlen=20)}
++
++
++def proc_ram_bytes():
++    """This process's anonymous resident memory (RssAnon) - the number the memcg OOM killer reported (anon-rss)."""
++    try:
++        with open("/proc/self/status") as f:
++            for line in f:
++                if line.startswith("RssAnon:"):
++                    return int(line.split()[1]) * 1024
++    except OSError:
++        pass
++    return 0
++
++
++def _malloc_trim():
++    try:
++        import ctypes
++        ctypes.CDLL("libc.so.6").malloc_trim(0)
++    except Exception:  # noqa: BLE001
++        pass
++
++
++def _ram_patchers(r):
++    if r.base is None:
++        return []
++    if r.kind == "ckpt":
++        ps = [r.base] + [getattr(x, "patcher", None) for x in (getattr(r, "clip", None), getattr(r, "vae", None)) if x is not None]
++    elif r.kind == "unet":
++        ps = [r.base]
++    else:                                   # te (CLIP) / vae (VAE) wrap a ModelPatcher
++        ps = [getattr(r.base, "patcher", None)]
++    return [p for p in ps if p is not None]
++
++
++def ram_bytes_of(r):
++    """Bytes of this copy's weights that are NOT on its GPU, i.e. held in this process's RAM (ComfyUI's own accounting)."""
++    tot = 0
++    for p in _ram_patchers(r):
++        try:
++            tot += max(0, int(p.model_size()) - int(p.loaded_size()))
++        except Exception:  # noqa: BLE001
++            pass
++    return tot
++
++
++def _ram_why_not(k, r, now, pins):
++    """None when copy k may be evicted now, else the reason it may not."""
++    if r.kind not in RAM_KINDS:
++        return "plugin kind"
++    if r.base is None:
++        return "released"
++    if k in pins:
++        return "pinned"
++    if r.run_members > 0 or r.fwd_lock.locked() or r.run_lock.locked():
++        return "in a run"
++    if now - r.last < RAM_MIN_IDLE_S:
++        return f"used {now - r.last:.0f}s ago"
++    lease = LEASES[r.gpu]
++    if lease.holder is not None or lease.queue:
++        return "its GPU is busy / has requests queued"
++    return None
++
++
++def ram_candidates(all_rows=False):
++    """[(key, ram bytes, idle s, reason-or-None)], evictable ones first in LRU order (oldest use first, bigger first on ties)."""
++    now = time.time()
++    with MODELS_LOCK:
++        items = list(MODELS.items())
++    with PINS_LOCK:
++        pins = set(PINS)
++    rows = []
++    for k, r in items:
++        rb = ram_bytes_of(r) if r.kind in RAM_KINDS else 0
++        if rb < 64 * 2 ** 20 and not all_rows:
++            continue                       # (nearly) all in VRAM: evicting it frees no RAM
++        rows.append((k, rb, now - r.last, _ram_why_not(k, r, now, pins), r.last))
++    rows.sort(key=lambda x: (x[3] is not None, x[4], -x[1]))
++    return [x[:4] for x in rows]
++
++
++def ram_evict(k):
++    """Unload copy k if it is still evictable, re-checked under its GPU's exclusive gate. -> RAM bytes it held (0 = skipped)."""
++    import gc
++    g = k[3]
++    with MM(g):                            # no step / load / offload on this card while we take the copy apart
++        with PINS_LOCK:
++            pins = set(PINS)
++        with MODELS_LOCK:
++            r = MODELS.get(k)
++            if r is None or _ram_why_not(k, r, time.time(), pins) is not None:
++                return 0
++            held, idle = ram_bytes_of(r), time.time() - r.last
++            MODELS.pop(k)
++        trace("ram evict", g, kind=k[0], name=k[1], ram_gb=round(held / 2 ** 30, 2))
++        r.release(); del r
++        gc.collect()
++        if hasattr(mm, "cleanup_models_gc"):
++            mm.cleanup_models_gc()
++        mm.cleanup_models(); mm.soft_empty_cache()
++    _malloc_trim()
++    registry_write()
++    RAM_STATS["recent"].append({"at": time.time(), "kind": k[0], "name": k[1], "gpu": g, "ram_gb": round(held / 2 ** 30, 2), "idle_s": round(idle)})
++    return held or 1
++
++
++def ram_enforce(budget_gb=None, dry_run=False):
++    """One pass: over the budget -> evict LRU idle RAM-held copies down to RAM_LOW x budget. -> summary dict."""
++    budget_gb = RAM_BUDGET_GB if budget_gb is None else float(budget_gb)
++    if budget_gb <= 0:
++        return {"ok": True, "enabled": False}
++    if not RAM_LOCK.acquire(blocking=False):
++        return {"ok": False, "error": "an enforcement pass is already running"}
++    try:
++        budget = budget_gb * 2 ** 30
++        cur = start = proc_ram_bytes()
++        RAM_STATS["last_check"] = time.time()
++        out = {"ok": True, "budget_gb": budget_gb, "rss_anon_gb": round(cur / 2 ** 30, 2), "evicted": []}
++        if cur <= budget:
++            return out
++        target, tried = RAM_LOW * budget, set()
++        while cur > target:
++            cands = [c for c in ram_candidates() if c[3] is None and c[0] not in tried]
++            if not cands:
++                if not dry_run and cur > budget and (RAM_STATS["last_stuck"] is None or time.time() - RAM_STATS["last_stuck"] > 600):
++                    RAM_STATS["last_stuck"] = time.time()
++                    why = [(k[0], k[1], k[3], reason) for k, _, _, reason in ram_candidates() if reason][:8]
++                    log(f"ram: {cur / 2 ** 30:.1f} GB anon RSS is over the {budget_gb:g} GB budget and nothing more can be evicted now ({why})")
++                break
++            k, rb, idle, _ = cands[0]
++            tried.add(k)
++            if dry_run:
++                out["evicted"].append({"kind": k[0], "name": k[1], "gpu": k[3], "ram_gb": round(rb / 2 ** 30, 2), "idle_s": round(idle), "dry_run": True})
++                cur -= rb
++                continue
++            held = ram_evict(k)
++            if not held:
++                continue
++            new = proc_ram_bytes()
++            RAM_STATS["evictions"] += 1; RAM_STATS["last_eviction"] = time.time()
++            RAM_STATS["freed_gb"] = round(RAM_STATS["freed_gb"] + max(0, cur - new) / 2 ** 30, 2)
++            log(f"ram: evicted {k[0]} {k[1]} from GPU {k[3]} (idle {idle / 60:.0f} min, {held / 2 ** 30:.1f} GB in RAM) - "
++                f"process anon RSS {cur / 2 ** 30:.1f} -> {new / 2 ** 30:.1f} GB (budget {budget_gb:g} GB)")
++            out["evicted"].append({"kind": k[0], "name": k[1], "gpu": k[3], "ram_gb": round(held / 2 ** 30, 2), "idle_s": round(idle),
++                                   "rss_before_gb": round(cur / 2 ** 30, 2), "rss_after_gb": round(new / 2 ** 30, 2)})
++            cur = new
++        out["rss_anon_after_gb"] = round(cur / 2 ** 30, 2) if not dry_run else None
++        out["freed_gb"] = round(max(0, start - cur) / 2 ** 30, 2) if not dry_run else None
++        return out
++    finally:
++        RAM_LOCK.release()
++
++
++def _ram_loop():
++    while True:
++        RAM_KICK.wait(RAM_CHECK_S)
++        RAM_KICK.clear()
++        try:
++            ram_enforce()
++        except Exception:  # noqa: BLE001
++            traceback.print_exc()
++
++
++def ram_status(detail=False):
++    s = {"budget_gb": RAM_BUDGET_GB, "min_idle_s": RAM_MIN_IDLE_S, "check_s": RAM_CHECK_S, "rss_anon_gb": round(proc_ram_bytes() / 2 ** 30, 2),
++         "evictions": RAM_STATS["evictions"], "freed_gb": RAM_STATS["freed_gb"], "last_check": RAM_STATS["last_check"],
++         "last_eviction": RAM_STATS["last_eviction"], "recent": list(RAM_STATS["recent"])}
++    if detail:
++        s["copies"] = [{"kind": k[0], "name": k[1], "gpu": k[3], "ram_gb": round(rb / 2 ** 30, 2), "idle_s": round(idle), "evictable": why is None, "why_not": why}
++                       for k, rb, idle, why in ram_candidates(all_rows=True)]
++    return s
++
++
+ def to_dev(o, dev=None):
+     dev = dev or DEV
+     if isinstance(o, torch.Tensor):
+@@ -1614,7 +1812,7 @@
+             # single-kind fields kept for older clients
+             "kind": A.kind, "model": next((r.name for r in MODELS.values()), None),
+             "vram_used_gb": round(sum(torch.cuda.memory_allocated(d) for d in GPUS if d.type == "cuda") / 1e9, 2),
+-            "stats": dict(STATS), "cache": cache_summary(), "uds": UDS}
++            "stats": dict(STATS), "cache": cache_summary(), "uds": UDS, "ram": ram_status()}
+ 
+ 
+ class Handler(socketserver.BaseRequestHandler):
+@@ -1754,7 +1952,10 @@
+         def run():
+             r = restore_ram(lambda k, n: full_path(n, FOLDERS[k]))
+             if body.get("models", True):   # then reload what this service had loaded before the reboot
+-                for item in _state_host("resident_v2") or []:   # [kind, name, extra, GPU UUID]
++                for item in reversed(_state_host("resident_v2") or []):   # [kind, name, extra, GPU UUID] - newest first
++                    if RAM_BUDGET_GB > 0 and proc_ram_bytes() > RAM_LOW * RAM_BUDGET_GB * 2 ** 30:
++                        log(f"restore: process RAM at the {RAM_BUDGET_GB:g} GB budget - not reloading the older copies")
++                        break
+                     kind, name, extra = item[:3]
+                     gpu = gpu_index(item[3]) if len(item) > 3 and item[3] else None
+                     if len(item) > 3 and item[3] and gpu is None:
+@@ -1769,6 +1970,16 @@
+             return run()
+         threading.Thread(target=run, daemon=True).start()
+         return {"ok": True, "restoring": True}
++    if path == "/ram":   # {budget_gb?, min_idle_s?, enforce?, dry_run?} - live change (until restart; env sets the default) / one pass now
++        global RAM_BUDGET_GB, RAM_MIN_IDLE_S
++        if body.get("budget_gb") is not None:
++            RAM_BUDGET_GB = float(body["budget_gb"])
++        if body.get("min_idle_s") is not None:
++            RAM_MIN_IDLE_S = float(body["min_idle_s"])
++        r = ram_enforce(dry_run=bool(body.get("dry_run"))) if body.get("enforce") or body.get("dry_run") else None
++        if r is None and (body.get("budget_gb") is not None or body.get("min_idle_s") is not None):
++            RAM_KICK.set()
++        return {"ok": True, "ram": ram_status(), "pass": r}
+     if path == "/cache/quotas":
+         return set_quotas(body.get("quota_gb"), body.get("half_life_h"), body.get("optane_quota_gb", body.get("persist_quota_gb")),
+                           body.get("optane_root", body.get("persist_root")), body.get("persist_label"))
+@@ -1886,6 +2097,8 @@
+                 out = {"rules": placement_rules(), "reservations": reservations()}
+             elif path == "/reservations":
+                 out = {"reservations": reservations()}
++            elif path == "/ram":
++                out = ram_status(detail=True)
+             elif path in ("/", "/health", "/status"):
+                 out = status()
+             else:
+@@ -1925,7 +2138,7 @@
+ # 53.9 dB image PSNR, 14.2 GB. Opt-in by name (regex) because each architecture's fp16 headroom must be verified first.
+ FP16_KEEP = __import__("re").compile(os.environ.get("AILAB_FP16_KEEP", r"(?i)^qwen_2\.1/.*fp16.*\.safetensors$"))
+ TE_CLAIMS = []   # [(plugin, fn)]: fn(sess, m) -> reply dict to serve a text-encoder "encode" itself, or None to decline (claude1)
+-CORE_PATHS = {"/", "/health", "/status", "/models", "/placement", "/reservations", "/cache", "/cache/warm", "/cache/evict", "/cache/pin", "/cache/quotas", "/cache/restore",
++CORE_PATHS = {"/", "/health", "/status", "/models", "/placement", "/reservations", "/ram", "/cache", "/cache/warm", "/cache/evict", "/cache/pin", "/cache/quotas", "/cache/restore",
+               "/models/load", "/models/unload", "/models/pin"}
+ 
+ 
+@@ -2140,6 +2353,9 @@
+         threading.Thread(target=srv.serve_forever, daemon=True).start()
+     log(f"listening on :{A.port} and {UDS} - GPUs: " + ", ".join(f"{i}={n}" for i, n in enumerate(GPU_NAMES)) + f" - serves {KINDS}")
+     pins_restore()
++    threading.Thread(target=_ram_loop, name="ram-budget", daemon=True).start()
++    log(f"RAM budget {RAM_BUDGET_GB:g} GB anon RSS (idle copies evicted LRU after {RAM_MIN_IDLE_S:g}s idle; check every {RAM_CHECK_S:g}s)"
++        if RAM_BUDGET_GB > 0 else "RAM budget off (AILAB_MODELSVC_RAM_BUDGET_GB=0)")
+     for item in [x.strip() for x in A.preload.split(",") if x.strip()]:
+         kind, _, name = item.partition(":") if item.split(":", 1)[0] in FOLDERS else (A.kind, "", item)
+         gpu = None
