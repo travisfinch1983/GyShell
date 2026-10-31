@@ -1,0 +1,277 @@
+ailab-modelsvc 0006: shared RAM-drive accounting with the AI-Lab model cacher + the persistent tier's real name (claude1 2026-10-31, Travis).
+Against modelsvc/tiers.py (md5 123d1de4, same on both hosts) and serve.py after 0005. Generated on ai-epyc from the
+*.bak-drive-20261031065009 copies; applies to ai-gpu unchanged (serve.py hunks offset -13: no 0002 hooks there).
+Re-apply: cd /opt/ailab-modelsvc && patch -p1 < this
+
+--- a/modelsvc/tiers.py
++++ b/modelsvc/tiers.py
+@@ -10,7 +10,9 @@
+                                                      "optane_root": "/optane-sock0/ailab-modelsvc", "optane_quota_gb": 500,
+                                                      "half_life_h": 72}   (editable live, POST /cache/quotas)
+   scoring per use: score = score * 0.5^(age / half_life) + 1. Above 85 % of a store's quota the lowest-scored files that
+-          aren't in use or pinned are evicted down to 80 %; a new file never takes a store past 90 %."""
++          aren't in use or pinned are evicted down to 80 %; a new file never takes a store past 90 %.
++  shared drive (0006): the RAM drive also holds AI-Lab's model cacher (its keep-cached manifest). The RAM quotas are scaled
++          down to fit drive - reserve - what the cacher needs, and no copy goes below the reserve - see drive_info()."""
+ import fcntl
+ import json
+ import os
+@@ -48,6 +50,23 @@
+ _PERSIST = next(((r, label, q) for r, label, q in (("/optane-sock0", "Optane", 580), ("/disk-cache", "Disk", 240)) if _own_mount(r)), ("", "", 0))
+ DEFAULT_OPTANE = f"{_PERSIST[0]}/ailab-modelsvc" if _PERSIST[0] else ""
+ HIGH, LOW, CAP = 0.85, 0.80, 0.90
++
++# ── shared RAM drive accounting (patch 0006, claude1 2026-10-31, Travis) ─────────────────────────────────────────────────────
++# /model-cache is ONE tmpfs per host shared by two managers: the RAM stores here (ailab-modelsvc/<kind>) and AI-Lab's model
++# cacher (its keep-cached manifest: LLM / imagegen / tts entries elsewhere on the drive). Neither knew about the other and the
++# quotas alone could exceed the drive (px-gpu: 336 GB of RAM quotas + 248 GB of manifest on a 550 GB tmpfs). Now:
++#  - the cacher writes <drive>/.ailab-cacher.json at every reconcile / cache / uncache: {manifest_bytes, reserve_frac, ...};
++#  - here, the rest of the drive needs max(that manifest, what is on the drive now outside ailab-modelsvc); the RAM stores
++#    together get drive - reserve - that, and when 90 % (CAP) of their quotas adds up to more, every kind's quota is scaled by the same
++#    factor (stores prune to the scaled quota as usual; drive_prune() runs that for all kinds, serve.py calls it every 5 min);
++#  - before a copy into RAM the REAL free space (statvfs) minus the copy must stay above the reserve; if not, the
++#    lowest-scored idle RAM files of all kinds are evicted first (make_room), and if that isn't enough the copy is skipped
++#    (the model then loads from the persistent tier / NAS, like any failed copy). The cacher refuses its own copies the same way.
++DRIVE = os.path.dirname(ROOT)
++DRIVE_RESERVE_FRAC = float(os.environ.get("AILAB_MODELSVC_DRIVE_RESERVE_FRAC", "0.05"))
++CACHER_FILE = os.path.join(DRIVE, ".ailab-cacher.json")
++CACHER_STALE_S = 6 * 3600              # an older usage file is ignored (the drive's current contents still count)
++_drive_memo = {"at": 0.0, "v": None}
+ # The RAM drive is a host tmpfs: pages are charged to the memory cgroup of whoever WRITES them, so RAM copies must be made
+ # on the hypervisor host (AI-Lab does it), never from inside the container. Optane (pmem fs) copies are made locally.
+ STATE_DIR = os.environ.get("AILAB_MODELSVC_STATE", "/var/lib/ailab-modelsvc")   # on the container's DISK: survives reboots
+@@ -194,6 +213,10 @@
+             if r is None:
+                 return None
+             if r == "room":
++                if self.label.startswith("ram/") and not make_room(size, self.label):
++                    self.copy_error = "RAM drive short of free space (the shared reserve is kept)"
++                    log(f"{self.label}: not caching {key} ({size / 1e9:.1f} GB): {self.copy_error} - loading from {src} instead")
++                    return None
+                 t = time.time()
+                 try:
+                     self.copier(src, dst)
+@@ -263,7 +286,7 @@
+     """One model kind: its RAM store + its slice of the shared optane store."""
+     def __init__(self, kind):
+         self.kind = kind
+-        self.ram = Store(f"ram/{kind}", lambda: os.path.join(ROOT, kind), lambda: float(config()["quota_gb"].get(kind, 0)), host_copy)
++        self.ram = Store(f"ram/{kind}", lambda: os.path.join(ROOT, kind), lambda: float(config()["quota_gb"].get(kind, 0)) * ram_scale(), host_copy)
+ 
+     def _ok(self):
+         return self.ram.ok()
+@@ -321,7 +344,9 @@
+         return OPTANE.entries(f"{self.kind}/")
+ 
+     def stats(self):
+-        return self.ram.stats()
++        st = self.ram.stats()
++        st["quota_gb_configured"] = float(config()["quota_gb"].get(self.kind, 0))
++        return st
+ 
+ 
+ TIERS = {k: Tier(k) for k in KINDS}
+@@ -420,6 +445,128 @@
+         _restoring.release()
+ 
+ 
++def _tree_bytes(d):
++    """Bytes a tree really takes on the drive (allocated blocks)."""
++    tot = 0
++    for r, _, fs in os.walk(d):
++        for f in fs:
++            try:
++                tot += os.lstat(os.path.join(r, f)).st_blocks * 512
++            except OSError:
++                pass
++    return tot
++
++
++def drive_info(fresh=False):
++    """The whole RAM drive as both managers see it (bytes), or None when it can't be read. Memoised 10 s."""
++    now = time.time()
++    if not fresh and _drive_memo["v"] is not None and now - _drive_memo["at"] < 10:
++        return _drive_memo["v"]
++    try:
++        st = os.statvfs(DRIVE)
++    except OSError:
++        return None
++    total, free = st.f_blocks * st.f_frsize, st.f_bavail * st.f_frsize
++    own = _tree_bytes(ROOT) if os.path.isdir(ROOT) else 0
++    outside = max(0, total - free - own)
++    cacher, age = None, None
++    try:
++        c = json.load(open(CACHER_FILE))
++        age = now - float(c.get("updated") or 0)
++        cacher = c if age < CACHER_STALE_S else None
++    except Exception:  # noqa: BLE001
++        pass
++    manifest = int((cacher or {}).get("manifest_bytes") or 0)
++    reserve = max(DRIVE_RESERVE_FRAC, float((cacher or {}).get("reserve_frac") or 0)) * total
++    others_need = max(outside, manifest)
++    q = config()["quota_gb"]
++    quotas = sum(float(v) for k, v in q.items() if k in TIERS or os.path.isdir(os.path.join(ROOT, k))) * 1e9
++    room = max(0.0, total - reserve - others_need)
++    v = {"total": total, "free": free, "reserve": reserve, "modelsvc": own, "outside_modelsvc": outside,
++         "cacher_manifest": manifest if cacher else None, "cacher_file_age_s": round(age) if age is not None else None,
++         "others_need": others_need, "ram_room": room, "quotas_configured": quotas,
++         # a store never holds more than CAP (90 %) of its quota after a copy, so CAP x the quotas must fit the room. Floor
++         # 0.2: a misread usage file must not wipe the RAM stores (the free-space check before every copy still holds).
++         "scale": max(0.2, min(1.0, room / (CAP * quotas))) if quotas > 0 else 1.0}
++    _drive_memo.update(at=now, v=v)
++    return v
++
++
++def ram_scale():
++    """Factor applied to every RAM quota so they fit next to the cacher's manifest on the shared drive (1 = configured)."""
++    d = drive_info()
++    return d["scale"] if d else 1.0
++
++
++def drive_summary():
++    d = drive_info()
++    if not d:
++        return None
++    g = lambda b: None if b is None else round(b / 1e9, 1)  # noqa: E731
++    return {"root": DRIVE, "total_gb": g(d["total"]), "free_gb": g(d["free"]), "reserve_gb": g(d["reserve"]),
++            "modelsvc_gb": g(d["modelsvc"]), "outside_modelsvc_gb": g(d["outside_modelsvc"]),
++            "cacher_manifest_gb": g(d["cacher_manifest"]), "cacher_file_age_s": d["cacher_file_age_s"],
++            "ram_room_gb": g(d["ram_room"]), "ram_quotas_configured_gb": g(d["quotas_configured"]), "ram_quota_scale": round(d["scale"], 3),
++            "rule": "RAM quotas x scale fit in total - reserve - max(cacher manifest, used outside ailab-modelsvc); no copy below the reserve"}
++
++
++def make_room(need, why=""):
++    """Before copying `need` bytes into a RAM store: keep the drive's free space above the reserve, evicting the lowest-scored
++    idle RAM files of ALL kinds first. -> True when the copy fits."""
++    def slack():
++        d = drive_info(fresh=True)
++        return None if d is None else d["free"] - need - d["reserve"]
++    s = slack()
++    if s is None or s >= 0:
++        return True
++    now = time.time()
++    cands = []
++    for tier in list(TIERS.values()):
++        st = tier.ram
++        if not st.ok():
++            continue
++        try:
++            idx = json.load(open(os.path.join(st.dir, "index.json")))
++        except Exception:  # noqa: BLE001
++            continue
++        cands += [(_score(e, now), st, k) for k, e in idx.items() if not (st.in_use.get(k) or e.get("pinned") or k in st.copying)]
++    cands.sort(key=lambda x: x[0])
++    for _, st, k in cands:
++        if s >= 0:
++            break
++
++        def go(idx, st=st, k=k):
++            e = idx.get(k)
++            if e is None or st.in_use.get(k) or e.get("pinned") or k in st.copying:
++                return 0
++            try:
++                os.remove(os.path.join(st.dir, k))
++            except FileNotFoundError:
++                pass
++            idx.pop(k)
++            return e.get("size", 0) or 1
++        if st._locked(go):
++            log(f"{st.label}: evicted {k} - the RAM drive is short of free space for {why or 'a copy'} ({need / 1e9:.1f} GB; shared reserve kept)")
++            s = slack()
++    return s >= 0
++
++
++def drive_prune():
++    """Prune every RAM store to its (scaled) quota - after the cacher's manifest grew, the quotas may have shrunk."""
++    _drive_memo["at"] = 0.0
++    for tier in list(TIERS.values()):
++        try:
++            tier.ram.prune()
++        except Exception as e:  # noqa: BLE001
++            log(f"{tier.ram.label}: prune failed: {e}")
++
++
++def persist_label():
++    """The persistent tier's name for people: "Optane" (px-gpu pmem) or "Disk cache" (ai-epyc zfs dataset /disk-cache)."""
++    lab = (config().get("persist_label") or _PERSIST[1] or "").strip()
++    return {"disk": "Disk cache", "": "persistent cache"}.get(lab.lower(), lab)
++
++
+ def set_quotas(quota_gb=None, half_life_h=None, optane_quota_gb=None, optane_root=None, persist_label=None):
+     os.makedirs(ROOT, exist_ok=True)
+     cfg = config()
+@@ -442,6 +589,6 @@
+ 
+ 
+ def summary():
+-    return {"enabled": TIERS["unet"]._ok(), "root": ROOT, "config": config(),
++    return {"enabled": TIERS["unet"]._ok(), "root": ROOT, "config": config(), "drive": drive_summary(),
+             "ram": {k: TIERS[k].stats() for k in KINDS},
+             "optane": ({"root": OPTANE.dir, "label": config().get("persist_label") or "Optane", **OPTANE.stats(), "by_kind": {k: OPTANE.stats(f"{k}/") for k in KINDS}} if OPTANE.ok() else None)}
+--- a/serve.py
++++ b/serve.py
+@@ -67,6 +67,7 @@
+ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+ from modelsvc import wire  # noqa: E402
+ from modelsvc.tiers import TIERS, set_quotas, summary as cache_summary, snapshot_resident, saved_state, restore_ram, add_kind  # noqa: E402
++from modelsvc.tiers import persist_label, drive_prune, drive_summary  # noqa: E402  (0006)
+ 
+ def _patch_prefix_cache():
+     """ComfyUI bug: the Qwen 2.1 / Wan prefix cache (PoseBranchCache.select) moves the hit slot with list.remove(slot), which
+@@ -590,8 +591,10 @@
+             # per FILE (claude1 2026-10-31: this compared paths[0] with the LAST part's src, so a dual text encoder read as
+             # "Optane" whatever its tier). The copy is "RAM cache" only when every file is on the RAM drive - the RAM-cache
+             # unload rule below relies on that (a reload from it then takes seconds).
+-            srcl = ["RAM cache" if p.startswith("/model-cache/") else "Optane" if p != sp else "NAS" for p, sp in zip(paths, srcs)]
+-            self.source = next((x for x in ("NAS", "Optane") if x in srcl), "RAM cache")
++            # 0006: the persistent tier by its real name - "Optane" on px-gpu, "Disk cache" on ai-epyc (was "Optane" everywhere)
++            pl = persist_label()
++            srcl = ["RAM cache" if p.startswith("/model-cache/") else pl if p != sp else "NAS" for p, sp in zip(paths, srcs)]
++            self.source = next((x for x in ("NAS", pl) if x in srcl), "RAM cache")
+             trace("model load", gpu, kind=kind, name=name, source=self.source)
+             with MM(gpu), on_device(gpu):
+                 if kind == "unet" and path.endswith(".gguf"):
+@@ -1577,7 +1580,11 @@
+     return min(RAM_CHECK_S, max(5.0, RAMCACHE_IDLE_S / 4)) if RAMCACHE_UNLOAD else RAM_CHECK_S
+ 
+ 
++DRIVE_PRUNE_S = 300   # 0006: re-fit the RAM-drive stores to their (scaled) quotas this often (the cacher's manifest may grow)
++
++
+ def _ram_loop():
++    last_prune = 0.0
+     while True:
+         RAM_KICK.wait(_ram_period())
+         RAM_KICK.clear()
+@@ -1585,6 +1592,12 @@
+             ram_enforce()
+         except Exception:  # noqa: BLE001
+             traceback.print_exc()
++        if time.time() - last_prune > DRIVE_PRUNE_S:
++            last_prune = time.time()
++            try:
++                drive_prune()
++            except Exception:  # noqa: BLE001
++                traceback.print_exc()
+ 
+ 
+ def _ram_explain(rule, why, rb, src):
+@@ -1608,7 +1621,7 @@
+     rc = (f"RAM-cache rule ON: a copy whose file is on the /model-cache RAM drive is unloaded {RAMCACHE_IDLE_S:g}s after its last use "
+           f"once ComfyUI has moved it out of VRAM, wholly or partly (>= {RAMCACHE_MIN_BYTES / 2 ** 20:.0f} MB / {RAMCACHE_MIN_FRAC:.0%} of it on the CPU), "
+           f"whatever the budget" if RAMCACHE_UNLOAD else "RAM-cache rule OFF")
+-    bd = (f"Optane/NAS copies: LRU only while anon RSS > {RAM_BUDGET_GB:g} GB (after {RAM_MIN_IDLE_S:g}s idle)" if RAM_BUDGET_GB > 0
++    bd = (f"{persist_label()}/NAS copies: LRU only while anon RSS > {RAM_BUDGET_GB:g} GB (after {RAM_MIN_IDLE_S:g}s idle)" if RAM_BUDGET_GB > 0
+           else "RAM budget off")
+     return f"{rc}; {bd}; never evicted: pinned / in a run / GPU busy or queued / plugin kinds; pass every {_ram_period():g}s"
+ 
+@@ -1619,7 +1632,8 @@
+          "ramcache_offload_min": {"mb": RAMCACHE_MIN_BYTES / 2 ** 20, "fraction": RAMCACHE_MIN_FRAC},
+          "evictions": RAM_STATS["evictions"], "freed_gb": RAM_STATS["freed_gb"], "ramcache_evictions": RAM_STATS["ramcache_evictions"],
+          "ramcache_freed_gb": RAM_STATS["ramcache_freed_gb"], "last_check": RAM_STATS["last_check"],
+-         "last_eviction": RAM_STATS["last_eviction"], "last_ramcache_eviction": RAM_STATS["last_ramcache_eviction"], "recent": list(RAM_STATS["recent"])}
++         "last_eviction": RAM_STATS["last_eviction"], "last_ramcache_eviction": RAM_STATS["last_ramcache_eviction"], "recent": list(RAM_STATS["recent"]),
++         "drive": drive_summary()}
+     if detail:
+         with MODELS_LOCK:
+             res = dict(MODELS)

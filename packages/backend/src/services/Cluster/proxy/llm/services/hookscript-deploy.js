@@ -523,22 +523,11 @@ if [ "\${PROXLAB_CACHE_COUNT:-0}" -eq 0 ]; then
     exit 0
 fi
 
-proxlab_log "Restoring \${PROXLAB_CACHE_COUNT} cached model dir(s) on host ..."
-
-# Run sequential copies in a background subshell so hookscript returns quickly
-(
-  for i in $(seq 0 $((\${PROXLAB_CACHE_COUNT} - 1))); do
-    eval src="\\$PROXLAB_CACHE_\${i}_SRC"
-    eval dst="\\$PROXLAB_CACHE_\${i}_DST"
-    [ -z "$src" ] || [ -z "$dst" ] && continue
-    proxlab_log "  Copying: $src -> $dst"
-    mkdir -p "$dst" && cp "$src"/*.gguf "$dst/"
-    proxlab_log "  Done: $dst"
-  done
-  proxlab_ok "All cache restores complete"
-) &
-
-proxlab_ok "Cache restore initiated (sequential copies in background)"
+# claude1 2026-10-31: this hook no longer copies. It copied only "$src"/*.gguf into a mkdir'd "$dst" - wrong for
+# safetensors model dirs and for single-file entries (it made a DIRECTORY named after the file) - without a .part/size
+# check or the shared RAM-drive reserve, racing the AI-Lab reconciler, which re-copies every missing manifest entry
+# properly (to <dst>.part, size-checked, reserve kept) at its boot pass and every 10 minutes after.
+proxlab_log "\${PROXLAB_CACHE_COUNT} cached model entr(ies) for CT $VMID: restored by the AI-Lab model-cache reconciler (boot pass / every 10 min)"
 exit 0
 `;
   }

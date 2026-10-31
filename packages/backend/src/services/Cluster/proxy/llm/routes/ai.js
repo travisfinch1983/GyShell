@@ -459,6 +459,43 @@ function inferCacheType(sourceDir) {
   return null;
 }
 
+// ─── Shared RAM drive accounting (claude1 2026-10-31, Travis) ─────────
+// A node's /model-cache tmpfs is shared by TWO managers: this cacher (keep-cached manifest: LLM / imagegen / tts entries)
+// and the image model services' own tiered RAM cache in <drive>/ailab-modelsvc (modelsvc/tiers.py: per-kind quotas, LRU).
+// Neither knew about the other; their sizes could add up to more than the drive. Now:
+//  - both keep CACHE_RESERVE_FRAC of the drive free: this cacher refuses (logs, reports, keeps the entry, retries next
+//    pass) a copy that would go below it; tiers.py evicts its own lowest-scored files first and else skips its copy;
+//  - this cacher writes <drive>/.ailab-cacher.json (what its manifest needs); tiers.py caps the sum of its quotas to
+//    drive - reserve - max(that, what is on the drive outside ailab-modelsvc). The reconcile report shows the whole drive.
+const CACHE_RESERVE_FRAC = 0.05;
+
+/** A node's manifest entries as paths in the same space (host or container) as the reconcile listing. */
+function manifestDirsFor(node, nodeEntries, useHostPaths) {
+  return nodeEntries.map(e => (useHostPaths ? toHostCachePath(node, e.cacheDir) : e.cacheDir)).filter(Boolean).map(p => p.replace(/\/+$/, ''));
+}
+
+/** Write <drive>/.ailab-cacher.json: what this cacher's keep-cached manifest needs on the node's RAM drive (read by tiers.py). */
+async function writeCacherUsage(sshService, node, hostIp, vmid, extra = {}) {
+  try {
+    const cfgc = loadAiConfig().agents?.[node]?.cache || {};
+    const host = !!(cfgc.hostPath && cfgc.modelsHostPath);
+    const base = ((host ? cfgc.hostPath : cfgc.containerPath) || '/model-cache').replace(/\/+$/, '');
+    const ents = (loadCacheManifest().entries || []).filter(e => e.node === node);
+    const body = {
+      writer: 'ai-lab model cacher (ai.js)', node, updated: Math.floor(Date.now() / 1000),
+      manifest_bytes: ents.reduce((a, e) => a + (Number(e.sizeMB) || 0) * 1048576, 0),
+      entries: ents.length, pending: ents.filter(e => !e.cachedAt).length, reserve_frac: CACHE_RESERVE_FRAC, ...extra,
+    };
+    const b64 = Buffer.from(JSON.stringify(body)).toString('base64');
+    const f = `${base}/.ailab-cacher.json`;
+    const w = `echo ${b64} | base64 -d > "${f}.tmp" && mv -f "${f}.tmp" "${f}"`;
+    const r = await sshService.exec(hostIp, host ? w : `pct exec ${vmid} -- bash -c '${w}'`, { timeout: 15000 });
+    if (r.code !== 0) console.warn(`[cache] ${node}: could not write ${f}: ${r.stderr}`);
+  } catch (err) {
+    console.warn(`[cache] ${node}: could not write the cacher usage file: ${err.message}`);
+  }
+}
+
 // ─── Sequential Copy Queue (per-node) ──────────────────────────────────
 // Ensures only one cache copy runs at a time per node, preventing:
 //   1. Partial caches from interrupted parallel copies
@@ -484,17 +521,31 @@ function startNextCopy(node, sshService, hookscriptDeploy) {
   // default 0755 owned by host-root, and external writers get EPERM.
   // `base` is the cache root (host: hostDst's first 2 path segments;
   // container: cacheDir's first 1 segment + '/model-cache' prefix).
+  //
+  // claude1 2026-10-31: the copy goes to <dst>.part and is renamed into place only when the bytes of every file match the
+  // source (a copy cut short by an AI-Lab restart / reboot used to sit at <dst> and pass the 90 % size check). The reconcile
+  // pass sweeps stale .part leftovers. Before copying: free space minus the copy must stay above the shared reserve
+  // (CACHE_RESERVE_FRAC of the drive), else exit 4 = refused, the entry stays in the manifest and is retried.
   const copyScript = (src, dst, base) => {
     // dst starts with base + '/<rootSubdir>/...'; extract rootSubdir and chmod it.
     const tail = dst.substring(base.length + 1);
     const rootSubdir = tail.split('/')[0]; // e.g. "imagegen", "tts", "Qwen3.6"
     const rootPath = `${base}/${rootSubdir}`;
+    const pct = Math.round(CACHE_RESERVE_FRAC * 100);
+    const sum = 'awk "{s+=\\$1} END{print s+0}"';
     return `mkdir -p "${rootPath}" && chmod 1777 "${rootPath}" 2>/dev/null; ` +
-      `if [ -f "${src}" ]; then ` +
-      `rm -f "${dst}"; mkdir -p "$(dirname "${dst}")" && cp -a "${src}" "${dst}"; ` +
-      `elif [ -d "${src}" ]; then ` +
-      `rm -rf "${dst}"; mkdir -p "${dst}" && cp -a "${src}"/* "${dst}/"; ` +
-      `else echo "ERR:source-not-found" >&2; exit 1; fi`;
+      `part="${dst}.part"; rm -rf "$part"; ` +
+      `if [ -f "${src}" ]; then need=$(stat -c %s "${src}"); ` +
+      `elif [ -d "${src}" ]; then need=$(find "${src}"/* -type f -printf "%s\\n" 2>/dev/null | ${sum}); ` +
+      `else echo "ERR:source-not-found" >&2; exit 1; fi; ` +
+      `rm -rf "${dst}"; ` +
+      `read sz av < <(df -B1 --output=size,avail "${base}" | tail -1); res=$((sz * ${pct} / 100)); ` +
+      `if [ $((av - need)) -lt $res ]; then echo "ERR:no-space need=$need avail=$av reserve=$res" >&2; exit 4; fi; ` +
+      `mkdir -p "$(dirname "${dst}")" || exit 1; ` +
+      `if [ -f "${src}" ]; then cp -a "${src}" "$part" && got=$(stat -c %s "$part"); ` +
+      `else mkdir -p "$part" && cp -a "${src}"/* "$part/" && got=$(find "$part" -type f -printf "%s\\n" | ${sum}); fi; ` +
+      `if [ "$got" != "$need" ]; then rm -rf "$part"; echo "ERR:verify got=$got need=$need" >&2; exit 5; fi; ` +
+      `mv -f "$part" "${dst}"`;
   };
   // Container base = the cachePath we used to build cacheDir (e.g. /model-cache).
   // Host base = the hostCachePath prefix (derive by replacing cacheDir's prefix in hostDst).
@@ -509,6 +560,7 @@ function startNextCopy(node, sshService, hookscriptDeploy) {
     const e = m.entries.find(x => x.node === node && x.cacheDir === cacheDir);
     if (result.code === 0 && e) {
       e.cachedAt = new Date().toISOString();
+      delete e.lastError; delete e.lastErrorAt;
       // Get actual size
       const duDir = hostDst || null;
       const sizeCmd = duDir
@@ -530,11 +582,17 @@ function startNextCopy(node, sshService, hookscriptDeploy) {
       } catch (err) {
         console.error(`[cache] Failed to redeploy vars for CT ${vmid}:`, err.message);
       }
+    } else if (e && result.code === 4) {
+      // refused for space (shared reserve): keep the keep-cached entry, the next reconcile pass retries it
+      e.lastError = `no space: ${String(result.stderr || '').trim()}`; e.lastErrorAt = new Date().toISOString();
+      saveCacheManifest(m);
+      console.warn(`[cache] NOT caching ${sourceDir} on ${node} - ${e.lastError} (kept in the manifest, retried next pass)`);
     } else if (e) {
       m.entries = m.entries.filter(x => !(x.node === node && x.cacheDir === cacheDir));
       saveCacheManifest(m);
       console.error(`[cache] Copy failed for ${sourceDir} on ${node}:`, result.stderr);
     }
+    await writeCacherUsage(sshService, node, hostIp, vmid);
     q.active = false;
     q.currentCacheDir = null;
     startNextCopy(node, sshService, hookscriptDeploy);
@@ -2414,7 +2472,8 @@ if out: print(json.dumps(out))
       // (kcpps base64 + tts/imagegen dir swaps below are untouched: those paths aren't literal
       //  /models tokens, so the regex skips them.)
       const escCache = cachePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const modelPathRe = new RegExp('((?:/models|' + escCache + ')/[^\\s"\'\\\\]+)', 'g');
+      // claude1 2026-10-31: whole tokens only (`/tts/models/...` was rewritten to `/tts$(mc '/models/...')`).
+      const modelPathRe = new RegExp('(?<![\\w./$-])((?:/models|' + escCache + ')/[^\\s"\'\\\\]+)', 'g');
       if (modelPathRe.test(finalCommand)) {
         // A path inside a single-quoted argument (the drafter "model" in --speculative-config
         // JSON, e.g. DFlash2) must NOT get a bare $(mc ...): bash never expands inside single
@@ -2432,8 +2491,33 @@ if out: print(json.dumps(out))
           }
           return sq;
         };
+        // claude1 2026-10-31: mc() maps <cache>/<rel> <-> /models/<rel>, i.e. LLM paths only. The ComfyUI launcher's
+        // /model-cache/imagegen paths were wrapped too - inside a QUOTED heredoc (<<'YAML_EOF', never expanded), so
+        // extra_model_paths.yaml got the literal `base_path: $(mc '/model-cache/imagegen')`, and its skeleton loop's
+        // "$(mc '/model-cache/imagegen/$sub')" (no expansion inside the single quotes) made a dir literally named `$sub`
+        // under /models/imagegen on the NAS. Now left alone: cache paths of the non-LLM roots (imagegen / tts /
+        // ailab-modelsvc / ailab-loras), tokens holding a `$`, quoted-heredoc bodies and comment lines.
+        const nonLlmCache = new RegExp('^' + escCache + '/(imagegen|tts|ailab-modelsvc|ailab-loras)(/|$)');
+        const literalRanges = [];
+        {
+          let pos = 0, tag = null, start = 0;
+          for (const line of finalCommand.split('\n')) {
+            const end = pos + line.length;
+            if (tag !== null) {
+              if (line.replace(/^\t+/, '') === tag) { literalRanges.push([start, end]); tag = null; }
+            } else {
+              if (/^\s*#/.test(line)) literalRanges.push([pos, end]);
+              const h = /<<-?\s*(['"])([A-Za-z_][A-Za-z0-9_]*)\1/.exec(line);
+              if (h) { tag = h[2]; start = end + 1; }
+            }
+            pos = end + 1;
+          }
+          if (tag !== null) literalRanges.push([start, finalCommand.length]);
+        }
+        const leaveAlone = (m, offset) => m.includes('$') || nonLlmCache.test(m) || literalRanges.some(([a, b]) => offset >= a && offset <= b);
         finalCommand = finalCommand.replace(modelPathRe, (m, _p, offset, str) =>
-          inSingleQuote(str, offset) ? "'\"$(mc '" + m + "')\"'" : "$(mc '" + m + "')");
+          leaveAlone(m, offset) ? m
+            : inSingleQuote(str, offset) ? "'\"$(mc '" + m + "')\"'" : "$(mc '" + m + "')");
         mcHelper =
           'mc(){ p="$1"; case "$p" in\n' +
           '  ' + cachePath + '/*) c="$p"; n="/models/${p#' + cachePath + '/}";;\n' +
@@ -6446,12 +6530,14 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
       const dfResult = await sshService.exec(agent.hostIp, dfCmd, { timeout: 10000 });
       const parts = dfResult.stdout.trim().split(/\s+/);
       const freeMB = parseInt(parts[3], 10) || 0;
-      if (sizeMB && freeMB > 0 && sizeMB > freeMB) {
+      const reserveMB = Math.round((parseInt(parts[1], 10) || 0) * CACHE_RESERVE_FRAC);   // shared RAM-drive reserve
+      if (sizeMB && freeMB > 0 && sizeMB > freeMB - reserveMB) {
         return res.status(400).json({
           error: 'insufficient_space',
           freeMB,
+          reserveMB,
           requiredMB: sizeMB,
-          message: `Not enough cache space: ${Math.round(freeMB / 1024)} GB free, need ${Math.round(sizeMB / 1024)} GB`,
+          message: `Not enough cache space: ${Math.round(freeMB / 1024)} GB free, ${Math.round(reserveMB / 1024)} GB of it kept in reserve (the drive is shared with the image model services' RAM cache), need ${Math.round(sizeMB / 1024)} GB`,
         });
       }
     } catch {} // If df fails, allow the cache attempt anyway
@@ -6473,6 +6559,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
     }
     manifest.entries.push(entry);
     saveCacheManifest(manifest);
+    writeCacherUsage(sshService, node, agent.hostIp, agent.vmid);   // the image model services see the new need at once
 
     // Enqueue copy — sequential per node to prevent partial caches and manifest races
     if (!copyQueues[node]) copyQueues[node] = { active: false, pending: [], currentCacheDir: null };
@@ -6825,6 +6912,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
     // Remove from manifest
     manifest.entries.splice(idx, 1);
     saveCacheManifest(manifest);
+    await writeCacherUsage(sshService, node, agent.hostIp, agent.vmid);
 
     // Redeploy hookscript vars
     try {
@@ -8015,8 +8103,8 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
   async function validateAndRestoreCache() {
     const summary = {
       startedAt: new Date().toISOString(),
-      totalEntries: 0, present: 0, missing: 0, truncated: 0, requeued: 0, orphansRemoved: 0,
-      skippedNodes: [], byNode: {},
+      totalEntries: 0, present: 0, missing: 0, truncated: 0, requeued: 0, orphansRemoved: 0, partsRemoved: 0,
+      refused: [], skippedNodes: [], byNode: {},
     };
     const manifest = loadCacheManifest();
     const entries = manifest.entries || [];
@@ -8049,7 +8137,8 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
         summary.skippedNodes.push(`${node} (no-host-ip; PVE not ready?)`);
         continue;
       }
-      const ns = summary.byNode[node] = { entries: nodeEntries.length, present: 0, missing: 0, truncated: 0, requeued: 0, orphansRemoved: 0 };
+      const ns = summary.byNode[node] = { entries: nodeEntries.length, present: 0, missing: 0, truncated: 0, requeued: 0, orphansRemoved: 0,
+        partsRemoved: 0, refused: 0, removed: [], keptNoModelFiles: [] };
 
       const cachePath = getCachePath(node);
       const cacheConfig = cfg.agents?.[node]?.cache;
@@ -8057,6 +8146,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
 
       // Use host paths for validation when available (avoids pct exec cgroup charges)
       const useHostPaths = !!(hostCachePath && cacheConfig?.modelsHostPath);
+      const onNode = (c) => (useHostPaths ? c : `pct exec ${agent.vmid} -- bash -c '${c}'`);
 
       // Build a single SSH command that checks all entries + lists orphans.
       // `-e`, not `-d` (claude1 2026-10-31): an imagegen entry can be ONE FILE (e.g. the SeedVR2 sharp .safetensors on
@@ -8066,9 +8156,13 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
         const checkDir = useHostPaths ? toHostCachePath(node, e.cacheDir) : e.cacheDir;
         return `if [ -e "${checkDir}" ]; then sz=$(du -sm "${checkDir}" 2>/dev/null | cut -f1); echo "EXISTS:${e.cacheDir}:$sz"; else echo "MISS:${e.cacheDir}"; fi`;
       });
-      // Find all gguf directories in cache (for orphan detection)
-      const findPath = useHostPaths ? hostCachePath : cachePath;
-      checks.push(`find ${findPath} -name "*.gguf" -printf "%h\\n" 2>/dev/null | sort -u | while read d; do echo "DIR:$d"; done`);
+      const findPath = (useHostPaths ? hostCachePath : cachePath).replace(/\/+$/, '');
+      // Whole-drive accounting + a listing of everything outside the image model services' folder (claude1 2026-10-31):
+      // drive size / free space, the services' share (ailab-modelsvc, which they manage themselves), and every dir/file
+      // this cacher may own, for the stale-.part and orphan sweeps below.
+      checks.push(`df -B1 --output=size,avail "${findPath}" 2>/dev/null | tail -1 | sed "s/^/DF:/"`);
+      checks.push(`echo "MS:$(du -sB1 "${findPath}/ailab-modelsvc" 2>/dev/null | cut -f1)"`);
+      checks.push(`find "${findPath}" -mindepth 1 \\( -path "${findPath}/ailab-modelsvc" -o -path "${findPath}/ailab-loras" \\) -prune -o -printf "LS:%y\\t%s\\t%T@\\t%p\\n" 2>/dev/null`);
 
       try {
         const cmd = useHostPaths
@@ -8077,15 +8171,14 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
         const result = await sshService.exec(hostIp, cmd, { timeout: 30000 });
         const lines = result.stdout.split('\n').filter(Boolean);
 
-        const existingDirs = new Set();
-        const foundCacheDirs = new Set();
+        const drive = { total: 0, free: 0, modelsvc: 0 };
+        const listing = [];
 
         for (const line of lines) {
           if (line.startsWith('EXISTS:')) {
             const parts = line.substring(7).split(':');
             const dir = parts[0];
             const actualMB = parseInt(parts[1], 10) || 0;
-            existingDirs.add(dir);
 
             const entry = nodeEntries.find(e => e.cacheDir === dir);
             if (entry && entry.cachedAt && entry.sizeMB) {
@@ -8109,32 +8202,107 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
               entry.cachedAt = null;
               manifestChanged = true;
             }
-          } else if (line.startsWith('DIR:')) {
-            foundCacheDirs.add(line.substring(4));
+          } else if (line.startsWith('DF:')) {
+            const [sz, av] = line.substring(3).trim().split(/\s+/).map(Number);
+            drive.total = sz || 0; drive.free = av || 0;
+          } else if (line.startsWith('MS:')) {
+            drive.modelsvc = Number(line.substring(3)) || 0;
+          } else if (line.startsWith('LS:')) {
+            const [t, sz, mt, ...p] = line.substring(3).split('\t');
+            listing.push({ type: t, size: Number(sz) || 0, mtime: (Number(mt) || 0) * 1000, path: p.join('\t') });
           }
         }
 
-        // Orphan cleanup — dirs in cache that aren't in the manifest
-        // When using host paths, translate manifest dirs to host paths for comparison
-        const manifestHostDirs = useHostPaths
-          ? new Set(nodeEntries.map(e => toHostCachePath(node, e.cacheDir)).filter(Boolean))
-          : new Set(nodeEntries.map(e => e.cacheDir));
-        for (const dir of foundCacheDirs) {
-          // The image model services keep their OWN tiered RAM cache of model files + LoRAs here
-          // (/model-cache/ailab-modelsvc/{unet,te,vae,lora}, with its own quotas): never an orphan of
-          // this manifest. ailab-loras was its earlier location.
-          if (/\/ailab-(modelsvc|loras)(\/|$)/.test(dir)) continue;
-          if (!manifestHostDirs.has(dir)) {
-            console.log(`[cache-validate] ${node}: orphan directory ${dir}, removing`);
-            // dir is already in the right path space (host or container) depending on useHostPaths
-            await sshService.exec(hostIp, `rm -rf "${dir}"`, { timeout: 15000 }).catch(() => {});
-            summary.orphansRemoved++; ns.orphansRemoved++;
+        const q = copyQueues[node];
+        const queueBusy = !!(q && (q.active || q.pending.length));
+        const rmOnNode = async (p, why) => {
+          // belt and braces: only inside this node's cache root, never the image model services' folders
+          if (!p.startsWith(findPath + '/') || /\/ailab-(modelsvc|loras)(\/|$)/.test(p) || p.includes('/../')) return false;
+          console.log(`[cache-validate] ${node}: removing ${p} - ${why}`);
+          try {
+            const r = await sshService.exec(hostIp, onNode(`rm -rf "${p}"`), { timeout: 30000 });
+            if (r.code !== 0) { console.warn(`[cache-validate] ${node}: rm ${p} failed: ${r.stderr}`); return false; }
+            return true;
+          } catch (err) { console.warn(`[cache-validate] ${node}: rm ${p} failed: ${err.message}`); return false; }
+        };
+
+        // Stale partial copies: copies now land in <dst>.part and are renamed into place only after a size check, so a
+        // .part outside ailab-modelsvc is a copy that was interrupted (AI-Lab restart, host reboot). Only this cacher's copy
+        // queue writes them, so they are swept only while that queue is idle.
+        if (queueBusy) {
+          ns.sweep = 'skipped: copy queue busy';
+        } else {
+          for (const it of listing) {
+            if (!/\.part$/.test(it.path)) continue;
+            if (listing.some(o => o !== it && /\.part$/.test(o.path) && it.path.startsWith(o.path + '/'))) continue;   // inside a .part dir
+            if (await rmOnNode(it.path, 'stale partial copy (.part) from an interrupted copy')) {
+              summary.partsRemoved++; ns.partsRemoved++; ns.removed.push({ path: it.path, reason: 'stale .part' });
+            }
+          }
+
+          // Orphans (claude1 2026-10-31; was: only dirs holding a .gguf). A dir is OWNED when it is a manifest entry, inside
+          // one, or on the way to one. The topmost dir that is not owned is removed when it is empty or holds at least one
+          // model file (any model type), and nothing in it changed for 30 min. Never: the image model services' folders
+          // (/model-cache/ailab-modelsvc/{unet,te,vae,lora,...}: their own index, quotas and eviction; ailab-loras was their
+          // earlier location), hidden names, .part (above), and ComfyUI's tmpfs skeleton (imagegen/<sub>, tts/<sub>: the
+          // ComfyUI launch script re-creates those, so removing them would churn). A dir with files but no model file is
+          // kept and reported (keptNoModelFiles).
+          const MODEL_FILE = /\.(gguf|safetensors|bin|pt|pth|ckpt|onnx|pb|h5|msgpack|model|tflite|engine|plan|nemo|npz|npy|ggml|llamafile)$/i;
+          const owned = manifestDirsFor(node, nodeEntries, useHostPaths);
+          const isOwned = (p) => owned.some(m => m === p || m.startsWith(p + '/') || p.startsWith(m + '/'));
+          const isSkeleton = (p) => { const s = p.slice(findPath.length + 1).split('/'); return (s[0] === 'imagegen' || s[0] === 'tts') && s.length <= 2; };
+          const keep = (p) => p === findPath || isOwned(p) || isSkeleton(p);
+          for (const d of listing) {
+            if (d.type !== 'd') continue;
+            const p = d.path;
+            if (!p.startsWith(findPath + '/') || /\.part$/.test(p)) continue;
+            if (p.slice(findPath.length + 1).split('/').some(s => s.startsWith('.'))) continue;
+            if (keep(p) || !keep(p.substring(0, p.lastIndexOf('/')))) continue;   // only the topmost dir that isn't owned
+            const inside = listing.filter(it => it.path.startsWith(p + '/'));
+            const files = inside.filter(it => it.type !== 'd');
+            const newest = Math.max(d.mtime, ...inside.map(it => it.mtime));
+            if (Date.now() - newest < 30 * 60 * 1000) continue;
+            const models = files.filter(f => MODEL_FILE.test(f.path));
+            if (files.length && !models.length) { ns.keptNoModelFiles.push(p); continue; }
+            const bytes = files.reduce((a, f) => a + f.size, 0);
+            const why = files.length
+              ? `orphan: not in the keep-cached manifest, ${models.length} model file(s), ${(bytes / 2 ** 30).toFixed(1)} GB`
+              : 'orphan: empty directory, not in the keep-cached manifest';
+            if (await rmOnNode(p, why)) {
+              summary.orphansRemoved++; ns.orphansRemoved++; ns.removed.push({ path: p, bytes, reason: why });
+            }
           }
         }
 
-        // Enqueue re-cache for missing/truncated entries via sequential copy queue
+        // Shared RAM-drive accounting (claude1 2026-10-31). The image model services keep their own quota'd stores in
+        // ailab-modelsvc on the SAME tmpfs; they read <drive>/.ailab-cacher.json (written here) and cap themselves to
+        // drive - reserve - max(this manifest, what is on the drive outside their folder). This cacher in turn never
+        // copies below the reserve: a copy that would is refused (logged, kept in the manifest, retried next pass).
+        const manifestBytes = nodeEntries.reduce((a, e) => a + (Number(e.sizeMB) || 0) * 1048576, 0);
+        const reserve = Math.round(drive.total * CACHE_RESERVE_FRAC);
+        const outside = Math.max(0, drive.total - drive.free - drive.modelsvc);
+        const GB = (b) => Math.round(b / 1e8) / 10;
+        ns.drive = drive.total ? {
+          totalGB: GB(drive.total), freeGB: GB(drive.free), reserveGB: GB(reserve), manifestGB: GB(manifestBytes),
+          outsideModelsvcGB: GB(outside), modelsvcGB: GB(drive.modelsvc),
+          modelsvcRoomGB: GB(Math.max(0, drive.total - reserve - Math.max(outside, manifestBytes))),
+        } : { error: 'df failed' };
+        await writeCacherUsage(sshService, node, hostIp, agent.vmid, { drive_total_bytes: drive.total, drive_free_bytes: drive.free });
+
+        // Enqueue re-cache for missing/truncated entries via the sequential copy queue - if it fits above the reserve.
+        let freeLeft = drive.total ? drive.free - reserve : Infinity;
         for (const entry of nodeEntries) {
           if (entry.cachedAt === null) {
+            if (q && (q.currentCacheDir === entry.cacheDir || q.pending.some(x => x.cacheDir === entry.cacheDir))) continue;   // already queued
+            const need = (Number(entry.sizeMB) || 0) * 1048576;
+            if (need && need > freeLeft) {
+              const msg = `no space: needs ${GB(need)} GB, ${GB(drive.free)} GB free, ${GB(reserve)} GB reserve kept`;
+              if (entry.lastError !== msg) console.warn(`[cache-validate] ${node}: NOT re-caching ${entry.cacheDir} - ${msg}`);
+              entry.lastError = msg; entry.lastErrorAt = new Date().toISOString(); manifestChanged = true;
+              summary.refused.push({ node, cacheDir: entry.cacheDir, reason: msg }); ns.refused++;
+              continue;
+            }
+            freeLeft -= need;
             console.log(`[cache-validate] ${node}: queuing re-cache ${entry.sourceDir} → ${entry.cacheDir}`);
             const hSrc = toHostSourcePath(node, entry.sourceDir);
             const hDst = toHostCachePath(node, entry.cacheDir);
@@ -8155,7 +8323,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
 
     if (manifestChanged) saveCacheManifest(manifest);
     summary.finishedAt = new Date().toISOString();
-    console.log(`[cache-validate] complete — ${summary.present} present, ${summary.missing} missing, ${summary.truncated} truncated, ${summary.requeued} requeued, ${summary.orphansRemoved} orphans removed`);
+    console.log(`[cache-validate] complete — ${summary.present} present, ${summary.missing} missing, ${summary.truncated} truncated, ${summary.requeued} requeued, ${summary.orphansRemoved} orphans removed, ${summary.partsRemoved} stale .part removed, ${summary.refused.length} refused (space)`);
     return summary;
   }
   // Track the last reconcile summary so the manual endpoint / UI can report it.
