@@ -8058,10 +8058,13 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
       // Use host paths for validation when available (avoids pct exec cgroup charges)
       const useHostPaths = !!(hostCachePath && cacheConfig?.modelsHostPath);
 
-      // Build a single SSH command that checks all entries + lists orphans
+      // Build a single SSH command that checks all entries + lists orphans.
+      // `-e`, not `-d` (claude1 2026-10-31): an imagegen entry can be ONE FILE (e.g. the SeedVR2 sharp .safetensors on
+      // px-epyc). `-d` reported it MISS on every 10-min periodic pass, so it was rm'd and re-copied from the NAS each time
+      // (8.2 GB, 144x/day since at least 10-19) and was briefly absent during each copy. du -sm sizes files too.
       const checks = nodeEntries.map(e => {
         const checkDir = useHostPaths ? toHostCachePath(node, e.cacheDir) : e.cacheDir;
-        return `if [ -d "${checkDir}" ]; then sz=$(du -sm "${checkDir}" 2>/dev/null | cut -f1); echo "EXISTS:${e.cacheDir}:$sz"; else echo "MISS:${e.cacheDir}"; fi`;
+        return `if [ -e "${checkDir}" ]; then sz=$(du -sm "${checkDir}" 2>/dev/null | cut -f1); echo "EXISTS:${e.cacheDir}:$sz"; else echo "MISS:${e.cacheDir}"; fi`;
       });
       // Find all gguf directories in cache (for orphan detection)
       const findPath = useHostPaths ? hostCachePath : cachePath;

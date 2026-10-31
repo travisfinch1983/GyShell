@@ -1,0 +1,376 @@
+ailab-modelsvc 0005: RAM-drive copies are not kept as a second copy in process RAM (claude1 2026-10-31, Travis).
+Against serve.py after 0004. Generated on ai-epyc (diff serve.py.bak-ramcache-20261031061726 -> serve.py); applies to ai-gpu's
+0004 file unchanged (last hunk offset -13: ai-gpu lacks the 0002 shutdown hooks). Re-apply: cd /opt/ailab-modelsvc && patch -p1 < this
+
+--- a/serve.py
++++ b/serve.py
+@@ -578,15 +578,20 @@
+         ex = PLUGIN_KINDS.get(kind, {}).get("exclude")
+         if ex and ex.search(name):     # before the fetch: don't copy a 16 GB file into the RAM cache just to refuse it
+             raise RuntimeError(f"{name} isn't a model of the {kind} kind (that kind excludes it)")
+-        paths, held = [], []
++        paths, held, srcs = [], [], []
+         try:
+             for part in self.parts:
+                 src = full_path(part, FOLDERS[kind])
++                srcs.append(src)
+                 paths.append(TIERS[kind].fetch(part, src))
+                 TIERS[kind].hold(part)
+                 held.append(part)
+             path = paths[0]
+-            self.source = "RAM cache" if path.startswith("/model-cache/") else "Optane" if path != src else "NAS"
++            # per FILE (claude1 2026-10-31: this compared paths[0] with the LAST part's src, so a dual text encoder read as
++            # "Optane" whatever its tier). The copy is "RAM cache" only when every file is on the RAM drive - the RAM-cache
++            # unload rule below relies on that (a reload from it then takes seconds).
++            srcl = ["RAM cache" if p.startswith("/model-cache/") else "Optane" if p != sp else "NAS" for p, sp in zip(paths, srcs)]
++            self.source = next((x for x in ("NAS", "Optane") if x in srcl), "RAM cache")
+             trace("model load", gpu, kind=kind, name=name, source=self.source)
+             with MM(gpu), on_device(gpu):
+                 if kind == "unet" and path.endswith(".gguf"):
+@@ -1316,6 +1321,22 @@
+ RAM_LOCK = threading.Lock()            # one enforcement pass at a time
+ RAM_STATS = {"evictions": 0, "freed_gb": 0.0, "last_check": None, "last_eviction": None, "last_stuck": None, "recent": collections.deque(maxlen=20)}
+ 
++# ── RAM-cache rule: no second copy of a RAM-drive file in process RAM (claude1 2026-10-31, Travis's decision) ─────────────────
++# A copy whose model file(s) came from the /model-cache RAM drive (tmpfs, source "RAM cache") and that ComfyUI pushed out of
++# VRAM (wholly or partly) holds a SECOND copy of those weights in RAM: the tmpfs file already makes a reload take seconds. Such
++# a copy is unloaded once idle AILAB_MODELSVC_RAMCACHE_IDLE_S (default 60 s) - whatever the budget, with every never-evict rule
++# above (pinned / in a run / GPU slot held or waited for / plugin kinds), re-checked under the GPU's exclusive gate. Copies fully
++# in VRAM are untouched: a copy becomes a candidate only once ComfyUI moves it out of VRAM. Optane / NAS-sourced copies keep the
++# budget LRU. AILAB_MODELSVC_RAMCACHE_UNLOAD=0 turns the rule off; both are live-settable: POST /ram {ramcache_unload, ramcache_idle_s}.
++RAMCACHE_UNLOAD = os.environ.get("AILAB_MODELSVC_RAMCACHE_UNLOAD", "1").strip().lower() not in ("0", "false", "no", "off", "")
++RAMCACHE_IDLE_S = float(os.environ.get("AILAB_MODELSVC_RAMCACHE_IDLE_S", "60"))
++# "Pushed out of VRAM" (both rules) = at least max(256 MiB, 3 % of the copy) of its weights on the CPU. A copy that loaded fully
++# can still keep a small remainder on the CPU (tested 2026-10-31: an SDXL ckpt kept 71 MB of its UNet there right after
++# load_models_gpu(force_full_load)) - that alone must not unload a copy that is in VRAM. (0004 used a flat 64 MiB, RAM_HOLD_MIN.)
++RAMCACHE_MIN_BYTES = 256 * 2 ** 20
++RAMCACHE_MIN_FRAC = 0.03
++RAM_STATS.update(ramcache_evictions=0, ramcache_freed_gb=0.0, last_ramcache_eviction=None)
++
+ 
+ def proc_ram_bytes():
+     """This process's anonymous resident memory (RssAnon) - the number the memcg OOM killer reported (anon-rss)."""
+@@ -1360,8 +1381,46 @@
+     return tot
+ 
+ 
+-def _ram_why_not(k, r, now, pins):
+-    """None when copy k may be evicted now, else the reason it may not."""
++def _ram_sizes(r):
++    """(bytes of this copy's weights NOT on its GPU, total bytes of its weights) - ComfyUI's own accounting, all its patchers."""
++    off = tot = 0
++    for p in _ram_patchers(r):
++        try:
++            sz = int(p.model_size()); tot += sz; off += max(0, sz - int(p.loaded_size()))
++        except Exception:  # noqa: BLE001
++            pass
++    return off, tot
++
++
++def _ram_offload_min(rule, total):
++    """RAM bytes from which a copy counts as pushed out of VRAM (the same for both rules)."""
++    return max(RAMCACHE_MIN_BYTES, RAMCACHE_MIN_FRAC * total)
++
++
++def ram_parts(r):
++    """[[patcher model class, GB total, GB on the GPU, GB of tensors actually on the CPU]] - detail for GET /ram."""
++    out = []
++    for p in _ram_patchers(r):
++        try:
++            cpu = sum(t.numel() * t.element_size() for t in list(p.model.parameters()) + list(p.model.buffers()) if t.device.type == "cpu")
++            out.append([type(p.model).__name__, round(int(p.model_size()) / 2 ** 30, 3), round(int(p.loaded_size()) / 2 ** 30, 3), round(cpu / 2 ** 30, 3)])
++        except Exception as e:  # noqa: BLE001
++            out.append([f"{type(e).__name__}: {e}", 0, 0, 0])
++    return out
++
++
++def _ram_rule(r):
++    """'ramcache' when the copy's file(s) came from the RAM drive and the RAM-cache rule is on, else 'budget'."""
++    return "ramcache" if RAMCACHE_UNLOAD and getattr(r, "source", None) == "RAM cache" else "budget"
++
++
++def _ram_idle_for(rule):
++    return RAMCACHE_IDLE_S if rule == "ramcache" else RAM_MIN_IDLE_S
++
++
++def _ram_why_not(k, r, now, pins, min_idle=None):
++    """None when copy k may be evicted now (under its rule's idle time), else the reason it may not."""
++    min_idle = RAM_MIN_IDLE_S if min_idle is None else min_idle
+     if r.kind not in RAM_KINDS:
+         return "plugin kind"
+     if r.base is None:
+@@ -1370,7 +1429,7 @@
+         return "pinned"
+     if r.run_members > 0 or r.fwd_lock.locked() or r.run_lock.locked():
+         return "in a run"
+-    if now - r.last < RAM_MIN_IDLE_S:
++    if now - r.last < min_idle:
+         return f"used {now - r.last:.0f}s ago"
+     lease = LEASES[r.gpu]
+     if lease.holder is not None or lease.queue:
+@@ -1378,8 +1437,9 @@
+     return None
+ 
+ 
+-def ram_candidates(all_rows=False):
+-    """[(key, ram bytes, idle s, reason-or-None)], evictable ones first in LRU order (oldest use first, bigger first on ties)."""
++def ram_candidates(all_rows=False, rule=None):
++    """[(key, ram bytes, idle s, reason-or-None, rule, source)], evictable ones first in LRU order (oldest use first, bigger
++    first on ties). rule='ramcache' / 'budget' keeps only the copies under that rule."""
+     now = time.time()
+     with MODELS_LOCK:
+         items = list(MODELS.items())
+@@ -1387,16 +1447,23 @@
+         pins = set(PINS)
+     rows = []
+     for k, r in items:
+-        rb = ram_bytes_of(r) if r.kind in RAM_KINDS else 0
+-        if rb < 64 * 2 ** 20 and not all_rows:
+-            continue                       # (nearly) all in VRAM: evicting it frees no RAM
+-        rows.append((k, rb, now - r.last, _ram_why_not(k, r, now, pins), r.last))
++        rl = _ram_rule(r)
++        if rule is not None and rl != rule:
++            continue
++        rb, tot = _ram_sizes(r) if r.kind in RAM_KINDS else (0, 0)
++        why = _ram_why_not(k, r, now, pins, _ram_idle_for(rl))
++        if r.kind in RAM_KINDS and rb < _ram_offload_min(rl, tot):
++            if not all_rows:
++                continue                   # (nearly) all in VRAM: evicting it frees no RAM
++            if why not in ("released", "pinned"):
++                why = "fully in VRAM"
++        rows.append((k, rb, now - r.last, why, r.last, rl, getattr(r, "source", None)))
+     rows.sort(key=lambda x: (x[3] is not None, x[4], -x[1]))
+-    return [x[:4] for x in rows]
++    return [x[:4] + x[5:] for x in rows]
+ 
+ 
+-def ram_evict(k):
+-    """Unload copy k if it is still evictable, re-checked under its GPU's exclusive gate. -> RAM bytes it held (0 = skipped)."""
++def ram_evict(k, rule="budget"):
++    """Unload copy k if it is still evictable under `rule`, re-checked under its GPU's exclusive gate. -> RAM bytes it held (0 = skipped)."""
+     import gc
+     g = k[3]
+     with MM(g):                            # no step / load / offload on this card while we take the copy apart
+@@ -1404,11 +1471,13 @@
+             pins = set(PINS)
+         with MODELS_LOCK:
+             r = MODELS.get(k)
+-            if r is None or _ram_why_not(k, r, time.time(), pins) is not None:
++            if r is None or _ram_why_not(k, r, time.time(), pins, _ram_idle_for(rule)) is not None:
+                 return 0
+-            held, idle = ram_bytes_of(r), time.time() - r.last
++            (held, tot), idle = _ram_sizes(r), time.time() - r.last
++            if rule == "ramcache" and (_ram_rule(r) != "ramcache" or held < _ram_offload_min("ramcache", tot)):
++                return 0                   # back in VRAM (or the rule was switched off) since the candidate list was made
+             MODELS.pop(k)
+-        trace("ram evict", g, kind=k[0], name=k[1], ram_gb=round(held / 2 ** 30, 2))
++        trace("ram evict", g, kind=k[0], name=k[1], ram_gb=round(held / 2 ** 30, 2), rule=rule)
+         r.release(); del r
+         gc.collect()
+         if hasattr(mm, "cleanup_models_gc"):
+@@ -1416,40 +1485,76 @@
+         mm.cleanup_models(); mm.soft_empty_cache()
+     _malloc_trim()
+     registry_write()
+-    RAM_STATS["recent"].append({"at": time.time(), "kind": k[0], "name": k[1], "gpu": g, "ram_gb": round(held / 2 ** 30, 2), "idle_s": round(idle)})
++    RAM_STATS["recent"].append({"at": time.time(), "kind": k[0], "name": k[1], "gpu": g, "ram_gb": round(held / 2 ** 30, 2), "idle_s": round(idle), "rule": rule})
+     return held or 1
+ 
+ 
++def _ramcache_pass(dry_run=False):
++    """The RAM-cache rule, one pass: unload every idle, (partly) offloaded copy whose file is on the RAM drive. Caller holds
++    RAM_LOCK. -> (list of evictions, set of their keys)."""
++    out, keys = [], set()
++    if not RAMCACHE_UNLOAD:
++        return out, keys
++    for k, rb, idle, why, _, src in ram_candidates(rule="ramcache"):
++        if why is not None:
++            continue
++        keys.add(k)
++        if dry_run:
++            out.append({"kind": k[0], "name": k[1], "gpu": k[3], "ram_gb": round(rb / 2 ** 30, 2), "idle_s": round(idle), "rule": "ramcache", "dry_run": True})
++            continue
++        cur = proc_ram_bytes()
++        held = ram_evict(k, "ramcache")
++        if not held:
++            continue
++        new = proc_ram_bytes()
++        freed = max(0, cur - new) / 2 ** 30
++        RAM_STATS["evictions"] += 1; RAM_STATS["ramcache_evictions"] += 1
++        RAM_STATS["last_eviction"] = RAM_STATS["last_ramcache_eviction"] = time.time()
++        RAM_STATS["freed_gb"] = round(RAM_STATS["freed_gb"] + freed, 2)
++        RAM_STATS["ramcache_freed_gb"] = round(RAM_STATS["ramcache_freed_gb"] + freed, 2)
++        log(f"ram: unloaded {k[0]} {k[1]} from GPU {k[3]} - its file is on the RAM drive and {held / 2 ** 30:.1f} GB of it had been "
++            f"moved to process RAM (idle {idle:.0f}s >= {RAMCACHE_IDLE_S:g}s) - process anon RSS {cur / 2 ** 30:.1f} -> {new / 2 ** 30:.1f} GB")
++        out.append({"kind": k[0], "name": k[1], "gpu": k[3], "ram_gb": round(held / 2 ** 30, 2), "idle_s": round(idle), "rule": "ramcache",
++                    "rss_before_gb": round(cur / 2 ** 30, 2), "rss_after_gb": round(new / 2 ** 30, 2)})
++    return out, keys
++
++
+ def ram_enforce(budget_gb=None, dry_run=False):
+-    """One pass: over the budget -> evict LRU idle RAM-held copies down to RAM_LOW x budget. -> summary dict."""
++    """One pass: the RAM-cache rule (always, when on), then over the budget -> evict LRU idle RAM-held copies down to
++    RAM_LOW x budget. -> summary dict."""
+     budget_gb = RAM_BUDGET_GB if budget_gb is None else float(budget_gb)
+-    if budget_gb <= 0:
++    if budget_gb <= 0 and not RAMCACHE_UNLOAD:
+         return {"ok": True, "enabled": False}
+     if not RAM_LOCK.acquire(blocking=False):
+         return {"ok": False, "error": "an enforcement pass is already running"}
+     try:
+-        budget = budget_gb * 2 ** 30
+-        cur = start = proc_ram_bytes()
+         RAM_STATS["last_check"] = time.time()
+-        out = {"ok": True, "budget_gb": budget_gb, "rss_anon_gb": round(cur / 2 ** 30, 2), "evicted": []}
++        start = proc_ram_bytes()
++        rc, tried = _ramcache_pass(dry_run)
++        out = {"ok": True, "budget_gb": budget_gb, "rss_anon_gb": round(start / 2 ** 30, 2), "ramcache": rc, "evicted": []}
++        if budget_gb <= 0:
++            out["budget"] = "off"
++            return out
++        budget = budget_gb * 2 ** 30
++        cur = start - sum(x["ram_gb"] for x in rc) * 2 ** 30 if dry_run else proc_ram_bytes()
+         if cur <= budget:
+             return out
+-        target, tried = RAM_LOW * budget, set()
++        target = RAM_LOW * budget
+         while cur > target:
+             cands = [c for c in ram_candidates() if c[3] is None and c[0] not in tried]
+             if not cands:
+                 if not dry_run and cur > budget and (RAM_STATS["last_stuck"] is None or time.time() - RAM_STATS["last_stuck"] > 600):
+                     RAM_STATS["last_stuck"] = time.time()
+-                    why = [(k[0], k[1], k[3], reason) for k, _, _, reason in ram_candidates() if reason][:8]
++                    why = [(c[0][0], c[0][1], c[0][3], c[3]) for c in ram_candidates() if c[3]][:8]
+                     log(f"ram: {cur / 2 ** 30:.1f} GB anon RSS is over the {budget_gb:g} GB budget and nothing more can be evicted now ({why})")
+                 break
+-            k, rb, idle, _ = cands[0]
++            k, rb, idle, _, rule, _src = cands[0]
+             tried.add(k)
+             if dry_run:
+-                out["evicted"].append({"kind": k[0], "name": k[1], "gpu": k[3], "ram_gb": round(rb / 2 ** 30, 2), "idle_s": round(idle), "dry_run": True})
++                out["evicted"].append({"kind": k[0], "name": k[1], "gpu": k[3], "ram_gb": round(rb / 2 ** 30, 2), "idle_s": round(idle), "rule": rule, "dry_run": True})
+                 cur -= rb
+                 continue
+-            held = ram_evict(k)
++            held = ram_evict(k, rule)
+             if not held:
+                 continue
+             new = proc_ram_bytes()
+@@ -1457,7 +1562,7 @@
+             RAM_STATS["freed_gb"] = round(RAM_STATS["freed_gb"] + max(0, cur - new) / 2 ** 30, 2)
+             log(f"ram: evicted {k[0]} {k[1]} from GPU {k[3]} (idle {idle / 60:.0f} min, {held / 2 ** 30:.1f} GB in RAM) - "
+                 f"process anon RSS {cur / 2 ** 30:.1f} -> {new / 2 ** 30:.1f} GB (budget {budget_gb:g} GB)")
+-            out["evicted"].append({"kind": k[0], "name": k[1], "gpu": k[3], "ram_gb": round(held / 2 ** 30, 2), "idle_s": round(idle),
++            out["evicted"].append({"kind": k[0], "name": k[1], "gpu": k[3], "ram_gb": round(held / 2 ** 30, 2), "idle_s": round(idle), "rule": rule,
+                                    "rss_before_gb": round(cur / 2 ** 30, 2), "rss_after_gb": round(new / 2 ** 30, 2)})
+             cur = new
+         out["rss_anon_after_gb"] = round(cur / 2 ** 30, 2) if not dry_run else None
+@@ -1467,9 +1572,14 @@
+         RAM_LOCK.release()
+ 
+ 
++def _ram_period():
++    """Seconds between passes: often enough that the RAM-cache rule acts close to its idle time, never above RAM_CHECK_S."""
++    return min(RAM_CHECK_S, max(5.0, RAMCACHE_IDLE_S / 4)) if RAMCACHE_UNLOAD else RAM_CHECK_S
++
++
+ def _ram_loop():
+     while True:
+-        RAM_KICK.wait(RAM_CHECK_S)
++        RAM_KICK.wait(_ram_period())
+         RAM_KICK.clear()
+         try:
+             ram_enforce()
+@@ -1477,13 +1587,47 @@
+             traceback.print_exc()
+ 
+ 
++def _ram_explain(rule, why, rb, src):
++    """One line for GET /ram: why this copy is or isn't evictable."""
++    gb = f"{rb / 2 ** 30:.1f} GB"
++    if why == "fully in VRAM":
++        return ("in VRAM: untouched - " + (f"once ComfyUI moves it out of VRAM (>= {RAMCACHE_MIN_BYTES / 2 ** 20:.0f} MB / {RAMCACHE_MIN_FRAC:.0%} of it "
++                f"on the CPU; now {rb / 2 ** 20:.0f} MB) it is unloaded after {RAMCACHE_IDLE_S:g}s idle (file on the RAM drive)"
++                if rule == "ramcache" else "it becomes a budget-LRU candidate only once ComfyUI moves it out of VRAM"))
++    if rule == "ramcache":
++        if why is None:
++            return f"file on the RAM drive and {gb} of it in process RAM: unloaded at the next pass (idle >= {RAMCACHE_IDLE_S:g}s), whatever the budget"
++        return f"kept for now: {why} (file on the RAM drive: unloaded once idle {RAMCACHE_IDLE_S:g}s and evictable)"
++    if why is None:
++        return (f"{src}-sourced, {gb} in process RAM: budget LRU - evicted only while anon RSS is over the {RAM_BUDGET_GB:g} GB budget"
++                if RAM_BUDGET_GB > 0 else f"{src}-sourced, {gb} in process RAM: kept (RAM budget off)")
++    return f"kept: {why} ({src}-sourced: budget LRU, needs {RAM_MIN_IDLE_S:g}s idle)"
++
++
++def ram_policy_text():
++    rc = (f"RAM-cache rule ON: a copy whose file is on the /model-cache RAM drive is unloaded {RAMCACHE_IDLE_S:g}s after its last use "
++          f"once ComfyUI has moved it out of VRAM, wholly or partly (>= {RAMCACHE_MIN_BYTES / 2 ** 20:.0f} MB / {RAMCACHE_MIN_FRAC:.0%} of it on the CPU), "
++          f"whatever the budget" if RAMCACHE_UNLOAD else "RAM-cache rule OFF")
++    bd = (f"Optane/NAS copies: LRU only while anon RSS > {RAM_BUDGET_GB:g} GB (after {RAM_MIN_IDLE_S:g}s idle)" if RAM_BUDGET_GB > 0
++          else "RAM budget off")
++    return f"{rc}; {bd}; never evicted: pinned / in a run / GPU busy or queued / plugin kinds; pass every {_ram_period():g}s"
++
++
+ def ram_status(detail=False):
+     s = {"budget_gb": RAM_BUDGET_GB, "min_idle_s": RAM_MIN_IDLE_S, "check_s": RAM_CHECK_S, "rss_anon_gb": round(proc_ram_bytes() / 2 ** 30, 2),
+-         "evictions": RAM_STATS["evictions"], "freed_gb": RAM_STATS["freed_gb"], "last_check": RAM_STATS["last_check"],
+-         "last_eviction": RAM_STATS["last_eviction"], "recent": list(RAM_STATS["recent"])}
++         "ramcache_unload": RAMCACHE_UNLOAD, "ramcache_idle_s": RAMCACHE_IDLE_S, "period_s": _ram_period(), "policy": ram_policy_text(),
++         "ramcache_offload_min": {"mb": RAMCACHE_MIN_BYTES / 2 ** 20, "fraction": RAMCACHE_MIN_FRAC},
++         "evictions": RAM_STATS["evictions"], "freed_gb": RAM_STATS["freed_gb"], "ramcache_evictions": RAM_STATS["ramcache_evictions"],
++         "ramcache_freed_gb": RAM_STATS["ramcache_freed_gb"], "last_check": RAM_STATS["last_check"],
++         "last_eviction": RAM_STATS["last_eviction"], "last_ramcache_eviction": RAM_STATS["last_ramcache_eviction"], "recent": list(RAM_STATS["recent"])}
+     if detail:
+-        s["copies"] = [{"kind": k[0], "name": k[1], "gpu": k[3], "ram_gb": round(rb / 2 ** 30, 2), "idle_s": round(idle), "evictable": why is None, "why_not": why}
+-                       for k, rb, idle, why in ram_candidates(all_rows=True)]
++        with MODELS_LOCK:
++            res = dict(MODELS)
++        s["copies"] = [{"kind": k[0], "name": k[1], "gpu": k[3], "source": src, "rule": rule, "ram_gb": round(rb / 2 ** 30, 2),
++                        "in_vram": why == "fully in VRAM", "idle_s": round(idle), "evictable": why is None,
++                        "why_not": why, "why": _ram_explain(rule, why, rb, src),
++                        "parts": ram_parts(res[k]) if k in res and k[0] in RAM_KINDS else None}
++                       for k, rb, idle, why, rule, src in ram_candidates(all_rows=True)]
+     return s
+ 
+ 
+@@ -1970,14 +2114,27 @@
+             return run()
+         threading.Thread(target=run, daemon=True).start()
+         return {"ok": True, "restoring": True}
+-    if path == "/ram":   # {budget_gb?, min_idle_s?, enforce?, dry_run?} - live change (until restart; env sets the default) / one pass now
+-        global RAM_BUDGET_GB, RAM_MIN_IDLE_S
+-        if body.get("budget_gb") is not None:
++    if path == "/ram":   # {budget_gb?, min_idle_s?, ramcache_unload?, ramcache_idle_s?, enforce?, dry_run?} - live change (until restart;
++        #                    env sets the default) / one pass now
++        global RAM_BUDGET_GB, RAM_MIN_IDLE_S, RAMCACHE_UNLOAD, RAMCACHE_IDLE_S
++        dry = bool(body.get("dry_run"))
++        # a dry run's budget_gb is a what-if for that pass only (claude1 2026-10-31: it used to be STORED too, so the next
++        # background pass really evicted down to the what-if budget)
++        if body.get("budget_gb") is not None and not dry:
+             RAM_BUDGET_GB = float(body["budget_gb"])
+         if body.get("min_idle_s") is not None:
+             RAM_MIN_IDLE_S = float(body["min_idle_s"])
+-        r = ram_enforce(dry_run=bool(body.get("dry_run"))) if body.get("enforce") or body.get("dry_run") else None
+-        if r is None and (body.get("budget_gb") is not None or body.get("min_idle_s") is not None):
++        if body.get("ramcache_unload") is not None:
++            v = body["ramcache_unload"]
++            RAMCACHE_UNLOAD = v if isinstance(v, bool) else str(v).strip().lower() not in ("0", "false", "no", "off", "")
++        if body.get("ramcache_idle_s") is not None:
++            RAMCACHE_IDLE_S = max(0.0, float(body["ramcache_idle_s"]))
++        changed = any(body.get(x) is not None for x in (() if dry else ("budget_gb",)) + ("min_idle_s", "ramcache_unload", "ramcache_idle_s"))
++        if changed:
++            log(f"ram: policy changed via POST /ram - {ram_policy_text()}")
++        r = (ram_enforce(budget_gb=body.get("budget_gb") if dry else None, dry_run=dry)
++             if body.get("enforce") or dry else None)
++        if r is None and changed:
+             RAM_KICK.set()
+         return {"ok": True, "ram": ram_status(), "pass": r}
+     if path == "/cache/quotas":
+@@ -2356,6 +2513,7 @@
+     threading.Thread(target=_ram_loop, name="ram-budget", daemon=True).start()
+     log(f"RAM budget {RAM_BUDGET_GB:g} GB anon RSS (idle copies evicted LRU after {RAM_MIN_IDLE_S:g}s idle; check every {RAM_CHECK_S:g}s)"
+         if RAM_BUDGET_GB > 0 else "RAM budget off (AILAB_MODELSVC_RAM_BUDGET_GB=0)")
++    log(f"RAM policy: {ram_policy_text()}")
+     for item in [x.strip() for x in A.preload.split(",") if x.strip()]:
+         kind, _, name = item.partition(":") if item.split(":", 1)[0] in FOLDERS else (A.kind, "", item)
+         gpu = None
