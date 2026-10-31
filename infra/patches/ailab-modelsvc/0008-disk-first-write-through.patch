@@ -1,0 +1,35 @@
+ailab-modelsvc 0008 (claude1 2026-10-31, Travis): disk first - NAS -> persistent tier -> RAM for every kind; the persistent tier never prunes a file that is on the RAM drive.
+Against modelsvc/tiers.py after 0007 (md5 36ab90d0, both hosts). Generated on ai-epyc from tiers.py.bak-diskfirst-20261031075020.
+Re-apply: cd /opt/ailab-modelsvc && patch -p1 < this
+
+--- a/modelsvc/tiers.py
++++ b/modelsvc/tiers.py
+@@ -28,6 +28,10 @@
+ # llm = files another server loads (llama.cpp GGUFs under /models). /models is a CIFS mount INSIDE the container, so the
+ # host-side RAM copy can't read it: these are staged into the persistent tier first (a local copy) and RAM is filled from there.
+ VIA_PERSIST = {"llm"}
++# 0008 (Travis): DISK FIRST for every kind. A model that goes into RAM (or onto a GPU) first gets a copy on the host's local
++# persistent tier (ai-epyc /disk-cache zfs, ai-gpu Optane) and RAM is filled from THAT copy - so after a reboot or a container
++# restart the models come back from local disk, not all at once from the NAS (a cold boot used to choke the NAS link).
++DISK_FIRST = os.environ.get("AILAB_MODELSVC_DISK_FIRST", "1").strip().lower() not in ("0", "false", "no", "off", "")
+ def _drive_gb():
+     try:
+         st = os.statvfs(os.path.dirname(ROOT)); return st.f_blocks * st.f_frsize / 1e9
+@@ -181,6 +185,8 @@
+                 break
+             if self.in_use.get(k) or idx[k].get("pinned") or k in self.copying:
+                 continue
++            if self.label == "optane" and "/" in k and os.path.exists(os.path.join(ROOT, *k.split("/", 1))):
++                continue                   # 0008: on the RAM drive -> disk-pinned (it must come back from disk after a reboot)
+             try:
+                 os.remove(os.path.join(self.dir, k))
+             except FileNotFoundError:
+@@ -324,7 +330,7 @@
+         size, mtime = os.path.getsize(src), os.path.getmtime(src)
+         okey = f"{self.kind}/{name}"
+         opt_has = OPTANE.ok() and OPTANE.has(okey, size)
+-        if self.kind in VIA_PERSIST and not opt_has and not self.ram.has(name, size) and OPTANE.ok():
++        if (self.kind in VIA_PERSIST or DISK_FIRST) and not opt_has and not self.ram.has(name, size) and OPTANE.ok():
+             opt_has = OPTANE.put(okey, src, size, mtime, count_use) is not None   # synchronous: RAM is filled from this copy
+         if self.ram.has(name, size):
+             if count_use:

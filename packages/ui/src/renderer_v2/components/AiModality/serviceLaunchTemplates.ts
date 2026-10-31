@@ -51,7 +51,11 @@ export const TTS_LAUNCH_TEMPLATES: Record<string, any> = {
           // The SHARED library on /tts (a mount visible to every instance), not a local
           // per-host copy. Launched against /root/voices this served 10 of 44 voices and
           // adding voices to the shared dir appeared to do nothing.
-          '  --voices /tts/voices/chatterbox',
+          '  --voices /tts/voices/chatterbox \\',
+          // claude1 2026-10-31: the server looked in /model-cache/chatterbox, which nothing fills - the cacher's copies are
+          // /model-cache/tts/models/chatterbox/{turbo,original}; the store goes through mc() (RAM -> local disk -> NAS).
+          '  --model-cache /model-cache/tts/models/chatterbox \\',
+          '  --model-store /tts/models/chatterbox',
         ].join('\n');
       },
     },

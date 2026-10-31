@@ -469,6 +469,26 @@ function inferCacheType(sourceDir) {
 //    drive - reserve - max(that, what is on the drive outside ailab-modelsvc). The reconcile report shows the whole drive.
 const CACHE_RESERVE_FRAC = 0.05;
 
+// ─── Disk-first model tiers (claude1 2026-10-31, Travis) ─────────────────────────────────────────────────────────────
+// agents[node].cache.diskTierHostPath / diskTierContainerPath: the host's local persistent disk tier for this cacher (px-epyc
+// /ct-pool/data/ailab-modelsvc-disk/ailab-cacher = CT /disk-cache/ailab-cacher, px-gpu /mnt/optane/sock1/ailab-cacher = CT
+// /optane-sock1/ailab-cacher). When set, the host tool /usr/local/sbin/ailab-model-cache-warm does every copy: NAS -> disk
+// (write-through, bandwidth-capped, one at a time per host) -> RAM; it also judges staleness file by file. autoTiers:
+// per-kind RAM / disk quotas (GB) for the AUTO entries (models running services load through mc()).
+const AUTO_TIER_DEFAULTS = { llm: { ramGB: 16, diskGB: 64 }, tts: { ramGB: 8, diskGB: 24 }, stt: { ramGB: 4, diskGB: 8 } };
+function tierConfig(node) {
+  const c = loadAiConfig().agents?.[node]?.cache || {};
+  const auto = {};
+  for (const k of Object.keys(AUTO_TIER_DEFAULTS)) auto[k] = { ...AUTO_TIER_DEFAULTS[k], ...(c.autoTiers?.[k] || {}) };
+  return { on: !!(c.diskTierHostPath && c.hostPath && c.modelsHostPath), diskHost: (c.diskTierHostPath || '').replace(/\/+$/, ''),
+    diskCt: (c.diskTierContainerPath || '').replace(/\/+$/, ''), auto };
+}
+function diskHostPathFor(node, cacheDir) {
+  const t = tierConfig(node);
+  const rel = String(cacheDir || '').split('/').slice(2).join('/');   // /model-cache/<rel>
+  return t.on && rel ? `${t.diskHost}/${rel}` : null;
+}
+
 /** A node's manifest entries as paths in the same space (host or container) as the reconcile listing. */
 function manifestDirsFor(node, nodeEntries, useHostPaths) {
   return nodeEntries.map(e => (useHostPaths ? toHostCachePath(node, e.cacheDir) : e.cacheDir)).filter(Boolean).map(p => p.replace(/\/+$/, ''));
@@ -483,7 +503,7 @@ async function writeCacherUsage(sshService, node, hostIp, vmid, extra = {}) {
     const ents = (loadCacheManifest().entries || []).filter(e => e.node === node);
     const body = {
       writer: 'ai-lab model cacher (ai.js)', node, updated: Math.floor(Date.now() / 1000),
-      manifest_bytes: ents.reduce((a, e) => a + (Number(e.sizeMB) || 0) * 1048576, 0),
+      manifest_bytes: ents.filter(e => e.tier !== 'disk').reduce((a, e) => a + (Number(e.sizeMB) || 0) * 1048576, 0),   // RAM share
       entries: ents.length, pending: ents.filter(e => !e.cachedAt).length, reserve_frac: CACHE_RESERVE_FRAC, ...extra,
     };
     const b64 = Buffer.from(JSON.stringify(body)).toString('base64');
@@ -496,7 +516,9 @@ async function writeCacherUsage(sshService, node, hostIp, vmid, extra = {}) {
     if (host) {
       const man = { writer: 'ai-lab model cacher (ai.js)', node, updated: body.updated, entries: ents.map(e => ({
         cacheDir: e.cacheDir, sourceDir: e.sourceDir, type: e.type || 'llm', sizeMB: e.sizeMB || null, cachedAt: e.cachedAt || null,
-        src: toHostSourcePath(node, e.sourceDir) || null, dst: toHostCachePath(node, e.cacheDir) || null })) };
+        tier: e.tier === 'disk' ? 'disk' : 'ram', pinned: !e.auto, kind: e.kind || null,
+        src: toHostSourcePath(node, e.sourceDir) || null, dst: e.tier === 'disk' ? null : (toHostCachePath(node, e.cacheDir) || null),
+        disk: diskHostPathFor(node, e.cacheDir) })) };
       const mb = Buffer.from(JSON.stringify(man, null, 1)).toString('base64');
       const mf = '/etc/ailab/model-cache-manifest.json';
       const r2 = await sshService.exec(hostIp, `mkdir -p /etc/ailab && echo ${mb} | base64 -d > "${mf}.tmp" && mv -f "${mf}.tmp" "${mf}"`, { timeout: 15000 });
@@ -566,14 +588,21 @@ function startNextCopy(node, sshService, hookscriptDeploy) {
     ? `bash -c '${copyScript(hostSrc, hostDst, hostBase)}'`
     : `pct exec ${vmid} -- bash -c '${copyScript(sourceDir, cacheDir, containerBase)}'`;
 
-  sshService.exec(hostIp, cpCmd, { timeout: 600000 }).then(async (result) => {
+  // claude1 2026-10-31: disk-first nodes - the host tool fills disk (from RAM / the NAS, capped) then RAM (from disk), one
+  // fill at a time per host (its flock), every copy .part + checked; it reads the entry from the host manifest pushed first.
+  const tiered = tierConfig(node).on && !!hostDst;
+  const runCopy = tiered
+    ? writeCacherUsage(sshService, node, hostIp, vmid).then(() =>
+      sshService.exec(hostIp, `/usr/local/sbin/ailab-model-cache-warm --fill "${cacheDir}"`, { timeout: 4 * 3600 * 1000 }))
+    : sshService.exec(hostIp, cpCmd, { timeout: 600000 });
+  runCopy.then(async (result) => {
     const m = loadCacheManifest();
     const e = m.entries.find(x => x.node === node && x.cacheDir === cacheDir);
     if (result.code === 0 && e) {
       e.cachedAt = new Date().toISOString();
       delete e.lastError; delete e.lastErrorAt;
       // Get actual size
-      const duDir = hostDst || null;
+      const duDir = tiered && e.tier === 'disk' ? diskHostPathFor(node, cacheDir) : (hostDst || null);
       const sizeCmd = duDir
         ? `du -sm "${duDir}" 2>/dev/null | cut -f1`
         : `pct exec ${vmid} -- du -sm "${cacheDir}" 2>/dev/null | cut -f1`;
@@ -598,6 +627,12 @@ function startNextCopy(node, sshService, hookscriptDeploy) {
       e.lastError = `no space: ${String(result.stderr || '').trim()}`; e.lastErrorAt = new Date().toISOString();
       saveCacheManifest(m);
       console.warn(`[cache] NOT caching ${sourceDir} on ${node} - ${e.lastError} (kept in the manifest, retried next pass)`);
+    } else if (e && tiered) {
+      // disk-first: a failed fill keeps the entry (pinned = Travis's; auto = in use) - logged, retried next pass
+      e.lastError = `fill failed (exit ${result.code}): ${String(result.stdout || '').trim().slice(-300)} ${String(result.stderr || '').trim().slice(-300)}`;
+      e.lastErrorAt = new Date().toISOString();
+      saveCacheManifest(m);
+      console.error(`[cache] fill failed for ${cacheDir} on ${node}: ${e.lastError}`);
     } else if (e) {
       m.entries = m.entries.filter(x => !(x.node === node && x.cacheDir === cacheDir));
       saveCacheManifest(m);
@@ -610,7 +645,7 @@ function startNextCopy(node, sshService, hookscriptDeploy) {
   }).catch(err => {
     console.error(`[cache] SSH error caching ${sourceDir} on ${node}:`, err.message);
     const m = loadCacheManifest();
-    m.entries = m.entries.filter(x => !(x.node === node && x.cacheDir === cacheDir));
+    if (!tiered) m.entries = m.entries.filter(x => !(x.node === node && x.cacheDir === cacheDir));
     saveCacheManifest(m);
     q.active = false;
     q.currentCacheDir = null;
@@ -2484,7 +2519,7 @@ if out: print(json.dumps(out))
       //  /models tokens, so the regex skips them.)
       const escCache = cachePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       // claude1 2026-10-31: whole tokens only (`/tts/models/...` was rewritten to `/tts$(mc '/models/...')`).
-      const modelPathRe = new RegExp('(?<![\\w./$-])((?:/models|' + escCache + ')/[^\\s"\'\\\\]+)', 'g');
+      const modelPathRe = new RegExp('(?<![\\w./$-])((?:/models|/tts|' + escCache + ')/[^\\s"\'\\\\]+)', 'g');
       if (modelPathRe.test(finalCommand)) {
         // A path inside a single-quoted argument (the drafter "model" in --speculative-config
         // JSON, e.g. DFlash2) must NOT get a bare $(mc ...): bash never expands inside single
@@ -2529,12 +2564,18 @@ if out: print(json.dumps(out))
         finalCommand = finalCommand.replace(modelPathRe, (m, _p, offset, str) =>
           leaveAlone(m, offset) ? m
             : inSingleQuote(str, offset) ? "'\"$(mc '" + m + "')\"'" : "$(mc '" + m + "')");
+        // claude1 2026-10-31 (disk-first): RAM cache -> the host's local disk tier -> NAS; /tts paths too (their cache
+        // copies live under <cache>/tts/...). The reconciler gives every model a running service loads this way a disk copy.
+        const diskCt = tierConfig(node).diskCt;
         mcHelper =
           'mc(){ p="$1"; case "$p" in\n' +
-          '  ' + cachePath + '/*) c="$p"; n="/models/${p#' + cachePath + '/}";;\n' +
-          '  /models/*) n="$p"; c="' + cachePath + '/${p#/models/}";;\n' +
+          '  ' + cachePath + '/tts/*) r="tts/${p#' + cachePath + '/tts/}"; n="/tts/${p#' + cachePath + '/tts/}";;\n' +
+          '  ' + cachePath + '/*) r="${p#' + cachePath + '/}"; n="/models/$r";;\n' +
+          '  /models/*) r="${p#/models/}"; n="$p";;\n' +
+          '  /tts/*) r="tts/${p#/tts/}"; n="$p";;\n' +
           '  *) printf "%s" "$p"; return ;; esac\n' +
-          '  if [ -e "$c" ]; then printf "%s" "$c"; else printf "%s" "$n"; fi; }\n';
+          '  for x in "' + cachePath + '/$r"' + (diskCt ? ' "' + diskCt + '/$r"' : '') + '; do [ -e "$x" ] && { printf "%s" "$x"; return; }; done\n' +
+          '  printf "%s" "$n"; }\n';
       }
       const b64Cfg = command.match(/echo '([A-Za-z0-9+/=]+)' \| base64 -d/);
       if (b64Cfg) {
@@ -6916,6 +6957,9 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
         ? `rm -rf "${hostDir}"`
         : `pct exec ${agent.vmid} -- rm -rf "${entry.cacheDir}"`;
       await sshService.exec(agent.hostIp, rmCmd, { timeout: 30000 });
+      // disk-first nodes: an uncached model loses its local disk copy too (claude1 2026-10-31)
+      const diskDir = diskHostPathFor(node, entry.cacheDir);
+      if (diskDir) await sshService.exec(agent.hostIp, `rm -rf "${diskDir}" "${diskDir}.part"`, { timeout: 60000 });
     } catch (err) {
       console.error(`[cache] Failed to rm ${entry.cacheDir}:`, err.message);
     }
@@ -8158,6 +8202,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
       // Use host paths for validation when available (avoids pct exec cgroup charges)
       const useHostPaths = !!(hostCachePath && cacheConfig?.modelsHostPath);
       const onNode = (c) => (useHostPaths ? c : `pct exec ${agent.vmid} -- bash -c '${c}'`);
+      const tiered = tierConfig(node).on && useHostPaths;   // disk-first: entry state comes from the host tool, below
 
       // Build a single SSH command that checks all entries + lists orphans.
       // `-e`, not `-d` (claude1 2026-10-31): an imagegen entry can be ONE FILE (e.g. the SeedVR2 sharp .safetensors on
@@ -8193,7 +8238,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
 
             const entry = nodeEntries.find(e => e.cacheDir === dir);
             const queued = copyQueues[node] && (copyQueues[node].currentCacheDir === dir || copyQueues[node].pending.some(x => x.cacheDir === dir));
-            if (entry && !entry.cachedAt && !queued && (!entry.sizeMB || actualMB >= entry.sizeMB * 0.9)) {
+            if (!tiered && entry && !entry.cachedAt && !queued && (!entry.sizeMB || actualMB >= entry.sizeMB * 0.9)) {
               // present but marked not cached (a pass saw it missing, then the host warm-up restored it): adopt it instead
               // of re-copying it (which starts with rm -rf).
               console.log(`[cache-validate] ${node}: ${dir} is present again (${actualMB}MB) - marked cached`);
@@ -8202,7 +8247,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
             }
             if (entry && entry.cachedAt && entry.sizeMB) {
               // Size check: if actual < 90% of expected, likely truncated
-              if (actualMB < entry.sizeMB * 0.9) {
+              if (!tiered && actualMB < entry.sizeMB * 0.9) {
                 console.log(`[cache-validate] ${node}: ${dir} truncated (${actualMB}MB vs expected ${entry.sizeMB}MB), will re-cache`);
                 const rmDir = useHostPaths ? toHostCachePath(node, dir) : null;
                 const rmCmd = rmDir ? `rm -rf "${rmDir}"` : `pct exec ${agent.vmid} -- rm -rf "${dir}"`;
@@ -8216,7 +8261,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
             const dir = line.substring(5);
             const entry = nodeEntries.find(e => e.cacheDir === dir);
             summary.missing++; ns.missing++;
-            if (entry && entry.cachedAt) {
+            if (entry && entry.cachedAt && !tiered) {
               console.log(`[cache-validate] ${node}: ${dir} missing from cache, will re-cache`);
               entry.cachedAt = null;
               manifestChanged = true;
@@ -8230,6 +8275,127 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
             const [t, sz, mt, ...p] = line.substring(3).split('\t');
             listing.push({ type: t, size: Number(sz) || 0, mtime: (Number(mt) || 0) * 1000, path: p.join('\t') });
           }
+        }
+
+        // ── Disk-first tiers (claude1 2026-10-31, Travis) ─────────────────────────────────────────────────────────────
+        // Every entry has a copy on the host's local disk tier (px-epyc zfs, px-gpu Optane) and RAM is filled from it;
+        // the host tool (ailab-model-cache-warm) does every copy and judges every copy against its source FILE BY FILE
+        // (names, sizes, mtimes: disk vs NAS, RAM vs disk) - the 90 % size check could not see an edited config.json.
+        //   pinned = Travis's hand-cached entries (never auto-evicted);
+        //   auto   = models running services load through mc() (llm / tts / stt): RAM + disk copies managed per kind with
+        //            their own quotas, scored by service starts (half-life 30 d) + recency; a model in use is never evicted.
+        if (tiered) {
+          const tc = tierConfig(node);
+          ns.tiers = { pinned: { entries: 0, ramGB: 0, diskGB: 0 }, auto: {}, stale: [], evicted: [], promoted: [] };
+          for (const k of Object.keys(tc.auto)) ns.tiers.auto[k] = { entries: 0, inUse: 0, ramGB: 0, ramQuotaGB: tc.auto[k].ramGB, diskGB: 0, diskQuotaGB: tc.auto[k].diskGB };
+          // 1. which models do the node's running services load (mc() tokens in their launch scripts)?
+          const svcs = Object.values(loadActiveServices().services || {}).filter(s => s.node === node && Number(s.vmid) === Number(agent.vmid) && s.scriptPath && !s.suspended);
+          const used = new Map();   // sourceDir -> [svc]
+          for (const s of svcs) {
+            const r = await sshService.exec(hostIp, `pct exec ${agent.vmid} -- cat "${s.scriptPath}"`, { timeout: 15000 }).catch(() => null);
+            for (const mm of String(r?.stdout || '').matchAll(/\$\(mc '([^']+)'\)/g)) {
+              let p = mm[1].replace(/\/+$/, '');
+              if (p.startsWith(cachePath + '/tts/')) p = '/tts/' + p.slice(cachePath.length + 5);
+              else if (p.startsWith(cachePath + '/')) p = '/models/' + p.slice(cachePath.length + 1);
+              if (!/^\/(models|tts)\//.test(p)) continue;
+              if (!used.has(p)) used.set(p, []);
+              used.get(p).push(s);
+            }
+          }
+          const now = Date.now();
+          const covers = (e, p) => p === e.sourceDir || p.startsWith(e.sourceDir + '/') || e.sourceDir.startsWith(p + '/');
+          for (const e of nodeEntries) { e._inUse = false; if (!e.auto) e.pinned = true; }
+          for (const [p, users] of used) {
+            let hit = nodeEntries.filter(e => covers(e, p));
+            if (!hit.length) {
+              const kind = p.startsWith('/tts/') ? (/\/stt\//i.test(p) ? 'stt' : 'tts') : (/whisper|\/stt\/|\/asr\//i.test(p) ? 'stt' : 'llm');
+              const hsrc = toHostSourcePath(node, p);
+              const du = hsrc ? await sshService.exec(hostIp, `du -sm "${hsrc}" 2>/dev/null | cut -f1`, { timeout: 60000 }).catch(() => null) : null;
+              const sizeMB = parseInt(String(du?.stdout || '').trim(), 10) || 0;
+              const cacheDir = sourceToCacheDir(p, cachePath);
+              if (!sizeMB || !cacheDir) { console.warn(`[cache-validate] ${node}: ${p} (used by ${users.map(u => u.id).join(', ')}) not found on the NAS - not cached`); continue; }
+              const segs = p.split('/').filter(Boolean);
+              const ne = { node, vmid: agent.vmid, sourceDir: p, cacheDir, sizeMB, cachedAt: null, auto: true, kind, tier: 'disk',
+                family: segs[1] || segs[0], variant: segs.slice(2).join('/') || 'default', quant: 'auto', useCount: 0, users: {},
+                displayName: `auto ${kind}: ${segs.slice(1).join('/')}`, addedAt: new Date(now).toISOString() };
+              if (kind !== 'llm') ne.type = 'tts';
+              manifest.entries.push(ne); nodeEntries.push(ne); manifestChanged = true;
+              console.log(`[cache-validate] ${node}: auto ${kind} entry for ${p} (${(sizeMB / 1024).toFixed(1)} GB, used by ${users.map(u => u.id).join(', ')}): disk copy first`);
+              hit = [ne];
+            }
+            for (const e of hit) {
+              e._inUse = true;
+              if (!e.auto) continue;
+              e.users = e.users || {};
+              for (const u of users) {
+                const st = String(u.startedAt || '');
+                if (e.users[u.id] !== st) { e.users[u.id] = st; e.useCount = (e.useCount || 0) + 1; manifestChanged = true; }
+              }
+              e.lastUsed = new Date(now).toISOString();
+            }
+          }
+          // 2. state of every entry from the host tool (file-by-file against the source)
+          await writeCacherUsage(sshService, node, hostIp, agent.vmid);
+          const sr = await sshService.exec(hostIp, '/usr/local/sbin/ailab-model-cache-warm --status-json', { timeout: 120000 });
+          let status = {};
+          try { for (const s of JSON.parse(sr.stdout).entries) status[s.cacheDir] = s; } catch (err) { throw new Error(`status-json: ${err.message} ${sr.stderr || ''}`); }
+          const q0 = copyQueues[node];
+          for (const e of nodeEntries) {
+            const s = status[e.cacheDir];
+            if (!s) continue;
+            e.state = { disk: s.disk, ram: s.ram, nas: s.nas, at: new Date(now).toISOString() };
+            const ok = ['ok', 'unverified'].includes(s.disk) && (e.tier === 'disk' || s.ram === 'ok');
+            const queued = q0 && (q0.currentCacheDir === e.cacheDir || q0.pending.some(x => x.cacheDir === e.cacheDir));
+            if (s.disk === 'stale' || s.ram === 'stale') ns.tiers.stale.push({ cacheDir: e.cacheDir, disk: s.disk, ram: s.ram, files: s.stale_files || [] });
+            if (!ok && e.cachedAt && !queued) {
+              console.log(`[cache-validate] ${node}: ${e.cacheDir} needs a fill (disk ${s.disk}, ram ${s.ram}${s.stale_files ? ', changed: ' + s.stale_files.join(', ') : ''})`);
+              e.cachedAt = null; manifestChanged = true;
+            } else if (ok && !e.cachedAt && !queued) {
+              e.cachedAt = new Date(now).toISOString(); delete e.lastError; delete e.lastErrorAt; manifestChanged = true;
+            }
+          }
+          // 3. auto entries: RAM promotion / demotion and disk eviction per kind (only under pressure: low churn)
+          const score = (e) => (e._inUse ? 1e9 : 0) + (e.useCount || 0) * Math.pow(0.5, (now - Date.parse(e.lastUsed || e.addedAt || 0)) / (30 * 86400e3));
+          for (const kind of Object.keys(tc.auto)) {
+            const mine = nodeEntries.filter(e => e.auto && e.kind === kind);
+            const quotaR = tc.auto[kind].ramGB * 1024, quotaD = tc.auto[kind].diskGB * 1024;
+            let ramMB = mine.filter(e => e.tier === 'ram').reduce((a, e) => a + (e.sizeMB || 0), 0);
+            for (const e of mine.filter(x => x.tier === 'disk' && x._inUse).sort((a, b) => score(b) - score(a))) {
+              if (ramMB + (e.sizeMB || 0) > quotaR) continue;
+              e.tier = 'ram'; e.cachedAt = null; ramMB += e.sizeMB || 0; manifestChanged = true;
+              ns.tiers.promoted.push(e.cacheDir);
+            }
+            for (const e of mine.filter(x => x.tier === 'ram' && !x._inUse).sort((a, b) => score(a) - score(b))) {
+              if (ramMB <= quotaR) break;
+              const hd = toHostCachePath(node, e.cacheDir);
+              if (hd) await sshService.exec(hostIp, `rm -rf "${hd}"`, { timeout: 60000 }).catch(() => {});
+              e.tier = 'disk'; ramMB -= e.sizeMB || 0; manifestChanged = true;
+              ns.tiers.evicted.push({ cacheDir: e.cacheDir, from: 'ram', score: score(e) });
+              console.log(`[cache-validate] ${node}: auto ${kind} ${e.cacheDir} out of RAM (over the ${tc.auto[kind].ramGB} GB ${kind} RAM quota; disk copy kept)`);
+            }
+            let diskMB = mine.reduce((a, e) => a + (e.sizeMB || 0), 0);
+            for (const e of mine.filter(x => !x._inUse).sort((a, b) => score(a) - score(b))) {
+              if (diskMB <= quotaD) break;
+              for (const p of [toHostCachePath(node, e.cacheDir), diskHostPathFor(node, e.cacheDir)].filter(Boolean)) {
+                await sshService.exec(hostIp, `rm -rf "${p}"`, { timeout: 60000 }).catch(() => {});
+              }
+              manifest.entries = manifest.entries.filter(x => x !== e);
+              nodeEntries.splice(nodeEntries.indexOf(e), 1);
+              diskMB -= e.sizeMB || 0; manifestChanged = true;
+              ns.tiers.evicted.push({ cacheDir: e.cacheDir, from: 'disk', score: score(e) });
+              console.log(`[cache-validate] ${node}: auto ${kind} ${e.cacheDir} evicted (over the ${tc.auto[kind].diskGB} GB ${kind} disk quota)`);
+            }
+          }
+          for (const e of nodeEntries) {
+            const gb = (e.sizeMB || 0) / 1024;
+            if (!e.auto) { ns.tiers.pinned.entries++; ns.tiers.pinned.diskGB += gb; if (e.tier !== 'disk') ns.tiers.pinned.ramGB += gb; continue; }
+            const t = ns.tiers.auto[e.kind] || (ns.tiers.auto[e.kind] = { entries: 0, inUse: 0, ramGB: 0, diskGB: 0 });
+            t.entries++; t.diskGB += gb; if (e.tier === 'ram') t.ramGB += gb; if (e._inUse) t.inUse++;
+          }
+          const r1 = (x) => Math.round(x * 10) / 10;
+          ns.tiers.pinned.ramGB = r1(ns.tiers.pinned.ramGB); ns.tiers.pinned.diskGB = r1(ns.tiers.pinned.diskGB);
+          for (const t of Object.values(ns.tiers.auto)) { t.ramGB = r1(t.ramGB); t.diskGB = r1(t.diskGB); }
+          for (const e of nodeEntries) delete e._inUse;
         }
 
         const q = copyQueues[node];
@@ -8271,7 +8437,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
           // ComfyUI launch script re-creates those, so removing them would churn). A dir with files but no model file is
           // kept and reported (keptNoModelFiles).
           const MODEL_FILE = /\.(gguf|safetensors|bin|pt|pth|ckpt|onnx|pb|h5|msgpack|model|tflite|engine|plan|nemo|npz|npy|ggml|llamafile)$/i;
-          const owned = manifestDirsFor(node, nodeEntries, useHostPaths);
+          const owned = manifestDirsFor(node, nodeEntries.filter(e => e.tier !== 'disk'), useHostPaths);   // disk-tier entries hold no RAM copy
           const isOwned = (p) => owned.some(m => m === p || m.startsWith(p + '/') || p.startsWith(m + '/'));
           const isSkeleton = (p) => { const s = p.slice(findPath.length + 1).split('/'); return (s[0] === 'imagegen' || s[0] === 'tts') && s.length <= 2; };
           const keep = (p) => p === findPath || isOwned(p) || isSkeleton(p);
@@ -8319,7 +8485,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
             if (warming) continue;
             if (q && (q.currentCacheDir === entry.cacheDir || q.pending.some(x => x.cacheDir === entry.cacheDir))) continue;   // already queued
             const need = (Number(entry.sizeMB) || 0) * 1048576;
-            if (need && need > freeLeft) {
+            if (!tiered && need && need > freeLeft) {   // disk-first: the host tool checks both reserves
               const msg = `no space: needs ${GB(need)} GB, ${GB(drive.free)} GB free, ${GB(reserve)} GB reserve kept`;
               if (entry.lastError !== msg) console.warn(`[cache-validate] ${node}: NOT re-caching ${entry.cacheDir} - ${msg}`);
               entry.lastError = msg; entry.lastErrorAt = new Date().toISOString(); manifestChanged = true;

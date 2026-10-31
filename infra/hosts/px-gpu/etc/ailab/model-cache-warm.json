@@ -5,6 +5,23 @@
  "cap_s": 900,
  "boot_window_s": 3600,
  "up_cap_s": 300,
- "rates_gbps": {"nas": 0.5, "disk": 1.0, "optane": 2.0},
- "containers": [{"vmid": 177, "hostname": "ai-gpu", "onboot_orig": 1, "startup_orig": "", "modelsvc": true}]
+ "rates_gbps": {
+  "nas": 0.3,
+  "disk": 1.0,
+  "optane": 2.0,
+  "ram": 3.0
+ },
+ "containers": [
+  {
+   "vmid": 177,
+   "hostname": "ai-gpu",
+   "onboot_orig": 1,
+   "startup_orig": "",
+   "modelsvc": true
+  }
+ ],
+ "disk_root": "/mnt/optane/sock1/ailab-cacher",
+ "disk_reserve_frac": 0.05,
+ "nas_mbps": 300,
+ "_comment_disk": "disk-first (Travis 2026-10-31): disk_root = the AI-Lab cacher's local disk tier on Optane socket 1 (CT path /optane-sock1/ailab-cacher); NAS reads only for files missing/stale on disk, nas_mbps cap, one fill at a time per host."
 }
