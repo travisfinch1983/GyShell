@@ -1,0 +1,64 @@
+ailab-modelsvc 0007 (claude1 2026-10-31): use files already on the RAM drive in place; keep a disk copy of the quota config.
+Against modelsvc/tiers.py after 0006 (md5 2f50817f, both hosts). Generated on ai-epyc from tiers.py.bak-cachefirst-20261031072502.
+Re-apply: cd /opt/ailab-modelsvc && patch -p1 < this
+
+--- a/modelsvc/tiers.py
++++ b/modelsvc/tiers.py
+@@ -95,11 +95,23 @@
+     print(time.strftime("%H:%M:%S"), "[cache]", *a, flush=True)
+ 
+ 
++CONFIG_SAVED = os.path.join(STATE_DIR, "cache-config.json")   # 0007: survives a reboot (CONFIG is on the tmpfs)
++
++
++def _save_config_copy(cfg):
++    try:
++        os.makedirs(STATE_DIR, exist_ok=True)
++        tmp = CONFIG_SAVED + f".tmp{os.getpid()}"
++        json.dump(cfg, open(tmp, "w"), indent=1); os.replace(tmp, CONFIG_SAVED)
++    except Exception as e:  # noqa: BLE001
++        log("config copy not saved:", e)
++
++
+ def config():
+     cfg = {"quota_gb": dict(DEFAULT_GB), "half_life_h": 72, "optane_root": DEFAULT_OPTANE, "optane_quota_gb": _PERSIST[2],
+            "persist_label": _PERSIST[1], "host_copy_url": HOST_COPY_URL}
+     try:
+-        user = json.load(open(CONFIG))
++        user = json.load(open(CONFIG if os.path.exists(CONFIG) else CONFIG_SAVED))
+         cfg["quota_gb"].update(user.get("quota_gb") or {})
+         for k in ("half_life_h", "optane_root", "optane_quota_gb", "persist_label", "host_copy_url"):
+             if k in user:
+@@ -305,7 +317,9 @@
+ 
+     def fetch(self, name, src, count_use=True):
+         """-> the path to load from (RAM copy > optane copy > NAS). Warms RAM, mirrors to optane in the background."""
+-        if not self._ok() or src.startswith(ROOT):
++        # 0007: anything already on the RAM drive is used in place - ComfyUI's folder order now finds AI-Lab's cached copy
++        # (/model-cache/imagegen/...) before the NAS one, and copying it into ailab-modelsvc would hold it twice in RAM.
++        if not self._ok() or src.startswith(ROOT) or src.startswith(DRIVE + "/"):
+             return src
+         size, mtime = os.path.getsize(src), os.path.getmtime(src)
+         okey = f"{self.kind}/{name}"
+@@ -351,6 +365,13 @@
+ 
+ TIERS = {k: Tier(k) for k in KINDS}
+ 
++# 0007: seed the disk copy of the quota config from the RAM drive's (once per process; a later set_quotas keeps it current)
++try:
++    if os.path.exists(CONFIG) and (not os.path.exists(CONFIG_SAVED) or open(CONFIG).read() != open(CONFIG_SAVED).read()):
++        _save_config_copy(json.load(open(CONFIG)))
++except Exception:  # noqa: BLE001
++    pass
++
+ 
+ def add_kind(kind, quota_big_gb=8, quota_small_gb=4):
+     """For plugins: give a new model kind its own RAM quota + slice of the persistent tier."""
+@@ -582,6 +603,7 @@
+         cfg["persist_label"] = persist_label
+     tmp = CONFIG + f".tmp{os.getpid()}"
+     json.dump(cfg, open(tmp, "w"), indent=1); os.replace(tmp, CONFIG)
++    _save_config_copy(cfg)
+     for t in TIERS.values():
+         t.ram.prune()
+     OPTANE.prune()

@@ -1,37 +1,7 @@
-imagegen:
-    base_path: /imagegen
-    checkpoints: |
-        checkpoints
-        ckpts
-    loras: |
-        loras
-        lycoris
-    vae: vae
-    vae_approx: |
-        vae-approx
-        taesd
-    clip_vision: clip-vision
-    controlnet: |
-        controlnet
-        t2i-adapter
-    diffusion_models: diffusion-models
-    text_encoders: text-encoders
-    unet: diffusion-models
-    embeddings: embeddings
-    upscale_models: upscale-models
-    diffusers: diffusers
-    gligen: gligen
-    style_models: style-models
-    photomaker: photomaker
-    configs: configs
-    audio_encoders: audio-encoders
-    ipadapter: ipadapter
-    LLM: llm
-    TTS: tts
-    step_audio: step-audio
-    clip_models: clip-models
-
 model-cache:
+    # is_default: ComfyUI puts these paths FIRST - a file on the RAM drive wins over the same name on the NAS;
+    # the model lists stay the union of all roots. (claude1 2026-10-31)
+    is_default: true
     base_path: /model-cache/imagegen
     checkpoints: |
         checkpoints
@@ -53,6 +23,43 @@ model-cache:
     embeddings: embeddings
     upscale_models: upscale-models
     latent_upscale_models: latent_upscale_models
+    diffusers: diffusers
+    gligen: gligen
+    style_models: style-models
+    photomaker: photomaker
+    configs: configs
+    audio_encoders: audio-encoders
+    ipadapter: ipadapter
+    LLM: llm
+    TTS: tts
+    step_audio: step-audio
+    clip_models: clip-models
+    ultralytics_bbox: ultralytics/bbox
+    ultralytics_segm: ultralytics/segm
+    ultralytics: ultralytics
+    sams: sam
+
+imagegen:
+    base_path: /imagegen
+    checkpoints: |
+        checkpoints
+        ckpts
+    loras: |
+        loras
+        lycoris
+    vae: vae
+    vae_approx: |
+        vae-approx
+        taesd
+    clip_vision: clip-vision
+    controlnet: |
+        controlnet
+        t2i-adapter
+    diffusion_models: diffusion-models
+    text_encoders: text-encoders
+    unet: diffusion-models
+    embeddings: embeddings
+    upscale_models: upscale-models
     diffusers: diffusers
     gligen: gligen
     style_models: style-models

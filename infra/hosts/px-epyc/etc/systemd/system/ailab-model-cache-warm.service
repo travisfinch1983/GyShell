@@ -1,0 +1,17 @@
+# AI-Lab (claude1 2026-10-31, Travis): refill this host's model-cache RAM drive after a boot, THEN start the AI containers
+# (their onboot is 0; see /etc/ailab/model-cache-warm.json and the script's docstring). Tracked in /opt/ai-lab infra/hosts/<host>/.
+# No Requires= on the mounts on purpose: a failed dependency would skip this unit - and the containers would never start.
+[Unit]
+Description=AI-Lab: warm the model-cache RAM drive, then start the AI containers
+Wants=network-online.target
+After=network-online.target local-fs.target remote-fs.target zfs-mount.service pve-cluster.service pvedaemon.service lxc.service mnt-model\x2dcache.mount
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ailab-model-cache-warm --boot
+# runs after ExecStart however it ended (success, failure, timeout): start whatever AI container is still down
+ExecStopPost=/usr/local/sbin/ailab-model-cache-warm --ensure-started
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target

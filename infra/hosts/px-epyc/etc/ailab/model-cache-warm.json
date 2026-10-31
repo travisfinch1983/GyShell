@@ -1,0 +1,10 @@
+{
+ "_comment": "ailab-model-cache-warm (claude1 2026-10-31). containers: the AI CTs this unit starts after the warm-up. onboot_orig / startup_orig = their values BEFORE onboot was set to 0 (restore: pct set <vmid> --onboot <onboot_orig> [--startup <startup_orig>], then disable ailab-model-cache-warm.service + ailab-ai-ct-failsafe.timer).",
+ "drive": "/mnt/model-cache",
+ "reserve_frac": 0.05,
+ "cap_s": 900,
+ "boot_window_s": 3600,
+ "up_cap_s": 300,
+ "rates_gbps": {"nas": 0.5, "disk": 1.0, "optane": 2.0},
+ "containers": [{"vmid": 176, "hostname": "ai-epyc", "onboot_orig": 1, "startup_orig": "", "modelsvc": true}]
+}

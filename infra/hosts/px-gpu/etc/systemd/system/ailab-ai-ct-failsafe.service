@@ -1,0 +1,10 @@
+# AI-Lab failsafe (claude1 2026-10-31): 25 min after boot, start any AI container (onboot=0, normally started by
+# ailab-model-cache-warm.service) that is still not running - in case the warm-up unit never ran at all.
+[Unit]
+Description=AI-Lab: failsafe start of the AI containers after boot
+After=pve-cluster.service pvedaemon.service lxc.service
+
+[Service]
+Type=oneshot
+# if the script itself is broken, start the AI container(s) with plain pct
+ExecStart=/bin/sh -c '/usr/local/sbin/ailab-model-cache-warm --ensure-started || for v in 177; do pct status $v | grep -q running || pct start $v; done'

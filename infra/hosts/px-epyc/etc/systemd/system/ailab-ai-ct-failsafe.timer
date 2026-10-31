@@ -1,0 +1,9 @@
+[Unit]
+Description=AI-Lab: failsafe start of the AI containers, 25 min after boot
+
+[Timer]
+OnBootSec=25min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,99 @@
+# Second root — RAM-disk cache. ComfyUI scans BOTH roots; cached files load
+# from RAM, uncached fall through to the NAS root below. No symlinks needed.
+# Mirror the exact subpath structure of the imagegen root.
+model-cache:
+    # is_default: ComfyUI puts these paths FIRST - a file on the RAM drive wins over the same name on the NAS;
+    # the model lists stay the union of all roots. (claude1 2026-10-31)
+    is_default: true
+    base_path: /model-cache/imagegen
+    checkpoints: |
+        checkpoints
+        ckpts
+    loras: |
+        loras
+        lycoris
+    vae: vae
+    vae_approx: |
+        vae-approx
+        taesd
+    clip_vision: clip-vision
+    controlnet: |
+        controlnet
+        t2i-adapter
+    diffusion_models: diffusion-models
+    text_encoders: text-encoders
+    unet: diffusion-models
+    embeddings: embeddings
+    upscale_models: upscale-models
+    latent_upscale_models: latent_upscale_models
+    diffusers: diffusers
+    gligen: gligen
+    style_models: style-models
+    photomaker: photomaker
+    configs: configs
+    audio_encoders: audio-encoders
+    ipadapter: ipadapter
+    LLM: llm
+    TTS: tts
+    step_audio: step-audio
+    clip_models: clip-models
+    ultralytics_bbox: ultralytics/bbox
+    ultralytics_segm: ultralytics/segm
+    ultralytics: ultralytics
+    sams: sam
+
+imagegen:
+    base_path: /imagegen
+    checkpoints: |
+        checkpoints
+        ckpts
+    loras: |
+        loras
+        lycoris
+    vae: vae
+    vae_approx: |
+        vae-approx
+        taesd
+    clip_vision: clip-vision
+    controlnet: |
+        controlnet
+        t2i-adapter
+    diffusion_models: diffusion-models
+    text_encoders: text-encoders
+    unet: diffusion-models
+    embeddings: embeddings
+    upscale_models: upscale-models
+    latent_upscale_models: latent_upscale_models
+    diffusers: diffusers
+    gligen: gligen
+    style_models: style-models
+    photomaker: photomaker
+    configs: configs
+    audio_encoders: audio-encoders
+    ipadapter: ipadapter
+    LLM: llm
+    TTS: tts
+    step_audio: step-audio
+    clip_models: clip-models
+
+# --- Impact Pack detector roots (added 2026-08-12) -------------------------
+# Impact Subpack registers ultralytics_bbox / ultralytics_segm / sams against
+# folder_paths.models_dir (= /opt/comfyui/models) at custom_node import time.
+# main.py loads THIS yaml at line ~99, long before init_extra_nodes() at ~469,
+# and add_model_folder_path() APPENDS rather than replaces -- so these NAS paths
+# are registered first and Impact's own paths are simply added alongside.
+# This is what makes the detector library survive a container rebuild; nothing
+# lives inside /opt/comfyui/models anymore.
+impact-detectors:
+    base_path: /imagegen
+    ultralytics_bbox: ultralytics/bbox
+    ultralytics_segm: ultralytics/segm
+    ultralytics: ultralytics
+    sams: sam
+
+h3:
+    base_path: /models/ComfyUI-H3/
+    diffusion_models: diffusion_models
+    text_encoders: text_encoders
+    vae: vae
+    loras: loras

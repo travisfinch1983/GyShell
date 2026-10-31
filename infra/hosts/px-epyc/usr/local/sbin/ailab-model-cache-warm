@@ -1,0 +1,450 @@
+#!/usr/bin/env python3
+"""ailab-model-cache-warm - refill a PVE host's model-cache RAM drive (tmpfs) after a boot, THEN start the AI containers.
+
+claude1 2026-10-31 (Travis). Installed on px-epyc and px-gpu; tracked in /opt/ai-lab infra/hosts/<host>/.
+
+Why: the RAM drive (/mnt/model-cache, tmpfs) is empty after a host reboot. The AI containers used to autostart at once and
+load every model from the NAS while AI-Lab refilled the drive behind them. Now the AI containers (CT176 on px-epyc, CT177 on
+px-gpu) have onboot=0; this script (ailab-model-cache-warm.service, at boot) fills the drive first and then `pct start`s
+them - when warm, or after a cap (cap_s, default 15 min), and ALWAYS (try/finally + the unit's ExecStopPost + a 25-min
+failsafe timer), even if copying fails. Other guests keep their normal autostart.
+
+What it copies, on the HOST (tmpfs pages are charged to the writer's memory cgroup - never to a container):
+  1. the AI-Lab model cacher's keep-cached manifest  (/etc/ailab/model-cache-manifest.json, pushed by AI-Lab ai.js on
+     every manifest change; host src/dst paths), from the NAS;
+  2. each AI container's image-model-service RAM tier (<drive>/ailab-modelsvc/<kind>/<name>), from its saved state
+     (CT disk: /var/lib/ailab-modelsvc/state.json "ram") and its persistent tier (ai-epyc /disk-cache, ai-gpu Optane) only -
+     what isn't there the service fetches itself after it starts (AI-Lab triggers its /cache/restore). index.json is written
+     too (scores / pins kept), owned by the container's root.
+  Every copy goes to <dst>.part and is renamed after a byte-count check; free space minus the copy must stay above the
+  shared reserve (reserve_frac of the drive, the same 5 % AI-Lab and tiers.py keep); the RAM-tier fill stays within the
+  service's quotas scaled to the room left by the manifest (as tiers.py does). While it runs, <drive>/.ailab-warming tells
+  the AI-Lab reconciler to keep its hands off this drive.
+
+Usage:  --boot            warm, then start the containers (the unit)
+        --dry-run         print the plan + estimated time; copy nothing, start nothing
+        --warm-only       warm, don't start (tests); with --drive DIR (e.g. a scratch tmpfs), --max-gb N, --only cacher|modelsvc
+        --ensure-started  start the containers that aren't running (ExecStopPost / failsafe timer); only within
+                          boot_window_s of boot unless --force
+"""
+import argparse, fcntl, json, os, re, shutil, subprocess, sys, time
+
+CONF = "/etc/ailab/model-cache-warm.json"
+MANIFEST = "/etc/ailab/model-cache-manifest.json"
+LOGF = "/var/log/ailab-model-cache-warm.log"
+DEFAULTS = {"drive": "/mnt/model-cache", "reserve_frac": 0.05, "cap_s": 900, "boot_window_s": 3600, "up_cap_s": 300,
+            "rates_gbps": {"nas": 0.5, "disk": 1.0, "optane": 2.0}, "containers": []}
+# tiers.py defaults (claude1 0006): used when the service's saved quota config can't be read
+TIER_DEFAULT_GB_BIG = {"unet": 128, "te": 64, "vae": 16, "lora": 32, "ckpt": 48, "detector": 8, "sam": 8, "llm": 32}
+TIER_DEFAULT_GB_SMALL = {"unet": 80, "te": 40, "vae": 8, "lora": 24, "ckpt": 24, "detector": 4, "sam": 4, "llm": 16}
+HIGH, CAP, MIB = 0.85, 0.90, 1048576
+T0 = time.time()
+
+
+def log(*a):
+    line = time.strftime("%Y-%m-%dT%H:%M:%S ") + " ".join(str(x) for x in a)
+    print(line, flush=True)
+    try:
+        with open(LOGF, "a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def sh(*cmd, check=False):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if check and r.returncode:
+        raise RuntimeError(f"{' '.join(cmd)}: {r.stderr.strip()}")
+    return r
+
+
+def load_conf():
+    c = dict(DEFAULTS)
+    try:
+        c.update(json.load(open(CONF)))
+    except FileNotFoundError:
+        log(f"no {CONF} - defaults, no containers")
+    return c
+
+
+def uptime_s():
+    return float(open("/proc/uptime").read().split()[0])
+
+
+def pct_conf(vmid):
+    out = sh("pct", "config", str(vmid)).stdout
+    d = {"mps": [], "raw": out}
+    for line in out.splitlines():
+        m = re.match(r"^(mp\d+):\s*([^,]+),.*\bmp=([^,\s]+)", line)
+        if m:
+            d["mps"].append((m.group(2).rstrip("/"), m.group(3).rstrip("/")))
+        m = re.match(r"^(\w+):\s*(.*)$", line)
+        if m and not m.group(1).startswith("mp"):
+            d.setdefault(m.group(1), m.group(2).strip())
+    return d
+
+
+def ct_to_host(cfg, ct_path):
+    best = None
+    for host, ct in cfg["mps"]:
+        if ct_path == ct or ct_path.startswith(ct + "/"):
+            if best is None or len(ct) > len(best[1]):
+                best = (host, ct)
+    if best is None:
+        return None
+    host = best[0]
+    if not host.startswith("/"):       # a storage volume (ct-pool:subvol-...)
+        host = sh("pvesm", "path", host).stdout.strip()
+    return host + ct_path[len(best[1]):]
+
+
+def rootfs_host(cfg):
+    vol = (cfg.get("rootfs") or "").split(",")[0]
+    return sh("pvesm", "path", vol).stdout.strip() if vol else ""
+
+
+def tree_bytes(p):
+    if os.path.isfile(p):
+        return os.path.getsize(p)
+    tot = 0
+    for r, _, fs in os.walk(p):
+        for f in fs:
+            fp = os.path.join(r, f)
+            if not os.path.islink(fp):
+                tot += os.path.getsize(fp)
+    return tot
+
+
+def src_bytes(src):
+    """Bytes the AI-Lab cacher copies for src: the file, or the regular files under src/* (non-hidden top level)."""
+    if os.path.isfile(src):
+        return os.path.getsize(src)
+    return sum(tree_bytes(os.path.join(src, e)) for e in os.listdir(src) if not e.startswith("."))
+
+
+def drive_stat(drive):
+    st = os.statvfs(drive)
+    return st.f_blocks * st.f_frsize, st.f_bavail * st.f_frsize
+
+
+def is_tmpfs(path):
+    try:
+        for line in open("/proc/mounts"):
+            p = line.split()
+            if p[1] == path.rstrip("/") and p[2] == "tmpfs":
+                return True
+    except OSError:
+        pass
+    return False
+
+
+class Deadline(Exception):
+    pass
+
+
+def copy_file(src, dst, deadline):
+    with open(src, "rb") as fi, open(dst, "wb") as fo:
+        while True:
+            if time.time() > deadline:
+                raise Deadline()
+            n = os.sendfile(fo.fileno(), fi.fileno(), None, 256 * MIB)
+            if n == 0:
+                break
+    shutil.copystat(src, dst)
+
+
+def copy_tree_into(src, part, deadline):
+    os.makedirs(part, exist_ok=True)
+    for e in sorted(os.listdir(src)):
+        if e.startswith("."):
+            continue
+        s, d = os.path.join(src, e), os.path.join(part, e)
+        if os.path.islink(s):
+            os.symlink(os.readlink(s), d)
+        elif os.path.isdir(s):
+            copy_tree_into(s, d, deadline)
+        else:
+            copy_file(s, d, deadline)
+
+
+def chown_tree(p, uid, gid):
+    os.lchown(p, uid, gid)
+    if os.path.isdir(p) and not os.path.islink(p):
+        for r, ds, fs in os.walk(p):
+            for x in ds + fs:
+                os.lchown(os.path.join(r, x), uid, gid)
+
+
+def do_copy(item, drive, reserve, deadline):
+    """-> 'copied' | 'no-space' | 'deadline' | 'failed: ...'"""
+    src, dst, need = item["src"], item["dst"], item["bytes"]
+    total, free = drive_stat(drive)
+    if free - need < reserve:
+        return "no-space"
+    part = dst + ".part"
+    shutil.rmtree(part, ignore_errors=True)
+    if os.path.lexists(part):
+        os.remove(part)
+    parent = os.path.dirname(dst)
+    os.makedirs(parent, exist_ok=True)
+    try:
+        if os.path.isfile(src):
+            copy_file(src, part, deadline)
+        else:
+            copy_tree_into(src, part, deadline)
+        got = tree_bytes(part)
+        if got != need:
+            raise RuntimeError(f"size check: copied {got} bytes, source has {need}")
+        if item.get("owner"):
+            chown_tree(part, *item["owner"])
+        else:   # like the AI-Lab cacher: its first-level folder is 1777 so the containers can add to it (ComfyUI skeleton)
+            top = os.path.join(drive, os.path.relpath(dst, drive).split(os.sep)[0])
+            if os.path.isdir(top):
+                os.chmod(top, 0o1777)
+        if os.path.isdir(dst) and not os.path.islink(dst):
+            shutil.rmtree(dst)
+        os.replace(part, dst)
+        return "copied"
+    except Deadline:
+        shutil.rmtree(part, ignore_errors=True)
+        if os.path.lexists(part):
+            os.remove(part)
+        return "deadline"
+    except Exception as e:  # noqa: BLE001
+        shutil.rmtree(part, ignore_errors=True)
+        if os.path.lexists(part):
+            os.remove(part)
+        return f"failed: {type(e).__name__}: {e}"
+
+
+# ── the plan ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+def plan_cacher(conf, drive, only_drive_default):
+    items, manifest_bytes = [], 0
+    try:
+        m = json.load(open(MANIFEST))
+    except Exception as e:  # noqa: BLE001
+        log(f"cacher: no manifest ({e}) - nothing to warm from it")
+        return items, 0
+    for e in m.get("entries") or []:
+        src, dst = e.get("src"), e.get("dst")
+        manifest_bytes += int(e.get("sizeMB") or 0) * MIB
+        if not src or not dst:
+            log(f"cacher: {e.get('cacheDir')}: no host src/dst in the manifest - skipped"); continue
+        if not only_drive_default:   # a scratch drive: same relative layout
+            dst = drive + dst[len(conf["drive"].rstrip("/")):] if dst.startswith(conf["drive"].rstrip("/") + "/") else None
+            if dst is None:
+                continue
+        if not os.path.exists(src):
+            log(f"cacher: {src}: source missing - skipped"); continue
+        need = src_bytes(src)
+        if os.path.exists(dst) and tree_bytes(dst) == need:
+            continue
+        items.append({"list": "cacher", "name": e.get("cacheDir"), "src": src, "dst": dst, "bytes": need, "tier": "nas"})
+    return items, manifest_bytes
+
+
+def plan_modelsvc(conf, drive, room_for_ram):
+    items, indexes = [], []
+    for c in conf["containers"]:
+        if not c.get("modelsvc"):
+            continue
+        vmid = c["vmid"]
+        cfg = pct_conf(vmid)
+        root = rootfs_host(cfg)
+        uid = 100000 if cfg.get("unprivileged") == "1" else 0
+        try:
+            st = json.load(open(os.path.join(root, "var/lib/ailab-modelsvc/state.json")))
+        except Exception as e:  # noqa: BLE001
+            log(f"CT{vmid}: no image-model-service state ({e}) - its RAM tier is left to the service"); continue
+        try:
+            qcfg = json.load(open(os.path.join(root, "var/lib/ailab-modelsvc/cache-config.json")))
+        except Exception:  # noqa: BLE001
+            qcfg = {}
+        total, _ = drive_stat(drive)
+        quotas = dict(TIER_DEFAULT_GB_BIG if total > 400e9 else TIER_DEFAULT_GB_SMALL)
+        quotas.update({k: float(v) for k, v in (qcfg.get("quota_gb") or {}).items()})
+        persist_ct = qcfg.get("optane_root") or next((f"{p}/ailab-modelsvc" for p in ("/optane-sock0", "/disk-cache")
+                                                     if ct_to_host(cfg, p)), "")
+        persist = ct_to_host(cfg, persist_ct) if persist_ct else None
+        tier = "optane" if "optane" in (persist_ct or "") else "disk"
+        ram = st.get("ram") or {}
+        kinds = [k for k in ram if ram[k]]
+        qsum = sum(quotas.get(k, 4) for k in kinds) * 1e9
+        scale = min(1.0, room_for_ram / (CAP * qsum)) if qsum else 1.0
+        for kind in kinds:
+            cap_b = CAP * quotas.get(kind, 4) * 1e9 * scale   # tiers.py lets a store reach CAP (90 %) of its quota on a copy
+            used = 0
+            ents = sorted(ram[kind].items(), key=lambda kv: (not kv[1].get("pinned"), -(kv[1].get("score") or 0)))
+            keep = {}
+            for name, e in ents:
+                size = int(e.get("size") or 0)
+                dst = os.path.join(drive, "ailab-modelsvc", kind, name)
+                if os.path.exists(dst) and os.path.getsize(dst) == size:
+                    keep[name] = e; used += size; continue
+                if used + size > cap_b:
+                    log(f"CT{vmid} {kind}/{name}: over the scaled {kind} quota - left to the service"); continue
+                src = os.path.join(persist, kind, name) if persist else None
+                if not src or not os.path.isfile(src) or os.path.getsize(src) != size:
+                    log(f"CT{vmid} {kind}/{name}: not in the {tier} tier - the service fetches it after it starts"); continue
+                items.append({"list": f"CT{vmid}", "name": f"{kind}/{name}", "src": src, "dst": dst, "bytes": size, "tier": tier,
+                              "owner": (uid, uid), "kind": kind, "entry": e})
+                keep[name] = e; used += size
+            indexes.append({"vmid": vmid, "kind": kind, "dir": os.path.join(drive, "ailab-modelsvc", kind), "uid": uid, "entries": keep})
+        # the service's quota config lives on the drive: put the saved copy back (tiers.py 0007 keeps one in its state dir)
+        if qcfg:
+            indexes.append({"vmid": vmid, "config": qcfg, "dir": os.path.join(drive, "ailab-modelsvc"), "uid": uid})
+    return items, indexes
+
+
+def write_indexes(indexes):
+    for ix in indexes:
+        os.makedirs(ix["dir"], exist_ok=True)
+        if "config" in ix:
+            p = os.path.join(ix["dir"], "config.json")
+            if not os.path.exists(p):
+                json.dump(ix["config"], open(p + ".tmp", "w"), indent=1); os.replace(p + ".tmp", p)
+                os.lchown(p, ix["uid"], ix["uid"])
+            continue
+        p = os.path.join(ix["dir"], "index.json")
+        try:
+            idx = json.load(open(p))
+        except Exception:  # noqa: BLE001
+            idx = {}
+        now = time.time()
+        for name, e in ix["entries"].items():
+            f = os.path.join(ix["dir"], name)
+            if os.path.exists(f) and name not in idx:
+                idx[name] = {"size": e.get("size"), "mtime": e.get("mtime"), "score": e.get("score") or 0, "last": e.get("last") or now,
+                             "pinned": bool(e.get("pinned")), "added": now}
+        json.dump(idx, open(p + ".tmp", "w")); os.replace(p + ".tmp", p)
+        # the dirs below ailab-modelsvc belong to the container's root (the service evicts / writes its index there)
+        d = ix["dir"]
+        while True:
+            os.lchown(d, ix["uid"], ix["uid"])
+            if os.path.basename(d) == "ailab-modelsvc" or d in ("/", ""):
+                break
+            d = os.path.dirname(d)
+        for r, ds, fs in os.walk(ix["dir"]):
+            for x in ds:
+                os.lchown(os.path.join(r, x), ix["uid"], ix["uid"])
+        os.lchown(p, ix["uid"], ix["uid"])
+
+
+def write_usage(drive, manifest_bytes, conf):
+    try:
+        m = json.load(open(MANIFEST))
+        body = {"writer": "ailab-model-cache-warm (host, at boot)", "node": m.get("node"), "updated": int(time.time()),
+                "manifest_bytes": manifest_bytes, "entries": len(m.get("entries") or []), "reserve_frac": conf["reserve_frac"]}
+        p = os.path.join(drive, ".ailab-cacher.json")
+        json.dump(body, open(p + ".tmp", "w")); os.replace(p + ".tmp", p)
+    except Exception as e:  # noqa: BLE001
+        log(f"usage file not written: {e}")
+
+
+# ── containers ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+def start_containers(conf, force=False, why=""):
+    if not force and uptime_s() > conf["boot_window_s"]:
+        log(f"start: host up {uptime_s() / 60:.0f} min > boot window - not starting containers ({why}; --force to override)")
+        return
+    def order(c):
+        m = re.search(r"order=(\d+)", c.get("startup_orig") or "")
+        return int(m.group(1)) if m else 10 ** 9
+    for c in sorted(conf["containers"], key=order):
+        vmid = c["vmid"]
+        if not c.get("onboot_orig", 1):
+            log(f"start: CT{vmid} had onboot=0 originally - not started"); continue
+        st = sh("pct", "status", str(vmid)).stdout.strip()
+        if "running" in st:
+            log(f"start: CT{vmid} already running ({why})"); continue
+        r = sh("pct", "start", str(vmid))
+        log(f"start: pct start {vmid} ({why}) -> exit {r.returncode} {r.stderr.strip()}")
+        m = re.search(r"up=(\d+)", c.get("startup_orig") or "")
+        if m:
+            time.sleep(min(int(m.group(1)), conf["up_cap_s"]))
+
+
+# ── main ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+def warm(conf, a):
+    drive = (a.drive or conf["drive"]).rstrip("/")
+    default_drive = drive == conf["drive"].rstrip("/")
+    if not os.path.isdir(drive) or (not is_tmpfs(drive) and not a.dry_run):
+        log(f"{drive} is not a mounted tmpfs - nothing warmed"); return
+    total, free = drive_stat(drive)
+    reserve = conf["reserve_frac"] * total
+    deadline = T0 + (a.cap_s if a.cap_s is not None else conf["cap_s"])
+    marker = os.path.join(drive, ".ailab-warming")
+    items, manifest_bytes = plan_cacher(conf, drive, default_drive)
+    if a.only == "modelsvc":
+        items = []
+    own = tree_bytes(os.path.join(drive, "ailab-modelsvc")) if os.path.isdir(os.path.join(drive, "ailab-modelsvc")) else 0
+    outside_now = max(0, total - free - own)
+    room = max(0.0, total - reserve - max(manifest_bytes, outside_now))   # what the RAM tiers may use (as tiers.py 0006)
+    ms_items, indexes = ([], []) if a.only == "cacher" else plan_modelsvc(conf, drive, room)
+    items += ms_items
+    if a.max_gb is not None:
+        sel, acc = [], 0
+        for it in items:
+            if acc + it["bytes"] <= a.max_gb * 1e9:
+                sel.append(it); acc += it["bytes"]
+        items = sel
+    if a.max_files is not None:
+        items = items[:a.max_files]
+    rates = conf["rates_gbps"]
+    est = sum(it["bytes"] / 1e9 / rates.get(it["tier"], 0.5) for it in items)
+    log(f"plan: drive {drive} {total / 1e9:.0f} GB, {free / 1e9:.0f} GB free, reserve {reserve / 1e9:.1f} GB, cacher manifest "
+        f"{manifest_bytes / 1e9:.1f} GB; {len(items)} copies, {sum(i['bytes'] for i in items) / 1e9:.1f} GB, est {est / 60:.1f} min "
+        f"(cap {(deadline - T0) / 60:.0f} min)")
+    for it in items:
+        log(f"  {it['list']:8} {it['bytes'] / 1e9:7.2f} GB  {it['tier']:6}  {it['src']}  ->  {it['dst']}")
+    if a.dry_run:
+        return
+    open(marker, "w").write(json.dumps({"pid": os.getpid(), "started": int(T0), "cap_s": int(deadline - T0)}))
+    try:
+        done = 0
+        for it in items:
+            if time.time() > deadline:
+                log(f"cap reached - {len(items) - done} copies left to AI-Lab / the service"); break
+            t = time.time()
+            r = do_copy(it, drive, reserve, deadline)
+            done += 1
+            dt = time.time() - t
+            log(f"{r}: {it['list']} {it['name']} {it['bytes'] / 1e9:.2f} GB in {dt:.1f}s"
+                + (f" ({it['bytes'] / 1e9 / dt:.2f} GB/s)" if r == "copied" and dt > 0 else ""))
+            if r == "deadline":
+                log("cap reached mid-copy - partial copy removed"); break
+        write_indexes(indexes)
+        if default_drive:
+            write_usage(drive, manifest_bytes, conf)
+    finally:
+        try:
+            os.remove(marker)
+        except OSError:
+            pass
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    g = ap.add_mutually_exclusive_group(required=True)
+    g.add_argument("--boot", action="store_true"); g.add_argument("--dry-run", action="store_true")
+    g.add_argument("--warm-only", action="store_true"); g.add_argument("--ensure-started", action="store_true")
+    ap.add_argument("--drive"); ap.add_argument("--max-gb", type=float); ap.add_argument("--max-files", type=int)
+    ap.add_argument("--only", choices=["cacher", "modelsvc"]); ap.add_argument("--cap-s", type=float); ap.add_argument("--force", action="store_true")
+    a = ap.parse_args()
+    conf = load_conf()
+    if a.ensure_started:
+        start_containers(conf, a.force, "ensure-started"); return
+    lk = open("/run/ailab-model-cache-warm.lock", "w")
+    fcntl.flock(lk, fcntl.LOCK_EX)
+    try:
+        log(f"=== {'boot' if a.boot else 'dry-run' if a.dry_run else 'warm-only'} (host up {uptime_s() / 60:.1f} min)")
+        warm(conf, a)
+    except Exception as e:  # noqa: BLE001
+        log(f"warm failed: {type(e).__name__}: {e}")
+    finally:
+        if a.boot:
+            start_containers(conf, False, f"after warm-up, {time.time() - T0:.0f}s")
+        log(f"=== done in {time.time() - T0:.0f}s")
+
+
+if __name__ == "__main__":
+    main()

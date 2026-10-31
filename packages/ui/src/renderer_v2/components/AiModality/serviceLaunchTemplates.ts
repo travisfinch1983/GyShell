@@ -240,6 +240,11 @@ export const GENERIC_LAUNCH_TEMPLATES: Record<string, any> = {
         // skeleton on every launch. extra_model_paths.yaml has a model-cache:
         // root pointing here so ComfyUI scans both /imagegen/ and /model-cache/
         // imagegen/ for assets, with cached files winning by path order.
+        // claude1 2026-10-31: they only win when the model-cache paths come FIRST. They used to be appended after the
+        // NAS root (a hand-written imagegen: block came first), so every lookup found the NAS copy. The block now
+        // carries `is_default: true` (ComfyUI inserts its paths at the front whatever the file order; the lists stay
+        // the union), the same folder keys as the /imagegen roots incl. the Impact detector ones, and an existing
+        // yaml that lacks is_default gets it added on the next launch.
         // ComfyUI reads extra_model_paths.yaml only at startup — the cat >>
         // append below takes effect on the NEXT launch if the section is
         // missing. Idempotent: grep -q skips the append if already present, so
@@ -275,6 +280,7 @@ export const GENERIC_LAUNCH_TEMPLATES: Record<string, any> = {
           "  cat >> /opt/comfyui/extra_model_paths.yaml <<'YAML_EOF'",
           '',
           'model-cache:',
+          '    is_default: true',
           '    base_path: /model-cache/imagegen',
           '    checkpoints: |',
           '        checkpoints',
@@ -307,7 +313,15 @@ export const GENERIC_LAUNCH_TEMPLATES: Record<string, any> = {
           '    TTS: tts',
           '    step_audio: step-audio',
           '    clip_models: clip-models',
+          '    ultralytics_bbox: ultralytics/bbox',
+          '    ultralytics_segm: ultralytics/segm',
+          '    ultralytics: ultralytics',
+          '    sams: sam',
           'YAML_EOF',
+          'fi',
+          '# model-cache paths must be searched BEFORE the NAS roots: add is_default to an existing block that lacks it.',
+          "if ! sed -n '/^model-cache:/,/^[^ #]/p' /opt/comfyui/extra_model_paths.yaml | grep -q '^ *is_default: *true'; then",
+          "  sed -i '/^model-cache:/a\\    is_default: true' /opt/comfyui/extra_model_paths.yaml",
           'fi',
           '',
           // Impact Pack's UltralyticsDetectorProvider and SAMLoader only see detectors under

@@ -491,6 +491,17 @@ async function writeCacherUsage(sshService, node, hostIp, vmid, extra = {}) {
     const w = `echo ${b64} | base64 -d > "${f}.tmp" && mv -f "${f}.tmp" "${f}"`;
     const r = await sshService.exec(hostIp, host ? w : `pct exec ${vmid} -- bash -c '${w}'`, { timeout: 15000 });
     if (r.code !== 0) console.warn(`[cache] ${node}: could not write ${f}: ${r.stderr}`);
+    // claude1 2026-10-31: the host's own copy of this node's manifest (host paths), on the host's DISK, for the boot-time
+    // warm-up (ailab-model-cache-warm.service refills the RAM drive before it starts the AI containers).
+    if (host) {
+      const man = { writer: 'ai-lab model cacher (ai.js)', node, updated: body.updated, entries: ents.map(e => ({
+        cacheDir: e.cacheDir, sourceDir: e.sourceDir, type: e.type || 'llm', sizeMB: e.sizeMB || null, cachedAt: e.cachedAt || null,
+        src: toHostSourcePath(node, e.sourceDir) || null, dst: toHostCachePath(node, e.cacheDir) || null })) };
+      const mb = Buffer.from(JSON.stringify(man, null, 1)).toString('base64');
+      const mf = '/etc/ailab/model-cache-manifest.json';
+      const r2 = await sshService.exec(hostIp, `mkdir -p /etc/ailab && echo ${mb} | base64 -d > "${mf}.tmp" && mv -f "${mf}.tmp" "${mf}"`, { timeout: 15000 });
+      if (r2.code !== 0) console.warn(`[cache] ${node}: could not write ${mf}: ${r2.stderr}`);
+    }
   } catch (err) {
     console.warn(`[cache] ${node}: could not write the cacher usage file: ${err.message}`);
   }
@@ -8181,6 +8192,14 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
             const actualMB = parseInt(parts[1], 10) || 0;
 
             const entry = nodeEntries.find(e => e.cacheDir === dir);
+            const queued = copyQueues[node] && (copyQueues[node].currentCacheDir === dir || copyQueues[node].pending.some(x => x.cacheDir === dir));
+            if (entry && !entry.cachedAt && !queued && (!entry.sizeMB || actualMB >= entry.sizeMB * 0.9)) {
+              // present but marked not cached (a pass saw it missing, then the host warm-up restored it): adopt it instead
+              // of re-copying it (which starts with rm -rf).
+              console.log(`[cache-validate] ${node}: ${dir} is present again (${actualMB}MB) - marked cached`);
+              entry.cachedAt = new Date().toISOString(); delete entry.lastError; delete entry.lastErrorAt;
+              manifestChanged = true;
+            }
             if (entry && entry.cachedAt && entry.sizeMB) {
               // Size check: if actual < 90% of expected, likely truncated
               if (actualMB < entry.sizeMB * 0.9) {
@@ -8215,6 +8234,10 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
 
         const q = copyQueues[node];
         const queueBusy = !!(q && (q.active || q.pending.length));
+        // the host warm-up (ailab-model-cache-warm, after a host reboot) is filling this drive: no sweeps, no copies
+        const warm = listing.find(it => it.path === findPath + '/.ailab-warming');
+        const warming = !!(warm && Date.now() - warm.mtime < 2 * 3600 * 1000);
+        if (warming) ns.warming = 'host warm-up in progress: sweeps and re-copies skipped this pass';
         const rmOnNode = async (p, why) => {
           // belt and braces: only inside this node's cache root, never the image model services' folders
           if (!p.startsWith(findPath + '/') || /\/ailab-(modelsvc|loras)(\/|$)/.test(p) || p.includes('/../')) return false;
@@ -8229,8 +8252,8 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
         // Stale partial copies: copies now land in <dst>.part and are renamed into place only after a size check, so a
         // .part outside ailab-modelsvc is a copy that was interrupted (AI-Lab restart, host reboot). Only this cacher's copy
         // queue writes them, so they are swept only while that queue is idle.
-        if (queueBusy) {
-          ns.sweep = 'skipped: copy queue busy';
+        if (queueBusy || warming) {
+          ns.sweep = warming ? 'skipped: host warm-up in progress' : 'skipped: copy queue busy';
         } else {
           for (const it of listing) {
             if (!/\.part$/.test(it.path)) continue;
@@ -8293,6 +8316,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
         let freeLeft = drive.total ? drive.free - reserve : Infinity;
         for (const entry of nodeEntries) {
           if (entry.cachedAt === null) {
+            if (warming) continue;
             if (q && (q.currentCacheDir === entry.cacheDir || q.pending.some(x => x.cacheDir === entry.cacheDir))) continue;   // already queued
             const need = (Number(entry.sizeMB) || 0) * 1048576;
             if (need && need > freeLeft) {
