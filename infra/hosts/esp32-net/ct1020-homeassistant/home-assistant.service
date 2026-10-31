@@ -1,0 +1,20 @@
+[Unit]
+Description=Home Assistant Core (claude1 2026-10-30; venv /opt/homeassistant/venv, config /var/lib/homeassistant/config)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=homeassistant
+Group=homeassistant
+WorkingDirectory=/var/lib/homeassistant
+Environment=PATH=/opt/homeassistant/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/homeassistant/venv/bin/hass -c /var/lib/homeassistant/config
+# The migrated config serves the UI on port 80 (.storage/http server_port); ping/DHCP discovery want raw sockets.
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
