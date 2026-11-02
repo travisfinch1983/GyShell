@@ -56,6 +56,9 @@ export interface ChatItem {
   steering?: boolean
   /** user turns: what page context rode along ('text' = viewContext, 'vision' = +screenshot). */
   ctxAttached?: 'text' | 'vision'
+  /** user turns: images the user attached (data URLs), sent as native image blocks. Kept in
+   *  memory for display only — a transcript reloaded from the backend won't have them. */
+  images?: string[]
   /** capture_consent: the pending view_screen request this button completes. */
   requestId?: string
   capConvId?: string
@@ -68,7 +71,7 @@ export interface AgentChatState {
   /** a prompt turn is in flight (from this UI or any other client) */
   busy: boolean
   /** type-ahead: messages composed while busy; auto-sent on turn end (they used to vanish). */
-  queue: Array<{ itemId: number; text: string }>
+  queue: Array<{ itemId: number; text: string; images?: string[] }>
   commands: HermesSlashCommand[]
   /** context-window meter from usageUpdate: {used, size} */
   usage: { used: number; size: number } | null
@@ -611,7 +614,7 @@ class HermesChatStore {
     this.rebuilding.add(conversationId)
     try {
       const s = this.state(conversationId)
-      const pending = s.queue.map((q) => q.text)
+      const pending = s.queue.map((q) => ({ text: q.text, images: q.images }))
       this.detach(conversationId)
       runInAction(() => {
         s.items.splice(0, s.items.length)
@@ -625,10 +628,10 @@ class HermesChatStore {
       runInAction(() => {
         s.items.push({ id: this.nextId++, ts: Date.now(), kind: 'system',
           text: why === 'manual' ? '↻ agent session restarted — conversation reloaded' : '↻ the agent process restarted — reconnected and reloaded the conversation' })
-        for (const text of pending) {
+        for (const { text, images } of pending) {
           const id = this.nextId++
-          s.items.push({ id, ts: Date.now(), kind: 'user', text, queued: true })
-          s.queue.push({ itemId: id, text })
+          s.items.push({ id, ts: Date.now(), kind: 'user', text, queued: true, ...(images?.length ? { images } : {}) })
+          s.queue.push({ itemId: id, text, images })
         }
       })
       if (pending.length) chatDebug(`[${cshort(conversationId)}] rebuild: re-queued ${pending.length} message(s)`)
@@ -806,15 +809,24 @@ class HermesChatStore {
     await speakTextNow(t, agentId, override)
   }
 
-  async send(agentId: string, conversationId: string, text: string): Promise<void> {
+  async send(agentId: string, conversationId: string, text: string, images: string[] = []): Promise<void> {
     const s = this.state(conversationId)
-    const t = text.trim()
+    // The /prompt route requires text; an image-only send gets a neutral caption.
+    const t = text.trim() || (images.length ? (images.length === 1 ? '(image attached)' : `(${images.length} images attached)`) : '')
     if (!t) return
     this.agents.set(conversationId, agentId)
 
     // ALWAYS render the user's message immediately — it must never vanish.
-    const item: ChatItem = { id: this.nextId++, kind: 'user', text: t, ts: Date.now() }
+    const item: ChatItem = { id: this.nextId++, kind: 'user', text: t, ts: Date.now(), ...(images.length ? { images } : {}) }
     s.items.push(item)
+
+    // Steering carries text only, so a mid-turn message WITH images queues instead of steering
+    // (dropping the images silently would be worse than waiting for the turn to end).
+    if (s.busy && images.length) {
+      runInAction(() => { item.queued = true })
+      s.queue.push({ itemId: item.id, text: t, images })
+      return
+    }
 
     // MID-TURN => STEER, always. Travis: "Anytime I send a message while an agent is working,
     // it means I want them to see it ASAP" — if he wanted it to land after the turn he would
@@ -832,15 +844,16 @@ class HermesChatStore {
       s.queue.push({ itemId: item.id, text: t })
       return
     }
-    await this.fire(agentId, conversationId, t, item)
+    await this.fire(agentId, conversationId, t, item, images)
   }
 
   /** POST one turn. Sets busy synchronously so a concurrent flush can't double-fire. The reply
    *  renders via the stream; the POST is for error surfacing + view-context attach. */
-  private async fire(agentId: string, conversationId: string, t: string, item: ChatItem): Promise<void> {
+  private async fire(agentId: string, conversationId: string, t: string, item: ChatItem, images: string[] = []): Promise<void> {
     const s = this.state(conversationId)
     s.busy = true
-    const extra: { context?: string; screenshot?: string; conversationId?: string } = { conversationId }
+    const extra: { context?: string; screenshot?: string; images?: string[]; conversationId?: string } = { conversationId }
+    if (images.length) extra.images = images
     try {
       // Context is snapshotted at SEND time (for a queued msg, that's when it actually fires).
       const snapshot = buildViewSnapshot((window as any).__appStore)
@@ -876,7 +889,7 @@ class HermesChatStore {
       setTimeout(() => this.flushQueue(conversationId), 0)
       return
     }
-    void this.fire(agentId, conversationId, next.text, item)
+    void this.fire(agentId, conversationId, next.text, item, next.images ?? [])
   }
 }
 

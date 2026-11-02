@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Mic, MicOff, Pencil, Plus, Radio, RefreshCw, RotateCcw, ScanEye, SendHorizonal, Settings2, Square, Trash2, Volume2, VolumeX, Wrench } from 'lucide-react'
+import { Bot, Camera, ChevronDown, ChevronRight, ListChecks, MessageSquare, Mic, MicOff, Paperclip, Pencil, Plus, Radio, RefreshCw, RotateCcw, ScanEye, SendHorizonal, Settings2, Square, Trash2, Volume2, VolumeX, Wrench } from 'lucide-react'
 import { stopPlayback } from '../../services/TtsPlayback'
 import {
   startPushToTalk, stopPushToTalk,
@@ -18,6 +18,31 @@ import { hermesApi } from '../../stores/hermesApi'
 import { hermesChatStore as chat, type ChatItem } from '../../stores/HermesChatStore'
 import { hermesConversationsStore, type ConvMeta } from '../../stores/hermesConversationsStore'
 import styles from './AgentChat.module.scss'
+
+// Image attachments: sent as native ACP image blocks (the backend's /prompt `images` field).
+// The hermes router's JSON limit is 12 MB, so big photos are downscaled before they go.
+const MAX_ATTACH = 6
+const MAX_EDGE = 2048
+const KEEP_AS_IS_BYTES = 1.5 * 1024 * 1024
+const readAsDataUrl = (f: Blob) => new Promise<string>((resolve, reject) => {
+  const r = new FileReader()
+  r.onload = () => resolve(String(r.result))
+  r.onerror = () => reject(r.error ?? new Error('read failed'))
+  r.readAsDataURL(f)
+})
+async function imageFileToDataUrl(f: File): Promise<string> {
+  const original = await readAsDataUrl(f)
+  // Small files and SVGs go as-is (PNG transparency matters for icon references).
+  if (f.size <= KEEP_AS_IS_BYTES || f.type === 'image/svg+xml') return original
+  const img = new Image()
+  await new Promise<void>((resolve, reject) => { img.onload = () => resolve(); img.onerror = () => reject(new Error(`could not decode ${f.name}`)); img.src = original })
+  const scale = Math.min(1, MAX_EDGE / Math.max(img.naturalWidth, img.naturalHeight))
+  const c = document.createElement('canvas')
+  c.width = Math.round(img.naturalWidth * scale); c.height = Math.round(img.naturalHeight * scale)
+  c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height)
+  // Keep PNG for PNGs (alpha); everything else re-encodes as JPEG.
+  return f.type === 'image/png' ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.9)
+}
 
 /** Collapsible reasoning block. */
 const ThoughtRow = observer(({ item }: { item: ChatItem }) => {
@@ -194,6 +219,15 @@ const Row = observer(({ item, agentId }: { item: ChatItem; agentId: string }) =>
     case 'user':
       return (
         <div className={styles.msgYou} style={item.queued || item.steering ? { opacity: 0.55 } : undefined}>
+          {item.images?.length ? (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+              {item.images.map((src, n) => (
+                <a key={n} href={src} target="_blank" rel="noreferrer" title="open full size">
+                  <img src={src} alt={`attachment ${n + 1}`} style={{ maxWidth: 160, maxHeight: 120, borderRadius: 6, display: 'block', objectFit: 'contain', background: 'rgba(0,0,0,0.15)' }} />
+                </a>
+              ))}
+            </div>
+          ) : null}
           {item.text}
           {item.steering && (
             <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.85 }} title="Steering — delivered to the agent at its next tool call, without waiting for the turn to end">
@@ -407,12 +441,36 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
     finally { setRestarting(false) }
   }
 
+  const [attachments, setAttachments] = useState<Array<{ name: string; dataUrl: string }>>([])
+  const [attachMsg, setAttachMsg] = useState('')
+  const fileRef = useRef<HTMLInputElement | null>(null)
+  const addImageFiles = async (files: File[]) => {
+    const imgs = files.filter((f) => f.type.startsWith('image/'))
+    if (!imgs.length) return
+    setAttachMsg('')
+    const room = MAX_ATTACH - attachments.length
+    if (room <= 0) { setAttachMsg(`max ${MAX_ATTACH} images per message`); return }
+    if (imgs.length > room) setAttachMsg(`only the first ${room} added (max ${MAX_ATTACH} per message)`)
+    const added: Array<{ name: string; dataUrl: string }> = []
+    for (const f of imgs.slice(0, room)) {
+      try { added.push({ name: f.name || 'image', dataUrl: await imageFileToDataUrl(f) }) }
+      catch (e) {
+        console.warn('[agent-chat] attach failed', f.name, e)
+        setAttachMsg(`couldn't attach ${f.name}: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    if (added.length) setAttachments((cur) => [...cur, ...added].slice(0, MAX_ATTACH))
+  }
+
   const send = () => {
     setSlashOpen(false)
     if (editing) { void doRewind('edit'); return }
     const t = text
+    const imgs = attachments.map((a) => a.dataUrl)
+    if (!t.trim() && !imgs.length) return
     setText('')
-    void chat.send(agentId, conversationId, t)
+    setAttachments([]); setAttachMsg('')
+    void chat.send(agentId, conversationId, t, imgs)
   }
 
   const spec = hermesAgentsStore.specs.get(agentId)
@@ -515,7 +573,41 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
             ))}
           </div>
         )}
+        {(attachments.length > 0 || attachMsg) && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', padding: '4px 2px' }}>
+            {attachments.map((a, n) => (
+              <div key={n} style={{ position: 'relative' }} title={a.name}>
+                <img src={a.dataUrl} alt={a.name} style={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 6, display: 'block' }} />
+                <button
+                  type="button"
+                  aria-label={`remove ${a.name}`}
+                  title="remove"
+                  onClick={() => setAttachments((cur) => cur.filter((_, i) => i !== n))}
+                  style={{ position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: 9, border: 'none', cursor: 'pointer', fontSize: 11, lineHeight: '18px', padding: 0, background: 'rgba(0,0,0,0.75)', color: '#fff' }}
+                >×</button>
+              </div>
+            ))}
+            {attachMsg && <span className={styles.msgActErr}>{attachMsg}</span>}
+          </div>
+        )}
         <div className={styles.composer}>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => { const f = Array.from(e.target.files ?? []); e.target.value = ''; void addImageFiles(f) }}
+          />
+          <button
+            type="button"
+            className={styles.msgActBtn}
+            disabled={editing || attachments.length >= MAX_ATTACH}
+            title={editing ? 'images can\'t be added while editing a message' : 'Attach images (or paste / drag them into the box)'}
+            onClick={() => fileRef.current?.click()}
+          >
+            <Paperclip size={14} />
+          </button>
           <textarea
             ref={taRef}
             className={styles.input}
@@ -523,6 +615,17 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
             value={text}
             placeholder={s.commands.length ? `message ${agentId} — / for commands (Shift+Enter = newline)` : `message ${agentId}… (Shift+Enter = newline)`}
             onChange={(e) => setText(e.target.value)}
+            onPaste={(e) => {
+              if (editing) return
+              const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith('image/'))
+              if (files.length) { e.preventDefault(); void addImageFiles(files) }
+            }}
+            onDragOver={(e) => { if (!editing && Array.from(e.dataTransfer?.types ?? []).includes('Files')) e.preventDefault() }}
+            onDrop={(e) => {
+              if (editing) return
+              const files = Array.from(e.dataTransfer?.files ?? []).filter((f) => f.type.startsWith('image/'))
+              if (files.length) { e.preventDefault(); void addImageFiles(files) }
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 if (slashOpen && slashMatches[0]) { e.preventDefault(); setText(`/${slashMatches[0].name} `); setSlashOpen(false); return }
@@ -542,7 +645,7 @@ export const AgentConversation: React.FC<{ agentId: string; conversationId: stri
               <Square size={11} fill="currentColor" /> Stop
             </button>
           ) : (
-            <button className={styles.btnPrimary} disabled={!text.trim()} onClick={send}>
+            <button className={styles.btnPrimary} disabled={!text.trim() && attachments.length === 0} onClick={send}>
               <SendHorizonal size={13} />
             </button>
           )}

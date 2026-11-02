@@ -550,9 +550,9 @@ export const hermesApi = {
    * writes it to the agent's cwd and tells the agent to read it with its vision tool).
    * Both augment only the agent's turn, never the displayed user message.
    */
-  async prompt(id: string, text: string, extra?: { context?: string; screenshot?: string; conversationId?: string; wait?: boolean }): Promise<HermesPromptResult> {
+  async prompt(id: string, text: string, extra?: { context?: string; screenshot?: string; images?: string[]; conversationId?: string; wait?: boolean }): Promise<HermesPromptResult> {
     try {
-      const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/prompt`, { text, ...(extra?.wait ? { wait: true } : {}), ...(extra?.context ? { context: extra.context } : {}), ...(extra?.screenshot ? { screenshot: extra.screenshot } : {}), ...(extra?.conversationId ? { conversationId: extra.conversationId } : {}) })
+      const r = await bridge().request('POST', `/api/hermes/agents/${encodeURIComponent(id)}/prompt`, { text, ...(extra?.wait ? { wait: true } : {}), ...(extra?.context ? { context: extra.context } : {}), ...(extra?.screenshot ? { screenshot: extra.screenshot } : {}), ...(extra?.images?.length ? { images: extra.images } : {}), ...(extra?.conversationId ? { conversationId: extra.conversationId } : {}) })
       if (r?.error) return { ok: false, error: String(r.error) }
       return { ok: r?.ok !== false, reply: r?.reply, stopReason: r?.stopReason }
     } catch (e) {
