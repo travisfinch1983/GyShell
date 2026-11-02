@@ -1,0 +1,108 @@
+diff --git a/agent/chat_completion_helpers.py b/agent/chat_completion_helpers.py
+index d7feafc97c..67f05cf23d 100644
+--- a/agent/chat_completion_helpers.py
++++ b/agent/chat_completion_helpers.py
+@@ -66,6 +66,17 @@ _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
+ _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
+ 
+ 
++def _cap_request_images(api_messages):
++    """[ailab patch] Cap images per request (see context_compressor.cap_request_images).
++    HERMES_MAX_IMAGES_PER_REQUEST, default 5 = the AI-Lab vLLM servers' limit; 0 disables."""
++    try:
++        from agent.context_compressor import cap_request_images
++        return cap_request_images(api_messages, env_int("HERMES_MAX_IMAGES_PER_REQUEST", 5))
++    except Exception:
++        logger.exception("cap_request_images failed; sending messages unchanged")
++        return api_messages
++
++
+ def _context_thread_target(callback):
+     """Bind a no-argument thread target to the caller's ContextVars."""
+     context = contextvars.copy_context()
+@@ -2038,6 +2049,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
+         # (e.g. DeepSeek, Kimi). The legacy path below already does this, but
+         # registered providers with profiles were bypassing the strip.
+         api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
++        api_messages = _cap_request_images(api_messages)
+ 
+         return _ct.build_kwargs(
+             model=agent.model,
+@@ -2071,6 +2083,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
+ 
+     # Strip image parts for non-vision models (no-op when vision-capable).
+     _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
++    _msgs_for_chat = _cap_request_images(_msgs_for_chat)
+ 
+     return _ct.build_kwargs(
+         model=agent.model,
+diff --git a/agent/context_compressor.py b/agent/context_compressor.py
+index d66bee1cad..8f60e9dd28 100644
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -1516,6 +1516,65 @@ def _strip_images_from_content(content: Any) -> Any:
+     return new_parts
+ 
+ 
++def cap_request_images(messages: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
++    """Keep only the newest ``limit`` image parts in an outgoing request.
++
++    [ailab patch] Servers cap images per request (vLLM ``--limit-mm-per-prompt``,
++    "At most 5 image(s) may be provided in one prompt."). ``_strip_historical_media``
++    only runs on compression and only anchors on image-bearing USER turns, so an
++    agent that keeps loading images through TOOLS (vision tool results) grows past
++    the cap and every later turn 400s -- the conversation is bricked. This runs on
++    every request: older image parts become a text note; the stored history is
++    untouched (shallow copies of touched messages only). ``limit <= 0`` disables.
++    """
++    if limit <= 0 or not messages:
++        return messages
++    seen = 0
++    # Walk newest -> oldest, counting image parts; strip anything past the limit.
++    cut: Dict[int, int] = {}  # message index -> number of its images to keep (newest-last within it)
++    for i in range(len(messages) - 1, -1, -1):
++        msg = messages[i]
++        if not isinstance(msg, dict):
++            continue
++        content = msg.get("content")
++        if not isinstance(content, list):
++            continue
++        n = sum(1 for p in content if _is_image_part(p))
++        if not n:
++            continue
++        keep = max(0, min(n, limit - seen))
++        seen += n
++        if keep < n:
++            cut[i] = keep
++    if not cut:
++        return messages
++    result = list(messages)
++    removed = 0
++    for i, keep in cut.items():
++        msg = messages[i]
++        content = msg["content"]
++        total = sum(1 for p in content if _is_image_part(p))
++        drop = total - keep  # drop the OLDEST images within the message (earliest parts)
++        new_parts: List[Any] = []
++        for p in content:
++            if _is_image_part(p) and drop > 0:
++                drop -= 1
++                removed += 1
++                new_parts.append({
++                    "type": "text",
++                    "text": "[older image removed: this request is limited to the newest "
++                            f"{limit} image(s). Re-open it with your image tool if you need it again.]",
++                })
++            else:
++                new_parts.append(p)
++        new_msg = msg.copy()
++        new_msg["content"] = new_parts
++        drop_stale_api_content(new_msg)
++        result[i] = new_msg
++    logger.info("cap_request_images: removed %d older image part(s) (limit %d, had %d)", removed, limit, seen)
++    return result
++
++
+ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+     """Replace image parts in older messages with placeholder text.
+ 
