@@ -333,6 +333,16 @@ function addToHfHistory(entry) {
   saveHfHistory(h);
 }
 
+// A HF repo id may carry a repo-type prefix, `datasets/owner/name` or `spaces/owner/name` — exactly
+// what the page URL shows, and what normalizeHfRepo keeps. The /resolve/ download URL takes that form
+// verbatim, but the Hub API does NOT: it is /api/datasets/owner/name, and /api/models/datasets/...
+// is a 404 the downloader reported as "cannot find repo" (2026-11-03, nvidia/simready-assets).
+// Every Hub API call goes through here so a dataset can't work in one route and 404 in another.
+function hfApiRepoUrl(repo) {
+  const m = String(repo || '').match(/^(datasets|spaces)\/(.+)$/);
+  return m ? `https://huggingface.co/api/${m[1]}/${m[2]}` : `https://huggingface.co/api/models/${repo}`;
+}
+
 async function enrichHfHistoryEntry(entry) {
   if (!entry.repo) return;
   try {
@@ -340,7 +350,7 @@ async function enrichHfHistoryEntry(entry) {
     const token = ui.hfToken || loadClusterHfToken();
     const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
-    const repoUrl = `https://huggingface.co/api/models/${entry.repo}`;
+    const repoUrl = hfApiRepoUrl(entry.repo);
     const resp = await fetch(repoUrl, { headers, timeout: 10000 });
     if (!resp.ok) return;
     const meta = await resp.json();
@@ -7056,32 +7066,50 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
 
   // ─── HuggingFace Model Downloader ───────────────────────────────────
 
-  /** Recursively walk HF tree API and return flat file list */
+  /**
+   * Flat file list for a repo (or one folder of it).
+   *
+   * One recursive listing, following the API's `Link: rel="next"` pages. The old walk made one
+   * request per directory and read only the FIRST page of each, and the API caps a page at 1000
+   * entries, so any directory with more than 1000 entries was silently truncated. nvidia/simready-assets
+   * has >1000 top-level folders (2026-11-03).
+   *
+   * Capped at HF_TREE_MAX_FILES: that same repo is >138k files and >346 GB, and listing it in full
+   * takes minutes and produces a six-figure download queue. Past the cap we refuse with instructions
+   * to paste a folder URL, rather than return a partial list that looks complete.
+   */
+  const HF_TREE_MAX_FILES = 20_000;
   async function walkHfTree(repo, revision, token, pathPrefix = '') {
-    const url = `https://huggingface.co/api/models/${repo}/tree/${revision}${pathPrefix ? '/' + pathPrefix : ''}`;
+    const prefix = pathPrefix ? '/' + pathPrefix.split('/').map(encodeURIComponent).join('/') : '';
+    let url = `${hfApiRepoUrl(repo)}/tree/${encodeURIComponent(revision)}${prefix}?recursive=true&limit=1000`;
     const headers = {};
     if (token) headers['Authorization'] = `Bearer ${token}`;
-    const resp = await fetch(url, { headers });
-    if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error(`${resp.status} — ${resp.statusText}: ${text.slice(0, 200)}`);
-    }
-    const entries = await resp.json();
     const files = [];
-    for (const entry of entries) {
-      if (entry.type === 'file') {
-        files.push({ path: entry.path, size: entry.size || 0 });
-      } else if (entry.type === 'directory') {
-        const subFiles = await walkHfTree(repo, revision, token, entry.path);
-        files.push(...subFiles);
+    let pages = 0;
+    while (url) {
+      const resp = await fetch(url, { headers, signal: AbortSignal.timeout(30_000) });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`${resp.status} — ${resp.statusText}: ${text.slice(0, 200)}`);
       }
+      const entries = await resp.json();
+      pages++;
+      for (const entry of entries) {
+        if (entry.type === 'file') files.push({ path: entry.path, size: entry.size || 0 });
+      }
+      if (files.length > HF_TREE_MAX_FILES) {
+        throw new Error(`${repo}${pathPrefix ? '/' + pathPrefix : ''} has more than ${HF_TREE_MAX_FILES.toLocaleString()} files `
+          + `(stopped after ${pages} pages). Paste a folder URL instead, e.g. https://huggingface.co/${repo}/tree/${revision}/<folder>`);
+      }
+      const m = (resp.headers.get('link') || '').match(/<([^>]+)>;\s*rel="next"/);
+      url = m ? m[1] : null;
     }
     return files;
   }
 
   /** Fetch branches/refs for a HuggingFace repo */
   async function fetchHfBranches(repo, token) {
-    const url = `https://huggingface.co/api/models/${repo}/refs`;
+    const url = `${hfApiRepoUrl(repo)}/refs`;
     const headers = {};
     if (token) headers['Authorization'] = `Bearer ${token}`;
     try {
@@ -7111,6 +7139,13 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
    * of which 404'd independently in that same report. Fixing one interpolation would have
    * left the others broken, which is how one invariant becomes four separate bugs.
    */
+  /** The folder and revision a pasted `.../tree/<rev>/<folder>` URL points at (empty when none). */
+  function parseHfTreeTarget(input) {
+    const s = String(input ?? '').trim().split(/[?#]/)[0].replace(/\/+$/, '');
+    const m = s.match(/\/tree\/([^/]+)(?:\/(.+))?$/i);
+    return m ? { revision: decodeURIComponent(m[1]), path: m[2] ? decodeURIComponent(m[2]) : '' } : { revision: '', path: '' };
+  }
+
   function normalizeHfRepo(input) {
     let s = String(input ?? '').trim();
     if (!s) return s;
@@ -7125,9 +7160,13 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
 
   router.post('/hf/tree', async (req, res) => {
     try {
-      const { repo: repoRaw, revision = 'main', token } = req.body;
+      const { repo: repoRaw, token } = req.body;
       const repo = normalizeHfRepo(repoRaw);
       if (!repo) return res.status(400).json({ error: 'repo is required' });
+      // A pasted folder URL (.../tree/main/<folder>) browses just that folder; it used to be thrown away.
+      const target = parseHfTreeTarget(repoRaw);
+      const revision = (req.body.revision && req.body.revision !== 'main') ? req.body.revision : (target.revision || 'main');
+      const subPath = String(req.body.path || target.path || '').replace(/^\/+|\/+$/g, '');
 
       // Use saved token if none provided in request
       const ui = loadSettings().ui || {};
@@ -7135,7 +7174,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
 
       // Fetch branches in parallel with file tree
       const [files, branches] = await Promise.all([
-        walkHfTree(repo, revision, effectiveToken),
+        walkHfTree(repo, revision, effectiveToken, subPath),
         fetchHfBranches(repo, effectiveToken),
       ]);
 
