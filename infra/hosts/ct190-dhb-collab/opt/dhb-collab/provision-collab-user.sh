@@ -56,6 +56,7 @@ for ev, groups in ours.items():
     mine = {h["command"] for g in groups for h in g["hooks"]}
     kept = [g for g in hooks.get(ev, []) if not any(h.get("command") in mine for h in g.get("hooks", []))]
     hooks[ev] = kept + groups
+d["skipDangerousModePermissionPrompt"] = True   # claudecode/resume pass --dangerously-skip-permissions
 json.dump(d, open(p, "w"), indent=2)
 EOF
 

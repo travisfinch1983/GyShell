@@ -1,0 +1,3 @@
+#!/bin/bash
+# resume: open Claude and pick which earlier conversation to continue.
+exec /usr/local/bin/claude-collab-launch resume

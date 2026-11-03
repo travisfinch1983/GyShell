@@ -1,7 +1,9 @@
 
-  dhb-collab — your Claude Code box (Debian 13).
-    cc            start / re-attach your persistent Claude session (with fleet messaging)
-    claude        plain Claude Code (no inbound fleet messages)
-  First run: sign in with YOUR enterprise Claude account (/login inside claude).
-  Scope + rules: ~/.claude/CLAUDE.md   ·   need anything outside this box? ask claude1 (fleet)
+  Welcome to dhb-collab.
+
+    claudecode    start Claude (picks up where you left off)
+    resume        start Claude and choose an older conversation
+
+  Done for now? Just close this window - Claude keeps running.
+  Next time, type claudecode to get back to it.
 

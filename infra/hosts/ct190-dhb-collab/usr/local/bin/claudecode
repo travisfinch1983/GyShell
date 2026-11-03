@@ -1,0 +1,3 @@
+#!/bin/bash
+# claudecode: open Claude, continuing your last conversation (or back into the running one).
+exec /usr/local/bin/claude-collab-launch continue

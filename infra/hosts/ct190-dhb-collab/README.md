@@ -42,8 +42,15 @@ It is enforced on the **px-nas host** (`etc/dhb-collab-ct190-fence.nft` and the 
 - `opt/dhb-collab/CLAUDE.md` is installed as `~/.claude/CLAUDE.md`. It tells the instance it owns the
   container, that anything outside needs Travis's approval through claude1, and that outside exposure
   needs approval plus an evaluation.
-- `usr/local/bin/cc` runs a persistent tmux session of `claude --dangerously-load-development-channels server:fleet`,
-  so fleet messages still arrive while he's disconnected.
+- **One-word commands** (he has never used Linux): **`claudecode`** continues the last conversation
+  (`claude -c`, or a fresh one on first run), and **`resume`** opens the conversation picker (`claude -r`).
+  `cc` is an alias of claudecode. All of them run `usr/local/bin/claude-collab-launch`, which starts
+  Claude with `--dangerously-skip-permissions --dangerously-load-development-channels server:fleet`
+  inside an invisible tmux session called `claude` (`etc/tmux.conf`: status bar off, mouse scrolling
+  on). Closing the SSH window leaves it running, so fleet messages still arrive, and the next command
+  re-attaches to it rather than starting a second copy. If the terminal can't run tmux (`TERM=dumb`),
+  Claude starts directly. The remaining individual permission prompts are his to allow or deny.
+  `skipDangerousModePermissionPrompt` is set, so the bypass warning doesn't appear on every launch.
 - `opt/dhb-docs/` is a fork of mcp-document-rag (patch `infra/patches/mcp-document-rag/0003`): it reaches
   everything through the gate and adds `add_documents` / `index_status`. Install it with
   `npm install --omit=dev` and create `data/`, writable by the user. The same server is installed on

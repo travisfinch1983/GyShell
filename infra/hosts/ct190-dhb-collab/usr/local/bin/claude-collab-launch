@@ -1,0 +1,28 @@
+#!/bin/bash
+# Shared launcher behind `claudecode` and `resume` (dhb-collab, claude1 2026-11-03).
+# Runs Claude inside an invisible tmux session named "claude", so closing the SSH window does NOT
+# stop it (fleet messages keep arriving) and the next `claudecode` drops him straight back in.
+MODE="$1"                                   # continue | resume
+CLAUDE="$HOME/.local/bin/claude"
+FLAGS="--dangerously-skip-permissions --dangerously-load-development-channels server:fleet"
+if tmux has-session -t claude 2>/dev/null; then
+  if [ "$MODE" = resume ]; then
+    echo "Claude is already running - taking you back to it."
+    echo "(To open a different conversation: type /exit in Claude, then run: resume)"
+    sleep 3
+  fi
+  exec tmux attach -t claude
+fi
+if [ "$MODE" = resume ]; then
+  CMD="$CLAUDE -r $FLAGS"
+elif ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1; then
+  CMD="$CLAUDE -c $FLAGS"                   # pick up the last conversation
+else
+  CMD="$CLAUDE $FLAGS"                      # first ever run: nothing to continue
+fi
+# A terminal tmux cannot drive (e.g. TERM=dumb) must not leave him with nothing: run Claude directly.
+if ! tput clear >/dev/null 2>&1; then
+  echo "(this terminal cannot run the background session - starting Claude directly; closing the window will stop it)"
+  exec $CMD
+fi
+exec tmux new-session -s claude -c "$HOME" "$CMD"
