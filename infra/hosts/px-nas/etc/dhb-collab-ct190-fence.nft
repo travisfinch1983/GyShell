@@ -1,0 +1,59 @@
+#!/usr/sbin/nft -f
+# CT190 "dhb-collab" fence — claude1, 2026-11-03.
+#
+# WHY: CT190 is a Claude Code box for one of Travis's coworkers (his own enterprise Claude account)
+# and its SSH port is FORWARDED FROM THE INTERNET. Treat it as untrusted: if it is ever compromised,
+# it must not be a foothold into the homelab. Enforced HERE on the px-nas host (bridge family, on the
+# CT's veth), so root inside the container cannot undo it.
+#
+# EGRESS from CT190 (10.0.0.194):
+#   10.0.0.219 tcp 8098  dhb-collab-gate (fleet pinned to claude-dhb-collab -> claude1/claude-dhb-enterprise
+#                        only, DHB doc-RAG, memory-extract LLM)   /opt/ai-lab-mcp/dhb-collab-gate.py on CT152
+#   10.0.0.219 tcp 9857  memory server #2 (ai-lab-memory-mcp-dhb) — source-IP PINNED to namespace dhb-collab
+#   public internet (Anthropic API, apt, npm, GitHub ...). DNS = public resolvers (1.1.1.1 / 9.9.9.9).
+#   Everything else private (RFC1918, CGNAT/tailnet, link-local, IPv6) is DROPPED.
+# ANTI-SPOOF: frames from the veth must carry CT190's own MAC and IP (the gate and the memory
+#   server identify callers by source IP — a CT that could take 10.0.0.153 or .161 would inherit
+#   their rights). ARP is limited to CT190's own address for the same reason.
+# INGRESS to CT190: only NEW connections to the SSH port (47983) are let in — from the internet via
+#   the OPNsense port-forward and from the LAN (claude1 manages it); replies pass via conntrack.
+#   Anything else he runs in the container is unreachable until an exposure is approved + added here.
+# Apply: nft -f /etc/dhb-collab-ct190-fence.nft   (dhb-collab-ct190-fence.service does this at boot)
+
+table bridge dhb_collab_ct190
+delete table bridge dhb_collab_ct190
+
+table bridge dhb_collab_ct190 {
+	set lab_allow {
+		type ipv4_addr . inet_proto . inet_service
+		elements = {
+			10.0.0.219 . tcp . 8098,
+			10.0.0.219 . tcp . 9857,
+		}
+	}
+
+	chain forward {
+		type filter hook forward priority -10; policy accept;
+
+		# ── egress: frames coming OUT of the container ──
+		iifname "veth190i0" ether saddr != bc:24:11:14:e2:30 counter drop comment "MAC spoof"
+		iifname "veth190i0" ether type arp arp saddr ip != 10.0.0.194 counter drop comment "ARP spoof"
+		iifname "veth190i0" ether type arp accept
+		iifname "veth190i0" ether type ip6 counter drop comment "no IPv6 out of CT190"
+		iifname "veth190i0" ether type ip ip saddr != 10.0.0.194 counter drop comment "IP spoof"
+		iifname "veth190i0" ct state established,related accept
+		iifname "veth190i0" ip daddr . ip protocol . th dport @lab_allow accept
+		# NOTE: limit is a MATCH condition — keep it on the log-only rule, never on the drop rule
+		iifname "veth190i0" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } limit rate 6/minute log prefix "ct190-egress-deny "
+		iifname "veth190i0" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } counter drop
+		iifname "veth190i0" ether type != { ip, arp } counter drop comment "only IPv4 + ARP"
+
+		# ── ingress: frames going INTO the container ──
+		oifname "veth190i0" ether type arp accept
+		oifname "veth190i0" ether type ip6 counter drop
+		oifname "veth190i0" ct state established,related accept
+		oifname "veth190i0" tcp dport 47983 ct state new accept comment "SSH (internet + LAN)"
+		oifname "veth190i0" ether type ip limit rate 6/minute log prefix "ct190-ingress-deny "
+		oifname "veth190i0" ether type ip counter drop
+	}
+}

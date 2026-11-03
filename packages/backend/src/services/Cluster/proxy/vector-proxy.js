@@ -332,9 +332,27 @@ export function createVectorProxyRouter() {
     }
   }
 
-  /** Get eligible DBs (excludeFromAll filtered out) */
-  function getEligibleDbs() {
-    return loadConfig().filter(db => !db.excludeFromAll);
+  /**
+   * Get eligible DBs (excludeFromAll filtered out), optionally FOR ONE COLLECTION.
+   *
+   * collectionPrefixes routing (2026-11-03): a DB entry with `collectionPrefixes: ["docs_dhb_"]`
+   * OWNS every collection whose name starts with one of them (companions like `__kw` share the
+   * prefix, so they follow automatically): those collections live there and nowhere else, and that
+   * DB serves nothing else. A DB without the field serves every collection NOT owned by another
+   * eligible DB. This keeps the shared DHB/enterprise store (ailab-qdrant-dhb) physically apart
+   * from the lab Qdrant while every caller keeps using the same /all/collections/:name API.
+   * 🛑 Any per-collection call site MUST pass the collection — called bare this returns ALL eligible
+   * DBs (correct only for collection LISTINGS), and an un-routed write would create the
+   * collection in the wrong store.
+   */
+  function getEligibleDbs(collection) {
+    const dbs = loadConfig().filter(db => !db.excludeFromAll);
+    if (collection == null) return dbs;
+    const name = String(collection);
+    const owns = (db) => Array.isArray(db.collectionPrefixes) && db.collectionPrefixes.some((x) => x && name.startsWith(x));
+    const owners = dbs.filter(owns);
+    if (owners.length) return owners;
+    return dbs.filter((db) => !(Array.isArray(db.collectionPrefixes) && db.collectionPrefixes.length));
   }
 
   /** Vectorize text using the embedding model (OpenAI-compatible format) */
@@ -665,14 +683,14 @@ export function createVectorProxyRouter() {
     const { name, dimension } = req.body || {};
     if (!name) return res.status(400).json({ error: 'name is required' });
     const dim = dimension || await getEmbedDim();
-    const dbs = getEligibleDbs();
+    const dbs = getEligibleDbs(name);
     const results = await Promise.all(dbs.map(db => createCollectionInDb(db, name, dim)));
     res.json({ collection: name, dimension: dim, results });
   });
 
   // DELETE /api/proxy/vector/all/collections/:name — Drop collection from all eligible DBs
   router.delete('/all/collections/:name', async (req, res) => {
-    const dbs = getEligibleDbs();
+    const dbs = getEligibleDbs(req.params.name);
     const results = await Promise.all(dbs.map(db => dropCollectionInDb(db, req.params.name)));
     // 207 when ANY backend failed. This handler used to return 200 unconditionally, so a
     // caller checking only the status could not tell a full drop from a partial one — and
@@ -689,7 +707,7 @@ export function createVectorProxyRouter() {
   // Every operation is mirrored onto the BM25 companion (<name>__kw) so keyword search agrees.
   const qdrantPointsOp = async (name, op, body) => {
     const results = [];
-    for (const db of getEligibleDbs()) {
+    for (const db of getEligibleDbs(name)) {
       if (db.type !== 'qdrant') { results.push({ db: db.name, ok: false, error: `${op} by filter not supported on ${db.type}` }); continue; }
       const url = `http://${db.host}:${db.port}`;
       const qCol = await resolveCollection('qdrant', name);
@@ -727,7 +745,7 @@ export function createVectorProxyRouter() {
   // POST /all/collections/:name/scroll { filter?, keys?: [...], limit?, offset? } -> { points:[{id,payload}], next }
   // Payload is restricted to `keys` (default file_name/file_type/doc_id) so a 25k-point walk stays small.
   router.post('/all/collections/:name/scroll', jsonParser(), async (req, res) => {
-    const db = getEligibleDbs().find((d) => d.type === 'qdrant');
+    const db = getEligibleDbs(req.params.name).find((d) => d.type === 'qdrant');
     if (!db) return res.status(503).json({ error: 'no qdrant backend' });
     const { filter, keys, limit = 1000, offset } = req.body || {};
     try {
@@ -775,7 +793,7 @@ export function createVectorProxyRouter() {
       return res.status(400).json({ error: 'Provide either "points" (pre-vectorized) or "documents" (auto-vectorize)' });
     }
 
-    const dbs = getEligibleDbs();
+    const dbs = getEligibleDbs(collection);
     const results = await Promise.all(dbs.map(db => upsertInDb(db, collection, upsertPoints)));
     // `count` stays SENT, for compatibility. `stored` is the conservative truth: the MINIMUM
     // across backends that answered — one number over stores that genuinely diverge is a lie by
@@ -795,7 +813,7 @@ export function createVectorProxyRouter() {
   router.get('/all/collections/:name/count', async (req, res) => {
     const name = String(req.params.name || '');
     if (!/^[a-zA-Z0-9_]+$/.test(name)) return res.status(400).json({ error: 'invalid collection name' });
-    const dbs = getEligibleDbs();
+    const dbs = getEligibleDbs(name);
     const counts = {};
     await Promise.all(dbs.map(async (db) => {
       const url = `http://${db.host}:${db.port}`;
@@ -1049,7 +1067,7 @@ export function createVectorProxyRouter() {
     if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (text) is required' });
     const sv = kwSparseQuery(query);
     if (!sv.indices.length) return res.json({ collection: req.params.name, results: [], note: 'no searchable terms' });
-    const db = getEligibleDbs().find((d) => d.type === 'qdrant');
+    const db = getEligibleDbs(req.params.name).find((d) => d.type === 'qdrant');
     if (!db) return res.status(503).json({ error: 'no qdrant backend' });
     const url = `http://${db.host}:${db.port}`;
     try {
@@ -1094,7 +1112,7 @@ export function createVectorProxyRouter() {
     }
 
     // Search all eligible DBs in parallel
-    const dbs = getEligibleDbs();
+    const dbs = getEligibleDbs(collection);
     const searchResults = {};
     const dbResults = await Promise.all(dbs.map(async (db) => {
       const results = await searchDb(db, queryVector, collection, topK, filter);

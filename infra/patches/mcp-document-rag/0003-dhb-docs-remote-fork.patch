@@ -1,0 +1,128 @@
+--- a/server.mjs
++++ b/server.mjs
+@@ -1,5 +1,14 @@
+ #!/usr/bin/env node
+ /**
++ * dhb-docs — MCP server for the SHARED DHB document store, run on CT190 dhb-collab (stdio).
++ *
++ * Fork of /opt/mcp-document-rag/server.mjs (CT152), 2026-11-03 claude1. Differences:
++ *  - talks to the AI-Lab API ONLY through dhb-collab-gate (PROXLAB_URL=http://10.0.0.219:8098),
++ *    which scopes every call to docs_dhb_* collections (they live in the dedicated ailab-qdrant-dhb);
++ *  - the collection manifest and the embedding model come from the gate (no local AI-Lab data dir);
++ *  - adds add_documents / index_status so this instance can CONTRIBUTE documents; no delete.
++ *
++ * Original header:
+  * mcp-document-rag — MCP server for searching indexed document collections
+  *
+  * Provides semantic search across document collections (PDFs, images, office docs)
+@@ -9,8 +18,8 @@
+ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+ import { z } from 'zod';
+-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+-import { join } from 'path';
++import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'fs';
++import { join, basename } from 'path';
+ import { fileURLToPath } from 'url';
+ 
+ // ── Config ──────────────────────────────────────────────────────────────────
+@@ -63,11 +72,26 @@
+ function loadManifest() {
+   return loadManifestAll().filter((m) => allowedCol(m.name));
+ }
++// The manifest lives on CT152; refreshed from the gate before every tool call (syncManifest).
++let _manifest = [];
+ function loadManifestAll() {
++  return _manifest;
++}
++async function syncManifest() {
+   try {
+-    if (existsSync(MANIFEST_FILE)) return JSON.parse(readFileSync(MANIFEST_FILE, 'utf-8'));
+-  } catch {}
+-  return [];
++    const r = await fetch(`${PROXLAB_URL}/api/ai/docrag/collections`, { signal: AbortSignal.timeout(15000) });
++    if (r.ok) _manifest = await r.json();
++    else console.error(`[dhb-docs] manifest fetch HTTP ${r.status} - using the last copy`);
++  } catch (e) {
++    console.error(`[dhb-docs] manifest fetch failed (${e.message}) - using the last copy`);
++  }
++  try {
++    const r = await fetch(`${PROXLAB_URL}/dhb/rag-models`, { signal: AbortSignal.timeout(10000) });
++    const m = r.ok ? ((await r.json()) || {}).embedModel : '';
++    if (m) _ragCfgCache = { ..._ragCfgCache, model: m, ts: Date.now() };
++  } catch (e) {
++    console.error(`[dhb-docs] embed-model fetch failed (${e.message})`);
++  }
+ }
+ 
+ function saveManifest(data) {
+@@ -204,9 +228,12 @@
+ 
+ // ── MCP Server ──────────────────────────────────────────────────────────────
+ const server = new McpServer({
+-  name: 'document-rag',
++  name: 'dhb-docs',
+   version: '1.0.0',
+ });
++// Every tool first refreshes the manifest + embed model from the gate.
++const _tool = server.tool.bind(server);
++server.tool = (name, desc, schema, handler) => _tool(name, desc, schema, async (...a) => { await syncManifest(); return handler(...a); });
+ 
+ // ─── Tool: search_docs ──────────────────────────────────────────────────────
+ server.tool(
+@@ -359,6 +386,55 @@
+   },
+ );
+ 
++// ─── Tool: add_documents (contribute to the shared store) ───────────────────
++const MAX_UPLOAD = 100 * 1024 * 1024;
++server.tool(
++  'add_documents',
++  'Index local files into a SHARED DHB document collection (seen by every DHB instance). Supports pdf, docx, xlsx, txt, md, csv, json, yaml, xml, html and images. Indexing runs in the background on the AI-Lab server - poll index_status. Only one indexing job runs at a time lab-wide (409 = busy, retry later). New collections must be named dhb_<something>.',
++  {
++    paths: z.array(z.string()).describe('Absolute paths of local files to index'),
++    collection: z.string().describe('Collection, e.g. "dhb_royal_slope_bess" (existing) or a new "dhb_<project>"'),
++    description: z.string().optional().describe('Collection description (used when creating a new collection)'),
++  },
++  async ({ paths, collection, description }) => {
++    try {
++      let total = 0;
++      const files = paths.map((p) => {
++        const st = statSync(p);
++        if (!st.isFile()) throw new Error(`${p} is not a file`);
++        total += st.size;
++        if (total > MAX_UPLOAD) throw new Error(`upload over ${MAX_UPLOAD / 1048576} MB - split it into several add_documents calls`);
++        return { name: basename(p), dataB64: readFileSync(p).toString('base64') };
++      });
++      const r = await fetch(`${PROXLAB_URL}/api/ai/docrag/index-b64`, {
++        method: 'POST', headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({ collection, description: description || '', files }),
++        signal: AbortSignal.timeout(300000),
++      });
++      const text = await r.text();
++      if (!r.ok) return { content: [{ type: 'text', text: `add_documents refused (HTTP ${r.status}): ${text.slice(0, 400)}` }], isError: true };
++      return { content: [{ type: 'text', text: `${text}\nIndexing started - poll index_status until it finishes.` }] };
++    } catch (e) {
++      return { content: [{ type: 'text', text: `add_documents error: ${e.message}` }], isError: true };
++    }
++  },
++);
++
++// ─── Tool: index_status ─────────────────────────────────────────────────────
++server.tool(
++  'index_status',
++  'Status of the (single, lab-wide) document indexing job. A non-DHB job shows only as busy.',
++  {},
++  async () => {
++    try {
++      const r = await fetch(`${PROXLAB_URL}/api/ai/docrag/index/status`, { signal: AbortSignal.timeout(15000) });
++      return { content: [{ type: 'text', text: await r.text() }] };
++    } catch (e) {
++      return { content: [{ type: 'text', text: `index_status error: ${e.message}` }], isError: true };
++    }
++  },
++);
++
+ // ── Start server ────────────────────────────────────────────────────────────
+ const transport = new StdioServerTransport();
+ await server.connect(transport);

@@ -1,0 +1,14 @@
+[DEFAULT]
+backend = systemd
+banaction = nftables-multiport
+ignoreip = 127.0.0.1/8 10.0.0.161
+bantime = 1h
+bantime.increment = true
+bantime.maxtime = 1w
+findtime = 10m
+maxretry = 4
+
+[sshd]
+enabled = true
+port = 47983
+mode = aggressive

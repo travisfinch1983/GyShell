@@ -1,0 +1,14 @@
+[Unit]
+Description=Fence for CT190 dhb-collab (internet-exposed coworker box): LAN egress allow-list, anti-spoof, SSH-only ingress - see /etc/dhb-collab-ct190-fence.nft
+Before=pve-guests.service
+After=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/sbin/modprobe nf_conntrack_bridge
+ExecStart=/usr/sbin/nft -f /etc/dhb-collab-ct190-fence.nft
+ExecStop=/usr/sbin/nft delete table bridge dhb_collab_ct190
+
+[Install]
+WantedBy=multi-user.target

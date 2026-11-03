@@ -34,6 +34,32 @@ services:
       timeout: 5s
       retries: 3
 
+  qdrant-dhb:
+    # SECOND Qdrant (2026-11-03, claude1): the shared DHB/enterprise document store, used by
+    # Travis's claude-dhb-enterprise (CT196) and the coworker instance (CT190 dhb-collab), plus
+    # the coworker's own memory. Kept apart from the lab Qdrant so enterprise data never mixes
+    # with homelab collections. LOCALHOST ONLY: every client reaches it through CT152 services
+    # (vector-proxy routes docs_dhb_* here via collectionPrefixes; memory server #2 on :9848).
+    image: qdrant/qdrant:v1.17.0
+    container_name: ailab-qdrant-dhb
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6340:6333"   # REST
+      - "127.0.0.1:6341:6334"   # gRPC
+    environment:
+      QDRANT__STORAGE__ON_DISK_PAYLOAD: "true"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - /zpoolgamma/docker-volume/ai-lab/qdrant-dhb:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   elasticsearch:
     # Keyword (BM25) + vector search for AI-Lab and its clients: Nextcloud
     # full-text search, the Nextcloud image-search fork, hybrid code/doc RAG.

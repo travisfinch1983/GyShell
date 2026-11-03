@@ -1,0 +1,24 @@
+[Unit]
+Description=AI-Lab memory MCP server #2 (DHB coworker instance CT190 dhb-collab): own Qdrant (ailab-qdrant-dhb :6340) on :9857, no HippocampAI/OpenViking lanes
+After=network.target docker.service
+
+[Service]
+# Same code as ai-lab-memory-mcp (/opt/mcp-unified-memory), separate store + WAL. Built 2026-11-03 by claude1.
+Environment=MEMORY_MCP_HTTP_PORT=9857
+Environment=PROXLAB_URL=http://127.0.0.1:17890
+Environment=QDRANT_HOST=127.0.0.1
+Environment=QDRANT_PORT=6340
+Environment=VECTOR_DBS=qdrant
+Environment=HIPPOCAMPAI_URL=off
+Environment=HIPPOCAMPAI_USER=dhb-collab
+Environment=OPENVIKING_URL=
+Environment=OPENVIKING_API_KEY=
+Environment=WAL_DIR=/var/lib/unified-memory-wal-dhb
+Environment=MEMORY_PINNED_SOURCES=10.0.0.194=dhb-collab
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/mcp-unified-memory/.venv/bin/python -m mcp_unified_memory --http
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

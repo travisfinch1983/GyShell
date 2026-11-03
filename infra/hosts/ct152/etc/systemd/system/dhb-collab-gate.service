@@ -1,0 +1,12 @@
+[Unit]
+Description=dhb-collab gate: allow-list proxy on :8098 for internet-exposed CT190 (fleet pinned to claude-dhb-collab, DHB doc-RAG, extract LLM) + CT196 doc-RAG
+After=network.target
+
+[Service]
+ExecStart=/opt/mcp-unified-memory/.venv/bin/python /opt/ai-lab-mcp/dhb-collab-gate.py 8098
+Restart=always
+RestartSec=3
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,54 @@
+--- a/mcp_unified_memory/server.py
++++ b/mcp_unified_memory/server.py
+@@ -29,6 +29,18 @@
+ # off the decommissioned host.
+ PROXLAB_URL = os.environ.get("PROXLAB_URL", "http://10.0.0.219:17890")
+ HIPPOCAMPAI_URL = os.environ.get("HIPPOCAMPAI_URL", "http://10.0.0.26:8000")
++# HIPPOCAMPAI_URL=off (2026-11-03): run WITHOUT the HippocampAI lane. Used by the second memory
++# server (ai-lab-memory-mcp-dhb, :9848) for the coworker instance on CT190, whose memories must stay
++# in its own Qdrant and never reach the shared lab hippo. Writes report the lane as applied (no WAL
++# backlog), recall returns nothing from it; every other hippo call hits a closed port and fails fast
++# into its existing error handling.
++class _HippoOff(Exception):
++    pass
++
++
++HIPPO_OFF = HIPPOCAMPAI_URL.strip().lower() in ("", "off", "none", "disabled")
++if HIPPO_OFF:
++    HIPPOCAMPAI_URL = "http://127.0.0.1:9"
+ HIPPOCAMPAI_USER = os.environ.get("HIPPOCAMPAI_USER", "claude")
+ 
+ # Per-caller namespace routing (memory consolidation, 2026-07-07): in HTTP
+@@ -686,6 +698,8 @@
+ 
+ def write_to_hippocampai(text: str, mem_type: str, importance: float, tags: list, user_id: str) -> Optional[dict]:
+     """Write to HippocampAI via its REST API."""
++    if HIPPO_OFF:
++        return {"disabled": True}
+     client = get_client()
+     try:
+         payload = {
+@@ -786,6 +800,8 @@
+     Bounded by HIPPO_RECALL_TIMEOUT: hippo does a local-CPU query embed + cross-encoder
+     rerank, so under load it can be slow. A short timeout keeps a slow hippo from blocking
+     the whole consensus — the vector + OpenViking lanes still answer. Best-effort lane."""
++    if HIPPO_OFF:
++        return []
+     client = get_client()
+     try:
+         resp = client.post(
+@@ -1533,10 +1549,13 @@
+ 
+     # HippocampAI
+     try:
++        if HIPPO_OFF:
++            raise _HippoOff()
+         resp = client.get(f"{HIPPOCAMPAI_URL}/v1/intelligence/health", timeout=5.0)
+         health["hippocampai"] = {"healthy": resp.status_code == 200, "data": resp.json()}
+     except Exception as e:
+-        health["hippocampai"] = {"healthy": False, "error": str(e)}
++        health["hippocampai"] = ({"healthy": True, "disabled": True} if isinstance(e, _HippoOff)
++                                 else {"healthy": False, "error": str(e)})
+ 
+     # Vector DBs
+     for db in VECTOR_DBS:

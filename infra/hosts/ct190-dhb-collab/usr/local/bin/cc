@@ -1,0 +1,9 @@
+#!/bin/bash
+# cc — start (or re-attach to) your persistent Claude Code session on dhb-collab.
+# It runs inside tmux, so it keeps running when you disconnect and fleet messages from claude1 /
+# claude-dhb-enterprise still reach it. Detach with Ctrl-b d; run `cc` again to come back.
+# Extra arguments are passed to claude (e.g. `cc --resume`). Plain `claude` works too, but without
+# the fleet channel (no inbound messages).
+CLAUDE="$HOME/.local/bin/claude"
+if tmux has-session -t claude 2>/dev/null; then exec tmux attach -t claude; fi
+exec tmux new-session -s claude -c "$HOME" "$CLAUDE --dangerously-load-development-channels server:fleet $*; echo; echo '[claude exited - press enter]'; read"
