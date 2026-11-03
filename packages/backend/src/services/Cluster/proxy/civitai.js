@@ -645,6 +645,104 @@ function moveModelFamily(fromPath, toPath) {
 }
 
 /**
+ * When a weight file finishes downloading, bring its version's sidecar set (.civit.info,
+ * .civit.full.info, .json, <base>[_N].jpeg|mp4, .vthumb/<base>[_N].mp4.jpg) next to it under the
+ * weight's own stem.
+ *
+ * The sidecars are written when the download is REQUESTED; the weight can land much later (an
+ * early-access version parks until it is released, a failed file is retried or forced), and by
+ * then the routing or the name may differ. That is how Diving-Anima's weights landed in
+ * diffusion-models/Anima on Oct 29 while its info and previews stayed in checkpoints/Anima from
+ * Oct 16, under nothing that paired them. The set is found by CONTENT (the .civit.info whose
+ * `id` is this version), never by a re-derived name, in every folder history recorded for the
+ * version plus the weight's own folder.
+ *
+ * Moves the set, except when its current base name is itself another weight file of that folder
+ * (a multi-file version: -BF16 / -FP8 ...): then it COPIES, so that file keeps its own previews.
+ * Never overwrites an existing file. Never throws.
+ */
+const SIDECAR_WEIGHT_EXT = /\.(safetensors|sft|ckpt|pt|pth|bin|gguf|onnx)$/i;
+function sidecarRest(name, base) {
+  if (!name.startsWith(base)) return null;
+  const rest = name.substring(base.length);
+  if (rest === '.civit.info' || rest === '.civit.full.info' || rest === '.json') return rest;
+  return /^(_\d+)?\.(jpeg|jpg|png|webp|mp4)$/i.test(rest) ? rest : null;
+}
+export function adoptSidecarsForDownload(dl) {
+  try {
+    if (!dl?.targetFile || !SIDECAR_WEIGHT_EXT.test(dl.fileName || dl.targetFile)) return;
+    const versionId = versionIdFromDlUrl(dl.dlUrl);
+    if (!versionId) return;
+    const toDir = dl.targetFile.substring(0, dl.targetFile.lastIndexOf('/'));
+    const toBase = dl.targetFile.split('/').pop().replace(/\.[^.]+$/, '');
+
+    const dirs = new Set([toDir]);
+    for (const h of (loadHistory().items || [])) {
+      if (String(h?.versionId) === String(versionId) && h.targetDir) dirs.add(String(h.targetDir).replace(/\/+$/, ''));
+    }
+    // Find this version's info set(s) by content.
+    let src = null;
+    for (const dir of dirs) {
+      let names = [];
+      try { names = readdirSync(dir); } catch { continue; }
+      for (const n of names) {
+        if (!n.endsWith('.civit.info')) continue;
+        const base = n.slice(0, -'.civit.info'.length);
+        let info = null;
+        try { info = JSON.parse(readFileSync(`${dir}/${n}`, 'utf8')); } catch { continue; }
+        if (String(info?.id) !== String(versionId)) continue;
+        if (dir === toDir && base === toBase) return; // already paired with this weight
+        // Prefer a set outside the weight's folder (the stranded one) over a sibling stem.
+        if (!src || (src.dir === toDir && dir !== toDir)) src = { dir, base, names };
+      }
+    }
+    if (!src) return;
+
+    const srcIsWeight = src.names.some((n) => n.startsWith(src.base + '.') && SIDECAR_WEIGHT_EXT.test(n)
+      && n.replace(/\.[^.]+$/, '') === src.base);
+    const copy = srcIsWeight;
+    mkdirSync(toDir, { recursive: true });
+    let done = 0; let skipped = 0;
+    const doOne = (from, to) => {
+      if (existsSync(to)) { skipped++; return; }
+      try {
+        if (copy) copyFileSync(from, to);
+        else { try { renameSync(from, to); } catch { copyFileSync(from, to); unlinkSync(from); } }
+        done++;
+      } catch (err) { console.error(`[civitai] sidecar ${copy ? 'copy' : 'move'} ${from} -> ${to} failed: ${err.message}`); }
+    };
+    for (const n of src.names) {
+      const rest = sidecarRest(n, src.base);
+      if (rest) doOne(`${src.dir}/${n}`, `${toDir}/${toBase}${rest}`);
+    }
+    // Video poster thumbnails the file browser caches.
+    try {
+      for (const n of readdirSync(`${src.dir}/.vthumb`)) {
+        if (!n.endsWith('.jpg')) continue;
+        const rest = sidecarRest(n.slice(0, -4), src.base);
+        if (!rest) continue;
+        mkdirSync(`${toDir}/.vthumb`, { recursive: true });
+        doOne(`${src.dir}/.vthumb/${n}`, `${toDir}/.vthumb/${toBase}${rest}.jpg`);
+      }
+    } catch {}
+    console.log(`[civitai] ${copy ? 'Copied' : 'Moved'} ${done} sidecar(s) of version ${versionId} from ${src.dir}/${src.base} to ${toDir}/${toBase}${skipped ? ` (${skipped} already there, left alone)` : ''}`);
+    // History's targetDir is where the metadata lives; keep it pointing at the weights.
+    if (!copy && done > 0) {
+      try {
+        const hist = loadHistory();
+        let changed = false;
+        for (const h of (hist.items || [])) {
+          if (String(h?.versionId) === String(versionId) && String(h.targetDir || '').replace(/\/+$/, '') === src.dir) { h.targetDir = toDir; changed = true; }
+        }
+        if (changed) saveHistory(hist);
+      } catch (err) { console.error(`[civitai] history re-point for version ${versionId} failed: ${err.message}`); }
+    }
+  } catch (err) {
+    console.error(`[civitai] adoptSidecarsForDownload failed for ${dl?.targetFile}: ${err.message}`);
+  }
+}
+
+/**
  * Apply a batch of model moves and re-point history at the new locations.
  *
  * Exported because the model-library manager performs the same operation: every move or
@@ -1086,6 +1184,7 @@ function processPendingDownloads() {
     if (dl.targetFile && existsSync(dl.targetFile) && dl.size > 0 && statSync(dl.targetFile).size === dl.size) {
       dl.status = 'complete'; dl.skipped = true; dl.completedAt = new Date().toISOString();
       console.log(`[civitai] Skip (already complete, ${dl.size}B): ${dl.targetFile}`);
+      adoptSidecarsForDownload(dl);
       continue;
     }
     const sp = spawnCurl(dl.dlUrl, dl.targetFile, null);
@@ -2588,6 +2687,7 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
           dl.progress = finalSize;
           dl.completedAt = new Date().toISOString();
           console.log(`[civitai-dl] COMPLETE: ${dl.fileName} (${(finalSize / 1e9).toFixed(2)} GB)`);
+          adoptSidecarsForDownload(dl);
         } else if (dl.dlUrl) {
           // Auto-requeue with retry limit — stop after 5 consecutive failures
           // to prevent infinite spawn-die loops (e.g. 401 auth errors).
