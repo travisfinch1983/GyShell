@@ -11,6 +11,11 @@
     "typecheck": "echo \"ui: checked by root tsconfig.web.json\""
   },
   "dependencies": {
-    "@xyflow/react": "^12.10.2"
+    "@mkkellogg/gaussian-splats-3d": "0.4.7",
+    "@xyflow/react": "^12.10.2",
+    "three": "0.177.0"
+  },
+  "devDependencies": {
+    "@types/three": "0.177.0"
   }
 }

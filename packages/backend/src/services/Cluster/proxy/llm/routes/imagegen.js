@@ -4393,5 +4393,62 @@ export function createImagegenRouter(config) {
     }, 3600 * 1000).unref();
   }
 
+
+  // ---- IMAGE -> 3D (claude1 2026-11-03) --------------------------------------------------------------
+  // Relays /api/imagegen/image3d/* to the image model service that has the image3d plugin
+  // (/opt/ailab-modelsvc/plugins/image3d.py on ai-epyc). The service is found by probing each imagegen-models
+  // service's /image3d/models (cached 60 s), so moving the plugin to another host needs no change here.
+  // Uploads are JSON with base64 images (a few phone photos, well under the 400 MB limit); file / zip replies
+  // are streamed back, with Content-Disposition when ?download=1.
+  let image3dCache = { at: 0, base: null };
+  async function image3dBase() {
+    if (image3dCache.base && Date.now() - image3dCache.at < 60000) return image3dCache.base;
+    for (const s of imsServiceList()) {
+      const base = `http://${s.containerIp}:${s.port}`;
+      try {
+        const r = await fetch(base + '/image3d/models', { signal: AbortSignal.timeout(5000) });
+        if (r.ok) { image3dCache = { at: Date.now(), base }; return base; }
+      } catch (e) {
+        console.warn(`[image3d] ${s.id} (${base}) has no image3d plugin or is down: ${e.message}`);
+      }
+    }
+    image3dCache = { at: 0, base: null };
+    return null;
+  }
+  router.all(/^\/image3d\/(models|jobs|job|file|zip|cancel|delete|unload)$/, express.json({ limit: '400mb' }), async (req, res) => {
+    const sub = req.path.replace(/^\/image3d\//, '');
+    const base = await image3dBase();
+    if (!base) return res.status(503).json({ error: 'no image model service with the image3d plugin is running' });
+    const qs = new URLSearchParams(Object.entries(req.query || {}).filter(([k]) => k !== 'download')).toString();
+    const url = `${base}/image3d/${sub}${qs ? `?${qs}` : ''}`;
+    const big = sub === 'file' || sub === 'zip';
+    try {
+      const up = await fetch(url, {
+        method: req.method,
+        headers: req.method === 'GET' ? {} : { 'Content-Type': 'application/json' },
+        body: req.method === 'GET' ? undefined : JSON.stringify(req.body || {}),
+        signal: AbortSignal.timeout(big ? 600000 : 120000),
+      });
+      res.status(up.status);
+      const ct = up.headers.get('content-type') || 'application/octet-stream';
+      res.setHeader('Content-Type', ct);
+      if (big && req.query.download) {
+        const id = String(req.query.id || 'model').replace(/[^A-Za-z0-9._-]/g, '_');
+        const rel = String(req.query.path || '').split('/').pop().replace(/[^A-Za-z0-9._-]/g, '_');
+        const name = sub === 'zip' ? `${id}.zip` : `${id}${rel ? `-${rel}` : (ct.includes('gltf') ? '.glb' : '.ply')}`;
+        res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+      }
+      if (!up.body) return res.end();
+      const { Readable } = await import('stream');
+      const st = Readable.fromWeb(up.body);
+      st.on('error', (e) => { console.warn(`[image3d] stream ${sub} failed: ${e.message}`); res.destroy(e); });
+      st.pipe(res);
+    } catch (e) {
+      console.warn(`[image3d] ${req.method} ${sub} -> ${url}: ${e.message}`);
+      image3dCache = { at: 0, base: null };
+      if (!res.headersSent) res.status(502).json({ error: `image model service: ${e.message}` });
+    }
+  });
+
   return router;
 }
