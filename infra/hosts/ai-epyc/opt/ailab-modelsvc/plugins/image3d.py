@@ -118,11 +118,12 @@ def register(api):
             env = {**os.environ, "CUDA_VISIBLE_DEVICES": cvd, "CUDA_DEVICE_ORDER": "PCI_BUS_ID", "HF_HUB_OFFLINE": "1",
                    "PYTHONUNBUFFERED": "1"}
             env.pop("PYTHONPATH", None)
+            self.q = queue.Queue()               # fresh per process: a previous process's "exited" must not fake a crash now
             self.log = open(f"{OUT}/.worker-{self.m}-gpu{self.g}.log", "a")
             self.log.write(f"\n==== {time.ctime()} start on GPU {self.g} ({info.get('name')})\n"); self.log.flush()
             self.proc = subprocess.Popen([ENV.format(MODELS[self.m]["env"]), WORKER, "--model", self.m], env=env, stdin=subprocess.PIPE,
                                          stdout=subprocess.PIPE, stderr=self.log, text=True, bufsize=1, cwd="/tmp")
-            threading.Thread(target=self._read, daemon=True).start()
+            threading.Thread(target=self._read, args=(self.proc, self.q), daemon=True).start()
             t0 = time.time()
             while True:
                 try:
@@ -137,19 +138,18 @@ def register(api):
                 if "error" in msg:
                     self.stop(); raise RuntimeError(msg["error"])
 
-        def _read(self):
-            for line in self.proc.stdout:
+        def _read(self, proc, q):
+            for line in proc.stdout:
                 if line.startswith("@@"):
                     try:
-                        self.q.put(json.loads(line[2:]))
+                        q.put(json.loads(line[2:]))
                     except ValueError:
-                        pass
+                        self.log.write(f"[image3d] unparseable protocol line: {line}")
                 else:
                     self.log.write(line); self.log.flush()
-            self.q.put({"exited": True})
+            q.put({"exited": True})
 
         def run(self, req, on_progress, cancelled):
-            self.busy = True
             try:
                 self.proc.stdin.write(json.dumps(req) + "\n"); self.proc.stdin.flush()
                 t0 = time.time()
@@ -171,7 +171,7 @@ def register(api):
                     elif msg.get("exited"):
                         self.stop(); raise RuntimeError(f"{self.m} worker died mid-run; see {OUT}/.worker-{self.m}-gpu{self.g}.log")
             finally:
-                self.busy, self.last = False, time.time()
+                self.last = time.time()
 
         def stop(self):
             if self.proc and self.proc.poll() is None:
@@ -188,8 +188,11 @@ def register(api):
             time.sleep(30)
             with WLOCK:
                 for k, w in list(WORKERS.items()):
-                    if w.alive() and not w.busy and time.time() - w.last > KEEP_WARM:
-                        api.log(f"image3d: {k[0]} on GPU {k[1]} idle {KEEP_WARM} s - unloading"); w.stop()
+                    try:
+                        if w.alive() and not w.busy and time.time() - w.last > KEEP_WARM:
+                            api.log(f"image3d: {k[0]} on GPU {k[1]} idle {KEEP_WARM} s - unloading"); w.stop()
+                    except Exception as e:  # noqa: BLE001
+                        api.log(f"image3d: reaper could not stop {k}: {type(e).__name__}: {e}")
     threading.Thread(target=reaper, daemon=True).start()
     api.add_shutdown(lambda: [w.stop() for w in list(WORKERS.values())])
 
@@ -232,12 +235,19 @@ def register(api):
                             if og == g and om != m and w.alive():
                                 api.log(f"image3d: stopping warm {om} on GPU {g} for {m}"); w.stop()
                         w = WORKERS.setdefault((m, g), Worker(m, g))
-                    api.free_vram(g, int(MODELS[m]["vram_gb"] * 1e9))
-                    if not w.alive():
-                        j["stage"] = "loading model"; info = w.start(prog); j["load_s"] = info.get("load_s")
-                    j.update(status="running", stage="starting"); save(j)
-                    res = w.run({"cmd": "run", "inputs": j["inputs"], "out": j["dir"], "options": j["options"]}, prog,
-                                lambda: j.get("_cancel"))
+                    # busy from the moment the job claims the worker - through loading - until the run ends, so the idle
+                    # reaper can't stop it in between (2026-11-03: a reused worker kept its old `last` time and the reaper
+                    # killed it 1 s after it came up)
+                    w.busy, w.last = True, time.time()
+                    try:
+                        api.free_vram(g, int(MODELS[m]["vram_gb"] * 1e9))
+                        if not w.alive():
+                            j["stage"] = "loading model"; info = w.start(prog); j["load_s"] = info.get("load_s")
+                        j.update(status="running", stage="starting"); save(j)
+                        res = w.run({"cmd": "run", "inputs": j["inputs"], "out": j["dir"], "options": j["options"]}, prog,
+                                    lambda: j.get("_cancel"))
+                    finally:
+                        w.busy, w.last = False, time.time()
                 finally:
                     stop_touch.set()
             out = "model.ply" if MODELS[m]["output"] == "splat" else "model.glb"
