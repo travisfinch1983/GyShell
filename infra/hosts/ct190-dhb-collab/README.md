@@ -10,7 +10,7 @@ fleet agent **`claude-dhb-collab`**.
 | Address | **10.0.0.194** static. It is outside Technitium's dynamic pool (.21-.59), with no reservation. DNS is public (1.1.1.1 / 9.9.9.9). |
 | SSH | Port **47983**, public key only. `PermitRootLogin no`, except root from **10.0.0.161** (claude1) with a key. `AllowGroups root sshusers`, no forwarding. fail2ban (nftables, systemd backend) bans for 1 h, escalating to 1 w. |
 | Internet | OPNsense NAT `rdr pass` **WAN tcp 47983 → 10.0.0.194:47983**, logged. Backup: `/conf/config.xml.claude-pre-ct190-fwd-20261103`. |
-| DNS name | `dhb-collab.deeveeyant.com` is a Cloudflare A record, **DNS-only**, pointing at the home WAN IP (47.216.196.176 on 2026-11-03). It must be updated if the WAN IP changes. On the LAN, Technitium's split-horizon resolves it to NPM, so test it from outside. |
+| DNS name | `dhb-collab.deeveeyant.com` is a Cloudflare A record, **DNS-only**, pointing at the home WAN IP. It is kept current by **`cf-ddns.timer` on CT152** (every 5 min; two IP sources must agree; config and token in `/opt/ai-lab-secrets/cf-ddns/env`, not in git; add more names to `CF_DDNS_RECORDS`). On the LAN, Technitium's split-horizon resolves it to NPM, so test it from outside. |
 | Patching | unattended-upgrades are on. |
 
 ## The fence: what CT190 can reach

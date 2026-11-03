@@ -1,0 +1,9 @@
+[Unit]
+Description=Cloudflare DDNS: point listed A records at the home WAN IP (see /usr/local/bin/cf-ddns.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/ai-lab-secrets/cf-ddns/env
+ExecStart=/usr/bin/python3 /usr/local/bin/cf-ddns.py
