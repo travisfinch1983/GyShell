@@ -1,0 +1,48 @@
+diff --git a/hy3dpaint/DifferentiableRenderer/mesh_utils.py b/hy3dpaint/DifferentiableRenderer/mesh_utils.py
+index 5b3e831..1fb8911 100644
+--- a/hy3dpaint/DifferentiableRenderer/mesh_utils.py
++++ b/hy3dpaint/DifferentiableRenderer/mesh_utils.py
+@@ -14,7 +14,10 @@
+ 
+ import os
+ import cv2
+-import bpy
++try:  # ailab: bpy==4.0 (py3.10) is no longer on PyPI; without it convert_obj_to_glb returns False
++    import bpy
++except ImportError:
++    bpy = None
+ import math
+ import numpy as np
+ from io import StringIO
+@@ -265,6 +268,8 @@ def convert_obj_to_glb(
+     merge_vertices: bool = False,
+ ) -> bool:
+     """Convert OBJ file to GLB format using Blender."""
++    if bpy is None:
++        return False
+     try:
+         _setup_blender_scene()
+         _clear_scene_objects()
+diff --git a/hy3dpaint/utils/multiview_utils.py b/hy3dpaint/utils/multiview_utils.py
+index 03f0557..5cda5ba 100644
+--- a/hy3dpaint/utils/multiview_utils.py
++++ b/hy3dpaint/utils/multiview_utils.py
+@@ -34,10 +34,14 @@ class multiviewDiffusionNet:
+         self.cfg = cfg
+         self.mode = self.cfg.model.params.stable_diffusion_config.custom_pipeline[2:]
+ 
+-        model_path = huggingface_hub.snapshot_download(
+-            repo_id=config.multiview_pretrained_path,
+-            allow_patterns=["hunyuan3d-paintpbr-v2-1/*"],
+-        )
++        # ailab: accept a local copy of the repo (no Hub call) when the path is a directory
++        if os.path.isdir(config.multiview_pretrained_path):
++            model_path = config.multiview_pretrained_path
++        else:
++            model_path = huggingface_hub.snapshot_download(
++                repo_id=config.multiview_pretrained_path,
++                allow_patterns=["hunyuan3d-paintpbr-v2-1/*"],
++            )
+ 
+         model_path = os.path.join(model_path, "hunyuan3d-paintpbr-v2-1")
+         pipeline = DiffusionPipeline.from_pretrained(
