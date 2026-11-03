@@ -24,6 +24,7 @@ import * as fsForState from 'fs';
 import { loadJsonState, emitNotification } from './lib/notify.js';
 import { createWiroRoutes } from './lib/wiro.js';
 import { joinRestParam } from './lib/rest-path.js';
+import { createSwrRefresher, createSourceTimer } from './lib/swr-cache.js';
 import http from 'http';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
@@ -289,10 +290,7 @@ async function fetchExternalSourceModels(source) {
   try {
     const key = resolveExternalSourceKey(source);
     const ep = externalTransportEndpoints(source);
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 6000);
-    const resp = await fetch(ep.modelsUrl, { signal: ctrl.signal, headers: ep.modelsHeaders(key) });
-    clearTimeout(timer);
+    const resp = await fetch(ep.modelsUrl, { signal: AbortSignal.timeout(6000), headers: ep.modelsHeaders(key) });   // covers the body too
     if (!resp.ok) return [];
     const json = await resp.json();
     // Feed the capability resolver the catalog's OWN modality claims — the annotation
@@ -332,10 +330,7 @@ async function fetchExternalSourceModelsRaw(source) {
   try {
     const key = resolveExternalSourceKey(source);
     const ep = externalTransportEndpoints(source);
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8000);
-    const resp = await fetch(ep.modelsUrl, { signal: ctrl.signal, headers: ep.modelsHeaders(key) });
-    clearTimeout(timer);
+    const resp = await fetch(ep.modelsUrl, { signal: AbortSignal.timeout(8000), headers: ep.modelsHeaders(key) });   // covers the body too
     if (!resp.ok) return [];
     const json = await resp.json();
     const raw = json.data || json.models || [];
@@ -385,10 +380,9 @@ async function fetchExternalSourceBalance(source) {
   const out = { supported: false, currency: 'USD', checkedAt: Date.now() };
   const h = key ? { Authorization: `Bearer ${key}` } : {};
   const j = async (url, headers) => {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 8000);
-    try { const r = await fetch(url, { signal: ctrl.signal, headers }); clearTimeout(t); return r.ok ? await r.json() : null; }
-    catch { clearTimeout(t); return null; }
+    // AbortSignal.timeout covers the body: clearTimeout before r.json() left a stalled body unbounded.
+    try { const r = await fetch(url, { signal: AbortSignal.timeout(8000), headers }); return r.ok ? await r.json() : null; }
+    catch (e) { console.warn(`[balance] ${url.replace(/\?.*$/, '')}: ${e?.name === 'TimeoutError' ? 'timed out after 8s' : e?.message}`); return null; }
   };
   if (/openrouter\.ai/.test(host)) {
     const c = await j('https://openrouter.ai/api/v1/credits', h);
@@ -930,6 +924,9 @@ function proxyRequest(req, res, targetHost, targetPort, targetPath) {
 /** @type {{ models: Object[], byModel: Map<string, Object>, updatedAt: number }} */
 let modelCache = { models: [], byModel: new Map(), updatedAt: 0 };
 const MODEL_CACHE_TTL = 30_000; // 30 seconds
+// Names the culprit of a slow rebuild: any source >2 s is logged, failures once per 10 min per source.
+const timeCatalogSource = createSourceTimer({ name: 'model-catalog' });
+const timeEmbedSource = createSourceTimer({ name: 'embed-catalog' });
 
 /**
  * Force the next refreshModelCache / refreshEmbedModelCache call to refetch.
@@ -940,6 +937,8 @@ const MODEL_CACHE_TTL = 30_000; // 30 seconds
 export function invalidateModelCache() {
   modelCache.updatedAt = 0;
   embedModelCache.updatedAt = 0;
+  refreshModelCache.invalidate();       // a rebuild already in flight may predate the change
+  refreshEmbedModelCache.invalidate();
   // Pools are rebuilt from the live registry, so a newly registered/removed embed or rerank
   // instance joins or leaves the rotation immediately rather than after the 30s TTL.
   invalidatePools();
@@ -995,8 +994,7 @@ async function lookupModelFresh(modelId) {
   let cache = await refreshModelCache();
   let svc = cache.byModel.get(modelId) || null;
   if (!svc && Date.now() - modelCache.updatedAt > MISS_REFRESH_MIN_MS) {
-    modelCache.updatedAt = 0;
-    cache = await refreshModelCache();
+    cache = await refreshModelCache({ force: true });   // shared with any rebuild already running
     svc = cache.byModel.get(modelId) || null;
   }
   return { cache, svc };
@@ -1030,10 +1028,8 @@ async function imagegenOwnedLlmBackends() {
   return out;
 }
 
-async function refreshModelCache() {
-  if (Date.now() - modelCache.updatedAt < MODEL_CACHE_TTL) return modelCache;
-
-  const services = [...findServicesByType('llm'), ...(await imagegenOwnedLlmBackends())];
+async function buildModelCache() {
+  const services = [...findServicesByType('llm'), ...(await timeCatalogSource('imagegen-pe-owners', imagegenOwnedLlmBackends))];
   const rawModels = []; // { model, svc } pairs collected from all backends
   const byModel = new Map();
 
@@ -1041,12 +1037,12 @@ async function refreshModelCache() {
     const slot = svc.proxySlot || 0;
     try {
       const url = `http://${svc.containerIp}:${svc.port}/v1/models`;
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 5000);
-      const resp = await fetch(url, { signal: ctrl.signal });
-      clearTimeout(timer);
-      if (!resp.ok) return;
-      const json = await resp.json();
+      const json = await timeCatalogSource(`${svc.id}@${svc.containerIp}:${svc.port}`, async () => {
+        const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });   // covers the body too
+        if (!resp.ok) return null;
+        return resp.json();
+      });
+      if (!json) return;
       const models = json.data || [];
       for (const m of models) {
         // svc.aliasOverride lets users rename a running service's API name
@@ -1111,7 +1107,7 @@ async function refreshModelCache() {
   try {
     const sources = loadExternalModelSources().filter((s) => s && s.enabled !== false);
     const perSource = await Promise.all(
-      sources.map(async (source) => ({ source, ids: await fetchExternalSourceModels(source) })),
+      sources.map(async (source) => ({ source, ids: await timeCatalogSource(`external:${source.id}`, () => fetchExternalSourceModels(source)) })),
     );
     for (const { source, ids } of perSource) {
       for (const upstreamModel of ids) {
@@ -1159,9 +1155,7 @@ let embedModelCache = { models: [], byModel: new Map(), updatedAt: 0 };
 /**
  * Refresh embed model cache with dedup — same @N decoration as LLM cache.
  */
-async function refreshEmbedModelCache() {
-  if (Date.now() - embedModelCache.updatedAt < MODEL_CACHE_TTL) return embedModelCache;
-
+async function buildEmbedModelCache() {
   const services = findServicesByType('embed');
   const rawModels = [];
   const byModel = new Map();
@@ -1170,12 +1164,12 @@ async function refreshEmbedModelCache() {
     const slot = svc.proxySlot || 0;
     try {
       const url = `http://${svc.containerIp}:${svc.port}/v1/models`;
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 5000);
-      const resp = await fetch(url, { signal: ctrl.signal });
-      clearTimeout(timer);
-      if (!resp.ok) return;
-      const json = await resp.json();
+      const json = await timeEmbedSource(`${svc.id}@${svc.containerIp}:${svc.port}`, async () => {
+        const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });   // covers the body too
+        if (!resp.ok) return null;
+        return resp.json();
+      });
+      if (!json) return;
       for (const m of (json.data || [])) {
         if (svc.aliasOverride && typeof svc.aliasOverride === 'string') {
           rawModels.push({ m: { ...m, id: svc.aliasOverride }, svc, slot });
@@ -1215,6 +1209,21 @@ async function refreshEmbedModelCache() {
   embedModelCache = { models: allModels, byModel, updatedAt: Date.now() };
   return embedModelCache;
 }
+
+// Single-flight + stale-while-revalidate (claude1, 2026-11-03, maintenance-claude work order on the
+// 10:04–10:27Z "AI-Lab proxy DOWN" alert). Every refresh took >12 s in that window, each cache miss
+// started its own rebuild, and chat requests awaited it. Now one rebuild runs at a time and callers
+// are served the previous map while it runs; only a never-built / invalidated / >10-min-old cache,
+// or an explicit { force: true } (a routing miss), waits. lib/swr-cache.extreme.spec.mjs pins this.
+const MODEL_CACHE_STALE_MAX = 10 * 60_000;
+const refreshModelCache = createSwrRefresher({
+  name: 'model-catalog', ttlMs: MODEL_CACHE_TTL, staleMaxMs: MODEL_CACHE_STALE_MAX,
+  getCache: () => modelCache, build: buildModelCache,
+});
+const refreshEmbedModelCache = createSwrRefresher({
+  name: 'embed-catalog', ttlMs: MODEL_CACHE_TTL, staleMaxMs: MODEL_CACHE_STALE_MAX,
+  getCache: () => embedModelCache, build: buildEmbedModelCache,
+});
 
 /**
  * Buffer the raw request body (needed since proxy.js is mounted before express.json()).
