@@ -1,0 +1,10 @@
+diff --git a/trellis2/modules/sparse/conv/config.py b/trellis2/modules/sparse/conv/config.py
+index ac08489..cf961dc 100644
+--- a/trellis2/modules/sparse/conv/config.py
++++ b/trellis2/modules/sparse/conv/config.py
+@@ -1,3 +1,4 @@
+ SPCONV_ALGO = 'auto'                                # 'auto', 'implicit_gemm', 'native'
+-FLEX_GEMM_ALGO = 'masked_implicit_gemm_splitk'      # 'explicit_gemm', 'implicit_gemm', 'implicit_gemm_splitk', 'masked_implicit_gemm', 'masked_implicit_gemm_splitk'
++import os as _os  # ailab: FLEX_GEMM_ALGO env override (the splitk Triton kernel aborts on V100 sm_70: use explicit_gemm)
++FLEX_GEMM_ALGO = _os.environ.get('FLEX_GEMM_ALGO', 'masked_implicit_gemm_splitk')      # 'explicit_gemm', 'implicit_gemm', 'implicit_gemm_splitk', 'masked_implicit_gemm', 'masked_implicit_gemm_splitk'
+ FLEX_GEMM_HASHMAP_RATIO = 2.0                       # Ratio of hashmap size to input size

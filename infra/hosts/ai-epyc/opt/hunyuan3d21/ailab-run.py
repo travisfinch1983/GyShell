@@ -51,6 +51,8 @@ if not a.no_texture:
     conf.multiview_cfg_path = "hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
     conf.custom_pipeline = "hy3dpaint/hunyuanpaintpbr"
     conf.multiview_pretrained_path = os.path.join(MODELS, "Hunyuan3D-2.1")
+    if os.path.isdir(os.path.join(MODELS, "dinov2-giant")):   # local copy (offline hosts)
+        conf.dino_ckpt_path = os.path.join(MODELS, "dinov2-giant")
     t = time.time(); paint = Hunyuan3DPaintPipeline(conf); stats["paint_load_s"] = round(time.time() - t, 1)
     t = time.time()
     paint(mesh_path=shape_glb, image_path=os.path.join(a.out, "input_rgba.png"),

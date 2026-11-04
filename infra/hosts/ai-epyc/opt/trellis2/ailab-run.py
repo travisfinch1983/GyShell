@@ -14,7 +14,7 @@ import torch
 from PIL import Image, ImageOps
 from trellis2.pipelines import Trellis2ImageTo3DPipeline
 import o_voxel
-t = time.time(); pipe = Trellis2ImageTo3DPipeline.from_pretrained("/opt/trellis2/ailab-models/TRELLIS.2-4B"); pipe.cuda()
+t = time.time(); pipe = Trellis2ImageTo3DPipeline.from_pretrained(os.environ.get("TRELLIS_MODEL_DIR", "/opt/trellis2/ailab-models/TRELLIS.2-4B")); pipe.cuda()  # TRELLIS_MODEL_DIR=...-fp16 on V100
 load_s = round(time.time() - t, 1)
 for img in a.images:
     n = os.path.splitext(os.path.basename(img))[0]; o = os.path.join(a.out, n); os.makedirs(o, exist_ok=True)

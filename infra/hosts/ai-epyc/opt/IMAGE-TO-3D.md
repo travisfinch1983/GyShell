@@ -23,3 +23,23 @@ scales any GLB/OBJ to a known length/width/height (ft/in/m/mm) and reports each 
 Install traps (handled in each `ailab-install.sh`): an unpinned dep drags torch to 2.14 (pin with `-c`);
 transformers 5.x renamed `DINOv3ViTModel.layer` (pin 4.57.3); `/opt/cuda-12.9` lacks cusparse headers
 (`CPATH` from torch's nvidia wheels); SMB `/imagegen` can't hold symlinks; `set -e` doesn't stop inside `&&` chains.
+
+## 2026-11-04: every GPU in the lab (AI-Lab "Image → 3D" tab, image model service plugin `image3d`)
+One env recipe per model for all cards: `/opt/image3d-envs/build-cu128.sh <model>` (torch 2.9.1+cu128, which ships
+sm_70..sm_120; xformers; extensions built for 7.0;8.6;8.9;12.0 with CUDA 12.9, which still supports Volta). Envs are
+`<model>-cu128` on ai-epyc and ai-gpu. The plugin uses one only once `.image3d-ready` exists in it: the build writes
+the marker after its import check, and the 2026-11-04 rollout wrote it by hand only after an end-to-end test.
+Hunyuan's cu128 env uses its own repo copy `/opt/hunyuan3d21-cu128` (in-tree custom_rasterizer build).
+Volta (V100) settings, applied by the plugin when compute capability < 8: TRELLIS `TRELLIS_MODEL_DIR=...-fp16`
+(configs only; `make-fp16-variants.py`) + `FLEX_GEMM_ALGO=explicit_gemm` + FlexGEMM PR #34; UniForge
+`UNIFORGE_AMP_DTYPE=float16` + `pipeline-fp16.json`; Idol `IDOL_VAE_DTYPE=fp32` + `IDOL_DINOV3_DTYPE=fp32`.
+Attention is xformers everywhere (flash-attn has no Volta).
+
+Verified 2026-11-04 (thermos / vape pen; each output rendered and compared with the 4090 one):
+
+| Model | RTX 5060 Ti (16 GB) | V100 32 GB |
+|---|---|---|
+| Hunyuan3D-2.1 | shape 113 s + texture 72 s, 13.5 GB (worker keeps the shape model in RAM while texturing on <22 GB cards) | shape 93 s + texture 87 s, 12.8 GB standalone / 20 GB in the worker |
+| TRELLIS.2 | ~2 min gen (first run) + 2 min export, 3 GB | 50 s gen + 9 min CPU export (ai-gpu's CPUs) |
+| UniForge3D | 288 s (4 views), 12 GB | see below |
+| Idol | 81 s, 5 GB | 76 s, 7.8 GB (fp32 encoders) |

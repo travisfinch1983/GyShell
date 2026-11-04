@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Play, Square, Upload, X, Star, AlertTriangle, Box } from 'lucide-react'
-import { image3dStore as store, type Job3d, type OptSpec } from '../../stores/Image3dStore'
+import { image3dStore as store, gpuKey, shortGpu, type Job3d, type OptSpec } from '../../stores/Image3dStore'
 import styles from './Image3d.module.scss'
 
 /** Image → 3D (claude1 2026-11-03): upload photos, pick a model + GPU (or auto), go. Jobs run on the image model service. */
@@ -46,7 +46,7 @@ const JobCard: React.FC<{ j: Job3d }> = observer(({ j }) => {
           <span className={`${styles.state} ${styles['st_' + j.status] || ''}`}>{j.status}</span>
         </div>
         <div className={styles.jobMeta}>
-          <b>{j.model_label}</b> · GPU {j.gpu} {j.gpu_name?.replace('NVIDIA GeForce ', '')} · {j.inputs.length} photo{j.inputs.length === 1 ? '' : 's'} · {when(j.created)}
+          <b>{j.model_label}</b> · {j.host || 'ai-epyc'} GPU {j.gpu} {shortGpu(j.gpu_name)} · {j.inputs.length} photo{j.inputs.length === 1 ? '' : 's'} · {when(j.created)}
         </div>
         {active && (
           <>
@@ -111,11 +111,11 @@ export const Image3dPanel: React.FC = observer(() => {
 
           <div className={styles.lbl}>GPU</div>
           <select className={styles.input} value={String(store.gpu)} onChange={(e) => store.setGpu(e.target.value)}>
-            <option value="auto">Auto (best free card that can run it)</option>
+            <option value="auto">Auto (best free card that can run it, any host)</option>
             {(m?.gpus || []).map((g) => {
-              const info = store.gpus.find((x) => x.index === g.index)
-              return <option key={g.index} value={g.index} disabled={!g.ok}>
-                GPU {g.index} · {g.name.replace('NVIDIA GeForce ', '')}{info ? ` · ${info.free_gb}/${info.total_gb} GB free` : ''}{g.ok ? '' : ` (can't: ${g.why})`}
+              const info = store.gpus.find((x) => x.service === g.service && x.index === g.index)
+              return <option key={gpuKey(g)} value={gpuKey(g)} disabled={!g.ok}>
+                {g.host} · GPU {g.index} · {shortGpu(g.name)}{info ? ` · ${info.free_gb}/${info.total_gb} GB free` : ''}{g.ok ? '' : ` (can't: ${g.why})`}
               </option>
             })}
           </select>

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import { RefreshCw, Download, Archive, Trash2, RotateCcw, Search } from 'lucide-react'
-import { image3dStore as store } from '../../stores/Image3dStore'
+import { image3dStore as store, shortGpu } from '../../stores/Image3dStore'
 import { confirmStore } from '../../stores/confirmStore'
 import { Model3dCanvas, type ViewOpts } from './Model3dCanvas'
 import styles from './Image3d.module.scss'
@@ -85,7 +85,7 @@ export const Model3dViewerPanel: React.FC = observer(() => {
                 <span className={styles.dim}>Input{j.inputs.length > 1 ? 's' : ''}:</span>
                 {j.inputs.map((p) => <a key={p} href={store.fileUrl(j, p)} target="_blank" rel="noreferrer"><img src={store.fileUrl(j, p)} alt="" /></a>)}
                 <span className={styles.spacer} />
-                <span className={styles.dim}>GPU {j.gpu} {j.gpu_name?.replace('NVIDIA GeForce ', '')}{j.result?.run_s != null ? ` · ${String(j.result.run_s)} s` : ''}{j.note ? ` · ${j.note}` : ''}</span>
+                <span className={styles.dim}>{j.host || 'ai-epyc'} GPU {j.gpu} {shortGpu(j.gpu_name)}{j.result?.run_s != null ? ` · ${String(j.result.run_s)} s` : ''}{j.note ? ` · ${j.note}` : ''}</span>
               </div>
             </>
           )}

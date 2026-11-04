@@ -11,7 +11,8 @@ from uniforge3d import UniForge3DImageTo3DPipeline
 SUF = {".png", ".jpg", ".jpeg", ".webp"}
 out_root = Path(sys.argv[1])
 t = time.time()
-pipe = UniForge3DImageTo3DPipeline.from_config("/opt/uniforge3d/ailab-models/pipeline.json",
+pipe = UniForge3DImageTo3DPipeline.from_config(os.environ.get("UNIFORGE_CONFIG", "/opt/uniforge3d/ailab-models/pipeline.json"),  # pipeline-fp16.json on V100
+                                              
                                                weights_root="/imagegen/3d-models/UniForge3D", low_vram=True,
                                                local_files_only=True)
 load_s = round(time.time() - t, 1)

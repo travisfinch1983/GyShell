@@ -11,7 +11,7 @@ ap.add_argument("--seed", type=int, default=42)
 a = ap.parse_args()
 import torch
 from idol.pipeline import IdolPipeline
-t = time.time(); pipe = IdolPipeline("/opt/idol-sdk/ailab-models/idol", optimize=os.environ.get("IDOL_OPTIMIZE", "0") == "1"); load_s = round(time.time() - t, 1)
+t = time.time(); pipe = IdolPipeline("/opt/idol-sdk/ailab-models/idol", optimize=os.environ.get("IDOL_OPTIMIZE", "0") == "1", dinov3_dtype=os.environ.get("IDOL_DINOV3_DTYPE", "bf16")); load_s = round(time.time() - t, 1)
 for img in a.images:
     n = os.path.splitext(os.path.basename(img))[0]; o = os.path.join(a.out, n); os.makedirs(o, exist_ok=True)
     torch.cuda.reset_peak_memory_stats(); t = time.time()

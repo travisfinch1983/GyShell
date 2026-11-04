@@ -1,0 +1,178 @@
+diff --git a/uniforge3d/models/conditioning.py b/uniforge3d/models/conditioning.py
+index e7560f0..8730b1a 100644
+--- a/uniforge3d/models/conditioning.py
++++ b/uniforge3d/models/conditioning.py
+@@ -8,6 +8,7 @@ import torch
+ 
+ from .vggt_routed_features import FrozenRoutedVGGTFeatureExtractor
+ from .view_router import GPUVoxelViewRouter
++from uniforge3d.modules.utils import amp_dtype as _amp_dtype  # ailab: bf16 -> switchable (V100)
+ 
+ 
+ class StructuredLatentConditioner:
+@@ -71,7 +72,7 @@ class StructuredLatentConditioner:
+         )
+ 
+         with torch.autocast(
+-            device_type=dino_features.device.type, dtype=torch.bfloat16,
++            device_type=dino_features.device.type, dtype=_amp_dtype(),
+         ):
+             vggt_delta = adapter(cached, patch_start)
+         patch_count = int(vggt_delta.shape[2])
+diff --git a/uniforge3d/modules/sparse/attention/routed_full_only_flash.py b/uniforge3d/modules/sparse/attention/routed_full_only_flash.py
+index 4aa9edc..82bbe08 100644
+--- a/uniforge3d/modules/sparse/attention/routed_full_only_flash.py
++++ b/uniforge3d/modules/sparse/attention/routed_full_only_flash.py
+@@ -126,9 +126,13 @@ class RoutedFullOnlyFlashCrossAttention(nn.Module):
+         if self.num_heads != 12 or self.head_dim != 128:
+             raise ValueError("production Full-only Flash path requires 12 heads x 128")
+         if flash_attn_varlen_func is None:
+-            raise RuntimeError(
+-                "flash_attn_varlen_func is required for routed Full-only attention"
+-            ) from _FLASH_IMPORT_ERROR
++            # ailab 2026-11-03: no flash-attn (V100 sm_70 has none) -> xformers block-diagonal attention, same math
++            try:
++                import xformers.ops  # noqa: F401
++            except Exception as exc:
++                raise RuntimeError(
++                    "routed Full-only attention needs flash_attn_varlen_func or xformers"
++                ) from (_FLASH_IMPORT_ERROR or exc)
+ 
+         self.to_q = nn.Linear(channels, channels, bias=qkv_bias)
+         self.to_kv = nn.Linear(ctx_channels, channels * 2, bias=qkv_bias)
+@@ -180,17 +184,25 @@ class RoutedFullOnlyFlashCrossAttention(nn.Module):
+ 
+         k_packed = k.reshape(-1, self.num_heads, self.head_dim)
+         v_packed = v.reshape(-1, self.num_heads, self.head_dim)
+-        out_grouped = flash_attn_varlen_func(
+-            q,
+-            k_packed,
+-            v_packed,
+-            context["routed_cu_seqlens_q"],
+-            context["routed_cu_seqlens_k"],
+-            int(context["routed_max_seqlen_q"]),
+-            self.full_tokens,
+-            dropout_p=0.0,
+-            softmax_scale=None,
+-            causal=False,
+-        )
++        if flash_attn_varlen_func is not None:
++            out_grouped = flash_attn_varlen_func(
++                q,
++                k_packed,
++                v_packed,
++                context["routed_cu_seqlens_q"],
++                context["routed_cu_seqlens_k"],
++                int(context["routed_max_seqlen_q"]),
++                self.full_tokens,
++                dropout_p=0.0,
++                softmax_scale=None,
++                causal=False,
++            )
++        else:
++            import xformers.ops as xops
++            q_lens = torch.diff(context["routed_cu_seqlens_q"]).tolist()
++            mask = xops.fmha.BlockDiagonalMask.from_seqlens(q_seqlen=q_lens, kv_seqlen=[self.full_tokens] * len(q_lens))
++            out_grouped = xops.memory_efficient_attention(
++                q.unsqueeze(0), k_packed.unsqueeze(0), v_packed.unsqueeze(0), attn_bias=mask
++            ).squeeze(0)
+         out = out_grouped[inverse]
+         return x.replace(self.to_out(out.reshape(-1, self.channels)))
+diff --git a/uniforge3d/modules/sparse/conv/config.py b/uniforge3d/modules/sparse/conv/config.py
+index 6d44311..5750b2a 100644
+--- a/uniforge3d/modules/sparse/conv/config.py
++++ b/uniforge3d/modules/sparse/conv/config.py
+@@ -1,4 +1,5 @@
+ SPCONV_ALGO = 'auto'                                # 'auto', 'implicit_gemm', 'native'
+-FLEX_GEMM_ALGO = 'masked_implicit_gemm_splitk'      # 'explicit_gemm', 'implicit_gemm', 'implicit_gemm_splitk', 'masked_implicit_gemm', 'masked_implicit_gemm_splitk'
++import os as _os  # ailab: FLEX_GEMM_ALGO env override (the splitk Triton kernel aborts on V100 sm_70: use explicit_gemm)
++FLEX_GEMM_ALGO = _os.environ.get('FLEX_GEMM_ALGO', 'masked_implicit_gemm_splitk')      # 'explicit_gemm', 'implicit_gemm', 'implicit_gemm_splitk', 'masked_implicit_gemm', 'masked_implicit_gemm_splitk'
+ FLEX_GEMM_HASHMAP_RATIO = 2.0                       # Ratio of hashmap size to input size
+ 
+diff --git a/uniforge3d/modules/utils.py b/uniforge3d/modules/utils.py
+index 44ee5b6..e7521d3 100644
+--- a/uniforge3d/modules/utils.py
++++ b/uniforge3d/modules/utils.py
+@@ -86,3 +86,10 @@ def str_to_dtype(dtype_str: str):
+         'float32': torch.float32,
+     }[dtype_str]
+ 
++
++
++def amp_dtype():
++    """ailab: autocast dtype for the pipelines. bf16 upstream; UNIFORGE_AMP_DTYPE=float16 on cards without bf16 (V100 sm_70)."""
++    import os
++    return {"bfloat16": torch.bfloat16, "bf16": torch.bfloat16, "float16": torch.float16, "fp16": torch.float16,
++            "float32": torch.float32}[os.environ.get("UNIFORGE_AMP_DTYPE", "bfloat16")]
+diff --git a/uniforge3d/pipelines/shape.py b/uniforge3d/pipelines/shape.py
+index c84dac4..6869b04 100644
+--- a/uniforge3d/pipelines/shape.py
++++ b/uniforge3d/pipelines/shape.py
+@@ -9,6 +9,7 @@ import torch
+ from ..models.vaes.flexi_dual_grid import FlexiDualGridVaeDecoder
+ from ..modules import sparse as sp
+ from .samplers import FlowEulerSampler, model_predictor
++from uniforge3d.modules.utils import amp_dtype as _amp_dtype  # ailab: bf16 -> switchable (V100)
+ 
+ 
+ @torch.no_grad()
+@@ -31,7 +32,7 @@ def sample_shape_latent(
+     sampler = FlowEulerSampler(**sampling["args"])
+     predict = model_predictor(model, condition["cond"], condition["neg_cond"])
+ 
+-    with torch.autocast(device_type=latent_coords.device.type, dtype=torch.bfloat16):
++    with torch.autocast(device_type=latent_coords.device.type, dtype=_amp_dtype()):
+         return sampler.sample(
+             noise,
+             predict,
+diff --git a/uniforge3d/pipelines/texture.py b/uniforge3d/pipelines/texture.py
+index 0493eb0..61c5002 100644
+--- a/uniforge3d/pipelines/texture.py
++++ b/uniforge3d/pipelines/texture.py
+@@ -12,6 +12,7 @@ from ..utils.preprocessing import InputBatch
+ from ..utils.texture_baking import to_glb
+ from .samplers import FlowEulerSampler, model_predictor
+ from .types import NormalizedShapeLatent
++from uniforge3d.modules.utils import amp_dtype as _amp_dtype  # ailab: bf16 -> switchable (V100)
+ 
+ 
+ def denormalize_shape_latent(
+@@ -83,7 +84,7 @@ def sample_texture(
+         condition["neg_cond"],
+         concat_cond=shape_condition,
+     )
+-    with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
++    with torch.autocast(device_type=device.type, dtype=_amp_dtype()):
+         texture_slat = sampler.sample(
+             noise,
+             predict,
+diff --git a/uniforge3d/pipelines/uniforge3d_image_to_3d.py b/uniforge3d/pipelines/uniforge3d_image_to_3d.py
+index 35c7edc..4139205 100644
+--- a/uniforge3d/pipelines/uniforge3d_image_to_3d.py
++++ b/uniforge3d/pipelines/uniforge3d_image_to_3d.py
+@@ -30,6 +30,7 @@ from .texture import (
+     sample_texture,
+ )
+ from .types import NormalizedShapeLatent, SparseStructure
++from uniforge3d.modules.utils import amp_dtype as _amp_dtype  # ailab: bf16 -> switchable (V100)
+ 
+ 
+ class UniForge3DImageTo3DPipeline:
+@@ -152,7 +153,7 @@ class UniForge3DImageTo3DPipeline:
+         """Encode once per resolution and share 512px features across stages."""
+         with self._use_models(self.dino):
+             images512 = batch.dino_images512.to(self.device, dtype=torch.float32)
+-            with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
++            with torch.autocast(device_type=self.device.type, dtype=_amp_dtype()):
+                 structure_features = self.dino(images512).cpu()
+                 shape1024_features = self.dino(
+                     batch.dino_images1024.to(self.device, dtype=torch.float32)
+@@ -177,7 +178,7 @@ class UniForge3DImageTo3DPipeline:
+         ).to(self.device)
+         with self._use_models(self.structure_model):
+             vggt_images = batch.vggt_images.to(self.device)
+-            with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
++            with torch.autocast(device_type=self.device.type, dtype=_amp_dtype()):
+                 latent = sample_sparse_structure(
+                     self.structure_model,
+                     noise,

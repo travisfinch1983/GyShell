@@ -17,26 +17,38 @@ Jobs + outputs: /imagegen/3d-outputs/<id>/ (job.json, inputs/, model.glb|model.p
 HTTP: GET /image3d/models   POST /image3d/jobs {model, gpu?, name?, images: [{name, data: base64}], options?}
       GET /image3d/jobs     GET /image3d/job?id=   GET /image3d/file?id=&path=   GET /image3d/zip?id=
       POST /image3d/cancel {id}   POST /image3d/delete {id}   POST /image3d/unload {}"""
-import base64, io, json, os, queue, re, shutil, subprocess, threading, time, zipfile
+import base64, io, json, os, queue, re, shutil, socket, subprocess, threading, time, zipfile
 
 OUT = "/imagegen/3d-outputs"
 WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_image3d_worker.py")
 KEEP_WARM = int(os.environ.get("IMAGE3D_KEEP_WARM", "300"))
 ENV = "/opt/conda/envs/{}/bin/python"
+HOST = socket.gethostname()            # jobs carry their host: ai-epyc and ai-gpu share /imagegen/3d-outputs
+# 2026-11-03 (Travis: run them on the 5060 Tis and the V100s too): every model has ONE env recipe for all cards -
+# torch 2.9.1+cu128 (sm_70..sm_120), xformers, extensions built for 7.0;8.6;8.9;12.0 (/opt/image3d-envs/build-cu128.sh).
+# "env" is tried first, "env_fallback" (the first cu124 build) if it isn't installed on this host. "vars" go to every
+# worker; "volta_vars" are added on cards without bf16 / flash-attn (compute capability < 8).
+VOLTA_TRELLIS = {"TRELLIS_MODEL_DIR": "/opt/trellis2/ailab-models/TRELLIS.2-4B-fp16", "FLEX_GEMM_ALGO": "explicit_gemm"}
 MODELS = {
-    "trellis2": {"label": "TRELLIS.2 (4B)", "env": "trellis2", "input": "single", "output": "mesh", "vram_gb": 8,
+    "trellis2": {"label": "TRELLIS.2 (4B)", "env": "trellis2-cu128", "env_fallback": "trellis2",
+                 "vars": {"ATTN_BACKEND": "xformers", "SPARSE_ATTN_BACKEND": "xformers"}, "volta_vars": VOLTA_TRELLIS, "input": "single", "output": "mesh", "vram_gb": 8,
                  "time": "~2 min", "notes": "Best single-photo all-rounder: right colours, plausible unseen sides.",
                  "options": {"seed": 42, "pipeline": {"default": "1024_cascade", "choices": ["512", "1024", "1024_cascade", "1536_cascade"]},
                              "faces": 1000000, "texture_size": {"default": 4096, "choices": [1024, 2048, 4096]}}},
-    "uniforge3d": {"label": "UniForge3D", "env": "uniforge3d", "input": "multi", "output": "mesh", "vram_gb": 14,
+    "uniforge3d": {"label": "UniForge3D", "env": "uniforge3d-cu128", "env_fallback": "uniforge3d",
+                   "vars": {"ATTN_BACKEND": "xformers", "SPARSE_ATTN_BACKEND": "xformers"},
+                   "volta_vars": {"UNIFORGE_AMP_DTYPE": "float16", "FLEX_GEMM_ALGO": "explicit_gemm",
+                                  "UNIFORGE_CONFIG": "/opt/uniforge3d/ailab-models/pipeline-fp16.json"}, "input": "multi", "output": "mesh", "vram_gb": 14,
                    "time": "~3 min (+4 min first load)",
                    "notes": "Uses ALL photos (first = front). Most detail from real views; everything in frame gets modelled (hands!).",
                    "options": {}},
-    "hunyuan3d21": {"label": "Hunyuan3D-2.1", "env": "hunyuan3d21", "input": "single", "output": "mesh", "vram_gb": 15,
+    "hunyuan3d21": {"label": "Hunyuan3D-2.1", "env": "hunyuan3d21-cu128", "env_fallback": "hunyuan3d21",
+                    "vars": {"IMAGE3D_REPO": "/opt/hunyuan3d21-cu128"}, "fallback_vars": {"IMAGE3D_REPO": "/opt/hunyuan3d21"}, "input": "single", "output": "mesh", "vram_gb": 15,
                     "time": "~3 min", "notes": "Cleanest geometry on simple shapes; washes out colour, invents unseen detail.",
                     "options": {"seed": 1234, "steps": 50, "octree": {"default": 384, "choices": [256, 384, 512]}, "texture": True,
                                 "views": {"default": 6, "choices": [6, 8, 9]}, "res": {"default": 512, "choices": [512, 768]}}},
-    "idol": {"label": "Idol (Gaussian splat)", "env": "idol", "input": "single", "output": "splat", "vram_gb": 6, "time": "~30 s",
+    "idol": {"label": "Idol (Gaussian splat)", "env": "idol-cu128", "env_fallback": "idol", "vars": {"ATTN_BACKEND": "sdpa"},
+             "volta_vars": {"IDOL_VAE_DTYPE": "fp32", "IDOL_DINOV3_DTYPE": "fp32"}, "input": "single", "output": "splat", "vram_gb": 6, "time": "~30 s",
              "notes": "Most faithful colour, but a splat (point cloud), not a mesh.",
              "options": {"seed": 42, "mode": {"default": "real", "choices": ["real", "synthetic"]},
                          "gaussians": {"default": 1048576, "choices": [262144, 524288, 1048576]}}},
@@ -51,8 +63,20 @@ def register(api):
     JOBS, JLOCK = {}, threading.Lock()
     WORKERS, WLOCK = {}, threading.Lock()        # (model, gpu) -> Worker
 
+    def env_of(m):
+        """-> (env name, is_fallback): the cu128 env if this host has it, else the first cu124 build"""
+        e = MODELS[m]["env"]
+        # a cu128 env counts only once build-cu128.sh finished AND its import check passed (it writes the marker):
+        # a half-built env must never take jobs
+        if os.path.exists(f"/opt/conda/envs/{e}/.image3d-ready") or not MODELS[m].get("env_fallback"):
+            return e, False
+        return MODELS[m]["env_fallback"], True
+
+    PROBED = {}                                  # model -> env name ARCHS[model] was read from
+
     def detect(m):
-        py = ENV.format(MODELS[m]["env"])
+        PROBED[m] = env_of(m)[0]
+        py = ENV.format(PROBED[m])
         if not os.path.exists(py):
             ARCHS[m] = []; api.log(f"image3d: {m} env missing ({py})"); return
         try:
@@ -70,6 +94,9 @@ def register(api):
         info = api.gpu_info(g)
         if info.get("total_gb", 0) < MODELS[m]["vram_gb"]:
             return False, f"needs {MODELS[m]['vram_gb']} GB, card has {info.get('total_gb')}"
+        if m in PROBED and PROBED[m] != env_of(m)[0]:   # a new env appeared (e.g. the cu128 build finished): re-probe
+            ARCHS.pop(m, None); PROBED[m] = env_of(m)[0]
+            threading.Thread(target=detect, args=(m,), daemon=True).start()
         archs = ARCHS.get(m)
         if archs is None:
             return False, "checking the env's CUDA build..."
@@ -96,6 +123,8 @@ def register(api):
         if os.path.exists(p):
             try:
                 j = json.load(open(p))
+                if j.get("host", "ai-epyc") != HOST:
+                    continue                     # another host's job (shared folder): that host's service owns it
                 if j.get("status") in ("queued", "loading", "running"):
                     j["status"], j["error"] = "error", "interrupted (the image model service restarted)"
                 j["dir"] = f"{OUT}/{d}"; JOBS[j["id"]] = j
@@ -107,7 +136,7 @@ def register(api):
     class Worker:
         def __init__(self, m, g):
             self.m, self.g, self.q, self.proc, self.last = m, g, queue.Queue(), None, time.time()
-            self.busy = False
+            self.busy, self.mem, self.uses = False, 0, 0
 
         def alive(self):
             return self.proc is not None and self.proc.poll() is None
@@ -121,7 +150,15 @@ def register(api):
             self.q = queue.Queue()               # fresh per process: a previous process's "exited" must not fake a crash now
             self.log = open(f"{OUT}/.worker-{self.m}-gpu{self.g}.log", "a")
             self.log.write(f"\n==== {time.ctime()} start on GPU {self.g} ({info.get('name')})\n"); self.log.flush()
-            self.proc = subprocess.Popen([ENV.format(MODELS[self.m]["env"]), WORKER, "--model", self.m], env=env, stdin=subprocess.PIPE,
+            e, fb = env_of(self.m); spec = MODELS[self.m]
+            env.update(spec.get("fallback_vars" if fb and spec.get("fallback_vars") else "vars", {}))
+            if fb:
+                env.pop("ATTN_BACKEND", None); env.pop("SPARSE_ATTN_BACKEND", None)   # cu124 envs have flash-attn, no xformers
+            if cc(self.g) < (8, 0):
+                env.update(spec.get("volta_vars", {}))
+            self.log.write(f"env {e}{' (fallback)' if fb else ''}, vars " +
+                           json.dumps({k: v for k, v in env.items() if k in set(spec.get('vars', {})) | set(spec.get('volta_vars', {})) | set(spec.get('fallback_vars', {}))}) + "\n")
+            self.proc = subprocess.Popen([ENV.format(e), WORKER, "--model", self.m], env=env, stdin=subprocess.PIPE,
                                          stdout=subprocess.PIPE, stderr=self.log, text=True, bufsize=1, cwd="/tmp")
             threading.Thread(target=self._read, args=(self.proc, self.q), daemon=True).start()
             t0 = time.time()
@@ -142,7 +179,10 @@ def register(api):
             for line in proc.stdout:
                 if line.startswith("@@"):
                     try:
-                        q.put(json.loads(line[2:]))
+                        msg = json.loads(line[2:])
+                        if "mem" in msg:
+                            self.mem = msg["mem"]
+                        q.put(msg)
                     except ValueError:
                         self.log.write(f"[image3d] unparseable protocol line: {line}")
                 else:
@@ -163,6 +203,7 @@ def register(api):
                     if "progress" in msg:
                         on_progress(msg["progress"], msg.get("frac"), round(time.time() - t0))
                     elif "done" in msg:
+                        self.uses += 1
                         return msg["done"]
                     elif "error" in msg:
                         if msg.get("fatal"):
@@ -182,6 +223,7 @@ def register(api):
                 if self.proc.poll() is None:
                     self.proc.kill()
             self.proc = None
+            self.mem = 0
 
     def reaper():
         while True:
@@ -194,7 +236,51 @@ def register(api):
                     except Exception as e:  # noqa: BLE001
                         api.log(f"image3d: reaper could not stop {k}: {type(e).__name__}: {e}")
     threading.Thread(target=reaper, daemon=True).start()
-    api.add_shutdown(lambda: [w.stop() for w in list(WORKERS.values())])
+    if hasattr(api, "add_shutdown"):             # older service cores (ai-gpu) lack it: workers also exit when their stdin closes
+        api.add_shutdown(lambda: [w.stop() for w in list(WORKERS.values())])
+
+    # ---- VRAM accounting (2026-11-03, Travis: "get the VRAM accounting fixed") --------------------------------------
+    # A warm worker is a separate process, so the core's model list and its free_idle() (which only moves ComfyUI-managed
+    # models to RAM) don't see it. (1) add_status reports every live worker - model, GPU, VRAM, busy, idle time - so it shows
+    # in /status "models" and the Model Manager. (2) mm.free_memory is wrapped: when a load still lacks room AFTER the core
+    # moved its own idle models to RAM (cheap), idle warm 3D workers on that card are stopped (a reload costs 30 s-4 min,
+    # so they go last). A busy worker (claimed by a job) is never stopped.
+    def status_rows():
+        rows = []
+        for (m, g), w in list(WORKERS.items()):
+            if w.alive():
+                rows.append({"kind": "image3d", "name": MODELS[m]["label"], "gpu": g, "vram_gb": round(w.mem / 1e9, 2),
+                             "busy": w.busy, "idle_s": 0 if w.busy else round(time.time() - w.last), "uses": w.uses})
+        return rows
+    if hasattr(api, "add_status"):
+        api.add_status(status_rows)
+
+    def evict_idle(g, why):
+        n = 0
+        with WLOCK:
+            for (m, gg), w in list(WORKERS.items()):
+                if gg == g and w.alive() and not w.busy:
+                    api.log(f"image3d: stopping idle {m} on GPU {g} ({w.mem / 1e9:.1f} GB) - {why}"); w.stop(); n += 1
+        return n
+    try:
+        import comfy.model_management as mm
+        orig_free = mm.free_memory
+        if not getattr(orig_free, "_image3d", False):
+            def free_memory(memory_required, device, keep_loaded=[], *a, **kw):   # noqa: B006 - ComfyUI's signature
+                out = orig_free(memory_required, device, keep_loaded, *a, **kw)
+                try:
+                    if getattr(device, "type", None) == "cuda" and mm.get_free_memory(device) < memory_required:
+                        g = next((i for i, d in enumerate(api.GPUS) if d == device), None)
+                        if g is not None and evict_idle(g, f"the service needs {memory_required / 1e9:.1f} GB on it"):
+                            time.sleep(1.0)                       # the killed process's memory returns to the driver
+                except Exception as e:  # noqa: BLE001
+                    api.log(f"image3d: free_memory hook failed: {type(e).__name__}: {e}")
+                return out
+            free_memory._image3d = True
+            # (plugins load BEFORE the core's _wrap_free_memory(), so its pin-protecting wrapper ends up outside this one)
+            mm.free_memory = free_memory
+    except Exception as e:  # noqa: BLE001
+        api.log(f"image3d: could not hook ComfyUI free_memory ({e}); idle 3D workers won't be evicted on demand")
 
     def pick_gpu(m, want):
         ok = [g for g in range(len(api.GPUS)) if runs_on(m, g)[0]]
@@ -274,7 +360,7 @@ def register(api):
             imgs = imgs[:1]                        # single-view models use the first (frontal) photo
         g = pick_gpu(m, body.get("gpu"))
         name = body.get("name") or os.path.splitext(imgs[0].get("name") or "object")[0]
-        jid = time.strftime("%Y%m%d-%H%M%S") + f"-{m}-{slug(name)}"
+        jid = time.strftime("%Y%m%d-%H%M%S") + f"-{m}-{slug(name)}" + ("" if HOST == "ai-epyc" else f"-{slug(HOST)}")
         d = f"{OUT}/{jid}"; os.makedirs(f"{d}/inputs")
         paths = []
         for i, im in enumerate(imgs, 1):
@@ -290,7 +376,7 @@ def register(api):
             api.log(f"image3d: thumbnail failed: {e}")
         opts = {k: (v["default"] if isinstance(v, dict) else v) for k, v in MODELS[m]["options"].items()}
         opts.update({k: v for k, v in (body.get("options") or {}).items() if k in opts})
-        j = {"id": jid, "name": name, "model": m, "model_label": MODELS[m]["label"], "output_type": MODELS[m]["output"],
+        j = {"id": jid, "name": name, "model": m, "model_label": MODELS[m]["label"], "output_type": MODELS[m]["output"], "host": HOST,
              "gpu": g, "gpu_name": api.GPU_NAMES[g], "options": opts, "inputs": paths, "dir": d, "status": "queued",
              "stage": "queued", "progress": 0.0, "created": time.time()}
         with JLOCK:
@@ -314,10 +400,12 @@ def register(api):
         gpus = [api.gpu_info(g) for g in range(len(api.GPUS))]
         out = []
         for m, s in MODELS.items():
-            out.append({"id": m, **{k: v for k, v in s.items() if k != "env"}, "archs": ARCHS.get(m),
+            out.append({"id": m, **{k: v for k, v in s.items() if k not in ("env", "env_fallback", "vars", "volta_vars", "fallback_vars")},
+                        "env": env_of(m)[0], "archs": ARCHS.get(m),
                         "gpus": [{"index": g, "name": api.GPU_NAMES[g], "ok": runs_on(m, g)[0], "why": runs_on(m, g)[1]} for g in range(len(api.GPUS))]})
-        return {"models": out, "gpus": gpus, "keep_warm_s": KEEP_WARM,
-                "warm": [{"model": k[0], "gpu": k[1], "busy": w.busy} for k, w in WORKERS.items() if w.alive()]}
+        return {"host": HOST, "models": out, "gpus": gpus, "keep_warm_s": KEEP_WARM,
+                "warm": [{"model": k[0], "gpu": k[1], "busy": w.busy, "vram_gb": round(w.mem / 1e9, 2),
+                          "idle_s": 0 if w.busy else round(time.time() - w.last)} for k, w in WORKERS.items() if w.alive()]}
 
     def jobs(_b, q):
         with JLOCK:
@@ -351,10 +439,13 @@ def register(api):
         shutil.rmtree(j["dir"]); JOBS.pop(j["id"], None)
         return {"ok": True}
 
-    def unload(_b, _q):
+    def unload(b, _q):
+        b = b if isinstance(b, dict) else {}
         n = 0
         with WLOCK:
-            for w in WORKERS.values():
+            for (m, g), w in WORKERS.items():
+                if b.get("model") not in (None, m) or (b.get("gpu") is not None and int(b["gpu"]) != g):
+                    continue
                 if w.alive() and not w.busy:
                     w.stop(); n += 1
         return {"ok": True, "stopped": n}

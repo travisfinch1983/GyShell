@@ -8,15 +8,15 @@ import { makeAutoObservable, runInAction } from 'mobx'
 const BASE = '/api/imagegen/image3d'
 
 export type OptSpec = number | string | boolean | { default: number | string; choices: (number | string)[] }
-export interface GpuChoice { index: number; name: string; ok: boolean; why: string }
+export interface GpuChoice { index: number; name: string; ok: boolean; why: string; service: string; host: string }
 export interface Model3d {
   id: string; label: string; input: 'single' | 'multi'; output: 'mesh' | 'splat'; vram_gb: number
   time: string; notes: string; options: Record<string, OptSpec>; gpus: GpuChoice[]; archs: string[] | null
 }
-export interface GpuInfo { index: number; name: string; total_gb: number; free_gb: number; queue?: number }
+export interface GpuInfo { index: number; name: string; total_gb: number; free_gb: number; queue?: number; service: string; host: string }
 export interface Job3d {
   id: string; name: string; model: string; model_label: string; output_type: 'mesh' | 'splat'
-  gpu: number; gpu_name: string; status: 'queued' | 'loading' | 'running' | 'done' | 'error' | 'cancelled'
+  gpu: number; gpu_name: string; host?: string; service?: string; status: 'queued' | 'loading' | 'running' | 'done' | 'error' | 'cancelled'
   stage?: string; progress?: number; elapsed_s?: number; load_s?: number; error?: string; output?: string
   created: number; started?: number; finished?: number; inputs: string[]; files?: string[]
   options: Record<string, unknown>; result?: Record<string, unknown>; note?: string
@@ -24,6 +24,8 @@ export interface Job3d {
 export interface Upload { name: string; dataUrl: string; size: number }
 
 const ACTIVE = new Set(['queued', 'loading', 'running'])
+export const gpuKey = (g: { service: string; index: number }) => `${g.service}|${g.index}`
+export const shortGpu = (n?: string) => (n || '').replace(/^NVIDIA (GeForce )?/, '').replace(/^Tesla /, '').replace(/-SXM2-32GB$/, '')
 
 async function call<T = any>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(BASE + path, init)
@@ -48,7 +50,8 @@ class Image3dStore {
   submitting = false
   // form
   modelId = 'trellis2'
-  gpu: 'auto' | number = 'auto'
+  /** 'auto' or '<service id>|<gpu index>' (the backend merges every host's image model service) */
+  gpu = 'auto'
   name = ''
   uploads: Upload[] = []
   options: Record<string, number | string | boolean> = {}
@@ -113,7 +116,7 @@ class Image3dStore {
   setModel(id: string) {
     this.modelId = id
     this.resetOptions()
-    if (this.gpu !== 'auto' && !this.usableGpus.find((g) => g.index === this.gpu)) this.gpu = 'auto'
+    if (this.gpu !== 'auto' && !this.usableGpus.find((g) => gpuKey(g) === this.gpu)) this.gpu = 'auto'
   }
   resetOptions() {
     const o: Record<string, number | string | boolean> = {}
@@ -121,7 +124,7 @@ class Image3dStore {
     this.options = o
   }
   setOption(k: string, v: number | string | boolean) { this.options = { ...this.options, [k]: v } }
-  setGpu(v: string) { this.gpu = v === 'auto' ? 'auto' : Number(v) }
+  setGpu(v: string) { this.gpu = v }
   setName(v: string) { this.name = v }
 
   async addFiles(list: FileList | File[]) {
@@ -147,7 +150,7 @@ class Image3dStore {
       const imgs = this.model.input === 'single' ? this.uploads.slice(0, 1) : this.uploads
       const j = await call<Job3d>('/jobs', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: this.modelId, gpu: this.gpu === 'auto' ? null : this.gpu, name: this.name || undefined,
+        body: JSON.stringify({ model: this.modelId, gpu: this.gpu, name: this.name || undefined,
           options: this.options, images: imgs.map((u) => ({ name: u.name, data: u.dataUrl })) }),
       })
       runInAction(() => { this.jobs = [j, ...this.jobs.filter((x) => x.id !== j.id)]; this.error = '' })

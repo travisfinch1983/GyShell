@@ -11,6 +11,12 @@ _out = sys.stdout; sys.stdout = sys.stderr            # library prints go to the
 
 
 def emit(**kw):
+    try:    # VRAM this process holds (allocator reserve + ~0.5 GB CUDA context): the plugin reports it to the service
+        import torch as _t
+        if _t.cuda.is_initialized():
+            kw["mem"] = int(_t.cuda.memory_reserved(0) + 0.5e9)
+    except Exception:  # noqa: BLE001
+        pass
     _out.write("@@" + json.dumps(kw) + "\n"); _out.flush()
 
 
@@ -50,19 +56,24 @@ def cutout(im):
 
 # ── adapters: load() -> state; run(state, inputs, out, opt) -> {"files": {...}, ...} ──
 class Hunyuan:
-    REPO = "/opt/hunyuan3d21"
+    REPO = os.environ.get("IMAGE3D_REPO", "/opt/hunyuan3d21")     # cu128 envs use their own copy (in-tree extension)
     def load(self):
-        sys.path[:0] = [f"{self.REPO}/hy3dshape", f"{self.REPO}/hy3dpaint"]; os.chdir(self.REPO)
+        # the repo root too: torchvision_fix.py lives there, and without it basicsr/realesrgan (texture stage) import
+        # torchvision.transforms.functional_tensor, which newer torchvision removed (2026-11-04: a worker job died on it)
+        sys.path[:0] = [self.REPO, f"{self.REPO}/hy3dshape", f"{self.REPO}/hy3dpaint"]; os.chdir(self.REPO)
         os.environ["HY3DGEN_MODELS"] = "/imagegen/3d-models"
-        try:
-            from torchvision_fix import apply_fix; apply_fix()
-        except Exception:  # noqa: BLE001
-            pass
+        from torchvision_fix import apply_fix
+        apply_fix()
         from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
         self.shape = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained("Hunyuan3D-2.1")
         self.paint = None
+        # shape (~8 GB) + paint (~13 GB) together peak ~20 GB (measured on a V100): on cards under 22 GB (5060 Ti 16 GB)
+        # the shape pipeline waits in RAM while painting, and the paint pipeline is dropped after each job
+        self.small = torch.cuda.get_device_properties(0).total_memory < 22e9
     def run(self, inputs, out, o):
         im = cutout(open_rgb(inputs[0])); im.save(f"{out}/input_rgba.png")
+        if self.small:
+            self.shape.to("cuda")
         progress("shape", 0.1)
         mesh = self.shape(image=im, num_inference_steps=int(o.get("steps", 50)), octree_resolution=int(o.get("octree", 384)),
                           generator=torch.manual_seed(int(o.get("seed", 1234))))[0]
@@ -71,13 +82,20 @@ class Hunyuan:
         if not o.get("texture", True):
             os.replace(f"{out}/shape.glb", f"{out}/model.glb"); return res
         progress("texture", 0.5)
+        if self.small:
+            self.shape.to("cpu"); torch.cuda.empty_cache()
         if self.paint is None:
             from textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
             c = Hunyuan3DPaintConfig(int(o.get("views", 6)), int(o.get("res", 512)))
             c.realesrgan_ckpt_path = "hy3dpaint/ckpt/RealESRGAN_x4plus.pth"; c.multiview_cfg_path = "hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
             c.custom_pipeline = "hy3dpaint/hunyuanpaintpbr"; c.multiview_pretrained_path = "/imagegen/3d-models/Hunyuan3D-2.1"
+            if os.path.isdir("/imagegen/3d-models/dinov2-giant"):    # local copy: every host runs HF_HUB_OFFLINE
+                c.dino_ckpt_path = "/imagegen/3d-models/dinov2-giant"
             self.paint = Hunyuan3DPaintPipeline(c)
         self.paint(mesh_path=f"{out}/shape.glb", image_path=f"{out}/input_rgba.png", output_mesh_path=f"{out}/textured.obj")
+        if self.small:
+            import gc
+            self.paint = None; gc.collect(); torch.cuda.empty_cache()
         progress("export", 0.9)
         pbr_glb(f"{out}/textured.obj", f"{out}/textured.jpg", f"{out}/textured_metallic.jpg", f"{out}/textured_roughness.jpg", f"{out}/model.glb")
         return res
@@ -103,7 +121,9 @@ class Trellis:
     def load(self):
         sys.path.insert(0, "/opt/trellis2"); os.chdir("/opt/trellis2"); os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
         from trellis2.pipelines import Trellis2ImageTo3DPipeline
-        self.pipe = Trellis2ImageTo3DPipeline.from_pretrained("/opt/trellis2/ailab-models/TRELLIS.2-4B"); self.pipe.cuda()
+        # TRELLIS_MODEL_DIR = .../TRELLIS.2-4B-fp16 on cards without bf16 (V100): same weights, configs say float16
+        self.pipe = Trellis2ImageTo3DPipeline.from_pretrained(os.environ.get("TRELLIS_MODEL_DIR", "/opt/trellis2/ailab-models/TRELLIS.2-4B"))
+        self.pipe.cuda()
     def run(self, inputs, out, o):
         import o_voxel
         im = open_rgb(inputs[0])
@@ -127,7 +147,7 @@ class UniForge:
     def load(self):
         sys.path.insert(0, "/opt/uniforge3d"); os.chdir("/opt/uniforge3d")
         from uniforge3d import UniForge3DImageTo3DPipeline
-        self.pipe = UniForge3DImageTo3DPipeline.from_config("/opt/uniforge3d/ailab-models/pipeline.json",
+        self.pipe = UniForge3DImageTo3DPipeline.from_config(os.environ.get("UNIFORGE_CONFIG", "/opt/uniforge3d/ailab-models/pipeline.json"),
                                                             weights_root="/imagegen/3d-models/UniForge3D", low_vram=True, local_files_only=True)
     def run(self, inputs, out, o):
         from pathlib import Path
@@ -141,7 +161,8 @@ class Idol:
         sys.path.insert(0, "/opt/idol-sdk")
         from idol.pipeline import IdolPipeline
         # optimize=True produced input-independent purple blobs on torch 2.6/cu124 (2026-11-03); eager is correct
-        self.pipe = IdolPipeline("/opt/idol-sdk/ailab-models/idol", optimize=False)
+        self.pipe = IdolPipeline("/opt/idol-sdk/ailab-models/idol", optimize=False,
+                                 dinov3_dtype=os.environ.get("IDOL_DINOV3_DTYPE", "bf16"))   # fp32 on V100 (no bf16)
     def run(self, inputs, out, o):
         progress("generate", 0.1)
         r = self.pipe(inputs[0], mode=o.get("mode", "real"), seed=int(o.get("seed", 42)),
@@ -154,7 +175,8 @@ ADAPTERS = {"hunyuan3d21": Hunyuan, "trellis2": Trellis, "uniforge3d": UniForge,
 
 try:
     t = time.time(); ad = ADAPTERS[A.model](); ad.load()
-    emit(ready=True, load_s=round(time.time() - t, 1), gpu=torch.cuda.get_device_name(0))
+    emit(ready=True, load_s=round(time.time() - t, 1), gpu=torch.cuda.get_device_name(0), torch=torch.__version__,
+         cc=".".join(map(str, torch.cuda.get_device_capability(0))))
 except Exception as e:  # noqa: BLE001
     traceback.print_exc(); emit(error=f"load failed: {type(e).__name__}: {e}"); sys.exit(1)
 

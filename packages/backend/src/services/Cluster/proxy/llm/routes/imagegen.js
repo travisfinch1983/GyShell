@@ -4395,44 +4395,130 @@ export function createImagegenRouter(config) {
 
 
   // ---- IMAGE -> 3D (claude1 2026-11-03) --------------------------------------------------------------
-  // Relays /api/imagegen/image3d/* to the image model service that has the image3d plugin
-  // (/opt/ailab-modelsvc/plugins/image3d.py on ai-epyc). The service is found by probing each imagegen-models
-  // service's /image3d/models (cached 60 s), so moving the plugin to another host needs no change here.
-  // Uploads are JSON with base64 images (a few phone photos, well under the 400 MB limit); file / zip replies
-  // are streamed back, with Content-Disposition when ?download=1.
-  let image3dCache = { at: 0, base: null };
-  async function image3dBase() {
-    if (image3dCache.base && Date.now() - image3dCache.at < 60000) return image3dCache.base;
-    for (const s of imsServiceList()) {
+  // Relays /api/imagegen/image3d/* to EVERY image model service that has the image3d plugin
+  // (/opt/ailab-modelsvc/plugins/image3d.py: ai-epyc 4090 + 5060 Tis, ai-gpu V100s). models / jobs are merged;
+  // a GPU is addressed as "<service id>|<gpu index>"; a job's later calls go to the service that owns it.
+  // Services are found by probing each imagegen-models service's /image3d/models (cached 30 s).
+  // Uploads are JSON with base64 photos (well under the 400 MB limit); file / zip replies are streamed back.
+  let image3dSvcCache = { at: 0, list: [] };
+  const image3dOwner = new Map();       // job id -> service id
+  async function image3dServices(force = false) {
+    if (!force && Date.now() - image3dSvcCache.at < 30000) return image3dSvcCache.list;
+    const found = await Promise.all(imsServiceList().map(async (s) => {
       const base = `http://${s.containerIp}:${s.port}`;
       try {
-        const r = await fetch(base + '/image3d/models', { signal: AbortSignal.timeout(5000) });
-        if (r.ok) { image3dCache = { at: Date.now(), base }; return base; }
+        const r = await fetch(base + '/image3d/models', { signal: AbortSignal.timeout(6000) });
+        if (!r.ok) return null;
+        const models = await r.json();
+        return { id: s.id, base, host: models.host || s.containerIp, models };
       } catch (e) {
         console.warn(`[image3d] ${s.id} (${base}) has no image3d plugin or is down: ${e.message}`);
+        return null;
       }
+    }));
+    image3dSvcCache = { at: Date.now(), list: found.filter(Boolean) };
+    return image3dSvcCache.list;
+  }
+  async function image3dJson(svc, p, init = {}) {
+    const r = await fetch(svc.base + p, { ...init, signal: AbortSignal.timeout(init.timeout || 120000) });
+    const j = await r.json().catch(() => ({}));
+    return { status: r.status, body: j };
+  }
+  async function image3dOwnerOf(id) {
+    const svcs = await image3dServices();
+    const known = svcs.find((s) => s.id === image3dOwner.get(id));
+    if (known) return known;
+    for (const s of svcs) {
+      const r = await image3dJson(s, `/image3d/job?id=${encodeURIComponent(id)}`, { timeout: 10000 }).catch(() => null);
+      if (r && r.status === 200 && !r.body.error) { image3dOwner.set(id, s.id); return s; }
     }
-    image3dCache = { at: 0, base: null };
     return null;
   }
-  router.all(/^\/image3d\/(models|jobs|job|file|zip|cancel|delete|unload)$/, express.json({ limit: '400mb' }), async (req, res) => {
-    const sub = req.path.replace(/^\/image3d\//, '');
-    const base = await image3dBase();
-    if (!base) return res.status(503).json({ error: 'no image model service with the image3d plugin is running' });
-    const qs = new URLSearchParams(Object.entries(req.query || {}).filter(([k]) => k !== 'download')).toString();
-    const url = `${base}/image3d/${sub}${qs ? `?${qs}` : ''}`;
-    const big = sub === 'file' || sub === 'zip';
+  router.get('/image3d/models', async (_req, res) => {
+    const svcs = await image3dServices(true);
+    if (!svcs.length) return res.status(503).json({ error: 'no image model service with the image3d plugin is running' });
+    const models = new Map(); const gpus = []; const warm = [];
+    for (const s of svcs) {
+      for (const g of s.models.gpus || []) gpus.push({ ...g, service: s.id, host: s.host });
+      for (const w of s.models.warm || []) warm.push({ ...w, service: s.id, host: s.host });
+      for (const m of s.models.models || []) {
+        const cur = models.get(m.id) || { ...m, gpus: [], envs: {} };
+        cur.gpus.push(...(m.gpus || []).map((g) => ({ ...g, service: s.id, host: s.host })));
+        cur.envs[s.host] = m.env;
+        models.set(m.id, cur);
+      }
+    }
+    res.json({ models: [...models.values()], gpus, warm, services: svcs.map((s) => ({ id: s.id, host: s.host })) });
+  });
+  router.get('/image3d/jobs', async (_req, res) => {
+    const svcs = await image3dServices();
+    const all = new Map();
+    await Promise.all(svcs.map(async (s) => {
+      const r = await image3dJson(s, '/image3d/jobs', { timeout: 15000 }).catch((e) => { console.warn(`[image3d] jobs from ${s.id}: ${e.message}`); return null; });
+      for (const j of (r && r.body.jobs) || []) { image3dOwner.set(j.id, s.id); all.set(j.id, { ...j, service: s.id, host: j.host || s.host }); }
+    }));
+    res.json({ jobs: [...all.values()].sort((a, b) => (b.created || 0) - (a.created || 0)) });
+  });
+  router.post('/image3d/jobs', express.json({ limit: '400mb' }), async (req, res) => {
+    const body = { ...(req.body || {}) };
+    const svcs = await image3dServices(true);
+    let svc = null; let gpu = null;
+    const want = body.gpu == null ? 'auto' : String(body.gpu);
+    if (want !== 'auto' && want.includes('|')) {
+      const [sid, gi] = want.split('|');
+      svc = svcs.find((s) => s.id === sid); gpu = Number(gi);
+      if (!svc) return res.status(400).json({ error: `GPU host ${sid} is not available` });
+    } else {
+      // auto: across every host, an eligible card - idle queue first, then the most free VRAM
+      const cands = [];
+      for (const s of svcs) {
+        const m = (s.models.models || []).find((x) => x.id === body.model);
+        for (const g of (m && m.gpus) || []) {
+          if (!g.ok) continue;
+          const info = (s.models.gpus || []).find((x) => x.index === g.index) || {};
+          cands.push({ s, g: g.index, idle: !info.queue && !info.holder, free: info.free_gb || 0 });
+        }
+      }
+      cands.sort((a, b) => (b.idle - a.idle) || (b.free - a.free));
+      if (!cands.length) return res.status(400).json({ error: `no GPU on any host can run ${body.model}` });
+      svc = cands[0].s; gpu = cands[0].g;
+    }
+    body.gpu = gpu; delete body.service;
     try {
-      const up = await fetch(url, {
-        method: req.method,
-        headers: req.method === 'GET' ? {} : { 'Content-Type': 'application/json' },
-        body: req.method === 'GET' ? undefined : JSON.stringify(req.body || {}),
-        signal: AbortSignal.timeout(big ? 600000 : 120000),
-      });
+      const r = await image3dJson(svc, '/image3d/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (r.body && r.body.id) image3dOwner.set(r.body.id, svc.id);
+      res.status(r.status).json({ ...r.body, service: svc.id, host: (r.body && r.body.host) || svc.host });
+    } catch (e) {
+      console.warn(`[image3d] new job on ${svc.id}: ${e.message}`);
+      res.status(502).json({ error: `image model service ${svc.host}: ${e.message}` });
+    }
+  });
+  router.post(/^\/image3d\/(cancel|delete)$/, express.json({ limit: '1mb' }), async (req, res) => {
+    const sub = req.path.replace(/^\/image3d\//, '');
+    const svc = await image3dOwnerOf(String((req.body || {}).id || ''));
+    if (!svc) return res.status(404).json({ error: `no job ${req.body && req.body.id}` });
+    const r = await image3dJson(svc, `/image3d/${sub}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req.body) })
+      .catch((e) => ({ status: 502, body: { error: e.message } }));
+    if (sub === 'delete' && r.status === 200) image3dOwner.delete(String(req.body.id));
+    res.status(r.status).json(r.body);
+  });
+  router.post('/image3d/unload', async (_req, res) => {
+    const out = await Promise.all((await image3dServices()).map((s) => image3dJson(s, '/image3d/unload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      .then((r) => ({ host: s.host, ...r.body })).catch((e) => ({ host: s.host, error: e.message }))));
+    res.json({ ok: true, services: out });
+  });
+  router.get(/^\/image3d\/(job|file|zip)$/, async (req, res) => {
+    const sub = req.path.replace(/^\/image3d\//, '');
+    const svc = await image3dOwnerOf(String(req.query.id || ''));
+    if (!svc) return res.status(404).json({ error: `no job ${req.query.id}` });
+    const qs = new URLSearchParams(Object.entries(req.query || {}).filter(([k]) => k !== 'download')).toString();
+    const url = `${svc.base}/image3d/${sub}${qs ? `?${qs}` : ''}`;
+    try {
+      const up = await fetch(url, { signal: AbortSignal.timeout(sub === 'job' ? 20000 : 600000) });
       res.status(up.status);
       const ct = up.headers.get('content-type') || 'application/octet-stream';
       res.setHeader('Content-Type', ct);
-      if (big && req.query.download) {
+      if (sub !== 'job' && req.query.download) {
         const id = String(req.query.id || 'model').replace(/[^A-Za-z0-9._-]/g, '_');
         const rel = String(req.query.path || '').split('/').pop().replace(/[^A-Za-z0-9._-]/g, '_');
         const name = sub === 'zip' ? `${id}.zip` : `${id}${rel ? `-${rel}` : (ct.includes('gltf') ? '.glb' : '.ply')}`;
@@ -4444,9 +4530,8 @@ export function createImagegenRouter(config) {
       st.on('error', (e) => { console.warn(`[image3d] stream ${sub} failed: ${e.message}`); res.destroy(e); });
       st.pipe(res);
     } catch (e) {
-      console.warn(`[image3d] ${req.method} ${sub} -> ${url}: ${e.message}`);
-      image3dCache = { at: 0, base: null };
-      if (!res.headersSent) res.status(502).json({ error: `image model service: ${e.message}` });
+      console.warn(`[image3d] GET ${sub} -> ${url}: ${e.message}`);
+      if (!res.headersSent) res.status(502).json({ error: `image model service ${svc.host}: ${e.message}` });
     }
   });
 
