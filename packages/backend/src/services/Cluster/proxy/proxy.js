@@ -86,6 +86,14 @@ async function getForwardPort(svc) {
 // ────────────────────────────────────────────────────────────────────────
 
 
+// Long input is synthesized in chunks by proxlab-tts, at about 35 ms of compute per character
+// when the worker is idle. A flat 60 s aborted any reply over roughly 1,500 characters, and the
+// abort then retried the whole job on the next worker. This allows for a busy worker.
+const RVC_TIMEOUT_MS = 180_000;
+function ttsTimeoutMs(text) {
+  return Math.min(600_000, 60_000 + String(text || '').length * 120);
+}
+
 /**
  * Transcode raw audio bytes from one container format to another using ffmpeg.
  * Used to coerce RVC pipeline output (always WAV) into whatever format the
@@ -2918,7 +2926,7 @@ export function createProxyRouter(sshService) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(ttsBody),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(ttsTimeoutMs(ttsBody.input)),
     });
     if (!ttsResp.ok) {
       const errText = await ttsResp.text().catch(() => 'unknown');
@@ -2937,7 +2945,7 @@ export function createProxyRouter(sshService) {
       method: 'POST',
       headers: { 'Content-Type': contentType },
       body: multipartBody,
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(RVC_TIMEOUT_MS),
     });
     if (!rvcResp.ok) {
       const errText = await rvcResp.text().catch(() => 'unknown');
@@ -3520,7 +3528,7 @@ export function createProxyRouter(sshService) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(ttsPayload),
-            signal: AbortSignal.timeout(60_000),
+            signal: AbortSignal.timeout(ttsTimeoutMs(ttsPayload.input)),
           }));
           if (!ttsResp.ok) {
             const errText = await ttsResp.text().catch(() => 'unknown');
@@ -4229,7 +4237,7 @@ export function createProxyRouter(sshService) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(ttsPayload),
-          signal: AbortSignal.timeout(60_000),
+          signal: AbortSignal.timeout(ttsTimeoutMs(ttsPayload.input)),
         }));
         if (!ttsResp.ok) {
           const errText = await ttsResp.text().catch(() => 'unknown');
@@ -4319,7 +4327,7 @@ export function createProxyRouter(sshService) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(ttsPayload),
-            signal: AbortSignal.timeout(60_000),
+            signal: AbortSignal.timeout(ttsTimeoutMs(ttsPayload.input)),
           }));
           if (!ttsResp.ok) {
             const errText = await ttsResp.text().catch(() => 'unknown');

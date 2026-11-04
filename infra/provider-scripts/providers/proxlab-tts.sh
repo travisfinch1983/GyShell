@@ -344,6 +344,54 @@ async def lifespan(app: FastAPI):
     load_tts(app.state.default_model)
     yield
 
+# Chatterbox loses coherence past roughly 30 s of speech in one generate() call: 536 chars
+# was clean, 982 was mostly gibberish, 1961 was noise, all as HTTP 200. Keep each call well
+# inside that and join the audio.
+MAX_CHUNK_CHARS = 350
+CHUNK_GAP_MS = 180
+
+
+def split_for_tts(text: str, limit: int = MAX_CHUNK_CHARS) -> list[str]:
+    """Split text into chunks of at most about `limit` chars, on sentence boundaries."""
+    units = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line[-1].isalnum():
+            line += "."  # headings and list items need a stop or the next line runs on
+        for sentence in re.split(r"(?:(?<=[.!?\u2026])|(?<=[.!?\u2026][\"'\u201d\u2019)\]]))\s+", line):
+            if len(sentence) <= limit:
+                units.append(sentence)
+                continue
+            current = ""
+            for word in re.split(r"(?<=[,;:])\s+|\s+", sentence):
+                while len(word) > limit:
+                    if current:
+                        units.append(current)
+                        current = ""
+                    units.append(word[:limit])
+                    word = word[limit:]
+                if current and len(current) + 1 + len(word) > limit:
+                    units.append(current)
+                    current = word
+                else:
+                    current = f"{current} {word}".strip()
+            if current:
+                units.append(current)
+
+    chunks = []
+    for unit in units:
+        if chunks and len(chunks[-1]) + 1 + len(unit) <= limit:
+            chunks[-1] += " " + unit
+        else:
+            chunks.append(unit)
+    # A very short last chunk tends to come out badly, so let it ride on the previous one.
+    if len(chunks) > 1 and len(chunks[-1]) < 40:
+        chunks[-2] += " " + chunks.pop()
+    return chunks
+
+
 app = FastAPI(title="AI-Lab TTS", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -389,11 +437,10 @@ async def create_speech(req: SpeechRequest):
     if _infer_sem is None:
         _infer_sem = asyncio.Semaphore(1)
 
-    def _generate():
-        load_tts(resolved)
+    def _synth_chunk(text):
         if loaded_model == "chatterbox-turbo":
             wav_tensor = tts_engine.generate(
-                text=req.input,
+                text=text,
                 audio_prompt_path=ref_wav,
                 temperature=req.temperature,
                 top_k=req.top_k,
@@ -403,7 +450,7 @@ async def create_speech(req: SpeechRequest):
         else:
             # chatterbox (original)
             wav_tensor = tts_engine.generate(
-                text=req.input,
+                text=text,
                 audio_prompt_path=ref_wav,
                 exaggeration=req.exaggeration,
                 cfg_weight=req.cfg_weight,
@@ -422,6 +469,23 @@ async def create_speech(req: SpeechRequest):
             )
             if trimmed_secs > 0.1:
                 print(f"Trimmed {trimmed_secs:.1f}s of trailing silence (was {original_len/tts_engine.sr:.1f}s, now {wav_tensor.shape[-1]/tts_engine.sr:.1f}s)")
+        return wav_tensor
+
+    def _generate():
+        load_tts(resolved)
+        chunks = split_for_tts(req.input)
+        if not chunks:
+            raise HTTPException(400, "Input text is empty")
+        parts = []
+        for i, chunk in enumerate(chunks):
+            part = _synth_chunk(chunk)
+            if i:
+                gap = int(tts_engine.sr * CHUNK_GAP_MS / 1000)
+                parts.append(torch.zeros(*part.shape[:-1], gap, dtype=part.dtype, device=part.device))
+            parts.append(part)
+        wav_tensor = torch.cat(parts, dim=-1)
+        if len(chunks) > 1:
+            print(f"Synthesized {len(req.input)} chars as {len(chunks)} chunks, {wav_tensor.shape[-1]/tts_engine.sr:.1f}s")
         wav_data = wav_tensor.squeeze(0).cpu().numpy()
         sample_rate = tts_engine.sr
         return convert_audio(wav_data, sample_rate, req.response_format)
