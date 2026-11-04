@@ -41,5 +41,9 @@ Verified 2026-11-04 (thermos / vape pen; each output rendered and compared with 
 |---|---|---|
 | Hunyuan3D-2.1 | shape 113 s + texture 72 s, 13.5 GB (worker keeps the shape model in RAM while texturing on <22 GB cards) | shape 93 s + texture 87 s, 12.8 GB standalone / 20 GB in the worker |
 | TRELLIS.2 | ~2 min gen (first run) + 2 min export, 3 GB | 50 s gen + 9 min CPU export (ai-gpu's CPUs) |
-| UniForge3D | 288 s (4 views), 12 GB | see below |
+| UniForge3D | 288 s (4 views), 12 GB | 352 s (4 views), 12.2 GB, fp16 + xformers routed attention |
 | Idol | 81 s, 5 GB | 76 s, 7.8 GB (fp32 encoders) |
+
+All four models are eligible on all 7 GPUs (4090, 4x 5060 Ti, 2x V100 on ai-gpu's image model service).
+The old cu124 envs (`hunyuan3d21`, `trellis2`, `uniforge3d`, `idol` on ai-epyc) are now only the plugin's fallback,
+used if a `-cu128` env loses its marker.
