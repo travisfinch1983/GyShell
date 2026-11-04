@@ -19,3 +19,7 @@ Set up 2026-11-04 by claude1 (Travis: "set up self-hosted Firecrawl for all agen
 - Known blocked (Cloudflare bot challenge, `403` + `cf-mitigated: challenge`, also to plain curl): psdevwiki.com
   (Optimus's PS5 firmware reference), eBay search. Firecrawl's "engines tried: [pdf, document]" error means
   playwright was rejected first. These need the per-agent browser (and even that may not pass a challenge).
+- Workaround for Cloudflare-challenged REFERENCE pages (found by Optimus 2026-11-04): extract
+  `https://web.archive.org/web/2026/<url>` instead. It works for psdevwiki (May 2026 snapshot), but only for pages
+  that were archived, and the content can be months old: fine for background, not for "what's current".
+  r.jina.ai does NOT help (it hits the same challenge).
