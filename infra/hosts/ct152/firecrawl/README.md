@@ -16,3 +16,6 @@ Set up 2026-11-04 by claude1 (Travis: "set up self-hosted Firecrawl for all agen
 - Firecrawl returns TEXT (markdown/html); images are only links. Anti-bot sites (eBay) reject its headless
   playwright ("proxy inadequacy" → wants a stealth proxy we don't have).
 - Backups: every profile's `.env.bak-firecrawl-20261104` / `config.yaml.bak-firecrawl-20261104`.
+- Known blocked (Cloudflare bot challenge, `403` + `cf-mitigated: challenge`, also to plain curl): psdevwiki.com
+  (Optimus's PS5 firmware reference), eBay search. Firecrawl's "engines tried: [pdf, document]" error means
+  playwright was rejected first. These need the per-agent browser (and even that may not pass a challenge).
