@@ -870,6 +870,19 @@ function lookupHistoryOverride(modelId, versionId) {
 }
 
 /**
+ * The override remembered for EXACTLY this version, or null. lookupHistoryOverride() falls back to
+ * any version of the model, which is right for model-level defaults (review queue) but wrong for
+ * anything that predicts ONE version's path: another version's remembered name made every version
+ * of a repo resolve to the one file on disk, so /check-existing lit every badge gold (2026-11-04).
+ * Callers used to re-check versionId by hand; the two that forgot are why this exists.
+ */
+function lookupVersionOverride(modelId, versionId) {
+  if (!versionId) return null;
+  const o = lookupHistoryOverride(modelId, versionId);
+  return o && String(o.versionId) === String(versionId) ? o : null;
+}
+
+/**
  * Check for existing files at a target directory that would conflict with a download.
  * Returns array of { name, size } for files that already exist.
  */
@@ -1182,7 +1195,7 @@ function processPendingDownloads() {
     if (dl.status !== 'pending') continue;
     // #4 Skip files that already exist AND match the expected size (parity with HF fix #1).
     if (dl.targetFile && existsSync(dl.targetFile) && dl.size > 0 && statSync(dl.targetFile).size === dl.size) {
-      dl.status = 'complete'; dl.skipped = true; dl.completedAt = new Date().toISOString();
+      dl.status = 'complete'; dl.skipped = 'already on disk'; dl.completedAt = new Date().toISOString();
       console.log(`[civitai] Skip (already complete, ${dl.size}B): ${dl.targetFile}`);
       adoptSidecarsForDownload(dl);
       continue;
@@ -1648,7 +1661,9 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       if (!version) throw new Error('No model versions found');
 
       // Check history for previous path overrides
-      const historyOverride = lookupHistoryOverride(modelId);
+      // This version's folder only, the same rule /download applies; another version's override
+      // made this check look in a folder the download would never write to.
+      const historyOverride = lookupVersionOverride(modelId, version.id);
       const effectiveOverride = historyOverride?.pathOverride || null;
 
       // Resolve paths and collect file names
@@ -1868,7 +1883,7 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       const missingFiles = [];
 
       // Check history for version-specific overrides
-      const vHistOverride = lookupHistoryOverride(modelId, vid);
+      const vHistOverride = lookupVersionOverride(modelId, vid);
       const effectiveOverride = vHistOverride?.pathOverride || null;
       const fnOverride = vHistOverride?.fileNameOverride || null;
 
@@ -2112,6 +2127,21 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
               // Incomplete final file from legacy download — delete and re-download
               try { const { unlinkSync } = await import('fs'); unlinkSync(targetFile); } catch {}
             } else {
+              // Record the skip as a finished row. It used to leave no trace outside the history:
+              // a 34-version batch that was already on disk "sent" fine, logged "Downloaded", wrote
+              // 34 history rows and never appeared in the queue, so it looked lost (2026-11-04).
+              const _dm = loadDownloads();
+              _dm.downloads.push({
+                id: Math.random().toString(16).slice(2, 10),
+                modelName: model.name || 'Unknown',
+                modelType: model.type || 'Unknown',
+                versionName: version.name || '',
+                fileName, targetDir, targetFile,
+                size: actualBytes, progress: 100, pid: null,
+                status: 'complete', skipped: 'already on disk',
+                startedAt: null, completedAt: new Date().toISOString(),
+              });
+              saveDownloads(_dm);
               queued.push({ type: 'model', fileName, targetDir, skipped: true });
               continue;
             }
@@ -2235,7 +2265,9 @@ function resolveTargetPath(model, version, file, cfg, pathOverride, userDefined,
       });
 
       // Respond immediately — metadata and images download in background
-      console.log(`[civitai] Downloaded ${model.name} (${modelType}) -> ${metaDir} (${queued.length} model files)`);
+      const _nSkip = queued.filter((q) => q.skipped).length;
+      const _nMoved = queued.filter((q) => q.relocated).length;
+      console.log(`[civitai] Downloaded ${model.name} / ${version.name} (${modelType}) -> ${metaDir} (${queued.length - _nSkip - _nMoved} queued, ${_nSkip} already on disk, ${_nMoved} relocated)`);
       res.json({
         ok: true,
         modelName: model.name,

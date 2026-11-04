@@ -24,6 +24,8 @@ export interface DLItem {
   // could not sort on them.
   startedAt?: string | null
   completedAt?: string | null
+  // Set by civitai.js when the file was already on disk and nothing was fetched.
+  skipped?: string | boolean // older rows carry `true`
 }
 export interface HFFile {
   path: string

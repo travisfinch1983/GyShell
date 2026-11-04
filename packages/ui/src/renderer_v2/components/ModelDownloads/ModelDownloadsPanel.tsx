@@ -83,7 +83,7 @@ const QueueItem: React.FC<{ source: 'hf' | 'civ'; item: DLItem }> = observer(({ 
     <div className={styles.qItem}>
       <div className={styles.qHead}>
         <span className={styles.qName} title={name}>{name}</span>
-        <span className={`${styles.qStatus} ${done ? styles.sDone : st === 'failed' ? styles.sFail : active ? styles.sActive : styles.sQueued}`}>{st}</span>
+        <span className={`${styles.qStatus} ${done ? styles.sDone : st === 'failed' ? styles.sFail : active ? styles.sActive : styles.sQueued}`}>{item.skipped ? (typeof item.skipped === 'string' ? item.skipped : 'already on disk') : st}</span>
       </div>
       {item.targetDir && <div className={styles.qDest} title={item.targetDir}>{item.targetDir}</div>}
       {active && (

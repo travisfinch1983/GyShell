@@ -1930,6 +1930,12 @@ export class HermesManagementService {
           if (!NEVER_EXPOSED_TOOL.test(t) && !want.includes(t)) want.push(t)
         }
       }
+      // The how-to for those tools (eBay route, browser_evaluate for extraction, screenshot `scale`) ships
+      // with them. Only when the browser is first added, so unassigning the skill from one agent sticks.
+      if (!hasBrowser) {
+        try { await this.assignSkill(agentId, 'custom/web-browser') }
+        catch (e) { console.warn(`[agent-provision] ${agentId}: could not assign skill custom/web-browser: ${(e as Error).message}`) }
+      }
       const sel = resolveSelection(want, reg)
       // A just-registered server whose tools aren't discovered yet resolves as unknown and
       // silently drops out of `included` — the write below is then a no-op for it. That is

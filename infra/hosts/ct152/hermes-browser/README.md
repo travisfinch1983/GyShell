@@ -46,3 +46,9 @@ ROOT with no LAN block; in no agent group, reachable only by whole-gateway calle
   despite documenting a default of css (still so in @playwright/mcp 0.0.84, checked 2026-11-04).
 - The profiles' eBay ship-to defaults to **US 85541** (eBay's own guess), so prices and delivery estimates are
   US-domestic.
+
+## Shared skill `custom/web-browser` (2026-11-04)
+Library copy: `/root/.hermes/skills/custom/web-browser/SKILL.md` (repo copy: `skill/SKILL.md` here). Copied into
+all 23 profiles; `ensureMemoryNamespaceAndFleet` assigns it whenever it first gives an agent the browser, so new
+agents get it by default and unassigning it from one agent sticks. Edit the library copy, then re-copy to profiles.
+Running agents see it in their skill index from their next new session.
