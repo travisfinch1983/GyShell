@@ -1,0 +1,10 @@
+{
+  "name": "browser-mapper",
+  "transport": "stdio",
+  "description": "mapper's own web browser: headed Chromium with a persistent profile (cookies, logins, tabs), screenshots as images. LAN addresses are blocked; the public internet is open.",
+  "session_mode": "stateful",
+  "command": "/opt/hermes-browser/browser-mcp",
+  "args": [
+    "mapper"
+  ]
+}

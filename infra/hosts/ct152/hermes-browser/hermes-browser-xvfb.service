@@ -1,0 +1,13 @@
+[Unit]
+Description=Virtual display :117 for the per-agent browser MCP servers (claude1 2026-11-04)
+# Headed Chromium on a virtual display: anti-bot checks flag headless browsers far more often.
+
+[Service]
+User=hermes-browser
+Group=hermes-browser
+ExecStart=/usr/bin/Xvfb :117 -screen 0 1920x1080x24 -nolisten tcp
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

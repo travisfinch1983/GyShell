@@ -1,0 +1,25 @@
+#!/bin/bash
+# Per-agent browser MCP server (claude1 2026-11-04, Travis: every agent gets a browser, as a default tool).
+# Usage: browser-mcp <agent-id>   (stdio MCP; the AI-Lab MCP gateway runs one per agent as server browser-<agent>)
+# - Playwright MCP 0.0.79 (pinned copy /opt/hermes-browser/mcp-0.0.79), headed Chromium on Xvfb :117
+#   (hermes-browser-xvfb.service): anti-bot checks flag headless browsers far more often.
+# - Runs as user hermes-browser: /etc/hermes-browser-egress.nft drops that uid's traffic to every LAN / loopback
+#   address (DNS to 10.0.0.3 excepted), so no agent can drive its browser into the lab.
+# - Own persistent profile per agent (/var/lib/hermes-browser/agents/<id>): cookies, logins and tabs never mix.
+set -euo pipefail
+A="${1:-}"
+[[ "$A" =~ ^[a-z0-9][a-z0-9-]{0,48}$ ]] || { echo "browser-mcp: bad agent id '$A'" >&2; exit 2; }
+for d in /var/lib/hermes-browser/agents/$A /var/lib/hermes-browser/out/$A; do
+  [ -d "$d" ] || install -d -o hermes-browser -g hermes-browser -m 700 "$d"
+done
+exec runuser -u hermes-browser -- env -i HOME=/var/lib/hermes-browser PATH=/usr/bin:/bin DISPLAY=:117 \
+  PLAYWRIGHT_BROWSERS_PATH=/opt/ai-lab-mcp/ms-playwright \
+  /usr/bin/node /opt/hermes-browser/mcp-0.0.79/node_modules/@playwright/mcp/cli.js \
+  --browser chromium \
+  --user-data-dir "/var/lib/hermes-browser/agents/$A" \
+  --output-dir "/var/lib/hermes-browser/out/$A" \
+  --output-max-size 524288000 \
+  --viewport-size 1366,900 \
+  --init-script /opt/hermes-browser/stealth.js \
+  --caps vision,pdf \
+  --timeout-navigation 60000

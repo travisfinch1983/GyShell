@@ -1,0 +1,26 @@
+#!/usr/sbin/nft -f
+# Per-agent browser MCP servers run Chromium as user hermes-browser. Agents' own code drives these browsers, so
+# "no LAN access" is enforced HERE, by uid, where no page or script can route around it (claude1 2026-11-04).
+# Allowed: DNS to the lab resolver 10.0.0.3. Rejected: every private / loopback / link-local / CGNAT / multicast
+# destination (AI-Lab, Firecrawl, routers, other services). The public internet is open.
+# 🛑 Match the uid POSITIVELY (jump only when skuid == hermes-browser). Kernel-generated packets have no socket
+# owner, so a negated test ("skuid != X accept") does not match them and they fell through to the reject rules:
+# CT152's own LAN control packets were rejected for ~5 min on 2026-11-04.
+table inet hermes_browser_egress {
+  set lan4 { type ipv4_addr; flags interval; elements = { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } }
+  set lan6 { type ipv6_addr; flags interval; elements = { ::1/128, fc00::/7, fe80::/10, ff00::/8 } }
+  chain output {
+    type filter hook output priority 0; policy accept;
+    meta skuid "hermes-browser" jump browser
+  }
+  chain browser {
+    ip daddr 10.0.0.3 udp dport 53 accept
+    ip daddr 10.0.0.3 tcp dport 53 accept
+    ip daddr @lan4 log prefix "hermes-browser LAN blocked: " limit rate 6/minute
+    # tcp reset / icmp unreachable: the browser fails at once with a clear error instead of hanging
+    ip daddr @lan4 meta l4proto tcp counter reject with tcp reset
+    ip daddr @lan4 counter reject with icmpx type admin-prohibited
+    ip6 daddr @lan6 meta l4proto tcp counter reject with tcp reset
+    ip6 daddr @lan6 counter reject with icmpx type admin-prohibited
+  }
+}

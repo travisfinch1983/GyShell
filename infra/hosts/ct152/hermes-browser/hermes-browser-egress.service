@@ -1,0 +1,13 @@
+[Unit]
+Description=Block LAN egress for the hermes-browser user (per-agent browser MCP)
+Before=network-online.target ai-lab-mcp.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/usr/sbin/nft delete table inet hermes_browser_egress
+ExecStart=/usr/sbin/nft -f /etc/hermes-browser-egress.nft
+ExecStop=/usr/sbin/nft delete table inet hermes_browser_egress
+
+[Install]
+WantedBy=multi-user.target

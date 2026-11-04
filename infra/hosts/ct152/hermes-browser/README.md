@@ -1,0 +1,33 @@
+# Per-agent browser MCP (CT152): every agent gets its own browser, by default
+
+Built 2026-11-04 by claude1. Travis: "Every agent should get it... a needed tool to become a default". The design
+was his (an MCP server with a separate session per agent instead of Hermes's browser_exec, which needs an
+externally started Chrome).
+
+| Piece | Where |
+|---|---|
+| Launcher (stdio MCP) | `/opt/hermes-browser/browser-mcp <agent-id>` — Playwright MCP 0.0.79 (pinned copy `/opt/hermes-browser/mcp-0.0.79`), Chromium from `/opt/ai-lab-mcp/ms-playwright` |
+| Per-agent profile | `/var/lib/hermes-browser/agents/<id>` (cookies, logins, tabs persist); output `/var/lib/hermes-browser/out/<id>` |
+| Virtual display | `hermes-browser-xvfb.service` = Xvfb **:117** (headed Chromium: anti-bot checks flag headless far more). `:99` belongs to an older root Xvfb (since 2026-09-14): don't touch |
+| LAN block | `hermes-browser-egress.service` loads `/etc/hermes-browser-egress.nft`: uid **hermes-browser** may reach DNS 10.0.0.3 and the public internet only; every private / loopback / CGNAT / link-local destination is rejected (TCP reset, so it fails fast) |
+| Gateway | one server `browser-<id>` per agent (stdio, stateful; `servers/*.json` here), its 30 tools in group `agent-<id>` |
+| Default for new agents | `HermesManagementService.ensureMemoryNamespaceAndFleet` registers `browser-<id>`, adds its tools by NAME, disables `__browser_run_code_unsafe` at the gateway; `deleteAgent` removes the registration (the profile on disk stays) |
+| Backfill helper | `add-browser-to-group.py <id>...` (`/opt/hermes-browser/`) |
+
+🛑 **`browser_run_code_unsafe` is never exposed**: it runs arbitrary code in the server process (not the page),
+and all agents' browsers share one uid, so it could read another agent's profile or any readable file. It is
+(1) disabled at the gateway for every caller, (2) refused by `writeToolGroup` (`NEVER_EXPOSED_TOOL`) for every
+group, and (3) never added by provisioning. Excluding it from the groups alone missed the Claude Code instances,
+which use the whole gateway (maintenance-claude caught it).
+
+🛑 **The nft rule must match the uid POSITIVELY** (`meta skuid "hermes-browser" jump browser`). The first version
+used `meta skuid != X accept`; kernel-generated packets have no socket owner, so they fell through and CT152's own
+LAN control packets were rejected for ~6 min (2026-11-04 01:50–01:56). No service impact was found.
+
+Live tool updates: the gateway sends `tools/list_changed` when a group changes, and running Hermes agents refresh
+("dynamically refreshed N tool(s)"); no restart or reconnect is needed. AI-Lab's tool-health check now reads those
+lines (it used to report every live-added tool as a stale set).
+
+Verified 2026-11-04: eBay search loads (title "Ps5 Console Firmware for sale | eBay", no challenge; Firecrawl was
+refused); screenshots come back as images; LAN addresses refused; test-agent used it live from Matrix. Idle cost:
+one node process per agent that has used it, plus Chromium (about 1.2 GB with one active).

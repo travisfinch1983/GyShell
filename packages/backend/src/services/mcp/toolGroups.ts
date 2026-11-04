@@ -77,10 +77,21 @@ export function unknownToolsError(group: string, unknown: string[]): Error {
   return new Error(`refusing to modify ${group} - ${unknown.length} selected item(s) are not live, enabled gateway tools: ${shown}${more}. Existing tools left untouched.`)
 }
 
+/** Tools that must never reach ANY agent's group, however they were selected (a whole-server pick in the UI
+ *  expands to every tool). browser_run_code_unsafe runs arbitrary code in the per-agent browser server's own
+ *  process, not the page; every agent's browser runs as the same uid (hermes-browser), so it could read another
+ *  agent's browser profile (cookies, logins) or any readable file on CT152. claude1 2026-11-04. */
+export const NEVER_EXPOSED_TOOL = /__browser_run_code_unsafe$/
+
 /** Write a group's membership. PUT (atomic in-place) with POST as the create path. Never deletes. */
 export async function writeToolGroup(
   gatewayBase: string, group: string, description: string, tools: string[], timeoutMs = 8000,
 ): Promise<void> {
+  const blocked = tools.filter((t) => NEVER_EXPOSED_TOOL.test(t))
+  if (blocked.length) {
+    console.warn(`[tool-groups] ${group}: dropping never-exposed tool(s) ${blocked.join(', ')}`)
+    tools = tools.filter((t) => !NEVER_EXPOSED_TOOL.test(t))
+  }
   const gw = gatewayBase.replace(/\/+$/, '')
   const headers = { 'Content-Type': 'application/json' }
   const body = JSON.stringify({

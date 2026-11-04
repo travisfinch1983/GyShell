@@ -8,7 +8,7 @@ import { PROVIDER_SERVICE_CAPS } from '@gyshell/shared'
 import { resolveModelCapabilities } from '../Cluster/proxy/model-capabilities.js'
 import { clusterSettingsService } from '../Cluster/ClusterSettingsService'
 import { AlarmLatch } from '../AlarmLatch'
-import { loadToolRegistry, resolveSelection, unknownToolsError, readToolGroup, readToolGroupStatus, writeToolGroup } from '../mcp/toolGroups.js'
+import { loadToolRegistry, resolveSelection, unknownToolsError, readToolGroup, readToolGroupStatus, writeToolGroup, NEVER_EXPOSED_TOOL } from '../mcp/toolGroups.js'
 import { nonGatewayExecutableNativeTools } from '../Agent/nativeToolsHttp.js'
 
 const execFileAsync = promisify(execFile)
@@ -1886,15 +1886,50 @@ export class HermesManagementService {
         }
       }
 
+      // Browser (Travis 2026-11-04: "every agent should get it ... a default"): one stdio server per agent,
+      // /opt/hermes-browser/browser-mcp <id> = Playwright MCP, headed Chromium on Xvfb :117 with the agent's OWN
+      // persistent profile, run as uid hermes-browser whose LAN egress /etc/hermes-browser-egress.nft blocks.
+      // Its tools are added by NAME below (never the bare server: that would expand to browser_run_code_unsafe,
+      // which writeToolGroup also refuses).
+      const browserSrv = `browser-${agentId}`
+      const hasBrowser = current.some((t) => t.startsWith(`${browserSrv}__`))
+      if (!hasBrowser && !registered.has(browserSrv) && /^[a-z0-9][a-z0-9-]{0,48}$/.test(agentId)) {
+        const res = await fetch(`${gw}/api/v0/servers`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: browserSrv, transport: 'stdio', session_mode: 'stateful',
+            command: '/opt/hermes-browser/browser-mcp', args: [agentId],
+            description: `${agentId}'s own web browser: headed Chromium with a persistent profile (cookies, logins, tabs), screenshots as images. LAN addresses are blocked; the public internet is open.`,
+          }),
+          signal: AbortSignal.timeout(90000),   // stdio: the gateway starts the server to list its tools
+        })
+        if (!res.ok && res.status !== 409 && res.status !== 400) {
+          console.warn(`[agent-provision] ${agentId}: could not register ${browserSrv} (HTTP ${res.status}) — no browser tools until the next create/edit`)
+        }
+      }
+      // ...and disable browser_run_code_unsafe AT THE GATEWAY, so no caller at all can reach it: the Claude Code
+      // instances use the whole gateway, not a group (maintenance-claude spotted that 2026-11-04). Idempotent.
+      if (registered.has(browserSrv) || !hasBrowser) {
+        const dis = await fetch(`${gw}/api/v0/tools/disable?entity=${encodeURIComponent(`${browserSrv}__browser_run_code_unsafe`)}`,
+          { method: 'POST', signal: AbortSignal.timeout(15000) }).catch((e) => ({ ok: false, status: String((e as Error).message) }))
+        if (!dis.ok) console.warn(`[agent-provision] ${agentId}: could not disable ${browserSrv}__browser_run_code_unsafe at the gateway (${dis.status})`)
+      }
+
       const want = [...current]
       if (existingMem.length === 0) want.push(memSrv)   // bare server name expands to all its tools
       if (!hasFleet) want.push('fleet')
       for (const srv of authoringServers) {
         if (!current.some((t) => t.startsWith(`${srv}__`))) want.push(srv)
       }
-      if (want.length === current.length) return        // already complete
+      if (want.length === current.length && hasBrowser) return        // already complete
 
       const reg = await loadToolRegistry(gw)
+      if (!hasBrowser) {
+        for (const t of reg.serverTools.get(browserSrv) ?? []) {
+          if (!NEVER_EXPOSED_TOOL.test(t) && !want.includes(t)) want.push(t)
+        }
+      }
       const sel = resolveSelection(want, reg)
       // A just-registered server whose tools aren't discovered yet resolves as unknown and
       // silently drops out of `included` — the write below is then a no-op for it. That is
@@ -2427,6 +2462,15 @@ export class HermesManagementService {
     const raw = await this.ssh(
       `rot=$(ls -1v ${shq(log)}.[0-9]* 2>/dev/null | tac | tr '\\n' ' '); grep -ahE 'registered [0-9]+ tool\\(s\\)( from|:)|reconnection attempts, giving up|parking until a reconnect' $rot ${shq(log)} </dev/null 2>/dev/null | tail -n 40 || true`,
     ).catch(() => '')
+    // Hermes also re-lists a server's tools LIVE on an MCP tools/list_changed notification and logs
+    // "MCP server 'x': dynamically refreshed N tool(s)" — the gateway sends one whenever a tool group changes.
+    // Without reading these, every tool added to a running agent looked like a stale set (the 2026-11-04 browser
+    // rollout raised "serving a stale tool set" on test-agent while it was using the new tools). Separate grep: a
+    // single notification logs ~7 identical refresh lines, which would push the registration summary out of the
+    // first probe's bounded output.
+    const refreshRaw = await this.ssh(
+      `rot=$(ls -1v ${shq(log)}.[0-9]* 2>/dev/null | tac | tr '\\n' ' '); grep -ahE "MCP server '[^']+': dynamically refreshed [0-9]+ tool\\(s\\)" $rot ${shq(log)} </dev/null 2>/dev/null | tail -n 200 || true`,
+    ).catch(() => '')
     let registeredTools: number | null = null
     let gaveUp = false
     let parkedServers = 0
@@ -2443,6 +2487,8 @@ export class HermesManagementService {
     const MCP_BUILTINS = new Set(['list_resources', 'read_resource', 'list_prompts', 'get_prompt'])
     let pendingBuiltins: number | null = null
     let builtinsCounted: number | null = null
+    let pendingPerServer: Record<string, number> = {}
+    let perServer: Record<string, number> = {}
     for (const line of raw.split('\n')) {
       const park = line.match(/MCP server '([^']+)' failed initial connection.*parking/)
       if (park) { pendingNames.push(park[1]); continue }
@@ -2450,6 +2496,8 @@ export class HermesManagementService {
       // mcp__<server>__<builtin> — exactly three '__' segments — never a group tool
       // (those carry a toolset segment: mcp__<server>__<toolset>__<tool>).
       const enumLine = line.match(/registered \d+ tool\(s\): (.+)$/)
+      const enumSrv = line.match(/MCP server '([^']+)'.*registered (\d+) tool\(s\): /)
+      if (enumSrv) pendingPerServer[enumSrv[1]] = parseInt(enumSrv[2], 10)
       if (enumLine) {
         const named = enumLine[1].split(',').map((t) => t.trim()).filter(Boolean)
         const b = named.filter((t) => {
@@ -2468,9 +2516,25 @@ export class HermesManagementService {
         registeredAt = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/)?.[1] ?? ''
         parkedNames = pendingNames; pendingNames = []
         builtinsCounted = pendingBuiltins; pendingBuiltins = null
+        perServer = pendingPerServer; pendingPerServer = {}
         continue
       }
       if (/reconnection attempts, giving up/.test(line)) gaveUp = true
+    }
+    // Live refreshes AFTER the last registration replace that server's count (same units as the
+    // enumeration line: the refreshed count includes the server's protocol built-ins).
+    let refreshedAt = ''
+    if (registeredTools !== null && registeredAt) {
+      const newest: Record<string, { n: number; at: string }> = {}
+      for (const line of refreshRaw.split('\n')) {
+        const r = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*MCP server '([^']+)': dynamically refreshed (\d+) tool\(s\)/)
+        if (r && r[1] > registeredAt) newest[r[2]] = { n: parseInt(r[3], 10), at: r[1] }
+      }
+      for (const [srv, v] of Object.entries(newest)) {
+        if (!(srv in perServer)) continue     // a server the registration didn't enumerate: no baseline to adjust
+        registeredTools += v.n - perServer[srv]; perServer[srv] = v.n
+        if (v.at > refreshedAt) refreshedAt = v.at
+      }
     }
     // Parks AFTER the last registration (a re-park during this session) count too.
     if (pendingNames.length) parkedNames = [...new Set([...parkedNames, ...pendingNames])]
@@ -3747,7 +3811,8 @@ async lintProfileDocs(agentId: string): Promise<{
     // their tools keep showing up in every catalog. Only REGISTRATIONS go — the memory data stays in
     // the vector DB, and re-creating the agent re-registers the same namespace.
     const gw = this.gatewayBase()
-    for (const path of [`tool-groups/agent-${agentId}`, ...['memory', 'pages', 'reports'].map((k) => `servers/${k}-${agentId}`)]) {
+    // browser-<id>: only the registration goes; its profile (/var/lib/hermes-browser/agents/<id>) stays, like memory data
+    for (const path of [`tool-groups/agent-${agentId}`, ...['memory', 'pages', 'reports', 'browser'].map((k) => `servers/${k}-${agentId}`)]) {
       try {
         const r = await fetch(`${gw}/api/v0/${path}`, { method: 'DELETE', signal: AbortSignal.timeout(8000) })
         if (!r.ok && r.status !== 404) console.error(`[deleteAgent] ${agentId}: DELETE ${path} -> HTTP ${r.status}`)
