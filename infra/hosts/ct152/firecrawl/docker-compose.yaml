@@ -1,0 +1,112 @@
+# Self-hosted Firecrawl for the Hermes agents' web_extract (claude1 2026-11-04, Travis: "set up self-hosted
+# Firecrawl for all agents"). Based on upstream v2.11.0 docker-compose.yaml (docker-compose.upstream-v2.11.0.yaml
+# next to this file) with the published ghcr images instead of local builds. The image digests are pinned in
+# .env (FIRECRAWL_IMAGE etc.) after the first pull. Dropped: the experimental FoundationDB queue (NUQ_BACKEND unset =
+# Postgres queue). The API listens on 127.0.0.1:3002 ONLY: every Hermes agent runs on this host (CT152), and
+# self-hosted Firecrawl has no auth (USE_DB_AUTHENTICATION=false).
+# Hermes: FIRECRAWL_API_URL=http://127.0.0.1:3002 + web.extract_backend: firecrawl (search stays on SearXNG).
+name: firecrawl
+
+x-common-env: &common-env
+  REDIS_URL: redis://redis:6379
+  REDIS_RATE_LIMIT_URL: redis://redis:6379
+  PLAYWRIGHT_MICROSERVICE_URL: http://playwright-service:3000/scrape
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+  POSTGRES_DB: postgres
+  POSTGRES_HOST: nuq-postgres
+  POSTGRES_PORT: 5432
+  USE_DB_AUTHENTICATION: "false"
+  NUM_WORKERS_PER_QUEUE: 4
+  CRAWL_CONCURRENT_REQUESTS: 6
+  MAX_CONCURRENT_JOBS: 4
+  BROWSER_POOL_SIZE: 4
+  LOGGING_LEVEL: info
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3", compress: "true" }
+
+services:
+  playwright-service:
+    image: ${PLAYWRIGHT_IMAGE:-ghcr.io/firecrawl/playwright-service:latest}
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      MAX_CONCURRENT_PAGES: 6
+    networks: [backend]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cpus: 2.0
+    mem_limit: 4G
+    memswap_limit: 4G
+    tmpfs: ["/tmp/.cache:noexec,nosuid,size=1g"]
+    logging: *logging
+
+  api:
+    image: ${FIRECRAWL_IMAGE:-ghcr.io/firecrawl/firecrawl:latest}
+    restart: unless-stopped
+    ulimits: { nofile: { soft: 65535, hard: 65535 } }
+    environment:
+      <<: *common-env
+      HOST: 0.0.0.0
+      PORT: 3002
+      EXTRACT_WORKER_PORT: 3004
+      WORKER_PORT: 3005
+      NUQ_RABBITMQ_URL: amqp://rabbitmq:5672
+      HARNESS_STARTUP_TIMEOUT_MS: 60000
+      ENV: local
+    depends_on:
+      redis: { condition: service_started }
+      playwright-service: { condition: service_started }
+      rabbitmq: { condition: service_healthy }
+      nuq-postgres: { condition: service_healthy }
+    ports: ["127.0.0.1:3002:3002"]
+    command: node dist/src/harness.js --start-docker
+    networks: [backend]
+    cpus: 4.0
+    mem_limit: 8G
+    memswap_limit: 8G
+    logging: *logging
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    restart: unless-stopped
+    command: redis-server --bind 0.0.0.0
+    networks: [backend]
+    logging: *logging
+
+  rabbitmq:
+    image: ${RABBITMQ_IMAGE:-rabbitmq:3-management}
+    restart: unless-stopped
+    command: rabbitmq-server
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks: [backend]
+    logging: *logging
+
+  nuq-postgres:
+    image: ${NUQ_POSTGRES_IMAGE:-ghcr.io/firecrawl/nuq-postgres:latest}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    volumes: ["nuq-pg:/var/lib/postgresql/data"]
+    networks: [backend]
+    logging: *logging
+
+networks:
+  backend: {}
+
+volumes:
+  nuq-pg: {}
