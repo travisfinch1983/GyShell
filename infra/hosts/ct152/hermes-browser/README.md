@@ -31,3 +31,7 @@ lines (it used to report every live-added tool as a stale set).
 Verified 2026-11-04: eBay search loads (title "Ps5 Console Firmware for sale | eBay", no challenge; Firecrawl was
 refused); screenshots come back as images; LAN addresses refused; test-agent used it live from Matrix. Idle cost:
 one node process per agent that has used it, plus Chromium (about 1.2 GB with one active).
+
+Also disabled 2026-11-04: `playwright__browser_run_code_unsafe` on the older SHARED `playwright` server (runs as
+ROOT with no LAN block; in no agent group, reachable only by whole-gateway callers). Re-enable with
+`POST /api/v0/tools/enable?entity=playwright__browser_run_code_unsafe` if a Claude instance genuinely needs it.
