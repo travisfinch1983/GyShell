@@ -35,3 +35,14 @@ one node process per agent that has used it, plus Chromium (about 1.2 GB with on
 Also disabled 2026-11-04: `playwright__browser_run_code_unsafe` on the older SHARED `playwright` server (runs as
 ROOT with no LAN block; in no agent group, reachable only by whole-gateway callers). Re-enable with
 `POST /api/v0/tools/enable?entity=playwright__browser_run_code_unsafe` if a Claude instance genuinely needs it.
+
+## Field notes (Optimus, first real use 2026-11-04)
+- **eBay: never deep-link a search.** A cold hit on `/sch/i.html?_nkw=...` (with or without filters) returns
+  eBay's generic "SORRY — Something went wrong" page. Open `https://www.ebay.com` first, type into the search box
+  (`#gh-ac`) and submit: the same results page then loads (13,000+ results, prices, seller feedback). The search
+  endpoint wants the cookies the homepage sets.
+- **Extract with `browser_evaluate`, not the accessibility snapshot**: one call returned 62 title/price pairs.
+- **`browser_take_screenshot` needs an explicit `scale` (`"css"` or `"device"`)**: upstream marks it required
+  despite documenting a default of css (still so in @playwright/mcp 0.0.84, checked 2026-11-04).
+- The profiles' eBay ship-to defaults to **US 85541** (eBay's own guess), so prices and delivery estimates are
+  US-domestic.
