@@ -35,6 +35,14 @@ Any text encoder (largest block list by bytes: Qwen/Llama `layers`, T5 `block`, 
 across two cards, balanced by bytes, always resident, outside ComfyUI's model manager. Needs the core hook in
 `serve-teclaim-claude1.patch` (`PluginAPI.claim_te`; merged into claude2's serve.py 2026-10-10). Config
 `/opt/ailab-modelsvc/te_split-<port>.json`; `GET/POST /te_split`, `POST /te_split/remove {model}`.
+**TE LoRAs (2026-11-04):** encodes carrying LoRAs used to fall through to core, which loaded a SECOND full copy of
+the encoder on one card (17.5 GB on V100 #4 beside the split on #4+#5). They are now patched into the split weights in
+place (fp32 math, rounded to the stored dtype; originals kept in RAM, restored when the LoRA set changes), verified
+bit-identical to ComfyUI's patcher with a restore that is exact. Note: none of the 2,524 Qwen/Krea LoRAs here carry
+text-encoder weights at all, so for them the patch is a no-op and the second copy never did anything.
+Quantized (int8/fp8) TE weights are not patched in place: those encodes still fall through to core.
+`serve-tesplit-loras-claude1.patch`: plugin_status passes the plugin's `loras` through (was hardcoded `[]`).
+Deployed: ai-gpu :9310 (live) and ai-epyc (no split configured there; inert until one is).
 Encodes with LoRAs, or for encoders not on the split list, fall through to core.
 
 Verified on svc-9310 (V100 #4+#5), Qwen 2.1 BF16 qwen3vl 8B: 8.66 + 8.88 GB, 0.2 s/encode, output equals an fp32 CPU

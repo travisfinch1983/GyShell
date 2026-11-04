@@ -1,0 +1,11 @@
+--- serve.py.bak-tesplit-loras-20261104	2026-11-04 06:49:18.402137510 +0000
++++ serve.py	2026-11-04 06:49:18.432137221 +0000
+@@ -2300,7 +2300,7 @@
+                 out.append({"kind": e.get("kind", "?"), "name": e.get("name", "?"), "gpu": gs[0], "gpus": gs,
+                             "gpu_name": " + ".join(GPU_NAMES[i] for i in gs if 0 <= i < len(GPU_NAMES)), "busy": bool(e.get("busy")), "holder": None, "waiting": 0,
+                             "tier": e.get("tier", "hot"), "clip_type": e.get("clip_type"), "vram_gb": e.get("vram_gb"), "offloaded_gb": e.get("offloaded_gb"),
+-                            "loras": [], "uses": e.get("uses", 0), "idle_s": e.get("idle_s"), "plugin": plugin, "unloadable": False})
++                            "loras": e.get("loras") or [], "uses": e.get("uses", 0), "idle_s": e.get("idle_s"), "plugin": plugin, "unloadable": False})
+         except Exception:  # noqa: BLE001
+             traceback.print_exc()
+     return out

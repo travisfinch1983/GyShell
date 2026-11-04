@@ -16,7 +16,12 @@ Config: <plugins dir>/../te_split-<port>.json  {"splits": [{"model": "<te name>"
   POST /te_split   {model, clip_type, gpus}   add/replace an entry and load it now
   POST /te_split/remove {model}  drop it and free the VRAM
 Encodes for a configured (model, clip_type) are served here via api.claim_te; anything else - and any encode that
-carries LoRAs - falls through to core unchanged. GPU queue slots are NOT taken: an encode sharing a card with a
+used to carry LoRAs
+- fell through to core unchanged. That loaded a SECOND full copy of the encoder on one card for every TE LoRA
+(Travis 2026-11-04: qwen3vl 8B split on V100 #4+#5 plus a 17.5 GB LoRA copy on #4). TE LoRAs are now patched INTO
+the split weights in place, on whichever card each weight lives, computed in fp32 and rounded back to the stored
+dtype (ComfyUI's own helper would use fp16 on V100: the bf16 overflow class). The originals are kept in RAM and put
+back when a different LoRA set (or none) arrives, so a run of encodes with the same LoRAs patches once. GPU queue slots are NOT taken: an encode sharing a card with a
 sampling run is accepted contention (it is ~0.2 s).
 """
 import json
@@ -30,6 +35,10 @@ import traceback
 def register(api):
     torch = api.torch
     import comfy.sd
+    import comfy.float
+    import comfy.lora
+    import comfy.model_patcher
+    import comfy.utils
     import folder_paths
 
     cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -162,9 +171,59 @@ def register(api):
             gc.collect()
             torch.cuda.empty_cache()
 
+    def restore(st):
+        """Put the original weights back (from the RAM backup taken when the LoRAs were applied)."""
+        bk = st.pop("lora_backup", None) or {}
+        csm = st["clip"].cond_stage_model
+        for k, w in bk.items():
+            comfy.utils.get_attr(csm, k).data.copy_(w, non_blocking=False)
+        st["lora_key"] = ()
+
+    def apply_loras(st, loras):
+        """Make the split weights carry exactly `loras` [(name, strength)...]. Returns None when it can't (core then
+        serves the encode with its own copy, as before)."""
+        key = tuple((str(n), float(s)) for n, s in loras or [])
+        if st.get("lora_key", ()) == key:
+            return True
+        t0 = time.time()
+        restore(st)
+        if not key:
+            api.log(f"te_split: LoRAs removed from the split encoder in {time.time() - t0:.1f}s")
+            return True
+        lora_sd = getattr(sys.modules.get('__main__'), 'lora_sd', None)
+        if lora_sd is None:
+            return None
+        x = st["clip"]
+        for n, s in key:
+            _, x = comfy.sd.load_lora_for_models(None, x, lora_sd(n), 0, s)
+        patcher, csm = x.patcher, st["clip"].cond_stage_model
+        if patcher.model is not csm:
+            return None
+        backup = {}
+        try:
+            for k in list(patcher.patches.keys()):
+                w, set_func, convert_func = comfy.model_patcher.get_key_weight(csm, k)
+                if set_func is not None or convert_func is not None:
+                    raise RuntimeError(f"quantized weight {k}")   # int8/fp8 storage: not patched here
+                backup[k] = w.detach().to("cpu", copy=True)
+                out = comfy.lora.calculate_weight(patcher.patches[k], w.to(torch.float32, copy=True), k)
+                w.data.copy_(comfy.float.stochastic_rounding(out, w.dtype, seed=comfy.utils.string_to_seed(k)))
+                del out
+        except Exception as e:  # noqa: BLE001
+            st["lora_backup"] = backup
+            restore(st)
+            api.log(f"te_split: could not apply LoRAs {[n for n, _ in key]} in place ({e}) - core serves this encode")
+            return None
+        st["lora_backup"], st["lora_key"] = backup, key
+        torch.cuda.empty_cache()
+        if backup:
+            api.log(f"te_split: applied LoRAs {[n for n, _ in key]} to {len(backup)} weights in place on GPUs {st['gpus']} "
+                    f"in {time.time() - t0:.1f}s")
+        else:   # the usual case for Qwen/Krea LoRAs: diffusion-model weights only, the clip strength is a no-op
+            api.log(f"te_split: LoRAs {[n for n, _ in key]} carry no text-encoder weights - nothing to patch, encoding as-is")
+        return True
+
     def claim(sess, m):
-        if m.get("loras"):
-            return None                     # TE LoRAs: core loads its own patched copy
         key = (m.get("model"), m.get("clip_type", "qwen_image"))
         entry = next((e for e in read_cfg().get("splits", []) if (e["model"], e.get("clip_type", "qwen_image")) == key), None)
         if entry is None:
@@ -193,6 +252,8 @@ def register(api):
                 return csm.encode_token_weights(m["tokens"])
 
         with lock:
+            if apply_loras(st, m.get("loras")) is None:
+                return None
             # Working memory is measured on every encode: image inputs (Qwen-VL vision tower, on card A) need GBs on top
             # of the resident weights, and nothing outside this plugin budgets for it.
             base, free0 = [], []
@@ -235,7 +296,8 @@ def register(api):
 
     def r_status(body, query):
         return {"config": cfg_path, "splits": read_cfg().get("splits", []),
-                "loaded": [{"model": k[0], "clip_type": k[1], **{x: v.get(x) for x in ("gpus", "cut", "n", "gb", "loaded_at", "encodes", "last", "error")}}
+                "loaded": [{"model": k[0], "clip_type": k[1], **{x: v.get(x) for x in ("gpus", "cut", "n", "gb", "loaded_at", "encodes", "last", "error")},
+                            "loras": [list(x) for x in v.get("lora_key", ())]}
                            for k, v in loaded.items()]}
 
     def r_add(body, query):
@@ -266,7 +328,7 @@ def register(api):
         if not busy:
             lock.release()
         return [{"kind": "te", "name": k[0], "clip_type": k[1], "gpus": v["gpus"], "vram_gb": round(sum(v["gb"]), 2),
-                 "uses": v.get("encodes", 0), "busy": busy,
+                 "uses": v.get("encodes", 0), "busy": busy, "loras": [list(x) for x in v.get("lora_key", ())],
                  "idle_s": round(time.time() - (v.get("last") or {}).get("at", v["loaded_at"]))}
                 for k, v in list(loaded.items()) if v.get("clip") is not None]
 
