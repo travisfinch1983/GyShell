@@ -1,0 +1,86 @@
+--- /root/codebase-rag-server.mjs.bak-history-20261104	2026-10-27 13:23:39.030435587 +0000
++++ server.mjs	2026-11-04 15:27:08.762317184 +0000
+@@ -187,14 +187,14 @@
+   return resp.json();
+ }
+ 
+-async function searchCollection(collection, query, topK = 10) {
++async function searchCollection(collection, query, topK = 10, includeHistory = false) {
+   // Pre-vectorize the query ourselves (ProxLab's embed config may point elsewhere)
+   const vecs = await embedTexts([query]);
+   const vector = vecs[0];
+   const resp = await fetch(`${PROXLAB_URL}/api/proxy/vector/all/collections/${collection}/search`, {
+     method: 'POST',
+     headers: { 'Content-Type': 'application/json' },
+-    body: JSON.stringify({ vector, topK }),
++    body: JSON.stringify({ vector, topK, include_history: includeHistory }),
+     signal: AbortSignal.timeout(30000),
+   });
+   return resp.json();
+@@ -210,19 +210,19 @@
+   const q = String(query || '').trim();
+   return (!/\s/.test(q) || /\d|_|[a-z][A-Z]|\w[.\-]\w/.test(q)) ? 2 : 1;
+ }
+-async function keywordSearch(collection, query, topK) {
++async function keywordSearch(collection, query, topK, includeHistory = false) {
+   const resp = await fetch(`${PROXLAB_URL}/api/proxy/vector/all/collections/${collection}/keyword-search`, {
+     method: 'POST', headers: { 'Content-Type': 'application/json' },
+-    body: JSON.stringify({ query, topK }), signal: AbortSignal.timeout(30000),
++    body: JSON.stringify({ query, topK, include_history: includeHistory }), signal: AbortSignal.timeout(30000),
+   });
+   return resp.json();
+ }
+-async function searchFused(collections, query, topK) {
++async function searchFused(collections, query, topK, includeHistory = false) {
+   const lists = [];
+   for (const col of collections) {
+     const tag = (r) => r.results.map((it) => ({ ...it, collection: col.display_name || col.name }));
+-    try { const r = await searchCollection(col.name, query, topK); if (r.results?.length) lists.push(tag(r)); } catch {}
+-    try { const k = await keywordSearch(col.name, query, topK); if (k.results?.length) lists.push(Object.assign(tag(k), { weight: kwWeight(query) })); } catch {}
++    try { const r = await searchCollection(col.name, query, topK, includeHistory); if (r.results?.length) lists.push(tag(r)); } catch {}
++    try { const k = await keywordSearch(col.name, query, topK, includeHistory); if (k.results?.length) lists.push(Object.assign(tag(k), { weight: kwWeight(query) })); } catch {}
+   }
+   const byKey = new Map();
+   for (const list of lists) {
+@@ -498,8 +498,9 @@
+     collection: z.string().optional().describe('Specific collection to search (without codebase_ prefix). Omit to search all.'),
+     k: z.number().optional().describe('Number of results to return (default: 10)'),
+     language: z.string().optional().describe('Filter by programming language (e.g. "Python", "JavaScript")'),
++    include_history: z.boolean().optional().describe('Also search code that has since been changed or deleted, on repos that keep history. Off by default. Old results are labelled OUTDATED; use this for questions like how something used to work or what happened to a removed feature.'),
+   },
+-  async ({ query, collection, k, language }) => {
++  async ({ query, collection, k, language, include_history }) => {
+     const topK = k || 10;
+ 
+     try {
+@@ -509,7 +510,7 @@
+         if (!allowedCol(colName)) {
+           return { content: [{ type: 'text', text: `Collection "${collection}" not found. Use list_collections to see available collections.` }] };
+         }
+-        results = { results: await searchFused([{ name: colName, display_name: colName }], query, topK) };
++        results = { results: await searchFused([{ name: colName, display_name: colName }], query, topK, !!include_history) };
+       } else {
+         // Search all codebase collections
+         const manifest = loadManifest();
+@@ -517,7 +518,7 @@
+           return { content: [{ type: 'text', text: 'No codebase collections indexed yet. Use index_repo first.' }] };
+         }
+ 
+-        results = { results: await searchFused(manifest, query, topK) };
++        results = { results: await searchFused(manifest, query, topK, !!include_history) };
+       }
+ 
+       // Filter by language if requested
+@@ -542,9 +543,11 @@
+         const lang = parsedMeta.language || meta.language || '';
+         const score = r.fusedScore || r.rerankScore || r.rrfScore || 0;
+         const col = r.collection || parsedMeta.collection || '';
++        const removedRev = parsedMeta.removed_rev ?? meta.removed_rev;
++        const outdated = removedRev != null ? `\nOUTDATED: replaced or deleted at revision ${removedRev}${parsedMeta.removed_at ? ` (${parsedMeta.removed_at})` : ''}. This is not current code.` : '';
+ 
+         return `--- Result ${i + 1} (score: ${score.toFixed(4)}) ---
+-File: ${filePath}${lang ? ` [${lang}]` : ''}${col ? ` (${col})` : ''}
++File: ${filePath}${lang ? ` [${lang}]` : ''}${col ? ` (${col})` : ''}${outdated}
+ 
+ ${r.text || ''}`;
+       }).join('\n\n');

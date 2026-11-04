@@ -537,6 +537,11 @@ async function checkBranchDrift(colName, repoUrl, requestedBranch) {
 const RAG_CHUNKER_VERSION = 1;   // bump when chunkFileContent changes: forces one full rebuild per repo
 const RAG_SKIP_DIRS = /(^|\/)(\.git|node_modules|__pycache__|\.venv|dist|build|vendor|\.next)\//;
 const RAG_PATH_OPS_BATCH = 100;
+// Random so that no file can contain them. These were literal strings, and rag.js itself contains
+// them, so its own content was cut off at the first occurrence and most of it was never indexed.
+const RAG_FILE_NONCE = Math.random().toString(36).slice(2) + Date.now().toString(36);
+const RAG_FILE_START = `===START_${RAG_FILE_NONCE}===`;
+const RAG_FILE_END = `===END_${RAG_FILE_NONCE}===`;
 
 // Travis's own repos keep superseded chunks (decided 2026-11-04). Everything under
 // gitea travisfinch1983/ is a mirror of someone else's project; his own work is claude/* plus his
@@ -640,14 +645,14 @@ async function embedChangedFiles(colName, entry, cloneDir, paths, rev, keepHisto
   for (let i = 0; i < paths.length; i += READ_BATCH) {
     if (ragCancelRequested) throw new RagCancelled();
     const batch = paths.slice(i, i + READ_BATCH);
-    const cat = batch.map((rel) => `echo ${shQuote(`===FILE_START===${rel}===`)}; cat ${shQuote(`${cloneDir}/${rel}`)} 2>/dev/null; echo "===FILE_END==="`).join('; ');
+    const cat = batch.map((rel) => `echo ${shQuote(`${RAG_FILE_START}${rel}===`)}; cat ${shQuote(`${cloneDir}/${rel}`)} 2>/dev/null; echo "${RAG_FILE_END}"`).join('; ');
     const read = await exec(MCPJUNGLE_HOST, cat, { timeout: 30000 });
     const chunks = [];
-    for (const block of String(read.stdout || '').split('===FILE_START===').filter((b) => b.trim())) {
+    for (const block of String(read.stdout || '').split(RAG_FILE_START).filter((b) => b.trim())) {
       const headerEnd = block.indexOf('===\n');
       if (headerEnd < 0) continue;
       const relPath = block.slice(0, headerEnd).trim();
-      const endIdx = block.indexOf('===FILE_END===');
+      const endIdx = block.indexOf(RAG_FILE_END);
       const content = endIdx > 0 ? block.slice(headerEnd + 4, endIdx) : block.slice(headerEnd + 4);
       if (!content.trim() || content.includes('\0') || content.length > 512 * 1024) continue;
       const ext = (relPath.match(/\.[^.]+$/) || [''])[0].toLowerCase();
@@ -1305,7 +1310,7 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
       // Read this batch of files via SSH
       const catCmd = batch.map(f => {
         const relPath = f.replace(tmpDir + '/', '');
-        return `echo "===FILE_START===${relPath}==="; cat "${f}" 2>/dev/null; echo "===FILE_END==="`;
+        return `echo "${RAG_FILE_START}${relPath}==="; cat "${f}" 2>/dev/null; echo "${RAG_FILE_END}"`;
       }).join('; ');
 
       let batchChunks = [];
@@ -1313,13 +1318,13 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
       try {
         const catResult = await exec(MCPJUNGLE_HOST, catCmd, { timeout: 30000 });
         const output = catResult.stdout || '';
-        const fileBlocks = output.split('===FILE_START===').filter(b => b.trim());
+        const fileBlocks = output.split(RAG_FILE_START).filter(b => b.trim());
 
         for (const block of fileBlocks) {
           const headerEnd = block.indexOf('===\n');
           if (headerEnd < 0) continue;
           const relPath = block.slice(0, headerEnd).trim();
-          const endIdx = block.indexOf('===FILE_END===');
+          const endIdx = block.indexOf(RAG_FILE_END);
           const content = endIdx > 0 ? block.slice(headerEnd + 4, endIdx) : block.slice(headerEnd + 4);
 
           if (!content.trim() || content.includes('\0') || content.length > 512 * 1024) {
