@@ -1,0 +1,351 @@
+diff -ruN a/plugins/detect.py b/plugins/detect.py
+--- a/plugins/detect.py	2026-11-04 17:13:34.820759478 +0000
++++ b/plugins/detect.py	2026-11-04 17:13:34.826759455 +0000
+@@ -39,8 +39,8 @@
+     def free(obj):
+         obj.clear(); torch.cuda.empty_cache()
+ 
+-    api.add_kind("detector", ["ultralytics"], load_yolo, unload=free, quota_gb=(8, 4))
+-    api.add_kind("sam", ["sams"], load_sam, unload=free, quota_gb=(8, 4))
++    api.add_kind("detector", ["ultralytics"], load_yolo, unload=free, quota_gb=(8, 4), work_gb=1.5)
++    api.add_kind("sam", ["sams"], load_sam, unload=free, quota_gb=(8, 4), work_gb=4)
+ 
+     # ── core ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+     def detect(name, images, conf=0.35, max_det=100, masks=True, classes=None, gpu=None, who="detect"):
+diff -ruN a/plugins/forge.py b/plugins/forge.py
+--- a/plugins/forge.py	2026-11-04 17:13:34.822759470 +0000
++++ b/plugins/forge.py	2026-11-04 17:13:34.826759455 +0000
+@@ -26,6 +26,7 @@
+ IMAGEGEN = os.environ.get("FORGE_IMAGEGEN", "/imagegen")
+ DATASETS = os.environ.get("FORGE_DATASETS", os.path.join(IMAGEGEN, "_datasets"))
+ DEFAULT_SAM = os.environ.get("FORGE_SAM_NAME", "sam_vit_h_4b8939.pth")
++INGEST_WORK_BYTES = 5 * 2**30   # SAM + detector activations while annotating
+ INGEST_CHUNK = 8          # images per GPU-queue slot during /forge/ingest: never hog a card for minutes
+ 
+ 
+@@ -181,6 +182,7 @@
+                     det = api.model("detector", det_name, gpu=gg)
+                     sam = api.model("sam", sam_name, gpu=gg)
+                     sam["image_key"] = None             # annotate_images drives the predictor itself
++                    api.make_room(gg, INGEST_WORK_BYTES)
+                     try:
+                         return forge.annotate_images(chunk, det["model"], sam["predictor"], os.path.join(d, "tiles"), os.path.join(d, "overlays"),
+                                                      device=gg, conf=conf, unseeded=unseeded,
+diff -ruN a/serve.py b/serve.py
+--- a/serve.py	2026-11-04 17:13:34.818759485 +0000
++++ b/serve.py	2026-11-04 17:13:34.824759463 +0000
+@@ -804,10 +804,7 @@
+             hot = bool(r and r.base is not None and r.fully_in_vram())
+             return ((LEASES[g].holder is not None) + len(LEASES[g].queue), not hot, -(mm.get_free_memory(GPUS[g]) if GPUS[g].type == "cuda" else 0))
+         return min(have, key=score)
+-    try:
+-        need = model_bytes(kind, name) * 1.15
+-    except Exception:  # noqa: BLE001
+-        need = 0
++    need = plugin_need(kind, name)
+     rules = placement_rules()
+     reserved = {g for k, gs in rules.items() if k != kind for g in gs}
+     allowed = rules.get(kind) or [i for i in range(len(GPUS)) if i not in reserved] or list(range(len(GPUS)))
+@@ -816,6 +813,16 @@
+     fits = [f for f in free if f[0] >= need]
+     if fits:
+         return max(fits)[1]
++    if rules.get(kind):
++        # Fail over only when no pinned card can make room: plugin kinds by evicting idle copies, ComfyUI-managed kinds by its
++        # offloading, which needs the card idle and big enough. First configured card that fits wins.
++        def can_make_room(f, i):
++            return f + evictable_plugin_bytes(i) >= need if kind in PLUGIN_KINDS else idle(i) and total_vram(i) >= need
++        if not any(can_make_room(f, i) for f, i in free):
++            for i in overflow_gpus(kind, lane):
++                if i not in allowed and GPUS[i].type == "cuda" and mm.get_free_memory(GPUS[i]) >= need:
++                    log(f"{kind} {name}: pinned GPU {allowed} can't make room, failing over to GPU {i} ({GPU_NAMES[i]})")
++                    return i
+     # nothing fits in FREE VRAM: ComfyUI moves idle models out to RAM to make room - but only a card whose TOTAL VRAM holds it
+     # can (2026-10-10: the 17 GB bf16 Qwen TE went to an empty 16 GB 5060 Ti and the next run OOM'd). Among those: no other
+     # models > an idle queue > most free VRAM.
+@@ -829,6 +836,114 @@
+     return torch.cuda.get_device_properties(GPUS[g]).total_memory if GPUS[g].type == "cuda" else 0
+ 
+ 
++def failover_rules():
++    """{kind: [gpu indices, in order]}: where a pinned kind may go when its pinned cards are full and what's on them can't be
++    unloaded. Set by Travis in the Model Cache & Placement panel. A kind with no entry never leaves its pinned cards."""
++    rules = _state_host("failover_v2") or {}   # {kind: [GPU UUID]} - only this service's cards count
++    out = {k: [i for i in (gpu_index(u) for u in v) if i is not None] for k, v in rules.items() if v}
++    return {k: v for k, v in out.items() if v}
++
++
++def overflow_gpus(kind, lane=None):
++    """This kind's configured failover cards that can take it right now, in the configured order."""
++    ok = gpus_for(kind, lane)
++    return [i for i in failover_rules().get(kind, []) if i in ok]
++
++
++# ── VRAM room for plugin kinds (claude1 2026-11-04). Detectors, SAM and other plugin kinds load outside ComfyUI's memory manager, so
++# free_idle can't move them: they piled up on their card until SAM failed with 11 GB free elsewhere. This is their eviction. A copy
++# is unloaded outright (the file stays in the RAM / disk tiers, so a reload takes seconds). Never touched: pinned copies, copies in
++# use, and copies looked up in the last PLUGIN_ROOM_MIN_IDLE_S seconds, which is what protects the detector a job fetched just
++# before it asked for SAM.
++PLUGIN_ROOM_MIN_IDLE_S = float(os.environ.get("AILAB_MODELSVC_PLUGIN_ROOM_MIN_IDLE_S", "30"))
++
++
++def plugin_work_bytes(kind):
++    return float((PLUGIN_KINDS.get(kind) or {}).get("work_gb") or 0) * 2**30
++
++
++def plugin_need(kind, name):
++    """VRAM to load a model and run it: the file plus 15 %, plus the kind's working memory."""
++    try:
++        size = model_bytes(kind, name) * 1.15
++    except Exception:  # noqa: BLE001
++        size = 0
++    return size + plugin_work_bytes(kind)
++
++
++def evictable_plugin_copies(g, keep=None, min_idle=None):
++    """[(key, Resident)] of plugin copies on GPU g that may be unloaded, least recently used first."""
++    min_idle = PLUGIN_ROOM_MIN_IDLE_S if min_idle is None else min_idle
++    now = time.time()
++    with MODELS_LOCK:
++        items = [(k, r) for k, r in MODELS.items() if k[3] == int(g) and k != keep and k[0] in PLUGIN_KINDS
++                 and PLUGIN_KINDS[k[0]].get("unload") and k not in PINS]
++    idle_ones = [(k, r) for k, r in items if now - r.last >= min_idle and r.run_members == 0 and not r.fwd_lock.locked()]
++    return sorted(idle_ones, key=lambda kr: kr[1].last)
++
++
++def evictable_plugin_bytes(g):
++    total = 0
++    for k, _ in evictable_plugin_copies(g):
++        try:
++            total += model_bytes(k[0], k[1])
++        except Exception:  # noqa: BLE001
++            pass
++    return total
++
++
++# An overflow copy sits on a card its kind isn't pinned to, usually one doing diffusion work, and a diffusion load can't move it
++# (same reason as above). So it only stays while it's in use.
++OVERFLOW_IDLE_S = float(os.environ.get("AILAB_MODELSVC_OVERFLOW_IDLE_S", "120"))
++
++
++def overflow_sweep_once():
++    rules = placement_rules()
++    with MODELS_LOCK:
++        cards = {k[3] for k in MODELS if k[0] in PLUGIN_KINDS and rules.get(k[0]) and k[3] not in rules[k[0]]}
++    for g in cards:
++        if LEASES[g].holder is not None:
++            continue                       # busy: look again next pass
++
++        def sweep(gg):
++            for k, _ in evictable_plugin_copies(gg, min_idle=OVERFLOW_IDLE_S):
++                if rules.get(k[0]) and gg not in rules[k[0]]:
++                    unload(k[0], k[1], k[2], k[3])
++                    log(f"overflow copy of {k[0]} {k[1]} idle {OVERFLOW_IDLE_S:.0f}s: unloaded from GPU {gg}")
++        op_once(Session("overflow sweep"), g, sweep)
++
++
++def overflow_sweep_loop():
++    while True:
++        time.sleep(30)
++        try:
++            overflow_sweep_once()
++        except Exception:  # noqa: BLE001
++            traceback.print_exc()
++
++
++def plugin_make_room(g, need, keep=None, min_idle=None):
++    """Unload idle plugin copies on GPU g, oldest first, then idle ComfyUI-managed models, until `need` bytes are free. Call it
++    holding the card's queue slot and outside GATE.compute. Returns the free bytes afterwards."""
++    d = GPUS[int(g)]
++    if d.type != "cuda":
++        return 0
++    free = mm.get_free_memory(d)
++    if free >= need:
++        return free
++    for k, _ in evictable_plugin_copies(g, keep, min_idle):
++        try:
++            unload(k[0], k[1], k[2], k[3])
++        except Exception as e:  # noqa: BLE001
++            log(f"VRAM room: could not unload {k[0]} {k[1]} from GPU {g}: {e}")
++            continue
++        free = mm.get_free_memory(d)
++        log(f"VRAM room: unloaded idle {k[0]} {k[1]} from GPU {g}, {free / 2**30:.1f} GB free, need {need / 2**30:.1f}")
++        if free >= need:
++            return free
++    return free_idle(int(g), need)
++
++
+ # ── GPU RESERVATIONS (2026-10-11, Travis via claude1: "built-in AI-Lab processes override everything") ───────────────────────
+ # A reservation takes GPUs away from everyone but its owner: placement never picks them for other requests (ComfyUI runs included),
+ # copies already on them don't count for others, an explicit gpu on them is refused. Runs already holding a card just finish.
+@@ -1273,6 +1388,8 @@
+         with MODELS_LOCK:
+             r = MODELS.get(key)
+         if r is None:
++            if kind in PLUGIN_KINDS:
++                plugin_make_room(gpu, plugin_need(kind, name), keep=key)
+             r = Resident(kind, name, key[2], gpu)
+             with MODELS_LOCK:
+                 MODELS[key] = r
+@@ -1955,7 +2072,7 @@
+     persist = {k: [e["name"] for e in TIERS[k].optane_entries()] for k in TIERS}
+     persist_label = (cache_summary().get("optane") or {}).get("label")
+     gpus = [gpu_info(i) for i in range(len(GPUS))]
+-    return {"service": {"host": HOSTNAME, "port": A.port, "gpu": GPU_NAME, "gpus": gpus, "placement": placement_rules(), "uds": UDS, "pid": os.getpid(), "kinds": KINDS,
++    return {"service": {"host": HOSTNAME, "port": A.port, "gpu": GPU_NAME, "gpus": gpus, "placement": placement_rules(), "failover": failover_rules(), "uds": UDS, "pid": os.getpid(), "kinds": KINDS,
+                         "vram_total_gb": round(sum(g.get("total_gb", 0) for g in gpus), 1), "vram_free_gb": round(sum(g.get("free_gb", 0) for g in gpus), 1)},
+             "resident": [r.info() for r in list(MODELS.values())] + plugin_status(), "available": avail,
+             "load_errors": sorted(LOAD_ERRORS.values(), key=lambda x: -x["at"]),
+@@ -2090,22 +2207,29 @@
+       POST /models/load {kind,name,clip_type?,gpu?}    make it hot on one of this service's GPUs (background; gpu = index,
+                                                     default: where it fits best)
+       POST /models/unload {kind,name,clip_type?,gpu?}
+-      POST /placement {rules: {kind: [gpu index]}}   auto-placement rules (GPUs named are reserved for those kinds); {} clears"""
++      POST /placement {rules: {kind: [gpu index]}, failover: {kind: [gpu index]}}   auto-placement rules (GPUs named are reserved
++        for those kinds) and each pinned kind's ordered failover GPUs; send either one; {} clears it"""
+     kind, name = body.get("kind"), body.get("name")
+-    if path == "/placement":   # {rules: {kind: [gpu]}} - replaces this service's rules ({} clears)
++    if path == "/placement":   # {rules?: {kind: [gpu]}, failover?: {kind: [gpu]}} - each one sent replaces this service's set ({} clears)
+         from modelsvc.tiers import _state_update
+         # indices in the request are THIS launch's; stored as UUIDs. Replaces this service's cards only (others' rules kept).
+-        rules = {k: [gpu_uuid(int(g)) for g in v if gpu_uuid(int(g))] for k, v in (body.get("rules") or {}).items() if k in FOLDERS and v}
+         have = set(u for u in GPU_UUIDS if u)
+ 
+-        def put(st):
+-            cur = st.setdefault("placement_v2", {}).get(HOSTNAME) or {}
+-            out = {k: [u for u in v if u not in have] for k, v in cur.items()}
+-            for k, v in rules.items():
+-                out[k] = out.get(k, []) + v
+-            st["placement_v2"][HOSTNAME] = {k: v for k, v in out.items() if v}
+-        _state_update(put)
+-        return {"ok": True, "rules": placement_rules()}
++        def put_section(section, wanted):
++            uuids = {k: [gpu_uuid(int(g)) for g in v if gpu_uuid(int(g))] for k, v in wanted.items() if k in FOLDERS and v}
++
++            def put(st):
++                cur = st.setdefault(section, {}).get(HOSTNAME) or {}
++                out = {k: [u for u in v if u not in have] for k, v in cur.items()}
++                for k, v in uuids.items():
++                    out[k] = out.get(k, []) + v
++                st[section][HOSTNAME] = {k: v for k, v in out.items() if v}
++            _state_update(put)
++        if "rules" in body:
++            put_section("placement_v2", body.get("rules") or {})
++        if "failover" in body:
++            put_section("failover_v2", body.get("failover") or {})
++        return {"ok": True, "rules": placement_rules(), "failover": failover_rules()}
+     if path == "/cache/restore":
+         def run():
+             r = restore_ram(lambda k, n: full_path(n, FOLDERS[k]))
+@@ -2265,7 +2389,7 @@
+             elif path == "/cache":
+                 out = cache_summary() | {"entries": {k: {"ram": TIERS[k].entries(), "optane": TIERS[k].optane_entries()} for k in TIERS}}
+             elif path == "/placement":
+-                out = {"rules": placement_rules(), "reservations": reservations()}
++                out = {"rules": placement_rules(), "failover": failover_rules(), "reservations": reservations()}
+             elif path == "/reservations":
+                 out = {"reservations": reservations()}
+             elif path == "/ram":
+@@ -2330,14 +2454,15 @@
+         "run" when a request's run is creating it on demand."""
+         return "manager" if getattr(LOAD_CTX, "manager", False) else "run"
+ 
+-    def add_kind(self, kind, folders, load, unload=None, in_vram=None, quota_gb=(8, 4), min_cc=None, exclude=None, vram=None):
++    def add_kind(self, kind, folders, load, unload=None, in_vram=None, quota_gb=(8, 4), min_cc=None, exclude=None, vram=None, work_gb=0):
+         """A servable model kind. load(path, device) -> object (kept resident); unload(obj); in_vram(obj) -> bool.
+         folders = ComfyUI folder names to find the files in (e.g. ["ultralytics"]). Gets RAM + persistent cache tiers.
+         min_cc = (major, minor): the oldest GPU generation it runs on - placement never picks an older card.
+         exclude = a regex: files in those folders whose name matches aren't this kind (not listed, refused by load).
+-        vram(obj) -> (GB in VRAM, GB offloaded to RAM or None): for models the plugin holds outside ComfyUI's manager (worker processes)."""
++        vram(obj) -> (GB in VRAM, GB offloaded to RAM or None): for models the plugin holds outside ComfyUI's manager (worker processes).
++        work_gb = VRAM a run needs beyond the weights; placement and eviction make room for it."""
+         PLUGIN_KINDS[kind] = {"load": load, "unload": unload, "in_vram": in_vram, "plugin": self.name, "min_cc": min_cc,
+-                              "exclude": re.compile(exclude, re.I) if exclude else None, "vram": vram}
++                              "exclude": re.compile(exclude, re.I) if exclude else None, "vram": vram, "work_gb": work_gb}
+         FOLDERS[kind] = list(folders)
+         add_kind(kind, *quota_gb)
+         if kind not in KINDS:
+@@ -2393,16 +2518,63 @@
+             with as_reservation(reservation):
+                 return self.run(kind, name, fn, gpu=gpu, who=who, extra=extra, lane=lane)
+         g = placement(kind, name, extra, gpu, lane)
++        key_of = lambda card: _key(kind, name, extra, card)   # noqa: E731
+ 
+         def go(gg):
+             trace("plugin run", gg, plugin=self.name, kind=kind, name=name, who=who)
+             r = resident(kind, name, extra, gg)          # (a load here takes the gate exclusive by itself)
++            if kind in PLUGIN_KINDS and plugin_work_bytes(kind):
++                plugin_make_room(gg, plugin_work_bytes(kind), keep=key_of(gg))   # a resident copy still needs working memory
+             with GATE.compute(gg):                       # the plugin's GPU work: shared on ITS card, like a sampling step
+                 out = fn(r.base, GPUS[gg])
+                 if GPUS[gg].type == "cuda":
+                     torch.cuda.synchronize(GPUS[gg])
+                 return out
+-        return op_once(Session(who or self.name), g, go)
++
++        def attempt(card):
++            return op_once(Session(who or self.name), card, go)
++
++        if kind not in PLUGIN_KINDS:
++            return attempt(g)
++        # Out of VRAM: clear the card and retry, then try another card. fn can run again safely: plugin work is a pure
++        # function of its request, and a failed one left nothing behind but memory.
++        try:
++            return attempt(g)
++        except torch.OutOfMemoryError as e:
++            log(f"{kind} {name} on GPU {g}: out of VRAM ({who or self.name}), clearing idle models and retrying: {str(e)[:160]}")
++        torch.cuda.empty_cache()
++        try:
++            need = plugin_need(kind, name)
++            op_once(Session(who or self.name), g, lambda gg: plugin_make_room(gg, need, keep=key_of(gg), min_idle=0))
++            return attempt(g)
++        except torch.OutOfMemoryError as e:
++            if gpu is not None:
++                log(f"{kind} {name}: out of VRAM on requested GPU {g}, giving up: {str(e)[:160]}")
++                raise
++            last = e
++        torch.cuda.empty_cache()
++        need = plugin_need(kind, name)
++        for card in overflow_gpus(kind, lane):
++            free = mm.get_free_memory(GPUS[card]) if GPUS[card].type == "cuda" else 0
++            if card == g or free < need:
++                continue
++            log(f"{kind} {name}: GPU {g} is out of VRAM, failing over to GPU {card} ({GPU_NAMES[card]}), {free / 2**30:.1f} GB free")
++            try:
++                out = attempt(card)
++            except torch.OutOfMemoryError as e:
++                last = e
++                torch.cuda.empty_cache()
++                continue
++            # The copy on g can't run there, and a copy on another card now serves this model.
++            if _key(kind, name, extra, g) in MODELS and _key(kind, name, extra, g) not in PINS:
++                try:
++                    op_once(Session(who or self.name), g, lambda gg: unload(kind, name, extra, gg))
++                except Exception as e:  # noqa: BLE001
++                    log(f"{kind} {name}: could not drop the copy on GPU {g}: {e}")
++            return out
++        log(f"{kind} {name}: out of VRAM on GPU {g} and no configured failover GPU has room, need {need / 2**30:.1f} GB "
++            f"({who or self.name}): {str(last)[:160]}")
++        raise last
+ 
+     def full_path(self, kind, name):
+         return full_path(name, FOLDERS[kind])
+@@ -2429,6 +2601,10 @@
+         for g in gpus:
+             LEASES[int(g)].touch(sess)
+ 
++    def make_room(self, gpu, bytes_needed, keep=None):
++        """Make room on a GPU whose slot you hold, by unloading idle plugin copies too. See plugin_make_room."""
++        return plugin_make_room(int(gpu), int(bytes_needed), keep=keep)
++
+     def free_vram(self, gpu, bytes_needed, keep=()):
+         """Make room on a GPU (out-of-process workers, or a plugin's own model outside ComfyUI's manager, e.g. te_split): this
+         service's IDLE models on that card move to RAM (they stay resident and reload on next use). Models IN USE (mid-step / in
+@@ -2525,6 +2701,7 @@
+     log(f"listening on :{A.port} and {UDS} - GPUs: " + ", ".join(f"{i}={n}" for i, n in enumerate(GPU_NAMES)) + f" - serves {KINDS}")
+     pins_restore()
+     threading.Thread(target=_ram_loop, name="ram-budget", daemon=True).start()
++    threading.Thread(target=overflow_sweep_loop, name="overflow-sweep", daemon=True).start()
+     log(f"RAM budget {RAM_BUDGET_GB:g} GB anon RSS (idle copies evicted LRU after {RAM_MIN_IDLE_S:g}s idle; check every {RAM_CHECK_S:g}s)"
+         if RAM_BUDGET_GB > 0 else "RAM budget off (AILAB_MODELSVC_RAM_BUDGET_GB=0)")
+     log(f"RAM policy: {ram_policy_text()}")

@@ -153,6 +153,18 @@ export class ImageModelsStore {
     await this.act(s.id, '/placement', { rules: next }, `Placement on :${s.port}`)
   }
 
+  // Failover (per service): {kind: [gpu index...]} in priority order. Where a pinned kind may go when its pinned cards are
+  // full and what's on them can't be unloaded. A kind with no list never leaves its pinned cards.
+  failoverOf(s: any): Record<string, number[]> { return (s?.service?.failover && typeof s.service.failover === 'object') ? s.service.failover : {} }
+  async toggleFailover(s: any, kind: string, gpu: number): Promise<void> {
+    const next: Record<string, number[]> = {}
+    for (const [k, v] of Object.entries(this.failoverOf(s))) next[k] = [...(v as number[])]
+    const list = next[kind] || []
+    next[kind] = list.includes(gpu) ? list.filter((g) => g !== gpu) : [...list, gpu]
+    if (!next[kind].length) delete next[kind]
+    await this.act(s.id, '/placement', { failover: next }, `Failover on :${s.port}`)
+  }
+
   // ── quota editor (per host) ──
   draft(n: any): any {
     if (!this.quotaDraft[n.node] && n.cache?.config) {

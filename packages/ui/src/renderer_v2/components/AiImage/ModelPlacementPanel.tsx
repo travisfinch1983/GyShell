@@ -147,6 +147,7 @@ const NodeCard: React.FC<{ n: any }> = observer(({ n }) => {
           </div>
         )}
       </div>
+      {n.services.filter((s: any) => s.ok && (s.service?.gpus?.length || 0) > 1).map((s: any) => <GpuRoutingTable key={s.id} s={s} />)}
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead><tr style={{ textAlign: 'left', color: 'var(--fg-faint)' }}>
@@ -189,6 +190,76 @@ const AddToCache: React.FC = observer(() => {
           onClick={() => void store.addToCache()}>Add to RAM cache</button>
       </div>
       {!supported && <div className={styles.muted} style={{ fontSize: 12 }}>{KIND_LABEL[store.addKind]} isn't cached by {n.node}'s Image Model Service yet; claude2 is adding it.</div>}
+    </div>
+  )
+})
+
+/** Per model class: the GPUs it's pinned to, and the ordered GPUs it may fail over to when those are full and nothing on them
+ *  can be unloaded. Click order is failover order; the number on a chip is its place in line. */
+const GpuRoutingTable: React.FC<{ s: any }> = observer(({ s }) => {
+  const rules = store.rulesOf(s)
+  const failover = store.failoverOf(s)
+  const gpus: any[] = s.service.gpus
+  const kinds: string[] = (s.service?.kinds || []).filter((k: string) => k !== 'lora')
+  const gpuName = (g: any) => `GPU${g.index} ${s.gpuFriendly?.[g.index] || String(g.name || '').replace(/^NVIDIA (GeForce )?/, '')}`
+  const chipStyle = (on: boolean, enabled: boolean): React.CSSProperties => ({
+    ...chip, fontSize: 10, cursor: enabled ? 'pointer' : 'not-allowed', opacity: enabled ? 1 : 0.4,
+    background: on ? 'var(--accent)' : 'transparent', color: on ? 'var(--accent-fg, #fff)' : 'var(--fg-muted)',
+    borderColor: on ? 'var(--accent)' : undefined,
+  })
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div className={styles.muted} style={{ fontSize: 11, fontWeight: 600 }}>GPU routing · :{s.port}</div>
+      <div className={styles.muted} style={{ fontSize: 11 }}>
+        Pin a model class to GPUs, then pick where it may fail over, in order. Failover is used only when the pinned GPUs are full
+        and their models can't be unloaded because they're in use. With no failover GPUs, the class never leaves its pinned GPUs.
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', fontSize: 11 }}>
+          <thead>
+            <tr className={styles.muted} style={{ textAlign: 'left' }}>
+              <th style={{ padding: '2px 10px 2px 0', fontWeight: 600 }}>Model class</th>
+              <th style={{ padding: '2px 10px', fontWeight: 600 }}>Pinned to</th>
+              <th style={{ padding: '2px 10px', fontWeight: 600 }}>Failover, in order</th>
+            </tr>
+          </thead>
+          <tbody>
+            {kinds.map((k) => {
+              const pinned = rules[k] || []
+              const order = failover[k] || []
+              return (
+                <tr key={k}>
+                  <td style={{ padding: '2px 10px 2px 0', whiteSpace: 'nowrap' }}>{KIND_LABEL[k] || k}</td>
+                  <td style={{ padding: '2px 10px' }}>
+                    <div style={{ display: 'flex', gap: 3 }}>
+                      {gpus.map((g) => (
+                        <button key={g.index} type="button" title={gpuName(g)} disabled={!!store.busyKey} onClick={() => void store.toggleRule(s, k, g.index)}
+                          style={chipStyle(pinned.includes(g.index), true)}>GPU{g.index}</button>
+                      ))}
+                    </div>
+                  </td>
+                  <td style={{ padding: '2px 10px' }}>
+                    <div style={{ display: 'flex', gap: 3 }}>
+                      {gpus.map((g) => {
+                        const place = order.indexOf(g.index)
+                        const on = place >= 0
+                        const enabled = pinned.length > 0 && !pinned.includes(g.index)
+                        return (
+                          <button key={g.index} type="button" disabled={!!store.busyKey || (!enabled && !on)}
+                            title={pinned.length === 0 ? 'Pin this class to a GPU first' : pinned.includes(g.index) ? 'Already pinned here' : gpuName(g)}
+                            onClick={() => void store.toggleFailover(s, k, g.index)} style={chipStyle(on, enabled || on)}>
+                            {on ? `${place + 1}. ` : ''}GPU{g.index}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 })
