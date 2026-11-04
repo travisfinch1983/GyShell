@@ -184,6 +184,7 @@ async function main() {
     post: (p, ...hs) => { routes[`POST ${p}`] = hs[hs.length - 1] },
     delete: (p, h) => { routes[`DELETE ${p}`] = h },
     put: (p, h) => { routes[`PUT ${p}`] = h },
+    patch: (p, h) => { routes[`PATCH ${p}`] = h },
   }
   const rag = await import('./rag.js')
   rag.registerRagRoutes(app, { exec: makeExec({ cloneOk: true }), selfPort: 0 })

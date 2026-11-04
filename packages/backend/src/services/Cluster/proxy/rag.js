@@ -524,6 +524,249 @@ async function checkBranchDrift(colName, repoUrl, requestedBranch) {
   }
 }
 
+// ── Incremental refresh ──
+// A refresh used to drop every vector and re-embed the whole repo: 24 repos, about 245,000 chunks
+// and 7+ hours every night, almost none of it changed, with each repo's search empty while it ran.
+// The clone kept after each run sits at exactly the indexed commit, so comparing its tree with a
+// fresh clone gives the changed files. Blob hashes need no shared history, so shallow clones and
+// force-pushes are both fine.
+//
+// Chunks carry added_rev and removed_rev. A missing removed_rev means current, which is also what
+// every chunk written before this existed looks like, so no migration is needed. Default search
+// hides anything with removed_rev (vector-proxy currentOnlyFilter).
+const RAG_CHUNKER_VERSION = 1;   // bump when chunkFileContent changes: forces one full rebuild per repo
+const RAG_SKIP_DIRS = /(^|\/)(\.git|node_modules|__pycache__|\.venv|dist|build|vendor|\.next)\//;
+const RAG_PATH_OPS_BATCH = 100;
+
+// Travis's own repos keep superseded chunks (decided 2026-11-04). Everything under
+// gitea travisfinch1983/ is a mirror of someone else's project; his own work is claude/* plus his
+// GitHub account. A manifest `history` boolean overrides this per collection.
+function ragKeepsHistory(entry) {
+  if (typeof entry?.history === 'boolean') return entry.history;
+  return /\/claude\/[^/]+$|github\.com\/travisfinch1983\//.test(String(entry?.repo_url || '').replace(/\.git$/, ''));
+}
+
+function isIndexableName(name) {
+  if (RAG_SKIP_NAMES.has(name)) return false;
+  const ext = (name.match(/\.[^.]+$/) || [''])[0].toLowerCase();
+  if (RAG_SKIP_EXTS.has(ext)) return false;
+  return !!ext || ['Makefile', 'Dockerfile', 'Rakefile', 'Gemfile', 'Procfile'].includes(name);
+}
+
+function isIndexablePath(relPath) {
+  return !RAG_SKIP_DIRS.test(relPath) && isIndexableName(relPath.split('/').pop());
+}
+
+const shQuote = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
+
+async function updateManifestEntry(colName, patch) {
+  const b64 = Buffer.from(JSON.stringify(patch)).toString('base64');
+  const r = await exec(MCPJUNGLE_HOST,
+    `node -e "
+      const fs = require('fs'), p = '/opt/mcp-codebase-rag/data/collections.json';
+      const m = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      const i = m.findIndex(c => c.name === '${colName}');
+      if (i < 0) throw new Error('no manifest entry');
+      Object.assign(m[i], JSON.parse(Buffer.from('${b64}', 'base64').toString()));
+      fs.writeFileSync(p, JSON.stringify(m, null, 2));
+      console.log('__MANIFEST_OK__');
+    "`, { timeout: 10000 });
+  if (!String(r.stdout || '').includes('__MANIFEST_OK__')) throw new Error('manifest update failed');
+}
+
+/** Decide what a refresh has to do: skip, incremental, or full. Never throws; doubt means full. */
+async function planRagRefresh(colName, entry, branch) {
+  const repoDir = `/opt/mcp-codebase-rag/data/repos/${colName}`;
+  const full = (reason) => ({ mode: 'full', reason });
+  if (entry.embed_model && entry.embed_model !== effEmbedModel()) return full(`embed model changed to ${effEmbedModel()}`);
+  if ((entry.chunker_version || 1) !== RAG_CHUNKER_VERSION) return full('chunker version changed');
+  // An interrupted full run leaves a half-built collection and an out-of-date clone, so a diff
+  // against that clone would describe the wrong baseline.
+  if (await readCheckpoint(colName).catch(() => null)) return full('an interrupted index left a checkpoint');
+  const head = await exec(MCPJUNGLE_HOST, `git -C "${repoDir}" rev-parse HEAD 2>/dev/null`, { timeout: 15000 }).catch(() => null);
+  const baseSha = /^[0-9a-f]{40,64}/.exec(String(head?.stdout || '').trim())?.[0];
+  if (!baseSha) return full('no preserved clone to compare against');
+  const ls = await exec(MCPJUNGLE_HOST,
+    `GIT_TERMINAL_PROMPT=0 git ls-remote ${shQuote(entry.repo_url)} ${branch ? shQuote(`refs/heads/${branch}`) : 'HEAD'}`,
+    { timeout: 30000 }).catch(() => null);
+  const remoteSha = /^[0-9a-f]{40,64}/.exec(String(ls?.stdout || '').trim())?.[0];
+  if (remoteSha === baseSha) return { mode: 'skip', baseSha };
+  return { mode: 'incremental', baseSha, repoDir };
+}
+
+/** Files that differ between two clones. Returns null if the comparison itself failed. */
+async function diffCloneTrees(oldDir, newDir) {
+  const a = `${newDir}.old.tree`, b = `${newDir}.new.tree`;
+  const r = await exec(MCPJUNGLE_HOST,
+    `git -C "${oldDir}" -c core.quotePath=false ls-tree -r HEAD > "${a}" && `
+    + `git -C "${newDir}" -c core.quotePath=false ls-tree -r HEAD > "${b}" && `
+    + `{ diff "${a}" "${b}" | grep '^[<>]'; echo __DIFF_DONE__; }; rm -f "${a}" "${b}"`,
+    { timeout: 60000 }).catch(() => null);
+  const out = String(r?.stdout || '');
+  // The marker also catches truncated output, which would otherwise read as a smaller diff.
+  if (!out.includes('__DIFF_DONE__')) return null;
+  const before = new Map(), after = new Map();
+  for (const line of out.split('\n')) {
+    const m = /^([<>]) (\d{6}) \w+ ([0-9a-f]+)\t(.+)$/.exec(line);
+    if (!m || !['100644', '100755'].includes(m[2])) continue;   // not symlinks or submodules
+    if (m[4].startsWith('"')) { console.warn(`[rag-update] skipping unquotable path ${m[4]}`); continue; }
+    if (isIndexablePath(m[4])) (m[1] === '<' ? before : after).set(m[4], m[3]);
+  }
+  const upserts = [], removed = [];
+  let added = 0;
+  for (const [path, sha] of after) {
+    if (before.get(path) === sha) continue;   // mode change only
+    upserts.push(path);
+    if (!before.has(path)) added++;
+  }
+  for (const path of before.keys()) if (!after.has(path)) removed.push(path);
+  return { upserts, removed, added };
+}
+
+async function vectorOp(colName, op, body) {
+  const r = await fetch(`http://127.0.0.1:${selfPort}/api/proxy/vector/all/collections/${colName}/${op}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body), signal: AbortSignal.timeout(120000),
+  });
+  const d = await r.json().catch(() => null);
+  const failed = (d?.results || []).filter((x) => !x.ok);
+  if (!r.ok || failed.length) throw new Error(`vector ${op} failed: ${JSON.stringify(failed.length ? failed : d).slice(0, 200)}`);
+}
+
+/** Read, chunk, embed and upsert `paths`. Strict: anything that does not land throws. */
+async function embedChangedFiles(colName, entry, cloneDir, paths, rev, keepHistory) {
+  const READ_BATCH = 20, EMBED_BATCH = 16;
+  let chunksWritten = 0;
+  for (let i = 0; i < paths.length; i += READ_BATCH) {
+    if (ragCancelRequested) throw new RagCancelled();
+    const batch = paths.slice(i, i + READ_BATCH);
+    const cat = batch.map((rel) => `echo ${shQuote(`===FILE_START===${rel}===`)}; cat ${shQuote(`${cloneDir}/${rel}`)} 2>/dev/null; echo "===FILE_END==="`).join('; ');
+    const read = await exec(MCPJUNGLE_HOST, cat, { timeout: 30000 });
+    const chunks = [];
+    for (const block of String(read.stdout || '').split('===FILE_START===').filter((b) => b.trim())) {
+      const headerEnd = block.indexOf('===\n');
+      if (headerEnd < 0) continue;
+      const relPath = block.slice(0, headerEnd).trim();
+      const endIdx = block.indexOf('===FILE_END===');
+      const content = endIdx > 0 ? block.slice(headerEnd + 4, endIdx) : block.slice(headerEnd + 4);
+      if (!content.trim() || content.includes('\0') || content.length > 512 * 1024) continue;
+      const ext = (relPath.match(/\.[^.]+$/) || [''])[0].toLowerCase();
+      for (const chunk of chunkFileContent(content, relPath, RAG_LANG_MAP[ext] || 'Other')) {
+        // History repos need a new id or this would overwrite the chunk being kept. Elsewhere the
+        // stable id replaces it in place, and only a shorter file's tail is left to delete.
+        const id = `${colName}::${chunk.filePath}::${chunk.chunkIndex || 0}${keepHistory ? `@${rev}` : ''}`;
+        chunks.push({ id, text: stripLoneSurrogates(chunk.text), metadata: {
+          file_path: chunk.filePath, language: chunk.language, repo_url: entry.repo_url, collection: colName, added_rev: rev,
+        } });
+      }
+    }
+    for (let j = 0; j < chunks.length; j += EMBED_BATCH) {
+      const part = chunks.slice(j, j + EMBED_BATCH);
+      const er = await embedFetch(`http://127.0.0.1:${selfPort}/api/proxy/embed/v1/embeddings`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: effEmbedModel(), input: part.map((c) => embedSafeText(c.text)) }),
+        signal: AbortSignal.timeout(120000),
+      });
+      if (!er.ok) throw new Error(`embedding returned ${er.status}`);
+      const vectors = ((await er.json()).data || []).map((d) => d.embedding);
+      if (vectors.length !== part.length || !vectors[0]?.length) throw new Error('embedding returned the wrong number of vectors');
+      const points = part.map((c, k) => ({ id: c.id, vector: vectors[k], metadata: { text: c.text, ...c.metadata } }));
+      const ur = await fetch(`http://127.0.0.1:${selfPort}/api/proxy/vector/all/collections/${colName}/upsert`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ points }), signal: AbortSignal.timeout(60000),
+      });
+      const ub = await ur.json().catch(() => null);
+      if (!ur.ok || ub?.failed?.length || (typeof ub?.stored === 'number' && ub.stored < part.length)) {
+        throw new Error(`upsert stored ${ub?.stored ?? '?'}/${part.length}`);
+      }
+      chunksWritten += part.length;
+    }
+    ragJob.progress = 20 + Math.round(((i + batch.length) / paths.length) * 70);
+    ragJob.detail = `Changed files: ${Math.min(i + READ_BATCH, paths.length)}/${paths.length}, ${chunksWritten} chunks`;
+  }
+  return chunksWritten;
+}
+
+/**
+ * Apply one refresh's changes. Ordering is the safety property: new chunks land first and old ones
+ * are retired only after all of them succeed, so a failure leaves yesterday's index serving. The
+ * kept clone only moves once the manifest is written, so a failure repeats the same diff next run.
+ * Each attempt takes a fresh rev, because the retire filter spares chunks of the current rev and
+ * must not spare leftovers from an earlier failed attempt.
+ *
+ * Deliberately not runRagIndexing: its failure path retries as a resumed full build, which assumes
+ * an emptied collection. Returns false if the comparison failed and the caller should do a full run.
+ */
+async function runRagIncremental(colName, entry, plan, cloneDir) {
+  const diff = await diffCloneTrees(plan.repoDir, cloneDir);
+  if (!diff) return false;
+  const { upserts, removed, added } = diff;
+  const keepHistory = ragKeepsHistory(entry);
+  const swapClone = () => exec(MCPJUNGLE_HOST, `rm -rf "${plan.repoDir}" && mv "${cloneDir}" "${plan.repoDir}"`, { timeout: 60000 });
+
+  if (!upserts.length && !removed.length) {
+    await swapClone();
+    console.log(`[rag-update] '${colName}': new commit, no indexable files changed`);
+    ragJob.phase = 'done'; ragJob.progress = 100; ragJob.detail = 'No indexable files changed';
+    ragJob.result = { collection: colName, files_indexed: 0, chunks_created: 0, repo_url: entry.repo_url, incremental: true };
+    return true;
+  }
+
+  const rev = (entry.rev || 0) + 1;
+  await updateManifestEntry(colName, { rev });
+  ragJob.phase = 'embedding';
+  ragJob.detail = `${upserts.length} changed, ${removed.length} removed`;
+  console.log(`[rag-update] '${colName}': rev ${rev}, ${upserts.length} changed, ${removed.length} removed, history ${keepHistory ? 'on' : 'off'}`);
+  let retiring = false;
+  try {
+    const chunksWritten = await embedChangedFiles(colName, entry, cloneDir, upserts, rev, keepHistory);
+
+    retiring = true;
+    const stale = [...upserts, ...removed];
+    for (let i = 0; i < stale.length; i += RAG_PATH_OPS_BATCH) {
+      const filter = {
+        must: [{ key: 'file_path', match: { any: stale.slice(i, i + RAG_PATH_OPS_BATCH) } }, { is_empty: { key: 'removed_rev' } }],
+        must_not: [{ key: 'added_rev', match: { value: rev } }],
+      };
+      if (keepHistory) await vectorOp(colName, 'set-payload', { filter, payload: { removed_rev: rev, removed_at: new Date().toISOString() } });
+      else await vectorOp(colName, 'delete-points', { filter });
+    }
+
+    const countResp = await fetch(`http://127.0.0.1:${selfPort}/api/proxy/vector/all/collections/${colName}/count`, { signal: AbortSignal.timeout(15000) });
+    const total = (await countResp.json().catch(() => null))?.maxCount;
+    await updateManifestEntry(colName, {
+      embed_model: effEmbedModel(), chunker_version: RAG_CHUNKER_VERSION,
+      files_indexed: Math.max(0, (entry.files_indexed || 0) + added - removed.length),
+      ...(typeof total === 'number' ? { chunks_created: total } : {}),
+      indexed_at: new Date().toISOString(),
+    });
+    await swapClone();
+
+    ragAttempts.delete(colName);
+    ragJob.phase = 'done'; ragJob.progress = 100;
+    ragJob.detail = `Updated ${upserts.length} files, removed ${removed.length} (${chunksWritten} chunks)`;
+    ragJob.result = { collection: colName, files_indexed: upserts.length, chunks_created: chunksWritten, repo_url: entry.repo_url, incremental: true };
+    console.log(`[rag-update] '${colName}' updated: ${upserts.length} files, ${chunksWritten} chunks, ${removed.length} removed`);
+    return true;
+  } catch (e) {
+    // Only history repos can tell this attempt's chunks from the ones being kept. Once retiring has
+    // started the new chunks must stay, or a retired file would have no current chunks at all; the
+    // next run retires anything left over.
+    if (keepHistory && !retiring) {
+      await vectorOp(colName, 'delete-points', { filter: { must: [{ key: 'added_rev', match: { value: rev } }] } })
+        .catch((err) => console.warn(`[rag-update] '${colName}': cleanup of rev ${rev} failed: ${err.message}`));
+    }
+    await exec(MCPJUNGLE_HOST, `rm -rf "${cloneDir}"`, { timeout: 30000 }).catch((err) => console.warn(`[rag-update] clone cleanup failed: ${err.message}`));
+    if (e?.cancelled) {
+      ragJob.phase = 'cancelled'; ragJob.progress = 0;
+      ragJob.detail = `Cancelled - ${colName} keeps its previous index; the next run repeats this update`;
+      console.warn(`[rag-update] '${colName}': cancelled, previous index still serving`);
+      return true;
+    }
+    throw new Error(`incremental update failed, the previous index is still serving: ${e.message}`);
+  }
+}
+
 async function runRagUpdate(collection) {
   const colName = sanitizeCollectionName(collection);
   // Manifest lookup — the collection's repo_url/branch live on the MCP server's manifest.
@@ -582,6 +825,14 @@ async function runRagUpdate(collection) {
   // Diagnostic, not a gate: a correct index of a stale branch is invisible otherwise.
   await checkBranchDrift(colName, entry.repo_url, branch);
 
+  const plan = await planRagRefresh(colName, entry, branch);
+  if (plan.mode === 'skip') {
+    console.log(`[rag-update] '${colName}': unchanged at ${plan.baseSha.slice(0, 10)}, nothing to do`);
+    ragJob.phase = 'done'; ragJob.progress = 100; ragJob.detail = 'Unchanged';
+    ragJob.result = { collection: colName, files_indexed: 0, chunks_created: 0, repo_url: entry.repo_url, incremental: true };
+    return;
+  }
+
   // CLONE FIRST, DROP SECOND (2026-10-18, m-c alert mvdom1y4-6). The drop used to precede the clone,
   // so a clone that timed out on slow GitHub left codebase_proxmenux EMPTY. Now the full clone must
   // finish before anything is deleted; any clone failure leaves yesterday's index serving.
@@ -599,6 +850,13 @@ async function runRagUpdate(collection) {
       + `search keeps serving the last successful index. The next nightly run retries.`);
     return;
   }
+
+  if (plan.mode === 'incremental') {
+    if (await runRagIncremental(colName, entry, plan, cloneDir)) return;
+    plan.reason = 'the clone comparison failed';
+  }
+  console.log(`[rag-update] '${colName}': full rebuild (${plan.reason})`);
+  void emitDebug('rag-update', `'${colName}': full rebuild (${plan.reason})`);
 
   // Drop the old vectors (all backends), then re-index over a clean collection.
   //
@@ -978,14 +1236,7 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
       { timeout: 30000 });
     const allFiles = (scanResult.stdout || '').trim().split('\n').filter(f => f);
 
-    const codeFiles = allFiles.filter(f => {
-      const name = f.split('/').pop();
-      if (RAG_SKIP_NAMES.has(name)) return false;
-      const ext = (name.match(/\.[^.]+$/) || [''])[0].toLowerCase();
-      if (RAG_SKIP_EXTS.has(ext)) return false;
-      if (!ext && !['Makefile', 'Dockerfile', 'Rakefile', 'Gemfile', 'Procfile'].includes(name)) return false;
-      return true;
-    });
+    const codeFiles = allFiles.filter(f => isIndexableName(f.split('/').pop()));
 
     if (codeFiles.length === 0) {
       throw new Error('No indexable code files found in repository.');
@@ -1207,8 +1458,8 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
     ragJob.detail = 'Updating collection manifest...';
     const manifestData = {
       name: colName, display_name: collection, description: description || '',
-      embed_model: effEmbedModel(), repo_url: url, branch: branch || 'default', files_indexed: filesRead,
-      chunks_created: upsertedCount, languages: languageCounts,
+      embed_model: effEmbedModel(), chunker_version: RAG_CHUNKER_VERSION, repo_url: url, branch: branch || 'default',
+      files_indexed: filesRead, chunks_created: upsertedCount, languages: languageCounts,
       indexed_at: new Date().toISOString(),
     };
     const manifestB64 = Buffer.from(JSON.stringify(manifestData)).toString('base64');
@@ -1218,7 +1469,7 @@ async function runRagIndexing(url, collection, description, branch, resume = fal
         let m = []; try { m = JSON.parse(fs.readFileSync(p,'utf-8')); } catch {}
         const entry = JSON.parse(Buffer.from('${manifestB64}','base64').toString());
         const idx = m.findIndex(c => c.name === entry.name);
-        if (idx >= 0) m[idx] = entry; else m.push(entry);
+        if (idx >= 0) m[idx] = { ...m[idx], ...entry }; else m.push(entry);
         fs.writeFileSync(p, JSON.stringify(m, null, 2));
         console.log('manifest updated');
       "`, { timeout: 10000 }).catch(e => console.warn(`[rag] Manifest update failed: ${e.message}`));

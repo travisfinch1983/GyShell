@@ -123,6 +123,13 @@ async function dropResult(dbName, r, okStatuses = []) {
 // term-frequency part. The companion is separate because a collection's vector config cannot gain
 // a sparse vector in place, and it is rebuildable from the stored text (scripts: kw-backfill).
 export const KW_SUFFIX = '__kw';
+
+// Codebase collections keep superseded chunks on some repos (rag.js, Incremental refresh). Enforced
+// here so every search path hides them by default: search has returned deleted code as live before.
+export function currentOnlyFilter(name, filter, includeHistory) {
+  if (includeHistory || !String(name).startsWith('codebase_')) return filter;
+  return { ...(filter || {}), must: [...(filter?.must || []), { is_empty: { key: 'removed_rev' } }] };
+}
 export const KW_PREFIXES = /^(docs_|codebase_)/;
 const KW_STOP = new Set(('a an and are as at be but by for from has have i if in into is it its no not of on or ' +
   'so such than that the their then there these they this to was were will with you your we our can may ' +
@@ -1063,7 +1070,7 @@ export function createVectorProxyRouter() {
   // fuse the lists by rank. A collection without a companion (not backfilled yet) returns [].
   router.post('/all/collections/:name/keyword-search', jsonParser(), async (req, res) => {
     const { query, topK = 10 } = req.body || {};
-    const filter = (req.body?.filter && typeof req.body.filter === 'object') ? req.body.filter : null;
+    const filter = currentOnlyFilter(req.params.name, (req.body?.filter && typeof req.body.filter === 'object') ? req.body.filter : null, req.body?.include_history);
     if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query (text) is required' });
     const sv = kwSparseQuery(query);
     if (!sv.indices.length) return res.json({ collection: req.params.name, results: [], note: 'no searchable terms' });
@@ -1092,7 +1099,7 @@ export function createVectorProxyRouter() {
 
   router.post('/all/collections/:name/search', jsonParser(), async (req, res) => {
     const { query, vector, topK = 10 } = req.body || {};
-    const filter = (req.body?.filter && typeof req.body.filter === 'object') ? req.body.filter : null;
+    const filter = currentOnlyFilter(req.params.name, (req.body?.filter && typeof req.body.filter === 'object') ? req.body.filter : null, req.body?.include_history);
     const collection = req.params.name;
     console.log(`[vector-search] ${collection} topK=${topK} ${query ? 'q="' + String(query).slice(0, 60).replace(/\s+/g, ' ') + '"' : 'vector'} from ${req.ip || req.socket?.remoteAddress} ua=${String(req.headers['user-agent'] || '-').slice(0, 40)}`);
 
