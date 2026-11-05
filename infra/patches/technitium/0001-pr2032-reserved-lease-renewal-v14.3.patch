@@ -1,0 +1,45 @@
+diff --git a/DnsServerCore/Dhcp/DhcpServer.cs b/DnsServerCore/Dhcp/DhcpServer.cs
+index 6f654c6..a047d19 100644
+--- a/DnsServerCore/Dhcp/DhcpServer.cs
++++ b/DnsServerCore/Dhcp/DhcpServer.cs
+@@ -659,7 +659,14 @@ namespace DnsServerCore.Dhcp
+                     {
+                         Scope scope = entry.Value;
+ 
+-                        if (scope.Enabled && scope.IsAddressInRange(request.ClientIpAddress))
++                        if (!scope.Enabled)
++                            continue;
++
++                        Lease reservedLease = scope.GetReservedLease(request);
++                        if ((reservedLease is not null) && reservedLease.Address.Equals(request.ClientIpAddress))
++                            return scope; //ciaddr is this client's reserved address (may be out of pool range)
++
++                        if (scope.IsAddressInRange(request.ClientIpAddress))
+                             return scope;
+                     }
+ 
+diff --git a/DnsServerCore/Dhcp/Scope.cs b/DnsServerCore/Dhcp/Scope.cs
+index 1886a77..67963e2 100644
+--- a/DnsServerCore/Dhcp/Scope.cs
++++ b/DnsServerCore/Dhcp/Scope.cs
+@@ -1470,6 +1470,9 @@ namespace DnsServerCore.Dhcp
+ 
+         public bool AddReservedLease(Lease reservedLease)
+         {
++            if (!IsAddressInNetwork(reservedLease.Address))
++                throw new ArgumentOutOfRangeException(nameof(reservedLease), "Reserved address must be within the scope's subnet.");
++
+             return _reservedLeases.TryAdd(reservedLease.ClientIdentifier, reservedLease);
+         }
+ 
+@@ -2142,8 +2145,8 @@ namespace DnsServerCore.Dhcp
+                 {
+                     foreach (Lease reservedLease in value)
+                     {
+-                        if (!IsAddressInRange(reservedLease.Address))
+-                            throw new ArgumentOutOfRangeException(nameof(ReservedLeases), "Reserved address must be in scope range.");
++                        if (!IsAddressInNetwork(reservedLease.Address))
++                            throw new ArgumentOutOfRangeException(nameof(ReservedLeases), "Reserved address must be within the scope's subnet.");
+                     }
+ 
+                     _reservedLeases.Clear();

@@ -39,3 +39,36 @@ subnet total still COUNTS exempt servers' queries, so a runaway server can push 
 (qpmPrefixLimitsIPv4 = `32|600|600`; the API's table format is pipe-separated
 prefix|udp|tcp rows; a comma list errors out). The IPv6 /64 and /56 rows are still at their defaults.
 Rollback: `/api/settings/set?qpmPrefixLimitsIPv4=32|600|600|24|6000|6000`.
+
+## DHCP: patched DnsServerCore.dll and widened pools (2026-11-05)
+
+**Problem:** with no relay, Technitium picks a scope for a RENEW/REBIND only by `IsAddressInRange(ciaddr)`.
+A reservation outside the pool matched no scope, so the request was dropped with no NAK and no log line.
+The client lost its IP at lease expiry and re-DISCOVERed every 2 h. That was about 80 clients, and it caused
+the SMB drops and "Restoring Network Connections" popups on Win11Pro. Clients behind relay 10.0.0.251
+were not affected because the relay path checks reservations first.
+
+**Running build:** v14.3 plus `infra/patches/technitium/0001-pr2032-reserved-lease-renewal-v14.3.patch`
+(upstream PR #2032, unmerged). Only `DnsServerCore.dll` and `.pdb` were replaced. Decompiled, the original DLL
+matched a clean v14.3.0 build, and the patched DLL differed only by the PR's changes.
+
+**Rebuild:** clone tag v14.3.0, apply the patch, copy `/opt/technitium/dns/TechnitiumLibrary*.dll` to
+`../TechnitiumLibrary/bin/` beside the clone, then `dotnet build DnsServerCore/DnsServerCore.csproj -c Release`
+with SDK 9.0.
+
+**Rollback:** in `/opt/technitium/dns`, copy `DnsServerCore.dll.orig-14.3` and `DnsServerCore.pdb.orig-14.3`
+over the live files, then `systemctl restart technitium` (the unit is `technitium`, not `dns`; a restart took
+about 1 s). CT141 also has snapshot `pre-pr2032-20261105`.
+
+**Upgrading:** an official update overwrites the patched DLL. Upstream v15 targets .NET 10; this CT has .NET 9.
+Move back to mainline only once a release contains PR #2032.
+
+**Pools:** ranges were widened so reservations are in range without the patch, and exclusions keep the
+dynamic pools unchanged:
+
+| Scope | Before | After | Exclusions | Dynamic pool |
+|---|---|---|---|---|
+| 10-SERVERS | 10.0.0.21-59 | 10.0.0.1-254 | .1-.20, .60-.254 | .21-.59 |
+| 20-MGMT | 10.0.20.200-254 | 10.0.20.1-254 | .1-.199 | .200-.254 |
+
+Rollback: `/api/dhcp/scopes/set` with the old start and end and `exclusions=` empty.
