@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { RefreshCw, Plus, Trash2, Undo2, Save, PersonStanding, Settings2, RotateCcw, X, Bone } from 'lucide-react'
+import { RefreshCw, Plus, Trash2, Undo2, Save, PersonStanding, Settings2, RotateCcw, X, Bone, Download } from 'lucide-react'
 import { poseManagerStore as store, type Pose, type MqStartOpts } from '../../stores/PoseManagerStore'
 import { igThumb, igImage } from '../../stores/TrainingImagesStore'
 import { confirmStore } from '../../stores/confirmStore'
@@ -303,7 +303,7 @@ const PoseCard: React.FC<{ pose: Pose; onConvert: (ids: string[]) => void; onSke
   return (
     <div className={`${styles.card} ${dirty ? styles.cardDirty : ''} ${sel ? styles.cardSel : ''}`}>
       <div className={styles.thumbCol}>
-        <label className={styles.selBox} title="Select for conversion"><input type="checkbox" checked={sel} onChange={() => store.toggleSelect(pose.id)} /></label>
+        <label className={styles.selBox} title="Select this pose"><input type="checkbox" checked={sel} onChange={() => store.toggleSelect(pose.id)} /></label>
         <img className={styles.thumb} src={igThumb(pose.rel)} alt={pose.name} loading="lazy"
              onClick={() => setBig(igImage(pose.rel))} title="Original — click to see it full size" />
         {pose.mannequin_rel ? (
@@ -346,6 +346,11 @@ const PoseCard: React.FC<{ pose: Pose; onConvert: (ids: string[]) => void; onSke
             </>
           ) : <span className={styles.dim}>saved</span>}
           <span className={styles.spacer} />
+          {pose.skeleton_at && (
+            <button className={styles.btnSm} title="Download this OpenPose skeleton (PNG on flat black)" onClick={() => void store.downloadSkeletons([pose.id])}>
+              <Download size={12} />
+            </button>
+          )}
           <button className={styles.btnDangerSm} title="Delete this pose" onClick={() => void doDelete()}>
             <Trash2 size={12} />
           </button>
@@ -373,6 +378,8 @@ export const PoseManagerPanel: React.FC = observer(() => {
   useEffect(() => { void store.load(); void store.loadMqSettings(); void store.pollMq(); void store.pollSk() }, [])
   const withMq = [...store.selected].filter((id) => store.poses.find((p) => p.id === id)?.mannequin)
   const skCheck = store.poses.filter((p) => store.needsSkeletonReview(p)).length
+  const withSk = [...store.selected].filter((id) => store.poses.find((p) => p.id === id)?.skeleton_at)
+  const skTotal = store.poses.filter((p) => p.skeleton_at).length
 
   return (
     <div className={styles.wrap}>
@@ -424,11 +431,21 @@ export const PoseManagerPanel: React.FC = observer(() => {
       )}
 
       <div className={styles.selBar}>
-        <span>{store.selected.size ? <><strong>{store.selected.size}</strong> selected</> : <span className={styles.dim}>Tick poses to convert them to mannequins</span>}</span>
+        <span>{store.selected.size ? <><strong>{store.selected.size}</strong> selected</> : <span className={styles.dim}>Tick poses to convert them or download their skeletons</span>}</span>
         <button className={styles.btnSm} onClick={() => store.selectVisible()}>Select all shown</button>
         <button className={styles.btnSm} onClick={() => store.selectWithoutMannequin()}>Select shown without mannequin</button>
         {store.selected.size > 0 && <button className={styles.btnSm} onClick={() => store.clearSelection()}>Clear</button>}
         <span className={styles.spacer} />
+        <button className={styles.btn} disabled={!withSk.length}
+                title="Download the selected poses' OpenPose skeletons on flat black (one PNG, or a zip for several). Selected poses without a skeleton are left out."
+                onClick={() => void store.downloadSkeletons(withSk)}>
+          <Download size={14} /> Download selected{withSk.length ? ` (${withSk.length})` : ''}
+        </button>
+        <button className={styles.btn} disabled={!skTotal}
+                title="Download every OpenPose skeleton in the library as a zip, on flat black. Ignores the filters."
+                onClick={() => void store.downloadSkeletons('all')}>
+          <Download size={14} /> Download all skeletons ({skTotal})
+        </button>
         <button className={styles.btn} disabled={!withMq.length}
                 title="Detect OpenPose skeletons on the selected poses' mannequins (ai-epyc CPU, ~2 s each). Hand-edited skeletons are kept."
                 onClick={() => void store.detectSkeletons(withMq).catch((e) => { store.msg = 'Failed: ' + String(e?.message || e) })}>

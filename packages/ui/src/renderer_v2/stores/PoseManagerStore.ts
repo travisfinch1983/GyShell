@@ -199,6 +199,27 @@ export class PoseManagerStore {
     const d = await api('/poses/skeleton/remove', { method: 'POST', body: { id } })
     runInAction(() => { const i = this.poses.findIndex((p) => p.id === id); if (i >= 0) this.poses[i] = { ...this.poses[i], ...d.pose } })
   }
+  /** Download skeletons on flat black: one id = a PNG, several or 'all' = a zip. Fetched rather
+   *  than linked so a server error lands in the message line instead of replacing the page. */
+  async downloadSkeletons(ids: string[] | 'all') {
+    const one = ids !== 'all' && ids.length === 1
+    const path = one ? `/poses/skeletons/download/${encodeURIComponent(ids[0])}`
+      : `/poses/skeletons/download?${ids === 'all' ? 'all=1' : `ids=${ids.map(encodeURIComponent).join(',')}`}`
+    this.msg = one ? 'Preparing the skeleton…' : 'Preparing the skeleton zip…'
+    try {
+      const res = await fetch(BASE + path)
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d?.error || `HTTP ${res.status}`) }
+      const name = /filename="?([^";]+)"?/.exec(res.headers.get('Content-Disposition') || '')?.[1] || (one ? `${ids[0]}_openpose.png` : 'openpose-skeletons.zip')
+      const url = URL.createObjectURL(await res.blob())
+      const a = document.createElement('a')
+      a.href = url; a.download = name
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+      runInAction(() => { this.msg = `Downloaded ${name}.` })
+    } catch (e: any) {
+      runInAction(() => { this.msg = 'Download failed: ' + String(e?.message || e) })
+    }
+  }
   /** Merge mannequin fields from the server without touching unsaved prompt drafts. */
   async refreshMannequins() {
     try {

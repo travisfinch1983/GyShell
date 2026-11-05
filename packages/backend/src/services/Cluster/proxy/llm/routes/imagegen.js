@@ -21,6 +21,7 @@ import path from 'path';
 import crypto from 'crypto';
 import http from 'http';
 import sharp from 'sharp';
+import { zipSync } from 'fflate';
 import { spawn, execFile } from 'child_process';
 import { pickForge } from '../../forge-endpoint.js';
 
@@ -3403,6 +3404,51 @@ export function createImagegenRouter(config) {
     if (j.remote_pid) { try { spawn('ssh', [...sshBase(), MQ_HOSTS[SK_HOST].ssh, `kill -TERM ${parseInt(j.remote_pid, 10)} 2>/dev/null || true`], { stdio: 'ignore' }); } catch { /* best effort */ } }
     setTimeout(() => { try { j.child.kill('SIGTERM'); } catch { /* gone */ } }, 3000);
     res.json({ ok: true, cancelled: true });
+  });
+  // ---- Skeleton downloads: the skeleton alone on flat black, one PNG or a zip ----
+  // Flattened to opaque RGB here so a download can never carry an alpha channel, whatever a
+  // renderer wrote to _skel.png. A requested pose without a skeleton fails the request: a zip
+  // that is quietly short looks like a complete one.
+  const skDownloadName = (p) => `${String(p.name || '').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || p.id}_openpose.png`;
+  const skBlackPng = (p) => sharp(path.join(SK_DIR, `${p.id}_skel.png`)).flatten({ background: '#000000' }).png().toBuffer();
+  const skHasFile = (p) => !!p.skeleton_at && existsSync(path.join(SK_DIR, `${p.id}_skel.png`));
+  router.get('/poses/skeletons/download', async (req, res) => {
+    try {
+      const poses = loadPoses();
+      const all = req.query.all === '1';
+      const ids = String(req.query.ids || '').split(',').map((s) => s.trim()).filter(Boolean);
+      if (!all && !ids.length) return res.status(400).json({ error: 'give ids=a,b,c or all=1' });
+      const byId = new Map(poses.map((p) => [p.id, p]));
+      const list = all ? poses.filter(skHasFile) : ids.map((id) => byId.get(id));
+      const missing = all ? [] : ids.filter((id) => !byId.get(id) || !skHasFile(byId.get(id)));
+      if (missing.length) return res.status(404).json({ error: `no skeleton for: ${missing.join(', ')}` });
+      if (!list.length) return res.status(404).json({ error: 'no skeletons to download' });
+      const files = {};
+      const pngs = await Promise.all(list.map(skBlackPng));
+      list.forEach((p, i) => {
+        const name = skDownloadName(p);
+        files[files[name] ? `${p.id}_${name}` : name] = [pngs[i], { level: 0 }];   // PNG is already compressed
+      });
+      const zip = Buffer.from(zipSync(files));
+      console.log(`[imagegen] skeleton zip: ${list.length} poses, ${(zip.length / 1048576).toFixed(1)} MB`);
+      res.attachment(`openpose-skeletons-${list.length}.zip`);
+      res.type('application/zip').send(zip);
+    } catch (e) {
+      console.error('[imagegen] skeleton zip failed:', e);
+      res.status(500).json({ error: String(e.message || e) });
+    }
+  });
+  router.get('/poses/skeletons/download/:id', async (req, res) => {
+    try {
+      const p = loadPoses().find((x) => x.id === req.params.id);
+      if (!p || !skHasFile(p)) return res.status(404).json({ error: `no skeleton for: ${req.params.id}` });
+      const png = await skBlackPng(p);
+      res.attachment(skDownloadName(p));
+      res.type('image/png').send(png);
+    } catch (e) {
+      console.error('[imagegen] skeleton download failed:', e);
+      res.status(500).json({ error: String(e.message || e) });
+    }
   });
   router.get('/poses/skeleton/:id', (req, res) => {
     const p = (() => { try { return loadPoses().find((x) => x.id === req.params.id); } catch { return null; } })();
