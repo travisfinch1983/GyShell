@@ -108,7 +108,7 @@ const NodeCard: React.FC<{ n: any }> = observer(({ n }) => {
               ? s.service.gpus.map((g: any) => {
                   const loaded = (s.resident || []).filter((m: any) => m.gpu === g.index).length
                   const rules = store.rulesOf(s)
-                  const kinds: string[] = (s.service?.kinds || []).filter((k: string) => k !== 'lora')
+                  const kinds: string[] = (s.service?.kinds || []).filter((k: string) => k !== 'lora' && k !== 'model3d')
                   return (
                     <div key={`${s.id}:${g.index}`} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                       <Bar label={`:${s.port} GPU${g.index} · ${s.gpuFriendly?.[g.index] || String(g.name || '').replace(/^NVIDIA (GeForce )?/, '')}`} used={(g.total_gb ?? 0) - (g.free_gb ?? 0)} total={g.total_gb ?? 0}
@@ -200,7 +200,7 @@ const GpuRoutingTable: React.FC<{ s: any }> = observer(({ s }) => {
   const rules = store.rulesOf(s)
   const failover = store.failoverOf(s)
   const gpus: any[] = s.service.gpus
-  const kinds: string[] = (s.service?.kinds || []).filter((k: string) => k !== 'lora')
+  const kinds: string[] = (s.service?.kinds || []).filter((k: string) => k !== 'lora' && k !== 'model3d')
   const gpuName = (g: any) => `GPU${g.index} ${s.gpuFriendly?.[g.index] || String(g.name || '').replace(/^NVIDIA (GeForce )?/, '')}`
   const chipStyle = (on: boolean, enabled: boolean): React.CSSProperties => ({
     ...chip, fontSize: 10, cursor: enabled ? 'pointer' : 'not-allowed', opacity: enabled ? 1 : 0.4,

@@ -6817,7 +6817,7 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
   // /te_split + /te_split/remove: claude1's te_split plugin (a text encoder held across 2 GPUs);
   // /models/pin: VRAM pin = permanently loaded (core). Both staged from the graphical manager (ModelMapPanel).
   const IMS_ACTIONS = new Set(['/cache/warm', '/cache/evict', '/cache/pin', '/cache/quotas', '/cache/restore', '/models/load', '/models/unload', '/placement',
-    '/te_split', '/te_split/remove', '/models/pin']);
+    '/te_split', '/te_split/remove', '/models/pin', '/image3d/cache']);
   const imsServices = () => Object.values(loadActiveServices().services || {}).filter((s) =>
     s && s.providerId === 'imagegen-models' && s.containerIp && s.port && !s.suspended);
   async function imsGet(svc, pathName) {
@@ -6846,7 +6846,10 @@ echo "TEARDOWN active=$ACT enabled=$ENA unitfile=$FILE portbusy=$PORTBUSY"
             // answers; unknown routes are 404 since 2026-10-10, so the probe is honest).
             let teSplit = null;
             try { teSplit = await imsGet(s, '/te_split'); } catch { /* no plugin */ }
-            return { ...base, ok: true, ...models, teSplit };
+            // 3D models' cache state, per model (the image3d plugin). Absent on a service without it.
+            let image3dCache = null;
+            try { image3dCache = await imsGet(s, '/image3d/cache'); } catch { /* no plugin */ }
+            return { ...base, ok: true, ...models, teSplit, image3dCache };
           }
           catch (e) { return { ...base, ok: false, error: e.message }; }
         }));

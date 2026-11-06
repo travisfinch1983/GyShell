@@ -47,3 +47,18 @@ Verified 2026-11-04 (thermos / vape pen; each output rendered and compared with 
 All four models are eligible on all 7 GPUs (4090, 4x 5060 Ti, 2x V100 on ai-gpu's image model service).
 The old cu124 envs (`hunyuan3d21`, `trellis2`, `uniforge3d`, `idol` on ai-epyc) are now only the plugin's fallback,
 used if a `-cu128` env loses its marker.
+
+## 2026-11-06: 3D models in the model cache (kind `model3d`, ai-epyc Disk tier + ai-gpu Optane)
+The files under `/imagegen/3d-models` are a cache-only kind of the `image3d` plugin, so they list in Model Cache & Placement.
+Model Map has a "3D models" panel per host: Cache / Remove per model (bundle of folders, some shared, `BUNDLES` in image3d.py);
+routes `GET|POST /image3d/cache {action: warm|evict, models}`. Copies are pinned in the persistent tier. RAM quota is 0 by default
+(any RAM quota shares the RAM drive with every other kind); raise it in the quota editor to also hold them in RAM.
+
+The loaders read fixed paths, so everything points at `/opt/image3d-view` (per host): a symlink tree mirroring `/imagegen/3d-models`,
+each link going to the best copy on that host (RAM > persistent > NAS). An uncached file is a link to the NAS. `view_sync()` runs at
+service start, before every worker start, and after a cache or remove. Repointed at it: `_image3d_worker.py`, TRELLIS and UniForge
+`pipeline*.json`, Idol `config.json`, the `ckpts` links and Idol's weight links. Not repointed: the standalone `ailab-run.py` /
+`ailab-rmbg.py` test scripts, which still read the NAS directly.
+
+Idol's FLUX.2 VAE is outside this cache: `/opt/idol-sdk/ailab-models/FLUX.2-dev/vae` -> `/imagegen/vae/Flux.2_Dev` (0.3 GB, NAS).
+That folder was renamed from `FLUX.2-dev`, which broke every fresh Idol load until the link was fixed on 2026-11-06.

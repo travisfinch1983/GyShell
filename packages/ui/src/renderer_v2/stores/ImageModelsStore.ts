@@ -8,9 +8,9 @@ function bridge(): any { return (window as any).gyshell?.cluster }
  * tier it sits in. Reads /api/ai/imagegen-models/overview; actions go through .../action, which only
  * forwards the services' own whitelisted routes.
  */
-export const KIND_LABEL: Record<string, string> = { unet: 'UNet', ckpt: 'Checkpoint', lora: 'LoRA', te: 'Text encoder', detector: 'Detector', sam: 'SAM', vae: 'VAE' }
+export const KIND_LABEL: Record<string, string> = { unet: 'UNet', ckpt: 'Checkpoint', lora: 'LoRA', te: 'Text encoder', detector: 'Detector', sam: 'SAM', vae: 'VAE', model3d: '3D model' }
 /** Model root (under /imagegen) per kind; file names are relative to it, as ComfyUI lists them. */
-export const KIND_ROOT: Record<string, string> = { unet: 'diffusion-models', ckpt: 'checkpoints', lora: 'loras', te: 'text-encoders', detector: 'ultralytics', sam: 'sam', vae: 'vae' }
+export const KIND_ROOT: Record<string, string> = { unet: 'diffusion-models', ckpt: 'checkpoints', lora: 'loras', te: 'text-encoders', detector: 'ultralytics', sam: 'sam', vae: 'vae', model3d: '3d-models' }
 
 export interface ModelRow {
   kind: string; name: string

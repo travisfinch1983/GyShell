@@ -142,6 +142,7 @@ def register(api):
             return self.proc is not None and self.proc.poll() is None
 
         def start(self, on_progress):
+            view_sync()
             info = api.gpu_info(self.g); uuid = info.get("uuid") or ""
             cvd = (uuid if uuid.startswith("GPU-") else f"GPU-{uuid}") if uuid else str(self.g)
             env = {**os.environ, "CUDA_VISIBLE_DEVICES": cvd, "CUDA_DEVICE_ORDER": "PCI_BUS_ID", "HF_HUB_OFFLINE": "1",
@@ -281,6 +282,132 @@ def register(api):
             mm.free_memory = free_memory
     except Exception as e:  # noqa: BLE001
         api.log(f"image3d: could not hook ComfyUI free_memory ({e}); idle 3D workers won't be evicted on demand")
+
+    # ---- model cache (2026-11-06, Travis: the 3D models weren't listed; "add them to the disk cache at the very least") -----
+    # Kind "model3d": the files under /imagegen/3d-models get the normal cache tiers, so they show up in Model Cache & Placement.
+    # RAM quota defaults to 0 (a share of the RAM drive would shrink every other kind's); raise it in the quota editor if wanted.
+    # The loaders never ask the tiers for a path - they read fixed paths, including from pipeline.json - so all of them point at
+    # VIEW, a tree of symlinks mirroring the NAS folder where each link goes to the best copy this host has (RAM > persistent >
+    # NAS). A file not cached is still a link to the NAS, so an empty cache behaves exactly as before. Cached files are pinned:
+    # a link must not go stale because LRU made room. Copies are per file because the tiers are; a model = its BUNDLE of folders.
+    import folder_paths
+    from modelsvc.tiers import OPTANE
+    KIND, NAS3D, VIEW = "model3d", "/imagegen/3d-models", "/opt/image3d-view"
+    SHARED_DINO3, RMBG = "dinov3-vitl16-pretrain-lvd1689m", "RMBG-2.0"
+    BUNDLES = {"trellis2": ["TRELLIS.2-4B", RMBG, SHARED_DINO3], "uniforge3d": ["UniForge3D", "TRELLIS.2-4B", RMBG, SHARED_DINO3],
+               "hunyuan3d21": ["Hunyuan3D-2.1", "dinov2-giant", RMBG], "idol": ["Idol", "dinov3-vith16plus-pretrain-lvd1689m"]}
+    # no loader reads these: other formats of the same weights, docs, and the models nothing runs yet
+    SKIP = re.compile(r"^(Hi3Dv1\.0|dinov3-vitl16-pretrain-lvd1689m-(GGUF|ONNX))/|^RMBG-2\.0/(onnx/|pytorch_model\.bin$|.*\.gguf$)|(^|/)(assets|\.[^/]+)(/|$)|\.(mp4|png|jpe?g|gif|webp|md)$", re.I)
+    VLOCK, CLOCK = threading.Lock(), threading.Lock()
+    CACHE = {"running": None, "done": 0, "total": 0, "failed": [], "error": None, "finished": None}
+    INV = {"at": 0, "files": {}}
+
+    def refuse_load(_path, _device):
+        raise RuntimeError("3D model files aren't loaded here - run them from the Image -> 3D tab")
+    folder_paths.folder_names_and_paths[KIND] = ([NAS3D], {".safetensors", ".ckpt", ".pt", ".pth", ".bin"})
+    api.add_kind(KIND, [KIND], refuse_load, quota_gb=(0, 0), exclude=SKIP.pattern)
+
+    def inventory(fresh=False):
+        """{relative path: size} of every file the models need. Cached 5 min: /cache's overview must not walk the NAS each poll."""
+        if fresh or time.time() - INV["at"] > 300:
+            files = {}
+            for d in sorted({x for v in BUNDLES.values() for x in v}):
+                for root, _dirs, names in os.walk(os.path.join(NAS3D, d)):
+                    for f in names:
+                        rel = os.path.relpath(os.path.join(root, f), NAS3D)
+                        if not SKIP.search(rel):
+                            files[rel] = os.path.getsize(os.path.join(root, f))
+            INV.update(at=time.time(), files=files)
+        return INV["files"]
+
+    def files_of(m):
+        return {r: s for r, s in inventory().items() if r.split("/", 1)[0] in BUNDLES[m]}
+
+    def cached_copy(rel, size):
+        t = api.TIERS[KIND]
+        if t.ram.has(rel, size):
+            return os.path.join(t.ram.dir, rel)
+        if OPTANE.has(f"{KIND}/{rel}", size):
+            return os.path.join(OPTANE.dir, KIND, rel)
+        return None
+
+    def view_sync(leaving=()):
+        """Point every link at the best copy. leaving = files about to be evicted: they go back to the NAS first."""
+        n = hit = 0
+        with VLOCK:
+            for root, _dirs, names in os.walk(NAS3D):
+                for f in names:
+                    src = os.path.join(root, f); rel = os.path.relpath(src, NAS3D); link = os.path.join(VIEW, rel)
+                    target = (None if rel in leaving else cached_copy(rel, os.path.getsize(src))) or src
+                    n += 1; hit += target != src
+                    try:
+                        if os.readlink(link) == target:
+                            continue
+                    except OSError:
+                        os.makedirs(os.path.dirname(link), exist_ok=True)
+                    tmp = f"{link}.new{os.getpid()}"
+                    os.symlink(target, tmp); os.replace(tmp, link)
+        api.log(f"image3d: model view synced, {hit} of {n} files from the cache")
+
+    def warm_models(ms):
+        t = api.TIERS[KIND]; failed = []
+        try:
+            todo = {}
+            for m in ms:
+                todo.update(files_of(m))
+            CACHE.update(total=len(todo), done=0)
+            for rel, size in sorted(todo.items()):
+                key = f"{KIND}/{rel}"
+                try:
+                    t.fetch(rel, os.path.join(NAS3D, rel), False)
+                    if OPTANE.has(key, size):
+                        OPTANE.pin(key, True)
+                    else:
+                        failed.append(rel)
+                except Exception as e:  # noqa: BLE001
+                    api.log(f"image3d: couldn't cache {rel}: {type(e).__name__}: {e}"); failed.append(rel)
+                CACHE["done"] += 1
+            view_sync()
+            CACHE["error"] = f"{len(failed)} files not cached (see the failed list; the persistent tier may be full)" if failed else None
+        except Exception as e:  # noqa: BLE001
+            api.log(f"image3d: cache run failed: {type(e).__name__}: {e}"); CACHE["error"] = f"{type(e).__name__}: {e}"
+        finally:
+            CACHE.update(running=None, failed=failed[:20], finished=time.time())
+
+    def evict_models(ms):
+        t = api.TIERS[KIND]
+        keep = {r for m in MODELS if m not in ms for r, s in files_of(m).items()
+                if any(OPTANE.has(f"{KIND}/{x}", y) for x, y in files_of(m).items() if x.split("/", 1)[0] == BUNDLES[m][0])}
+        drop = {r: s for m in ms for r, s in files_of(m).items() if r not in keep}
+        view_sync(leaving=set(drop))
+        for rel in drop:
+            t.evict(rel, "ram"); t.evict(rel, "optane")
+        return len(drop)
+
+    def cache_status(_b, _q):
+        rows = []
+        for m in MODELS:
+            fs = files_of(m); have = {r: s for r, s in fs.items() if cached_copy(r, s)}
+            rows.append({"id": m, "label": MODELS[m]["label"], "files": len(fs), "gb": round(sum(fs.values()) / 1e9, 1),
+                         "cached_files": len(have), "cached_gb": round(sum(have.values()) / 1e9, 1)})
+        return {"host": HOST, "models": rows, "job": dict(CACHE)}
+
+    def cache_action(b, _q):
+        ms = b.get("models") or []
+        if b.get("action") not in ("warm", "evict") or not ms or any(m not in MODELS for m in ms):
+            return 400, {"error": f"need action warm|evict and models from {list(MODELS)}"}
+        with CLOCK:
+            if CACHE["running"]:
+                return 409, {"error": f"already caching {CACHE['running']}"}
+            if b["action"] == "warm":
+                inventory(True)
+                CACHE.update(running=", ".join(ms), done=0, total=0, failed=[], error=None)
+                threading.Thread(target=warm_models, args=(ms,), daemon=True).start()
+                return {"ok": True, "status": f"caching {', '.join(ms)}"}
+        return {"ok": True, "status": f"removed {evict_models(ms)} files"}
+    api.add_route("GET", "/image3d/cache", cache_status)
+    api.add_route("POST", "/image3d/cache", cache_action)
+    threading.Thread(target=view_sync, daemon=True).start()
 
     def pick_gpu(m, want):
         ok = [g for g in range(len(api.GPUS)) if runs_on(m, g)[0]]

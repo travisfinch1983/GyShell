@@ -1,7 +1,7 @@
 {
   "external_models": {
-    "dino": "/imagegen/3d-models/dinov3-vitl16-pretrain-lvd1689m",
-    "rembg": "/imagegen/3d-models/RMBG-2.0"
+    "dino": "/opt/image3d-view/dinov3-vitl16-pretrain-lvd1689m",
+    "rembg": "/opt/image3d-view/RMBG-2.0"
   },
   "sparse_structure": {
     "sampler": {
@@ -70,7 +70,7 @@
       "checkpoint": "/opt/trellis2/ailab-models/TRELLIS-image-large/ckpts/ss_dec_conv3d_16l8_fp16"
     },
     "weights": {
-      "dit_base": "/imagegen/3d-models/TRELLIS.2-4B/ckpts/ss_flow_img_dit_1_3B_64_bf16.safetensors",
+      "dit_base": "/opt/image3d-view/TRELLIS.2-4B/ckpts/ss_flow_img_dit_1_3B_64_bf16.safetensors",
       "vggt_base": "uniforge3d/vggt/uniforge3d_stage1_structure_vggt_backbone.pt",
       "dit_lora": {
         "rank": 64,
@@ -230,7 +230,7 @@
           5.405691
         ]
       },
-      "checkpoint": "/imagegen/3d-models/TRELLIS.2-4B/ckpts/shape_dec_next_dc_f16c32_fp16"
+      "checkpoint": "/opt/image3d-view/TRELLIS.2-4B/ckpts/shape_dec_next_dc_f16c32_fp16"
     },
     "conditioning": {
       "image_size": 512,
@@ -384,7 +384,7 @@
           5.405691
         ]
       },
-      "checkpoint": "/imagegen/3d-models/TRELLIS.2-4B/ckpts/shape_dec_next_dc_f16c32_fp16"
+      "checkpoint": "/opt/image3d-view/TRELLIS.2-4B/ckpts/shape_dec_next_dc_f16c32_fp16"
     },
     "conditioning": {
       "image_size": 1024,
@@ -623,8 +623,8 @@
         2.77519
       ]
     },
-    "shape_decoder_checkpoint": "/imagegen/3d-models/TRELLIS.2-4B/ckpts/shape_dec_next_dc_f16c32_fp16",
-    "texture_decoder_checkpoint": "/imagegen/3d-models/TRELLIS.2-4B/ckpts/tex_dec_next_dc_f16c32_fp16",
+    "shape_decoder_checkpoint": "/opt/image3d-view/TRELLIS.2-4B/ckpts/shape_dec_next_dc_f16c32_fp16",
+    "texture_decoder_checkpoint": "/opt/image3d-view/TRELLIS.2-4B/ckpts/tex_dec_next_dc_f16c32_fp16",
     "weights": {
       "checkpoint": "uniforge3d/texture/uniforge3d_stage3_texture1024_denoiser.pt",
       "adapter_checkpoint": "uniforge3d/texture/uniforge3d_stage3_texture1024_vggt_adapter.pt",
@@ -645,7 +645,7 @@
   "image_preprocess": {
     "alpha_threshold": 0,
     "padding_factor": 1,
-    "rembg_model": "/imagegen/3d-models/RMBG-2.0"
+    "rembg_model": "/opt/image3d-view/RMBG-2.0"
   },
   "format_version": 1,
   "default_seed": 42,

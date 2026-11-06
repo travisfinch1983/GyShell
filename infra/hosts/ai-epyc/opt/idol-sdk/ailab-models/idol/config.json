@@ -52,7 +52,7 @@
   "image_size": 1024,
   "max_voxel_level": 8,
   "image_encoders": {
-    "dinov3": "/imagegen/3d-models/dinov3-vith16plus-pretrain-lvd1689m",
+    "dinov3": "/opt/image3d-view/dinov3-vith16plus-pretrain-lvd1689m",
     "flux2_vae": "/opt/idol-sdk/ailab-models/FLUX.2-dev"
   }
 }

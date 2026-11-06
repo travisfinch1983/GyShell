@@ -295,6 +295,40 @@ const CacheGrid: React.FC<{ cy: CacheCyl }> = observer(({ cy }) => {
   )
 })
 
+/** The 3D models as whole models: each is a bundle of files, some shared (UniForge3D uses TRELLIS.2's), so caching one by one in
+ *  the grid above would be a chore. Copies land in the persistent tier and are pinned; the Image -> 3D jobs read them from there. */
+const Model3dCache: React.FC<{ node: string }> = observer(({ node }) => {
+  const n: any = imageModelsStore.nodes.find((x: any) => x.node === node)
+  const s = n?.services?.find((x: any) => x.ok && x.image3dCache)
+  if (!s) return null
+  const c = s.image3dCache
+  const job = c.job || {}
+  const tier = n?.cache?.config?.persist_label || 'persistent'
+  const act = (action: 'warm' | 'evict', ids: string[], label: string) => void imageModelsStore.act(s.id, '/image3d/cache', { action, models: ids }, label)
+  const missing = c.models.filter((m: any) => m.cached_files < m.files).map((m: any) => m.id)
+  return (
+    <div className={styles.cacheWrap}>
+      <div className={styles.cacheHead}>
+        <b>3D models</b>
+        <span className={styles.dimText}>{job.running ? `caching ${job.running}: ${job.done} of ${job.total} files` : `copied to the ${tier} cache and pinned; shared files count under each model that uses them`}</span>
+        {!job.running && missing.length > 0 && <button className={styles.btn} onClick={() => act('warm', missing, `Cache 3D models on ${node}`)}>Cache all</button>}
+      </div>
+      {job.error && <div className={styles.warnText}>{job.error}{job.failed?.length ? `: ${job.failed.join(', ')}` : ''}</div>}
+      {c.models.map((m: any) => {
+        const full = m.cached_files === m.files
+        return (
+          <div key={m.id} style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 12, padding: '2px 0' }}>
+            <span style={{ flex: 1, minWidth: 0 }}>{m.label}</span>
+            <span className={full ? styles.okText : styles.dimText}>{full ? `cached · ${gb(m.gb)} GB` : `${gb(m.cached_gb)} of ${gb(m.gb)} GB cached`}</span>
+            {!full && <button className={styles.btn} disabled={!!job.running} onClick={() => act('warm', [m.id], `Cache ${m.label} on ${node}`)}>Cache</button>}
+            {m.cached_files > 0 && <button className={styles.btn} disabled={!!job.running} title="Remove from the cache. Files another cached 3D model uses stay; the NAS copy always stays." onClick={() => act('evict', [m.id], `Remove ${m.label} from ${node}'s cache`)}>Remove</button>}
+          </div>
+        )
+      })}
+    </div>
+  )
+})
+
 export const ModelMapPanel: React.FC = observer(() => {
   const [table, setTable] = useState(() => { try { return localStorage.getItem(VIEW_KEY) === 'table' } catch { return false } })
   useEffect(() => { store.start(); return () => store.stop() }, [])
@@ -375,6 +409,7 @@ export const ModelMapPanel: React.FC = observer(() => {
                   ))}
                 </div>
                 {node.caches.map((cy) => <CacheGrid key={cy.tier} cy={cy} />)}
+                <Model3dCache node={node.node} />
               </div>
             )
           })}

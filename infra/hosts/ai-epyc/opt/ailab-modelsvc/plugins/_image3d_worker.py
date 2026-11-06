@@ -43,7 +43,7 @@ def cutout(im):
     from torchvision import transforms
     if _rmbg is None:
         from transformers import AutoModelForImageSegmentation
-        _rmbg = AutoModelForImageSegmentation.from_pretrained("/imagegen/3d-models/RMBG-2.0", trust_remote_code=True).cuda().eval().half()
+        _rmbg = AutoModelForImageSegmentation.from_pretrained("/opt/image3d-view/RMBG-2.0", trust_remote_code=True).cuda().eval().half()
     if im.mode == "RGBA" and im.getextrema()[3][0] < 255:
         return im                                     # already cut out
     im = im.convert("RGB")
@@ -61,7 +61,7 @@ class Hunyuan:
         # the repo root too: torchvision_fix.py lives there, and without it basicsr/realesrgan (texture stage) import
         # torchvision.transforms.functional_tensor, which newer torchvision removed (2026-11-04: a worker job died on it)
         sys.path[:0] = [self.REPO, f"{self.REPO}/hy3dshape", f"{self.REPO}/hy3dpaint"]; os.chdir(self.REPO)
-        os.environ["HY3DGEN_MODELS"] = "/imagegen/3d-models"
+        os.environ["HY3DGEN_MODELS"] = "/opt/image3d-view"
         from torchvision_fix import apply_fix
         apply_fix()
         from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
@@ -88,9 +88,9 @@ class Hunyuan:
             from textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
             c = Hunyuan3DPaintConfig(int(o.get("views", 6)), int(o.get("res", 512)))
             c.realesrgan_ckpt_path = "hy3dpaint/ckpt/RealESRGAN_x4plus.pth"; c.multiview_cfg_path = "hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
-            c.custom_pipeline = "hy3dpaint/hunyuanpaintpbr"; c.multiview_pretrained_path = "/imagegen/3d-models/Hunyuan3D-2.1"
-            if os.path.isdir("/imagegen/3d-models/dinov2-giant"):    # local copy: every host runs HF_HUB_OFFLINE
-                c.dino_ckpt_path = "/imagegen/3d-models/dinov2-giant"
+            c.custom_pipeline = "hy3dpaint/hunyuanpaintpbr"; c.multiview_pretrained_path = "/opt/image3d-view/Hunyuan3D-2.1"
+            if os.path.isdir("/opt/image3d-view/dinov2-giant"):    # local copy: every host runs HF_HUB_OFFLINE
+                c.dino_ckpt_path = "/opt/image3d-view/dinov2-giant"
             self.paint = Hunyuan3DPaintPipeline(c)
         self.paint(mesh_path=f"{out}/shape.glb", image_path=f"{out}/input_rgba.png", output_mesh_path=f"{out}/textured.obj")
         if self.small:
@@ -148,7 +148,7 @@ class UniForge:
         sys.path.insert(0, "/opt/uniforge3d"); os.chdir("/opt/uniforge3d")
         from uniforge3d import UniForge3DImageTo3DPipeline
         self.pipe = UniForge3DImageTo3DPipeline.from_config(os.environ.get("UNIFORGE_CONFIG", "/opt/uniforge3d/ailab-models/pipeline.json"),
-                                                            weights_root="/imagegen/3d-models/UniForge3D", low_vram=True, local_files_only=True)
+                                                            weights_root="/opt/image3d-view/UniForge3D", low_vram=True, local_files_only=True)
     def run(self, inputs, out, o):
         from pathlib import Path
         progress("generate", 0.1)

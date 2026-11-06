@@ -279,6 +279,7 @@ export class ModelMapStore {
   private push(c: Change): void { this.changes.push(c); this.hint = ''; this.applyLog = [] }
 
   stageLoad(kind: string, name: string, service: string, gpu: number, clipType?: string): void {
+    if (kind === 'model3d') { this.hint = '3D model files run from the Image → 3D tab; they can only be cached here.'; return }
     const s = this.service(service)
     if (!s) { this.hint = 'That card is not part of an Image Model Service - only service GPUs can load models.'; return }
     if (s.service?.kinds && !s.service.kinds.includes(kind)) { this.hint = `${this.gpuName(service, gpu)}'s service doesn't serve ${kind} models.`; return }

@@ -3,7 +3,7 @@ TRELLIS.2: <ailab-models>/TRELLIS.2-4B-fp16/{pipeline.json, ckpts/*.json (dtype 
 UniForge3D: /opt/uniforge3d/ailab-models/pipeline-fp16.json (VGGT extractor dtype float16).
 The weights stay bf16 on disk; the models cast them to fp16 at load. Run on each host that serves V100s."""
 import json, os, shutil
-SRC = "/imagegen/3d-models/TRELLIS.2-4B/ckpts"
+SRC = "/opt/image3d-view/TRELLIS.2-4B/ckpts"
 DST = "/opt/trellis2/ailab-models/TRELLIS.2-4B-fp16"
 os.makedirs(f"{DST}/ckpts", exist_ok=True)
 for f in sorted(os.listdir(SRC)):
