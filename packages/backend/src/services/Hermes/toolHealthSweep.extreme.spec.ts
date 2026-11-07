@@ -474,6 +474,37 @@ async function main(): Promise<void> {
   const h4 = await svcExact.getToolHealth('xi')
   ok(h4.servedGroupTools === 6 && h4.healthy === false && h4.detail.includes('removed from the group'),
     'serving MORE group tools than the group has reads as a stale set (old check passed +4 over)')
+
+  // ── LIVE refreshes that CHANGE the set: Hermes logs names, not a count ──
+  // Real case (2026-11-07): image_inbox_post reached seven running agents at 02:26 via tools/list_changed,
+  // logged as "tools changed dynamically — added: …", and the check (reading only the "(no changes)" form)
+  // still alarmed "EXACTLY 1 tool(s) missing" on all seven at 02:29.
+  const CHG = (at: string, what: string) =>
+    `2026-10-16 ${at},000 WARNING tools.mcp_tool: MCP server 'ai-lab': tools changed dynamically — ${what}. Verify these changes are expected.`
+  // 5. one short at registration, then the missing tool ADDED live (logged 3× by one notification) → exact, healthy
+  fakeLog = `${ENUM_SHORT}\n${SUMMARY8}\n` + [1, 2, 3].map(() => CHG('04:05:00', 'added: mcp__ai_lab__fleet__fleet_x')).join('\n')
+  const h5 = await svcExact.getToolHealth('xi')
+  ok(h5.servedGroupTools === 5 && h5.healthy === true,
+    'a tool ADDED live ("tools changed dynamically — added") counts, and repeated lines apply once')
+  // 6. over-served at registration, then the extra REMOVED live → exact, healthy
+  fakeLog = ENUM_SHORT.replace('registered 8 tool(s): ', 'registered 10 tool(s): mcp__ai_lab__fleet__fleet_x, mcp__ai_lab__fleet__fleet_y, ') + '\n'
+    + SUMMARY8.replace('registered 8', 'registered 10') + '\n' + CHG('04:05:00', 'removed: mcp__ai_lab__fleet__fleet_y')
+  const h6 = await svcExact.getToolHealth('xi')
+  ok(h6.servedGroupTools === 5 && h6.healthy === true, 'a tool REMOVED live counts too')
+  // 7. both in one line
+  fakeLog = ENUM_SHORT.replace('registered 8 tool(s): ', 'registered 9 tool(s): mcp__ai_lab__fleet__fleet_y, ') + '\n'
+    + SUMMARY8.replace('registered 8', 'registered 9') + '\n' + CHG('04:05:00', 'added: mcp__ai_lab__fleet__fleet_x; removed: mcp__ai_lab__fleet__fleet_y')
+  const h7 = await svcExact.getToolHealth('xi')
+  ok(h7.servedGroupTools === 5 && h7.healthy === true, '"added: …; removed: …" in one line nets out')
+  // 8. a change logged BEFORE the registration is history, not a correction
+  fakeLog = CHG('03:55:00', 'added: mcp__ai_lab__fleet__fleet_x') + `\n${ENUM_SHORT}\n${SUMMARY8}`
+  const h8 = await svcExact.getToolHealth('xi')
+  ok(h8.servedGroupTools === 4 && h8.healthy === false, 'a live change that PREDATES the registration is ignored')
+  // 9. the "(no changes)" absolute form still works (the 2026-11-04 fix), and a later add applies on top of it
+  fakeLog = `${ENUM_SHORT}\n${SUMMARY8}\n2026-10-16 04:02:00,000 INFO tools.mcp_tool: MCP server 'ai-lab': dynamically refreshed 8 tool(s) (no changes)\n`
+    + CHG('04:05:00', 'added: mcp__ai_lab__fleet__fleet_x')
+  const h9 = await svcExact.getToolHealth('xi')
+  ok(h9.servedGroupTools === 5 && h9.healthy === true, 'absolute "(no changes)" refresh then a live add: exact')
   globalThis.fetch = exactFetchOrig
 
   console.log(`\n${n} assertions passed`)

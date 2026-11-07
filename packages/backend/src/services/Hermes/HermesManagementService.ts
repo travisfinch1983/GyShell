@@ -2474,8 +2474,13 @@ export class HermesManagementService {
     // rollout raised "serving a stale tool set" on test-agent while it was using the new tools). Separate grep: a
     // single notification logs ~7 identical refresh lines, which would push the registration summary out of the
     // first probe's bounded output.
+    // 🛑 A refresh that CHANGES the set logs no count: Hermes writes "dynamically refreshed N tool(s) (no changes)"
+    // only when nothing changed, and "tools changed dynamically — added: a, b; removed: c" when something did
+    // (hermes-agent tools/mcp_tool.py). Reading only the first form handled every refresh EXCEPT the ones that
+    // matter: the 2026-11-07 image_inbox_post rollout reached the agents live at 02:26 and still alarmed
+    // "EXACTLY 1 tool(s) missing" on seven of them at 02:29 (maintenance-claude).
     const refreshRaw = await this.ssh(
-      `rot=$(ls -1v ${shq(log)}.[0-9]* 2>/dev/null | tac | tr '\\n' ' '); grep -ahE "MCP server '[^']+': dynamically refreshed [0-9]+ tool\\(s\\)" $rot ${shq(log)} </dev/null 2>/dev/null | tail -n 200 || true`,
+      `rot=$(ls -1v ${shq(log)}.[0-9]* 2>/dev/null | tac | tr '\\n' ' '); grep -ahE "MCP server '[^']+': (dynamically refreshed [0-9]+ tool\\(s\\)|tools changed dynamically)" $rot ${shq(log)} </dev/null 2>/dev/null | tail -n 200 || true`,
     ).catch(() => '')
     let registeredTools: number | null = null
     let gaveUp = false
@@ -2495,6 +2500,10 @@ export class HermesManagementService {
     let builtinsCounted: number | null = null
     let pendingPerServer: Record<string, number> = {}
     let perServer: Record<string, number> = {}
+    // Names per server from the same enumeration line, so a live "added/removed" refresh applies as a SET
+    // operation: one notification logs several identical lines, and a set makes re-applying them harmless.
+    let pendingPerServerNames: Record<string, Set<string>> = {}
+    let perServerNames: Record<string, Set<string>> = {}
     for (const line of raw.split('\n')) {
       const park = line.match(/MCP server '([^']+)' failed initial connection.*parking/)
       if (park) { pendingNames.push(park[1]); continue }
@@ -2506,6 +2515,7 @@ export class HermesManagementService {
       if (enumSrv) pendingPerServer[enumSrv[1]] = parseInt(enumSrv[2], 10)
       if (enumLine) {
         const named = enumLine[1].split(',').map((t) => t.trim()).filter(Boolean)
+        if (enumSrv) pendingPerServerNames[enumSrv[1]] = new Set(named)
         const b = named.filter((t) => {
           const parts = t.split('__')
           return parts.length === 3 && parts[0] === 'mcp' && MCP_BUILTINS.has(parts[2])
@@ -2523,23 +2533,57 @@ export class HermesManagementService {
         parkedNames = pendingNames; pendingNames = []
         builtinsCounted = pendingBuiltins; pendingBuiltins = null
         perServer = pendingPerServer; pendingPerServer = {}
+        perServerNames = pendingPerServerNames; pendingPerServerNames = {}
         continue
       }
       if (/reconnection attempts, giving up/.test(line)) gaveUp = true
     }
     // Live refreshes AFTER the last registration replace that server's count (same units as the
-    // enumeration line: the refreshed count includes the server's protocol built-ins).
+    // enumeration line: the refreshed count includes the server's protocol built-ins). Applied in log order:
+    // "dynamically refreshed N" is an absolute count with the name set unchanged; "tools changed dynamically"
+    // carries only the names added/removed, applied to the enumerated name set (or, with no set, as a
+    // de-duplicated count delta).
     let refreshedAt = ''
     if (registeredTools !== null && registeredAt) {
-      const newest: Record<string, { n: number; at: string }> = {}
+      const count: Record<string, number> = { ...perServer }
+      const names: Record<string, Set<string> | undefined> = {}
+      for (const [srv, set] of Object.entries(perServerNames)) names[srv] = new Set(set)
+      const seenDelta = new Set<string>()
       for (const line of refreshRaw.split('\n')) {
-        const r = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*MCP server '([^']+)': dynamically refreshed (\d+) tool\(s\)/)
-        if (r && r[1] > registeredAt) newest[r[2]] = { n: parseInt(r[3], 10), at: r[1] }
+        const at = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/)?.[1]
+        if (!at || at <= registeredAt) continue
+        const abs = line.match(/MCP server '([^']+)': dynamically refreshed (\d+) tool\(s\)/)
+        const chg = abs ? null : line.match(/MCP server '([^']+)': tools changed dynamically \S+ (.*?)\. Verify these changes are expected/)
+        const srv = abs?.[1] ?? chg?.[1]
+        if (!srv || !(srv in count)) continue     // a server the registration didn't enumerate: no baseline to adjust
+        if (abs) {
+          count[srv] = parseInt(abs[2], 10)
+          if (names[srv] && names[srv]!.size !== count[srv]) names[srv] = undefined   // they disagree: trust the count
+        } else {
+          const added: string[] = []
+          const removed: string[] = []
+          for (const part of chg![2].split('; ')) {
+            const pm = part.match(/^(added|removed): (.*)$/)
+            if (!pm) continue
+            const list = pm[2].split(',').map((t) => t.trim()).filter(Boolean)
+            ;(pm[1] === 'added' ? added : removed).push(...list)
+          }
+          const set = names[srv]
+          if (set) {
+            for (const t of added) set.add(t)
+            for (const t of removed) set.delete(t)
+            count[srv] = set.size
+          } else {
+            const key = line.slice(line.indexOf('MCP server'))
+            if (seenDelta.has(key)) continue
+            seenDelta.add(key)
+            count[srv] += added.length - removed.length
+          }
+        }
+        if (at > refreshedAt) refreshedAt = at
       }
-      for (const [srv, v] of Object.entries(newest)) {
-        if (!(srv in perServer)) continue     // a server the registration didn't enumerate: no baseline to adjust
-        registeredTools += v.n - perServer[srv]; perServer[srv] = v.n
-        if (v.at > refreshedAt) refreshedAt = v.at
+      for (const srv of Object.keys(count)) {
+        registeredTools += count[srv] - perServer[srv]; perServer[srv] = count[srv]
       }
     }
     // Parks AFTER the last registration (a re-park during this session) count too.
