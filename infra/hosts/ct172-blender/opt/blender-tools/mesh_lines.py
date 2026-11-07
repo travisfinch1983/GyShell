@@ -13,6 +13,8 @@ ap.add_argument('--faces', type=int, default=8000)
 ap.add_argument('--voxel', type=float, default=0.004)
 ap.add_argument('--res', type=int, default=1536)
 ap.add_argument('--smooth', type=int, default=12)
+ap.add_argument('--line', type=float, default=1.0)
+ap.add_argument('--views', default='front,side,back,threequarter')
 a = ap.parse_args(argv)
 os.makedirs(a.out, exist_ok=True)
 t0 = time.time()
@@ -31,7 +33,10 @@ def stats(o):
 
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
-bpy.ops.import_scene.gltf(filepath=a.src)
+ext = os.path.splitext(a.src)[1].lower()
+{'.glb': lambda p: bpy.ops.import_scene.gltf(filepath=p), '.gltf': lambda p: bpy.ops.import_scene.gltf(filepath=p),
+ '.obj': lambda p: bpy.ops.wm.obj_import(filepath=p), '.fbx': lambda p: bpy.ops.import_scene.fbx(filepath=p),
+ '.ply': lambda p: bpy.ops.wm.ply_import(filepath=p), '.stl': lambda p: bpy.ops.wm.stl_import(filepath=p)}[ext](a.src)
 meshes = [o for o in bpy.context.scene.objects if o.type == 'MESH']
 if not meshes:
     raise SystemExit('no mesh in file')
@@ -120,7 +125,7 @@ if 'FINISHED' not in res or len(ob.data.polygons) == before:
     V = np.empty(len(me.vertices) * 3, np.float32); me.vertices.foreach_get('co', V); V = V.reshape(-1, 3)
     T = np.empty(len(me.loop_triangles) * 3, np.int32); me.loop_triangles.foreach_get('vertices', T)
     T = T.reshape(-1, 3).astype(np.uint32)
-    nv, nf = pim.remesh(V, T, a.faces)
+    nv, nf = pim.remesh(V, T, max(200, a.faces // 4))
     nv, nf = np.asarray(nv), np.asarray(nf)
     log('instant meshes out', nv.shape, nf.shape)
     polys = []
@@ -168,7 +173,7 @@ w = bpy.data.worlds.new('black'); w.use_nodes = True
 w.node_tree.nodes['Background'].inputs[0].default_value = (0, 0, 0, 1)
 sc.world = w
 sc.render.use_freestyle = True
-sc.render.line_thickness_mode = 'ABSOLUTE'; sc.render.line_thickness = 1.0
+sc.render.line_thickness_mode = 'ABSOLUTE'; sc.render.line_thickness = a.line
 vl = sc.view_layers[0]
 vl.use_freestyle = True
 fs = vl.freestyle_settings
@@ -178,7 +183,7 @@ ls.select_by_visibility = True; ls.visibility = 'VISIBLE'
 ls.select_by_edge_types = True; ls.edge_type_combination = 'OR'
 ls.linestyle = ls.linestyle or bpy.data.linestyles.new('white')
 ls.linestyle.color = (1, 1, 1)
-ls.linestyle.thickness = 1.0
+ls.linestyle.thickness = a.line
 
 corners = [ob.matrix_world @ Vector(c) for c in ob.bound_box]
 lo = Vector((min(c[i] for c in corners) for i in range(3)))
@@ -205,7 +210,9 @@ def edges(all_marked):
     ls.select_crease = not all_marked
 
 
-for name, deg in (('front', 0), ('side', 90), ('back', 180), ('threequarter', 40)):
+NAMED = {'front': 0, 'side': 90, 'back': 180, 'threequarter': 40}
+for name in [v.strip() for v in a.views.split(',') if v.strip()]:
+    deg = NAMED[name] if name in NAMED else float(name)
     aim(deg)
     for kind, marked in (('quads', True), ('form', False)):
         edges(marked)
