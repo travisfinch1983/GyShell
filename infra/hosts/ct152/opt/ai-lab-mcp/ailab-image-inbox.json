@@ -1,0 +1,13 @@
+{
+  "name": "ailab-image-inbox",
+  "transport": "stdio",
+  "description": "AI-Lab image inbox — send Travis an image to VIEW. It lands in the TopBar Images viewer with a count pip (no popup; he opens it himself), because generated images were scattered across folders he had to go dig through.",
+  "command": "/usr/bin/node",
+  "args": [
+    "/opt/mcp-ailab-image-inbox/server.mjs"
+  ],
+  "env": {
+    "AILAB_API_URL": "http://127.0.0.1:17890"
+  },
+  "session_mode": "stateless"
+}

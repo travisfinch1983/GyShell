@@ -10,6 +10,7 @@ import { ConnectionsView } from './components/Connections/ConnectionsView'
 import { ConfirmDialog } from './components/Common/ConfirmDialog'
 import { ConfirmHost } from './components/Common/ConfirmHost'
 import { ClipboardDrawer } from './components/Clipboard/ClipboardDrawer'
+import { ImageInboxDrawer } from './components/ImageInbox/ImageInboxDrawer'
 import { PromptHost } from './components/Common/PromptHost'
 import { TerminalWorkspace } from './components/Terminal/TerminalWorkspace'
 import { AgentRail } from './components/AgentRail/AgentRail'
@@ -207,6 +208,7 @@ export const App: React.FC = observer(() => {
       <ConfirmHost />
       <PromptHost />
       <ClipboardDrawer />
+      <ImageInboxDrawer />
       <ConfirmDialog
         open={store.showVersionUpdateDialog && hasVersionDifference}
         title={t.settings.versionUpdateTitle}

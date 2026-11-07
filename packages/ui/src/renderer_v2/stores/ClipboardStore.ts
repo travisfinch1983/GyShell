@@ -1,4 +1,5 @@
 import { makeAutoObservable, runInAction } from 'mobx'
+import { tabElection } from '../lib/tabElection'
 
 export interface ClipDrop {
   id: string
@@ -54,12 +55,13 @@ class ClipboardStore {
       live.onPosted((data: { item?: ClipDrop }) => {
         if (!data?.item) return
         runInAction(() => {
+          // Every tab updates its list quietly...
           if (!this.items.some((i) => i.id === data.item!.id)) this.items = [data.item!, ...this.items]
-          this.open = true
-          // A new drop is what Travis wants to see — jump back from History to the clipboard.
-          this.view = 'clipboard'
-          this.flagFresh(data.item!.id)
         })
+        // ...but the drawer slides open only where Travis is working: each open tab gets this
+        // broadcast on its own socket, and the election picks ONE (focused tab, else the most
+        // recently active, so an unfocused-everywhere drop still opens somewhere).
+        this.openElected(data.item.id)
       })
       live.onChanged((data: { items?: ClipDrop[] }) => {
         runInAction(() => { this.items = data?.items ?? [] })
@@ -75,18 +77,28 @@ class ClipboardStore {
     if (!c) return
     try {
       const r = await c.request('GET', '/api/clipboard')
+      const next: ClipDrop[] = r?.items ?? []
+      const newest = next[0]
+      const isNew = openOnNew && newest && !this.items.some((i) => i.id === newest.id)
       runInAction(() => {
-        const next: ClipDrop[] = r?.items ?? []
-        const newest = next[0]
-        const isNew = openOnNew && newest && !this.items.some((i) => i.id === newest.id)
         this.items = next
         this.loaded = true
         this.error = null
-        if (isNew) { this.open = true; this.flagFresh(newest.id) }
       })
+      if (isNew) this.openElected(newest.id)
     } catch (e: any) {
       runInAction(() => { this.error = `Could not load clipboard: ${e?.message || e}` })
     }
+  }
+
+  /** Open the drawer for a new drop in the ONE elected tab (see lib/tabElection). */
+  private openElected(id: string): void {
+    tabElection.elect(`clip:${id}`, () => runInAction(() => {
+      this.open = true
+      // A new drop is what Travis wants to see — jump back from History to the clipboard.
+      this.view = 'clipboard'
+      this.flagFresh(id)
+    }))
   }
 
   private flagFresh(id: string): void {

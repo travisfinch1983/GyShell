@@ -1,10 +1,11 @@
 import React from 'react'
 import { observer } from 'mobx-react-lite'
-import { Bell, ClipboardCopy, Cpu, Server, Settings, Square } from 'lucide-react'
+import { Bell, ClipboardCopy, Cpu, Image as ImageIcon, Server, Settings, Square } from 'lucide-react'
 import type { AppStore } from '../../stores/AppStore'
 import { aiServicesStore } from '../../stores/AiServicesStore'
 import { notificationsStore } from '../../stores/NotificationsStore'
 import { clipboardStore } from '../../stores/ClipboardStore'
+import { imageInboxStore } from '../../stores/ImageInboxStore'
 import { gpuFleetStore } from '../../stores/GpuFleetStore'
 import { NotificationsPanel } from '../Notifications/NotificationsPanel'
 import { isLinux } from '../../platform/platform'
@@ -30,6 +31,7 @@ export const TopBar: React.FC<{
   React.useEffect(() => {
     // Badge must be live without opening the panel — that's its whole job.
     void notificationsStore.ensureLoaded()
+    void imageInboxStore.ensureLoaded()
   }, [])
   const worst = notificationsStore.worstSeverity
   const badgeCount = notificationsStore.badgeCount
@@ -82,6 +84,19 @@ export const TopBar: React.FC<{
         <ClipboardCopy size={14} strokeWidth={2} />
         <span>Clipboard</span>
         {clipboardStore.items.length > 0 && <span className="topbar-services-badge">{clipboardStore.items.length}</span>}
+      </button>
+      {/* Image inbox — images agents sent for Travis to SEE. Deliberately never opens by
+          itself: a new image only bumps this pip, and opening the viewer clears it. */}
+      <button
+        className={`topbar-services-btn${imageInboxStore.open ? ' active' : ''}`}
+        onClick={() => imageInboxStore.toggle()}
+        title="Image inbox: images agents sent for you to view"
+      >
+        <ImageIcon size={14} strokeWidth={2} />
+        <span>Images</span>
+        {imageInboxStore.unseenCount > 0 && (
+          <span className="topbar-services-badge">{imageInboxStore.unseenCount}</span>
+        )}
       </button>
       <button
         className={`topbar-services-btn${servicesOpen ? ' active' : ''}`}

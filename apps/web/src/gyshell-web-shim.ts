@@ -333,6 +333,11 @@ const gyshellApi = {
     onPosted: (cb: (data: any) => void): CleanupFn => onRaw('clip:posted', cb),
     onChanged: (cb: (data: any) => void): CleanupFn => onRaw('clip:changed', cb),
   },
+  imageInbox: {
+    // Image inbox — images agents post for Travis to SEE (backend ImageInbox). Pip only.
+    onPosted: (cb: (data: any) => void): CleanupFn => onRaw('imginbox:posted', cb),
+    onChanged: (cb: (data: any) => void): CleanupFn => onRaw('imginbox:changed', cb),
+  },
   fleet: {
     // Fleet vertical: feed replay/live-tail, sends, guard config.
     send: (request: any) => rpc('fleet:send', request),

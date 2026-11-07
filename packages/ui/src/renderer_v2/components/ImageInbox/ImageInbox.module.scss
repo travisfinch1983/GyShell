@@ -1,0 +1,194 @@
+// Slide-down viewer for the image inbox. Same drawer mechanics as the clipboard —
+// hidden = translated above the viewport — but it NEVER opens by itself.
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  width: min(840px, calc(100vw - 16px));
+  max-height: min(84vh, 900px);
+  display: flex;
+  flex-direction: column;
+  z-index: 61;
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 12px 12px;
+  background: var(--panel-bg);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  transform: translate(-50%, -105%);
+  transition: transform 220ms ease;
+  pointer-events: none;
+
+  &.open {
+    transform: translate(-50%, 0);
+    pointer-events: auto;
+  }
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--control-bg);
+  color: var(--fg);
+}
+
+.headTitle {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.headMeta {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.spacer { flex: 1; }
+
+.iconBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+
+  &:hover { background: var(--hover-bg); color: var(--fg); }
+}
+
+.error {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--danger, #e5484d);
+}
+
+.empty {
+  padding: 28px 20px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  text-align: center;
+
+  code { font-size: 12px; }
+}
+
+.stage {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px;
+  min-height: 200px;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.stageLink {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+
+.stageImg {
+  max-width: 100%;
+  max-height: min(52vh, 560px);
+  object-fit: contain;
+  border-radius: 6px;
+}
+
+.navBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 56px;
+  flex: none;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+
+  &:hover:not(:disabled) { background: var(--hover-bg); color: var(--fg); }
+  &:disabled { opacity: 0.3; cursor: default; }
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 0;
+}
+
+.metaMain {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.metaTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metaSub {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.caption {
+  padding: 4px 12px 0;
+  font-size: 12px;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 96px;
+  overflow: auto;
+}
+
+.strip {
+  display: flex;
+  gap: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+
+.thumbBtn {
+  flex: none;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+
+  &.thumbActive { border-color: var(--accent, #4f8cff); }
+}
+
+.thumbImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}

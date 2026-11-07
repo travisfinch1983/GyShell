@@ -1,7 +1,9 @@
 // @ts-expect-error — express ships untyped in this repo (same pattern as flowchartsHttp)
 import express from 'express'
+import { createReadStream } from 'node:fs'
 import type { NotificationsService, NotifySeverity } from './NotificationsService'
 import { MAX_TEXT_BYTES } from './ClipboardDrops'
+import { ImageInboxError } from './ImageInbox'
 
 type Req = express.Request
 type Res = express.Response
@@ -70,6 +72,66 @@ export function createNotificationsRouter(svc: NotificationsService): express.Ro
 
   router.delete('/api/clipboard', (_req: Req, res: Res) => {
     res.json({ ok: true, cleared: svc.clips.clear() })
+  })
+
+  // ─── Image inbox: images an agent posts for Travis to SEE (MCP ailab-image-inbox). ───
+  // Uploads arrive as base64 in JSON, so this route gets its own, bigger body limit; the
+  // shared 256kb `json` stays on everything else.
+  const jsonImage = express.json({ limit: '34mb' })
+
+  router.get('/api/image-inbox', (_req: Req, res: Res) => {
+    res.json({ items: svc.imageInbox.list(), unseen: svc.imageInbox.unseen() })
+  })
+
+  router.post('/api/image-inbox', jsonImage, (req: Req, res: Res) => {
+    const b = (req.body ?? {}) as Record<string, unknown>
+    try {
+      const item = svc.imageInbox.post({
+        path: b.path === undefined ? undefined : String(b.path),
+        dataBase64: b.dataBase64 === undefined ? undefined : String(b.dataBase64),
+        filename: b.filename === undefined ? undefined : String(b.filename),
+        title: b.title === undefined ? undefined : String(b.title),
+        caption: b.caption === undefined ? undefined : String(b.caption),
+        from: b.from === undefined ? undefined : String(b.from),
+      })
+      res.json({ ok: true, item })
+    } catch (e) {
+      const status = e instanceof ImageInboxError ? e.status : 500
+      const msg = (e as Error)?.message || String(e)
+      if (status >= 500) console.warn('[image-inbox] post failed:', msg)
+      res.status(status).json({ ok: false, error: msg })
+    }
+  })
+
+  // The stored copy's bytes, for <img src>. Registered before any /:id handler ambiguity.
+  router.get('/api/image-inbox/:id/image', (req: Req, res: Res) => {
+    const f = svc.imageInbox.storedFile(String(req.params.id))
+    if (!f) return res.status(404).json({ ok: false, error: 'no such image' })
+    res.setHeader('content-type', f.mime)
+    res.setHeader('cache-control', 'private, max-age=31536000, immutable')
+    // Streamed by hand: express sendFile 404s any path CONTAINING a dotfile segment, and the
+    // store lives under .gybackend-data.
+    const stream = createReadStream(f.file)
+    stream.on('error', (err: Error) => {
+      console.warn('[image-inbox] stream failed:', err.message)
+      if (!res.headersSent) res.status(500).json({ ok: false, error: err.message })
+      else res.end()
+    })
+    stream.pipe(res)
+  })
+
+  // Viewer opened — the pip clears. Idempotent.
+  router.post('/api/image-inbox/seen', (_req: Req, res: Res) => {
+    res.json({ ok: true, marked: svc.imageInbox.markAllSeen() })
+  })
+
+  router.delete('/api/image-inbox/:id', (req: Req, res: Res) => {
+    const removed = svc.imageInbox.remove(String(req.params.id))
+    res.status(removed ? 200 : 404).json({ ok: removed })
+  })
+
+  router.delete('/api/image-inbox', (_req: Req, res: Res) => {
+    res.json({ ok: true, cleared: svc.imageInbox.clear() })
   })
 
   router.get('/api/notifications/state', (_req: Req, res: Res) => {

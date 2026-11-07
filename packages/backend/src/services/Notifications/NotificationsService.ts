@@ -4,6 +4,7 @@ import path from 'node:path'
 import { AlarmLatch } from '../AlarmLatch'
 import { TaskProgress, type TaskReportInput } from './TaskProgress'
 import { ClipboardDrops } from './ClipboardDrops'
+import { ImageInbox } from './ImageInbox'
 
 /**
  * NotificationsService — the answer to "far too many things can fail silently
@@ -208,6 +209,8 @@ export class NotificationsService {
     this.tasks = new TaskProgress((ch, data) => this.broadcast(ch, data))
     // Clipboard drops (text agents post for Travis to copy) share the same live transport.
     this.clips = new ClipboardDrops(path.join(dataDir, 'notifications', 'clipboard.json'), (ch, data) => this.broadcast(ch, data))
+    // Image inbox (images agents post for Travis to SEE — pip only, never a popup).
+    this.imageInbox = new ImageInbox(dataDir, (ch, data) => this.broadcast(ch, data))
     if (!Number.isFinite(intervalMs) || intervalMs < 5_000) {
       const bad = intervalMs
       intervalMs = 30_000
@@ -861,6 +864,7 @@ export class NotificationsService {
   /** Task Progress registry (panel section + bell pip). Public: routers and pollers report into it. */
   readonly tasks: TaskProgress
   readonly clips: ClipboardDrops
+  readonly imageInbox: ImageInbox
   /** Snapshot fn from the proxy's vector-activity tracker (JS module, loaded lazily so a
    *  broken import degrades to an empty section rather than a dead service). */
   private vectorActivitySnap: (() => { windowSec: number; buckets: unknown[] }) | null = null
