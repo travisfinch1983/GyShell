@@ -386,8 +386,10 @@ export const GENERIC_LAUNCH_TEMPLATES: Record<string, any> = {
       defaultPort: 9310,
       multiGpu: true,
       buildCommand(port) {
+        // NOT expandable segments: empty_cache() reaches every card, and unmapping doesn't wait for a
+        // compute stream still reading a streamed weight -> illegal memory access (2026-11-07).
         return [
-          'export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True',
+          'export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False',
           `exec /opt/conda/envs/ailab-modelsvc/bin/python /opt/ailab-modelsvc/serve.py --port ${port}`,
         ].join('\n')
       },
