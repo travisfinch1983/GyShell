@@ -1809,7 +1809,7 @@ export function createImagegenRouter(config) {
    *  as paths relative to it (= the names ComfyUI lists). Feeds the --preload dropdown on the image-gen
    *  model-service launch cards. Whitelisted roots only; dot-dirs skipped; depth-limited. */
   // + checkpoints / loras / ultralytics / sam for the Model Cache & Placement "Add to cache" picker.
-  const MODEL_FILE_ROOTS = new Set(['diffusion-models', 'text-encoders', 'vae', 'checkpoints', 'loras', 'ultralytics', 'sam', '3d-models']);
+  const MODEL_FILE_ROOTS = new Set(['pose', 'diffusion-models', 'text-encoders', 'vae', 'checkpoints', 'loras', 'ultralytics', 'sam', '3d-models']);
   const MODEL_FILE_EXT = /\.(safetensors|sft|gguf|pt|pth|ckpt|bin)$/i;
   router.get('/model-files', async (req, res) => {
     const root = String(req.query.root || '');
