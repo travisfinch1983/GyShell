@@ -1,0 +1,13 @@
+[Unit]
+Description=BBR congestion control for traffic to the tailnet subnet router CT110 (10.0.0.67) only - remote ComfyUI clients over Starlink (claude1, 2026-11-07). Needs tcp_bbr loaded on px-epyc (/etc/modules-load.d/tcp_bbr.conf).
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/ip route replace 10.0.0.67/32 dev eth0 congctl bbr
+ExecStop=/sbin/ip route del 10.0.0.67/32 dev eth0
+
+[Install]
+WantedBy=multi-user.target
