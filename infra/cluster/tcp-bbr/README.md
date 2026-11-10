@@ -27,3 +27,11 @@ Older per-route units (`tailnet-bbr-route.service` on px-nas, ai-epyc CT176, CT1
 
 ## New hosts
 Run `bbr-rollout.sh` once on any new PVE node.
+
+## Container template
+`px-data:vztmpl/Debian-13-Custom-Template-4.25.26.tar.gz` (Travis's standard Debian 13 template; name typo
+"Tempalte" fixed) has `/etc/sysctl.d/90-tcp-bbr.conf` baked in, so a CT made from it is BBR even on a
+host that lacks the default. Built 2026-11-10 by gunzip -> `tar -r` of that one file (root:root 0644) ->
+gzip; every other entry is byte-identical to the original `Debian-13-Custom-Tempalte-4.25.26.tar.gz`
+(entry count = original + 1). Verified with a throwaway unprivileged CT: sysctl reports bbr,
+systemd-sysctl clean.
