@@ -1,0 +1,13 @@
+[Unit]
+Description=BBR congestion control for traffic to the tailnet subnet router CT110 (10.0.0.67) only - remote AI-Lab UI clients over Starlink (claude1, 2026-11-10). Needs tcp_bbr loaded on px-nas.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/ip route replace 10.0.0.67/32 dev eth0 congctl bbr
+ExecStop=/sbin/ip route del 10.0.0.67/32 dev eth0
+
+[Install]
+WantedBy=multi-user.target
