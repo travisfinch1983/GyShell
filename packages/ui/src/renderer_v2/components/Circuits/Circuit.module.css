@@ -52,6 +52,10 @@
 .pinFrom { fill: var(--accent); fill-opacity: 0.9; stroke: #fff; }
 .wireHit { cursor: pointer; pointer-events: stroke; }
 .bend { fill: #fff; stroke: var(--accent); stroke-width: 0.8; cursor: move; }
+.ghost { cursor: copy; }
+.ghost circle { fill: #0b0d10; fill-opacity: 0.75; stroke: var(--accent); stroke-width: 0.6; }
+.ghost path { stroke: #fff; stroke-width: 0.6; fill: none; pointer-events: none; }
+.ghost:hover circle { fill: var(--accent); fill-opacity: 1; }
 .refLabel { font-size: 5px; font-family: sans-serif; fill: #aeb4bd; pointer-events: none; }
 .netLabel { font-size: 4.5px; font-family: monospace; fill: #fbbf24; }
 .missingText { font-size: 5px; fill: #fca5a5; text-anchor: middle; font-family: sans-serif; }

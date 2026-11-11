@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Design, PartDef, PartInstance, PinDef, PinRef, View } from './circuitTypes'
 import { PIN_COLORS } from './circuitTypes'
-import { artUrl, bounds, nearestSegment, partSize, pinWorld, schPins, snap, wirePath, type Pt } from './geometry'
+import { artUrl, bounds, nearestSegment, partSize, pinWorld, routePoints, schPins, snap, wireControls, wirePath, wireStyleFor, type Pt } from './geometry'
 import styles from './Circuit.module.css'
 
 export type Sel = { kind: 'part'; ref: string } | { kind: 'wire'; id: string } | null
@@ -32,6 +32,8 @@ type Drag =
   | { mode: 'part'; ref: string; start: Pt; orig: { x: number; y: number }; moved: boolean }
   | { mode: 'pan'; sx: number; sy: number; ox: number; oy: number }
   | { mode: 'bend'; wireId: string; idx: number; moved: boolean }
+  /** pressed on a wire body / a '+' handle: becomes a new bend once the pointer actually moves */
+  | { mode: 'wire-pull'; wireId: string; seg: number | null; sx: number; sy: number }
   | null
 
 const GRID = 5
@@ -149,10 +151,40 @@ export function CircuitCanvas(p: Props) {
     svgRef.current?.setPointerCapture(e.pointerId)
   }
 
-  const onWireDown = (e: React.PointerEvent, wireId: string) => {
+  /** Pressing a wire selects it; dragging it pulls out a new bend (Cirkit-style rerouting). */
+  const onWireDown = (e: React.PointerEvent, wireId: string, seg: number | null = null) => {
     if (e.button !== 0 || wiring) return
     e.stopPropagation()
     p.onSelect({ kind: 'wire', id: wireId })
+    drag.current = { mode: 'wire-pull', wireId, seg, sx: e.clientX, sy: e.clientY }
+    svgRef.current?.setPointerCapture(e.pointerId)
+  }
+
+  /** Insert a bend on wire `wireId` at world point `at` (segment `seg` of its control points, or the nearest). Returns its index. */
+  const insertBend = (wireId: string, at: Pt, seg: number | null): number | null => {
+    const d = clone(designRef.current)
+    const wire = d.wires.find((q) => q.id === wireId)
+    if (!wire) return null
+    const ctrl = wireControls(d, parts, wire, view)
+    if (!ctrl) return null
+    const key = view === 'bb' ? 'bbPoints' : 'schPoints'
+    const inner = [...(wire[key] ?? [])]
+    const i = seg ?? nearestSegment(ctrl, at)
+    inner.splice(i, 0, [snap(at.x, GRID), snap(at.y, GRID)])
+    wire[key] = inner
+    p.onBeginEdit()
+    p.onChange(d, false)
+    return i
+  }
+
+  const removeBend = (wireId: string, idx: number) => {
+    const d = clone(designRef.current)
+    const wire = d.wires.find((q) => q.id === wireId)
+    const key = view === 'bb' ? 'bbPoints' : 'schPoints'
+    if (!wire?.[key]) return
+    wire[key]!.splice(idx, 1)
+    if (!wire[key]!.length) delete wire[key]
+    p.onChange(d, true)
   }
 
   const onBendDown = (e: React.PointerEvent, wireId: string, idx: number) => {
@@ -181,6 +213,12 @@ export function CircuitCanvas(p: Props) {
     const dr = drag.current
     if (!dr) return
     if (dr.mode === 'pan') { setPan({ x: dr.ox + e.clientX - dr.sx, y: dr.oy + e.clientY - dr.sy }); return }
+    if (dr.mode === 'wire-pull') {
+      if (Math.hypot(e.clientX - dr.sx, e.clientY - dr.sy) < 4) return
+      const idx = insertBend(dr.wireId, w, dr.seg)
+      drag.current = idx === null ? null : { mode: 'bend', wireId: dr.wireId, idx, moved: true }
+      return
+    }
     if (dr.mode === 'part') {
       const nx = snap(dr.orig.x + w.x - dr.start.x, GRID), ny = snap(dr.orig.y + w.y - dr.start.y, GRID)
       const cur = designRef.current.parts.find((q) => q.ref === dr.ref)
@@ -211,34 +249,9 @@ export function CircuitCanvas(p: Props) {
     drag.current = null
   }
 
-  const onWireDouble = (e: React.MouseEvent, wireId: string) => {
-    e.stopPropagation()
-    const d = clone(designRef.current)
-    const wire = d.wires.find((q) => q.id === wireId)
-    if (!wire) return
-    const path = wirePath(d, parts, wire, view)
-    if (!path) return
-    const at = toWorld(e.clientX, e.clientY)
-    const key = view === 'bb' ? 'bbPoints' : 'schPoints'
-    // schematic wires without hand bends are auto-routed; make their route explicit first
-    const inner = wire[key]?.length ? [...wire[key]!] : view === 'sch' ? path.slice(1, -1).map((q) => [q.x, q.y] as [number, number]) : []
-    const full = [path[0], ...inner.map(([x, y]) => ({ x, y })), path[path.length - 1]]
-    const seg = nearestSegment(full, at)
-    inner.splice(seg, 0, [snap(at.x, GRID), snap(at.y, GRID)])
-    wire[key] = inner
-    p.onChange(d, true)
-    p.onSelect({ kind: 'wire', id: wireId })
-  }
-
   const onBendDouble = (e: React.MouseEvent, wireId: string, idx: number) => {
     e.stopPropagation()
-    const d = clone(designRef.current)
-    const wire = d.wires.find((q) => q.id === wireId)
-    const key = view === 'bb' ? 'bbPoints' : 'schPoints'
-    if (!wire?.[key]) return
-    wire[key]!.splice(idx, 1)
-    if (!wire[key]!.length) delete wire[key]
-    p.onChange(d, true)
+    removeBend(wireId, idx)
   }
 
   const onDragOver = (e: React.DragEvent) => {
@@ -317,13 +330,27 @@ export function CircuitCanvas(p: Props) {
             const dark = isDarkColor(color)
             return (
               <g key={w.id}>
-                <path d={d} fill="none" stroke="transparent" strokeWidth={8} className={styles.wireHit} onPointerDown={(e) => onWireDown(e, w.id)} onDoubleClick={(e) => onWireDouble(e, w.id)} />
+                <path d={d} fill="none" stroke="transparent" strokeWidth={8} className={styles.wireHit} onPointerDown={(e) => onWireDown(e, w.id)} />
                 {isSel && <path d={d} fill="none" stroke="var(--accent)" strokeWidth={view === 'bb' ? 4.6 : 3} strokeOpacity={0.55} strokeLinejoin="round" strokeLinecap="round" pointerEvents="none" />}
                 {view === 'bb' && <path d={d} fill="none" stroke={dark ? '#ffffff59' : '#00000066'} strokeWidth={dark ? 3.2 : 2.8} strokeLinejoin="round" strokeLinecap="round" pointerEvents="none" />}
                 <path d={d} fill="none" stroke={color} strokeWidth={view === 'bb' ? 2 : 1} strokeLinejoin="round" strokeLinecap="round" pointerEvents="none" />
                 {w.label && mid && <text x={mid.x + 2} y={mid.y - 2} className={styles.netLabel} pointerEvents="none">{w.label}</text>}
+                {isSel && (() => {
+                  const ctrl = wireControls(design, parts, w, view) ?? []
+                  return ctrl.slice(0, -1).map((a, i) => {
+                    const b = ctrl[i + 1]
+                    if (Math.hypot(b.x - a.x, b.y - a.y) < 14) return null
+                    return (
+                      <g key={`g${i}`} className={styles.ghost} onPointerDown={(e) => onWireDown(e, w.id, i)}>
+                        <circle cx={(a.x + b.x) / 2} cy={(a.y + b.y) / 2} r={2.4} />
+                        <path d={`M${(a.x + b.x) / 2 - 1.3} ${(a.y + b.y) / 2} h2.6 M${(a.x + b.x) / 2} ${(a.y + b.y) / 2 - 1.3} v2.6`} />
+                      </g>
+                    )
+                  })
+                })()}
                 {isSel && pts.map(([x, y], i) => (
-                  <circle key={i} cx={x} cy={y} r={2.6} className={styles.bend} onPointerDown={(e) => onBendDown(e, w.id, i)} onDoubleClick={(e) => onBendDouble(e, w.id, i)} />
+                  <circle key={i} cx={x} cy={y} r={2.6} className={styles.bend} onPointerDown={(e) => onBendDown(e, w.id, i)} onDoubleClick={(e) => onBendDouble(e, w.id, i)}
+                    onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); removeBend(w.id, i) }} />
                 ))}
               </g>
             )
@@ -353,14 +380,14 @@ export function CircuitCanvas(p: Props) {
           {/* rubber band while wiring */}
           {wiring && wiringStart && (
             <path
-              d={[wiringStart, ...wiring.pts, { x: snap(cursor.x, GRID), y: snap(cursor.y, GRID) }].map((q, i) => `${i ? 'L' : 'M'}${q.x} ${q.y}`).join(' ')}
+              d={routePoints([wiringStart, ...wiring.pts, { x: snap(cursor.x, GRID), y: snap(cursor.y, GRID) }], wireStyleFor(design, view), view === 'sch' ? 10 : 8).map((q, i) => `${i ? 'L' : 'M'}${q.x} ${q.y}`).join(' ')}
               fill="none" stroke="var(--accent)" strokeWidth={1.6} strokeDasharray="4 3" pointerEvents="none"
             />
           )}
         </g>
       </svg>
       {hover && <PinTip hover={hover} wrap={wrapRef.current} design={design} />}
-      <div className={styles.zoomBadge}>{Math.round(zoom * 50)}%{wiring ? ' · wiring: click a pin to finish, empty space to bend, Esc / right-click to cancel' : ''}</div>
+      <div className={styles.zoomBadge}>{Math.round(zoom * 50)}%{wiring ? ' · wiring: click a pin to finish, empty space to add a corner, Esc / right-click to cancel' : sel?.kind === 'wire' ? ' · drag the wire or a + to add a bend · drag a bend to move it · right-click a bend to remove it' : ''}</div>
     </div>
   )
 }

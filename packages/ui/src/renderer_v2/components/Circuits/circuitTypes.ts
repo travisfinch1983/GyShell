@@ -24,6 +24,8 @@ export interface Wire {
 export interface Design {
   id: string; name: string; description?: string; notes?: string
   parts: PartInstance[]; wires: Wire[]; updatedAt?: string; createdAt?: string; updatedBy?: string
+  /** Breadboard wire drawing: square corners (default) or straight lines */
+  wireStyle?: 'straight' | 'orthogonal'
 }
 export interface Finding { level: 'error' | 'warning' | 'info'; message: string; refs: string[] }
 export interface NetNode { ref: string; pin: string; pinName: string; partName: string; type: string }

@@ -65,7 +65,7 @@ function rotateVec(v: Pt, rot: number): Pt {
 }
 
 /** World position of a pin, plus the outward direction of its stub (used by schematic routing). */
-export function pinWorld(inst: PartInstance, part: PartDef | undefined, pinId: string, view: View): (Pt & { dir: Pt }) | null {
+export function pinWorld(inst: PartInstance, part: PartDef | undefined, pinId: string, view: View): (Pt & { dir: Pt; order?: number }) | null {
   if (!part) {
     const pl = inst[view]
     return { x: pl.x, y: pl.y, dir: { x: -1, y: 0 } }
@@ -79,24 +79,70 @@ export function pinWorld(inst: PartInstance, part: PartDef | undefined, pinId: s
   } else local = schPins(part).get(pinId)
   if (!local) return null
   const r = rotatePt(local, w, h, pl.rot)
-  return { x: pl.x + r.x, y: pl.y + r.y, dir: rotateVec(SIDE_VEC[local.side], pl.rot) }
+  return { x: pl.x + r.x, y: pl.y + r.y, dir: rotateVec(SIDE_VEC[local.side], pl.rot), order: part.pins.findIndex((q) => q.id === pinId) }
 }
 
-/** Polyline for a wire in a view. Breadboard: through user bend points. Schematic: orthogonal auto-route unless bent by hand. */
-export function wirePath(d: Design, parts: Map<string, PartDef>, w: Wire, view: View): Pt[] | null {
+export type WireStyle = 'straight' | 'orthogonal'
+
+/** Wire style in a view: the schematic is always square-cornered; the breadboard follows the design setting. */
+export function wireStyleFor(d: Design, view: View): WireStyle {
+  return view === 'sch' ? 'orthogonal' : (d.wireStyle === 'straight' ? 'straight' : 'orthogonal')
+}
+
+/** The wire's CONTROL points: pin, hand-placed bends, pin. Bends are inserted / moved against these. */
+export function wireControls(d: Design, parts: Map<string, PartDef>, w: Wire, view: View): Array<Pt & { dir?: Pt; order?: number }> | null {
   const ia = d.parts.find((p) => p.ref === w.from.ref), ib = d.parts.find((p) => p.ref === w.to.ref)
   if (!ia || !ib) return null
   const a = pinWorld(ia, parts.get(ia.partId), w.from.pin, view)
   const b = pinWorld(ib, parts.get(ib.partId), w.to.pin, view)
   if (!a || !b) return null
-  const pts = view === 'bb' ? w.bbPoints : w.schPoints
-  if (pts?.length) return [a, ...pts.map(([x, y]) => ({ x, y })), b]
-  if (view === 'bb') return [a, b]
-  const stub = 10
-  const sa = { x: a.x + a.dir.x * stub, y: a.y + a.dir.y * stub }
-  const sb = { x: b.x + b.dir.x * stub, y: b.y + b.dir.y * stub }
-  const mid = a.dir.x !== 0 ? { x: sb.x, y: sa.y } : { x: sa.x, y: sb.y }
-  return [a, sa, mid, sb, b]
+  const pts = (view === 'bb' ? w.bbPoints : w.schPoints) ?? []
+  return [a, ...pts.map(([x, y]) => ({ x, y })), b]
+}
+
+/**
+ * Turn control points into a drawable route. Orthogonal: leave each pin straight out along its
+ * edge (a short stub), then join every pair of points with one 90° corner, alternating so
+ * consecutive legs turn rather than double back. Straight: the control points as-is.
+ */
+export function routePoints(ctrl: Array<Pt & { dir?: Pt; order?: number }>, style: WireStyle, stub = 8): Pt[] {
+  if (style === 'straight' || ctrl.length < 2) return ctrl.map(({ x, y }) => ({ x, y }))
+  const a = ctrl[0], b = ctrl[ctrl.length - 1]
+  const pts: Pt[] = [{ x: a.x, y: a.y }]
+  // Neighbouring pins get different lead-out lengths, so wires leaving one header (or arriving at
+  // one breakout) turn on different lines instead of stacking on top of each other.
+  const lead = (q: { order?: number }) => stub + ((q.order ?? 0) % 5) * 3
+  if (a.dir) pts.push({ x: a.x + a.dir.x * lead(a), y: a.y + a.dir.y * lead(a) })
+  for (const q of ctrl.slice(1, -1)) pts.push({ x: q.x, y: q.y })
+  if (b.dir) pts.push({ x: b.x + b.dir.x * lead(b), y: b.y + b.dir.y * lead(b) })
+  pts.push({ x: b.x, y: b.y })
+  const out: Pt[] = [pts[0]]
+  // first free leg runs perpendicular to the pin's stub
+  let horiz = a.dir ? a.dir.x === 0 : true
+  for (let i = 1; i < pts.length; i++) {
+    const p = out[out.length - 1], q = pts[i]
+    if (p.x !== q.x && p.y !== q.y) {
+      out.push(horiz ? { x: q.x, y: p.y } : { x: p.x, y: q.y })
+      // after a corner the last leg is the other axis; the next corner keeps alternating
+    } else horiz = p.y === q.y ? false : true
+    out.push(q)
+  }
+  // drop zero-length legs and collinear midpoints
+  const clean: Pt[] = []
+  for (const q of out) {
+    const l = clean[clean.length - 1]
+    if (l && l.x === q.x && l.y === q.y) continue
+    const k = clean[clean.length - 2]
+    if (k && l && ((k.x === l.x && l.x === q.x) || (k.y === l.y && l.y === q.y))) clean[clean.length - 1] = q
+    else clean.push(q)
+  }
+  return clean
+}
+
+/** Drawable route of a wire in a view. */
+export function wirePath(d: Design, parts: Map<string, PartDef>, w: Wire, view: View): Pt[] | null {
+  const ctrl = wireControls(d, parts, w, view)
+  return ctrl ? routePoints(ctrl, wireStyleFor(d, view), view === 'sch' ? 10 : 8) : null
 }
 
 export const snap = (v: number, g: number) => Math.round(v / g) * g
@@ -114,7 +160,7 @@ export function bounds(d: Design, parts: Map<string, PartDef>, view: View): { x:
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
 }
 
-/** Index of the segment of `pts` nearest to `p` (for inserting a bend point on double-click). */
+/** Index of the segment of `pts` nearest to `p` (where a dragged-out bend is inserted). */
 export function nearestSegment(pts: Pt[], p: Pt): number {
   let best = 0, bd = Infinity
   for (let i = 0; i < pts.length - 1; i++) {

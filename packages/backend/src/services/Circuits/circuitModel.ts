@@ -36,6 +36,8 @@ export interface Design {
   wires: Wire[]
   updatedAt?: string
   createdAt?: string
+  /** Breadboard wire drawing: square corners (default) or straight lines between bends */
+  wireStyle?: 'straight' | 'orthogonal'
 }
 
 export type PartLookup = (partId: string) => PartDef | undefined
@@ -126,6 +128,7 @@ export function normalizeDesign(input: any, lookup: PartLookup): { design: Desig
     wires: [],
     createdAt: input?.createdAt,
   }
+  if (input?.wireStyle === 'straight' || input?.wireStyle === 'orthogonal') d.wireStyle = input.wireStyle
   const refs = new Set<string>()
   for (const raw of Array.isArray(input?.parts) ? input.parts : []) {
     const partId = String(raw?.partId ?? '')
@@ -188,7 +191,7 @@ export type Op =
   | { op: 'connect'; from: string | PinRef; to: string | PinRef; color?: string; label?: string }
   | { op: 'disconnect'; wireId?: string; from?: string | PinRef; to?: string | PinRef }
   | { op: 'set_wire'; wireId: string; color?: string; label?: string }
-  | { op: 'set_meta'; name?: string; description?: string; notes?: string }
+  | { op: 'set_meta'; name?: string; description?: string; notes?: string; wireStyle?: 'straight' | 'orthogonal' }
   | { op: 'clear' }
 
 export interface OpResult { op: string; ok: true; detail: string; ref?: string; wireId?: string }
@@ -311,6 +314,7 @@ export function applyOps(src: Design, ops: Op[], lookup: PartLookup): { design: 
           if (o.name !== undefined) d.name = String(o.name).slice(0, 200) || d.name
           if (o.description !== undefined) d.description = String(o.description).slice(0, 4000) || undefined
           if (o.notes !== undefined) d.notes = String(o.notes).slice(0, 20000) || undefined
+          if (o.wireStyle !== undefined) { if (o.wireStyle !== 'straight' && o.wireStyle !== 'orthogonal') throw new Error("wireStyle must be 'straight' or 'orthogonal'"); d.wireStyle = o.wireStyle }
           results.push({ op: o.op, ok: true, detail: 'updated design info' })
           break
         }

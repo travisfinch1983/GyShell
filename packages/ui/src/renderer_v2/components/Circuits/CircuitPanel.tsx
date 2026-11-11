@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  FilePlus2, FolderOpen, Trash2, Undo2, Redo2, Maximize2, RotateCw, ShieldCheck, FileDown, Plus, Pencil, Copy, Search, X, Cpu, GitBranch,
+  FilePlus2, FolderOpen, Trash2, Undo2, Redo2, Maximize2, RotateCw, ShieldCheck, FileDown, Plus, Pencil, Copy, Search, X, Cpu, GitBranch, CornerDownRight, Slash,
 } from 'lucide-react'
 import { CircuitCanvas, type CanvasHandle, type Sel } from './CircuitCanvas'
 import { PartEditor } from './PartEditor'
@@ -338,6 +338,15 @@ export function CircuitPanel() {
         <button className={styles.iconBtn} onClick={undo} disabled={!undoRef.current.length} title="Undo (Ctrl+Z)"><Undo2 size={14} /></button>
         <button className={styles.iconBtn} onClick={redo} disabled={!redoRef.current.length} title="Redo (Ctrl+Shift+Z)"><Redo2 size={14} /></button>
         <button className={styles.iconBtn} onClick={() => canvas.current?.fit()} disabled={!design} title="Fit to view (F)"><Maximize2 size={14} /></button>
+        {view === 'bb' && design && (
+          <button
+            className={styles.btn}
+            onClick={() => change({ ...clone(design), wireStyle: design.wireStyle === 'straight' ? 'orthogonal' : 'straight' })}
+            title="How breadboard wires are drawn: square corners (tidy) or straight lines between bends"
+          >
+            {design.wireStyle === 'straight' ? <><Slash size={13} /> Straight wires</> : <><CornerDownRight size={13} /> Square wires</>}
+          </button>
+        )}
         <span className={styles.sep} />
         <button className={styles.btn} onClick={runCheck} disabled={!design} title="Check the design for wiring mistakes">
           <ShieldCheck size={13} /> Check{findings ? ` (${findings.filter((f) => f.level !== 'info').length})` : ''}
@@ -491,10 +500,10 @@ export function CircuitPanel() {
                 <input value={selWire.label ?? ''} placeholder="e.g. I2C_SDA" onChange={(e) => updateWire(selWire.id, (w) => { w.label = e.target.value || undefined })} />
               </label>
               <div className={styles.row}>
-                <button className={styles.btn} onClick={() => updateWire(selWire.id, (w) => { if (view === 'bb') delete w.bbPoints; else delete w.schPoints })}>Straighten</button>
+                <button className={styles.btn} onClick={() => updateWire(selWire.id, (w) => { if (view === 'bb') delete w.bbPoints; else delete w.schPoints })} title="Remove every hand-placed bend">Reset route</button>
                 <button className={styles.btnDanger} onClick={deleteSelection}><Trash2 size={13} /> Delete</button>
               </div>
-              <div className={styles.dim}>Double-click the wire to add a bend; drag bends to move them; double-click a bend to remove it.</div>
+              <div className={styles.dim}>Reroute: drag the wire (or a <b>+</b> handle) to pull out a bend, drag a bend to move it, right-click or double-click a bend to remove it.</div>
             </>
           )}
 
@@ -520,7 +529,7 @@ export function CircuitPanel() {
                 </>
               )}
               <div className={styles.keys}>
-                <div><b>Click pin → pin</b> wire</div>
+                <div><b>Click pin → pin</b> wire · <b>drag a wire</b> to bend it</div>
                 <div><b>R</b> rotate · <b>Del</b> delete · <b>F</b> fit</div>
                 <div><b>Ctrl+Z / Ctrl+Shift+Z</b> undo / redo</div>
                 <div><b>Drag empty space</b> pan · <b>wheel</b> zoom</div>

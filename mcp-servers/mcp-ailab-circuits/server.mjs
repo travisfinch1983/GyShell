@@ -91,6 +91,7 @@ const opSchema = z.object({
   color: z.string().optional().describe('connect/set_wire: CSS colour (default: red for supply, black for ground)'),
   wireId: z.string().optional().describe('disconnect/set_wire: wire id from circuit_get'),
   name: z.string().optional(), description: z.string().optional(), notes: z.string().optional().describe('set_meta fields'),
+  wireStyle: z.enum(['straight', 'orthogonal']).optional().describe('set_meta: breadboard wires with square corners (default) or straight lines'),
 }).passthrough()
 
 tool('circuit_edit',
@@ -101,7 +102,8 @@ tool('circuit_edit',
   '  {op:"disconnect", wireId} | {op:"disconnect", from, to?}  (from alone removes every wire on that pin)\n' +
   '  {op:"move_part", ref, x?, y?, rot?, view?} · {op:"remove_part", ref} (also removes its wires)\n' +
   '  {op:"set_part", ref, label?, props?, newRef?} · {op:"set_wire", wireId, color?, label?}\n' +
-  '  {op:"set_meta", name?, description?, notes?} · {op:"clear"}\n' +
+  '  {op:"set_meta", name?, description?, notes?, wireStyle?} · {op:"clear"}\n' +
+  'Wires route with square corners out of each pin. To keep a busy design readable, add bends with bbPoints only via the editor; agents normally just connect pins and place parts sensibly (MCU on the left, modules to its right, grouped by bus).\n' +
   'Coordinates are in units of 0.01" (10 = one 0.1" breadboard pitch). Pin refs accept the pin id, the printed name, a bare GPIO number ("4") or an alt function. ' +
   'Wrong pins fail with the list of valid pins. Run circuit_check afterwards.',
   {
