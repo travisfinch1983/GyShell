@@ -17,7 +17,7 @@ import { AgentRail } from './components/AgentRail/AgentRail'
 import { PrimarySidebar, type PrimaryTab } from './components/PrimarySidebar/PrimarySidebar'
 import { GlobalChat } from './components/Chat/GlobalChat'
 import { AgentChatPanel } from './components/AgentChat/AgentChatPanel'
-import { FlowchartPanel } from './components/Flowchart/FlowchartPanel'
+import { DiagramsPanel } from './components/Diagrams/DiagramsPanel'
 import { PagesPanel } from './components/Pages/PagesPanel'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { SvgPanel } from './components/Svg/SvgPanel'
@@ -358,8 +358,8 @@ export const App: React.FC = observer(() => {
           )}
 
           {primaryTab === 'flowchart' && (
-            <ErrorBoundary label="The flowchart tab">
-              <FlowchartPanel />
+            <ErrorBoundary label="The diagrams tab">
+              <DiagramsPanel />
             </ErrorBoundary>
           )}
           {primaryTab === 'pages' && (

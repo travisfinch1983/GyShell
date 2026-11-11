@@ -1,0 +1,10 @@
+.shell { display: flex; flex-direction: column; height: 100%; background: var(--app-bg); color: var(--fg); }
+.head { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.title { font-size: 13px; font-weight: 600; }
+.subTabs { display: flex; gap: 4px; margin-left: 8px; }
+.subTab { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 5px 12px; border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--fg-muted); cursor: pointer; }
+.subTab:hover { background: var(--control-bg); color: var(--fg); }
+.subTabActive { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--fg); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.body { flex: 1; min-height: 0; position: relative; }
+.pane { position: absolute; inset: 0; }
+.pane[hidden] { display: none; }

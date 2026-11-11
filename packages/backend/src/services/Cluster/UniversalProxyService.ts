@@ -143,6 +143,7 @@ export class UniversalProxyService {
     const { createDatasetRouter } = await import('./proxy/dataset.js')
     const { createMatrixRouter } = await import('./proxy/matrix.js')
     const { createFlowchartsRouter } = await import('./flowchartsHttp')
+    const { createCircuitsRouter } = await import('./circuitsHttp')
     const { createPagesRouter } = await import('./pagesHttp')
     const { createReportsRouter } = await import('./reportsHttp')
     const { createJournalRouter } = await import('./journalHttp')
@@ -365,6 +366,8 @@ export class UniversalProxyService {
     }
     // Flowchart diagram store: /api/flowcharts/* — before the broad /api cluster router.
     app.use(createFlowchartsRouter(this.dataDir))
+    // Circuit Designer store (Diagrams tab + ailab-circuits MCP): /api/circuits/*
+    app.use(createCircuitsRouter(this.dataDir))
     // Pages store (Pages tab): /api/pages/* — versioned documents, same dataDir pattern.
     app.use(createPagesRouter(this.dataDir))
     // Reports and the Journal are their OWN surfaces, not sub-paths of pages:

@@ -1,0 +1,9 @@
+{
+  "name": "ailab-circuits",
+  "transport": "stdio",
+  "description": "AI-Lab Circuit Designer (Diagrams tab) — design ESP32 circuits with Travis: search the parts library, create circuits, add parts and wire pins (atomic op batches), run design checks (strapping pins, 5V on GPIO, I2C clashes), export netlist/BOM/ESPHome pins, and add custom parts.",
+  "command": "/usr/bin/node",
+  "args": ["/opt/mcp-ailab-circuits/server.mjs"],
+  "env": { "AILAB_API_URL": "http://127.0.0.1:17890" },
+  "session_mode": "stateless"
+}
