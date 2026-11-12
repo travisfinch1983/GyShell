@@ -21,7 +21,7 @@ def build(cfg, art):
     ox, oy = gl, gt
     out = []
     b = cfg['board']
-    out.append(f'<rect x="{ox + b["x"]*U:.1f}" y="{oy + b["y"]*U:.1f}" width="{b["w"]*U:.1f}" height="{b["h"]*U:.1f}" rx="{b.get("r",1)*U:.1f}" fill="{cfg["pcb"]}"/>')
+    out.append(f'<rect x="{ox + b["x"]*U:.1f}" y="{oy + b["y"]*U:.1f}" width="{b["w"]*U:.1f}" height="{b["h"]*U:.1f}" rx="{b.get("r",1)*U:.1f}" fill="{cfg["pcb"]}" stroke="{cfg.get("edge","#9aa4b2")}" stroke-width="0.8"/>')
     for (x, y, w, h, fill) in cfg.get('blocks', []):
         out.append(f'<rect x="{ox + x*U:.1f}" y="{oy + y*U:.1f}" width="{w*U:.1f}" height="{h*U:.1f}" fill="{fill}"/>')
     out.append(f'<path transform="translate({ox} {oy})" d="{art["d"]}" fill="none" stroke="{cfg.get("ink","#c9cdd3")}" stroke-width="0.32" stroke-linecap="round" stroke-linejoin="round"/>')
