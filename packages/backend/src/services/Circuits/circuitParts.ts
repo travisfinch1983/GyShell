@@ -10,6 +10,8 @@
  * silkscreen of the board in hand before trusting a wire to a specific header position.
  */
 
+import { BOARD_PARTS } from './circuitBoardParts'
+
 export type PinType = 'power' | 'ground' | 'gpio' | 'input' | 'output' | 'analog' | 'passive' | 'nc' | 'other'
 export type PinSide = 'L' | 'R' | 'T' | 'B'
 
@@ -559,6 +561,8 @@ export function builtinParts(): PartDef[] {
       pins: [P('1', 'passive'), P('2', 'passive'), P('3', 'passive'), P('4', 'passive')],
     }),
   ]
-  for (const p of cache) Object.assign(p, { license: 'AI-Lab built-in (original art)' })
+  for (const p of cache) if (!p.license) p.license = 'AI-Lab built-in (original art)'
+  // Travis's own boards (generated from vendor drawings — see circuitBoardParts.ts)
+  cache.push(...BOARD_PARTS.map((p) => structuredClone(p)))
   return cache
 }

@@ -79,6 +79,9 @@ export function createCircuitsRouter(dataDir: string): express.Router {
     const { svg: _svg, image: _image, pins, buses: _buses, ...rest } = p
     return { ...rest, description: clip(rest.description, 300), pins: [], pinCount: pins.length, lite: true }
   }
+  // Fritzing parts and big-art built-ins (the traced dev boards, 80-290 KB each) ship lite in the palette list;
+  // the UI fetches the full part from GET /parts/:id when it is placed.
+  const heavy = (p: PartDef) => p.source === 'fritzing' || (p.svg?.length ?? 0) + (p.image?.length ?? 0) > 50_000
   const lookupFrom = (parts: PartDef[]) => { const m = new Map(parts.map((p) => [p.id, p])); return (id: string) => m.get(id) }
   const clip = (s: string | undefined, n: number) => (s && s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s)
   const summary = (p: PartDef) => ({
@@ -113,7 +116,7 @@ export function createCircuitsRouter(dataDir: string): express.Router {
         }
         parts = parts.map((p) => ({ p, r: rank(p) })).sort((a, b) => a.r - b.r).map((x) => x.p).slice(0, limit)
       }
-      const shaped = req.query.summary ? parts.map(summary) : req.query.lite ? parts.map((p) => (p.source === 'fritzing' ? lite(p) : p)) : parts
+      const shaped = req.query.summary ? parts.map(summary) : req.query.lite ? parts.map((p) => (heavy(p) ? lite(p) : p)) : parts
       res.json({ parts: shaped, total })
     } catch (e) { err(res, 500, e) }
   })

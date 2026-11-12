@@ -432,6 +432,11 @@ export function checkDesign(d: Design, lookup: PartLookup): Finding[] {
         const drivesOut = defs.some((x) => x !== defs.find((y) => y.p === p) && (x.p?.type === 'input'))
         if (drivesOut) out.push({ level: 'error', message: `${at} is INPUT-ONLY but is wired to an input pin (${tag(defs.filter((x) => x.p?.type === 'input'))}) — it cannot drive it`, refs: [n.ref] })
       }
+      if (flags.includes('1v8')) {
+        if (highV > 2) out.push({ level: 'error', message: `${at} is 1.8 V logic but sits on a ${highV} V net — it will be damaged`, refs: [n.ref] })
+        const hot = defs.filter((x) => x.n.ref !== n.ref && x.p && ['gpio', 'input', 'output', 'analog'].includes(x.p.type) && !(x.p.flags ?? []).includes('1v8'))
+        if (hot.length) out.push({ level: 'warning', message: `${at} is 1.8 V logic wired to ${tag(hot)} — if that side is 3.3 V, add a level shifter`, refs: [n.ref] })
+      }
       if (flags.includes('adc2') && defs.some((x) => x.p?.type === 'analog'))
         out.push({ level: 'info', message: `${at} is ADC2 — analog reads fail while Wi-Fi is on; prefer an ADC1 pin`, refs: [n.ref] })
     }

@@ -1,0 +1,1923 @@
+{
+ "id": "arduino-ventuno-q",
+ "name": "Arduino VENTUNO Q (ABX00181)",
+ "description": "Arduino VENTUNO Q edge-AI board: Qualcomm Dragonwing IQ8 (QCS8275) MPU running Linux + STM32H5F5 MCU (Arduino/Zephyr). UNO shield headers (JDIGITAL/JANALOG/JSPI), Qwiic and FAN are 3.3 V MCU; the 40-pin JHAT is the MPU, level-shifted to 3.3 V; JCTL debug is 1.8 V. Power 7-24 V DC (12-24 V recommended) via terminal, barrel jack or USB-C PD. 160 x 100 mm.",
+ "tags": [
+  "arduino",
+  "ventuno",
+  "ventuno-q",
+  "abx00181",
+  "qualcomm",
+  "qcs8275",
+  "stm32h5",
+  "uno",
+  "hat",
+  "raspberry-pi-hat",
+  "linux",
+  "edge-ai",
+  "can",
+  "qwiic"
+ ],
+ "board": {
+  "w_mm": 160,
+  "h_mm": 100,
+  "corner_r_mm": 1.0,
+  "outline_mm": [
+   [
+    1,
+    0
+   ],
+   [
+    159,
+    0
+   ],
+   [
+    160,
+    1
+   ],
+   [
+    160,
+    91.77
+   ],
+   [
+    157.75,
+    94.02
+   ],
+   [
+    126,
+    94.02
+   ],
+   [
+    120,
+    100
+   ],
+   [
+    8,
+    100
+   ],
+   [
+    4,
+    96.02
+   ],
+   [
+    1,
+    96.02
+   ],
+   [
+    0,
+    95.02
+   ],
+   [
+    0,
+    1
+   ]
+  ],
+  "holes": [
+   [
+    6.6,
+    14.12,
+    3.2
+   ],
+   [
+    4.0,
+    92.02,
+    3.2
+   ],
+   [
+    156.0,
+    3.5,
+    3.2
+   ],
+   [
+    156.0,
+    90.01,
+    3.2
+   ],
+   [
+    59.0,
+    3.5,
+    3.2
+   ],
+   [
+    59.0,
+    61.51,
+    3.2
+   ]
+  ],
+  "hole_notes": "Corner holes (6.6,14.12),(4,92.02),(156,3.5),(156,90.01); HAT holes (59,3.5),(59,61.51) \u2014 58 mm apart per RPi HAT spec. Also 4x M2.5 heatsink standoffs around the SoM (not drawn)."
+ },
+ "features": [
+  {
+   "kind": "rect",
+   "x": 79.7,
+   "y": 20.1,
+   "w": 57.5,
+   "h": 57.5,
+   "label": "QCS8275 SoM"
+  },
+  {
+   "kind": "rect",
+   "x": 97.3,
+   "y": 38.0,
+   "w": 24.2,
+   "h": 24.2,
+   "label": "Dragonwing IQ8"
+  },
+  {
+   "kind": "rect",
+   "x": 8.6,
+   "y": 77.9,
+   "w": 17.6,
+   "h": 24.2,
+   "label": "2.5GbE RJ45"
+  },
+  {
+   "kind": "rect",
+   "x": 34.2,
+   "y": 84.7,
+   "w": 12.9,
+   "h": 16.9,
+   "label": "2x USB-A 3.0"
+  },
+  {
+   "kind": "rect",
+   "x": 55.8,
+   "y": 79.2,
+   "w": 6.4,
+   "h": 22.0,
+   "label": "HDMI"
+  },
+  {
+   "kind": "rect",
+   "x": 70.3,
+   "y": 92.6,
+   "w": 8.9,
+   "h": 8.2,
+   "label": "USB-C"
+  },
+  {
+   "kind": "rect",
+   "x": 82.9,
+   "y": 91.8,
+   "w": 25.0,
+   "h": 8.2,
+   "label": "CAN/PWR terminal"
+  },
+  {
+   "kind": "rect",
+   "x": 110.5,
+   "y": 88.6,
+   "w": 10.1,
+   "h": 13.4,
+   "label": "DC jack"
+  },
+  {
+   "kind": "rect",
+   "x": 23.2,
+   "y": 23.2,
+   "w": 22.0,
+   "h": 8.2,
+   "label": "M.2"
+  },
+  {
+   "kind": "rect",
+   "x": 27.8,
+   "y": 36.6,
+   "w": 10.0,
+   "h": 10.0,
+   "label": "PCIe switch"
+  },
+  {
+   "kind": "rect",
+   "x": 154.9,
+   "y": 10.7,
+   "w": 5.1,
+   "h": 15.3,
+   "label": "CAM2"
+  },
+  {
+   "kind": "rect",
+   "x": 154.9,
+   "y": 38.7,
+   "w": 5.1,
+   "h": 15.3,
+   "label": "CAM1"
+  },
+  {
+   "kind": "rect",
+   "x": 154.9,
+   "y": 66.7,
+   "w": 5.1,
+   "h": 15.3,
+   "label": "CAM0"
+  },
+  {
+   "kind": "rect",
+   "x": 71.6,
+   "y": 21.1,
+   "w": 4.4,
+   "h": 9.7,
+   "label": "FAN"
+  },
+  {
+   "kind": "rect",
+   "x": 0.0,
+   "y": 18.9,
+   "w": 4.5,
+   "h": 6.0,
+   "label": "Qwiic"
+  },
+  {
+   "kind": "rect",
+   "x": 46.4,
+   "y": 3.3,
+   "w": 6.1,
+   "h": 6.1,
+   "label": "MCU BTN"
+  },
+  {
+   "kind": "rect",
+   "x": 0.0,
+   "y": 11.4,
+   "w": 3.2,
+   "h": 5.4,
+   "label": "MPU BTN"
+  },
+  {
+   "kind": "rect",
+   "x": 56.5,
+   "y": 7.3,
+   "w": 4.9,
+   "h": 50.3,
+   "label": "JHAT"
+  },
+  {
+   "kind": "rect",
+   "x": 14.6,
+   "y": 14.8,
+   "w": 12.6,
+   "h": 4.9,
+   "label": "JCTL"
+  },
+  {
+   "kind": "rect",
+   "x": 24.2,
+   "y": 62.5,
+   "w": 7.5,
+   "h": 4.9,
+   "label": "JSPI"
+  }
+ ],
+ "headers": [
+  {
+   "name": "JDIGITAL",
+   "pitch_mm": 2.54,
+   "pins": [
+    {
+     "num": 1,
+     "name": "D0",
+     "id": "D0",
+     "type": "gpio",
+     "fn": [
+      "PB11",
+      "USART3_RX",
+      "TIM2_CH4"
+     ],
+     "flags": [
+      "uart",
+      "3v3-mcu"
+     ],
+     "notes": "UART RX (Serial). 3.3 V MCU logic; most pins 5 V-tolerant as digital inputs.",
+     "x_mm": 50.8,
+     "y_mm": 63.438
+    },
+    {
+     "num": 2,
+     "name": "D1",
+     "id": "D1",
+     "type": "gpio",
+     "fn": [
+      "PB10",
+      "USART3_TX",
+      "TIM2_CH3"
+     ],
+     "flags": [
+      "uart",
+      "3v3-mcu"
+     ],
+     "notes": "UART TX (Serial). 3.3 V MCU logic; most pins 5 V-tolerant as digital inputs.",
+     "x_mm": 50.8,
+     "y_mm": 60.898
+    },
+    {
+     "num": 3,
+     "name": "D2",
+     "id": "D2",
+     "type": "gpio",
+     "fn": [
+      "PB0",
+      "TIM1_CH2N"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": " 3.3 V MCU logic; most pins 5 V-tolerant as digital inputs.",
+     "x_mm": 50.8,
+     "y_mm": 58.358
+    },
+    {
+     "num": 4,
+     "name": "D3",
+     "id": "D3",
+     "type": "gpio",
+     "fn": [
+      "PB1",
+      "PWM",
+      "TIM1_CH3N",
+      "OPAMP1_OUT"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": " 3.3 V MCU logic; most pins 5 V-tolerant as digital inputs.",
+     "x_mm": 50.8,
+     "y_mm": 55.818
+    },
+    {
+     "num": 5,
+     "name": "D4",
+     "id": "D4",
+     "type": "gpio",
+     "fn": [
+      "PB6",
+      "FDCAN2_TX",
+      "UART5_TX",
+      "TIM16_CH1N"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": " 3.3 V MCU logic; most pins 5 V-tolerant as digital inputs.",
+     "x_mm": 50.8,
+     "y_mm": 53.278
+    },
+    {
+     "num": 6,
+     "name": "D5",
+     "id": "D5",
+     "type": "gpio",
+     "fn": [
+      "PB5",
+      "PWM",
+      "FDCAN2_RX",
+      "UART5_RX",
+      "TIM17_BKIN"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": " 3.3 V MCU logic; most pins 5 V-tolerant as digital inputs.",
+     "x_mm": 50.8,
+     "y_mm": 50.738
+    },
+    {
+     "num": 7,
+     "name": "D6",
+     "id": "D6",
+     "type": "gpio",
+     "fn": [
+      "PB2",
+      "PWM",
+      "TIM8_CH4N"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": " 3.3 V MCU logic; most pins 5 V-tolerant as digital inputs.",
+     "x_mm": 50.8,
+     "y_mm": 48.198
+    },
+    {
+     "num": 8,
+     "name": "D7",
+     "id": "D7",
+     "type": "gpio",
+     "fn": [
+      "PB3",
+      "UART7_RX",
+      "TIM2_CH2"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": " 3.3 V MCU logic; most pins 5 V-tolerant as digital inputs.",
+     "x_mm": 50.8,
+     "y_mm": 45.658
+    },
+    {
+     "num": 9,
+     "name": "D8",
+     "id": "D8",
+     "type": "gpio",
+     "fn": [
+      "PB4",
+      "UART7_TX",
+      "TIM16_BKIN"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": " 3.3 V MCU logic; most pins 5 V-tolerant as digital inputs.",
+     "x_mm": 50.8,
+     "y_mm": 41.594
+    },
+    {
+     "num": 10,
+     "name": "D9",
+     "id": "D9",
+     "type": "gpio",
+     "fn": [
+      "PB7",
+      "PWM",
+      "TIM17_CH1N"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": " 3.3 V MCU logic; most pins 5 V-tolerant as digital inputs.",
+     "x_mm": 50.8,
+     "y_mm": 39.054
+    },
+    {
+     "num": 11,
+     "name": "D10",
+     "id": "D10",
+     "type": "gpio",
+     "fn": [
+      "PB12",
+      "SPI2_SS",
+      "PWM",
+      "TIM1_BKIN"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": "SPI chip select. 3.3 V MCU logic; most pins 5 V-tolerant as digital inputs.",
+     "x_mm": 50.8,
+     "y_mm": 36.514
+    },
+    {
+     "num": 12,
+     "name": "D11",
+     "id": "D11",
+     "type": "gpio",
+     "fn": [
+      "PB15",
+      "SPI2_MOSI",
+      "PWM",
+      "USART1_RX",
+      "TIM1_CH3N"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": " 3.3 V MCU logic; most pins 5 V-tolerant as digital inputs.",
+     "x_mm": 50.8,
+     "y_mm": 33.974
+    },
+    {
+     "num": 13,
+     "name": "D12",
+     "id": "D12",
+     "type": "gpio",
+     "fn": [
+      "PB14",
+      "SPI2_MISO",
+      "USART1_TX",
+      "TIM1_CH2N"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": " 3.3 V MCU logic; most pins 5 V-tolerant as digital inputs.",
+     "x_mm": 50.8,
+     "y_mm": 31.434
+    },
+    {
+     "num": 14,
+     "name": "D13",
+     "id": "D13",
+     "type": "gpio",
+     "fn": [
+      "PB13",
+      "SPI2_SCK",
+      "TIM1_CH1N"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": " 3.3 V MCU logic; most pins 5 V-tolerant as digital inputs.",
+     "x_mm": 50.8,
+     "y_mm": 28.894
+    },
+    {
+     "num": 15,
+     "name": "GND",
+     "id": "GND",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 50.8,
+     "y_mm": 26.354
+    },
+    {
+     "num": 16,
+     "name": "AREF",
+     "id": "AREF",
+     "type": "analog",
+     "fn": [],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": "ADC reference input; only connected when MCU pin PI8 is HIGH (analog switch U28).",
+     "x_mm": 50.8,
+     "y_mm": 23.814
+    },
+    {
+     "num": 17,
+     "name": "SDA",
+     "id": "SDA",
+     "type": "gpio",
+     "fn": [
+      "PH12",
+      "I2C4_SDA",
+      "I3C1_SDA",
+      "D20",
+      "TIM1_BKIN"
+     ],
+     "flags": [
+      "i2c",
+      "3v3-mcu"
+     ],
+     "notes": "Hardware I2C (A4/A5 have none). 3.3 V MCU logic; most pins 5 V-tolerant as digital inputs.",
+     "x_mm": 50.8,
+     "y_mm": 21.274
+    },
+    {
+     "num": 18,
+     "name": "SCL",
+     "id": "SCL",
+     "type": "gpio",
+     "fn": [
+      "PH11",
+      "I2C4_SCL",
+      "I3C1_SCL",
+      "D21",
+      "TIM1_CH1"
+     ],
+     "flags": [
+      "i2c",
+      "3v3-mcu"
+     ],
+     "notes": "Hardware I2C (A4/A5 have none). 3.3 V MCU logic; most pins 5 V-tolerant as digital inputs.",
+     "x_mm": 50.8,
+     "y_mm": 18.734
+    }
+   ]
+  },
+  {
+   "name": "JANALOG",
+   "pitch_mm": 2.54,
+   "pins": [
+    {
+     "num": 1,
+     "name": "BOOT",
+     "id": "BOOT",
+     "type": "input",
+     "fn": [
+      "BOOT0"
+     ],
+     "flags": [
+      "strapping",
+      "3v3-mcu"
+     ],
+     "notes": "MCU BOOT0 strap (silkscreen NC on UNO). Leave unconnected.",
+     "x_mm": 2.54,
+     "y_mm": 27.878
+    },
+    {
+     "num": 2,
+     "name": "IOREF",
+     "id": "IOREF",
+     "type": "power",
+     "fn": [],
+     "flags": [],
+     "notes": "3.3 V I/O reference output (+3V3_LIMITED). Do not back-feed.",
+     "voltage": 3.3,
+     "x_mm": 2.54,
+     "y_mm": 30.418
+    },
+    {
+     "num": 3,
+     "name": "RESET",
+     "id": "RESET",
+     "type": "input",
+     "fn": [
+      "NRST"
+     ],
+     "flags": [
+      "reset",
+      "3v3-mcu"
+     ],
+     "notes": "MCU reset (active low).",
+     "x_mm": 2.54,
+     "y_mm": 32.958
+    },
+    {
+     "num": 4,
+     "name": "3V3",
+     "id": "3V3",
+     "type": "power",
+     "fn": [],
+     "flags": [],
+     "notes": "3.3 V out, load switch limited to 2.8 A.",
+     "voltage": 3.3,
+     "x_mm": 2.54,
+     "y_mm": 35.498
+    },
+    {
+     "num": 5,
+     "name": "5V",
+     "id": "5V",
+     "type": "power",
+     "fn": [],
+     "flags": [],
+     "notes": "5 V out (+5V_LIMITED), load switch limited to 2.8 A.",
+     "voltage": 5,
+     "x_mm": 2.54,
+     "y_mm": 38.038
+    },
+    {
+     "num": 6,
+     "name": "GND",
+     "id": "GND",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 2.54,
+     "y_mm": 40.578
+    },
+    {
+     "num": 7,
+     "name": "GND",
+     "id": "GND_2",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 2.54,
+     "y_mm": 43.118
+    },
+    {
+     "num": 8,
+     "name": "VIN",
+     "id": "VIN",
+     "type": "power",
+     "fn": [],
+     "flags": [],
+     "notes": "7-24 V DC, power only; 1.1 A PTC. Better for feeding a shield than powering the board.",
+     "voltage": 12,
+     "x_mm": 2.54,
+     "y_mm": 45.658
+    },
+    {
+     "num": 9,
+     "name": "A0",
+     "id": "A0",
+     "type": "analog",
+     "fn": [
+      "PA4",
+      "ADC",
+      "DAC0",
+      "TIM5_ETR",
+      "D14"
+     ],
+     "flags": [
+      "not-5v-tolerant",
+      "3v3-mcu"
+     ],
+     "notes": "ADC input, 0-3.3 V. NOT 5 V tolerant.",
+     "x_mm": 2.54,
+     "y_mm": 50.738
+    },
+    {
+     "num": 10,
+     "name": "A1",
+     "id": "A1",
+     "type": "analog",
+     "fn": [
+      "PA5",
+      "ADC",
+      "DAC1",
+      "TIM2_CH1",
+      "D15"
+     ],
+     "flags": [
+      "not-5v-tolerant",
+      "3v3-mcu"
+     ],
+     "notes": "ADC input, 0-3.3 V. NOT 5 V tolerant.",
+     "x_mm": 2.54,
+     "y_mm": 53.278
+    },
+    {
+     "num": 11,
+     "name": "A2",
+     "id": "A2",
+     "type": "analog",
+     "fn": [
+      "PE12",
+      "ADC",
+      "SPI4_SCK",
+      "OPAMP1_INP",
+      "TIM1_CH3N",
+      "D16"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": "ADC input, max ~3.6 V. Do not apply 5 V.",
+     "x_mm": 2.54,
+     "y_mm": 55.818
+    },
+    {
+     "num": 12,
+     "name": "A3",
+     "id": "A3",
+     "type": "analog",
+     "fn": [
+      "PE13",
+      "ADC",
+      "SPI4_MISO",
+      "OPAMP1_INM",
+      "TIM1_CH3",
+      "D17"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": "ADC input, max ~3.6 V. Do not apply 5 V.",
+     "x_mm": 2.54,
+     "y_mm": 58.358
+    },
+    {
+     "num": 13,
+     "name": "A4",
+     "id": "A4",
+     "type": "analog",
+     "fn": [
+      "PE14",
+      "ADC",
+      "SPI4_MOSI",
+      "TIM1_CH4",
+      "D18"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": "ADC input. No hardware I2C on A4/A5 (use SDA/SCL on JDIGITAL).",
+     "x_mm": 2.54,
+     "y_mm": 60.898
+    },
+    {
+     "num": 14,
+     "name": "A5",
+     "id": "A5",
+     "type": "analog",
+     "fn": [
+      "PE15",
+      "ADC",
+      "TIM1_CH4N",
+      "D19"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": "ADC input. No hardware I2C on A4/A5 (use SDA/SCL on JDIGITAL).",
+     "x_mm": 2.54,
+     "y_mm": 63.438
+    }
+   ]
+  },
+  {
+   "name": "JSPI",
+   "pitch_mm": 2.54,
+   "pins": [
+    {
+     "num": 1,
+     "name": "MISO",
+     "id": "MISO",
+     "type": "gpio",
+     "fn": [
+      "PF14",
+      "SPI3_MISO"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": "",
+     "x_mm": 30.48,
+     "y_mm": 63.675
+    },
+    {
+     "num": 2,
+     "name": "5V",
+     "id": "5V",
+     "type": "power",
+     "fn": [],
+     "flags": [],
+     "notes": "5 V out, 2.8 A limited.",
+     "voltage": 5,
+     "x_mm": 30.48,
+     "y_mm": 66.215
+    },
+    {
+     "num": 3,
+     "name": "SCK",
+     "id": "SCK",
+     "type": "gpio",
+     "fn": [
+      "PC10",
+      "SPI3_SCK"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": "",
+     "x_mm": 27.94,
+     "y_mm": 63.675
+    },
+    {
+     "num": 4,
+     "name": "MOSI",
+     "id": "MOSI",
+     "type": "gpio",
+     "fn": [
+      "PC12",
+      "SPI3_MOSI"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": "",
+     "x_mm": 27.94,
+     "y_mm": 66.215
+    },
+    {
+     "num": 5,
+     "name": "RESET",
+     "id": "RESET",
+     "type": "input",
+     "fn": [
+      "NRST"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": "MCU reset (active low).",
+     "x_mm": 25.4,
+     "y_mm": 63.675
+    },
+    {
+     "num": 6,
+     "name": "GND",
+     "id": "GND",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 25.4,
+     "y_mm": 66.215
+    }
+   ]
+  },
+  {
+   "name": "QWIIC",
+   "pitch_mm": 1.0,
+   "pins": [
+    {
+     "num": 1,
+     "name": "GND",
+     "id": "GND",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 4.73,
+     "y_mm": 20.42
+    },
+    {
+     "num": 2,
+     "name": "3V3",
+     "id": "3V3",
+     "type": "power",
+     "fn": [],
+     "flags": [],
+     "notes": "3.3 V out (+3V3_LIMITED, 2.8 A switch).",
+     "voltage": 3.3,
+     "x_mm": 4.73,
+     "y_mm": 21.42
+    },
+    {
+     "num": 3,
+     "name": "SDA",
+     "id": "SDA",
+     "type": "gpio",
+     "fn": [
+      "PC9",
+      "I2C3_SDA"
+     ],
+     "flags": [
+      "3v3-mcu",
+      "i2c"
+     ],
+     "notes": "I2C3 data (MCU).",
+     "x_mm": 4.73,
+     "y_mm": 22.42
+    },
+    {
+     "num": 4,
+     "name": "SCL",
+     "id": "SCL",
+     "type": "gpio",
+     "fn": [
+      "PA8",
+      "I2C3_SCL"
+     ],
+     "flags": [
+      "3v3-mcu",
+      "i2c"
+     ],
+     "notes": "I2C3 clock (MCU).",
+     "x_mm": 4.73,
+     "y_mm": 23.42
+    }
+   ],
+   "notes": "JST-SH 4-pin, 1.0 mm pitch \u2014 plug-in cable, not 0.1\" header."
+  },
+  {
+   "name": "JCTL",
+   "pitch_mm": 2.54,
+   "pins": [
+    {
+     "num": 1,
+     "name": "GND",
+     "id": "GND",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 25.99,
+     "y_mm": 15.995
+    },
+    {
+     "num": 2,
+     "name": "FORCE_BOOT",
+     "id": "FORCE_BOOT",
+     "type": "input",
+     "fn": [],
+     "flags": [
+      "open-drain"
+     ],
+     "notes": "FORCED_USB_BOOT_N, 3.3 V domain. Pull LOW (open-drain) then reboot to enter EDL mode.",
+     "x_mm": 25.99,
+     "y_mm": 18.535
+    },
+    {
+     "num": 3,
+     "name": "POWER_EN",
+     "id": "POWER_EN",
+     "type": "other",
+     "fn": [
+      "PMIC_POWER_EN"
+     ],
+     "flags": [
+      "1v8"
+     ],
+     "notes": "PMIC power enable, 1.8 V MPU domain.",
+     "x_mm": 23.45,
+     "y_mm": 15.995
+    },
+    {
+     "num": 4,
+     "name": "JCTL_TX",
+     "id": "JCTL_TX",
+     "type": "output",
+     "fn": [
+      "GPIO_43",
+      "QUP0_SE7_TX",
+      "UART_DBG"
+     ],
+     "flags": [
+      "1v8"
+     ],
+     "notes": "MPU debug console UART TX, 1.8 V. Default debugging shell.",
+     "x_mm": 23.45,
+     "y_mm": 18.535
+    },
+    {
+     "num": 5,
+     "name": "GPIO_103",
+     "id": "GPIO_103",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_103"
+     ],
+     "flags": [
+      "1v8"
+     ],
+     "notes": "MPU GPIO, 1.8 V.",
+     "x_mm": 20.91,
+     "y_mm": 15.995
+    },
+    {
+     "num": 6,
+     "name": "JCTL_RX",
+     "id": "JCTL_RX",
+     "type": "input",
+     "fn": [
+      "GPIO_44",
+      "QUP0_SE7_RX",
+      "UART_DBG"
+     ],
+     "flags": [
+      "1v8"
+     ],
+     "notes": "MPU debug console UART RX, 1.8 V only.",
+     "x_mm": 20.91,
+     "y_mm": 18.535
+    },
+    {
+     "num": 7,
+     "name": "GND",
+     "id": "GND_2",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 18.37,
+     "y_mm": 15.995
+    },
+    {
+     "num": 8,
+     "name": "PMIC_RESET",
+     "id": "PMIC_RESET",
+     "type": "input",
+     "fn": [
+      "RESIN_N"
+     ],
+     "flags": [
+      "open-drain"
+     ],
+     "notes": "3.3 V domain, open-drain. Pull LOW for hot reboot.",
+     "x_mm": 18.37,
+     "y_mm": 18.535
+    },
+    {
+     "num": 9,
+     "name": "1V8",
+     "id": "1V8",
+     "type": "power",
+     "fn": [
+      "SOM_VREG_MDPX3_1P8"
+     ],
+     "flags": [],
+     "notes": "+1V8 OUT from the SoM rail. Never apply external voltage.",
+     "voltage": 1.8,
+     "x_mm": 15.83,
+     "y_mm": 15.995
+    },
+    {
+     "num": 10,
+     "name": "PWR_DISABLE",
+     "id": "PWR_DISABLE",
+     "type": "input",
+     "fn": [
+      "POWER_SWITCH_DISABLE_N"
+     ],
+     "flags": [
+      "open-drain"
+     ],
+     "notes": "Main power switch enable (VIN-tolerant divider, max 5 V external, not TVS protected). Pull LOW for a cold reboot.",
+     "x_mm": 15.83,
+     "y_mm": 18.535
+    }
+   ],
+   "notes": "MPU remote debug (Arduino Bughopper). Mixed 1.8 V / 3.3 V; drive open-drain only."
+  },
+  {
+   "name": "JHAT",
+   "pitch_mm": 2.54,
+   "pins": [
+    {
+     "num": 1,
+     "name": "3V3",
+     "id": "3V3",
+     "type": "power",
+     "fn": [],
+     "flags": [],
+     "notes": "3.3 V out (2.8 A switch).",
+     "voltage": 3.3,
+     "x_mm": 57.73,
+     "y_mm": 8.37
+    },
+    {
+     "num": 2,
+     "name": "5V",
+     "id": "5V",
+     "type": "power",
+     "fn": [],
+     "flags": [],
+     "notes": "5 V out (2.8 A switch).",
+     "voltage": 5,
+     "x_mm": 60.27,
+     "y_mm": 8.37
+    },
+    {
+     "num": 3,
+     "name": "GPIO2",
+     "id": "GPIO2",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_17",
+      "QUP0_SE0_I2C_SDA",
+      "I2C1_SDA"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 57.73,
+     "y_mm": 10.91
+    },
+    {
+     "num": 4,
+     "name": "5V",
+     "id": "5V_2",
+     "type": "power",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "voltage": 5,
+     "x_mm": 60.27,
+     "y_mm": 10.91
+    },
+    {
+     "num": 5,
+     "name": "GPIO3",
+     "id": "GPIO3",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_18",
+      "QUP0_SE0_I2C_SCL",
+      "I2C1_SCL"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 57.73,
+     "y_mm": 13.45
+    },
+    {
+     "num": 6,
+     "name": "GND",
+     "id": "GND",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 60.27,
+     "y_mm": 13.45
+    },
+    {
+     "num": 7,
+     "name": "GPIO4",
+     "id": "GPIO4",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_83",
+      "GPCLK0"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 57.73,
+     "y_mm": 15.99
+    },
+    {
+     "num": 8,
+     "name": "GPIO14",
+     "id": "GPIO14",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_86",
+      "QUP1_SE2_UART_TX",
+      "UART0_TX"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3",
+      "shared-bt"
+     ],
+     "notes": "Shared with the Wi-Fi/BT module UART: unavailable while Bluetooth is on. MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 60.27,
+     "y_mm": 15.99
+    },
+    {
+     "num": 9,
+     "name": "GND",
+     "id": "GND_2",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 57.73,
+     "y_mm": 18.53
+    },
+    {
+     "num": 10,
+     "name": "GPIO15",
+     "id": "GPIO15",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_87",
+      "QUP1_SE2_UART_RX",
+      "UART0_RX"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3",
+      "shared-bt"
+     ],
+     "notes": "Shared with the Wi-Fi/BT module UART: unavailable while Bluetooth is on. MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 60.27,
+     "y_mm": 18.53
+    },
+    {
+     "num": 11,
+     "name": "GPIO17",
+     "id": "GPIO17",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_85",
+      "QUP1_SE2_UART_RFR"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3",
+      "shared-bt"
+     ],
+     "notes": "UART RTS, shared with Wi-Fi/BT (unavailable while BT on). MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 57.73,
+     "y_mm": 21.07
+    },
+    {
+     "num": 12,
+     "name": "GPIO18",
+     "id": "GPIO18",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_116",
+      "LPI_I2S1_SCK",
+      "PCM_CLK"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 60.27,
+     "y_mm": 21.07
+    },
+    {
+     "num": 13,
+     "name": "GPIO27",
+     "id": "GPIO27",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_109"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 57.73,
+     "y_mm": 23.61
+    },
+    {
+     "num": 14,
+     "name": "GND",
+     "id": "GND_3",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 60.27,
+     "y_mm": 23.61
+    },
+    {
+     "num": 15,
+     "name": "GPIO22",
+     "id": "GPIO22",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_90"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 57.73,
+     "y_mm": 26.15
+    },
+    {
+     "num": 16,
+     "name": "GPIO23",
+     "id": "GPIO23",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_105"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 60.27,
+     "y_mm": 26.15
+    },
+    {
+     "num": 17,
+     "name": "3V3",
+     "id": "3V3_2",
+     "type": "power",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "voltage": 3.3,
+     "x_mm": 57.73,
+     "y_mm": 28.69
+    },
+    {
+     "num": 18,
+     "name": "GPIO24",
+     "id": "GPIO24",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_106"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 60.27,
+     "y_mm": 28.69
+    },
+    {
+     "num": 19,
+     "name": "GPIO10",
+     "id": "GPIO10",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_26",
+      "QUP0_SE3_SPI_MOSI",
+      "SPI0_MOSI"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 57.73,
+     "y_mm": 31.23
+    },
+    {
+     "num": 20,
+     "name": "GND",
+     "id": "GND_4",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 60.27,
+     "y_mm": 31.23
+    },
+    {
+     "num": 21,
+     "name": "GPIO9",
+     "id": "GPIO9",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_25",
+      "QUP0_SE3_SPI_MISO",
+      "SPI0_MISO"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 57.73,
+     "y_mm": 33.77
+    },
+    {
+     "num": 22,
+     "name": "GPIO25",
+     "id": "GPIO25",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_107"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 60.27,
+     "y_mm": 33.77
+    },
+    {
+     "num": 23,
+     "name": "GPIO11",
+     "id": "GPIO11",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_27",
+      "QUP0_SE3_SPI_SCK",
+      "SPI0_SCLK"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 57.73,
+     "y_mm": 36.31
+    },
+    {
+     "num": 24,
+     "name": "GPIO8",
+     "id": "GPIO8",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_28",
+      "QUP0_SE3_SPI_CS",
+      "SPI0_CE0"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 60.27,
+     "y_mm": 36.31
+    },
+    {
+     "num": 25,
+     "name": "GND",
+     "id": "GND_5",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 57.73,
+     "y_mm": 38.85
+    },
+    {
+     "num": 26,
+     "name": "GPIO7",
+     "id": "GPIO7",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_88",
+      "SPI0_CE1"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 60.27,
+     "y_mm": 38.85
+    },
+    {
+     "num": 27,
+     "name": "GPIO0",
+     "id": "GPIO0",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_19",
+      "QUP0_SE1_I2C_SDA",
+      "ID_SD"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "HAT EEPROM I2C (I2C0). MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 57.73,
+     "y_mm": 41.39
+    },
+    {
+     "num": 28,
+     "name": "GPIO1",
+     "id": "GPIO1",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_20",
+      "QUP0_SE1_I2C_SCL",
+      "ID_SC"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "HAT EEPROM I2C (I2C0). MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 60.27,
+     "y_mm": 41.39
+    },
+    {
+     "num": 29,
+     "name": "GPIO5",
+     "id": "GPIO5",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_89"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 57.73,
+     "y_mm": 43.93
+    },
+    {
+     "num": 30,
+     "name": "GND",
+     "id": "GND_6",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 60.27,
+     "y_mm": 43.93
+    },
+    {
+     "num": 31,
+     "name": "GPIO6",
+     "id": "GPIO6",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_80"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 57.73,
+     "y_mm": 46.47
+    },
+    {
+     "num": 32,
+     "name": "GPIO12",
+     "id": "GPIO12",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_77",
+      "PWM0"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 60.27,
+     "y_mm": 46.47
+    },
+    {
+     "num": 33,
+     "name": "GPIO13",
+     "id": "GPIO13",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_81",
+      "PWM1"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 57.73,
+     "y_mm": 49.01
+    },
+    {
+     "num": 34,
+     "name": "GND",
+     "id": "GND_7",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 60.27,
+     "y_mm": 49.01
+    },
+    {
+     "num": 35,
+     "name": "GPIO19",
+     "id": "GPIO19",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_117",
+      "LPI_I2S1_WS",
+      "PCM_FS"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 57.73,
+     "y_mm": 51.55
+    },
+    {
+     "num": 36,
+     "name": "GPIO16",
+     "id": "GPIO16",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_84",
+      "QUP1_SE2_UART_CTS"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3",
+      "shared-bt"
+     ],
+     "notes": "UART CTS, shared with Wi-Fi/BT (unavailable while BT on). MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 60.27,
+     "y_mm": 51.55
+    },
+    {
+     "num": 37,
+     "name": "GPIO26",
+     "id": "GPIO26",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_108"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 57.73,
+     "y_mm": 54.09
+    },
+    {
+     "num": 38,
+     "name": "GPIO20",
+     "id": "GPIO20",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_118",
+      "LPI_I2S1_DATA0",
+      "PCM_DIN"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 60.27,
+     "y_mm": 54.09
+    },
+    {
+     "num": 39,
+     "name": "GND",
+     "id": "GND_8",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 57.73,
+     "y_mm": 56.63
+    },
+    {
+     "num": 40,
+     "name": "GPIO21",
+     "id": "GPIO21",
+     "type": "gpio",
+     "fn": [
+      "MD_GPIO_119",
+      "LPI_I2S1_DATA1",
+      "PCM_DOUT"
+     ],
+     "flags": [
+      "mpu",
+      "level-shifted-3v3"
+     ],
+     "notes": "MPU GPIO via TXS0108 level shifter, 3.3 V on the header; max 3.3 V.",
+     "x_mm": 60.27,
+     "y_mm": 56.63
+    }
+   ],
+   "notes": "Raspberry Pi 40-pin HAT layout, driven by the Qualcomm MPU (Linux), not the STM32."
+  },
+  {
+   "name": "FAN",
+   "pitch_mm": 2.19,
+   "pins": [
+    {
+     "num": 1,
+     "name": "5V",
+     "id": "5V",
+     "type": "power",
+     "fn": [],
+     "flags": [],
+     "notes": "Fan 5 V out.",
+     "voltage": 5,
+     "x_mm": 74.43,
+     "y_mm": 22.75
+    },
+    {
+     "num": 2,
+     "name": "TACH",
+     "id": "TACH",
+     "type": "input",
+     "fn": [
+      "PA7"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": "Fan tachometer to MCU PA7.",
+     "x_mm": 74.43,
+     "y_mm": 24.94
+    },
+    {
+     "num": 3,
+     "name": "PWM",
+     "id": "PWM",
+     "type": "output",
+     "fn": [
+      "PG15"
+     ],
+     "flags": [
+      "3v3-mcu"
+     ],
+     "notes": "Fan PWM from MCU PG15.",
+     "x_mm": 74.43,
+     "y_mm": 27.13
+    },
+    {
+     "num": 4,
+     "name": "GND",
+     "id": "GND",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 74.43,
+     "y_mm": 29.32
+    }
+   ],
+   "notes": "Heatsink fan connector (small-pitch wire-to-board). Positions as drawn; pitch unverified."
+  },
+  {
+   "name": "PWR_CAN_TERMINAL",
+   "pitch_mm": 5.0,
+   "pins": [
+    {
+     "num": 1,
+     "name": "CAN_H",
+     "id": "CAN_H",
+     "type": "other",
+     "fn": [
+      "FDCAN1 via CAN PHY",
+      "PD0 RX",
+      "PD1 TX"
+     ],
+     "flags": [],
+     "notes": "CAN bus high (on-board transceiver on FDCAN1).",
+     "x_mm": 85.58,
+     "y_mm": 95.35
+    },
+    {
+     "num": 2,
+     "name": "CAN_L",
+     "id": "CAN_L",
+     "type": "other",
+     "fn": [
+      "FDCAN1 via CAN PHY"
+     ],
+     "flags": [],
+     "notes": "CAN bus low.",
+     "x_mm": 90.76,
+     "y_mm": 95.35
+    },
+    {
+     "num": 3,
+     "name": "GND",
+     "id": "GND",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 95.42,
+     "y_mm": 95.35
+    },
+    {
+     "num": 4,
+     "name": "GND",
+     "id": "GND_2",
+     "type": "ground",
+     "fn": [],
+     "flags": [],
+     "notes": "",
+     "x_mm": 100.6,
+     "y_mm": 95.35
+    },
+    {
+     "num": 5,
+     "name": "VIN",
+     "id": "VIN",
+     "type": "power",
+     "fn": [],
+     "flags": [],
+     "notes": "Main power input 7-24 V DC, 10 A max (12-24 V recommended).",
+     "voltage": 12,
+     "x_mm": 105.27,
+     "y_mm": 95.35
+    }
+   ],
+   "notes": "5-way screw terminal on the bottom edge. DC barrel jack (VIN 7-24 V, 5 A) sits just right of it."
+  }
+ ],
+ "skipped": [
+  {
+   "name": "JMISC",
+   "reason": "60-pin high-density board-to-board connector on the BOTTOM side (PSSI camera, audio, MPU SPI/I2S, 1.8 V) \u2014 not individually wirable."
+  },
+  {
+   "name": "JMEDIA",
+   "reason": "60-pin high-density bottom-side connector (MIPI DSI/CSI D-PHY pairs) \u2014 not wirable."
+  },
+  {
+   "name": "JOMEGA",
+   "reason": "100-pin high-density bottom-side connector (USB3, CAN-FD logic, JTAG, MCU IO0-8) \u2014 not wirable."
+  },
+  {
+   "name": "CAMERA0/1/2 (J3_x)",
+   "reason": "22-pin MIPI CSI FFC connectors."
+  },
+  {
+   "name": "RGB LEDs 1-4",
+   "reason": "On-board, MCU-driven (LED1 PG3/PG6/PK2, LED2 PG4/PD10/PK1, LED3 PD11/PG5/PK0, LED4 PG2/PG8/PC6) \u2014 no header pins; recorded here for firmware use."
+  },
+  {
+   "name": "Buttons",
+   "reason": "MCU user button = PK13, MPU user button = GPIO_79 \u2014 on-board only."
+  }
+ ],
+ "sources": [
+  "ABX00181-full-pinout.pdf p1: board outline, holes, JCTL/Qwiic/terminal/feature geometry (vector, scale 5.7814 pt/mm from the 160 mm board width), CAN/VIN terminal assignment, LEDs/buttons",
+  "ABX00181-full-pinout.pdf p3: JDIGITAL/JANALOG/JSPI pin functions + JSPI numbering",
+  "ABX00181-full-pinout.pdf p4: JHAT, FAN connector, pin-1 markers",
+  "ABX00181-full-pinout.pdf p5-6: JMISC/JMEDIA/JOMEGA (bottom side, skipped)",
+  "ABX00181-datasheet.pdf p27-32 (sec 9.1-9.6): authoritative pin tables JANALOG, JDIGITAL, JSPI, Qwiic, JCTL, JHAT",
+  "ABX00181-datasheet.pdf p49 (sec 12): 160 x 100 mm, hole types"
+ ],
+ "position_method": "Board outline and holes from the pinout PDF vectors (outline came out 160.00 x 100.02 mm, holes exact). Header pins: the pinout art draws pins at ~2.575 mm pitch, so each header was regularized to exact pitch: JHAT from the RPi HAT spec relative to the HAT holes (pins y=8.37..56.63, x=59+/-1.27; drawing centroid agrees within 0.02 mm); UNO headers from Arduino R3 mil positions with one fitted offset (max residual vs drawing 0.33 mm, from the art's pitch stretch, true error likely <0.3 mm); JCTL/JSPI centred on the drawn pin centroids; Qwiic at drawn 1.0 mm pads; FAN and terminal positions as drawn.",
+ "uncertain": [
+  "UNO header absolute y offset (fit to drawing) \u2014 up to ~0.3 mm.",
+  "FAN connector pitch (drawn 2.19 mm) and exact pin x; connector type not stated in docs.",
+  "Screw terminal pitch drawn unevenly (5.18/4.66 mm); positions copied as drawn.",
+  "Feature rectangles (connectors/SoM) approximate, from pinout art.",
+  "JDIGITAL timer/alt functions taken from pinout p3 table (low-detail art); datasheet lists only the primary functions.",
+  "VIN 'voltage' set to 12 as nominal for a 7-24 V input.",
+  "JANALOG pin 1 is labelled NC in the datasheet designation column but carries MCU BOOT0 per the net name and pinout (named BOOT here)."
+ ]
+}
