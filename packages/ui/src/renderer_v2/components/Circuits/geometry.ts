@@ -105,16 +105,17 @@ export function wireControls(d: Design, parts: Map<string, PartDef>, w: Wire, vi
  * edge (a short stub), then join every pair of points with one 90° corner, alternating so
  * consecutive legs turn rather than double back. Straight: the control points as-is.
  */
+const lead = (q: { order?: number }, stub: number) => stub + ((q.order ?? 0) % 5) * 3
+
 export function routePoints(ctrl: Array<Pt & { dir?: Pt; order?: number }>, style: WireStyle, stub = 8): Pt[] {
   if (style === 'straight' || ctrl.length < 2) return ctrl.map(({ x, y }) => ({ x, y }))
   const a = ctrl[0], b = ctrl[ctrl.length - 1]
   const pts: Pt[] = [{ x: a.x, y: a.y }]
   // Neighbouring pins get different lead-out lengths, so wires leaving one header (or arriving at
   // one breakout) turn on different lines instead of stacking on top of each other.
-  const lead = (q: { order?: number }) => stub + ((q.order ?? 0) % 5) * 3
-  if (a.dir) pts.push({ x: a.x + a.dir.x * lead(a), y: a.y + a.dir.y * lead(a) })
+  if (a.dir) pts.push({ x: a.x + a.dir.x * lead(a, stub), y: a.y + a.dir.y * lead(a, stub) })
   for (const q of ctrl.slice(1, -1)) pts.push({ x: q.x, y: q.y })
-  if (b.dir) pts.push({ x: b.x + b.dir.x * lead(b), y: b.y + b.dir.y * lead(b) })
+  if (b.dir) pts.push({ x: b.x + b.dir.x * lead(b, stub), y: b.y + b.dir.y * lead(b, stub) })
   pts.push({ x: b.x, y: b.y })
   const out: Pt[] = [pts[0]]
   // first free leg runs perpendicular to the pin's stub
@@ -137,6 +138,64 @@ export function routePoints(ctrl: Array<Pt & { dir?: Pt; order?: number }>, styl
     else clean.push(q)
   }
   return clean
+}
+
+/** Drop repeated points and collinear midpoints, never removing a point flagged `fixed`. */
+function cleanRoute(pts: Pt[], fixed: (i: number) => boolean): Pt[] {
+  const out: Array<Pt & { f: boolean }> = []
+  pts.forEach((q, i) => {
+    const f = fixed(i)
+    const l = out[out.length - 1]
+    if (l && l.x === q.x && l.y === q.y) { if (f && !l.f) out[out.length - 1] = { ...q, f }; return }
+    const k = out[out.length - 2]
+    if (k && l && !l.f && ((k.x === l.x && l.x === q.x) || (k.y === l.y && l.y === q.y))) out[out.length - 1] = { ...q, f }
+    else out.push({ ...q, f })
+  })
+  return out.map(({ x, y }) => ({ x, y }))
+}
+
+/**
+ * Square-cornered route with both pins' lead-out points kept explicit:
+ * [pin, lead-out, ...free corners..., lead-out, pin]. Segment dragging works on this shape —
+ * the two pins and their lead-outs stay put, everything between them can move.
+ */
+export function anchoredRoute(ctrl: Array<Pt & { dir?: Pt; order?: number }>, stub: number): Pt[] | null {
+  const a = ctrl[0], b = ctrl[ctrl.length - 1]
+  if (ctrl.length < 2 || !a.dir || !b.dir) return null
+  const sa = { x: a.x + a.dir.x * lead(a, stub), y: a.y + a.dir.y * lead(a, stub) }
+  const sb = { x: b.x + b.dir.x * lead(b, stub), y: b.y + b.dir.y * lead(b, stub) }
+  const r = routePoints(ctrl, 'orthogonal', stub)
+  const inner = r.slice(1, -1).filter((q) => !(q.x === sa.x && q.y === sa.y) && !(q.x === sb.x && q.y === sb.y))
+  const pts = [{ x: a.x, y: a.y }, sa, ...inner, sb, { x: b.x, y: b.y }]
+  const n = pts.length
+  return cleanRoute(pts, (i) => i <= 1 || i >= n - 2)
+}
+
+/**
+ * Slide segment `seg` of an anchored route sideways by `d` (a horizontal segment moves up/down,
+ * a vertical one left/right). Free corners move with it; where the segment meets a pin's
+ * lead-out a new jog is inserted instead, so corners appear naturally. Returns the free
+ * corners to store as the wire's points (pins and lead-outs stripped).
+ */
+export function slideSegment(route: Pt[], seg: number, d: number): Array<[number, number]> {
+  const n = route.length
+  const a = route[seg], b = route[seg + 1]
+  const horiz = a.y === b.y
+  const mv = (q: Pt): Pt => (horiz ? { x: q.x, y: q.y + d } : { x: q.x + d, y: q.y })
+  const aFixed = seg <= 1, bFixed = seg + 1 >= n - 2
+  const out = [...route.slice(0, seg), ...(aFixed ? [a] : []), mv(a), mv(b), ...(bFixed ? [b] : []), ...route.slice(seg + 2)]
+  const m = out.length
+  const clean = cleanRoute(out, (i) => i <= 1 || i >= m - 2)
+  return clean.slice(2, -2).map((q) => [q.x, q.y] as [number, number])
+}
+
+/** Segment of an anchored route that a press at index `i` should drag: the lead-outs themselves hand off to their neighbour. */
+export function draggableSegment(route: Pt[], i: number): number | null {
+  const n = route.length
+  if (n < 4) return null
+  const s = Math.min(Math.max(i, 1), n - 3)
+  const a = route[s], b = route[s + 1]
+  return a.x === b.x && a.y === b.y ? null : s
 }
 
 /** Drawable route of a wire in a view. */

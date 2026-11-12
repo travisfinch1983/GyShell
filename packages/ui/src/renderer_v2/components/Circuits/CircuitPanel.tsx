@@ -500,10 +500,12 @@ export function CircuitPanel() {
                 <input value={selWire.label ?? ''} placeholder="e.g. I2C_SDA" onChange={(e) => updateWire(selWire.id, (w) => { w.label = e.target.value || undefined })} />
               </label>
               <div className={styles.row}>
-                <button className={styles.btn} onClick={() => updateWire(selWire.id, (w) => { if (view === 'bb') delete w.bbPoints; else delete w.schPoints })} title="Remove every hand-placed bend">Reset route</button>
+                <button className={styles.btn} onClick={() => updateWire(selWire.id, (w) => { if (view === 'bb') delete w.bbPoints; else delete w.schPoints })} title="Go back to the automatic route">Reset route</button>
                 <button className={styles.btnDanger} onClick={deleteSelection}><Trash2 size={13} /> Delete</button>
               </div>
-              <div className={styles.dim}>Reroute: drag the wire (or a <b>+</b> handle) to pull out a bend, drag a bend to move it, right-click or double-click a bend to remove it.</div>
+              <div className={styles.dim}>{design?.wireStyle === 'straight' && view === 'bb'
+                ? <>Reroute: drag the wire (or a <b>+</b> handle) to pull out a bend, drag a bend to move it, right-click or double-click a bend to remove it.</>
+                : <>Reroute: drag any straight run of the wire to slide it sideways. New corners appear where it meets a pin; runs that line up merge back together.</>}</div>
             </>
           )}
 
@@ -529,7 +531,7 @@ export function CircuitPanel() {
                 </>
               )}
               <div className={styles.keys}>
-                <div><b>Click pin → pin</b> wire · <b>drag a wire</b> to bend it</div>
+                <div><b>Click pin → pin</b> wire · <b>drag a wire</b> to reroute it</div>
                 <div><b>R</b> rotate · <b>Del</b> delete · <b>F</b> fit</div>
                 <div><b>Ctrl+Z / Ctrl+Shift+Z</b> undo / redo</div>
                 <div><b>Drag empty space</b> pan · <b>wheel</b> zoom</div>

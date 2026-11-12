@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Design, PartDef, PartInstance, PinDef, PinRef, View } from './circuitTypes'
 import { PIN_COLORS } from './circuitTypes'
-import { artUrl, bounds, nearestSegment, partSize, pinWorld, routePoints, schPins, snap, wireControls, wirePath, wireStyleFor, type Pt } from './geometry'
+import { anchoredRoute, artUrl, bounds, draggableSegment, nearestSegment, partSize, pinWorld, routePoints, schPins, slideSegment, snap, wireControls, wirePath, wireStyleFor, type Pt } from './geometry'
 import styles from './Circuit.module.css'
 
 export type Sel = { kind: 'part'; ref: string } | { kind: 'wire'; id: string } | null
@@ -32,8 +32,10 @@ type Drag =
   | { mode: 'part'; ref: string; start: Pt; orig: { x: number; y: number }; moved: boolean }
   | { mode: 'pan'; sx: number; sy: number; ox: number; oy: number }
   | { mode: 'bend'; wireId: string; idx: number; moved: boolean }
-  /** pressed on a wire body / a '+' handle: becomes a new bend once the pointer actually moves */
-  | { mode: 'wire-pull'; wireId: string; seg: number | null; sx: number; sy: number }
+  /** pressed on a wire body / a '+' handle: becomes a drag once the pointer actually moves */
+  | { mode: 'wire-pull'; wireId: string; seg: number | null; sx: number; sy: number; at: Pt }
+  /** sliding one straight run of a square-cornered wire sideways (Cirkit-style) */
+  | { mode: 'segment'; wireId: string; route: Pt[]; seg: number; horiz: boolean; start: Pt; d: number; moved: boolean }
   | null
 
 const GRID = 5
@@ -151,13 +153,33 @@ export function CircuitCanvas(p: Props) {
     svgRef.current?.setPointerCapture(e.pointerId)
   }
 
-  /** Pressing a wire selects it; dragging it pulls out a new bend (Cirkit-style rerouting). */
+  /**
+   * Pressing a wire selects it. Dragging a square-cornered wire slides the straight run under the
+   * pointer sideways (no new vertex — corners appear where it meets a pin's lead-out); dragging a
+   * straight-line wire pulls out a new bend.
+   */
   const onWireDown = (e: React.PointerEvent, wireId: string, seg: number | null = null) => {
     if (e.button !== 0 || wiring) return
     e.stopPropagation()
     p.onSelect({ kind: 'wire', id: wireId })
-    drag.current = { mode: 'wire-pull', wireId, seg, sx: e.clientX, sy: e.clientY }
+    drag.current = { mode: 'wire-pull', wireId, seg, sx: e.clientX, sy: e.clientY, at: toWorld(e.clientX, e.clientY) }
     svgRef.current?.setPointerCapture(e.pointerId)
+  }
+
+  const stubLen = view === 'sch' ? 10 : 8
+  const wireRoute = (d: Design, wireId: string): Pt[] | null => {
+    const wire = d.wires.find((q) => q.id === wireId)
+    const ctrl = wire ? wireControls(d, parts, wire, view) : null
+    return ctrl ? anchoredRoute(ctrl, stubLen) : null
+  }
+
+  /** Start sliding the segment of `wireId` nearest to `at`. */
+  const beginSegment = (wireId: string, at: Pt): Drag => {
+    const route = wireRoute(designRef.current, wireId)
+    if (!route) return null
+    const seg = draggableSegment(route, nearestSegment(route, at))
+    if (seg === null) return null
+    return { mode: 'segment', wireId, route, seg, horiz: route[seg].y === route[seg + 1].y, start: at, d: 0, moved: false }
   }
 
   /** Insert a bend on wire `wireId` at world point `at` (segment `seg` of its control points, or the nearest). Returns its index. */
@@ -215,8 +237,30 @@ export function CircuitCanvas(p: Props) {
     if (dr.mode === 'pan') { setPan({ x: dr.ox + e.clientX - dr.sx, y: dr.oy + e.clientY - dr.sy }); return }
     if (dr.mode === 'wire-pull') {
       if (Math.hypot(e.clientX - dr.sx, e.clientY - dr.sy) < 4) return
+      if (wireStyleFor(designRef.current, view) === 'orthogonal') {
+        drag.current = beginSegment(dr.wireId, dr.at)
+        if (drag.current) onMove(e)
+        return
+      }
       const idx = insertBend(dr.wireId, w, dr.seg)
       drag.current = idx === null ? null : { mode: 'bend', wireId: dr.wireId, idx, moved: true }
+      return
+    }
+    if (dr.mode === 'segment') {
+      const base = dr.horiz ? dr.route[dr.seg].y : dr.route[dr.seg].x
+      const raw = dr.horiz ? w.y - dr.start.y : w.x - dr.start.x
+      const dd = snap(base + raw, GRID) - base
+      if (dd === dr.d) return
+      dr.d = dd
+      const d = clone(designRef.current)
+      const wire = d.wires.find((q) => q.id === dr.wireId)
+      if (!wire) return
+      if (!dr.moved) { p.onBeginEdit(); dr.moved = true }
+      const key = view === 'bb' ? 'bbPoints' : 'schPoints'
+      const pts = slideSegment(dr.route, dr.seg, dd)
+      if (pts.length) wire[key] = pts
+      else delete wire[key]
+      p.onChange(d, false)
       return
     }
     if (dr.mode === 'part') {
@@ -328,14 +372,23 @@ export function CircuitCanvas(p: Props) {
             const mi = Math.max(0, Math.floor((path.length - 1) / 2))
             const mid = path[mi + 1] ? { x: (path[mi].x + path[mi + 1].x) / 2, y: (path[mi].y + path[mi + 1].y) / 2 } : path[mi]
             const dark = isDarkColor(color)
+            const ortho = wireStyleFor(design, view) === 'orthogonal'
+            const hitRoute = ortho ? (() => { const c = wireControls(design, parts, w, view); return c ? anchoredRoute(c, stubLen) : null })() : null
             return (
               <g key={w.id}>
-                <path d={d} fill="none" stroke="transparent" strokeWidth={8} className={styles.wireHit} onPointerDown={(e) => onWireDown(e, w.id)} />
+                {ortho && hitRoute
+                  ? hitRoute.slice(0, -1).map((a, i) => {
+                    const b = hitRoute[i + 1]
+                    const s = draggableSegment(hitRoute, i)
+                    const cur = s === null ? 'pointer' : hitRoute[s].y === hitRoute[s + 1].y ? 'ns-resize' : 'ew-resize'
+                    return <path key={`h${i}`} d={`M${a.x} ${a.y} L${b.x} ${b.y}`} fill="none" stroke="transparent" strokeWidth={8} strokeLinecap="round" style={{ cursor: cur }} onPointerDown={(e) => onWireDown(e, w.id)} />
+                  })
+                  : <path d={d} fill="none" stroke="transparent" strokeWidth={8} className={styles.wireHit} onPointerDown={(e) => onWireDown(e, w.id)} />}
                 {isSel && <path d={d} fill="none" stroke="var(--accent)" strokeWidth={view === 'bb' ? 4.6 : 3} strokeOpacity={0.55} strokeLinejoin="round" strokeLinecap="round" pointerEvents="none" />}
                 {view === 'bb' && <path d={d} fill="none" stroke={dark ? '#ffffff59' : '#00000066'} strokeWidth={dark ? 3.2 : 2.8} strokeLinejoin="round" strokeLinecap="round" pointerEvents="none" />}
                 <path d={d} fill="none" stroke={color} strokeWidth={view === 'bb' ? 2 : 1} strokeLinejoin="round" strokeLinecap="round" pointerEvents="none" />
                 {w.label && mid && <text x={mid.x + 2} y={mid.y - 2} className={styles.netLabel} pointerEvents="none">{w.label}</text>}
-                {isSel && (() => {
+                {isSel && !ortho && (() => {
                   const ctrl = wireControls(design, parts, w, view) ?? []
                   return ctrl.slice(0, -1).map((a, i) => {
                     const b = ctrl[i + 1]
@@ -348,7 +401,7 @@ export function CircuitCanvas(p: Props) {
                     )
                   })
                 })()}
-                {isSel && pts.map(([x, y], i) => (
+                {isSel && !ortho && pts.map(([x, y], i) => (
                   <circle key={i} cx={x} cy={y} r={2.6} className={styles.bend} onPointerDown={(e) => onBendDown(e, w.id, i)} onDoubleClick={(e) => onBendDouble(e, w.id, i)}
                     onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); removeBend(w.id, i) }} />
                 ))}
@@ -387,7 +440,7 @@ export function CircuitCanvas(p: Props) {
         </g>
       </svg>
       {hover && <PinTip hover={hover} wrap={wrapRef.current} design={design} />}
-      <div className={styles.zoomBadge}>{Math.round(zoom * 50)}%{wiring ? ' · wiring: click a pin to finish, empty space to add a corner, Esc / right-click to cancel' : sel?.kind === 'wire' ? ' · drag the wire or a + to add a bend · drag a bend to move it · right-click a bend to remove it' : ''}</div>
+      <div className={styles.zoomBadge}>{Math.round(zoom * 50)}%{wiring ? ' · wiring: click a pin to finish, empty space to add a corner, Esc / right-click to cancel' : sel?.kind === 'wire' ? (wireStyleFor(design, view) === 'orthogonal' ? ' · drag any straight run of the wire to slide it — corners appear where needed' : ' · drag the wire or a + to add a bend · drag a bend to move it · right-click a bend to remove it') : ''}</div>
     </div>
   )
 }
