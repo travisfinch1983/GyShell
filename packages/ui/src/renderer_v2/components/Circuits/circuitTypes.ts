@@ -13,6 +13,8 @@ export interface PartDef {
   source: 'builtin' | 'custom' | 'fritzing'; license?: string
   width: number; height: number; svg?: string; image?: string
   pins: PinDef[]; buses?: string[][]; schematic?: { symbol: SchSymbol }; props?: Record<string, unknown>; updatedAt?: string
+  /** Palette-only entry (imported Fritzing parts): no art or pins until fetched with circuitApi.part() */
+  lite?: boolean; pinCount?: number
 }
 export interface Placement { x: number; y: number; rot: number }
 export interface PartInstance { ref: string; partId: string; label?: string; bb: Placement; sch: Placement; props?: Record<string, string> }

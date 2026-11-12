@@ -130,14 +130,18 @@ tool('circuit_delete',
 
 // ── parts library ────────────────────────────────────────────────────────────────────────────
 tool('parts_search',
-  'Search the Circuit Designer parts library (built-in boards, sensors, passives, plus Travis\'s custom parts). ' +
-  'Matches name, tags, category, and pin names/functions (e.g. "i2c temperature", "relay", "esp32-s3"). Empty query lists everything.',
-  { query: z.string().optional(), category: z.string().optional() },
-  async ({ query, category }) => {
-    const qs = new URLSearchParams({ summary: '1' })
+  'Search the Circuit Designer parts library: built-in parts (ESP32 boards with full pin flags, common sensors, passives), ' +
+  'Travis\'s custom parts, and ~2000 parts imported from the Fritzing library (source "fritzing", ids "fz-…", categories "Fritzing · …"; ' +
+  'their pin types are guessed from names and they carry no ESP32 warning flags). ' +
+  'All words must match name, tags, category, or pin names/functions (e.g. "i2c temperature", "relay", "esp32-s3"). ' +
+  'Results list built-in and custom parts first; `total` says how many matched — narrow the query rather than raising the limit.',
+  { query: z.string().optional(), category: z.string().optional(), limit: z.number().int().min(1).max(200).optional().describe('max results, default 40') },
+  async ({ query, category, limit }) => {
+    const qs = new URLSearchParams({ summary: '1', limit: String(limit ?? 40) })
     if (query) qs.set('q', query)
     if (category) qs.set('category', category)
-    return (await api('GET', `/api/circuits/parts?${qs}`)).parts
+    const r = await api('GET', `/api/circuits/parts?${qs}`)
+    return { total: r.total ?? r.parts.length, shown: r.parts.length, parts: r.parts }
   })
 
 tool('part_get',

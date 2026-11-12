@@ -25,7 +25,14 @@ const lsSet = (k: string, v: string) => { try { localStorage.setItem(k, v) } cat
 export function CircuitPanel() {
   const [library, setLibrary] = useState<PartDef[]>([])
   const [libError, setLibError] = useState<string | null>(null)
-  const parts = useMemo(() => new Map(library.map((p) => [p.id, p])), [library])
+  // full definitions of `lite` palette parts, fetched the first time they're placed or opened
+  const [fullParts, setFullParts] = useState<Map<string, PartDef>>(new Map())
+  const parts = useMemo(() => {
+    const m = new Map(library.map((p) => [p.id, p]))
+    for (const [id, p] of fullParts) m.set(id, p)
+    return m
+  }, [library, fullParts])
+  const partsRef = useRef(parts); partsRef.current = parts
   const [design, setDesign] = useState<Design | null>(null)
   const [view, setView] = useState<View>(() => (lsGet(VIEW_KEY) === 'sch' ? 'sch' : 'bb'))
   const [sel, setSel] = useState<Sel>(null)
@@ -56,8 +63,37 @@ export function CircuitPanel() {
   const flash = (m: string) => { setStatus(m); setTimeout(() => setStatus((s) => (s === m ? '' : s)), 1800) }
 
   // ── library ──
+  const libLoaded = useRef(false)
   const loadLibrary = useCallback(async () => {
-    try { setLibrary(await circuitApi.parts()); setLibError(null) } catch (e) { setLibError(errText(e)) }
+    try {
+      const lib = await circuitApi.parts()
+      setLibrary(lib); setLibError(null)
+      // the imported Fritzing library is ~2k parts — its categories start collapsed (search still finds them)
+      if (!libLoaded.current) {
+        libLoaded.current = true
+        setCollapsed(new Set(lib.filter((p) => p.source === 'fritzing').map((p) => p.category)))
+      }
+    } catch (e) { setLibError(errText(e)) }
+  }, [])
+
+  /** Full definition of a part, fetching it if the palette only has the lite entry. */
+  const inflight = useRef(new Map<string, Promise<PartDef | null>>())
+  const fullPart = useCallback(async (id: string): Promise<PartDef | null> => {
+    const have = partsRef.current.get(id)
+    if (have && !have.lite) return have
+    let pr = inflight.current.get(id)
+    if (!pr) {
+      pr = circuitApi.part(id).then((p) => {
+        setFullParts((m) => new Map(m).set(id, p))
+        return p
+      }).catch((e) => {
+        setStatus(`could not load part '${id}' — ${errText(e)}`)
+        console.warn(`[circuits] part ${id} failed to load`, e)
+        return null
+      }).finally(() => { inflight.current.delete(id) })
+      inflight.current.set(id, pr)
+    }
+    return pr
   }, [])
   useEffect(() => { loadLibrary() }, [loadLibrary])
 
@@ -208,9 +244,9 @@ export function CircuitPanel() {
   }, [doSave])
 
   // ── editing helpers ──
-  const addPart = useCallback((partId: string, at?: Pt) => {
+  const addPart = useCallback(async (partId: string, at?: Pt) => {
+    const def = await fullPart(partId)
     const d = designRef.current
-    const def = parts.get(partId)
     if (!d || !def) return
     const used = new Set(d.parts.map((p) => p.ref))
     let i = 1; while (used.has(`${def.refPrefix}${i}`)) i++
@@ -227,7 +263,13 @@ export function CircuitPanel() {
     next.parts.push({ ref, partId, [view]: { x: pos.x, y: pos.y, rot: 0 }, [other]: otherPos } as any)
     change(next)
     setSel({ kind: 'part', ref })
-  }, [parts, view, change])
+  }, [parts, view, change, fullPart])
+
+  // parts used by the open design (including ones an agent just added) need their full definitions
+  const usedIds = design ? [...new Set(design.parts.map((p) => p.partId))].sort().join('|') : ''
+  useEffect(() => {
+    for (const id of usedIds.split('|')) if (id && parts.get(id)?.lite) fullPart(id)
+  }, [usedIds, parts, fullPart])
 
   const deleteSelection = useCallback(() => {
     const d = designRef.current
@@ -313,7 +355,9 @@ export function CircuitPanel() {
       : library
     const cats = new Map<string, PartDef[]>()
     for (const p of list) cats.set(p.category, [...(cats.get(p.category) ?? []), p])
-    return [...cats.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+    // our own categories first, the imported Fritzing library after them
+    const fz = (c: string) => (c.startsWith('Fritzing') ? 1 : 0)
+    return [...cats.entries()].sort((a, b) => fz(a[0]) - fz(b[0]) || a[0].localeCompare(b[0]))
   }, [library, query])
 
   const selPart = sel?.kind === 'part' ? design?.parts.find((p) => p.ref === sel.ref) : undefined
@@ -397,7 +441,12 @@ export function CircuitPanel() {
                   <span className={styles.partName}>{p.name}</span>
                   {p.source === 'custom' && <span className={styles.badge}>custom</span>}
                   <button className={styles.iconBtnSm} title={p.source === 'custom' ? 'Edit part' : 'Copy as a new custom part'}
-                    onClick={(e) => { e.stopPropagation(); setEditor(p.source === 'custom' ? { part: p, isNew: false } : { part: { ...p, id: undefined, name: `${p.name} (copy)`, source: 'custom' }, isNew: true }) }}>
+                    onClick={async (e) => {
+                      e.stopPropagation()
+                      if (p.source === 'custom') { setEditor({ part: p, isNew: false }); return }
+                      const src = await fullPart(p.id)
+                      if (src) setEditor({ part: { ...src, id: undefined, name: `${src.name} (copy)`, source: 'custom', lite: undefined, pinCount: undefined }, isNew: true })
+                    }}>
                     {p.source === 'custom' ? <Pencil size={11} /> : <Copy size={11} />}
                   </button>
                 </div>

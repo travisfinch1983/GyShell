@@ -1,6 +1,6 @@
 // @ts-expect-error — express ships untyped in this repo (same pattern as flowchartsHttp)
 import express from 'express'
-import { readdirSync, readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
+import { readdirSync, readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { builtinParts, type PartDef, type PinDef, type PinType, type PinSide } from '../Circuits/circuitParts'
 import { normalizeDesign, applyOps, netlist, checkDesign, exportText, bom, pinAssignments, type Design, type Op } from '../Circuits/circuitModel'
@@ -13,6 +13,8 @@ type Res = express.Response
  *
  *   <dataDir>/circuits/designs/<id>.json   designs
  *   <dataDir>/circuits/parts/<id>.json     custom parts (built-ins live in code: circuitParts.ts)
+ *   <dataDir>/circuits/fritzing/<id>.json  imported Fritzing library (read-only; regenerate with
+ *                                          infra/circuits/import-fritzing.mjs)
  *   <dataDir>/circuits/trash/              deleted designs/parts land here, never unlinked
  *
  * Two write paths: the UI PUTs whole designs with `baseUpdatedAt` (409 if someone else wrote since),
@@ -24,6 +26,7 @@ export function createCircuitsRouter(dataDir: string): express.Router {
   const json = express.json({ limit: '24mb' })
   const root = path.join(dataDir, 'circuits')
   const dDir = path.join(root, 'designs'), pDir = path.join(root, 'parts'), trash = path.join(root, 'trash')
+  const fDir = path.join(root, 'fritzing')
   const ensure = () => { for (const d of [dDir, pDir, trash]) if (!existsSync(d)) mkdirSync(d, { recursive: true }) }
   const safe = (id: unknown): id is string => typeof id === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(id)
   const dFile = (id: string) => path.join(dDir, `${id}.json`)
@@ -34,21 +37,53 @@ export function createCircuitsRouter(dataDir: string): express.Router {
 
   // ── parts ──────────────────────────────────────────────────────────────────────────────────
   const builtinIds = () => new Set(builtinParts().map((p) => p.id))
-  const customParts = (): PartDef[] => {
-    ensure()
+  /**
+   * Parts directories are read once and cached until the directory changes (custom parts are
+   * written by rename, which bumps the dir mtime; a Fritzing re-import swaps the whole dir).
+   * The Fritzing library is ~2k parts / ~150 MB of SVG, so re-reading it per request is not an
+   * option — and its art is not cached either: only GET /parts/:id returns it, read from disk.
+   */
+  const dirCache = new Map<string, { stamp: string; parts: PartDef[] }>()
+  const readPartsDir = (dir: string, source: PartDef['source']): PartDef[] => {
+    if (!existsSync(dir)) return []
+    let stamp: string
+    try {
+      const st = statSync(dir)
+      const rep = path.join(dir, '_report.json')
+      stamp = `${st.ino}:${st.mtimeMs}:${existsSync(rep) ? statSync(rep).mtimeMs : 0}`
+    } catch (e) { console.warn(`[circuits] cannot stat ${dir}: ${(e as Error).message}`); return [] }
+    const hit = dirCache.get(dir)
+    if (hit && hit.stamp === stamp) return hit.parts
     const out: PartDef[] = []
-    for (const f of readdirSync(pDir)) {
-      if (!f.endsWith('.json')) continue
-      try { out.push({ ...JSON.parse(readFileSync(path.join(pDir, f), 'utf8')), source: 'custom' }) }
-      catch (e) { console.warn(`[circuits] unreadable custom part ${f}: ${(e as Error).message}`) }
+    const t0 = Date.now()
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.json') || f.startsWith('_')) continue
+      try {
+        const p = { ...JSON.parse(readFileSync(path.join(dir, f), 'utf8')), source }
+        // imported art is ~150 MB in all: keep metadata + pins in memory, read the art per request
+        if (source === 'fritzing') { delete p.svg; delete p.image }
+        out.push(p)
+      }
+      catch (e) { console.warn(`[circuits] unreadable ${source} part ${f}: ${(e as Error).message}`) }
     }
+    dirCache.set(dir, { stamp, parts: out })
+    if (source === 'fritzing') console.log(`[circuits] loaded ${out.length} Fritzing parts in ${Date.now() - t0} ms`)
     return out
   }
-  const allParts = (): PartDef[] => [...builtinParts(), ...customParts()]
+  const customParts = (): PartDef[] => { ensure(); return readPartsDir(pDir, 'custom') }
+  const fritzingParts = (): PartDef[] => readPartsDir(fDir, 'fritzing')
+  const fritzingIds = () => new Set(fritzingParts().map((p) => p.id))
+  const allParts = (): PartDef[] => [...builtinParts(), ...customParts(), ...fritzingParts()]
+  /** Palette entry for a big imported part: everything but the art and pin list (fetched on use). */
+  const lite = (p: PartDef) => {
+    const { svg: _svg, image: _image, pins, buses: _buses, ...rest } = p
+    return { ...rest, description: clip(rest.description, 300), pins: [], pinCount: pins.length, lite: true }
+  }
   const lookupFrom = (parts: PartDef[]) => { const m = new Map(parts.map((p) => [p.id, p])); return (id: string) => m.get(id) }
+  const clip = (s: string | undefined, n: number) => (s && s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s)
   const summary = (p: PartDef) => ({
-    id: p.id, name: p.name, category: p.category, refPrefix: p.refPrefix, source: p.source, description: p.description, tags: p.tags,
-    pinCount: p.pins.length, width: p.width, height: p.height,
+    id: p.id, name: p.name, category: p.category, refPrefix: p.refPrefix, source: p.source, description: clip(p.description, 240), tags: p.tags,
+    pinCount: (p as any).pinCount ?? p.pins.length, width: p.width, height: p.height,
   })
 
   router.get('/api/circuits/parts', (req: Req, res: Res) => {
@@ -64,7 +99,22 @@ export function createCircuitsRouter(dataDir: string): express.Router {
           return terms.every((t) => hay.includes(t))
         })
       }
-      res.json({ parts: req.query.summary ? parts.map(summary) : parts })
+      const limit = Number(req.query.limit) || 0
+      const total = parts.length
+      if (limit > 0) {
+        // our own parts first (built-in, custom, then the Fritzing import); within each, parts whose
+        // NAME matches the query beat ones that only mention it in tags or a long description
+        const terms = q ? q.split(/\s+/) : []
+        const rank = (p: PartDef) => {
+          const src = p.source === 'builtin' ? 0 : p.source === 'custom' ? 1 : 2
+          const nm = p.name.toLowerCase(), meta = [p.id, p.category, ...(p.tags ?? [])].join(' ').toLowerCase()
+          const fit = !terms.length || terms.every((t) => nm.includes(t)) ? 0 : terms.every((t) => nm.includes(t) || meta.includes(t)) ? 1 : 2
+          return fit * 3 + src
+        }
+        parts = parts.map((p) => ({ p, r: rank(p) })).sort((a, b) => a.r - b.r).map((x) => x.p).slice(0, limit)
+      }
+      const shaped = req.query.summary ? parts.map(summary) : req.query.lite ? parts.map((p) => (p.source === 'fritzing' ? lite(p) : p)) : parts
+      res.json({ parts: shaped, total })
     } catch (e) { err(res, 500, e) }
   })
 
@@ -73,6 +123,12 @@ export function createCircuitsRouter(dataDir: string): express.Router {
     if (!safe(id)) return err(res, 400, 'bad id')
     const p = allParts().find((x) => x.id === id)
     if (!p) return err(res, 404, `no part '${id}'`)
+    if (p.source === 'fritzing') {
+      try {
+        const disk = JSON.parse(readFileSync(path.join(fDir, `${id}.json`), 'utf8'))
+        return res.json({ part: { ...p, svg: disk.svg, image: disk.image } })
+      } catch (e) { return err(res, 500, `Fritzing part '${id}' art unreadable: ${(e as Error).message}`) }
+    }
     res.json({ part: p })
   })
 
@@ -137,6 +193,7 @@ export function createCircuitsRouter(dataDir: string): express.Router {
     try {
       ensure()
       if (builtinIds().has(id)) return err(res, 409, `'${id}' is a built-in part and cannot be overwritten — save it under a new id`)
+      if (fritzingIds().has(id)) return err(res, 409, `'${id}' is an imported Fritzing part and is read-only — save a copy under a new id`)
       if (mustBeNew && existsSync(pFile(id))) return err(res, 409, `custom part '${id}' already exists`)
       const part = { ...validatePart(body, id), updatedAt: new Date().toISOString() }
       writeAtomic(pFile(id), part)
@@ -155,6 +212,7 @@ export function createCircuitsRouter(dataDir: string): express.Router {
     const id = req.params.id
     if (!safe(id)) return err(res, 400, 'bad id')
     if (builtinIds().has(id)) return err(res, 409, 'built-in parts cannot be deleted')
+    if (fritzingIds().has(id)) return err(res, 409, 'imported Fritzing parts cannot be deleted one by one — they come from the library import')
     try {
       ensure()
       if (!existsSync(pFile(id))) return err(res, 404, `no custom part '${id}'`)

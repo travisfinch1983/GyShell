@@ -10,10 +10,16 @@ const enc = encodeURIComponent
 
 /** Failures PROPAGATE — "could not load" must never render as "no designs". */
 export const circuitApi = {
+  /** The palette list. Imported Fritzing parts come back `lite` (no art/pins) — fetch them with part(). */
   async parts(): Promise<PartDef[]> {
-    const r = await req('GET', '/api/circuits/parts')
+    const r = await req('GET', '/api/circuits/parts?lite=1')
     if (!Array.isArray(r?.parts)) throw new Error('parts list missing from the response')
     return r.parts
+  },
+  async part(id: string): Promise<PartDef> {
+    const r = await req('GET', `/api/circuits/parts/${enc(id)}`)
+    if (!r?.part) throw new Error(`no part '${id}' in the response`)
+    return r.part
   },
   async list(): Promise<DesignSummary[]> {
     const r = await req('GET', '/api/circuits/designs')
